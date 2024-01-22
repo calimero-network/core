@@ -1,0 +1,18 @@
+# Dependency directories
+node_modules/
+
+# Package manager logs
+pnpm-debug.log*
+
+# Compiled output
+dist/
+
+# VS Code
+.vscode/
+
+# Log files
+*.log
+
+# Backup & temp files
+*.bak         
+*.swp
