@@ -2,11 +2,8 @@
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { JoinCommandOptions, StartSessionCommandOptions, AddKeysCommandOptions } from "./types";
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const fs = require("fs");
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const open = require("open");
-// TODO change requires to imports
+import * as fs from "fs";
+import * as open from "open";
 
 // TODO - update output with right chalk colors
 
