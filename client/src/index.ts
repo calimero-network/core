@@ -3,7 +3,7 @@ import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { JoinCommandOptions, StartSessionCommandOptions, AddKeysCommandOptions } from "./types";
 import * as fs from "fs";
-import * as open from "open";
+import open from "open";
 
 // TODO - update output with right chalk colors
 
