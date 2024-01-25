@@ -1,10 +1,14 @@
 #!/usr/bin/env node
-import yargs from "yargs";
+import yargs, { Argv } from "yargs";
 import { hideBin } from "yargs/helpers";
-import { JoinCommandOptions, StartSessionCommandOptions, AddKeysCommandOptions } from "./types";
+import { JoinCommandOptions, StartSessionCommandOptions } from "./types/index.js";
 import * as fs from "fs";
 import open from "open";
-
+import ora, {Color} from "ora";
+import inquirer, { Answers } from "inquirer";
+import * as progress from "cli-progress";
+import chalk from "chalk";
+import Table from "cli-table";
 // TODO - update output with right chalk colors
 
 //TOOD - does user connect to network or does he just reveals his IP and Port in Node Discovery?
@@ -14,7 +18,7 @@ import open from "open";
 const join = {
 	command: "join",
 	describe: "join P2P network on specific address",
-	builder: (yargs: yargs.Argv) => {
+	builder: (yargs: Argv) => {
 		return yargs
 			.usage("Usage: core-cli join --address <address> [--port <port>] [--token <token>]")
 			.option("address", {
@@ -53,6 +57,20 @@ const join = {
 			// }
 			console.log(`Using authentication token: ${argv.token}`);
 		}
+		const spinner = ora("Joining the network").start();
+
+		const updateSpinner = async (text: string, color: Color, delay: number) => {
+			await new Promise((resolve) => setTimeout(resolve, delay));
+			spinner.color = color;
+			spinner.text = text;
+		};
+
+		await updateSpinner("Spinning up your node...", "yellow", 1000);
+		await updateSpinner("Waiting response from server...", "yellow", 1000);
+		await updateSpinner("Adding your node to network discovery", "blue", 1000);
+		await updateSpinner("Starting connection...", "blue", 1000);
+		spinner.succeed("Connected successfully");
+		console.log("Node discoverable at address:", argv.address);
 	}
 };
 
@@ -62,7 +80,7 @@ const join = {
 const startSession = {
 	command: "start-session",
 	describe: "Start an Application Session",
-	builder: (yargs: yargs.Argv) => {
+	builder: (yargs: Argv) => {
 		return yargs
 			.usage("Usage: core-cli start-session --app <appName> [--config <configFilePath>]")
 			.option("app", {
@@ -94,16 +112,24 @@ const startSession = {
 			console.log(`Starting session with default configuration for ${argv.app}`);
 			//await startApplicationSession(argv.app);
 		}
-		// Active session loop - testing only
-		// console.log("The application session is running... (Press Ctrl+C to stop)");
-		// const intervalId = setInterval(() => {
-		// 	console.log("Session is active...");
-		// }, 10000);
-		// process.on("SIGINT", () => {
-		// 	clearInterval(intervalId);
-		// 	console.log("Application session ended.");
-		// 	process.exit(0);
-		// });
+
+		const progressBar = new progress.SingleBar({
+			format: "Connecting [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} Steps",
+			stopOnComplete: true,
+			barsize: 30,
+		  }, progress.Presets.shades_classic);
+		  const totalSteps = 10;
+		  const delay = 1000;
+		  async function simulateProgress() {
+			progressBar.start(totalSteps, 0);
+			for (let step = 0; step < totalSteps; step++) {
+			  await new Promise((resolve) => setTimeout(resolve, delay));
+			  progressBar.update(step + 1);
+			}
+			progressBar.stop();
+			console.log(chalk.green("✔ Connected successfully"));
+		  }
+		  simulateProgress();
 	}
 };
 
@@ -116,54 +142,57 @@ const startSession = {
 const addKeyPair = {
 	command: "add-keypair",
 	describe: "Support for importing raw key pairs",
-	builder: (yargs: yargs.Argv) => {
-		return yargs
-			.option("keys", {
-				alias: "k",
-				describe: "Key pair as a JSON string",
-				type: "string"
-			})
-			.option("file", {
-				alias: "f",
-				describe: "Path to a JSON file containing the keys",
-				type: "string"
-			})
-			.check((argv) => {
-				if (!argv.keys && !argv.file) {
-					throw new Error("Either --keys or --file must be provided");
-				}
-				if (argv.keys && argv.file) {
-					throw new Error("Only one of --keys or --file should be provided");
-				}
-				return true;
-			});
-	},
-	handler: (argv: AddKeysCommandOptions) => {
-		let keyData;
-		if (argv.keys) {
+	builder: {},
+	handler: async () => {
+		const answers: Answers = await inquirer.prompt([
+			{
+				type: "list",
+				name: "method",
+				message: "How would you like to import the key pair?",
+				choices: ["Import from JSON string", "Import from JSON file"],
+			  },
+			  {
+				type: "input",
+				name: "id",
+				message: "Enter your id:",
+				when: (answers: { method: string }) => answers.method === "Import from JSON string",
+			  },
+			  {
+				type: "input",
+				name: "pubKey",
+				message: "Enter your pubKey:",
+				when: (answers: { method: string }) => answers.method === "Import from JSON string",
+			  },
+			  {
+				type: "input",
+				name: "privKey",
+				message: "Enter your privKey:",
+				when: (answers: { method: string }) => answers.method === "Import from JSON string",
+			  },
+			  {
+				type: "input",
+				name: "filePath",
+				message: "Enter the file path:",
+				when: (answers: { method: string }) => answers.method === "Import from JSON file",
+			  },
+		]);
+		if (answers.method === "Import from JSON string") {
+			//save to storage
+		} else if (answers.filePath){
 			try {
-				keyData = JSON.parse(argv.keys);
-			} catch (error) {
-				console.error("Failed to parse keys JSON string");
-				return;
-			}
-		} else if (argv.file) {
-			try {
-				const path = process.cwd() + "/" + argv.file;
+				const path = process.cwd() + "/" + answers.filePath;
 				if (!fs.existsSync(path)) {
-					console.log("File does not exist:", path);
-					return;
+						console.log("File does not exist:", path);
+						return;
 				}
 				const data = fs.readFileSync(path, "utf-8");
-				keyData = data;
+				console.log(data);
 			} catch (error) {
-				console.error("Failed to read or parse keys from file");
-				return;
+					console.error("Failed to read or parse keys from file");
+					return;
 			}
 		}
-		//TODO actually save keypair to location
-		//await saveKeyPair(keyData)
-		console.log("Key data imported successfully:", keyData);
+		console.log("Key pair saved to storage.")
 	}
 };
 
@@ -175,8 +204,32 @@ const login = {
 	command: "login",
 	describe: "Support for browser login",
 	handler: async () => {
-		console.log("Please authorize CORE CLI on at least one of your accounts");
-		await open("https://testnet.mynearwallet.com/");
+		const answers: Answers = await inquirer.prompt([
+			{
+				type: "list",
+				name: "method",
+				message: "How would you link to login?",
+				choices: ["CLI login", "Browser Login"],
+			  },
+			  {
+				type: "input",
+				name: "id",
+				message: "Enter your id:",
+				when: (answers: { method: string }) => answers.method === "CLI login",
+			  },
+			  {
+				type: "input",
+				name: "privKey",
+				message: "Enter your private Key:",
+				when: (answers: { method: string }) => answers.method === "CLI login",
+			  },
+		]);
+		if (answers.method === "CLI login") {
+			console.log(chalk.green("Successfully logged in!"));
+		} else {
+			console.log(chalk.yellow("Please authorize CORE CLI on at least one of your accounts"));
+			await open("https://testnet.mynearwallet.com/");
+		}
 	}
 };
 
@@ -186,7 +239,14 @@ const showNodes = {
 	command: "get-nodes",
 	describe: "List all nodes",
 	handler: () => {
-		console.log("Listing all nodes...");
+		console.log(chalk.green("Listing all nodes..."));
+		const table = new Table({
+			head: ["Node", "IP Address", "Configuration"],
+		  });
+		table.push(["q2edmwslq4w", "127.23.12.3", "P2P"]);
+		table.push(["gkelsm24ls13s", "94.43.123.2", "P2P"]);
+
+		console.log(table.toString());
 	}
 };
 
@@ -197,11 +257,18 @@ const showApps = {
 	command: "get-apps",
 	describe: "List all apps",
 	handler: () => {
-		console.log("Listing all apps...");
+		console.log(chalk.green("Listing all apps..."));
+		const table = new Table({
+			head: ["Application", "IP Address", "Configuration"],
+		  });
+		table.push(["P2P Chat", "123.34.21.4:5314", "Node ID, Metadata"]);
+		table.push(["P2P Docs", "143.32.1.89:1249", "Node ID, Metadata"]);
+		console.log(table.toString());
 	}
 };
 
 yargs(hideBin(process.argv))
+	.demandCommand(1, "You must specify a command. Use --help flag to list available commands")
 	.scriptName("core-cli")
 	.command(join)
 	.command(startSession)
@@ -209,5 +276,6 @@ yargs(hideBin(process.argv))
 	.command(login)
 	.command(showNodes)
 	.command(showApps)
+	.version()
 	.help()
 	.parse();
