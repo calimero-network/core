@@ -1,1 +1,1 @@
-emcc -o module.wasm -s SIDE_MODULE=1 -O3 increment.c
+emcc increment.c -s EXPORTED_FUNCTIONS='["_increment","_get_counter"]' -s ALLOW_MEMORY_GROWTH=1 -o module.js

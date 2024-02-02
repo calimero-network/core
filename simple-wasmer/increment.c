@@ -1,11 +1,14 @@
-#include <stdint.h>
+#include <emscripten.h>
 
-uint32_t counter = 0;
+EMSCRIPTEN_KEEPALIVE
+int counter = 0;
 
+EMSCRIPTEN_KEEPALIVE
 void increment() {
     counter++;
 }
 
-uint32_t get_counter() {
+EMSCRIPTEN_KEEPALIVE
+int get_counter() {
     return counter;
 }
