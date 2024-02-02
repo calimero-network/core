@@ -1,35 +1,61 @@
+import { DidIdentifier } from './did/DidIdentifier.js';
+import { Veramo } from './did/Veramo.js';
+import { IdentityType, VerifiableCredentialsMetadata } from './did/types.js';
 import { loginWithNear } from './index.js';
+import { IVerifyCredentialArgs } from '@veramo/core-types';
+import { loginWithEth } from './wallets/eth-wallet.js';
 
-export enum IdentityType {
-  NEAR_WALLET,
-  ETH_WALLET,
-}
+export class IdentityManager {
+  private didIdentifier: DidIdentifier = new Veramo();
 
-export async function createIdentity(identityType: IdentityType) {
-  console.log('Not implemented', identityType);
-  switch (identityType) {
-    case IdentityType.ETH_WALLET: {
-      console.log('Not implemented login with Eth');
-      break;
-    }
-    case IdentityType.NEAR_WALLET: {
-      loginWithNear();
-      break;
-    }
-    default: {
-      console.error('Invalid identity type', identityType);
+  async createIdentity(id: string, identityType: IdentityType) {
+    switch (identityType) {
+      case IdentityType.ETH_WALLET: {
+        console.log('Login with eth wallet');
+        loginWithEth();
+        //TODO Create DID
+        //TODO store DID
+        break;
+      }
+      case IdentityType.NEAR_WALLET: {
+        console.log('Login with near wallet');
+        loginWithNear();
+        //TODO Create DID
+        //TODO store DID
+        break;
+      }
+      case IdentityType.NODE: {
+        console.log('Create node identity');
+        await this.didIdentifier.createIdentifier(id);
+        break;
+      }
+      default: {
+        console.error('Invalid identity type', identityType);
+      }
     }
   }
-}
 
-export async function importIdentity() {
-  console.log('Not implemented');
-}
+  async getIdentifiers() {
+    return this.didIdentifier.getIdentifiers();
+  }
 
-export async function deleteIdentity(id: string) {
-  console.log('Not implemented', id);
-}
+  async createCredentials(credentials: VerifiableCredentialsMetadata) {
+    return this.didIdentifier.createCredentials(credentials);
+  }
 
-export async function getIdentityById(id: string) {
-  console.log('Not implemented', id);
+  async verifyCredentials(credentials: IVerifyCredentialArgs) {
+    return this.didIdentifier.verifyCredentials(credentials);
+  }
+
+  async importIdentity() {
+    console.log('Not implemented');
+  }
+
+  async deleteIdentity(id: string) {
+    console.log('Not implemented', id);
+  }
+
+  async getIdentityById(id: string) {
+    return this.didIdentifier.getIdentifier(id);
+  }
 }

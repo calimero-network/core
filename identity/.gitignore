@@ -14,5 +14,7 @@ dist/
 *.log
 
 # Backup & temp files
-*.bak         
+*.bak
 *.swp
+
+database.sqlite
