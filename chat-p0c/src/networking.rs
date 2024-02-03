@@ -45,8 +45,11 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                 PROTOCOL_VERSION.to_owned(),
                 key.public(),
             )),
-            mdns: mdns::Behaviour::new(mdns::Config::default(), peer_id)
-                .ok()
+            mdns: config
+                .discovery
+                .mdns
+                .then_some(())
+                .and_then(|_| mdns::Behaviour::new(mdns::Config::default(), peer_id).ok())
                 .into(),
             relay: relay::Behaviour::new(peer_id, relay::Config::default()),
             ping: ping::Behaviour::default(),

@@ -3,10 +3,10 @@ use std::fs;
 use color_eyre::eyre::{self, Context};
 use const_format::concatcp;
 use libp2p::identity;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::cli;
-use crate::config::{BootstrapConfig, Config, SwarmConfig};
+use crate::config::{BootstrapConfig, Config, DiscoveryConfig, SwarmConfig};
 
 const DEFAULT_PORT: usize = 2428;
 
@@ -28,7 +28,16 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
     }
 
     if Config::exists(&args.home) {
-        Config::load(&args.home)?;
+        if let Err(err) = Config::load(&args.home) {
+            if init.force {
+                warn!(
+                    "Failed to load existing configuration, overwriting: {}",
+                    err
+                );
+            } else {
+                eyre::bail!("failed to load existing configuration: {}", err);
+            }
+        }
         if !init.force {
             eyre::bail!("chat node is already initialized in {:?}", args.home);
         }
@@ -48,6 +57,7 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
         bootstrap: BootstrapConfig {
             nodes: init.boot_nodes,
         },
+        discovery: DiscoveryConfig::default(),
     };
 
     config.save(&args.home)?;

@@ -13,6 +13,8 @@ pub struct Config {
     pub identity: identity::Keypair,
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,6 +25,18 @@ pub struct SwarmConfig {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BootstrapConfig {
     pub nodes: Vec<Multiaddr>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DiscoveryConfig {
+    #[serde(default = "bool_true")]
+    pub mdns: bool,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self { mdns: true }
+    }
 }
 
 impl Config {
@@ -39,12 +53,12 @@ impl Config {
             )
         })?;
 
-        toml::from_str(&content).wrap_err("failed to parse configuration")
+        toml::from_str(&content).map_err(Into::into)
     }
 
     pub fn save(&self, dir: &camino::Utf8Path) -> eyre::Result<()> {
         let path = dir.join(CONFIG_FILE);
-        let content = toml::to_string_pretty(self).wrap_err("failed to serialize configuration")?;
+        let content = toml::to_string_pretty(self)?;
 
         std::fs::write(&path, content).wrap_err_with(|| {
             format!(
@@ -55,6 +69,10 @@ impl Config {
 
         Ok(())
     }
+}
+
+fn bool_true() -> bool {
+    true
 }
 
 mod serde_identity {
