@@ -21,7 +21,7 @@ struct Behaviour {
 
 pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     if !Config::exists(&args.home) {
-        eyre::bail!("chat-p0c is not initialized in {:?}", args.home);
+        eyre::bail!("chat node is not initialized in {:?}", args.home);
     }
 
     let config = Config::load(&args.home)?;

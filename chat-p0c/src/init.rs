@@ -30,7 +30,7 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
     if Config::exists(&args.home) {
         Config::load(&args.home)?;
         if !init.force {
-            eyre::bail!("chat-p0c is already initialized in {:?}", args.home);
+            eyre::bail!("chat node is already initialized in {:?}", args.home);
         }
     }
 
@@ -51,6 +51,8 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
     };
 
     config.save(&args.home)?;
+
+    info!("Initialized a chat node in {:?}", args.home);
 
     Ok(())
 }
