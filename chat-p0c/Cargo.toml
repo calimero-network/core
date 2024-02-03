@@ -8,7 +8,6 @@ bs58.workspace = true
 camino.workspace = true
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
-const_format.workspace = true
 dirs.workspace = true
 libp2p = { workspace = true, features = ["full"] }
 serde.workspace = true

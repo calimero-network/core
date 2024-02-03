@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use clap::{Parser, Subcommand};
 use libp2p::Multiaddr;
 
@@ -44,6 +46,17 @@ pub struct InitCommand {
     /// List of bootstrap nodes
     #[clap(long, value_name = "ADDR")]
     pub boot_nodes: Vec<Multiaddr>,
+
+    /// Host to listen on
+    #[clap(long, value_name = "IP")]
+    #[clap(default_value = "0.0.0.0,::")]
+    #[clap(use_value_delimiter = true)]
+    pub host: Vec<IpAddr>,
+
+    /// Port to listen on
+    #[clap(long, value_name = "PORT")]
+    #[clap(default_value_t = crate::init::DEFAULT_PORT)]
+    pub port: u16,
 
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]

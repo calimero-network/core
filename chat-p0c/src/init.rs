@@ -1,21 +1,13 @@
 use std::fs;
 
 use color_eyre::eyre::{self, Context};
-use const_format::concatcp;
-use libp2p::identity;
+use libp2p::{identity, Multiaddr};
 use tracing::{info, warn};
 
 use crate::cli;
 use crate::config::{BootstrapConfig, Config, DiscoveryConfig, SwarmConfig};
 
-const DEFAULT_PORT: usize = 2428;
-
-const DEFAULT_LISTEN: &[&str] = &[
-    concatcp!("/ip4/0.0.0.0/tcp/", DEFAULT_PORT),
-    concatcp!("/ip6/::/tcp/", DEFAULT_PORT),
-    concatcp!("/ip4/0.0.0.0/udp/", DEFAULT_PORT, "/quic-v1"),
-    concatcp!("/ip6/::/udp/", DEFAULT_PORT, "/quic-v1"),
-];
+pub const DEFAULT_PORT: u16 = 2428;
 
 pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()> {
     let mdns = init.mdns && !init.no_mdns;
@@ -48,14 +40,24 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
     let identity = identity::Keypair::generate_ed25519();
     info!("Generated identity: {:?}", identity.public().to_peer_id());
 
+    let mut listen: Vec<Multiaddr> = vec![];
+
+    for host in init.host {
+        let host = format!(
+            "/{}/{}",
+            match host {
+                std::net::IpAddr::V4(_) => "ip4",
+                std::net::IpAddr::V6(_) => "ip6",
+            },
+            host,
+        );
+        listen.push(format!("{}/tcp/{}", host, init.port).parse()?);
+        listen.push(format!("{}/udp/{}/quic-v1", host, init.port).parse()?);
+    }
+
     let config = Config {
         identity,
-        swarm: SwarmConfig {
-            listen: DEFAULT_LISTEN
-                .iter()
-                .map(|addr| addr.parse().expect("invalid default listen address"))
-                .collect(),
-        },
+        swarm: SwarmConfig { listen },
         bootstrap: BootstrapConfig {
             nodes: init.boot_nodes,
         },
