@@ -1,17 +1,19 @@
 use std::time;
 
 use color_eyre::eyre;
+use color_eyre::owo_colors::OwoColorize;
 use libp2p::futures::prelude::*;
 use libp2p::swarm::behaviour::toggle::Toggle;
-use libp2p::{identify, mdns, ping, relay, swarm};
-use tracing::info;
+use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
+use libp2p::{identify, mdns, ping, relay};
+use tracing::{debug, info};
 
 use crate::cli;
 use crate::config::Config;
 
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-#[derive(swarm::NetworkBehaviour)]
+#[derive(NetworkBehaviour)]
 struct Behaviour {
     identify: identify::Behaviour,
     mdns: Toggle<mdns::tokio::Behaviour>,
@@ -58,10 +60,16 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
 
     loop {
         match swarm.select_next_some().await {
-            swarm::SwarmEvent::NewListenAddr { address, .. } => {
+            SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Listening on {}", address)
             }
-            event => println!("{:?}", event),
+            SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
+                for (peer_id, addr) in peers {
+                    debug!("Discovered {} at {}", peer_id, addr);
+                    swarm.dial(addr)?;
+                }
+            }
+            event => println!("{}: {:?}", "swarm".yellow(), event),
         }
     }
 }
