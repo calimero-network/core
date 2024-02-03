@@ -45,6 +45,15 @@ pub struct InitCommand {
     #[clap(long, value_name = "ADDR")]
     pub boot_nodes: Vec<Multiaddr>,
 
+    /// Enable mDNS discovery
+    #[clap(long, default_value_t = true)]
+    #[clap(overrides_with("no_mdns"))]
+    pub mdns: bool,
+
+    #[clap(long, hide = true)]
+    #[clap(overrides_with("mdns"))]
+    pub no_mdns: bool,
+
     /// Force initialization even if the directory already exists
     #[clap(long)]
     pub force: bool,

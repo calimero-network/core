@@ -18,6 +18,8 @@ const DEFAULT_LISTEN: &[&str] = &[
 ];
 
 pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()> {
+    let mdns = init.mdns && !init.no_mdns;
+
     if !args.home.exists() {
         if args.home == cli::default_chat_dir() {
             fs::create_dir_all(&args.home)
@@ -57,7 +59,7 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
         bootstrap: BootstrapConfig {
             nodes: init.boot_nodes,
         },
-        discovery: DiscoveryConfig::default(),
+        discovery: DiscoveryConfig { mdns },
     };
 
     config.save(&args.home)?;
