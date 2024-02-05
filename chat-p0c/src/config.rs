@@ -1,8 +1,14 @@
+use std::fmt;
+use std::fs;
+
 use color_eyre::eyre::{self, Context};
-use libp2p::{identity, Multiaddr};
+use libp2p::identity;
+use libp2p::multiaddr::{self, Multiaddr};
 use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "config.toml";
+pub const DEFAULT_PORT: u16 = 2428;
+pub const DEFAULT_CALIMERO_CHAT_HOME: &str = ".calimero/experiments/chat-p0c";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -24,6 +30,7 @@ pub struct SwarmConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BootstrapConfig {
+    #[serde(deserialize_with = "deserialize_bootstrap")]
     pub nodes: Vec<Multiaddr>,
 }
 
@@ -46,7 +53,7 @@ impl Config {
 
     pub fn load(dir: &camino::Utf8Path) -> eyre::Result<Self> {
         let path = dir.join(CONFIG_FILE);
-        let content = std::fs::read_to_string(&path).wrap_err_with(|| {
+        let content = fs::read_to_string(&path).wrap_err_with(|| {
             format!(
                 "failed to read configuration from {:?}",
                 dir.join(CONFIG_FILE)
@@ -60,7 +67,7 @@ impl Config {
         let path = dir.join(CONFIG_FILE);
         let content = toml::to_string_pretty(self)?;
 
-        std::fs::write(&path, content).wrap_err_with(|| {
+        fs::write(&path, content).wrap_err_with(|| {
             format!(
                 "failed to write configuration to {:?}",
                 dir.join(CONFIG_FILE)
@@ -71,14 +78,61 @@ impl Config {
     }
 }
 
+pub fn default_chat_dir() -> camino::Utf8PathBuf {
+    if let Some(home) = dirs::home_dir() {
+        let home = camino::Utf8Path::from_path(&home).expect("invalid home directory");
+        return home.join(DEFAULT_CALIMERO_CHAT_HOME);
+    }
+
+    Default::default()
+}
+
 fn bool_true() -> bool {
     true
 }
 
+fn deserialize_bootstrap<'de, D>(deserializer: D) -> Result<Vec<Multiaddr>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct BootstrapVisitor;
+
+    impl<'de> de::Visitor<'de> for BootstrapVisitor {
+        type Value = Vec<Multiaddr>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a list of multiaddresses")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: de::SeqAccess<'de>,
+        {
+            let mut addrs = Vec::new();
+
+            while let Some(addr) = seq.next_element::<Multiaddr>()? {
+                let Some(multiaddr::Protocol::P2p(_)) = addr.iter().last() else {
+                    return Err(serde::de::Error::custom("peer ID not allowed"));
+                };
+
+                addrs.push(addr);
+            }
+
+            Ok(addrs)
+        }
+    }
+
+    deserializer.deserialize_seq(BootstrapVisitor)
+}
+
 mod serde_identity {
+    use std::fmt;
+
     use libp2p::identity::Keypair;
     use serde::{
-        de,
+        de::{self, MapAccess},
         ser::{self, SerializeMap},
         Deserializer, Serializer,
     };
@@ -100,14 +154,12 @@ mod serde_identity {
     where
         D: Deserializer<'de>,
     {
-        use de::MapAccess;
-
         struct IdentityVisitor;
 
         impl<'de> de::Visitor<'de> for IdentityVisitor {
             type Value = Keypair;
 
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("an identity")
             }
 

@@ -5,15 +5,13 @@ use libp2p::{identity, Multiaddr};
 use tracing::{info, warn};
 
 use crate::cli;
-use crate::config::{BootstrapConfig, Config, DiscoveryConfig, SwarmConfig};
-
-pub const DEFAULT_PORT: u16 = 2428;
+use crate::config::{default_chat_dir, BootstrapConfig, Config, DiscoveryConfig, SwarmConfig};
 
 pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()> {
     let mdns = init.mdns && !init.no_mdns;
 
     if !args.home.exists() {
-        if args.home == cli::default_chat_dir() {
+        if args.home == default_chat_dir() {
             fs::create_dir_all(&args.home)
         } else {
             fs::create_dir(&args.home)

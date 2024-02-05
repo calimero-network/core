@@ -3,10 +3,7 @@ use std::net::IpAddr;
 use clap::{Parser, Subcommand};
 use libp2p::Multiaddr;
 
-// cp0c init
-// cp0c --listen 2428 --bootstrap /ip4/127.0.0.1/tcp/2428 --bootstrap /ip4/127.0.0.1/tcp/2429,/ip4/127.0.0.1/tcp/2430 --identity /path/to/identity
-
-pub const DEFAULT_CALIMERO_CHAT_HOME: &str = ".calimero/experiments/chat-p0c";
+use crate::config;
 
 #[derive(Debug, Parser)]
 #[clap(author, about, version)]
@@ -21,18 +18,9 @@ pub struct RootCommand {
 #[derive(Debug, Parser)]
 pub struct RootArgs {
     /// Directory for config and data
-    #[clap(long, value_name = "PATH", default_value_t = default_chat_dir())]
+    #[clap(long, value_name = "PATH", default_value_t = config::default_chat_dir())]
     #[clap(env = "CALIMERO_CHAT_HOME", hide_env_values = true)]
     pub home: camino::Utf8PathBuf,
-}
-
-pub fn default_chat_dir() -> camino::Utf8PathBuf {
-    if let Some(home) = dirs::home_dir() {
-        let home = camino::Utf8Path::from_path(&home).expect("invalid home directory");
-        return home.join(DEFAULT_CALIMERO_CHAT_HOME);
-    }
-
-    Default::default()
 }
 
 #[derive(Debug, Subcommand)]
@@ -55,7 +43,7 @@ pub struct InitCommand {
 
     /// Port to listen on
     #[clap(long, value_name = "PORT")]
-    #[clap(default_value_t = crate::init::DEFAULT_PORT)]
+    #[clap(default_value_t = config::DEFAULT_PORT)]
     pub port: u16,
 
     /// Enable mDNS discovery
