@@ -10,6 +10,16 @@ const CONFIG_FILE: &str = "config.toml";
 pub const DEFAULT_PORT: u16 = 2428;
 pub const DEFAULT_CALIMERO_CHAT_HOME: &str = ".calimero/experiments/chat-p0c";
 
+// https://github.com/ipfs/kubo/blob/efdef7fdcfeeb30e2f1ce3dbf65b6460b58afaaf/config/bootstrap_peers.go#L17-L24
+pub const DEFAULT_BOOTSTRAP_NODES: &[&str] = &[
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+    "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+    "/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+];
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     #[serde(
@@ -18,6 +28,7 @@ pub struct Config {
     )]
     pub identity: identity::Keypair,
     pub swarm: SwarmConfig,
+    #[serde(default)]
     pub bootstrap: BootstrapConfig,
     #[serde(default)]
     pub discovery: DiscoveryConfig,
@@ -32,6 +43,17 @@ pub struct SwarmConfig {
 pub struct BootstrapConfig {
     #[serde(deserialize_with = "deserialize_bootstrap")]
     pub nodes: Vec<Multiaddr>,
+}
+
+impl Default for BootstrapConfig {
+    fn default() -> Self {
+        Self {
+            nodes: DEFAULT_BOOTSTRAP_NODES
+                .iter()
+                .map(|s| s.parse().expect("invalid multiaddr"))
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
