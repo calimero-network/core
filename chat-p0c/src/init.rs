@@ -4,14 +4,14 @@ use color_eyre::eyre::{self, Context};
 use libp2p::{identity, Multiaddr};
 use tracing::{info, warn};
 
-use crate::cli;
-use crate::config::{default_chat_dir, BootstrapConfig, Config, DiscoveryConfig, SwarmConfig};
+use crate::config::{BootstrapConfig, Config, DiscoveryConfig, SwarmConfig};
+use crate::{cli, config};
 
 pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()> {
     let mdns = init.mdns && !init.no_mdns;
 
     if !args.home.exists() {
-        if args.home == default_chat_dir() {
+        if args.home == config::default_chat_dir() {
             fs::create_dir_all(&args.home)
         } else {
             fs::create_dir(&args.home)
@@ -57,7 +57,11 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
         identity,
         swarm: SwarmConfig { listen },
         bootstrap: BootstrapConfig {
-            nodes: init.boot_nodes,
+            nodes: if init.boot_nodes.is_empty() {
+                config::default_bootstrap()
+            } else {
+                init.boot_nodes
+            },
         },
         discovery: DiscoveryConfig { mdns },
     };

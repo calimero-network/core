@@ -41,6 +41,7 @@ pub struct SwarmConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BootstrapConfig {
+    #[serde(default = "default_bootstrap")]
     #[serde(deserialize_with = "deserialize_bootstrap")]
     pub nodes: Vec<Multiaddr>,
 }
@@ -48,10 +49,7 @@ pub struct BootstrapConfig {
 impl Default for BootstrapConfig {
     fn default() -> Self {
         Self {
-            nodes: DEFAULT_BOOTSTRAP_NODES
-                .iter()
-                .map(|s| s.parse().expect("invalid multiaddr"))
-                .collect(),
+            nodes: default_bootstrap(),
         }
     }
 }
@@ -64,7 +62,7 @@ pub struct DiscoveryConfig {
 
 impl Default for DiscoveryConfig {
     fn default() -> Self {
-        Self { mdns: true }
+        Self { mdns: bool_true() }
     }
 }
 
@@ -109,7 +107,14 @@ pub fn default_chat_dir() -> camino::Utf8PathBuf {
     Default::default()
 }
 
-fn bool_true() -> bool {
+pub fn default_bootstrap() -> Vec<Multiaddr> {
+    DEFAULT_BOOTSTRAP_NODES
+        .iter()
+        .map(|s| s.parse().expect("invalid multiaddr"))
+        .collect()
+}
+
+const fn bool_true() -> bool {
     true
 }
 
