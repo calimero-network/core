@@ -53,16 +53,15 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
         listen.push(format!("{}/udp/{}/quic-v1", host, init.port).parse()?);
     }
 
+    let mut boot_nodes = init.boot_nodes;
+    if let Some(cli::BootstrapNodes::Ipfs) = init.boot_network {
+        boot_nodes.extend(config::default_bootstrap());
+    }
+
     let config = Config {
         identity,
         swarm: SwarmConfig { listen },
-        bootstrap: BootstrapConfig {
-            nodes: if init.boot_nodes.is_empty() {
-                config::default_bootstrap()
-            } else {
-                init.boot_nodes
-            },
-        },
+        bootstrap: BootstrapConfig { nodes: boot_nodes },
         discovery: DiscoveryConfig { mdns },
     };
 

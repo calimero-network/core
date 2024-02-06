@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use libp2p::Multiaddr;
 
 use crate::config;
@@ -35,6 +35,10 @@ pub struct InitCommand {
     #[clap(long, value_name = "ADDR")]
     pub boot_nodes: Vec<Multiaddr>,
 
+    /// Use nodes from a known network
+    #[clap(long, value_name = "NETWORK")]
+    pub boot_network: Option<BootstrapNodes>,
+
     /// Host to listen on
     #[clap(long, value_name = "IP")]
     #[clap(default_value = "0.0.0.0,::")]
@@ -58,4 +62,9 @@ pub struct InitCommand {
     /// Force initialization even if the directory already exists
     #[clap(long)]
     pub force: bool,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum BootstrapNodes {
+    Ipfs,
 }
