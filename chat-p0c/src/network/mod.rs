@@ -99,6 +99,10 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
             line = stdin.next_line() => {
                 match line {
                     Ok(Some(line)) => {
+                        if client.mesh_peer_count(topic.hash()).await == 0 {
+                            info!("No connected peers to send message to.");
+                            continue;
+                        }
                         client
                             .publish(topic.hash(), line.into_bytes())
                             .await
@@ -236,6 +240,17 @@ impl Client {
 
         self.sender
             .send(Command::Unsubscribe { topic, sender })
+            .await
+            .expect("Command receiver not to be dropped.");
+
+        receiver.await.expect("Sender not to be dropped.")
+    }
+
+    pub(crate) async fn mesh_peer_count(&mut self, topic: gossipsub::TopicHash) -> usize {
+        let (sender, receiver) = oneshot::channel();
+
+        self.sender
+            .send(Command::MeshPeerCount { topic, sender })
             .await
             .expect("Command receiver not to be dropped.");
 
@@ -407,6 +422,15 @@ impl EventLoop {
 
                 let _ = sender.send(Ok(topic));
             }
+            Command::MeshPeerCount { topic, sender } => {
+                let _ = sender.send(
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .mesh_peers(&topic)
+                        .count(),
+                );
+            }
             Command::Publish {
                 topic,
                 data,
@@ -463,6 +487,10 @@ enum Command {
     Unsubscribe {
         topic: gossipsub::IdentTopic,
         sender: oneshot::Sender<eyre::Result<gossipsub::IdentTopic>>,
+    },
+    MeshPeerCount {
+        topic: gossipsub::TopicHash,
+        sender: oneshot::Sender<usize>,
     },
     Publish {
         topic: gossipsub::TopicHash,
