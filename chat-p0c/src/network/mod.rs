@@ -2,6 +2,7 @@ use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
 
 use color_eyre::eyre;
+use color_eyre::owo_colors::OwoColorize;
 use libp2p::futures::prelude::*;
 use libp2p::multiaddr::{self, Multiaddr};
 use libp2p::swarm::behaviour::toggle::Toggle;
@@ -63,22 +64,25 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                     peer_id: their_peer_id,
                     topic: topic_hash,
                 } => {
-                    info!("Other peer subscribed to {:?}", topic_hash);
-
                     if our_topic_hash == topic_hash {
+                        println!("info: {} joined the chat.", their_peer_id.cyan());
+
                         client
-                            .publish(
-                                our_topic_hash,
-                                format!("Hi {}, I'm {}", their_peer_id, peer_id).into_bytes(),
-                            )
+                            .publish(our_topic_hash, b"Welcome to the chat".to_vec())
                             .await?;
                     }
                 }
                 Event::Message { message, .. } => {
-                    info!(
-                        "Received message from {:?}: {:?}",
-                        message.source,
-                        std::str::from_utf8(&message.data)
+                    println!(
+                        "{}: {}",
+                        match message.source {
+                            Some(peer_id) => peer_id.green().to_string(),
+                            None => "<unknown>".to_owned(),
+                        },
+                        match std::str::from_utf8(&message.data) {
+                            Ok(s) => s,
+                            Err(_) => "<binary>",
+                        }
                     );
                 }
             }
