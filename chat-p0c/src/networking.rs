@@ -15,6 +15,9 @@ use tracing::{debug, info, trace, warn};
 use crate::cli;
 use crate::config::Config;
 
+#[path = "events/mod.rs"]
+mod events;
+
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
 #[derive(NetworkBehaviour)]
@@ -190,109 +193,33 @@ impl EventLoop {
         let mut interval = time::interval(time::Duration::from_secs(2));
         loop {
             tokio::select! {
-                event = self.swarm.next() => self.handle_event(event.expect("Swarm stream to be infinite.")).await,
+                event = self.swarm.next() => self.handle_swarm_event(event.expect("Swarm stream to be infinite.")).await,
                 command = self.command_receiver.recv() => match command {
                     Some(c) => self.handle_command(c).await,
                     None => break,
                 },
                 _ = interval.tick() => {
-                    info!("{} peers, {:?} in DHT", self.swarm.connected_peers().count(), self.swarm.behaviour_mut().kad.kbuckets().map(|e| e.iter().map(|f| (f.node.key.clone(), f.node.value.clone())).collect::<HashMap<_, _>>()).collect::<Vec<_>>());
+                    info!("{} peers", self.swarm.connected_peers().count());
+                    // info!("{} peers, {:#?} in DHT", self.swarm.connected_peers().count(), self.swarm.behaviour_mut().kad.kbuckets().map(|e| e.iter().map(|f| (f.node.key.clone(), f.node.value.clone())).collect::<HashMap<_, _>>()).collect::<Vec<_>>());
                 }
             }
         }
     }
 
-    async fn handle_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
+    async fn handle_behaviour_event(&mut self, event: BehaviourEvent) {
         match event {
-            SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed {
-                id,
-                result: kad::QueryResult::Bootstrap(result),
-                ..
-            })) => {
-                if let Some(sender) = self.pending_bootstrap.remove(&id) {
-                    let _ = sender.send(result.map(|_| None).map_err(Into::into));
-                }
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed {
-                id,
-                result: kad::QueryResult::StartProviding(_),
-                ..
-            })) => {
-                let _ = self
-                    .pending_start_providing
-                    .remove(&id)
-                    .expect("Completed query to be previously pending.")
-                    .send(());
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed {
-                id,
-                result:
-                    kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
-                        providers,
-                        ..
-                    })),
-                ..
-            })) => {
-                if let Some(sender) = self.pending_get_providers.remove(&id) {
-                    sender.send(providers).expect("Receiver not to be dropped");
+            BehaviourEvent::Identify(event) => events::EventHandler::handle(self, event).await,
+            BehaviourEvent::Kad(event) => events::EventHandler::handle(self, event).await,
+            BehaviourEvent::Mdns(event) => events::EventHandler::handle(self, event).await,
+            BehaviourEvent::Gossipsub(event) => events::EventHandler::handle(self, event).await,
+            BehaviourEvent::Relay(event) => events::EventHandler::handle(self, event).await,
+            BehaviourEvent::Ping(event) => events::EventHandler::handle(self, event).await,
+        }
+    }
 
-                    self.swarm
-                        .behaviour_mut()
-                        .kad
-                        .query_mut(&id)
-                        .unwrap()
-                        .finish();
-                }
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Kad(kad::Event::OutboundQueryProgressed {
-                id,
-                result:
-                    kad::QueryResult::GetProviders(Ok(
-                        kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
-                    )),
-                ..
-            })) => {
-                if let Some(sender) = self.pending_get_providers.remove(&id) {
-                    sender
-                        .send(HashSet::new())
-                        .expect("Receiver not to be dropped");
-
-                    self.swarm
-                        .behaviour_mut()
-                        .kad
-                        .query_mut(&id)
-                        .unwrap()
-                        .finish();
-                }
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
-                for (peer_id, addr) in peers {
-                    debug!("Discovered {} at {}", peer_id, addr);
-
-                    let (sender, _receiver) = oneshot::channel();
-
-                    self.handle_command(Command::Dial {
-                        peer_addr: addr,
-                        sender,
-                    })
-                    .await;
-                }
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
-                println!("{}: {:?}", "identify".yellow(), event)
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Mdns(event)) => {
-                debug!("{}: {:?}", "mdns".yellow(), event)
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Kad(event)) => {
-                debug!("{}: {:?}", "kad".yellow(), event)
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => {
-                println!("{}: {:?}", "relay".yellow(), event)
-            }
-            SwarmEvent::Behaviour(BehaviourEvent::Ping(event)) => {
-                println!("{}: {:?}", "ping".yellow(), event)
-            }
+    async fn handle_swarm_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
+        match event {
+            SwarmEvent::Behaviour(behaviour) => self.handle_behaviour_event(behaviour).await,
             SwarmEvent::NewListenAddr { address, .. } => {
                 let local_peer_id = *self.swarm.local_peer_id();
                 info!(
