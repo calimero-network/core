@@ -51,7 +51,9 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     let _ = client.bootstrap().await;
 
     let topic = client
-        .subscribe(gossipsub::IdentTopic::new("chat".to_owned()))
+        .subscribe(gossipsub::IdentTopic::new(
+            "/calimero/experimental/chat-p0c".to_owned(),
+        ))
         .await?;
 
     let event_recipient =
