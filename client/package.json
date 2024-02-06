@@ -1,0 +1,48 @@
+{
+  "name": "core-cli",
+  "version": "0.0.1",
+  "description": "General purpose command line tools for interacting with P2P Network",
+  "main": "dist/index.js",
+  "bin": {
+    "core-cli": "dist/tsc/index.js"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "dev": "node dist/tsc/index.js",
+    "build": "npx tsc",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint .",
+    "fix": "eslint . --fix"
+  },
+  "keywords": [
+    "distributed applications",
+    "P2P network"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^20.11.5",
+    "chalk": "^4",
+    "cli-progress": "^3.12.0",
+    "cli-table": "^0.3.11",
+    "eslint-plugin-typescript": "^0.14.0",
+    "inquirer": "^9.2.12",
+    "open": "^8.0.7",
+    "ora": "^6.0.1",
+    "typescript": "^5.3.3",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/cli-progress": "^3.11.5",
+    "@types/cli-table": "^0.3.4",
+    "@types/inquirer": "^9.0.7",
+    "@types/yargs": "^17.0.32",
+    "@typescript-eslint/eslint-plugin": "^6.19.1",
+    "@typescript-eslint/parser": "^6.19.1",
+    "esbuild": "^0.11.11",
+    "eslint": "^8.56.0"
+  }
+}
