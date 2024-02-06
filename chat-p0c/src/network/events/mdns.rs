@@ -1,9 +1,8 @@
 use color_eyre::owo_colors::OwoColorize;
 use libp2p::mdns;
-use tokio::sync::oneshot;
 use tracing::{debug, info};
 
-use super::{Command, EventHandler, EventLoop};
+use super::{EventHandler, EventLoop};
 
 impl EventHandler<mdns::Event> for EventLoop {
     async fn handle(&mut self, event: mdns::Event) {
@@ -14,16 +13,19 @@ impl EventHandler<mdns::Event> for EventLoop {
                 for (peer_id, addr) in peers {
                     debug!("Discovered {} at {}", peer_id, addr);
 
-                    let (sender, _receiver) = oneshot::channel();
-
-                    self.handle_command(Command::Dial {
-                        peer_addr: addr,
-                        sender,
-                    })
-                    .await;
+                    self.swarm.behaviour_mut().kad.add_address(&peer_id, addr);
                 }
             }
-            _ => {}
+            mdns::Event::Expired(peers) => {
+                for (peer_id, addr) in peers {
+                    debug!("Expired {} at {}", peer_id, addr);
+
+                    self.swarm
+                        .behaviour_mut()
+                        .kad
+                        .remove_address(&peer_id, &addr);
+                }
+            }
         }
     }
 }

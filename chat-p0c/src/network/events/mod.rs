@@ -1,5 +1,6 @@
 use super::*;
 
+mod gossipsub;
 mod identify;
 mod kad;
 mod mdns;
@@ -17,6 +18,7 @@ impl EventLoop {
                 BehaviourEvent::Identify(event) => events::EventHandler::handle(self, event).await,
                 BehaviourEvent::Kad(event) => events::EventHandler::handle(self, event).await,
                 BehaviourEvent::Mdns(event) => events::EventHandler::handle(self, event).await,
+                BehaviourEvent::Gossipsub(event) => events::EventHandler::handle(self, event).await,
                 BehaviourEvent::Relay(event) => events::EventHandler::handle(self, event).await,
                 BehaviourEvent::Ping(event) => events::EventHandler::handle(self, event).await,
             },
