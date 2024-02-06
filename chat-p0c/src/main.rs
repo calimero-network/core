@@ -5,7 +5,7 @@ use tracing_subscriber::{prelude::*, EnvFilter};
 mod cli;
 mod config;
 mod init;
-mod networking;
+mod network;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -15,7 +15,7 @@ async fn main() -> eyre::Result<()> {
 
     match command.action {
         Some(cli::SubCommands::Init(init)) => init::run(command.args, init).await?,
-        None => networking::run(command.args).await?,
+        None => network::run(command.args).await?,
     }
 
     Ok(())
