@@ -50,6 +50,11 @@ pub struct InitCommand {
     #[clap(default_value_t = config::DEFAULT_PORT)]
     pub port: u16,
 
+    /// Port to listen on
+    #[clap(long, value_name = "RPC_PORT")]
+    #[clap(default_value_t = config::DEFAULT_RPC_PORT)]
+    pub rpc_port: u16,
+
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
     #[clap(overrides_with("no_mdns"))]

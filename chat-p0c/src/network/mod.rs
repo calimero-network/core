@@ -47,11 +47,11 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     let mut io = IoHandler::default();
 
     let handler_arc = Arc::new(handler);
-    let handler_for_add_string = handler_arc.clone();
-    let handler_for_read = handler_for_add_string.clone();
+    let handler_write = handler_arc.clone();
+    let handler_read = handler_write.clone();
 
     io.add_method("send", move |params: Params| {
-        let handler = handler_for_add_string.clone();
+        let handler = handler_write.clone();
         let handler_clone = handler.clone();
 
         async move { handler_clone.send(params).await }
@@ -60,10 +60,14 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     tokio::task::spawn_blocking(move || {
         let server = ServerBuilder::new(io)
             .threads(3)
-            .start_http(&"127.0.0.1:3030".parse().unwrap())
+            .start_http(
+                &format!("127.0.0.1:{}", config.endpoint.port)
+                    .parse()
+                    .unwrap(),
+            )
             .expect("Unable to start JSON-RPC server");
 
-        info!("RPC Server running on 127.0.0.1:3030");
+        info!("RPC Server running on 127.0.0.1:{}", config.endpoint.port);
 
         server.wait();
     });
@@ -120,7 +124,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         };
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-    let handler = handler_for_read.clone();
+    let handler = handler_read.clone();
 
     loop {
         tokio::select! {
