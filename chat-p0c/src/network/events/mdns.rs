@@ -1,12 +1,12 @@
 use color_eyre::owo_colors::OwoColorize;
 use libp2p::mdns;
-use tracing::{debug, info};
+use tracing::debug;
 
 use super::{EventHandler, EventLoop};
 
 impl EventHandler<mdns::Event> for EventLoop {
     async fn handle(&mut self, event: mdns::Event) {
-        info!("{}: {:?}", "mdns".yellow(), event);
+        debug!("{}: {:?}", "mdns".yellow(), event);
 
         match event {
             mdns::Event::Discovered(peers) => {

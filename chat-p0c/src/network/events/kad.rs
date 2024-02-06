@@ -2,13 +2,13 @@ use std::collections::HashSet;
 
 use color_eyre::owo_colors::OwoColorize;
 use libp2p::kad;
-use tracing::info;
+use tracing::debug;
 
 use super::{EventHandler, EventLoop};
 
 impl EventHandler<kad::Event> for EventLoop {
     async fn handle(&mut self, event: kad::Event) {
-        info!("{}: {:?}", "kad".yellow(), event);
+        debug!("{}: {:?}", "kad".yellow(), event);
 
         match event {
             kad::Event::OutboundQueryProgressed {

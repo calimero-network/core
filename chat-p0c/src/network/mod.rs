@@ -36,8 +36,6 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
 
     let config = Config::load(&args.home)?;
 
-    println!("{:?}", config);
-
     let peer_id = config.identity.public().to_peer_id();
 
     info!("Peer ID: {}", peer_id);
@@ -50,9 +48,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         client.listen_on(addr.clone()).await?;
     }
 
-    if let Err(err) = client.bootstrap().await {
-        warn!("Failed to bootstrap with Kademlia: {}", err);
-    }
+    let _ = client.bootstrap().await;
 
     let topic = client
         .subscribe(gossipsub::IdentTopic::new("chat".to_owned()))
@@ -159,7 +155,7 @@ async fn init(
                     kad.add_address(&peer_id, addr);
                 }
                 if let Err(err) = kad.bootstrap() {
-                    warn!("Failed to bootstrap kad: {}", err);
+                    warn!("Failed to bootstrap with Kademlia: {}", err);
                 }
                 kad
             },
@@ -325,7 +321,7 @@ impl EventLoop {
     }
 
     pub(crate) async fn run(mut self) {
-        let mut interval = time::interval(time::Duration::from_secs(2));
+        let mut interval = time::interval(time::Duration::from_secs(5));
         loop {
             tokio::select! {
                 event = self.swarm.next() => self.handle_swarm_event(event.expect("Swarm stream to be infinite.")).await,
