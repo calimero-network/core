@@ -9,6 +9,9 @@ camino.workspace = true
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 dirs.workspace = true
+jsonrpc = "0.17.0"
+jsonrpc-core = "18.0.0"
+jsonrpc-http-server = "18.0.0"
 libp2p = { workspace = true, features = ["full"] }
 serde.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }

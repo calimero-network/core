@@ -13,8 +13,14 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tracing::{debug, info, trace, warn};
 
+use jsonrpc_core::{IoHandler, Params};
+use jsonrpc_http_server::ServerBuilder;
+use std::sync::{Arc, Mutex};
+
+
 use crate::cli;
 use crate::config::Config;
+use crate::endpoint;
 
 mod events;
 
@@ -37,12 +43,38 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
 
     let config = Config::load(&args.home)?;
 
+    // Setup the RPC endpoint
+    let handler = endpoint::CalimeroRPCHandler::new();
+    let mut io = IoHandler::default();
+
+    let handler_arc = Arc::new(handler);
+    let handler_for_add_string = handler_arc.clone();
+    let handler_for_read = handler_for_add_string.clone();
+
+    io.add_method("send", move |params: Params| {
+        let handler = handler_for_add_string.clone();
+        let handler_clone = handler.clone();
+
+        async move {
+            handler_clone.send(params).await
+        }
+    });
+
+    tokio::task::spawn_blocking(move || {
+        let server = ServerBuilder::new(io)
+            .threads(3)
+            .start_http(&"127.0.0.1:3030".parse().unwrap())
+            .expect("Unable to start JSON-RPC server");
+
+        info!("RPC Server running on 127.0.0.1:3030");
+
+        server.wait();
+    });
+    
+    // Setup the P2P network
     let peer_id = config.identity.public().to_peer_id();
-
     info!("Peer ID: {}", peer_id);
-
     let (mut client, mut event_receiver, event_loop) = init(peer_id, &config).await?;
-
     tokio::spawn(event_loop.run());
 
     for addr in &config.swarm.listen {
@@ -91,6 +123,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         };
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let handler = handler_for_read.clone();
 
     loop {
         tokio::select! {
@@ -99,20 +132,22 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                     Some(event) => event_recipient(client.clone(), topic.hash(), event).await?,
                     None => break,
                 }
+                
             }
-            line = stdin.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
+            pop_result = handler.read() => {
+                match pop_result {
+                    Ok(Some(value)) => {
                         if client.mesh_peer_count(topic.hash()).await == 0 {
                             info!("No connected peers to send message to.");
                             continue;
                         }
                         client
-                            .publish(topic.hash(), line.into_bytes())
+                            .publish(topic.hash(), value.into_bytes())
                             .await
                             .expect("Failed to publish message.");
                     }
-                    _ => break,
+                    Ok(None) => (),
+                    Err(e) => eprintln!("Error popping from list: {:?}", e),
                 }
             }
         }
