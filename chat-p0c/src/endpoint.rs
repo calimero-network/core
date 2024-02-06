@@ -1,5 +1,5 @@
-use jsonrpc_core::{IoHandler, Value, Params, Error};
-use jsonrpc_http_server::{ServerBuilder, AccessControlAllowOrigin, DomainsValidation};
+use jsonrpc_core::{Error, IoHandler, Params, Value};
+use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
 use std::sync::{Arc, Mutex};
 use tokio;
 use tracing::info;
@@ -22,18 +22,20 @@ impl CalimeroRPCHandler {
         };
 
         if input.len() != 1 {
-            return Err(Error::invalid_params("Expected exactly one string parameter"));
+            return Err(Error::invalid_params(
+                "Expected exactly one string parameter",
+            ));
         }
 
         let mut list = self.mempool.lock().unwrap();
         list.push(input[0].clone());
-        
+
         info!("Broadcasting: {}", input[0]);
 
         Ok(Value::String(format!("Added: {}", input[0])))
     }
 
-     pub async fn read(&self) -> Result<Option<String>, Error> {
+    pub async fn read(&self) -> Result<Option<String>, Error> {
         let mut list = self.mempool.lock().unwrap(); // In real code, handle lock errors
         Ok(list.pop())
     }
@@ -46,4 +48,3 @@ impl Clone for CalimeroRPCHandler {
         }
     }
 }
-

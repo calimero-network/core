@@ -17,7 +17,6 @@ use jsonrpc_core::{IoHandler, Params};
 use jsonrpc_http_server::ServerBuilder;
 use std::sync::{Arc, Mutex};
 
-
 use crate::cli;
 use crate::config::Config;
 use crate::endpoint;
@@ -55,9 +54,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         let handler = handler_for_add_string.clone();
         let handler_clone = handler.clone();
 
-        async move {
-            handler_clone.send(params).await
-        }
+        async move { handler_clone.send(params).await }
     });
 
     tokio::task::spawn_blocking(move || {
@@ -70,7 +67,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
 
         server.wait();
     });
-    
+
     // Setup the P2P network
     let peer_id = config.identity.public().to_peer_id();
     info!("Peer ID: {}", peer_id);
@@ -132,7 +129,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                     Some(event) => event_recipient(client.clone(), topic.hash(), event).await?,
                     None => break,
                 }
-                
+
             }
             pop_result = handler.read() => {
                 match pop_result {
