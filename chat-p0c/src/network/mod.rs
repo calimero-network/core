@@ -1,11 +1,11 @@
 use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 
+use axum::routing::{get_service, Router};
+use axum::response::IntoResponse;
 use color_eyre::eyre;
 use color_eyre::owo_colors::OwoColorize;
-use jsonrpc_core::{IoHandler, Params};
-use jsonrpc_http_server::ServerBuilder;
+use jsonrpsee::server::stop_channel;
 use libp2p::futures::prelude::*;
 use libp2p::multiaddr::{self, Multiaddr};
 use libp2p::swarm::behaviour::toggle::Toggle;
@@ -19,6 +19,7 @@ use tracing::{debug, info, trace, warn};
 use crate::cli;
 use crate::config::Config;
 use crate::endpoint;
+use crate::endpoint::CalimeroRPCServer;
 
 mod events;
 
@@ -39,36 +40,29 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         eyre::bail!("chat node is not initialized in {:?}", args.home);
     }
 
-    let config = Config::load(&args.home)?;
+    let config: Config = Config::load(&args.home)?;
 
-    // Setup the RPC endpoint
-    let handler = endpoint::CalimeroRPCHandler::new();
-    let mut io = IoHandler::default();
+    let addr: std::net::SocketAddr = format!("{}:{}", config.endpoint.host, config.endpoint.port).parse()?;
 
-    let handler_arc = Arc::new(handler);
-    let handler_write = handler_arc.clone();
-    let handler_read = handler_write.clone();
+    tokio::spawn(async move {
+        let (stop_handle, _server_handle) = stop_channel();
+        let service_builder = jsonrpsee::server::ServerBuilder::new().to_service_builder();
 
-    io.add_method("send", move |params: Params| {
-        let handler = handler_write.clone();
-        let handler_clone = handler.clone();
+        let server = service_builder.build(
+            endpoint::CalimeroRPCImpl::new().into_rpc(),
+            stop_handle,
+        );
 
-        async move { handler_clone.send(params).await }
-    });
+        let app = Router::new().route("/", 
+            get_service(server).handle_error(|err: Box<dyn std::error::Error + Send + Sync>| async move {
+                err.to_string().into_response()
+            }
+        ));
 
-    tokio::task::spawn_blocking(move || {
-        let server = ServerBuilder::new(io)
-            .threads(3)
-            .start_http(
-                &format!("127.0.0.1:{}", config.endpoint.port)
-                    .parse()
-                    .unwrap(),
-            )
-            .expect("Unable to start JSON-RPC server");
-
-        info!("RPC Server running on 127.0.0.1:{}", config.endpoint.port);
-
-        server.wait();
+        axum::Server::bind(&addr)
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
     });
 
     // Setup the P2P network
@@ -123,7 +117,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         };
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
-    let handler = handler_read.clone();
+    //let handler = handler_read.clone();
 
     loop {
         tokio::select! {
@@ -134,6 +128,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                 }
 
             }
+            /*
             pop_result = handler.read() => {
                 match pop_result {
                     Ok(Some(value)) => {
@@ -150,6 +145,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                     Err(e) => eprintln!("Error popping from list: {:?}", e),
                 }
             }
+            */
         }
     }
 
