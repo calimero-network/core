@@ -1,0 +1,13 @@
+[package]
+name = "kv-store"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+borsh = { workspace = true, features = ["derive"] }
+calimero-sdk = { path = "../../sdk" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
