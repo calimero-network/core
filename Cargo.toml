@@ -1,6 +1,6 @@
 [workspace]
 resolver = "1"
-members = ["./chat-p0c"]
+members = ["./chat-p0c", "./identity-rs"]
 
 [workspace.dependencies]
 bs58 = "0.5.0"

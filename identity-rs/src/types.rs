@@ -1,10 +1,10 @@
-use std::fmt;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SerializedPublicKey(Vec<u8>);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug,Clone, Serialize, Deserialize)]
 pub struct VerificationMethod {
     pub id: String,
     #[serde(rename = "type")]
@@ -14,11 +14,20 @@ pub struct VerificationMethod {
     pub controller: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug,Clone, Serialize, Deserialize)]
 pub struct DidDocument {
     pub id: String,
     #[serde(rename = "verificationMethod")]
     pub verification_method: Vec<VerificationMethod>,
+}
+
+impl DidDocument {
+    pub fn new(id: String, verification_method:Vec<VerificationMethod>) -> Self {
+        Self {
+            id,
+            verification_method
+         }
+    }
 }
 
 #[derive(Debug)]

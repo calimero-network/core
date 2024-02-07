@@ -1,7 +1,10 @@
-use libp2p::identity::PublicKey;
+use libp2p::{identity::PublicKey, kad::store::MemoryStore};
 use multibase::{encode, Base};
 
-use crate::types::{AlgorithmType, DidDocument, VerificationMethod};
+use crate::{
+    dht::Dht,
+    types::{AlgorithmType, DidDocument, VerificationMethod},
+};
 
 #[derive(Debug)]
 pub struct Authentication {
@@ -24,14 +27,14 @@ const DID_CALI_IDENTIFIER: &'static str = "did:cali:";
 ///     }
 ///   ]
 /// }
-pub fn create_identity(authentication: Authentication) -> DidDocument {
+pub fn create_identity(store: &mut MemoryStore, authentication: Authentication) -> DidDocument {
     let public_key_id = authentication.public_key.to_peer_id().to_base58();
     let multibase_encoded = encode(Base::Base58Btc, &public_key_id);
 
     let did = DID_CALI_IDENTIFIER.to_string() + &public_key_id;
 
     let verification_method: VerificationMethod = VerificationMethod {
-        id: did.clone()+"#key1",
+        id: did.clone() + "#key1",
         algorithm_type: authentication.algorithm.to_string(),
         public_key_multibase: multibase_encoded,
         controller: authentication.controller.unwrap_or(did.clone()),
@@ -41,14 +44,18 @@ pub fn create_identity(authentication: Authentication) -> DidDocument {
         id: did.clone(),
         verification_method: vec![verification_method],
     };
-    //TODO store it
+
+    Dht::new(store).write_record(did_document.clone());
+
     return did_document;
 }
 
-#[allow(dead_code)]
-pub async fn get_identifier(_did: String) -> Option<DidDocument> {
-    //TODO fetch document per key from storage
-    unimplemented!();
+pub fn get_identifier(store: &mut MemoryStore, did: String) -> Option<DidDocument> {
+    if let Some(did_document) = Dht::new(store).read_record(did.clone()) {
+        return Some(did_document);
+    } else {
+        return None;
+    }
 }
 
 #[allow(dead_code)]
