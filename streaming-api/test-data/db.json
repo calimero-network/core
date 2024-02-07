@@ -1,0 +1,13 @@
+{
+    "apps": [
+        {
+            "id": 1,
+            "name": "chat",
+            "description": "Awesome chat app",
+            "tags": [
+                "chat",
+                "collaboration"
+            ]
+        }
+    ]
+}

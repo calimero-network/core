@@ -1,0 +1,19 @@
+[package]
+name = "simple-dispatcher"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+pretty_env_logger = "0.5"
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1.1", features = ["net"] }
+uuid = { version = "1.7.0", features = ["v4", "fast-rng", "macro-diagnostics", "serde"] }
+warp = "0.3"
