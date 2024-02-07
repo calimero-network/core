@@ -27,7 +27,7 @@ async fn main() -> eyre::Result<()> {
 pub fn setup() -> eyre::Result<()> {
     tracing_subscriber::registry()
         .with(EnvFilter::builder().parse(format!(
-            "debug,error,info,{}",
+            "chat_p0c=info,{}",
             std::env::var("RUST_LOG").unwrap_or_default()
         ))?)
         .with(tracing_subscriber::fmt::layer())

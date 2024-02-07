@@ -64,6 +64,7 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
         bootstrap: BootstrapConfig { nodes: boot_nodes },
         discovery: DiscoveryConfig { mdns },
         endpoint: EndpointConfig {
+            host: init.rpc_host,
             port: init.rpc_port,
         },
     };
