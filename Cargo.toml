@@ -1,3 +1,9 @@
+[workspace.package]
+authors = ["Calimero Limited <info@calimero.network>"]
+edition = "2021"
+repository = "https://github.com/calimero-is-near/cali2.0-experimental"
+license = "MIT OR Apache-2.0"
+
 [workspace]
 resolver = "2"
 members = ["./chat-p0c", "./apps/kv-store", "./sdk"]
