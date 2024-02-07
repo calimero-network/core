@@ -40,7 +40,7 @@ pub struct InitCommand {
     pub boot_network: Option<BootstrapNodes>,
 
     /// Host to listen on
-    #[clap(long, value_name = "IP")]
+    #[clap(long, value_name = "HOST")]
     #[clap(default_value = "0.0.0.0,::")]
     #[clap(use_value_delimiter = true)]
     pub host: Vec<IpAddr>,
@@ -49,6 +49,16 @@ pub struct InitCommand {
     #[clap(long, value_name = "PORT")]
     #[clap(default_value_t = config::DEFAULT_PORT)]
     pub port: u16,
+
+    /// Host to listen on
+    #[clap(long, value_name = "RPC_HOST")]
+    #[clap(default_value = "127.0.0.1")]
+    pub rpc_host: String,
+
+    /// Port to listen on
+    #[clap(long, value_name = "RPC_PORT")]
+    #[clap(default_value_t = config::DEFAULT_RPC_PORT)]
+    pub rpc_port: u16,
 
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
