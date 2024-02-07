@@ -22,3 +22,14 @@ tokio = "1.35.1"
 toml = "0.8.9"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+# Tell `rustc` to optimize for small code size.
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+# Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
+overflow-checks = true
