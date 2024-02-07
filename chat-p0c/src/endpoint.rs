@@ -1,6 +1,7 @@
+use std::sync::{Arc, Mutex};
+
 use jsonrpc_core::{Error, IoHandler, Params, Value};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
-use std::sync::{Arc, Mutex};
 use tokio;
 use tracing::info;
 

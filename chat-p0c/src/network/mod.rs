@@ -1,8 +1,11 @@
 use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use color_eyre::eyre;
 use color_eyre::owo_colors::OwoColorize;
+use jsonrpc_core::{IoHandler, Params};
+use jsonrpc_http_server::ServerBuilder;
 use libp2p::futures::prelude::*;
 use libp2p::multiaddr::{self, Multiaddr};
 use libp2p::swarm::behaviour::toggle::Toggle;
@@ -12,10 +15,6 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tracing::{debug, info, trace, warn};
-
-use jsonrpc_core::{IoHandler, Params};
-use jsonrpc_http_server::ServerBuilder;
-use std::sync::{Arc, Mutex};
 
 use crate::cli;
 use crate::config::Config;
