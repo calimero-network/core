@@ -1,8 +1,8 @@
 use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
 
-use axum::routing::{get_service, Router};
 use axum::response::IntoResponse;
+use axum::routing::{get_service, Router};
 use color_eyre::eyre;
 use color_eyre::owo_colors::OwoColorize;
 use jsonrpsee::server::stop_channel;
@@ -42,27 +42,29 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
 
     let config: Config = Config::load(&args.home)?;
 
-    let addr: std::net::SocketAddr = format!("{}:{}", config.endpoint.host, config.endpoint.port).parse()?;
+    let addr: std::net::SocketAddr =
+        format!("{}:{}", config.endpoint.host, config.endpoint.port).parse()?;
 
     tokio::spawn(async move {
         let (stop_handle, _server_handle) = stop_channel();
         let service_builder = jsonrpsee::server::ServerBuilder::new().to_service_builder();
 
-        let server = service_builder.build(
-            endpoint::CalimeroRPCImpl::new().into_rpc(),
-            stop_handle,
+        let server =
+            service_builder.build(endpoint::CalimeroRPCImpl::new().into_rpc(), stop_handle);
+
+        let app = Router::new().route(
+            "/",
+            get_service(server).handle_error(
+                |err: Box<dyn std::error::Error + Send + Sync>| async move {
+                    err.to_string().into_response()
+                },
+            ),
         );
 
-        let app = Router::new().route("/", 
-            get_service(server).handle_error(|err: Box<dyn std::error::Error + Send + Sync>| async move {
-                err.to_string().into_response()
-            }
-        ));
-
         axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
     });
 
     // Setup the P2P network
