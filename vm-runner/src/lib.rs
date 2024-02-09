@@ -70,6 +70,7 @@ pub fn run(
     if let Err(err) = function.call(&mut store, &[]) {
         return match err.downcast::<logic::VMLogicError>() {
             Ok(err) => Ok(logic.finish(Some(err.try_into()?))),
+            // todo! handle panics from the host / wasm
             Err(err) => Ok(logic.finish(Some(err.into()))),
         };
     }
