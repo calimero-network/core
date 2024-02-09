@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::env;
-use serde::{Deserialize, Serialize};
 
 #[derive(Default, BorshSerialize, BorshDeserialize)]
 struct KvStore {
@@ -19,43 +18,76 @@ impl KvStore {
     fn get(&self, key: &str) -> Option<&str> {
         self.items.get(key).map(|v| v.as_str())
     }
+
+    fn get_unchecked(&self, key: &str) -> &str {
+        self.items.get(key).expect("Key not found.").as_str()
+    }
 }
 
-#[no_mangle]
-pub extern "C" fn set() {
-    #[derive(Serialize, Deserialize)]
-    struct Input {
-        key: String,
-        value: String,
+mod code_generated_from_calimero_sdk_macros {
+    use super::KvStore;
+    use calimero_sdk::env;
+    use serde::{Deserialize, Serialize};
+
+    #[no_mangle]
+    pub extern "C" fn set() {
+        #[derive(Serialize, Deserialize)]
+        struct Input {
+            key: String,
+            value: String,
+        }
+
+        let Input { key, value }: Input = serde_json::from_slice(
+            &env::input().expect("Expected input since method has arguments."),
+        )
+        .expect("Failed to deserialize input from JSON.");
+
+        let mut app: KvStore = env::state_read().unwrap_or_default();
+
+        app.set(key, value);
+
+        env::state_write(&app);
     }
 
-    let Input { key, value }: Input =
-        serde_json::from_slice(&env::input().expect("Expected input since method has arguments."))
-            .expect("Failed to deserialize input from JSON.");
+    #[no_mangle]
+    pub extern "C" fn get() {
+        #[derive(Serialize, Deserialize)]
+        struct Input {
+            key: String,
+        }
 
-    let mut app: KvStore = env::state_read().unwrap_or_default();
+        let Input { key }: Input = serde_json::from_slice(
+            &env::input().expect("Expected input since method has arguments."),
+        )
+        .expect("Failed to deserialize input from JSON.");
 
-    app.set(key, value);
+        let app: KvStore = env::state_read().expect("Failed to read app state.");
 
-    env::state_write(&app);
-}
+        let value = app.get(&key);
 
-#[no_mangle]
-pub extern "C" fn get() {
-    #[derive(Serialize, Deserialize)]
-    struct Input {
-        key: String,
+        let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+
+        env::value_return(&output);
     }
 
-    let Input { key }: Input =
-        serde_json::from_slice(&env::input().expect("Expected input since method has arguments."))
-            .expect("Failed to deserialize input from JSON.");
+    #[no_mangle]
+    pub extern "C" fn get_unchecked() {
+        #[derive(Serialize, Deserialize)]
+        struct Input {
+            key: String,
+        }
 
-    let app: KvStore = env::state_read().expect("Failed to read app state.");
+        let Input { key }: Input = serde_json::from_slice(
+            &env::input().expect("Expected input since method has arguments."),
+        )
+        .expect("Failed to deserialize input from JSON.");
 
-    let value = app.get(&key);
+        let app: KvStore = env::state_read().expect("Failed to read app state.");
 
-    let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+        let value = app.get_unchecked(&key);
 
-    env::value_return(&output);
+        let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+
+        env::value_return(&output);
+    }
 }
