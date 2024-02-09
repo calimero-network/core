@@ -1,3 +1,4 @@
+use color_eyre::owo_colors::OwoColorize;
 use serde_json::json;
 
 use vm_runner::{logic, run, store};
@@ -43,6 +44,12 @@ fn main() -> color_eyre::Result<()> {
     };
     let set_outcome = run(file, "get_unchecked", cx, &mut storage, &limits)?;
     dbg!(set_outcome);
+
+    println!("{}", "--".repeat(20).dimmed());
+    println!("{:>35}", "Now, let's inspect the storage".bold());
+    println!("{}", "--".repeat(20).dimmed());
+
+    dbg!(storage);
 
     Ok(())
 }

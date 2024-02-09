@@ -7,7 +7,7 @@ pub trait Storage: Send {
     fn has(&self, key: &[u8]) -> bool;
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct InMemoryStorage {
     inner: HashMap<Vec<u8>, Vec<u8>>,
 }
