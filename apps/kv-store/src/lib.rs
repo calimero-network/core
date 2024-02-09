@@ -16,10 +16,14 @@ impl KvStore {
     }
 
     fn get(&self, key: &str) -> Option<&str> {
+        env::log(&format!("Getting key: {:?}", key));
+
         self.items.get(key).map(|v| v.as_str())
     }
 
     fn get_unchecked(&self, key: &str) -> &str {
+        env::log(&format!("Getting key without checking: {:?}", key));
+
         self.items.get(key).expect("Key not found.").as_str()
     }
 }
