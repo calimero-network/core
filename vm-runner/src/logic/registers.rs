@@ -2,7 +2,7 @@ use std::collections::hash_map::{Entry, HashMap};
 use std::mem;
 
 use crate::errors::HostError;
-use crate::logic::{Result, VMLimits, VMLogicError};
+use crate::logic::{Result, VMLimits};
 
 const REGISTER_SIZE: u64 = mem::size_of::<u64>() as _;
 
@@ -17,7 +17,7 @@ impl Registers {
         self.inner
             .get(&id)
             .map(|v| &**v)
-            .ok_or(VMLogicError::HostError(HostError::InvalidRegisterId { id }))
+            .ok_or(HostError::InvalidRegisterId { id }.into())
     }
 
     pub fn get_len(&self, id: u64) -> Option<u64> {
@@ -34,7 +34,7 @@ impl Registers {
         let mut func = || {
             let len = data.as_ref().len() as _;
 
-            (len <= limits.max_register_size).then_some(())?;
+            (len <= *limits.max_register_size).then_some(())?;
 
             let new_usage = REGISTER_SIZE.checked_add(len)?;
 
@@ -55,7 +55,7 @@ impl Registers {
             Some(())
         };
 
-        func().ok_or(VMLogicError::HostError(HostError::InvalidMemoryAccess))?;
+        func().ok_or(HostError::InvalidMemoryAccess)?;
 
         match entry {
             Entry::Occupied(mut entry) => {

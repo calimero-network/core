@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use ouroboros::self_referencing;
 
 use super::store::Storage;
@@ -6,6 +8,7 @@ mod errors;
 mod imports;
 mod registers;
 
+use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError};
 pub use errors::VMLogicError;
 use registers::Registers;
@@ -20,12 +23,14 @@ pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
     pub max_registers: u64,
-    pub max_register_size: u64,
-    pub max_registers_capacity: u64,
+    // constrained to be less than u64::MAX
+    // because register_len returns u64::MAX if the register is not found
+    pub max_register_size: Constrained<u64, MaxU64<{ u64::MAX - 1 }>>,
+    pub max_registers_capacity: u64, // todo! must not be less than max_register_size
     pub max_logs: u64,
     pub max_log_size: u64,
-    pub max_storage_key_size: u64,
-    pub max_storage_value_size: u64,
+    pub max_storage_key_size: NonZeroU64,
+    pub max_storage_value_size: NonZeroU64,
     // pub max_execution_time: u64,
     // number of functions per contract
 }
@@ -178,11 +183,11 @@ impl<'a> VMHostFunctions<'a> {
     ) -> Result<u64> {
         let logic = self.borrow_logic();
 
-        if key_len > logic.limits.max_storage_key_size {
+        if key_len > logic.limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
         }
 
-        if value_len > logic.limits.max_storage_value_size {
+        if value_len > logic.limits.max_storage_value_size.get() {
             return Err(HostError::ValueLengthOverflow.into());
         }
 
@@ -204,7 +209,7 @@ impl<'a> VMHostFunctions<'a> {
     pub fn storage_read(&mut self, key_len: u64, key_ptr: u64, register_id: u64) -> Result<u64> {
         let logic = self.borrow_logic();
 
-        if key_len > logic.limits.max_storage_key_size {
+        if key_len > logic.limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
         }
 

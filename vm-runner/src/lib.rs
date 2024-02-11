@@ -1,9 +1,12 @@
 use wasmer::{Instance, Module, NativeEngineExt, Store};
 
+mod constraint;
 pub mod errors;
 pub mod logic;
-pub mod memory;
+mod memory;
 pub mod store;
+
+pub use constraint::Constraint;
 
 pub type Result<T, E = errors::VMRuntimeError> = std::result::Result<T, E>;
 
