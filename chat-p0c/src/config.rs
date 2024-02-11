@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "config.toml";
 pub const DEFAULT_PORT: u16 = 2428;
+pub const DEFAULT_RPC_HOST: &str = "127.0.0.1";
+pub const DEFAULT_RPC_PORT: u16 = 3030;
 pub const DEFAULT_CALIMERO_CHAT_HOME: &str = ".calimero/experiments/chat-p0c";
 
 // https://github.com/ipfs/kubo/blob/efdef7fdcfeeb30e2f1ce3dbf65b6460b58afaaf/config/bootstrap_peers.go#L17-L24
@@ -32,6 +34,8 @@ pub struct Config {
     pub bootstrap: BootstrapConfig,
     #[serde(default)]
     pub discovery: DiscoveryConfig,
+    #[serde(default)]
+    pub endpoint: EndpointConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -63,6 +67,21 @@ pub struct DiscoveryConfig {
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self { mdns: bool_true() }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EndpointConfig {
+    pub host: String,
+    pub port: u16,
+}
+
+impl Default for EndpointConfig {
+    fn default() -> Self {
+        Self {
+            host: DEFAULT_RPC_HOST.to_string(),
+            port: DEFAULT_RPC_PORT,
+        }
     }
 }
 

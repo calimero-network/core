@@ -1,8 +1,11 @@
 use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
 
+use axum::response::IntoResponse;
+use axum::routing::{get_service, Router};
 use color_eyre::eyre;
 use color_eyre::owo_colors::OwoColorize;
+use jsonrpsee::server::stop_channel;
 use libp2p::futures::prelude::*;
 use libp2p::multiaddr::{self, Multiaddr};
 use libp2p::swarm::behaviour::toggle::Toggle;
@@ -15,6 +18,8 @@ use tracing::{debug, info, trace, warn};
 
 use crate::cli;
 use crate::config::Config;
+use crate::endpoint;
+use crate::endpoint::CalimeroRPCServer;
 
 mod events;
 
@@ -35,14 +40,37 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         eyre::bail!("chat node is not initialized in {:?}", args.home);
     }
 
-    let config = Config::load(&args.home)?;
+    let config: Config = Config::load(&args.home)?;
 
+    let addr: std::net::SocketAddr =
+        format!("{}:{}", config.endpoint.host, config.endpoint.port).parse()?;
+
+    tokio::spawn(async move {
+        let (stop_handle, _server_handle) = stop_channel();
+        let service_builder = jsonrpsee::server::ServerBuilder::new().to_service_builder();
+
+        let server =
+            service_builder.build(endpoint::CalimeroRPCImpl::new().into_rpc(), stop_handle);
+
+        let app = Router::new().route(
+            "/",
+            get_service(server).handle_error(
+                |err: Box<dyn std::error::Error + Send + Sync>| async move {
+                    err.to_string().into_response()
+                },
+            ),
+        );
+
+        axum::Server::bind(&addr)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    });
+
+    // Setup the P2P network
     let peer_id = config.identity.public().to_peer_id();
-
     info!("Peer ID: {}", peer_id);
-
     let (mut client, mut event_receiver, event_loop) = init(peer_id, &config).await?;
-
     tokio::spawn(event_loop.run());
 
     for addr in &config.swarm.listen {
@@ -91,6 +119,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         };
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    //let handler = handler_read.clone();
 
     loop {
         tokio::select! {
@@ -99,22 +128,26 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                     Some(event) => event_recipient(client.clone(), topic.hash(), event).await?,
                     None => break,
                 }
+
             }
-            line = stdin.next_line() => {
-                match line {
-                    Ok(Some(line)) => {
+            /*
+            pop_result = handler.read() => {
+                match pop_result {
+                    Ok(Some(value)) => {
                         if client.mesh_peer_count(topic.hash()).await == 0 {
                             info!("No connected peers to send message to.");
                             continue;
                         }
                         client
-                            .publish(topic.hash(), line.into_bytes())
+                            .publish(topic.hash(), value.into_bytes())
                             .await
                             .expect("Failed to publish message.");
                     }
-                    _ => break,
+                    Ok(None) => (),
+                    Err(e) => eprintln!("Error popping from list: {:?}", e),
                 }
             }
+            */
         }
     }
 

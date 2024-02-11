@@ -10,7 +10,7 @@ pub struct Authentication {
     pub public_key: PublicKey,
 }
 
-const DID_CALI_IDENTIFIER: &'static str = "did:cali:";
+const DID_CALI_IDENTIFIER: &str = "did:cali:";
 
 /// Create decentralized identity document based on provided public key
 ///  {
@@ -26,7 +26,7 @@ const DID_CALI_IDENTIFIER: &'static str = "did:cali:";
 /// }
 pub fn create_identity(authentication: Authentication) -> DidDocument {
     let public_key_id = authentication.public_key.to_peer_id();
-    let multibase_encoded = encode(Base::Base58Btc, &public_key_id.as_ref().to_bytes());
+    let multibase_encoded = encode(Base::Base58Btc, public_key_id.as_ref().to_bytes());
 
     let did = format!("{}{}", DID_CALI_IDENTIFIER, public_key_id);
 
