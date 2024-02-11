@@ -1923,27 +1923,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "didkit-cli"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "137a39b2986522809dd69abc2e1111605a3d2e75870ad43b5d3cfe8d5b8be500"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "didkit",
- "iref",
- "json-ld",
- "rdf-types",
- "serde",
- "serde_json",
- "sshkeys",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "digest"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2969,12 +2948,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 name = "identity-rs"
 version = "0.1.0"
 dependencies = [
- "bs58 0.5.0",
  "didkit",
- "didkit-cli",
- "ed25519-dalek",
- "hex",
- "libc",
  "libp2p",
  "multibase 0.9.1",
  "serde",
