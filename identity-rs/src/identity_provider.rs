@@ -1,3 +1,5 @@
+use std::io;
+
 use libp2p::{identity::PublicKey, kad::store::MemoryStore};
 use multibase::{encode, Base};
 
@@ -27,7 +29,10 @@ const DID_CALI_IDENTIFIER: &'static str = "did:cali:";
 ///     }
 ///   ]
 /// }
-pub fn create_identity(store: &mut MemoryStore, authentication: Authentication) -> DidDocument {
+pub fn create_identity(
+    store: &mut MemoryStore,
+    authentication: Authentication,
+) -> Result<DidDocument, io::Error> {
     let public_key_id = authentication.public_key.to_peer_id().to_base58();
     let multibase_encoded = encode(Base::Base58Btc, &public_key_id);
 
@@ -45,17 +50,16 @@ pub fn create_identity(store: &mut MemoryStore, authentication: Authentication) 
         verification_method: vec![verification_method],
     };
 
-    Dht::new(store).write_record(did_document.clone());
+    Dht::new(store).write_record(did_document.clone())?;
 
-    return did_document;
+    return Ok(did_document);
 }
 
-pub fn get_identifier(store: &mut MemoryStore, did: String) -> Option<DidDocument> {
-    if let Some(did_document) = Dht::new(store).read_record(did.clone()) {
-        return Some(did_document);
-    } else {
-        return None;
-    }
+pub fn get_identifier(
+    store: &mut MemoryStore,
+    did: String,
+) -> Result<Option<DidDocument>, io::Error> {
+    return Dht::new(store).read_record(did);
 }
 
 #[allow(dead_code)]

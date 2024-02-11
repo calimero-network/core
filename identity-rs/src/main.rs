@@ -1,14 +1,13 @@
 use std::borrow::BorrowMut;
 
-use identity_provider::{create_identity, Authentication};
+use libp2p::{identity::Keypair, kad::store::MemoryStore};
 
 mod dht;
 mod identity_provider;
 mod types;
 
-use libp2p::{identity::Keypair, kad::store::MemoryStore};
-
-use crate::{identity_provider::get_identifier, types::AlgorithmType};
+use identity_provider::{create_identity, get_identifier, Authentication};
+use types::AlgorithmType;
 
 fn main() {
     //generate keypair in any way
@@ -24,15 +23,29 @@ fn main() {
     let peer_id = public_key.to_peer_id();
     let mut store = MemoryStore::new(peer_id);
 
-    println!("Generating identity");
+    println!("Generate identity");
     let identity = create_identity(store.borrow_mut(), authentication);
-    let formatted_identity = serde_json::to_string_pretty(&identity).unwrap();
-    println!("Stored did document: {}", formatted_identity);
+    let did_document = match identity {
+        Ok(value) => {
+            let formatted_identity = serde_json::to_string_pretty(&value).unwrap();
+            println!("Stored did document: {}", formatted_identity);
+            value
+        }
+        Err(err) => {
+            println!("Error while reading record {}", err);
+            return;
+        }
+    };
 
-    if let Some(identity) = get_identifier(store.borrow_mut(), identity.id.clone()) {
-        let formatted_identity = serde_json::to_string_pretty(&identity).unwrap();
-        println!("Fetched did document {}", formatted_identity)
-    } else {
-        println!("Error while reading record")
+    println!("Fetch identity");
+    let identity = get_identifier(store.borrow_mut(), did_document.id.clone());
+    match identity {
+        Ok(value) => {
+            let formatted_identity = serde_json::to_string_pretty(&value).unwrap();
+            println!("Fetched did document {}", formatted_identity)
+        }
+        Err(err) => {
+            println!("Error while reading record {}", err)
+        }
     }
 }
