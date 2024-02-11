@@ -44,8 +44,8 @@ pub fn run(
         Err(err) => return Ok(logic.finish(Some(err.into()))),
     };
 
-    match instance.exports.get_memory("memory").cloned() {
-        Ok(memory) => logic.with_memory(memory),
+    match instance.exports.get_memory("memory") {
+        Ok(memory) => logic.with_memory(memory.clone()),
         // todo! test memory returns MethodNotFound
         Err(err) => return Ok(logic.finish(Some(err.into()))),
     };
@@ -70,7 +70,6 @@ pub fn run(
     if let Err(err) = function.call(&mut store, &[]) {
         return match err.downcast::<logic::VMLogicError>() {
             Ok(err) => Ok(logic.finish(Some(err.try_into()?))),
-            // todo! handle panics from the host / wasm
             Err(err) => Ok(logic.finish(Some(err.into()))),
         };
     }

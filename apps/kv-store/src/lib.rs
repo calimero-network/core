@@ -35,6 +35,8 @@ mod code_generated_from_calimero_sdk_macros {
 
     #[no_mangle]
     pub extern "C" fn set() {
+        env::setup_panic_hook();
+
         #[derive(Serialize, Deserialize)]
         struct Input {
             key: String,
@@ -55,6 +57,8 @@ mod code_generated_from_calimero_sdk_macros {
 
     #[no_mangle]
     pub extern "C" fn get() {
+        env::setup_panic_hook();
+
         #[derive(Serialize, Deserialize)]
         struct Input {
             key: String,
@@ -76,6 +80,8 @@ mod code_generated_from_calimero_sdk_macros {
 
     #[no_mangle]
     pub extern "C" fn get_unchecked() {
+        env::setup_panic_hook();
+
         #[derive(Serialize, Deserialize)]
         struct Input {
             key: String,

@@ -22,6 +22,25 @@ pub fn panic_str(message: &str) -> ! {
     unsafe { sys::panic_utf8(message.len() as u64, message.as_ptr() as u64) }
 }
 
+pub fn setup_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let message = match info.payload().downcast_ref::<&'static str>() {
+            Some(message) => *message,
+            None => match info.payload().downcast_ref::<String>() {
+                Some(message) => &**message,
+                None => "<no message>",
+            },
+        };
+
+        let payload = match info.location() {
+            Some(location) => format!("panicked at {}: {}", location, message),
+            None => format!("fatal: panicked at unknown location: {}", message),
+        };
+
+        panic_str(&payload);
+    }));
+}
+
 pub fn read_register(register_id: u64) -> Option<Vec<u8>> {
     let len = match register_len(register_id)?.try_into() {
         Ok(len) => len,
