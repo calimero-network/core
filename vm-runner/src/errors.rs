@@ -59,15 +59,13 @@ pub enum HostError {
 #[derive(Debug)]
 pub enum WasmTrap {
     StackOverflow,
-    HeapAccessOutOfBounds,
+    MemoryOutOfBounds,
     HeapMisaligned,
     TableAccessOutOfBounds,
     IndirectCallToNull,
     BadSignature,
-    IntegerOverflow,
-    IntegerDivisionByZero,
-    BadConversionToInteger,
-    UnreachableCodeReached,
+    IllegalArithmetic,
+    Unreachable,
     UnalignedAtomic,
     Indeterminate,
 }
@@ -107,28 +105,21 @@ impl From<wasmer::RuntimeError> for FunctionCallError {
     fn from(err: wasmer::RuntimeError) -> Self {
         match err.to_trap() {
             Some(TrapCode::StackOverflow) => FunctionCallError::WasmTrap(WasmTrap::StackOverflow),
-            Some(TrapCode::HeapAccessOutOfBounds) => {
-                FunctionCallError::WasmTrap(WasmTrap::HeapAccessOutOfBounds)
+            Some(TrapCode::HeapAccessOutOfBounds | TrapCode::TableAccessOutOfBounds) => {
+                FunctionCallError::WasmTrap(WasmTrap::MemoryOutOfBounds)
             }
             Some(TrapCode::HeapMisaligned) => FunctionCallError::WasmTrap(WasmTrap::HeapMisaligned),
-            Some(TrapCode::TableAccessOutOfBounds) => {
-                FunctionCallError::WasmTrap(WasmTrap::TableAccessOutOfBounds)
-            }
             Some(TrapCode::IndirectCallToNull) => {
                 FunctionCallError::WasmTrap(WasmTrap::IndirectCallToNull)
             }
             Some(TrapCode::BadSignature) => FunctionCallError::WasmTrap(WasmTrap::BadSignature),
-            Some(TrapCode::IntegerOverflow) => {
-                FunctionCallError::WasmTrap(WasmTrap::IntegerOverflow)
-            }
-            Some(TrapCode::IntegerDivisionByZero) => {
-                FunctionCallError::WasmTrap(WasmTrap::IntegerDivisionByZero)
-            }
-            Some(TrapCode::BadConversionToInteger) => {
-                FunctionCallError::WasmTrap(WasmTrap::BadConversionToInteger)
-            }
+            Some(
+                TrapCode::IntegerOverflow
+                | TrapCode::IntegerDivisionByZero
+                | TrapCode::BadConversionToInteger,
+            ) => FunctionCallError::WasmTrap(WasmTrap::IllegalArithmetic),
             Some(TrapCode::UnreachableCodeReached) => {
-                FunctionCallError::WasmTrap(WasmTrap::UnreachableCodeReached)
+                FunctionCallError::WasmTrap(WasmTrap::Unreachable)
             }
             Some(TrapCode::UnalignedAtomic) => {
                 FunctionCallError::WasmTrap(WasmTrap::UnalignedAtomic)
