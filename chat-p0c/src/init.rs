@@ -4,7 +4,7 @@ use color_eyre::eyre::{self, Context};
 use libp2p::{identity, Multiaddr};
 use tracing::{info, warn};
 
-use crate::config::{BootstrapConfig, Config, DiscoveryConfig, SwarmConfig};
+use crate::config::{BootstrapConfig, Config, DiscoveryConfig, EndpointConfig, SwarmConfig};
 use crate::{cli, config};
 
 pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()> {
@@ -63,6 +63,10 @@ pub async fn run(args: cli::RootArgs, init: cli::InitCommand) -> eyre::Result<()
         swarm: SwarmConfig { listen },
         bootstrap: BootstrapConfig { nodes: boot_nodes },
         discovery: DiscoveryConfig { mdns },
+        endpoint: EndpointConfig {
+            host: init.rpc_host,
+            port: init.rpc_port,
+        },
     };
 
     config.save(&args.home)?;

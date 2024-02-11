@@ -6,14 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-didkit = "0.6.0"
 libp2p = { workspace = true, features = ["full"] }
-libc = "0.2.110"
-didkit-cli = "0.3.2"
 serde_json = "1.0.113"
 sha2 = "0.10.8"
-ed25519-dalek = "2.1.1"
 multibase = "0.9.1"
-hex = "0.4.3"
-bs58.workspace = true
 serde = "1.0.196"

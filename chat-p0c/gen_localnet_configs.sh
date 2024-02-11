@@ -13,5 +13,5 @@ for (( i=1; i<=N; i++ ))
 do
   rm -rf ~/.calimero/node$i
   mkdir -p ~/.calimero/node$i
-  cargo run -- --home ~/.calimero/node$i init --port 233$i
+  cargo run -- --home ~/.calimero/node$i init --port 233$i --rpc-port 303$i
 done
