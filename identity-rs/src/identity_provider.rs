@@ -25,24 +25,24 @@ const DID_CALI_IDENTIFIER: &'static str = "did:cali:";
 ///   ]
 /// }
 pub fn create_identity(authentication: Authentication) -> DidDocument {
-    let public_key_id = authentication.public_key.to_peer_id().to_base58();
-    let multibase_encoded = encode(Base::Base58Btc, &public_key_id);
+    let public_key_id = authentication.public_key.to_peer_id();
+    let multibase_encoded = encode(Base::Base58Btc, &public_key_id.as_ref().to_bytes());
 
-    let did = DID_CALI_IDENTIFIER.to_string() + &public_key_id;
+    let did = format!("{}{}", DID_CALI_IDENTIFIER, public_key_id);
 
     let verification_method: VerificationMethod = VerificationMethod {
-        id: did.clone()+"#key1",
+        id: format!("{}#key1", did),
         algorithm_type: authentication.algorithm.to_string(),
         public_key_multibase: multibase_encoded,
-        controller: authentication.controller.unwrap_or(did.clone()),
+        controller: authentication.controller.unwrap_or_else(|| did.clone()),
     };
 
     let did_document: DidDocument = DidDocument {
-        id: did.clone(),
+        id: did,
         verification_method: vec![verification_method],
     };
     //TODO store it
-    return did_document;
+    did_document
 }
 
 #[allow(dead_code)]
