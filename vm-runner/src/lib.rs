@@ -17,6 +17,8 @@ pub fn run(
     storage: &mut dyn store::Storage,
     limits: &logic::VMLimits,
 ) -> Result<logic::Outcome> {
+    // todo! calculate storage key for cached precompiled
+    // todo! module, execute that, instead of recompiling
     let mut engine = wasmer::Engine::default();
 
     engine.set_tunables(memory::WasmerTunables::new(&limits));
