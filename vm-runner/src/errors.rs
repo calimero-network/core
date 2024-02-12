@@ -5,6 +5,9 @@ use wasmer_types::TrapCode;
 pub enum VMRuntimeError {
     #[error(transparent)]
     StorageError(StorageError),
+
+    #[error(transparent)]
+    HostError(HostError),
 }
 
 #[derive(Debug, Error)]
@@ -44,8 +47,14 @@ pub enum HostError {
     InvalidRegisterId { id: u64 },
     #[error("invalid memory access")]
     InvalidMemoryAccess,
-    #[error("guest panicked: {message}")]
-    GuestPanic { message: String },
+    #[error("{} panicked: {message}", match .context {
+        PanicContext::Guest => "guest",
+        PanicContext::Host => "host",
+    })]
+    Panic {
+        context: PanicContext,
+        message: String,
+    },
     #[error("invalid UTF-8 string")]
     BadUTF8,
     #[error("key length overflow")]
@@ -54,6 +63,12 @@ pub enum HostError {
     ValueLengthOverflow,
     #[error("logs overflow")]
     LogsOverflow,
+}
+
+#[derive(Debug)]
+pub enum PanicContext {
+    Guest,
+    Host,
 }
 
 #[derive(Debug)]

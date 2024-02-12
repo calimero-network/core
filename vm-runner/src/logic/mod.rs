@@ -9,7 +9,7 @@ mod imports;
 mod registers;
 
 use crate::constraint::{Constrained, MaxU64};
-use crate::errors::{FunctionCallError, HostError};
+use crate::errors::{FunctionCallError, HostError, PanicContext};
 pub use errors::VMLogicError;
 use registers::Registers;
 
@@ -129,8 +129,9 @@ impl<'a> VMHostFunctions<'a> {
     }
 
     pub fn panic(&self) -> Result<()> {
-        Err(HostError::GuestPanic {
-            message: "explicit guest panic".to_string(),
+        Err(HostError::Panic {
+            context: PanicContext::Guest,
+            message: "explicit panic".to_owned(),
         }
         .into())
     }
@@ -146,7 +147,11 @@ impl<'a> VMHostFunctions<'a> {
     pub fn panic_utf8(&self, len: u64, ptr: u64) -> Result<()> {
         let message = self.get_string(len, ptr)?;
 
-        Err(HostError::GuestPanic { message }.into())
+        Err(HostError::Panic {
+            context: PanicContext::Guest,
+            message,
+        }
+        .into())
     }
 
     pub fn value_return(&mut self, len: u64, ptr: u64) -> Result<()> {
