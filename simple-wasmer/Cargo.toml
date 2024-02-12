@@ -1,8 +1,0 @@
-[package]
-name = "wasmer_example"
-version = "0.1.0"
-edition = "2018"
-
-[dependencies]
-wasmer = "2.2.0"
-anyhow = "1.0"
