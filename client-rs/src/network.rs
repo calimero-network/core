@@ -1,4 +1,4 @@
-use reqwest::blocking::{Client};
+use reqwest::blocking::Client;
 use serde::Serialize;
 use rand::{Rng, thread_rng};
 

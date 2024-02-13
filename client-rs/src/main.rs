@@ -3,13 +3,14 @@ use color_eyre::owo_colors::OwoColorize;
 use inquire::{InquireError, Select};
 use libp2p::Multiaddr;
 use std::net::IpAddr;
-
+use std::thread;
 
 mod storage;
 mod output;
 mod login_handler;
 mod config;
 mod network;
+mod init;
 #[derive(Parser)]
 #[command(
     version = "0.0.1",
@@ -27,6 +28,10 @@ struct Cli {
 enum Commands {
     /// Initialize nodes
     Init {
+        /// Directory for config and data
+        #[clap(long, value_name = "PATH", default_value_t = config::default_chat_dir())]
+        #[clap(env = "CALIMERO_CHAT_HOME", hide_env_values = true)]
+        home: camino::Utf8PathBuf,
         /// List of bootstrap nodes
         #[clap(long, value_name = "ADDR")]
         boot_nodes: Vec<Multiaddr>,
@@ -96,6 +101,7 @@ enum Commands {
     ListApps {},
     /// List available nodes in the network
     ListNodes {},
+    /// Send message through P2P chat
     SendMessage {
         #[arg(value_name = "ADDRESS", short = 'a', long = "address", aliases = ["addr", "address", "a"], required = true)]
         address: String,
@@ -103,6 +109,7 @@ enum Commands {
         #[arg(value_name = "message", short = 'm', aliases = ["message", "msg", "m"], required = true)]
         message: String,
     },
+    /// Read message that was broadcasted
     ReadMessage {
         #[arg(value_name = "ADDRESS", short = 'a', long = "address", aliases = ["addr", "address", "a"], required = true)]
         address: String,
@@ -114,11 +121,28 @@ pub enum BootstrapNodes {
     Ipfs,
 }
 
+pub struct RootArgs {
+    pub home: camino::Utf8PathBuf,
+}
+
+pub struct InitParams {
+    pub boot_nodes: Vec<Multiaddr>,
+    pub boot_network: Option<BootstrapNodes>,
+    pub host: Vec<IpAddr>,
+    pub port: u16,
+    pub rpc_host: String,
+    pub rpc_port: u16,
+    pub mdns: bool,
+    pub no_mdns: bool,
+    pub force: bool,
+}
+
 fn main() {
     let cli = Cli::parse();
 
     match &cli.command {
         Some(Commands::Init {
+            home,
             boot_nodes,
             boot_network,
             host,
@@ -129,7 +153,42 @@ fn main() {
             no_mdns,
             force
         }) => {
-                //to do (?)
+
+            let main_thread = thread::current();
+
+            let root_args = RootArgs {
+                home: home.clone(),
+            };
+        
+            let init_params = InitParams {
+                boot_nodes: boot_nodes.iter().map(|addr| addr.clone()).collect(),
+                boot_network: boot_network.clone(),
+                host: host.iter().map(|ip| ip.clone()).collect(),
+                port: *port,
+                rpc_host: rpc_host.clone(),
+                rpc_port: *rpc_port,
+                mdns: *mdns,
+                no_mdns: *no_mdns,
+                force: *force,
+            };
+            println!("{}",init_params.mdns);
+            let _handle = thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                
+                rt.block_on(async {
+
+                    
+                    let _ = init::run(root_args, init_params).await;
+                });
+
+                main_thread.unpark();
+            });
+
+            thread::park();
+            
         },
         Some(Commands::Join { address , port}) => {
             match (address.is_empty(), port.is_empty()) {
