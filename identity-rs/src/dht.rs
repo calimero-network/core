@@ -1,7 +1,6 @@
 use std::io;
 
-use libp2p::kad::store::MemoryStore;
-use libp2p::kad::store::RecordStore;
+use libp2p::kad::store::{MemoryStore, RecordStore};
 
 use crate::types::DidDocument;
 
