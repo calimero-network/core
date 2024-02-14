@@ -1,0 +1,16 @@
+[package]
+name = "kv-store"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+borsh = { workspace = true, features = ["derive"] }
+calimero-sdk = { path = "../../sdk" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

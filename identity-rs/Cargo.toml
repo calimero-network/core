@@ -1,5 +1,5 @@
 [package]
-name = "identity-rs"
+name = "identity"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 libp2p = { workspace = true, features = ["full"] }
-serde_json = "1.0.113"
-sha2 = "0.10.8"
-multibase = "0.9.1"
-serde = "1.0.196"
+serde_json.workspace = true
+sha2.workspace = true
+multibase.workspace = true
+serde.workspace = true

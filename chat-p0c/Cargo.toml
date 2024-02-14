@@ -1,7 +1,10 @@
 [package]
 name = "chat-p0c"
 version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
 async-trait = "0.1.77"
