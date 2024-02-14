@@ -5,7 +5,6 @@ use libp2p::{identity::Keypair, kad::store::MemoryStore};
 mod dht;
 mod identity_provider;
 mod types;
-mod vp;
 
 use identity_provider::{create_identity, get_identifier, Authentication};
 use types::AlgorithmType;
