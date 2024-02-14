@@ -15,9 +15,9 @@ pub struct VerificationMethod {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DidDocument {
     pub id: String,
-    #[serde(rename = "verificationMethod")]
     pub verification_method: Vec<VerificationMethod>,
 }
 
