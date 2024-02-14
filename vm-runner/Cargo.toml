@@ -1,0 +1,27 @@
+[package]
+name = "vm-runner"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+fragile.workspace = true
+ouroboros.workspace = true
+owo-colors = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wasmer.workspace = true
+wasmer-types.workspace = true
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+color-eyre.workspace = true
+
+[[example]]
+name = "demo"
+
+[features]
+host-traces = ["owo-colors"]
