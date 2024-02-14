@@ -17,7 +17,7 @@ fn main() {
     let authentication: Authentication = Authentication {
         algorithm: AlgorithmType::Ed25519,
         controller: None,
-        public_key,
+        public_key: public_key.clone(),
     };
 
     let peer_id = public_key.to_peer_id();

@@ -15,10 +15,10 @@ impl<'a> Dht<'a> {
 
     /// Write did in dht
     pub fn write_record(&mut self, did_document: DidDocument) -> Result<(), io::Error> {
-        let key_id: Vec<u8> = did_document.clone().id.into();
+        let key_id = did_document.id.as_bytes().to_owned();
         let key = libp2p::kad::RecordKey::from(key_id);
-        let value: Vec<u8> = serde_json::to_vec(&did_document.clone())?;
-        let record = libp2p::kad::Record::new(key, value.clone());
+        let value = serde_json::to_vec(&did_document)?;
+        let record = libp2p::kad::Record::new(key, value);
         self.kad
             .put(record)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -31,10 +31,9 @@ impl<'a> Dht<'a> {
         let key = libp2p::kad::RecordKey::from(key_id);
 
         if let Some(result) = self.kad.get(&key) {
-            let value = &result.value.clone();
-            let data = String::from_utf8(value.to_vec())
+            let data = std::str::from_utf8(&result.value)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let did_document: DidDocument = serde_json::from_str(&data)?;
+            let did_document: DidDocument = serde_json::from_str(data)?;
             Ok(Some(did_document))
         } else {
             Ok(None)
