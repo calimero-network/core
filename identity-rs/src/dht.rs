@@ -5,7 +5,7 @@ use libp2p::kad::store::{MemoryStore, RecordStore};
 use crate::types::DidDocument;
 
 pub struct Dht<'a> {
-    kad: &'a mut libp2p::kad::store::MemoryStore,
+    kad: &'a mut MemoryStore,
 }
 
 impl<'a> Dht<'a> {
