@@ -1,9 +1,10 @@
-use color_eyre::owo_colors::OwoColorize;
-use prettytable::{Table, Row, Cell};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::thread;
 use std::time::Duration;
 use rand::Rng;
+
+use color_eyre::owo_colors::OwoColorize;
+use prettytable::{Table, Row, Cell};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 pub fn print_table(asset: &String, header: &Vec<[&str; 3]>, table_rows: &Vec<[&str; 3]>) {
     println!("Listing {}...",asset.green());

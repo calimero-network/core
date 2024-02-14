@@ -1,16 +1,39 @@
-use clap::{Parser, Subcommand, ValueEnum};
-use color_eyre::owo_colors::OwoColorize;
-use inquire::{InquireError, Select};
-use libp2p::Multiaddr;
-use std::net::IpAddr;
-use std::thread;
-
 mod storage;
 mod output;
 mod login_handler;
 mod config;
 mod network;
 mod init;
+
+use std::net::IpAddr;
+use std::thread;
+
+use clap::{Parser, Subcommand, ValueEnum};
+use color_eyre::owo_colors::OwoColorize;
+use inquire::{InquireError, Select};
+use libp2p::Multiaddr;
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum BootstrapNodes {
+    Ipfs,
+}
+
+pub struct RootArgs {
+    pub home: camino::Utf8PathBuf,
+}
+
+pub struct InitParams {
+    pub boot_nodes: Vec<Multiaddr>,
+    pub boot_network: Option<BootstrapNodes>,
+    pub host: Vec<IpAddr>,
+    pub port: u16,
+    pub rpc_host: String,
+    pub rpc_port: u16,
+    pub mdns: bool,
+    pub no_mdns: bool,
+    pub force: bool,
+}
+
 #[derive(Parser)]
 #[command(
     version = "0.0.1",
@@ -114,27 +137,6 @@ enum Commands {
         #[arg(value_name = "ADDRESS", short = 'a', long = "address", aliases = ["addr", "address", "a"], required = true)]
         address: String,
     },
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-pub enum BootstrapNodes {
-    Ipfs,
-}
-
-pub struct RootArgs {
-    pub home: camino::Utf8PathBuf,
-}
-
-pub struct InitParams {
-    pub boot_nodes: Vec<Multiaddr>,
-    pub boot_network: Option<BootstrapNodes>,
-    pub host: Vec<IpAddr>,
-    pub port: u16,
-    pub rpc_host: String,
-    pub rpc_port: u16,
-    pub mdns: bool,
-    pub no_mdns: bool,
-    pub force: bool,
 }
 
 fn main() {

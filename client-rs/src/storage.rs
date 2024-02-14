@@ -1,7 +1,8 @@
-use serde::Serialize;
 use std::fs::{self, File};
 use std::io::prelude::*;
 use std::{error::Error, fmt};
+
+use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct Credentials {

@@ -1,8 +1,9 @@
-use color_eyre::owo_colors::OwoColorize;
-use inquire::{InquireError, Password, Text};
+use crate::storage::save_keys_to_storage;
+
 use std::process;
 
-use crate::storage::save_keys_to_storage;
+use color_eyre::owo_colors::OwoColorize;
+use inquire::{InquireError, Password, Text};
 
 pub fn handle_login_result(result: Result<&str, InquireError>) {
     match result {
