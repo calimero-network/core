@@ -5,6 +5,7 @@ mod config;
 mod network;
 mod init;
 mod ws_client;
+mod commands;
 
 use std::net::IpAddr;
 use std::thread;
@@ -149,7 +150,7 @@ enum Commands {
         ws_address: String,
 
         #[arg(value_name = "APPID", short = 'a', long = "appid", aliases = ["a", "app", "appid"], required = true)]
-        app_id: String,
+        app_id: u32,
     },
     /// Stop instance of an app
     StopPod {
@@ -157,7 +158,7 @@ enum Commands {
         ws_address: String,
 
         #[arg(value_name = "PODID", short = 'p', long = "pid", aliases = ["podid", "pid", "p"], required = true)]
-        pod_id: String,
+        pod_id: u32,
     },
     /// Subscribe to Pod websocket
     Subscribe {
@@ -165,7 +166,7 @@ enum Commands {
         ws_address: String,
 
         #[arg(value_name = "PODID", short = 'p', long = "pid", aliases = ["podid", "pid", "p"], required = true)]
-        pod_id: String,
+        pod_id: u32,
     },
     /// Unsubscribe Pod websocket
     Unsubscribe {
@@ -173,7 +174,7 @@ enum Commands {
         ws_address: String,
 
         #[arg(value_name = "PODID", short = 'p', long = "pid", aliases = ["podid", "pid", "p"], required = true)]
-        pod_id: String,
+        pod_id: u32,
     }
 }
 
@@ -288,6 +289,8 @@ async fn main() {
         },
         Some(Commands::ListApps {ws_address}) => {
             // fetch applications from running node
+            ws_client::ws_no_params(ws_address, &String::from("listApps")).await;
+
             let asset = String::from("Applications");
             let header: Vec<[&str; 3]> = vec![
                 ["Application", "IP Address", "Configuration"]
@@ -298,8 +301,6 @@ async fn main() {
             ];
 
             output::print_table(&asset,&header, &data);
-
-            ws_client::ws_no_params(ws_address, &String::from("listApps")).await;
         }
         Some(Commands::SendMessage {address, message}) => {
             network::send_message(address, message);
@@ -311,25 +312,25 @@ async fn main() {
         Some(Commands::StartPod {ws_address, app_id}) => {
             println!("Starting Pod for application: {}", app_id);
 
-            let params = vec![app_id.to_string()];
+            let params = vec![app_id.clone()];
             ws_client::ws_params(ws_address, &String::from("startPod"), params).await;
         },
         Some(Commands::StopPod {ws_address ,pod_id}) => {
             println!("Stopping Pod: {}", pod_id);
 
-            let params = vec![pod_id.to_string()];
+            let params = vec![pod_id.clone()];
             ws_client::ws_params(ws_address, &String::from("stopPod"), params).await;
         },
         Some(Commands::Subscribe {ws_address, pod_id}) => {
             println!("Subscribing to Pod: {}", pod_id);
 
-            let params = vec![pod_id.to_string()];
+            let params = vec![pod_id.clone()];
             ws_client::ws_params(ws_address, &String::from("subscribe"), params).await;
         },
         Some(Commands::Unsubscribe {ws_address, pod_id}) => {
             println!("Unsubscribing to Pod: {}", pod_id);
 
-            let params = vec![pod_id.to_string()];
+            let params = vec![pod_id.clone()];
             ws_client::ws_params(ws_address, &String::from("unsubscribe"), params).await;
         },
         None => {}

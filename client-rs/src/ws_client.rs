@@ -1,4 +1,4 @@
-use rand::{Rng, thread_rng};
+use rand::Rng;
 
 use serde::{Deserialize, Serialize};
 use color_eyre::owo_colors::OwoColorize;
@@ -6,6 +6,8 @@ use color_eyre::owo_colors::OwoColorize;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
+
+use crate::commands;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JsonRequestSendParams {
@@ -39,40 +41,39 @@ impl WSClientStream {
     }
 }
 
-fn generate_request_method(method: &String) -> JsonRequestSendMethod {
-    let random_int_string_10_chars: String = thread_rng()
-    .sample_iter(&rand::distributions::Uniform::new_inclusive(b'0', b'9'))
-    .take(10)
-    .map(|c| c as char)
-    .collect();
-
-    let request_object = JsonRequestSendMethod {
-        jsonrpc: "2.0".to_string(),
-        id: random_int_string_10_chars.clone(),
-        method: method.to_string(),
-    };
-
-    request_object
+fn generate_random_number() -> u32 {
+    let mut rng = rand::thread_rng();
+    rng.gen_range(100_000..=1_000_000)
 }
 
-fn generate_request_params(method: &String, params: Vec<String>) -> JsonRequestSendParams {
-    let random_int_string_10_chars: String = thread_rng()
-    .sample_iter(&rand::distributions::Uniform::new_inclusive(b'0', b'9'))
-    .take(10)
-    .map(|c| c as char)
-    .collect();
+///
+/// Here for request method we send commands::WsCommand items
+/// ID is needed for knowing which response we looping for (u8 or u32) number
+fn generate_request_method(method: &String) -> commands::WsCommand {
+    let id = generate_random_number();
 
-    let request_object = JsonRequestSendParams {
-        jsonrpc: "2.0".to_string(),
-        id: random_int_string_10_chars.clone(),
-        method: method.to_string(),
-        params
+    let request = match method.as_str() {
+        "listApps" => commands::WsCommand::ListApps(),
+        "listPods" => commands::WsCommand::ListApps(),
+        _ => commands::WsCommand::ListApps()
     };
-
-    request_object
+    request
 }
 
-pub async fn ws_params(ws_address: &String, method: &String, params: Vec<String>) {
+fn generate_request_params(method: &String, params: Vec<u32>) -> commands::WsCommand {
+    let id = generate_random_number();
+
+    let request = match method.as_str() {
+        "startPod" => commands::WsCommand::StartPod(params[0]),
+        "stopPod" => commands::WsCommand::StopPod(params[0]),
+        "subscribe" => commands::WsCommand::Subscribe(params[0]),
+        "unsubscribe" => commands::WsCommand::Unsubscribe(params[0]),
+        _ => commands::WsCommand::ListApps()
+    };
+    request
+}
+
+pub async fn ws_params(ws_address: &String, method: &String, params: Vec<u32>) {
     let mut ws_client_stream = WSClientStream::get_stream(ws_address)
         .await
         .expect("Failed to get WebSocket stream");
@@ -88,12 +89,20 @@ pub async fn ws_params(ws_address: &String, method: &String, params: Vec<String>
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
+                println!("msg: {}", text.as_str());
+                // Response will be json string that will need to be serialized
+                // Type will be JsonResponseWebsocket or similar name
+                // will include result + error + id
+                // for result it will be response for each application
+                // we will know which type it is with match and recording to that
+                // parse it to right value
+                // for example Apps we know the struct
                 if let Ok(json_request) = serde_json::from_str::<JsonRequestSendParams>(text.as_str()) {
-                    if json_request.id == request_object.id {
-                        println!("Received response with id: {} \nMessage received: {}",
-                        json_request.id, json_request.params.join(" ").green());
-                        break;
-                    }
+                    // if json_request.id == request_object.id {
+                    //     println!("Received response with id: {} \nMessage received: {}",
+                    //     json_request.id, json_request.params.join(" ").green());
+                    //     break;
+                    // } 
                 } else {
                     continue
                 }
@@ -118,12 +127,14 @@ pub async fn ws_no_params(ws_address: &String, method: &String) {
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
+                println!("msg: {}", text.as_str());
                 if let Ok(json_request) = serde_json::from_str::<JsonRequestSendMethod>(text.as_str()) {
-                    if json_request.id == request_object.id {
-                        println!("Received response with id: {}", json_request.id);
-                        println!("Message received: {}", json_request.method.green());
-                        break;
-                    }
+                    
+                    // if json_request.id == request_object.id {
+                    //     println!("Received response with id: {}", json_request.id);
+                    //     println!("Message received: {}", json_request.method.green());
+                    //     break;
+                    // }
                 } else {
                    continue;
                 }
@@ -131,3 +142,6 @@ pub async fn ws_no_params(ws_address: &String, method: &String) {
         }
     }
 }
+
+
+// TO DO - FUNCTIONS FOR EACH
