@@ -56,22 +56,24 @@ pub enum VerifiableCredentialType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename = "camelCase")]
 pub struct WalletVerifiableCredential {
     #[serde(rename = "type")]
     pub wallet_type: WalletType,
     pub address: String,
-    pub public_key: String,
+    pub public_key: Vec<u8>,
     pub peer_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename = "camelCase")]
 pub struct VerifiableCredential {
     pub id: String,
     pub issuer: String,
     #[serde(rename = "type")]
     pub algorithm_type: AlgorithmType,
     pub credential_subject: VerifiableCredentialType,
-    pub proof: String,
+    pub proof: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
