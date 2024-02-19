@@ -21,6 +21,9 @@ pub struct RootArgs {
     #[clap(long, value_name = "PATH", default_value_t = config::default_chat_dir())]
     #[clap(env = "CALIMERO_CHAT_HOME", hide_env_values = true)]
     pub home: camino::Utf8PathBuf,
+
+    #[clap(long, value_name = "TYPE", default_value = "peer")]
+    pub node_type: String,
 }
 
 #[derive(Debug, Subcommand)]
