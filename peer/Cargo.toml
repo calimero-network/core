@@ -1,0 +1,20 @@
+[package]
+name = "peer"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+color-eyre.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+warp.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+api.path = "../api"
+controller.path = "../controller"
+primitives.path = "../primitives"

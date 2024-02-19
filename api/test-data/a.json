@@ -1,0 +1,8 @@
+{
+    "id": 123,
+    "result": {
+        "Err": {
+            "SerdeError": "Failed to serde"
+        }
+    }
+}

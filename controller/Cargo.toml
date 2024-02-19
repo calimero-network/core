@@ -1,0 +1,17 @@
+[package]
+name = "controller"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+
+api.path = "../api"
+primitives.path = "../primitives"
