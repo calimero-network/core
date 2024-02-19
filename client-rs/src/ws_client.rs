@@ -1,28 +1,12 @@
 use rand::Rng;
 
-use serde::{Deserialize, Serialize};
 use color_eyre::owo_colors::OwoColorize;
 
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 
-use crate::commands;
-
-#[derive(Debug, Serialize, Deserialize)]
-struct JsonRequestSendParams {
-    jsonrpc: String,
-    id: String,
-    method: String,
-    params: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct JsonRequestSendMethod {
-    jsonrpc: String,
-    id: String,
-    method: String,
-}
+use crate::api::{ApiRequest, WsRequest, WsResponse};
 
 pub struct WSClientStream {
     pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
@@ -46,31 +30,38 @@ fn generate_random_number() -> u32 {
     rng.gen_range(100_000..=1_000_000)
 }
 
-///
-/// Here for request method we send commands::WsCommand items
-/// ID is needed for knowing which response we looping for (u8 or u32) number
-fn generate_request_method(method: &String) -> commands::WsCommand {
+fn generate_request_method(method: &String) -> WsRequest {
     let id = generate_random_number();
 
-    let request = match method.as_str() {
-        "listApps" => commands::WsCommand::ListApps(),
-        "listPods" => commands::WsCommand::ListApps(),
-        _ => commands::WsCommand::ListApps()
+    let command = match method.as_str() {
+        "listRemoteApps" => ApiRequest::ListRemoteApps(),
+        "listInstalledApps" => ApiRequest::ListInstalledApps(),
+        "unsubscribeAll" => ApiRequest::UnsubscribeFromAll(),
+        _ => ApiRequest::ListRemoteApps()
     };
-    request
+
+    WsRequest {
+        id: Some(id),
+        command,
+    }
 }
 
-fn generate_request_params(method: &String, params: Vec<u32>) -> commands::WsCommand {
+fn generate_request_params(method: &String, params: Vec<u32>) -> WsRequest {
     let id = generate_random_number();
 
-    let request = match method.as_str() {
-        "startPod" => commands::WsCommand::StartPod(params[0]),
-        "stopPod" => commands::WsCommand::StopPod(params[0]),
-        "subscribe" => commands::WsCommand::Subscribe(params[0]),
-        "unsubscribe" => commands::WsCommand::Unsubscribe(params[0]),
-        _ => commands::WsCommand::ListApps()
+    let command = match method.as_str() {
+        "installBinaryApp" => ApiRequest::InstallBinaryApp(params[0].to_be_bytes().to_vec()),
+        "installRemoteApp" => ApiRequest::InstallRemoteApp(params[0]),
+        "uninstallApp" => ApiRequest::UninstallApp(params[0]),
+        "subscribe" => ApiRequest::Subscribe(params[0]),
+        "unsubscribe" => ApiRequest::Unsubscribe(params[0]),
+        _ => ApiRequest::InstallBinaryApp(params[0].to_be_bytes().to_vec())
     };
-    request
+    
+    WsRequest {
+        id: Some(id),
+        command,
+    }
 }
 
 pub async fn ws_params(ws_address: &String, method: &String, params: Vec<u32>) {
@@ -97,12 +88,13 @@ pub async fn ws_params(ws_address: &String, method: &String, params: Vec<u32>) {
                 // we will know which type it is with match and recording to that
                 // parse it to right value
                 // for example Apps we know the struct
-                if let Ok(json_request) = serde_json::from_str::<JsonRequestSendParams>(text.as_str()) {
-                    // if json_request.id == request_object.id {
-                    //     println!("Received response with id: {} \nMessage received: {}",
-                    //     json_request.id, json_request.params.join(" ").green());
-                    //     break;
-                    // } 
+                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                    let response_id = json_request.id.unwrap();
+                    if response_id == request_object.id.unwrap() {
+                        println!("Received response with id: {}",
+                        response_id);
+                        break;
+                    } 
                 } else {
                     continue
                 }
@@ -128,13 +120,13 @@ pub async fn ws_no_params(ws_address: &String, method: &String) {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
                 println!("msg: {}", text.as_str());
-                if let Ok(json_request) = serde_json::from_str::<JsonRequestSendMethod>(text.as_str()) {
-                    
-                    // if json_request.id == request_object.id {
-                    //     println!("Received response with id: {}", json_request.id);
-                    //     println!("Message received: {}", json_request.method.green());
-                    //     break;
-                    // }
+                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                    let response_id = json_request.id.unwrap();
+                    if response_id == request_object.id.unwrap() {
+                        println!("Received response with id: {}",
+                        response_id);
+                        break;
+                    } 
                 } else {
                    continue;
                 }

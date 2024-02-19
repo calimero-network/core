@@ -5,7 +5,8 @@ mod config;
 mod network;
 mod init;
 mod ws_client;
-mod commands;
+mod api;
+mod app;
 
 use std::net::IpAddr;
 use std::thread;
