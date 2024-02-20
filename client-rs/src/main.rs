@@ -304,7 +304,8 @@ async fn main() {
             ws_client::list_remote_apps(ws_address, &method).await;
         },
         Some(Commands::ListInstalledApps {ws_address}) => {
-            
+            let method = String::from("listInstalledApps");
+            ws_client::list_installed_apps(ws_address, &method).await;
         },
         Some(Commands::InstallBinaryApp {ws_address, binary_path }) => {
 
