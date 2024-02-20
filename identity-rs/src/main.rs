@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let verifiable_credential = create_wallet_verifiable_credentials(
         peer_id.to_string().as_str(),
         &WalletType::NEAR,
-        "vuki.near",
+        "cali.near",
         &wallet_keypair.public().encode_protobuf(),
         &proof,
     )?;
