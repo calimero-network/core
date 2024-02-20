@@ -57,7 +57,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         confirmations: Arc::new(Mutex::new(HashMap::new())),
         senders: Arc::new(Mutex::new(HashMap::new())),
         last_known_transaction_hash: Default::default(),
-        nonce: Arc::new(Mutex::new(1)),
+        nonce: Arc::new(Mutex::new(0)),
         node_type: args.node_type,
     };
 
@@ -129,7 +129,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                             continue;
                         }
                         client
-                            .publish(topic.hash(), serde_json::to_vec(&create_transaction(&line, &storage, peer_id)?).unwrap())
+                            .publish(topic.hash(), serde_json::to_vec(&create_transaction(&line, &storage, peer_id)?)?)
                             .await
                             .expect("Failed to publish message.");
                     }
@@ -164,7 +164,7 @@ async fn event_recipient(mut client: Client, our_topic_hash: gossipsub::TopicHas
                     println!("info: {} joined the chat.", their_peer_id.cyan());
 
 //                    client
-//                        .publish(our_topic_hash, serde_json::to_vec(&create_transaction("Welcome to the chat", &storage)?).unwrap())
+//                        .publish(our_topic_hash, serde_json::to_vec(&create_transaction("Welcome to the chat", &storage)?).?)
 //                        .await?;
                 }
             }
@@ -178,15 +178,15 @@ async fn event_recipient(mut client: Client, our_topic_hash: gossipsub::TopicHas
 
                         if storage.node_type.is_coordinator() {
                             let mut nonce_mutex = storage.nonce.lock().unwrap();
+                            *nonce_mutex += 1;
                             let confirmation = NetworkAction::TransactionConfirmation(TransactionConfirmation{
                                 nonce: *nonce_mutex,
                                 transaction_hash: transaction_hash.clone(),
                                 // TODO proper confirmation hash
                                 confirmation_hash: transaction_hash,
                             });
-                            *nonce_mutex += 1;
                             client
-                                .publish(our_topic_hash, serde_json::to_vec(&confirmation).unwrap())
+                                .publish(our_topic_hash, serde_json::to_vec(&confirmation)?)
                                 .await?;
                         }
                     },
