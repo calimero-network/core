@@ -10,39 +10,50 @@ use serde_json;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
+use warp::ws::Ws;
 use warp::ws::{Message, WebSocket};
+use warp::Filter;
 
-use primitives::api::{ApiError, ApiRequest, WsClientId, WsRequest, WsResponse};
+use primitives::api::{ApiRequest, WsClientId, WsRequest, WsResponse};
 use primitives::controller::ControllerCommand;
 
 pub type WsClients = Arc<RwLock<HashMap<WsClientId, Sender<WsResponse>>>>;
 
 static NEXT_CLIENT_ID: AtomicU32 = AtomicU32::new(1);
 
-pub async fn client_connected(
+pub async fn start(
+    cancellation_token: CancellationToken,
+    clients: WsClients,
+    controller_tx: Sender<ControllerCommand>,
+) {
+    let ws_route = warp::path("ws")
+        .and(warp::ws())
+        .and(warp::any().map(move || clients.clone()))
+        .and(warp::any().map(move || controller_tx.clone()))
+        .map(|websocket: Ws, clients, controller_tx| {
+            websocket.on_upgrade(move |socket| client_connected(socket, clients, controller_tx))
+        });
+    let routes = ws_route;
+
+    let (_addr, server) =
+        warp::serve(routes).bind_with_graceful_shutdown(([127, 0, 0, 1], 3030), async move {
+            cancellation_token.cancelled().await;
+            info!("agraceful api shutdown initiated");
+        });
+
+    info!("api started");
+    server.await;
+}
+
+async fn client_connected(
     ws: WebSocket,
     clients: WsClients,
     controller_tx: Sender<ControllerCommand>,
 ) {
-    let test = WsRequest {
-        id: Some(123),
-        command: ApiRequest::Subscribe(1),
-    };
-
-    let test = serde_json::to_string(&test).unwrap();
-
-    eprintln!("{}", test);
-    let test = WsResponse {
-        id: None,
-        result: Err(ApiError::SerdeError("Failed to serde".to_string())),
-    };
-
-    let test = serde_json::to_string(&test).unwrap();
-    eprintln!("{}", test);
-
     let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
-    info!("new client: {}", client_id);
+    info!("new client connected(client_id={})", client_id);
 
     let (mut ws_tx, mut ws_rx) = ws.split();
 
@@ -51,21 +62,21 @@ pub async fn client_connected(
 
     tokio::task::spawn(async move {
         while let Some(response) = rx.next().await {
-            let message = match serde_json::to_string(&response) {
+            let response = match serde_json::to_string(&response) {
                 Ok(message) => message,
-                Err(err) => {
+                Err(e) => {
                     error!(
                         "failed to serialize WsResponse object(client_id={}): {}",
-                        client_id, err
+                        client_id, e
                     );
                     continue;
                 }
             };
 
             ws_tx
-                .send(Message::text(message))
+                .send(Message::text(response))
                 .unwrap_or_else(|e| {
-                    error!("failed to send Ws Message(client_id={}): {}", client_id, e);
+                    error!("failed to send Message(client_id={}): {}", client_id, e);
                 })
                 .await;
         }
@@ -73,23 +84,23 @@ pub async fn client_connected(
 
     clients.write().await.insert(client_id, tx);
 
-    while let Some(result) = ws_rx.next().await {
-        let message = match result {
+    while let Some(message) = ws_rx.next().await {
+        let message = match message {
             Ok(message) => message,
             Err(e) => {
-                error!("failed to read Ws Message(client_id={}): {}", client_id, e);
+                error!("failed to read Message(client_id={}): {}", client_id, e);
                 break;
             }
         };
         if message.is_text() {
             if let Err(e) = process_text_message(client_id, message, &controller_tx).await {
                 error!(
-                    "failed to process text Ws Message(client_id={}): {}",
+                    "failed to process text Ws Message (client_id={}): {}",
                     client_id, e
                 );
             }
         } else {
-            error!("unsupported Ws Message type")
+            error!("unsupported Ws Message type(client_id={})", client_id)
         }
     }
 
@@ -120,14 +131,14 @@ async fn client_disconnected(
     users: &WsClients,
     controller_tx: &Sender<ControllerCommand>,
 ) {
-    eprintln!("good bye client: {}", client_id);
+    info!("client disconnected(client_id={})", client_id);
 
     let api_request = ApiRequest::UnsubscribeFromAll();
     let message = ControllerCommand::WsApiRequest(client_id, None, api_request);
 
     controller_tx.send(message).await.unwrap_or_else(|e| {
-        eprintln!(
-            "failed to send controller command from api (client_id={}): {}",
+        error!(
+            "failed to send controller command(client_id={}): {}",
             client_id, e
         );
     });

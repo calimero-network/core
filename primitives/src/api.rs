@@ -4,12 +4,14 @@ use crate::app::{App, AppBinary, AppId, InstalledApp, InstalledAppId};
 
 // API
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub enum ApiError {
     SerdeError(String),
     ExecutionError(String),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub enum ApiRequest {
     ListRemoteApps(),
     ListInstalledApps(),
@@ -22,6 +24,7 @@ pub enum ApiRequest {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub enum ApiResponse {
     ListRemoteApps(Vec<App>),
     ListInstalledApps(Vec<InstalledApp>),
@@ -34,6 +37,15 @@ pub enum ApiResponse {
     UnsubscribeFromAll(),
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum ApiResponseResult {
+    #[serde(rename = "ok")]
+    Ok(ApiResponse),
+    #[serde(rename = "err")]
+    Err(ApiError),
+}
+
 // WebSocket API
 /// Client ID is a locally unique identifier of a WebSocket client connection.
 pub type WsClientId = u32;
@@ -41,13 +53,15 @@ pub type WsClientId = u32;
 pub type WsRequestId = u32;
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct WsRequest {
     pub id: Option<WsRequestId>,
     pub command: ApiRequest,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct WsResponse {
     pub id: Option<WsRequestId>,
-    pub result: Result<ApiResponse, ApiError>,
+    pub result: ApiResponseResult,
 }

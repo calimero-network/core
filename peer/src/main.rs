@@ -1,45 +1,57 @@
+use std::{env, str::FromStr};
+
 use color_eyre::eyre;
 use primitives::controller::ControllerCommand;
+use tokio::signal;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing_subscriber::{prelude::*, EnvFilter};
-use warp::ws::Ws;
-use warp::Filter;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
+use tracing::Level;
+use tracing_subscriber::{filter::Targets, fmt, prelude::*};
 
-use api::ws::WsClients;
+use api::ws::{self, WsClients};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     setup()?;
+
+    let tracker = TaskTracker::new();
+    let token = CancellationToken::new();
 
     let clients = WsClients::default();
 
     let (controller_tx, controller_rx) = mpsc::channel::<ControllerCommand>(32);
     let controller_rx = ReceiverStream::new(controller_rx);
 
-    controller::start(clients.clone(), controller_rx);
+    tracker.spawn(controller::start(
+        token.clone(),
+        clients.clone(),
+        controller_rx,
+    ));
+    tracker.spawn(ws::start(
+        token.clone(),
+        clients.clone(),
+        controller_tx.clone(),
+    ));
 
-    let ws_route = warp::path("ws")
-        .and(warp::ws())
-        .and(warp::any().map(move || clients.clone()))
-        .and(warp::any().map(move || controller_tx.clone()))
-        .map(|ws: Ws, clients, controller_tx| {
-            ws.on_upgrade(move |socket| api::ws::client_connected(socket, clients, controller_tx))
-        });
-    let routes = ws_route;
-
-    warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+    signal::ctrl_c().await?;
+    token.cancel();
+    tracker.close();
+    tracker.wait().await;
 
     Ok(())
 }
 
 pub fn setup() -> eyre::Result<()> {
+    let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "error".to_string());
+    let filter = Targets::new()
+        .with_target("peer", Level::INFO)
+        .with_default(Level::from_str(&rust_log)?);
+
     tracing_subscriber::registry()
-        .with(EnvFilter::builder().parse(format!(
-            "chat_p0c=info,{}",
-            std::env::var("RUST_LOG").unwrap_or_default()
-        ))?)
-        .with(tracing_subscriber::fmt::layer())
+        .with(filter)
+        .with(fmt::layer())
         .init();
 
     color_eyre::install()?;

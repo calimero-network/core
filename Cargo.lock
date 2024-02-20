@@ -177,6 +177,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tokio-util 0.7.10",
  "tracing",
  "warp",
 ]
@@ -1030,6 +1031,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
+ "tokio-util 0.7.10",
+ "tracing",
 ]
 
 [[package]]
@@ -4230,6 +4233,7 @@ dependencies = [
  "primitives",
  "tokio",
  "tokio-stream",
+ "tokio-util 0.7.10",
  "tracing",
  "tracing-subscriber",
  "warp",
@@ -5710,6 +5714,7 @@ dependencies = [
  "mio",
  "num_cpus",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2 0.5.5",
  "tokio-macros",
  "windows-sys 0.48.0",
@@ -5795,6 +5800,8 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
+ "hashbrown 0.14.3",
  "pin-project-lite",
  "tokio",
  "tracing",
