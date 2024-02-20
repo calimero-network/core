@@ -22,8 +22,25 @@ pub struct RootArgs {
     #[clap(env = "CALIMERO_CHAT_HOME", hide_env_values = true)]
     pub home: camino::Utf8PathBuf,
 
-    #[clap(long, value_name = "TYPE", default_value = "peer")]
-    pub node_type: String,
+    #[clap(long, value_name = "TYPE")]
+    #[clap(value_enum, default_value_t)]
+    pub node_type: NodeType,
+}
+
+#[derive(Clone, Debug, Default, ValueEnum)]
+pub enum NodeType {
+    #[default]
+    Peer,
+    Coordinator,
+}
+
+impl NodeType {
+    pub fn is_coordinator(&self) -> bool {
+        match *self {
+            NodeType::Coordinator => true,
+            NodeType::Peer => false
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]

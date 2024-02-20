@@ -15,13 +15,11 @@ use libp2p::{gossipsub, identify, kad, mdns, ping, relay, PeerId};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
-use tracing::{debug, info, trace, warn};
-
+use tracing::{debug, info, trace, warn, error};
 use sha2::{Sha256, Digest};
 use serde::{Deserialize, Serialize};
-use serde_json;
 
-use crate::cli;
+use crate::cli::{self, NodeType};
 use crate::config::Config;
 use crate::endpoint;
 use crate::endpoint::CalimeroRPCServer;
@@ -46,16 +44,13 @@ struct Storage {
     senders: Arc<Mutex<HashMap<Hash, PeerId>>>,
     last_known_transaction_hash: Arc<Mutex<Hash>>,
     nonce: Arc<Mutex<u64>>,
-    // true if coordinator
-    // TODO proper implementation should use enum
-    node_type: bool,
+    node_type: NodeType,
 }
 
 pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     if !Config::exists(&args.home) {
         eyre::bail!("chat node is not initialized in {:?}", args.home);
     }
-    println!("TYPE: {}", args.node_type);
 
     let storage = Storage {
         transactions: Arc::new(Mutex::new(HashMap::new())),
@@ -63,7 +58,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         senders: Arc::new(Mutex::new(HashMap::new())),
         last_known_transaction_hash: Default::default(),
         nonce: Arc::new(Mutex::new(1)),
-        node_type: args.node_type == "coordinator",
+        node_type: args.node_type,
     };
 
     let config: Config = Config::load(&args.home)?;
@@ -125,8 +120,8 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
             line = stdin.next_line() => {
                 match line {
                     Ok(Some(line)) => {
-                        if storage.node_type {
-                            println!("Coordinator can not create transactions!");
+                        if storage.node_type.is_coordinator() {
+                            error!("Coordinator can not create transactions!");
                             continue;
                         }
                         if client.mesh_peer_count(topic.hash()).await == 0 {
@@ -134,7 +129,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                             continue;
                         }
                         client
-                            .publish(topic.hash(), serde_json::to_vec(&create_transaction(&line, &storage, peer_id)).unwrap())
+                            .publish(topic.hash(), serde_json::to_vec(&create_transaction(&line, &storage, peer_id)?).unwrap())
                             .await
                             .expect("Failed to publish message.");
                     }
@@ -148,18 +143,18 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     Ok(())
 }
 
-fn store_transaction(transaction: Transaction, storage: &Storage, sender: Option<PeerId>) -> Hash {
-    let transaction_hash = hash(&transaction);
+fn store_transaction(transaction: Transaction, storage: &Storage, sender: Option<PeerId>) -> eyre::Result<Hash> {
+    let transaction_hash = hash(&transaction)?;
     let mut transactions_mutex = storage.transactions.lock().unwrap();
     transactions_mutex.insert(transaction_hash.clone(), transaction);
     if let Some(peer_id) = sender {
         storage.senders.lock().unwrap().insert(transaction_hash.clone(), peer_id);
     }
 
-    transaction_hash
+    Ok(transaction_hash)
 }
 
-async fn event_recipient(mut client: Client, our_topic_hash: gossipsub::TopicHash, event: Event, storage: &Storage) -> Result<(), eyre::Report> {
+async fn event_recipient(mut client: Client, our_topic_hash: gossipsub::TopicHash, event: Event, storage: &Storage) -> eyre::Result<()> {
         match event {
             Event::Subscribed {
                 peer_id: their_peer_id,
@@ -169,25 +164,25 @@ async fn event_recipient(mut client: Client, our_topic_hash: gossipsub::TopicHas
                     println!("info: {} joined the chat.", their_peer_id.cyan());
 
 //                    client
-//                        .publish(our_topic_hash, serde_json::to_vec(&create_transaction("Welcome to the chat", &storage)).unwrap())
+//                        .publish(our_topic_hash, serde_json::to_vec(&create_transaction("Welcome to the chat", &storage)?).unwrap())
 //                        .await?;
                 }
             }
             Event::Message { message, .. } => {
                 let source = message.source;
-                let message: NetworkAction = serde_json::from_slice(&message.data).unwrap();
+                let message: NetworkAction = serde_json::from_slice(&message.data)?;
 
                 match message {
                     NetworkAction::Transaction(transaction) => {
-                        let transaction_hash = store_transaction(transaction, storage, source);
+                        let transaction_hash = store_transaction(transaction, storage, source)?;
 
-                        if storage.node_type {
+                        if storage.node_type.is_coordinator() {
                             let mut nonce_mutex = storage.nonce.lock().unwrap();
                             let confirmation = NetworkAction::TransactionConfirmation(TransactionConfirmation{
                                 nonce: *nonce_mutex,
                                 transaction_hash: transaction_hash.clone(),
                                 // TODO proper confirmation hash
-                                confirmation_hash: transaction_hash.clone(),
+                                confirmation_hash: transaction_hash,
                             });
                             *nonce_mutex += 1;
                             client
@@ -221,18 +216,18 @@ async fn event_recipient(mut client: Client, our_topic_hash: gossipsub::TopicHas
             }
         }
 
-        Ok::<_, eyre::Report>(())
+        Ok(())
 }
 
-fn create_transaction(message: &str, storage: &Storage, peer_id: PeerId) -> NetworkAction {
+fn create_transaction(message: &str, storage: &Storage, peer_id: PeerId) -> eyre::Result<NetworkAction> {
     let transaction = Transaction {
         method: String::from("send_message"),
         payload: message.as_bytes().to_vec(),
         last_known_transaction_hash: (*storage.last_known_transaction_hash.lock().unwrap().clone()).to_vec(),
     };
-    store_transaction(transaction.clone(), storage, Some(peer_id));
+    store_transaction(transaction.clone(), storage, Some(peer_id))?;
 
-    NetworkAction::Transaction(transaction)
+    Ok(NetworkAction::Transaction(transaction))
 }
 
 async fn init(
@@ -639,10 +634,10 @@ pub(crate) enum Event {
 
 type Hash = Vec<u8>;
 
-fn hash<T: Serialize>(item: &T) -> Hash {
+fn hash<T: Serialize>(item: &T) -> eyre::Result<Hash> {
     let mut hasher = Sha256::new();
-    hasher.update(serde_json::to_vec(&item).unwrap());
-    return hasher.finalize().to_vec();
+    hasher.update(serde_json::to_vec(&item)?);
+    Ok(hasher.finalize().to_vec())
 }
 
 type Signature = Vec<u8>;

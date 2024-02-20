@@ -19,7 +19,7 @@ fragile = "2.0.0"
 libp2p = "0.53.2"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
-serde = { version = "1.0.196", features = ["derive"] }
+serde = "1.0.196"
 serde_json = "1.0.113"
 thiserror = "1.0.56"
 tokio = "1.35.1"
