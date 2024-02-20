@@ -123,13 +123,6 @@ enum Commands {
     AddKeyPair {},
     /// Support for browser login
     Login {},
-    /// List applications available in the Application Registry - Executable bundle of functionalities
-    ListApps {
-        #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
-        ws_address: String,
-    },
-    /// List Pods - running instance of an app
-    ListPods {},
     /// List available nodes in the network
     ListNodes {},
     /// Send message through P2P chat
@@ -145,37 +138,60 @@ enum Commands {
         #[arg(value_name = "ADDRESS", short = 'a', long = "address", aliases = ["addr", "address", "a"], required = true)]
         address: String,
     },
-    /// Start instance of an app
-    StartPod {
+    /// List applications available in the Application Registry - Executable bundle of functionalities
+    ListRemoteApps {
+        #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
+        ws_address: String,
+    },
+    /// List installed Apps
+    ListInstalledApps {
+        #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
+        ws_address: String,
+    },
+    /// Install application from Binary
+    InstallBinaryApp {
         #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
         ws_address: String,
 
-        #[arg(value_name = "APPID", short = 'a', long = "appid", aliases = ["a", "app", "appid"], required = true)]
+        #[arg(value_name = "BINARY", short = 'p', long = "binary-path", aliases = ["path", "p", "binary-path"], required = true)]
+        binary_path: String,
+    },
+    /// Install application from Application Registry
+    InstallRemoteApp {
+        #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
+        ws_address: String,
+
+        #[arg(value_name = "APP_ID", long = "app-id", aliases = ["app-id", "app", "id"], required = true)]
         app_id: u32,
     },
-    /// Stop instance of an app
-    StopPod {
+    /// Uninstall applicaton,
+    UninstallApp {
         #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
         ws_address: String,
 
-        #[arg(value_name = "PODID", short = 'p', long = "pid", aliases = ["podid", "pid", "p"], required = true)]
-        pod_id: u32,
+        #[arg(value_name = "APP_ID", long = "app-id", aliases = ["app-id", "app", "id"], required = true)]
+        app_id: u32,
     },
-    /// Subscribe to Pod websocket
+    /// Subscribe to application websocket,
     Subscribe {
         #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
         ws_address: String,
 
-        #[arg(value_name = "PODID", short = 'p', long = "pid", aliases = ["podid", "pid", "p"], required = true)]
-        pod_id: u32,
+        #[arg(value_name = "APP_ID", long = "app-id", aliases = ["app-id", "app", "id"], required = true)]
+        app_id: u32,
     },
-    /// Unsubscribe Pod websocket
+    /// Unsubscribe application websocket
     Unsubscribe {
         #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
         ws_address: String,
 
-        #[arg(value_name = "PODID", short = 'p', long = "pid", aliases = ["podid", "pid", "p"], required = true)]
-        pod_id: u32,
+        #[arg(value_name = "APP_ID", long = "app-id", aliases = ["app-id", "app", "id"], required = true)]
+        app_id: u32,
+    },
+    /// Unsubscribe All websockets
+    UnsubscribeAll {
+        #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
+        ws_address: String,
     }
 }
 
@@ -276,33 +292,6 @@ async fn main() {
             ];
             output::print_table(&asset, &header, &data);
         },
-        Some(Commands::ListPods {}) => {
-            // fetch nodes from running node
-            let asset = String::from("Pods");
-            let header: Vec<[&str; 3]> = vec![
-                ["Node", "IP Address", "Configuration"]
-            ];
-            let data: Vec<[&str; 3]> = vec![
-                ["q2edmwslq4w", "127.23.12.3", "P2P"],
-                ["gkelsm24ls13s", "94.43.123.2", "P2P"],
-            ];
-            output::print_table(&asset, &header, &data);
-        },
-        Some(Commands::ListApps {ws_address}) => {
-            // fetch applications from running node
-            ws_client::ws_no_params(ws_address, &String::from("listApps")).await;
-
-            let asset = String::from("Applications");
-            let header: Vec<[&str; 3]> = vec![
-                ["Application", "IP Address", "Configuration"]
-            ];
-            let data: Vec<[&str; 3]> = vec![
-                ["P2P Chat", "123.34.21.4:5314", "Node ID, Metadata"],
-                ["P2P Docs", "143.32.1.89:1249", "Node ID, Metadata"],
-            ];
-
-            output::print_table(&asset,&header, &data);
-        }
         Some(Commands::SendMessage {address, message}) => {
             network::send_message(address, message);
         
@@ -310,30 +299,31 @@ async fn main() {
         Some(Commands::ReadMessage {address}) => {
             network::read_message(address)
         },
-        Some(Commands::StartPod {ws_address, app_id}) => {
-            println!("Starting Pod for application: {}", app_id);
-
-            let params = vec![app_id.clone()];
-            ws_client::ws_params(ws_address, &String::from("startPod"), params).await;
+        Some(Commands::ListRemoteApps { ws_address }) => {
+            let method = String::from("listRemoteApps");
+            ws_client::list_remote_apps(ws_address, &method).await;
         },
-        Some(Commands::StopPod {ws_address ,pod_id}) => {
-            println!("Stopping Pod: {}", pod_id);
-
-            let params = vec![pod_id.clone()];
-            ws_client::ws_params(ws_address, &String::from("stopPod"), params).await;
+        Some(Commands::ListInstalledApps {ws_address}) => {
+            
         },
-        Some(Commands::Subscribe {ws_address, pod_id}) => {
-            println!("Subscribing to Pod: {}", pod_id);
+        Some(Commands::InstallBinaryApp {ws_address, binary_path }) => {
 
-            let params = vec![pod_id.clone()];
-            ws_client::ws_params(ws_address, &String::from("subscribe"), params).await;
         },
-        Some(Commands::Unsubscribe {ws_address, pod_id}) => {
-            println!("Unsubscribing to Pod: {}", pod_id);
+        Some(Commands::InstallRemoteApp { ws_address, app_id }) => {
 
-            let params = vec![pod_id.clone()];
-            ws_client::ws_params(ws_address, &String::from("unsubscribe"), params).await;
         },
+        Some(Commands::UninstallApp { ws_address, app_id }) => {
+
+        },
+        Some(Commands::Subscribe { ws_address, app_id }) => {
+
+        },
+        Some(Commands::Unsubscribe { ws_address, app_id }) => {
+
+        },
+        Some(Commands::UnsubscribeAll { ws_address }) => {
+
+        }
         None => {}
     }
 }

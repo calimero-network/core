@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::app::{App, AppBinary, AppId, InstalledApp, InstalledAppId};
@@ -7,6 +9,15 @@ use crate::app::{App, AppBinary, AppId, InstalledApp, InstalledAppId};
 pub enum ApiError {
     SerdeError(String),
     ExecutionError(String),
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiError::SerdeError(message) => write!(f, "Serde error: {}", message),
+            ApiError::ExecutionError(message) => write!(f, "Execution error: {}", message),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]

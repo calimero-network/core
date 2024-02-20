@@ -6,7 +6,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 
-use crate::api::{ApiRequest, WsRequest, WsResponse};
+use crate::{api::{ApiRequest, ApiResponse, WsRequest, WsResponse}, app::App, output};
 
 pub struct WSClientStream {
     pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
@@ -136,4 +136,56 @@ pub async fn ws_no_params(ws_address: &String, method: &String) {
 }
 
 
-// TO DO - FUNCTIONS FOR EACH
+pub async fn list_remote_apps(ws_address: &String, method: &String) {
+    // TODO - error handling and program exit
+    let mut ws_client_stream = WSClientStream::get_stream(ws_address)
+        .await
+        .expect("Failed to get WebSocket stream");
+
+    let request_object = generate_request_method(method);
+
+    let json_string_reqest = serde_json::to_string(&request_object).expect("Failed to serialize JSON");
+
+    let msg = Message::Text(r#json_string_reqest.to_string().into());
+
+    ws_client_stream.write.send(msg).await.expect("Failed to send message");
+
+    loop {
+        if let Some(message) = ws_client_stream.read.next().await {
+            if let Ok(text) = message.expect("Failed to read message").into_text() {
+                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                    let response_id = json_request.id.unwrap();
+                    if response_id == request_object.id.unwrap() {
+                        println!("Received response with id: {}",
+                        response_id.green());
+                        let result = json_request.result;
+                        
+                        match result {
+                            Ok(response) => {
+                                match response {
+                                    ApiResponse::ListRemoteApps(apps) => {
+                                        let asset = String::from("Remote Apps");
+                                        let header: Vec<[&str; 2]> = vec![
+                                                ["ID", "Description"]
+                                            ];
+                                        output::print_table_apps(&asset, &header, apps);
+                                        return;
+                                    }
+                                    _ => {}
+                                }
+                            },
+                            Err(err) => {
+                                println!("Error fetching data: {}", err);
+                                continue;
+                            }
+                        }
+                    } else {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+        }
+    }
+}
