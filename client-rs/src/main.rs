@@ -282,19 +282,9 @@ async fn main() {
         },
         Some(Commands::ListNodes {}) => {
             // fetch nodes from running node
-            let asset = String::from("Nodes");
-            let header: Vec<[&str; 3]> = vec![
-                ["Node", "IP Address", "Configuration"]
-            ];
-            let data: Vec<[&str; 3]> = vec![
-                ["q2edmwslq4w", "127.23.12.3", "P2P"],
-                ["gkelsm24ls13s", "94.43.123.2", "P2P"],
-            ];
-            output::print_table(&asset, &header, &data);
         },
         Some(Commands::SendMessage {address, message}) => {
             network::send_message(address, message);
-        
         },
         Some(Commands::ReadMessage {address}) => {
             network::read_message(address)
@@ -308,22 +298,28 @@ async fn main() {
             ws_client::list_installed_apps(ws_address, &method).await;
         },
         Some(Commands::InstallBinaryApp {ws_address, binary_path }) => {
-
+            let method = String::from("installBinaryApp");
+            ws_client::install_binary_app(ws_address, &method, binary_path).await;
         },
         Some(Commands::InstallRemoteApp { ws_address, app_id }) => {
-
+            let method = String::from("installRemoteApp");
+            ws_client::install_remote_app(ws_address, &method, app_id).await;
         },
         Some(Commands::UninstallApp { ws_address, app_id }) => {
-
+            let method = String::from("uninstallApp");
+            ws_client::uninstall_app(ws_address, &method, app_id).await;
         },
         Some(Commands::Subscribe { ws_address, app_id }) => {
-
+            let method = String::from("subscribe");
+            ws_client::subscribe(ws_address, &method, app_id).await;
         },
         Some(Commands::Unsubscribe { ws_address, app_id }) => {
-
+            let method = String::from("unsubscribe");
+            ws_client::unsubscribe(ws_address, &method, app_id).await;
         },
         Some(Commands::UnsubscribeAll { ws_address }) => {
-
+            let method = String::from("unsubscribeAll");
+            ws_client::unsubscribe_all(ws_address, &method).await;
         }
         None => {}
     }
