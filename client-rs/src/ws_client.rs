@@ -6,7 +6,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 
-use crate::{api::{ApiRequest, ApiResponse, WsRequest, WsResponse}, output};
+use crate::{api::{ApiRequest, ApiResponse, ApiResponseResult, WsRequest, WsResponse}, output};
 
 pub struct WSClientStream {
     pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
@@ -89,20 +89,22 @@ pub async fn list_remote_apps(ws_address: &String, method: &String) {
                         let result = json_request.result;
 
                         match result {
-                            Ok(response) => {
+                            ApiResponseResult::Ok(response) => {
                                 match response {
                                     ApiResponse::ListRemoteApps(apps) => {
                                         let asset = String::from("Remote Apps");
                                         let header: Vec<[&str; 2]> = vec![
-                                                ["ID", "Description"]
-                                            ];
+                                            ["ID", "Description"]
+                                        ];
                                         output::print_table_apps(&asset, &header, apps);
                                         return;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Handle other ApiResponse variants if needed
+                                    }
                                 }
-                            },
-                            Err(err) => {
+                            }
+                            ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -143,20 +145,22 @@ pub async fn list_installed_apps(ws_address: &String, method: &String) {
                         let result = json_request.result;
 
                         match result {
-                            Ok(response) => {
+                            ApiResponseResult::Ok(response) => {
                                 match response {
                                     ApiResponse::ListInstalledApps(apps) => {
                                         let asset = String::from("Remote Apps");
                                         let header: Vec<[&str; 2]> = vec![
-                                                ["ID", "Description"]
-                                            ];
+                                            ["ID", "Description"]
+                                        ];
                                         output::print_table_installed_apps(&asset, &header, apps);
                                         return;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Handle other ApiResponse variants if needed
+                                    }
                                 }
-                            },
-                            Err(err) => {
+                            }
+                            ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -196,16 +200,18 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
                         let result = json_request.result;
 
                         match result {
-                            Ok(response) => {
+                            ApiResponseResult::Ok(response) => {
                                 match response {
                                     ApiResponse::InstallRemoteApp(app_id) => {
                                         println!("App with id: {} installed", app_id.green());
                                         return;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Handle other ApiResponse variants if needed
+                                    }
                                 }
-                            },
-                            Err(err) => {
+                            }
+                            ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -247,16 +253,18 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
                         let result = json_request.result;
 
                         match result {
-                            Ok(response) => {
+                            ApiResponseResult::Ok(response) => {
                                 match response {
                                     ApiResponse::InstallBinaryApp(app_id) => {
                                         println!("App with id: {} installed", app_id.green());
                                         return;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Handle other ApiResponse variants if needed
+                                    }
                                 }
-                            },
-                            Err(err) => {
+                            }
+                            ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -296,16 +304,18 @@ pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
                         let result = json_request.result;
 
                         match result {
-                            Ok(response) => {
+                            ApiResponseResult::Ok(response) => {
                                 match response {
                                     ApiResponse::UninstallApp(app_id) => {
-                                        println!("App with id: {} installed", app_id.green());
+                                        println!("App with id: {} uninstalled", app_id.green());
                                         return;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Handle other ApiResponse variants if needed
+                                    }
                                 }
-                            },
-                            Err(err) => {
+                            }
+                            ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -345,16 +355,18 @@ pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
                         let result = json_request.result;
 
                         match result {
-                            Ok(response) => {
+                            ApiResponseResult::Ok(response) => {
                                 match response {
                                     ApiResponse::Subscribe(app_id) => {
-                                        println!("App with id: {} installed", app_id.green());
+                                        println!("Subscribed to App with id: {}", app_id.green());
                                         return;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Handle other ApiResponse variants if needed
+                                    }
                                 }
-                            },
-                            Err(err) => {
+                            }
+                            ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -394,16 +406,18 @@ pub async fn unsubscribe(ws_address: &String, method: &String, app_id: &u32) {
                         let result = json_request.result;
 
                         match result {
-                            Ok(response) => {
+                            ApiResponseResult::Ok(response) => {
                                 match response {
                                     ApiResponse::Unsubscribe(app_id) => {
-                                        println!("App with id: {} installed", app_id.green());
+                                        println!("Unsubscribed to App with id: {}", app_id.green());
                                         return;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Handle other ApiResponse variants if needed
+                                    }
                                 }
-                            },
-                            Err(err) => {
+                            }
+                            ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -444,16 +458,18 @@ pub async fn unsubscribe_all(ws_address: &String, method: &String) {
                         let result = json_request.result;
 
                         match result {
-                            Ok(response) => {
+                            ApiResponseResult::Ok(response) => {
                                 match response {
                                     ApiResponse::UnsubscribeFromAll() => {
                                         println!("Unsubscribed from all.");
                                         return;
                                     }
-                                    _ => {}
+                                    _ => {
+                                        // Handle other ApiResponse variants if needed
+                                    }
                                 }
-                            },
-                            Err(err) => {
+                            }
+                            ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
