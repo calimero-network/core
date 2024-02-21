@@ -29,7 +29,6 @@ fragile = "2.0.0"
 futures-util = { version = "0.3.30", default-features = false, features = [
     "sink",
 ] }
-indoc = "2.0.4"
 libp2p = "0.53.2"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"

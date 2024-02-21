@@ -40,9 +40,7 @@ pub enum ApiResponse {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum ApiResponseResult {
-    #[serde(rename = "ok")]
     Ok(ApiResponse),
-    #[serde(rename = "err")]
     Err(ApiError),
 }
 

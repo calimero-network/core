@@ -1,5 +1,6 @@
-use futures_util::StreamExt;
+mod subscriptions;
 
+use futures_util::StreamExt;
 use primitives::controller::ControllerCommand;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -7,22 +8,19 @@ use tokio_util::sync::CancellationToken;
 use api::ws::WsClients;
 use primitives::api::{ApiRequest, ApiResponse, ApiResponseResult, WsResponse};
 use primitives::app::App;
-
-mod subscriptions;
 use subscriptions::Subscriptions;
-use tracing::{error, info, warn};
 
 pub async fn start(
     cancellation_token: CancellationToken,
     clients: WsClients,
     mut rx: ReceiverStream<ControllerCommand>,
 ) {
-    info!("controller started");
+    tracing::info!("controller started");
     let mut subscriptions = Subscriptions::new();
     loop {
         tokio::select! {
             _ = cancellation_token.cancelled() => {
-                info!("graceful controller shutdown initiated");
+                tracing::info!("graceful controller shutdown initiated");
                 break
             }
             command = rx.next() => {
@@ -31,7 +29,7 @@ pub async fn start(
                         handle_command(&mut subscriptions, &clients, command).await;
                     },
                     None => {
-                        warn!("got empty command");
+                        tracing::warn!("got empty command");
                     },
                 }
             }
@@ -73,7 +71,7 @@ async fn handle_command(
 
             if let Some(tx) = clients.read().await.get(&client_id) {
                 tx.send(respone).await.unwrap_or_else(|e| {
-                    error!("failed to send WsResponse (client_id={}): {}", client_id, e);
+                    tracing::error!("failed to send WsResponse (client_id={}): {}", client_id, e);
                 });
             }
         }

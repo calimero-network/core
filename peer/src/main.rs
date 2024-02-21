@@ -1,5 +1,6 @@
 use std::{env, str::FromStr};
 
+use clap::Parser;
 use color_eyre::eyre;
 use primitives::controller::ControllerCommand;
 use tokio::signal;
@@ -11,10 +12,18 @@ use tracing::Level;
 use tracing_subscriber::{filter::Targets, fmt, prelude::*};
 
 use api::ws::{self, WsClients};
+use peer::{cli::RootCommand, config::Config};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     setup()?;
+
+    let command = RootCommand::parse();
+
+    if !Config::exists(&command.args.home) {
+        eyre::bail!("peer is not initialized in {:?}", command.args.home);
+    }
+    let config: Config = Config::load(&command.args.home)?;
 
     let tracker = TaskTracker::new();
     let token = CancellationToken::new();
@@ -30,6 +39,7 @@ async fn main() -> eyre::Result<()> {
         controller_rx,
     ));
     tracker.spawn(ws::start(
+        config.websocket_api.get_socket_addr()?,
         token.clone(),
         clients.clone(),
         controller_tx.clone(),

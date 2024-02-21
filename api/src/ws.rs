@@ -1,17 +1,17 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc,
 };
 
-use color_eyre::eyre::{self, eyre};
+use color_eyre::eyre;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use serde_json;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
 use warp::ws::Ws;
 use warp::ws::{Message, WebSocket};
 use warp::Filter;
@@ -24,10 +24,13 @@ pub type WsClients = Arc<RwLock<HashMap<WsClientId, Sender<WsResponse>>>>;
 static NEXT_CLIENT_ID: AtomicU32 = AtomicU32::new(1);
 
 pub async fn start(
+    addr: SocketAddr,
     cancellation_token: CancellationToken,
     clients: WsClients,
     controller_tx: Sender<ControllerCommand>,
 ) {
+    let shutdown_clients = clients.clone();
+
     let ws_route = warp::path("ws")
         .and(warp::ws())
         .and(warp::any().map(move || clients.clone()))
@@ -37,13 +40,13 @@ pub async fn start(
         });
     let routes = ws_route;
 
-    let (_addr, server) =
-        warp::serve(routes).bind_with_graceful_shutdown(([127, 0, 0, 1], 3030), async move {
-            cancellation_token.cancelled().await;
-            info!("agraceful api shutdown initiated");
-        });
+    let (_addr, server) = warp::serve(routes).bind_with_graceful_shutdown(addr, async move {
+        cancellation_token.cancelled().await;
+        tracing::info!("agraceful api shutdown initiated");
+        shutdown_clients.write().await.clear();
+    });
 
-    info!("api started");
+    tracing::info!("api started");
     server.await;
 }
 
@@ -53,7 +56,7 @@ async fn client_connected(
     controller_tx: Sender<ControllerCommand>,
 ) {
     let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
-    info!("new client connected(client_id={})", client_id);
+    tracing::info!("new client connected(client_id={})", client_id);
 
     let (mut ws_tx, mut ws_rx) = ws.split();
 
@@ -65,9 +68,10 @@ async fn client_connected(
             let response = match serde_json::to_string(&response) {
                 Ok(message) => message,
                 Err(e) => {
-                    error!(
+                    tracing::error!(
                         "failed to serialize WsResponse object(client_id={}): {}",
-                        client_id, e
+                        client_id,
+                        e
                     );
                     continue;
                 }
@@ -76,10 +80,25 @@ async fn client_connected(
             ws_tx
                 .send(Message::text(response))
                 .unwrap_or_else(|e| {
-                    error!("failed to send Message(client_id={}): {}", client_id, e);
+                    tracing::error!("failed to send Message(client_id={}): {}", client_id, e);
                 })
                 .await;
         }
+
+        // docs: https://developer.mozilla.org/en-US/docs/Web/API/CloseEvent/code
+        // it is not rexported from tungstenite in warp
+        let going_away_code: u16 = 1001;
+        ws_tx
+            .send(Message::close_with(going_away_code, "Server shutting down"))
+            .unwrap_or_else(|e| {
+                tracing::error!(
+                    "failed to send Message::close_with(client_id={}): {}",
+                    client_id,
+                    e
+                );
+            })
+            .await;
+        let _ = ws_tx.close().await;
     });
 
     clients.write().await.insert(client_id, tx);
@@ -88,23 +107,24 @@ async fn client_connected(
         let message = match message {
             Ok(message) => message,
             Err(e) => {
-                error!("failed to read Message(client_id={}): {}", client_id, e);
+                tracing::error!("failed to read Message(client_id={}): {}", client_id, e);
                 break;
             }
         };
         if message.is_text() {
             if let Err(e) = process_text_message(client_id, message, &controller_tx).await {
-                error!(
+                tracing::error!(
                     "failed to process text Ws Message (client_id={}): {}",
-                    client_id, e
+                    client_id,
+                    e
                 );
             }
         } else {
-            error!("unsupported Ws Message type(client_id={})", client_id)
+            tracing::error!("unsupported Ws Message type(client_id={})", client_id)
         }
     }
 
-    client_disconnected(client_id, &clients, &controller_tx).await;
+    client_disconnected(client_id, clients, &controller_tx).await;
 }
 
 async fn process_text_message(
@@ -115,7 +135,7 @@ async fn process_text_message(
     let message = match message.to_str() {
         Ok(s) => s,
         Err(_) => {
-            return Err(eyre!("can not get string from Ws Message"));
+            eyre::bail!("can not get string from Ws Message");
         }
     };
 
@@ -128,20 +148,21 @@ async fn process_text_message(
 
 async fn client_disconnected(
     client_id: WsClientId,
-    users: &WsClients,
+    clients: WsClients,
     controller_tx: &Sender<ControllerCommand>,
 ) {
-    info!("client disconnected(client_id={})", client_id);
+    tracing::info!("client disconnected(client_id={})", client_id);
 
     let api_request = ApiRequest::UnsubscribeFromAll();
     let message = ControllerCommand::WsApiRequest(client_id, None, api_request);
 
     controller_tx.send(message).await.unwrap_or_else(|e| {
-        error!(
+        tracing::error!(
             "failed to send controller command(client_id={}): {}",
-            client_id, e
+            client_id,
+            e
         );
     });
 
-    users.write().await.remove(&client_id);
+    clients.write().await.remove(&client_id);
 }
