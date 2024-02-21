@@ -152,6 +152,7 @@ pub async fn list_installed_apps(ws_address: &String, method: &String) {
                                         let header: Vec<[&str; 2]> = vec![
                                             ["ID", "Description"]
                                         ];
+                                        // Handle response and test when ready
                                         output::print_table_installed_apps(&asset, &header, apps);
                                         return;
                                     }
@@ -192,6 +193,7 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
+                // Handle progress responses and add loader
                 if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
@@ -232,6 +234,7 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
         .await
         .expect("Failed to get WebSocket stream");
     //decide what to do here, read binary path and convert to vec<u8> ..
+    println!("Application binary: {}", binary_path);
     let binary: u32 = 123;
     let params = vec![binary];
     let request_object = generate_request_params(method, params);
@@ -247,6 +250,7 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
             if let Ok(text) = message.expect("Failed to read message").into_text() {
                 if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
+                    // Handle progress responses and add loader
                     if response_id == request_object.id.unwrap() {
                         println!("Received response with id: {}",
                         response_id.green());
@@ -297,6 +301,7 @@ pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
                 if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                    // Handle progress response and add progress loader
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
                         println!("Received response with id: {}",
@@ -359,6 +364,7 @@ pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
                                 match response {
                                     ApiResponse::Subscribe(app_id) => {
                                         println!("Subscribed to App with id: {}", app_id.green());
+                                        // Handle more info -> better structure for subscribe and what it does
                                         return;
                                     }
                                     _ => {
