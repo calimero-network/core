@@ -63,3 +63,8 @@ pub struct WsResponse {
     pub id: Option<WsRequestId>,
     pub result: ApiResponseResult,
 }
+
+pub enum WsCommand {
+    Close(),
+    Reply(WsResponse),
+}

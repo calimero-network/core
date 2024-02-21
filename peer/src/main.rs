@@ -2,7 +2,7 @@ use std::{env, str::FromStr};
 
 use clap::Parser;
 use color_eyre::eyre;
-use primitives::controller::ControllerCommand;
+use primitives::controller::Command;
 use tokio::signal;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -11,7 +11,7 @@ use tokio_util::task::TaskTracker;
 use tracing::Level;
 use tracing_subscriber::{filter::Targets, fmt, prelude::*};
 
-use api::ws::{self, WsClients};
+use api::ws::{self, WsClientsState};
 use peer::{cli::RootCommand, config::Config};
 
 #[tokio::main]
@@ -28,9 +28,9 @@ async fn main() -> eyre::Result<()> {
     let tracker = TaskTracker::new();
     let token = CancellationToken::new();
 
-    let clients = WsClients::default();
+    let clients = WsClientsState::default();
 
-    let (controller_tx, controller_rx) = mpsc::channel::<ControllerCommand>(32);
+    let (controller_tx, controller_rx) = mpsc::channel::<Command>(32);
     let controller_rx = ReceiverStream::new(controller_rx);
 
     tracker.spawn(controller::start(

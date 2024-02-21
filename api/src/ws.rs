@@ -8,26 +8,23 @@ use std::sync::{
 use color_eyre::eyre;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use serde_json;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use warp::ws::Ws;
-use warp::ws::{Message, WebSocket};
 use warp::Filter;
 
-use primitives::api::{ApiRequest, WsClientId, WsRequest, WsResponse};
-use primitives::controller::ControllerCommand;
+use primitives::api;
+use primitives::controller;
 
-pub type WsClients = Arc<RwLock<HashMap<WsClientId, Sender<WsResponse>>>>;
+pub type WsClientsState = Arc<RwLock<HashMap<api::WsClientId, mpsc::Sender<api::WsCommand>>>>;
 
 static NEXT_CLIENT_ID: AtomicU32 = AtomicU32::new(1);
 
 pub async fn start(
     addr: SocketAddr,
     cancellation_token: CancellationToken,
-    clients: WsClients,
-    controller_tx: Sender<ControllerCommand>,
+    clients: WsClientsState,
+    controller_tx: mpsc::Sender<controller::Command>,
 ) {
     let shutdown_clients = clients.clone();
 
@@ -35,7 +32,7 @@ pub async fn start(
         .and(warp::ws())
         .and(warp::any().map(move || clients.clone()))
         .and(warp::any().map(move || controller_tx.clone()))
-        .map(|websocket: Ws, clients, controller_tx| {
+        .map(|websocket: warp::ws::Ws, clients, controller_tx| {
             websocket.on_upgrade(move |socket| client_connected(socket, clients, controller_tx))
         });
     let routes = ws_route;
@@ -43,7 +40,17 @@ pub async fn start(
     let (_addr, server) = warp::serve(routes).bind_with_graceful_shutdown(addr, async move {
         cancellation_token.cancelled().await;
         tracing::info!("agraceful api shutdown initiated");
-        shutdown_clients.write().await.clear();
+        futures_util::stream::iter(shutdown_clients.write().await.drain())
+            .for_each_concurrent(None, |(client_id, client)| async move {
+                if let Err(e) = client.send(api::WsCommand::Close()).await {
+                    tracing::error!(
+                        %e,
+                        "failed to send api::WsCommand::Close message(client_id={})",
+                        client_id,
+                    );
+                }
+            })
+            .await;
     });
 
     tracing::info!("api started");
@@ -51,54 +58,63 @@ pub async fn start(
 }
 
 async fn client_connected(
-    ws: WebSocket,
-    clients: WsClients,
-    controller_tx: Sender<ControllerCommand>,
+    ws: warp::ws::WebSocket,
+    clients: WsClientsState,
+    controller_tx: mpsc::Sender<controller::Command>,
 ) {
     let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
     tracing::info!("new client connected(client_id={})", client_id);
 
     let (mut ws_tx, mut ws_rx) = ws.split();
 
-    let (tx, rx) = mpsc::channel::<WsResponse>(32);
+    let (tx, rx) = mpsc::channel::<api::WsCommand>(32);
     let mut rx = ReceiverStream::new(rx);
 
     tokio::task::spawn(async move {
-        while let Some(response) = rx.next().await {
-            let response = match serde_json::to_string(&response) {
-                Ok(message) => message,
-                Err(e) => {
-                    tracing::error!(
-                        "failed to serialize WsResponse object(client_id={}): {}",
-                        client_id,
-                        e
-                    );
-                    continue;
+        while let Some(command) = rx.next().await {
+            match command {
+                api::WsCommand::Close() => {
+                    ws_tx
+                        .send(warp::ws::Message::close_with(
+                            1001 as u16,
+                            "Server shutting down",
+                        ))
+                        .unwrap_or_else(|e| {
+                            tracing::error!(
+                                %e,
+                                "failed to send Message::close_with(client_id={})",
+                                client_id,
+                            );
+                        })
+                        .await;
+                    let _ = ws_tx.close().await;
+                    break;
                 }
-            };
-
-            ws_tx
-                .send(Message::text(response))
-                .unwrap_or_else(|e| {
-                    tracing::error!("failed to send Message(client_id={}): {}", client_id, e);
-                })
-                .await;
+                api::WsCommand::Reply(response) => {
+                    let response = match serde_json::to_string(&response) {
+                        Ok(message) => message,
+                        Err(e) => {
+                            tracing::error!(
+                                %e,
+                                "failed to serialize WsResponse object(client_id={})",
+                                client_id,
+                            );
+                            continue;
+                        }
+                    };
+                    ws_tx
+                        .send(warp::ws::Message::text(response))
+                        .unwrap_or_else(|e| {
+                            tracing::error!(
+                                "failed to send Message(client_id={}): {}",
+                                client_id,
+                                e
+                            );
+                        })
+                        .await;
+                }
+            }
         }
-
-        // docs: https://developer.mozilla.org/en-US/docs/Web/API/CloseEvent/code
-        // it is not rexported from tungstenite in warp
-        let going_away_code: u16 = 1001;
-        ws_tx
-            .send(Message::close_with(going_away_code, "Server shutting down"))
-            .unwrap_or_else(|e| {
-                tracing::error!(
-                    "failed to send Message::close_with(client_id={}): {}",
-                    client_id,
-                    e
-                );
-            })
-            .await;
-        let _ = ws_tx.close().await;
     });
 
     clients.write().await.insert(client_id, tx);
@@ -107,16 +123,16 @@ async fn client_connected(
         let message = match message {
             Ok(message) => message,
             Err(e) => {
-                tracing::error!("failed to read Message(client_id={}): {}", client_id, e);
+                tracing::error!(%e, "failed to read Message(client_id={})", client_id);
                 break;
             }
         };
         if message.is_text() {
             if let Err(e) = process_text_message(client_id, message, &controller_tx).await {
                 tracing::error!(
-                    "failed to process text Ws Message (client_id={}): {}",
+                    %e,
+                    "failed to process text Ws Message (client_id={})",
                     client_id,
-                    e
                 );
             }
         } else {
@@ -128,9 +144,9 @@ async fn client_connected(
 }
 
 async fn process_text_message(
-    client_id: WsClientId,
-    message: Message,
-    controller_tx: &Sender<ControllerCommand>,
+    client_id: api::WsClientId,
+    message: warp::ws::Message,
+    controller_tx: &mpsc::Sender<controller::Command>,
 ) -> eyre::Result<()> {
     let message = match message.to_str() {
         Ok(s) => s,
@@ -139,22 +155,22 @@ async fn process_text_message(
         }
     };
 
-    let message: WsRequest = serde_json::from_str(message)?;
-    let message = ControllerCommand::WsApiRequest(client_id, message.id, message.command);
+    let message: api::WsRequest = serde_json::from_str(message)?;
+    let message = controller::Command::WsApiRequest(client_id, message.id, message.command);
     controller_tx.send(message).await?;
 
     Ok(())
 }
 
 async fn client_disconnected(
-    client_id: WsClientId,
-    clients: WsClients,
-    controller_tx: &Sender<ControllerCommand>,
+    client_id: api::WsClientId,
+    clients: WsClientsState,
+    controller_tx: &mpsc::Sender<controller::Command>,
 ) {
     tracing::info!("client disconnected(client_id={})", client_id);
 
-    let api_request = ApiRequest::UnsubscribeFromAll();
-    let message = ControllerCommand::WsApiRequest(client_id, None, api_request);
+    let api_request = api::ApiRequest::UnsubscribeFromAll();
+    let message = controller::Command::WsApiRequest(client_id, None, api_request);
 
     controller_tx.send(message).await.unwrap_or_else(|e| {
         tracing::error!(
