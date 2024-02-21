@@ -13,17 +13,17 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use warp::Filter;
 
-use primitives::api;
-use primitives::controller;
+use calimero_primitives::api;
+use calimero_primitives::controller;
 
-pub type WsClientsState = Arc<RwLock<HashMap<api::WsClientId, mpsc::Sender<api::WsCommand>>>>;
+pub type ClientsState = Arc<RwLock<HashMap<api::WsClientId, mpsc::Sender<api::WsCommand>>>>;
 
 static NEXT_CLIENT_ID: AtomicU32 = AtomicU32::new(1);
 
 pub async fn start(
     addr: SocketAddr,
     cancellation_token: CancellationToken,
-    clients: WsClientsState,
+    clients: ClientsState,
     controller_tx: mpsc::Sender<controller::Command>,
 ) {
     let shutdown_clients = clients.clone();
@@ -45,7 +45,7 @@ pub async fn start(
                 if let Err(e) = client.send(api::WsCommand::Close()).await {
                     tracing::error!(
                         %e,
-                        "failed to send api::WsCommand::Close message(client_id={})",
+                        "failed to send calimero_api::WsCommand::Close message(client_id={})",
                         client_id,
                     );
                 }
@@ -59,7 +59,7 @@ pub async fn start(
 
 async fn client_connected(
     ws: warp::ws::WebSocket,
-    clients: WsClientsState,
+    clients: ClientsState,
     controller_tx: mpsc::Sender<controller::Command>,
 ) {
     let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
@@ -164,7 +164,7 @@ async fn process_text_message(
 
 async fn client_disconnected(
     client_id: api::WsClientId,
-    clients: WsClientsState,
+    clients: ClientsState,
     controller_tx: &mpsc::Sender<controller::Command>,
 ) {
     tracing::info!("client disconnected(client_id={})", client_id);

@@ -2,7 +2,6 @@ use std::{env, str::FromStr};
 
 use clap::Parser;
 use color_eyre::eyre;
-use primitives::controller::Command;
 use tokio::signal;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -11,8 +10,7 @@ use tokio_util::task::TaskTracker;
 use tracing::Level;
 use tracing_subscriber::{filter::Targets, fmt, prelude::*};
 
-use api::ws::{self, WsClientsState};
-use peer::{cli::RootCommand, config::Config};
+use calimero_peer::{cli::RootCommand, config::Config};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -28,17 +26,17 @@ async fn main() -> eyre::Result<()> {
     let tracker = TaskTracker::new();
     let token = CancellationToken::new();
 
-    let clients = WsClientsState::default();
+    let clients = calimero_api::ws::ClientsState::default();
 
-    let (controller_tx, controller_rx) = mpsc::channel::<Command>(32);
+    let (controller_tx, controller_rx) = mpsc::channel(32);
     let controller_rx = ReceiverStream::new(controller_rx);
 
-    tracker.spawn(controller::start(
+    tracker.spawn(calimero_controller::start(
         token.clone(),
         clients.clone(),
         controller_rx,
     ));
-    tracker.spawn(ws::start(
+    tracker.spawn(calimero_api::ws::start(
         config.websocket_api.get_socket_addr()?,
         token.clone(),
         clients.clone(),

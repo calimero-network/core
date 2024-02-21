@@ -166,22 +166,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "080e9890a082662b09c1ad45f567faeeb47f22b5fb23895fbe1e651e718e25ca"
 
 [[package]]
-name = "api"
-version = "0.1.0"
-dependencies = [
- "color-eyre",
- "futures-util",
- "primitives",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tokio-util 0.7.10",
- "tracing",
- "warp",
-]
-
-[[package]]
 name = "arrayref"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -823,6 +807,68 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero_api"
+version = "0.1.0"
+dependencies = [
+ "calimero_primitives",
+ "color-eyre",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tokio-util 0.7.10",
+ "tracing",
+ "warp",
+]
+
+[[package]]
+name = "calimero_controller"
+version = "0.1.0"
+dependencies = [
+ "calimero_api",
+ "calimero_primitives",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tokio-util 0.7.10",
+ "tracing",
+]
+
+[[package]]
+name = "calimero_peer"
+version = "0.1.0"
+dependencies = [
+ "calimero_api",
+ "calimero_controller",
+ "calimero_primitives",
+ "camino",
+ "clap",
+ "color-eyre",
+ "dirs",
+ "futures-util",
+ "serde",
+ "tokio",
+ "tokio-stream",
+ "tokio-util 0.7.10",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "calimero_primitives"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "warp",
+]
+
+[[package]]
 name = "camino"
 version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1018,21 +1064,6 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
-
-[[package]]
-name = "controller"
-version = "0.1.0"
-dependencies = [
- "api",
- "futures-util",
- "primitives",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tokio-util 0.7.10",
- "tracing",
-]
 
 [[package]]
 name = "core-foundation"
@@ -4216,27 +4247,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de3145af08024dea9fa9914f381a17b8fc6034dfb00f3a84013f7ff43f29ed4c"
 
 [[package]]
-name = "peer"
-version = "0.1.0"
-dependencies = [
- "api",
- "camino",
- "clap",
- "color-eyre",
- "controller",
- "dirs",
- "futures-util",
- "primitives",
- "serde",
- "tokio",
- "tokio-stream",
- "tokio-util 0.7.10",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "pem"
 version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4398,16 +4408,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "353e1ca18966c16d9deb1c69278edbc5f194139612772bd9537af60ac231e1e6"
 dependencies = [
  "elliptic-curve",
-]
-
-[[package]]
-name = "primitives"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tokio",
- "warp",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "controller"
+name = "calimero_controller"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -15,5 +15,5 @@ tokio-stream.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 
-api.path = "../api"
-primitives.path = "../primitives"
+calimero_api.path = "../calimero-api"
+calimero_primitives.path = "../calimero-primitives"

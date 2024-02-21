@@ -1,5 +1,5 @@
 [package]
-name = "peer"
+name = "calimero_peer"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -20,6 +20,6 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
-api.path = "../api"
-controller.path = "../controller"
-primitives.path = "../primitives"
+calimero_api.path = "../calimero-api"
+calimero_controller.path = "../calimero-controller"
+calimero_primitives.path = "../calimero-primitives"

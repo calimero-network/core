@@ -8,14 +8,14 @@ license = "MIT OR Apache-2.0"
 resolver = "2"
 members = [
     "./chat-p0c",
-    "./api",
     "./apps/kv-store",
-    "./controller",
     "./sdk",
     "./vm-runner",
     "./identity-rs",
-    "./peer",
-    "./primitives",
+    "./calimero-api",
+    "./calimero-controller",
+    "./calimero-peer",
+    "./calimero-primitives",
 ]
 
 [workspace.dependencies]
