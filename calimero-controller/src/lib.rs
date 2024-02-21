@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use calimero_api::ws;
 use calimero_primitives::api;
+use calimero_primitives::app;
 use calimero_primitives::controller;
 use subscriptions::Subscriptions;
 
@@ -85,11 +86,11 @@ async fn handle_command(
 
 async fn handle_list_remote_apps() -> api::ApiResponse {
     api::ApiResponse::ListRemoteApps(vec![
-        calimero_primitives::app::App {
+        app::App {
             id: 1000,
             description: "Chat".to_string(),
         },
-        calimero_primitives::app::App {
+        app::App {
             id: 2000,
             description: "Forum".to_string(),
         },

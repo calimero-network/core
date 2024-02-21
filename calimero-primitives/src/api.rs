@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::protocol;
 
 use crate::app;
 
@@ -65,6 +66,6 @@ pub struct WsResponse {
 }
 
 pub enum WsCommand {
-    Close(),
+    Close(protocol::frame::coding::CloseCode, String),
     Reply(WsResponse),
 }

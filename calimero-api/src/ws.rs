@@ -10,6 +10,7 @@ use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use serde_json;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_tungstenite::tungstenite::protocol;
 use tokio_util::sync::CancellationToken;
 use warp::Filter;
 
@@ -42,10 +43,14 @@ pub async fn start(
         tracing::info!("agraceful api shutdown initiated");
         futures_util::stream::iter(shutdown_clients.write().await.drain())
             .for_each_concurrent(None, |(client_id, client)| async move {
-                if let Err(e) = client.send(api::WsCommand::Close()).await {
+                let command = api::WsCommand::Close(
+                    protocol::frame::coding::CloseCode::Away,
+                    String::from("Server shuting down"),
+                );
+                if let Err(e) = client.send(command).await {
                     tracing::error!(
                         %e,
-                        "failed to send calimero_api::WsCommand::Close message(client_id={})",
+                        "failed to send WsCommand::Close(client_id={})",
                         client_id,
                     );
                 }
@@ -73,12 +78,9 @@ async fn client_connected(
     tokio::task::spawn(async move {
         while let Some(command) = rx.next().await {
             match command {
-                api::WsCommand::Close() => {
+                api::WsCommand::Close(code, reason) => {
                     ws_tx
-                        .send(warp::ws::Message::close_with(
-                            1001 as u16,
-                            "Server shutting down",
-                        ))
+                        .send(warp::ws::Message::close_with(code, reason))
                         .unwrap_or_else(|e| {
                             tracing::error!(
                                 %e,
@@ -96,7 +98,7 @@ async fn client_connected(
                         Err(e) => {
                             tracing::error!(
                                 %e,
-                                "failed to serialize WsResponse object(client_id={})",
+                                "failed to serialize WsResponse(client_id={})",
                                 client_id,
                             );
                             continue;
@@ -106,9 +108,10 @@ async fn client_connected(
                         .send(warp::ws::Message::text(response))
                         .unwrap_or_else(|e| {
                             tracing::error!(
-                                "failed to send Message(client_id={}): {}",
+                                %e,
+                                "failed to send Message(client_id={})",
                                 client_id,
-                                e
+
                             );
                         })
                         .await;

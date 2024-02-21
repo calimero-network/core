@@ -10,6 +10,7 @@ use tokio_util::task::TaskTracker;
 use tracing::Level;
 use tracing_subscriber::{filter::Targets, fmt, prelude::*};
 
+use calimero_api::ws;
 use calimero_peer::cli::RootCommand;
 use calimero_peer::config::Config;
 
@@ -27,7 +28,7 @@ async fn main() -> eyre::Result<()> {
     let tracker = TaskTracker::new();
     let token = CancellationToken::new();
 
-    let clients = calimero_api::ws::ClientsState::default();
+    let clients = ws::ClientsState::default();
 
     let (controller_tx, controller_rx) = mpsc::channel(32);
     let controller_rx = ReceiverStream::new(controller_rx);
@@ -37,7 +38,7 @@ async fn main() -> eyre::Result<()> {
         clients.clone(),
         controller_rx,
     ));
-    tracker.spawn(calimero_api::ws::start(
+    tracker.spawn(ws::start(
         config.websocket_api.get_socket_addr()?,
         token.clone(),
         clients.clone(),
