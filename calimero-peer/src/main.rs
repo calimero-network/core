@@ -10,7 +10,8 @@ use tokio_util::task::TaskTracker;
 use tracing::Level;
 use tracing_subscriber::{filter::Targets, fmt, prelude::*};
 
-use calimero_peer::{cli::RootCommand, config::Config};
+use calimero_peer::cli::RootCommand;
+use calimero_peer::config::Config;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {

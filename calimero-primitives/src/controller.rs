@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::api::{ApiRequest, WsClientId, WsRequestId};
+use crate::api;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Command {
-    WsApiRequest(WsClientId, Option<WsRequestId>, ApiRequest),
+    WsApiRequest(api::WsClientId, Option<api::WsRequestId>, api::ApiRequest),
 }

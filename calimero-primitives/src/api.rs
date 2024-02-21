@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::app::{App, AppBinary, AppId, InstalledApp, InstalledAppId};
+use crate::app;
 
 // API
 #[derive(Serialize, Deserialize, Debug)]
@@ -15,25 +15,25 @@ pub enum ApiError {
 pub enum ApiRequest {
     ListRemoteApps(),
     ListInstalledApps(),
-    InstallBinaryApp(AppBinary),
-    InstallRemoteApp(AppId),
-    UninstallApp(InstalledAppId),
-    Subscribe(InstalledAppId),
-    Unsubscribe(InstalledAppId),
+    InstallBinaryApp(app::AppBinary),
+    InstallRemoteApp(app::AppId),
+    UninstallApp(app::InstalledAppId),
+    Subscribe(app::InstalledAppId),
+    Unsubscribe(app::InstalledAppId),
     UnsubscribeFromAll(),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum ApiResponse {
-    ListRemoteApps(Vec<App>),
-    ListInstalledApps(Vec<InstalledApp>),
-    GetInstalledApp(InstalledApp),
-    InstallBinaryApp(InstalledAppId),
-    InstallRemoteApp(InstalledAppId),
-    UninstallApp(InstalledAppId),
-    Subscribe(InstalledAppId),
-    Unsubscribe(InstalledAppId),
+    ListRemoteApps(Vec<app::App>),
+    ListInstalledApps(Vec<app::InstalledApp>),
+    GetInstalledApp(app::InstalledApp),
+    InstallBinaryApp(app::InstalledAppId),
+    InstallRemoteApp(app::InstalledAppId),
+    UninstallApp(app::InstalledAppId),
+    Subscribe(app::InstalledAppId),
+    Unsubscribe(app::InstalledAppId),
     UnsubscribeFromAll(),
 }
 
