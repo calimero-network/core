@@ -38,7 +38,7 @@ impl NodeType {
     pub fn is_coordinator(&self) -> bool {
         match *self {
             NodeType::Coordinator => true,
-            NodeType::Peer => false
+            NodeType::Peer => false,
         }
     }
 }

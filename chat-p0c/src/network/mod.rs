@@ -12,12 +12,12 @@ use libp2p::multiaddr::{self, Multiaddr};
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::{gossipsub, identify, kad, mdns, ping, relay, PeerId};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
-use tracing::{debug, info, trace, warn, error};
-use sha2::{Sha256, Digest};
-use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::cli::{self, NodeType};
 use crate::config::Config;
@@ -43,7 +43,7 @@ struct Storage {
     confirmations: Arc<Mutex<HashMap<Hash, Transaction>>>,
     senders: Arc<Mutex<HashMap<Hash, PeerId>>>,
     last_known_transaction_hash: Arc<Mutex<Hash>>,
-    nonce: Arc<Mutex<u64>>,
+    nonce: u64,
     node_type: NodeType,
 }
 
@@ -52,12 +52,12 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         eyre::bail!("chat node is not initialized in {:?}", args.home);
     }
 
-    let storage = Storage {
+    let mut storage = Storage {
         transactions: Arc::new(Mutex::new(HashMap::new())),
         confirmations: Arc::new(Mutex::new(HashMap::new())),
         senders: Arc::new(Mutex::new(HashMap::new())),
         last_known_transaction_hash: Default::default(),
-        nonce: Arc::new(Mutex::new(0)),
+        nonce: 0,
         node_type: args.node_type,
     };
 
@@ -113,7 +113,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         tokio::select! {
             event = event_receiver.recv() => {
                 match event {
-                    Some(event) => event_recipient(client.clone(), topic.hash(), event, &storage).await?,
+                    Some(event) => event_recipient(client.clone(), topic.hash(), event, &mut storage).await?,
                     None => break,
                 }
             }
@@ -143,87 +143,119 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     Ok(())
 }
 
-fn store_transaction(transaction: Transaction, storage: &Storage, sender: Option<PeerId>) -> eyre::Result<Hash> {
+fn store_transaction(
+    transaction: Transaction,
+    storage: &Storage,
+    sender: Option<PeerId>,
+) -> eyre::Result<Hash> {
     let transaction_hash = hash(&transaction)?;
-    let mut transactions_mutex = storage.transactions.lock().unwrap();
+    let mut transactions_mutex = storage
+        .transactions
+        .lock()
+        .map_err(|guard| eyre::eyre!(format!("{:?}", guard)))?;
     transactions_mutex.insert(transaction_hash.clone(), transaction);
     if let Some(peer_id) = sender {
-        storage.senders.lock().unwrap().insert(transaction_hash.clone(), peer_id);
+        storage
+            .senders
+            .lock()
+            .map_err(|guard| eyre::eyre!(format!("{:?}", guard)))?
+            .insert(transaction_hash.clone(), peer_id);
     }
 
     Ok(transaction_hash)
 }
 
-async fn event_recipient(mut client: Client, our_topic_hash: gossipsub::TopicHash, event: Event, storage: &Storage) -> eyre::Result<()> {
-        match event {
-            Event::Subscribed {
-                peer_id: their_peer_id,
-                topic: topic_hash,
-            } => {
-                if our_topic_hash == topic_hash {
-                    println!("info: {} joined the chat.", their_peer_id.cyan());
+async fn event_recipient(
+    mut client: Client,
+    our_topic_hash: gossipsub::TopicHash,
+    event: Event,
+    storage: &mut Storage,
+) -> eyre::Result<()> {
+    match event {
+        Event::Subscribed {
+            peer_id: their_peer_id,
+            topic: topic_hash,
+        } => {
+            if our_topic_hash == topic_hash {
+                println!("info: {} joined the chat.", their_peer_id.cyan());
 
-//                    client
-//                        .publish(our_topic_hash, serde_json::to_vec(&create_transaction("Welcome to the chat", &storage)?).?)
-//                        .await?;
-                }
+                //                    client
+                //                        .publish(our_topic_hash, serde_json::to_vec(&create_transaction("Welcome to the chat", &storage)?).?)
+                //                        .await?;
             }
-            Event::Message { message, .. } => {
-                let source = message.source;
-                let message: NetworkAction = serde_json::from_slice(&message.data)?;
+        }
+        Event::Message { message, .. } => {
+            let source = message.source;
+            let message: NetworkAction = serde_json::from_slice(&message.data)?;
 
-                match message {
-                    NetworkAction::Transaction(transaction) => {
-                        let transaction_hash = store_transaction(transaction, storage, source)?;
+            match message {
+                NetworkAction::Transaction(transaction) => {
+                    let transaction_hash = store_transaction(transaction, storage, source)?;
 
-                        if storage.node_type.is_coordinator() {
-                            let mut nonce_mutex = storage.nonce.lock().unwrap();
-                            *nonce_mutex += 1;
-                            let confirmation = NetworkAction::TransactionConfirmation(TransactionConfirmation{
-                                nonce: *nonce_mutex,
+                    if storage.node_type.is_coordinator() {
+                        storage.nonce += 1;
+                        let confirmation =
+                            NetworkAction::TransactionConfirmation(TransactionConfirmation {
+                                nonce: storage.nonce,
                                 transaction_hash: transaction_hash.clone(),
                                 // TODO proper confirmation hash
                                 confirmation_hash: transaction_hash,
                             });
-                            client
-                                .publish(our_topic_hash, serde_json::to_vec(&confirmation)?)
-                                .await?;
-                        }
-                    },
-                    NetworkAction::TransactionConfirmation(confirmation) => {
-                        info!("Confirmation -> nonce: {}, transaction_hash: {:02X?}", confirmation.nonce, confirmation.transaction_hash);
-                        let src = if let Some(peer_id) = storage.senders.lock().unwrap().get(&confirmation.transaction_hash) {
-                            peer_id.green().to_string()
-                        } else {
-                            "<unknown>".to_owned()
-                        };
-                        let payload = if let Some(transaction) = storage.transactions.lock().unwrap().get(&confirmation.transaction_hash) {
-                            transaction.clone().payload
-                        } else {
-                            Vec::new()
-                        };
-                        println!(
-                            "{}: {}",
-                            src,
-                            match std::str::from_utf8(&payload) {
+                        client
+                            .publish(our_topic_hash, serde_json::to_vec(&confirmation)?)
+                            .await?;
+                    }
+                }
+                NetworkAction::TransactionConfirmation(confirmation) => {
+                    info!(
+                        "Confirmation -> nonce: {}, transaction_hash: {:02X?}",
+                        confirmation.nonce, confirmation.transaction_hash
+                    );
+                    let src = if let Some(peer_id) = storage
+                        .senders
+                        .lock()
+                        .map_err(|guard| eyre::eyre!(format!("{:?}", guard)))?
+                        .get(&confirmation.transaction_hash)
+                    {
+                        peer_id.green().to_string()
+                    } else {
+                        "<unknown>".to_owned()
+                    };
+                    println!(
+                        "{}: {}",
+                        src,
+                        if let Some(transaction) = storage
+                            .transactions
+                            .lock()
+                            .map_err(|guard| eyre::eyre!(format!("{:?}", guard)))?
+                            .get(&confirmation.transaction_hash)
+                        {
+                            match std::str::from_utf8(&transaction.payload[..]) {
                                 Ok(s) => s,
                                 Err(_) => "<binary>",
                             }
-                        )
-                    }
-                    _ => println!("UNKNOWN"),
+                        } else {
+                            "<unknown>"
+                        }
+                    );
                 }
+                _ => println!("UNKNOWN"),
             }
         }
+    }
 
-        Ok(())
+    Ok(())
 }
 
-fn create_transaction(message: &str, storage: &Storage, peer_id: PeerId) -> eyre::Result<NetworkAction> {
+fn create_transaction(
+    message: &str,
+    storage: &Storage,
+    peer_id: PeerId,
+) -> eyre::Result<NetworkAction> {
     let transaction = Transaction {
         method: String::from("send_message"),
         payload: message.as_bytes().to_vec(),
-        last_known_transaction_hash: (*storage.last_known_transaction_hash.lock().unwrap().clone()).to_vec(),
+        last_known_transaction_hash: storage.last_known_transaction_hash.lock().unwrap().clone(),
     };
     store_transaction(transaction.clone(), storage, Some(peer_id))?;
 
@@ -659,7 +691,7 @@ pub struct TransactionConfirmation {
 
 #[derive(Serialize, Deserialize)]
 pub struct CatchupRequest {
-    pub last_executed_transaction_hash: Hash
+    pub last_executed_transaction_hash: Hash,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -670,7 +702,7 @@ pub struct TransactionWithConfirmation {
 
 #[derive(Serialize, Deserialize)]
 pub struct CatchupResponse {
-    pub transactions: Vec<TransactionWithConfirmation>
+    pub transactions: Vec<TransactionWithConfirmation>,
 }
 
 #[derive(Serialize, Deserialize)]
