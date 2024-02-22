@@ -152,13 +152,13 @@ fn store_transaction(
     let mut transactions_mutex = storage
         .transactions
         .lock()
-        .map_err(|guard| eyre::eyre!(format!("{:?}", guard)))?;
+        .map_err(|guard| eyre::eyre!("{:?}", guard))?;
     transactions_mutex.insert(transaction_hash.clone(), transaction);
     if let Some(peer_id) = sender {
         storage
             .senders
             .lock()
-            .map_err(|guard| eyre::eyre!(format!("{:?}", guard)))?
+            .map_err(|guard| eyre::eyre!("{:?}", guard))?
             .insert(transaction_hash.clone(), peer_id);
     }
 
@@ -214,7 +214,7 @@ async fn event_recipient(
                     let src = if let Some(peer_id) = storage
                         .senders
                         .lock()
-                        .map_err(|guard| eyre::eyre!(format!("{:?}", guard)))?
+                        .map_err(|guard| eyre::eyre!("{:?}", guard))?
                         .get(&confirmation.transaction_hash)
                     {
                         peer_id.green().to_string()
@@ -227,7 +227,7 @@ async fn event_recipient(
                         if let Some(transaction) = storage
                             .transactions
                             .lock()
-                            .map_err(|guard| eyre::eyre!(format!("{:?}", guard)))?
+                            .map_err(|guard| eyre::eyre!("{:?}", guard))?
                             .get(&confirmation.transaction_hash)
                         {
                             match std::str::from_utf8(&transaction.payload[..]) {
