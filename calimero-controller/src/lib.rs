@@ -1,5 +1,3 @@
-mod subscriptions;
-
 use futures_util::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -8,6 +6,9 @@ use calimero_api::ws;
 use calimero_primitives::api;
 use calimero_primitives::app;
 use calimero_primitives::controller;
+
+mod subscriptions;
+
 use subscriptions::Subscriptions;
 
 pub async fn start(
