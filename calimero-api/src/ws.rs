@@ -7,7 +7,6 @@ use std::sync::{
 
 use color_eyre::eyre;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
-use serde_json;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_tungstenite::tungstenite::protocol;
