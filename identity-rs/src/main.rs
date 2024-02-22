@@ -1,6 +1,8 @@
-use std::{borrow::BorrowMut, error::Error};
+use std::borrow::BorrowMut;
+use std::error::Error;
 
-use libp2p::{identity::Keypair, kad::store::MemoryStore};
+use libp2p::identity::Keypair;
+use libp2p::kad::store::MemoryStore;
 
 mod dht;
 mod identity_provider;
@@ -68,10 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         wallet_keypair.public().encode_protobuf(),
         proof,
     )?;
-    println!(
-        "Verifiable credential: {}",
-        format!("{:?}", verifiable_credential)
-    );
+    println!("Verifiable credential: {:?}", verifiable_credential);
 
     println!("Create verifiable presentation");
     let application_challenge = "alpha bravo sigma";
@@ -80,10 +79,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         verifiable_credential,
         &peer_keypair,
     )?;
-    println!(
-        "Verifiable presentation: {}",
-        format!("{:?}", verifiable_presentation)
-    );
+
+    println!("Verifiable presentation: {:?}", verifiable_presentation);
     let verifiable_presentation_result =
         validate_verifiable_presentation(&peer_keypair.public(), &verifiable_presentation);
     println!("Validate verifiable presentation: {verifiable_presentation_result}");
