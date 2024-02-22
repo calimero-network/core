@@ -35,7 +35,7 @@ pub enum ApiResponse {
     UninstallApp(app::InstalledAppId),
     Subscribe(app::InstalledAppId),
     Unsubscribe(app::InstalledAppId),
-    UnsubscribeFromAll(),
+    UnsubscribeFromAll,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
