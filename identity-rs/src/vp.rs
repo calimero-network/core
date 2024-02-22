@@ -1,23 +1,17 @@
-use std::io;
-
-use libp2p::identity::{Keypair, PublicKey};
+use libp2p::identity::{Keypair, PublicKey, SigningError};
 
 use crate::types::{VerifiableCredential, VerifiablePresentation};
 
 pub fn create_verifiable_presentation(
-    challenge: &String,
-    verifiable_credentials: &VerifiableCredential,
+    challenge: String,
+    verifiable_credential: VerifiableCredential,
     key_pair: &Keypair,
-) -> Result<VerifiablePresentation, io::Error> {
+) -> Result<VerifiablePresentation, SigningError> {
     //sign challenge with node private key
-
-    let signature = key_pair
-        .sign(challenge.as_bytes())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
+    let signature = key_pair.sign(challenge.as_bytes())?;
     let vp = VerifiablePresentation {
-        challenge: challenge.clone(),
-        verifiable_credential: verifiable_credentials.clone(),
+        challenge,
+        verifiable_credential,
         signature,
     };
 
@@ -27,11 +21,9 @@ pub fn create_verifiable_presentation(
 pub fn validate_verifiable_presentation(
     public_key: &PublicKey,
     verifiable_presentation: &VerifiablePresentation,
-) -> Result<bool, io::Error> {
-    let valid = public_key.verify(
+) -> bool {
+    public_key.verify(
         verifiable_presentation.challenge.as_bytes(),
         &verifiable_presentation.signature,
-    );
-
-    Ok(valid)
+    )
 }

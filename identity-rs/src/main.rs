@@ -62,11 +62,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let message = peer_id.to_string();
     let proof = wallet_keypair.sign(&message.into_bytes())?;
     let verifiable_credential = create_wallet_verifiable_credentials(
-        peer_id.to_string().as_str(),
-        &WalletType::NEAR,
-        "cali.near",
-        &wallet_keypair.public().encode_protobuf(),
-        &proof,
+        peer_id.to_string(),
+        WalletType::NEAR,
+        "cali.near".to_string(),
+        wallet_keypair.public().encode_protobuf(),
+        proof,
     )?;
     println!(
         "Verifiable credential: {}",
@@ -76,8 +76,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Create verifiable presentation");
     let application_challenge = "alpha bravo sigma";
     let verifiable_presentation = create_verifiable_presentation(
-        &application_challenge.to_string(),
-        &verifiable_credential,
+        application_challenge.to_string(),
+        verifiable_credential,
         &peer_keypair,
     )?;
     println!(
@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         format!("{:?}", verifiable_presentation)
     );
     let verifiable_presentation_result =
-        validate_verifiable_presentation(&peer_keypair.public(), &verifiable_presentation)?;
+        validate_verifiable_presentation(&peer_keypair.public(), &verifiable_presentation);
     println!("Validate verifiable presentation: {verifiable_presentation_result}");
 
     Ok(())
