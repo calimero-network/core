@@ -23,15 +23,13 @@ pub async fn start(
                 tracing::info!("graceful controller shutdown initiated");
                 break
             }
-            command = rx.next() => {
-                match command {
-                    Some(command) => {
-                        handle_command(&mut subscriptions, &clients, command).await;
-                    },
-                    None => {
-                        tracing::warn!("got empty command");
-                    },
-                }
+            command = rx.next() => match command {
+                Some(command) => {
+                    handle_command(&mut subscriptions, &clients, command).await;
+                },
+                None => {
+                    tracing::warn!("got empty command");
+                },
             }
         }
     }
