@@ -8,7 +8,6 @@ use std::sync::{
 use color_eyre::eyre;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use tokio::sync::{mpsc, RwLock};
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_tungstenite::tungstenite::protocol;
 use tokio_util::sync::CancellationToken;
 use warp::Filter;
@@ -70,12 +69,10 @@ async fn client_connected(
     tracing::info!("new client connected(client_id={})", client_id);
 
     let (mut ws_tx, mut ws_rx) = ws.split();
-
-    let (tx, rx) = mpsc::channel::<api::WsCommand>(32);
-    let mut rx = ReceiverStream::new(rx);
+    let (tx, mut rx) = mpsc::channel::<api::WsCommand>(32);
 
     tokio::task::spawn(async move {
-        while let Some(command) = rx.next().await {
+        while let Some(command) = rx.recv().await {
             match command {
                 api::WsCommand::Close(code, reason) => {
                     ws_tx

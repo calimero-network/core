@@ -7,12 +7,12 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-futures-util.workspace = true
+futures-util = { workspace = true, default-features = false, features = ["sink"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tokio-stream.workspace = true
-tokio-util.workspace = true
+tokio-stream = { workspace = true, features = ["signal"] }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 
 calimero_api.path = "../calimero-api"

@@ -11,11 +11,11 @@ camino.workspace = true
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 dirs.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, default-features = false, features = ["sink"] }
 serde.workspace = true
 tokio.workspace = true
-tokio-stream.workspace = true
-tokio-util.workspace = true
+tokio-stream = { workspace = true, features = ["signal"] }
+tokio-util = { workspace = true, features = ["rt"] }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

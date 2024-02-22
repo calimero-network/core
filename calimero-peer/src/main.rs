@@ -45,10 +45,17 @@ async fn main() -> eyre::Result<()> {
         controller_tx.clone(),
     ));
 
-    signal::ctrl_c().await?;
-    token.cancel();
-    tracker.close();
-    tracker.wait().await;
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            token.cancel();
+            tracker.close();
+        }
+        _ = tracker.wait() => {}
+    };
+    // signal::ctrl_c().await?;
+    // token.cancel();
+    // tracker.close();
+    // tracker.wait().await;
 
     Ok(())
 }
