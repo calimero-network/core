@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Create verifiable credential");
     let wallet_keypair = Keypair::generate_ed25519();
     let message = peer_id.to_string();
-    let proof = wallet_keypair.sign(&message.into_bytes())?;
+    let proof = wallet_keypair.sign(&message.as_bytes())?;
     let verifiable_credential = create_wallet_verifiable_credentials(
         peer_id.to_string(),
         WalletType::NEAR,

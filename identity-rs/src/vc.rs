@@ -33,9 +33,9 @@ pub fn create_verifiable_credentials(
     proof: Vec<u8>,
 ) -> Result<VerifiableCredential, io::Error> {
     //check for proof
-    let verified_proof = match credential_subject.clone() {
+    let verified_proof = match &credential_subject {
         VerifiableCredentialType::Wallet(wallet) => {
-            let pubkey_result = PublicKey::try_decode_protobuf(&wallet.public_key.to_vec());
+            let pubkey_result = PublicKey::try_decode_protobuf(&wallet.public_key);
             match pubkey_result {
                 Ok(pub_k) => pub_k.verify(&wallet.peer_id.as_bytes(), &proof),
                 Err(err) => {
