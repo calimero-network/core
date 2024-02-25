@@ -26,6 +26,14 @@ impl QueryRoot {
         let stored_posts = ctx.data_unchecked::<Storage>().lock().await.clone();
         Ok(stored_posts)
     }
+    async fn post<'a>(&self, ctx: &Context<'a>, id: i32) -> async_graphql::Result<Post> {
+        let idx: usize = id as usize;
+        if let Some(post) = ctx.data_unchecked::<Storage>().lock().await.clone().get(idx) {
+            return Ok(post.clone());
+        } else {
+            Err(async_graphql::Error::new("Post not found"))
+        }
+    }
 }
 #[derive(InputObject)]
 struct CreateCommentInput {

@@ -4,6 +4,7 @@ schema {
 }
 
 type Query {
+    post(id: ID!): Post!,
     posts: [Post!]!
 }
 
@@ -19,19 +20,19 @@ input CreatePost {
 
 input CreateComment {
     post: ID!,
-    user: String,
+    user: String!,
     text: String!
 }
 
 type Comment {
-    text: String,
-    user: String,
+    text: String!,
+    user: String!,
 }
 
 type Post {
     id: ID!,
-    title: String,
-    content: String,
+    title: String!,
+    content: String!,
     comments: [Comment],
 }
 
