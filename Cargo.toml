@@ -13,6 +13,7 @@ members = [
   "./crates/runtime",
 
   "./apps/kv-store",
+  "./peer-space"
 ]
 
 [workspace.dependencies]
