@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use color_eyre::eyre::{self};
+use color_eyre::eyre;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::tungstenite::protocol;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use warp::Filter;
 
 use calimero_primitives::api;
@@ -126,21 +126,21 @@ async fn client_connected(
                 break;
             }
         };
+
         if message.is_text() {
-            if let Err(e) = handle_text_message(
+            handle_text_message(
                 client_id,
                 message,
                 connections.clone(),
                 subscriptions.clone(),
             )
             .await
-            {
-                error!(
-                    %e,
-                    "failed to process text Ws Message (client_id={})",
-                    client_id,
-                );
-            }
+            .unwrap_or_else(|e| {
+                error!(%e, "failed to process (client_id={})", client_id);
+            });
+        } else if message.is_close() {
+            debug!("received close message");
+            break;
         } else {
             error!("unsupported Ws Message type(client_id={})", client_id)
         }
