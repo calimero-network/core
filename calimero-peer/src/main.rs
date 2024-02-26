@@ -3,8 +3,6 @@ use std::{env, str::FromStr};
 use clap::Parser;
 use color_eyre::eyre;
 use tokio::signal;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::Level;
@@ -28,21 +26,9 @@ async fn main() -> eyre::Result<()> {
     let tracker = TaskTracker::new();
     let token = CancellationToken::new();
 
-    let clients = ws::ClientsState::default();
-
-    let (controller_tx, controller_rx) = mpsc::channel(32);
-    let controller_rx = ReceiverStream::new(controller_rx);
-
-    tracker.spawn(calimero_controller::start(
-        token.clone(),
-        clients.clone(),
-        controller_rx,
-    ));
     tracker.spawn(ws::start(
         config.websocket_api.get_socket_addr()?,
         token.clone(),
-        clients.clone(),
-        controller_tx.clone(),
     ));
 
     signal::ctrl_c().await?;

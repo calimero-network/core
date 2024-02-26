@@ -1,13 +1,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{
-    atomic::{AtomicU32, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
-use color_eyre::eyre;
+use color_eyre::eyre::{self};
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
-use rand::distributions::DistString;
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::tungstenite::protocol;
 use tokio_util::sync::CancellationToken;
@@ -15,39 +11,41 @@ use tracing::{error, info};
 use warp::Filter;
 
 use calimero_primitives::api;
-use calimero_primitives::controller;
 
-pub type ClientsState = Arc<RwLock<HashMap<api::WsClientId, mpsc::Sender<api::WsCommand>>>>;
+use crate::subscriptions::Subscriptions;
 
-static NEXT_CLIENT_ID: AtomicU32 = AtomicU32::new(1);
+type ConnectionsState = Arc<RwLock<HashMap<api::WsClientId, mpsc::Sender<api::WsCommand>>>>;
+type SubscriptionsState = Arc<RwLock<Subscriptions>>;
 
-pub async fn start(
-    addr: SocketAddr,
-    cancellation_token: CancellationToken,
-    clients: ClientsState,
-    controller_tx: mpsc::Sender<controller::Command>,
-) {
-    let shutdown_clients = clients.clone();
+pub async fn start(addr: SocketAddr, cancellation_token: CancellationToken) {
+    let server_state = ConnectionsState::default();
+    let shutdown_clients = server_state.clone();
+
+    let subscription_state = SubscriptionsState::default();
 
     let ws_route = warp::path("ws")
         .and(warp::ws())
-        .and(warp::any().map(move || clients.clone()))
-        .and(warp::any().map(move || controller_tx.clone()))
-        .map(|websocket: warp::ws::Ws, clients, controller_tx| {
-            websocket.on_upgrade(move |socket| client_connected(socket, clients, controller_tx))
-        });
+        .and(warp::any().map(move || server_state.clone()))
+        .and(warp::any().map(move || subscription_state.clone()))
+        .map(
+            |websocket: warp::ws::Ws, server_state, subscription_state| {
+                websocket.on_upgrade(move |socket| {
+                    client_connected(socket, server_state, subscription_state)
+                })
+            },
+        );
     let routes = ws_route;
 
     let (_addr, server) = warp::serve(routes).bind_with_graceful_shutdown(addr, async move {
         cancellation_token.cancelled().await;
         info!("agraceful api shutdown initiated");
         futures_util::stream::iter(shutdown_clients.write().await.drain())
-            .for_each_concurrent(None, |(client_id, client)| async move {
+            .for_each_concurrent(None, |(client_id, state)| async move {
                 let command = api::WsCommand::Close(
                     protocol::frame::coding::CloseCode::Away,
                     String::from("Server shuting down"),
                 );
-                if let Err(e) = client.send(command).await {
+                if let Err(e) = state.send(command).await {
                     error!(
                         %e,
                         "failed to send WsCommand::Close(client_id={})",
@@ -64,12 +62,10 @@ pub async fn start(
 
 async fn client_connected(
     ws: warp::ws::WebSocket,
-    clients: ClientsState,
-    controller_tx: mpsc::Sender<controller::Command>,
+    connections: ConnectionsState,
+    subscriptions: SubscriptionsState,
 ) {
-    let app_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 10);
-
-    let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
+    let client_id = rand::random();
     info!("new client connected(client_id={})", client_id);
 
     let (mut ws_tx, mut ws_rx) = ws.split();
@@ -120,7 +116,7 @@ async fn client_connected(
         }
     });
 
-    clients.write().await.insert(client_id, tx);
+    connections.write().await.insert(client_id, tx);
 
     while let Some(message) = ws_rx.next().await {
         let message = match message {
@@ -131,7 +127,14 @@ async fn client_connected(
             }
         };
         if message.is_text() {
-            if let Err(e) = process_text_message(client_id, message, &controller_tx).await {
+            if let Err(e) = handle_text_message(
+                client_id,
+                message,
+                connections.clone(),
+                subscriptions.clone(),
+            )
+            .await
+            {
                 error!(
                     %e,
                     "failed to process text Ws Message (client_id={})",
@@ -143,13 +146,14 @@ async fn client_connected(
         }
     }
 
-    client_disconnected(client_id, clients, &controller_tx).await;
+    client_disconnected(client_id, connections, subscriptions).await;
 }
 
-async fn process_text_message(
+async fn handle_text_message(
     client_id: api::WsClientId,
     message: warp::ws::Message,
-    controller_tx: &mpsc::Sender<controller::Command>,
+    connections: ConnectionsState,
+    subscriptions: SubscriptionsState,
 ) -> eyre::Result<()> {
     let message = match message.to_str() {
         Ok(s) => s,
@@ -159,28 +163,88 @@ async fn process_text_message(
     };
 
     let message: api::WsRequest = serde_json::from_str(message)?;
-    let message = controller::Command::WsApiRequest(client_id, message.id, message.command);
-    controller_tx.send(message).await?;
+
+    tokio::task::spawn(async move {
+        handle_api_request(client_id, message, connections, subscriptions)
+            .await
+            .unwrap_or_else(|e| {
+                error!("failed to send WsResponse (client_id={}): {}", client_id, e);
+            });
+    });
+
+    Ok(())
+}
+
+async fn handle_api_request(
+    client_id: api::WsClientId,
+    message: api::WsRequest,
+    connections: ConnectionsState,
+    subscriptions: SubscriptionsState,
+) -> eyre::Result<()> {
+    let response = match message.command {
+        api::ApiRequest::ListRemoteApps => {
+            let response = calimero_controller::list_remote_apps().await?;
+            calimero_primitives::api::ApiResponse::ListRemoteApps(response)
+        }
+        api::ApiRequest::ListInstalledApps => {
+            let response = calimero_controller::list_installed_apps().await?;
+            calimero_primitives::api::ApiResponse::ListInstalledApps(response)
+        }
+        api::ApiRequest::InstallBinaryApp(app) => {
+            let response = calimero_controller::install_binary_app(app).await?;
+            calimero_primitives::api::ApiResponse::InstallBinaryApp(response)
+        }
+        api::ApiRequest::InstallRemoteApp(app_id) => {
+            let response = calimero_controller::install_remote_app(app_id).await?;
+            calimero_primitives::api::ApiResponse::InstallRemoteApp(response)
+        }
+        api::ApiRequest::UninstallApp(installed_app_id) => {
+            let response = calimero_controller::uninstall_app(installed_app_id).await?;
+            calimero_primitives::api::ApiResponse::UninstallApp(response)
+        }
+        api::ApiRequest::Subscribe(installed_app_id) => {
+            subscriptions
+                .write()
+                .await
+                .subscribe(installed_app_id, client_id);
+            api::ApiResponse::Subscribe(installed_app_id)
+        }
+        api::ApiRequest::Unsubscribe(installed_app_id) => {
+            subscriptions
+                .write()
+                .await
+                .unsubscribe(installed_app_id, client_id);
+            api::ApiResponse::Unsubscribe(installed_app_id)
+        }
+        api::ApiRequest::UnsubscribeFromAll => {
+            subscriptions.write().await.unsubscribe_from_all(client_id);
+            api::ApiResponse::UnsubscribeFromAll
+        }
+    };
+
+    let response = api::WsResponse {
+        id: message.id,
+        result: api::ApiResponseResult::Ok(response),
+    };
+
+    if let Some(tx) = connections.read().await.get(&client_id) {
+        tx.send(api::WsCommand::Reply(response))
+            .await
+            .unwrap_or_else(|e| {
+                error!("failed to send WsResponse (client_id={}): {}", client_id, e);
+            });
+    };
 
     Ok(())
 }
 
 async fn client_disconnected(
     client_id: api::WsClientId,
-    clients: ClientsState,
-    controller_tx: &mpsc::Sender<controller::Command>,
+    connections: ConnectionsState,
+    subscriptions: SubscriptionsState,
 ) {
     info!("client disconnected(client_id={})", client_id);
 
-    let api_request = api::ApiRequest::UnsubscribeFromAll;
-    let message = controller::Command::WsApiRequest(client_id, None, api_request);
-
-    controller_tx.send(message).await.unwrap_or_else(|e| {
-        error!(
-            "failed to send controller command(client_id={}): {}",
-            client_id, e
-        );
-    });
-
-    clients.write().await.remove(&client_id);
+    subscriptions.write().await.unsubscribe_from_all(client_id);
+    connections.write().await.remove(&client_id);
 }

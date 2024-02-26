@@ -810,13 +810,14 @@ dependencies = [
 name = "calimero_api"
 version = "0.1.0"
 dependencies = [
+ "calimero_controller",
  "calimero_primitives",
  "color-eyre",
  "futures-util",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "tokio",
- "tokio-stream",
  "tokio-tungstenite",
  "tokio-util 0.7.10",
  "tracing",
@@ -827,9 +828,9 @@ dependencies = [
 name = "calimero_controller"
 version = "0.1.0"
 dependencies = [
- "calimero_api",
  "calimero_primitives",
- "futures-util",
+ "color-eyre",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "tokio",
@@ -843,13 +844,10 @@ name = "calimero_peer"
 version = "0.1.0"
 dependencies = [
  "calimero_api",
- "calimero_controller",
- "calimero_primitives",
  "camino",
  "clap",
  "color-eyre",
  "dirs",
- "futures-util",
  "serde",
  "tokio",
  "tokio-stream",

@@ -1,6 +1,6 @@
 {
     "id": 123,
     "command": {
-        "Subscribe": 1
+        "subscribe": 1
     }
 }

@@ -14,9 +14,9 @@ serde_json.workspace = true
 warp.workspace = true
 rand.workspace = true
 tokio.workspace = true
-tokio-stream = { workspace = true, features = ["signal"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 
 calimero_primitives.path = "../calimero-primitives"
+calimero_controller.path = "../calimero-controller"

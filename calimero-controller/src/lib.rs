@@ -1,87 +1,12 @@
-use futures_util::StreamExt;
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use std::time::Duration;
 
-use calimero_api::ws;
-use calimero_primitives::api;
+use color_eyre::eyre;
+
 use calimero_primitives::app;
-use calimero_primitives::controller;
+use tracing::info;
 
-mod subscriptions;
-
-use subscriptions::Subscriptions;
-
-pub async fn start(
-    cancellation_token: CancellationToken,
-    clients: ws::ClientsState,
-    mut rx: ReceiverStream<controller::Command>,
-) {
-    info!("controller started");
-    let mut subscriptions = Subscriptions::new();
-    loop {
-        tokio::select! {
-            _ = cancellation_token.cancelled() => {
-                info!("graceful controller shutdown initiated");
-                break
-            }
-            command = rx.next() => match command {
-                Some(command) => {
-                    handle_command(&mut subscriptions, &clients, command).await;
-                },
-                None => {
-                    warn!("got empty command");
-                },
-            }
-        }
-    }
-}
-
-async fn handle_command(
-    subscriptions: &mut Subscriptions,
-    clients: &ws::ClientsState,
-    command: controller::Command,
-) {
-    match command {
-        controller::Command::WsApiRequest(client_id, request_id, request) => {
-            let response = match request {
-                api::ApiRequest::ListRemoteApps => handle_list_remote_apps().await,
-                api::ApiRequest::ListInstalledApps => todo!(),
-                api::ApiRequest::InstallBinaryApp(_) => todo!(),
-                api::ApiRequest::InstallRemoteApp(_) => todo!(),
-                api::ApiRequest::UninstallApp(_) => todo!(),
-                api::ApiRequest::Subscribe(installed_app_id) => {
-                    subscriptions.subscribe(installed_app_id, client_id);
-                    api::ApiResponse::Subscribe(installed_app_id)
-                }
-                api::ApiRequest::Unsubscribe(installed_app_id) => {
-                    subscriptions.unsubscribe(installed_app_id, client_id);
-                    api::ApiResponse::Unsubscribe(installed_app_id)
-                }
-                api::ApiRequest::UnsubscribeFromAll => {
-                    subscriptions.unsubscribe_from_all(client_id);
-                    api::ApiResponse::UnsubscribeFromAll
-                }
-            };
-
-            let response = api::WsResponse {
-                id: request_id,
-                result: api::ApiResponseResult::Ok(response),
-            };
-
-            if let Some(tx) = clients.read().await.get(&client_id) {
-                tx.send(api::WsCommand::Reply(response))
-                    .await
-                    .unwrap_or_else(|e| {
-                        error!("failed to send WsResponse (client_id={}): {}", client_id, e);
-                    });
-            }
-        }
-    };
-}
-
-async fn handle_list_remote_apps() -> api::ApiResponse {
-    api::ApiResponse::ListRemoteApps(vec![
+pub async fn list_remote_apps() -> eyre::Result<Vec<calimero_primitives::app::App>> {
+    Ok(vec![
         app::App {
             id: 1000,
             description: "Chat".to_string(),
@@ -91,4 +16,38 @@ async fn handle_list_remote_apps() -> api::ApiResponse {
             description: "Forum".to_string(),
         },
     ])
+}
+
+pub async fn list_installed_apps() -> eyre::Result<Vec<calimero_primitives::app::InstalledApp>> {
+    Ok(vec![
+        app::InstalledApp {
+            id: 1,
+            app_id: 1000,
+        },
+        app::InstalledApp {
+            id: 2000,
+            app_id: 1000,
+        },
+    ])
+}
+
+pub async fn install_binary_app(_: app::AppBinary) -> eyre::Result<app::InstalledAppId> {
+    info!("installing app binary...");
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    info!("installation complete");
+    Ok(rand::random())
+}
+
+pub async fn install_remote_app(_: app::AppId) -> eyre::Result<app::InstalledAppId> {
+    info!("installing app from remote store...");
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    info!("installation complete");
+    Ok(rand::random())
+}
+
+pub async fn uninstall_app(id: app::InstalledAppId) -> eyre::Result<app::InstalledAppId> {
+    info!("installing app binary...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    info!("installation complete");
+    Ok(id)
 }
