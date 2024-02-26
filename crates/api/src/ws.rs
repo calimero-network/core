@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{hash_map, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -64,11 +64,23 @@ async fn client_connected(
     connections: ConnectionsState,
     subscriptions: SubscriptionsState,
 ) {
-    let client_id = rand::random();
+    let (tx, mut rx) = mpsc::channel::<api::WsCommand>(32);
+    let client_id = loop {
+        let peer_id = rand::random();
+
+        let mut connections = connections.write().await;
+        match connections.entry(peer_id) {
+            hash_map::Entry::Occupied(_) => continue,
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(tx);
+                break peer_id;
+            }
+        }
+    };
+
     info!("new client connected(client_id={})", client_id);
 
     let (mut ws_tx, mut ws_rx) = ws.split();
-    let (tx, mut rx) = mpsc::channel::<api::WsCommand>(32);
 
     tokio::task::spawn(async move {
         while let Some(command) = rx.recv().await {
@@ -114,8 +126,6 @@ async fn client_connected(
             }
         }
     });
-
-    connections.write().await.insert(client_id, tx);
 
     while let Some(message) = ws_rx.next().await {
         let message = match message {
