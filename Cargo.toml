@@ -12,7 +12,7 @@ members = [
   "./crates/sdk",
   "./crates/runtime",
 
-  "./apps/kv-store",
+  "./apps/kv-store", "apps/nft_contract",
 ]
 
 [workspace.dependencies]
@@ -26,6 +26,8 @@ dirs = "5.0.1"
 fragile = "2.0.0"
 jsonrpsee = "0.22.0"
 libp2p = "0.53.2"
+near-sdk = "5.0.0"
+near-sdk-macros = "5.0.0"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
 serde = "1.0.196"
