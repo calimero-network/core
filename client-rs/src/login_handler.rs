@@ -3,7 +3,9 @@ use crate::storage::save_keys_to_storage;
 use std::process;
 
 use color_eyre::owo_colors::OwoColorize;
-use inquire::{InquireError, Password, Text};
+use inquire::InquireError;
+use inquire::Password;
+use inquire::Text;
 
 pub fn handle_login_result(result: Result<&str, InquireError>) {
     match result {

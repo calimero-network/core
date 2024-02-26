@@ -3,10 +3,15 @@ use std::time::Duration;
 use rand::Rng;
 
 use color_eyre::owo_colors::OwoColorize;
-use prettytable::{Table, Row, Cell};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use prettytable::Table;
+use prettytable::Row;
+use prettytable::Cell;
+use indicatif::MultiProgress;
+use indicatif::ProgressBar;
+use indicatif::ProgressStyle;
 
-use crate::app::{App, InstalledApp};
+use crate::app::App;
+use crate::app::InstalledApp;
 
 pub fn print_table_apps(asset: &String, header: &Vec<[&str; 2]>, table_rows: Vec<App>) {
     println!("\nListing {}...\n", asset.yellow());

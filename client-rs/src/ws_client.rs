@@ -9,11 +9,17 @@ use rand::Rng;
 use color_eyre::owo_colors::OwoColorize;
 
 use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite:: WebSocketStream;
+use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite:: tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
-use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
+use futures_util::stream::SplitSink;
+use futures_util::stream::SplitStream;
+use futures_util::SinkExt;
+use futures_util::StreamExt;
 
 use crate::api;
 use crate::output;
@@ -25,7 +31,7 @@ pub struct WSClientStream {
 
 impl WSClientStream {
     pub async fn get_stream(ws_address: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        println!("Connecting to {}", ws_address.green());
+        println!("Connected to ws: {}", ws_address.green());
         let (ws_stream, _) = connect_async(ws_address).await?;
         let (write,read) = ws_stream.split();
         Ok(Self {

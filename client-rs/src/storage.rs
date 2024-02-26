@@ -1,6 +1,8 @@
-use std::fs::{self, File};
+use std::fs::{self};
+use std::fs::File;
 use std::io::prelude::*;
-use std::{error::Error, fmt};
+use std::error::Error;
+use std::fmt;
 
 use serde::Serialize;
 

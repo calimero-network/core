@@ -11,9 +11,12 @@ mod app;
 use std::net::IpAddr;
 use std::thread;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::Parser;
+use clap::Subcommand;
+use clap::ValueEnum;
 use color_eyre::owo_colors::OwoColorize;
-use inquire::{InquireError, Select};
+use inquire::InquireError;
+use inquire::Select;
 use libp2p::Multiaddr;
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -164,7 +167,7 @@ enum Commands {
         #[arg(value_name = "APP_ID", long = "app-id", aliases = ["app-id", "app", "id"], required = true)]
         app_id: u32,
     },
-    /// Uninstall applicaton,
+    /// Uninstall applicaton
     UninstallApp {
         #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
         ws_address: String,
@@ -172,7 +175,7 @@ enum Commands {
         #[arg(value_name = "APP_ID", long = "app-id", aliases = ["app-id", "app", "id"], required = true)]
         app_id: u32,
     },
-    /// Subscribe to application websocket,
+    /// Subscribe to application websocket
     Subscribe {
         #[arg(value_name = "ADDRESS", short = 'a', long = "ws-address", aliases = ["addr", "address", "a", "ws-address"], required = true)]
         ws_address: String,

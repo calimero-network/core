@@ -1,8 +1,8 @@
-use rand::{Rng, thread_rng};
+use rand::Rng;
+use rand::thread_rng;
 
 use reqwest::blocking::Client;
 use serde::Serialize;
-
 
 #[derive(Serialize)]
 struct JsonRequestSend {
