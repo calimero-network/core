@@ -800,18 +800,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-sdk"
+name = "calimero-api"
 version = "0.1.0"
 dependencies = [
- "borsh",
-]
-
-[[package]]
-name = "calimero_api"
-version = "0.1.0"
-dependencies = [
- "calimero_controller",
- "calimero_primitives",
+ "calimero-controller",
+ "calimero-primitives",
  "color-eyre",
  "futures-util",
  "rand 0.8.5",
@@ -825,10 +818,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero_controller"
+name = "calimero-controller"
 version = "0.1.0"
 dependencies = [
- "calimero_primitives",
+ "calimero-primitives",
  "color-eyre",
  "rand 0.8.5",
  "serde",
@@ -840,10 +833,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero_peer"
+name = "calimero-peer"
 version = "0.1.0"
 dependencies = [
- "calimero_api",
+ "calimero-api",
  "camino",
  "clap",
  "color-eyre",
@@ -858,7 +851,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero_primitives"
+name = "calimero-primitives"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -866,6 +859,13 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "warp",
+]
+
+[[package]]
+name = "calimero-sdk"
+version = "0.1.0"
+dependencies = [
+ "borsh",
 ]
 
 [[package]]

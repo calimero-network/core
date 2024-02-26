@@ -136,7 +136,7 @@ async fn client_connected(
             )
             .await
             .unwrap_or_else(|e| {
-                error!(%e, "failed to process (client_id={})", client_id);
+                error!(%e, "failed to process text messasge (client_id={})", client_id);
             });
         } else if message.is_close() {
             debug!("received close message");
@@ -228,11 +228,7 @@ async fn handle_api_request(
     };
 
     if let Some(tx) = connections.read().await.get(&client_id) {
-        tx.send(api::WsCommand::Reply(response))
-            .await
-            .unwrap_or_else(|e| {
-                error!("failed to send WsResponse (client_id={}): {}", client_id, e);
-            });
+        tx.send(api::WsCommand::Reply(response)).await?
     };
 
     Ok(())
