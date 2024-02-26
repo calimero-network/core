@@ -6,7 +6,8 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 
-use crate::{api::{ApiRequest, ApiResponse, ApiResponseResult, WsRequest, WsResponse}, output};
+use crate::api;
+use crate::output;
 
 pub struct WSClientStream {
     pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
@@ -30,35 +31,35 @@ fn generate_random_number() -> u32 {
     rng.gen_range(100_000..=1_000_000)
 }
 
-fn generate_request_method(method: &String) -> WsRequest {
+fn generate_request_method(method: &String) -> api::WsRequest {
     let id = generate_random_number();
 
     let command = match method.as_str() {
-        "listRemoteApps" => ApiRequest::ListRemoteApps(),
-        "listInstalledApps" => ApiRequest::ListInstalledApps(),
-        "unsubscribeAll" => ApiRequest::UnsubscribeFromAll(),
-        _ => ApiRequest::ListRemoteApps()
+        "listRemoteApps" => api::ApiRequest::ListRemoteApps(),
+        "listInstalledApps" => api::ApiRequest::ListInstalledApps(),
+        "unsubscribeAll" => api::ApiRequest::UnsubscribeFromAll(),
+        _ => api::ApiRequest::ListRemoteApps()
     };
 
-    WsRequest {
+    api::WsRequest {
         id: Some(id),
         command,
     }
 }
 
-fn generate_request_params(method: &String, params: Vec<u32>) -> WsRequest {
+fn generate_request_params(method: &String, params: Vec<u32>) -> api::WsRequest {
     let id = generate_random_number();
 
     let command = match method.as_str() {
-        "installBinaryApp" => ApiRequest::InstallBinaryApp(params[0].to_be_bytes().to_vec()),
-        "installRemoteApp" => ApiRequest::InstallRemoteApp(params[0]),
-        "uninstallApp" => ApiRequest::UninstallApp(params[0]),
-        "subscribe" => ApiRequest::Subscribe(params[0]),
-        "unsubscribe" => ApiRequest::Unsubscribe(params[0]),
-        _ => ApiRequest::InstallBinaryApp(params[0].to_be_bytes().to_vec())
+        "installBinaryApp" => api::ApiRequest::InstallBinaryApp(params[0].to_be_bytes().to_vec()),
+        "installRemoteApp" => api::ApiRequest::InstallRemoteApp(params[0]),
+        "uninstallApp" => api::ApiRequest::UninstallApp(params[0]),
+        "subscribe" => api::ApiRequest::Subscribe(params[0]),
+        "unsubscribe" => api::ApiRequest::Unsubscribe(params[0]),
+        _ => api::ApiRequest::InstallBinaryApp(params[0].to_be_bytes().to_vec())
     };
 
-    WsRequest {
+    api::WsRequest {
         id: Some(id),
         command,
     }
@@ -81,7 +82,7 @@ pub async fn list_remote_apps(ws_address: &String, method: &String) {
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
-                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
                         println!("Received response with id: {}",
@@ -89,9 +90,9 @@ pub async fn list_remote_apps(ws_address: &String, method: &String) {
                         let result = json_request.result;
 
                         match result {
-                            ApiResponseResult::Ok(response) => {
+                            api::ApiResponseResult::Ok(response) => {
                                 match response {
-                                    ApiResponse::ListRemoteApps(apps) => {
+                                    api::ApiResponse::ListRemoteApps(apps) => {
                                         let asset = String::from("Remote Apps");
                                         let header: Vec<[&str; 2]> = vec![
                                             ["ID", "Description"]
@@ -104,7 +105,7 @@ pub async fn list_remote_apps(ws_address: &String, method: &String) {
                                     }
                                 }
                             }
-                            ApiResponseResult::Err(err) => {
+                            api::ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -137,7 +138,7 @@ pub async fn list_installed_apps(ws_address: &String, method: &String) {
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
-                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
                         println!("Received response with id: {}",
@@ -145,9 +146,9 @@ pub async fn list_installed_apps(ws_address: &String, method: &String) {
                         let result = json_request.result;
 
                         match result {
-                            ApiResponseResult::Ok(response) => {
+                            api::ApiResponseResult::Ok(response) => {
                                 match response {
-                                    ApiResponse::ListInstalledApps(apps) => {
+                                    api::ApiResponse::ListInstalledApps(apps) => {
                                         let asset = String::from("Remote Apps");
                                         let header: Vec<[&str; 2]> = vec![
                                             ["ID", "Description"]
@@ -161,7 +162,7 @@ pub async fn list_installed_apps(ws_address: &String, method: &String) {
                                     }
                                 }
                             }
-                            ApiResponseResult::Err(err) => {
+                            api::ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -194,7 +195,7 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
                 // Handle progress responses and add loader
-                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
                         println!("Received response with id: {}",
@@ -202,9 +203,9 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
                         let result = json_request.result;
 
                         match result {
-                            ApiResponseResult::Ok(response) => {
+                            api::ApiResponseResult::Ok(response) => {
                                 match response {
-                                    ApiResponse::InstallRemoteApp(app_id) => {
+                                    api::ApiResponse::InstallRemoteApp(app_id) => {
                                         println!("App with id: {} installed", app_id.green());
                                         return;
                                     }
@@ -213,7 +214,7 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
                                     }
                                 }
                             }
-                            ApiResponseResult::Err(err) => {
+                            api::ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -248,7 +249,7 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
-                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     // Handle progress responses and add loader
                     if response_id == request_object.id.unwrap() {
@@ -257,9 +258,9 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
                         let result = json_request.result;
 
                         match result {
-                            ApiResponseResult::Ok(response) => {
+                            api::ApiResponseResult::Ok(response) => {
                                 match response {
-                                    ApiResponse::InstallBinaryApp(app_id) => {
+                                    api::ApiResponse::InstallBinaryApp(app_id) => {
                                         println!("App with id: {} installed", app_id.green());
                                         return;
                                     }
@@ -268,7 +269,7 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
                                     }
                                 }
                             }
-                            ApiResponseResult::Err(err) => {
+                            api::ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -300,7 +301,7 @@ pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
-                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     // Handle progress response and add progress loader
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
@@ -309,9 +310,9 @@ pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
                         let result = json_request.result;
 
                         match result {
-                            ApiResponseResult::Ok(response) => {
+                            api::ApiResponseResult::Ok(response) => {
                                 match response {
-                                    ApiResponse::UninstallApp(app_id) => {
+                                    api::ApiResponse::UninstallApp(app_id) => {
                                         println!("App with id: {} uninstalled", app_id.green());
                                         return;
                                     }
@@ -320,7 +321,7 @@ pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
                                     }
                                 }
                             }
-                            ApiResponseResult::Err(err) => {
+                            api::ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -352,7 +353,7 @@ pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
-                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
                         println!("Received response with id: {}",
@@ -360,9 +361,9 @@ pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
                         let result = json_request.result;
 
                         match result {
-                            ApiResponseResult::Ok(response) => {
+                            api::ApiResponseResult::Ok(response) => {
                                 match response {
-                                    ApiResponse::Subscribe(app_id) => {
+                                    api::ApiResponse::Subscribe(app_id) => {
                                         println!("Subscribed to App with id: {}", app_id.green());
                                         // Handle more info -> better structure for subscribe and what it does
                                         return;
@@ -372,7 +373,7 @@ pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
                                     }
                                 }
                             }
-                            ApiResponseResult::Err(err) => {
+                            api::ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -404,7 +405,7 @@ pub async fn unsubscribe(ws_address: &String, method: &String, app_id: &u32) {
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
-                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
                         println!("Received response with id: {}",
@@ -412,9 +413,9 @@ pub async fn unsubscribe(ws_address: &String, method: &String, app_id: &u32) {
                         let result = json_request.result;
 
                         match result {
-                            ApiResponseResult::Ok(response) => {
+                            api::ApiResponseResult::Ok(response) => {
                                 match response {
-                                    ApiResponse::Unsubscribe(app_id) => {
+                                    api::ApiResponse::Unsubscribe(app_id) => {
                                         println!("Unsubscribed to App with id: {}", app_id.green());
                                         return;
                                     }
@@ -423,7 +424,7 @@ pub async fn unsubscribe(ws_address: &String, method: &String, app_id: &u32) {
                                     }
                                 }
                             }
-                            ApiResponseResult::Err(err) => {
+                            api::ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
@@ -456,7 +457,7 @@ pub async fn unsubscribe_all(ws_address: &String, method: &String) {
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
-                if let Ok(json_request) = serde_json::from_str::<WsResponse>(text.as_str()) {
+                if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
                         println!("Received response with id: {}",
@@ -464,9 +465,9 @@ pub async fn unsubscribe_all(ws_address: &String, method: &String) {
                         let result = json_request.result;
 
                         match result {
-                            ApiResponseResult::Ok(response) => {
+                            api::ApiResponseResult::Ok(response) => {
                                 match response {
-                                    ApiResponse::UnsubscribeFromAll() => {
+                                    api::ApiResponse::UnsubscribeFromAll() => {
                                         println!("Unsubscribed from all.");
                                         return;
                                     }
@@ -475,7 +476,7 @@ pub async fn unsubscribe_all(ws_address: &String, method: &String) {
                                     }
                                 }
                             }
-                            ApiResponseResult::Err(err) => {
+                            api::ApiResponseResult::Err(err) => {
                                 println!("Error fetching data: {}", err);
                                 continue;
                             }
