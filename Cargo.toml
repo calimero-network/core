@@ -6,7 +6,13 @@ license = "MIT OR Apache-2.0"
 
 [workspace]
 resolver = "2"
-members = ["./chat-p0c", "./apps/kv-store", "./sdk", "./vm-runner", "./identity-rs"]
+members = [
+  "./chat-p0c",
+  "./apps/kv-store",
+  "./sdk",
+  "./vm-runner",
+  "./identity-rs",
+]
 
 [workspace.dependencies]
 borsh = "1.3.1"

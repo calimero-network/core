@@ -21,8 +21,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::cli::{self, NodeType};
 use crate::config::Config;
-use crate::endpoint;
-use crate::endpoint::CalimeroRPCServer;
+use crate::endpoint::{self, CalimeroRPCServer};
 
 mod events;
 

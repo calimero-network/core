@@ -1,6 +1,5 @@
 use color_eyre::owo_colors::OwoColorize;
 use serde_json::json;
-
 use vm_runner::{logic, run, store, Constraint};
 
 fn main() -> color_eyre::Result<()> {
