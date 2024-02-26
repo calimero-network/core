@@ -1,3 +1,8 @@
+use std::time::Duration;
+use std::thread;
+use indicatif::ProgressBar;
+use indicatif::ProgressStyle;
+
 use rand::Rng;
 
 use color_eyre::owo_colors::OwoColorize;
@@ -6,8 +11,12 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 
+
 use crate::api;
 use crate::output;
+
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
 pub struct WSClientStream {
     pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
@@ -35,10 +44,10 @@ fn generate_request_method(method: &String) -> api::WsRequest {
     let id = generate_random_number();
 
     let command = match method.as_str() {
-        "listRemoteApps" => api::ApiRequest::ListRemoteApps(),
-        "listInstalledApps" => api::ApiRequest::ListInstalledApps(),
-        "unsubscribeAll" => api::ApiRequest::UnsubscribeFromAll(),
-        _ => api::ApiRequest::ListRemoteApps()
+        "listRemoteApps" => api::ApiRequest::ListRemoteApps,
+        "listInstalledApps" => api::ApiRequest::ListInstalledApps,
+        "unsubscribeAll" => api::ApiRequest::UnsubscribeFromAll,
+        _ => api::ApiRequest::ListRemoteApps
     };
 
     api::WsRequest {
@@ -65,8 +74,21 @@ fn generate_request_params(method: &String, params: Vec<u32>) -> api::WsRequest 
     }
 }
 
+async fn close_connection(ws_client_stream: &mut WSClientStream ) {
+    let close_code = CloseCode::Normal;
+    let reason = String::from("End");
+
+    let close_frame = CloseFrame {
+        code: close_code.into(),
+        reason: reason.clone().into(),
+    };
+
+    let message = Message::Close(Some(close_frame));
+
+    ws_client_stream.write.send(message).await.expect("Failed to send message");
+}
+
 pub async fn list_remote_apps(ws_address: &String, method: &String) {
-    // TODO - error handling and program exit
     let mut ws_client_stream = WSClientStream::get_stream(ws_address)
         .await
         .expect("Failed to get WebSocket stream");
@@ -98,10 +120,12 @@ pub async fn list_remote_apps(ws_address: &String, method: &String) {
                                             ["ID", "Description"]
                                         ];
                                         output::print_table_apps(&asset, &header, apps);
-                                        return;
+                                        
+                                        break;
                                     }
                                     _ => {
-                                        // Handle other ApiResponse variants if needed
+                                        println!("Error - Unknown result");
+                                        break;
                                     }
                                 }
                             }
@@ -119,6 +143,7 @@ pub async fn list_remote_apps(ws_address: &String, method: &String) {
             }
         }
     }
+    close_connection(&mut ws_client_stream).await;
 }
 
 pub async fn list_installed_apps(ws_address: &String, method: &String) {
@@ -191,15 +216,33 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
 
     ws_client_stream.write.send(msg).await.expect("Failed to send message");
 
+    let pb = ProgressBar::new_spinner();
+    let style = ProgressStyle::default_spinner()
+        .tick_chars("/|\\- ");
+    
+    let style = match style.template("{spinner:.green} {msg}") {
+        Ok(style) => style,
+        Err(e) => {
+            eprintln!("Error setting progress bar template: {:?}", e);
+            return;
+        }
+    };
+    pb.set_style(style);
+
     loop {
+        pb.enable_steady_tick(Duration::from_millis(100));
+        
+        for _ in 0..100 {
+            pb.set_message("Loading...");
+            thread::sleep(Duration::from_millis(50));
+        }
+        
+        pb.disable_steady_tick();
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
-                // Handle progress responses and add loader
                 if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
-                        println!("Received response with id: {}",
-                        response_id.green());
                         let result = json_request.result;
 
                         match result {
@@ -207,10 +250,11 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
                                 match response {
                                     api::ApiResponse::InstallRemoteApp(app_id) => {
                                         println!("App with id: {} installed", app_id.green());
-                                        return;
+                                        break;
                                     }
                                     _ => {
-                                        // Handle other ApiResponse variants if needed
+                                        println!("Error - Unknown result");
+                                        break;
                                     }
                                 }
                             }
@@ -228,6 +272,8 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
             }
         }
     }
+    pb.finish_with_message("Application Installed!");
+    close_connection(&mut ws_client_stream).await;
 }
 
 pub async fn install_binary_app(ws_address: &String, method: &String, binary_path: &String) {

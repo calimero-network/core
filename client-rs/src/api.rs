@@ -14,14 +14,14 @@ pub enum ApiError {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum ApiRequest {
-    ListRemoteApps(),
-    ListInstalledApps(),
+    ListRemoteApps,
+    ListInstalledApps,
     InstallBinaryApp(app::AppBinary),
     InstallRemoteApp(app::AppId),
     UninstallApp(app::InstalledAppId),
     Subscribe(app::InstalledAppId),
     Unsubscribe(app::InstalledAppId),
-    UnsubscribeFromAll(),
+    UnsubscribeFromAll,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -47,7 +47,7 @@ pub enum ApiResponseResult {
 
 // WebSocket API
 /// Client ID is a locally unique identifier of a WebSocket client connection.
-pub type WsClientId = u32;
+pub type _WsClientId = u32;
 /// Request Id is a locally unique identifier of a WebSocket client connection.
 pub type WsRequestId = u32;
 
@@ -65,7 +65,7 @@ pub struct WsResponse {
     pub result: ApiResponseResult,
 }
 
-pub enum WsCommand {
+pub enum _WsCommand {
     Close(protocol::frame::coding::CloseCode, String),
     Reply(WsResponse),
 }

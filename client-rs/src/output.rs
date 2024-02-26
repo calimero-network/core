@@ -8,21 +8,6 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use crate::app::{App, InstalledApp};
 
-pub fn print_table(asset: &String, header: &Vec<[&str; 3]>, table_rows: &Vec<[&str; 3]>) {
-    println!("Listing {}...",asset.green());
-    let mut table = Table::new();
-
-    let header_row_cells: Vec<Cell> = header[0].iter().map(|&s| Cell::new(s)).collect();
-    table.add_row(Row::new(header_row_cells));
-
-    for row_data in table_rows {
-        let row_cells: Vec<Cell> = row_data.iter().map(|&s| Cell::new(s)).collect();
-        table.add_row(Row::new(row_cells));
-    }
-
-    table.printstd();
-}
-
 pub fn print_table_apps(asset: &String, header: &Vec<[&str; 2]>, table_rows: Vec<App>) {
     println!("\nListing {}...\n", asset.yellow());
     let mut table = Table::new();

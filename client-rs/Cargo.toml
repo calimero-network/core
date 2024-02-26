@@ -27,3 +27,4 @@ tokio-tungstenite = { version = "0.21.0", features = ["native-tls"] }
 url = "2.5.0"
 futures-util = "0.3.30"
 tokio = { version = "1", features = ["full"] }
+warp = "0.3.6"

@@ -11,7 +11,7 @@ use crate::{BootstrapNodes, RootArgs, InitParams};
 
 pub async fn run(args: RootArgs, init: InitParams) -> eyre::Result<()> {
     let mdns = init.mdns && !init.no_mdns;
-
+    println!("{}",args.home);
     if !args.home.exists() {
         if args.home == config::default_chat_dir() {
             fs::create_dir_all(&args.home)
@@ -74,6 +74,6 @@ pub async fn run(args: RootArgs, init: InitParams) -> eyre::Result<()> {
     config.save(&args.home)?;
 
     info!("Initialized a chat node in {:?}", args.home);
-
+    println!("Initialized a chat node in {:?}", args.home);
     Ok(())
 }

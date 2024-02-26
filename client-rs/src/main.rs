@@ -230,7 +230,6 @@ async fn main() {
                 no_mdns: *no_mdns,
                 force: *force,
             };
-            println!("{}",init_params.mdns);
             let _handle = thread::spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
