@@ -11,6 +11,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
-calimero-sdk = { path = "../../sdk" }
+calimero-sdk = { path = "../../crates/sdk" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

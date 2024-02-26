@@ -2,14 +2,14 @@ use std::num::NonZeroU64;
 
 use ouroboros::self_referencing;
 
-use super::store::Storage;
+use crate::constraint::{Constrained, MaxU64};
+use crate::errors::{FunctionCallError, HostError, PanicContext};
+use crate::store::Storage;
 
 mod errors;
 mod imports;
 mod registers;
 
-use crate::constraint::{Constrained, MaxU64};
-use crate::errors::{FunctionCallError, HostError, PanicContext};
 pub use errors::VMLogicError;
 use registers::Registers;
 

@@ -1,12 +1,11 @@
 use std::io;
 
-use libp2p::{identity::PublicKey, kad::store::MemoryStore};
+use libp2p::identity::PublicKey;
+use libp2p::kad::store::MemoryStore;
 use multibase::{encode, Base};
 
-use crate::{
-    dht::Dht,
-    types::{AlgorithmType, DidDocument, VerificationMethod},
-};
+use crate::dht::Dht;
+use crate::types::{AlgorithmType, DidDocument, VerificationMethod};
 
 #[derive(Debug)]
 pub struct Authentication {

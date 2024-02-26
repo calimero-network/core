@@ -1,5 +1,4 @@
-use std::fmt;
-use std::fs;
+use std::{fmt, fs};
 
 use color_eyre::eyre::{self, Context};
 use libp2p::identity;
@@ -177,11 +176,9 @@ mod serde_identity {
     use std::fmt;
 
     use libp2p::identity::Keypair;
-    use serde::{
-        de::{self, MapAccess},
-        ser::{self, SerializeMap},
-        Deserializer, Serializer,
-    };
+    use serde::de::{self, MapAccess};
+    use serde::ser::{self, SerializeMap};
+    use serde::{Deserializer, Serializer};
 
     pub fn serialize<S>(key: &Keypair, serializer: S) -> Result<S::Ok, S::Error>
     where
