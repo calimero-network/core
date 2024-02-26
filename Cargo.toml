@@ -7,18 +7,19 @@ license = "MIT OR Apache-2.0"
 [workspace]
 resolver = "2"
 members = [
-    "./chat-p0c",
+    "./crates/node",
+    "./crates/identity",
+    "./crates/sdk",
+    "./crates/runtime",
     "./apps/kv-store",
-    "./sdk",
-    "./vm-runner",
-    "./identity-rs",
-    "./calimero-api",
-    "./calimero-controller",
-    "./calimero-peer",
-    "./calimero-primitives",
+    "./crates/api",
+    "./crates/controller",
+    "./crates/peer",
+    "./crates/primitives",
 ]
 
 [workspace.dependencies]
+axum = "0.6.20"
 borsh = "1.3.1"
 bs58 = "0.5.0"
 camino = "1.1.6"
@@ -27,6 +28,7 @@ color-eyre = "0.6.2"
 dirs = "5.0.1"
 fragile = "2.0.0"
 futures-util = "0.3.30"
+jsonrpsee = "0.22.0"
 libp2p = "0.53.2"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"

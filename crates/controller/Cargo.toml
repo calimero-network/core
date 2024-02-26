@@ -1,5 +1,5 @@
 [package]
-name = "calimero-api"
+name = "calimero-controller"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -8,15 +8,12 @@ license.workspace = true
 
 [dependencies]
 color-eyre.workspace = true
-futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-warp.workspace = true
 rand.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
-tokio-tungstenite.workspace = true
 tracing.workspace = true
 
-calimero-primitives.path = "../calimero-primitives"
-calimero-controller.path = "../calimero-controller"
+calimero-primitives.path = "../primitives"

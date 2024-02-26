@@ -29,9 +29,10 @@ impl KvStore {
 }
 
 mod code_generated_from_calimero_sdk_macros {
-    use super::KvStore;
     use calimero_sdk::env;
     use serde::{Deserialize, Serialize};
+
+    use super::KvStore;
 
     #[no_mangle]
     pub extern "C" fn set() {
