@@ -11,11 +11,12 @@ members = [
     "./crates/identity",
     "./crates/sdk",
     "./crates/runtime",
-    "./apps/kv-store",
     "./crates/api",
     "./crates/controller",
     "./crates/peer",
     "./crates/primitives",
+
+    "./apps/kv-store",
 ]
 
 [workspace.dependencies]
