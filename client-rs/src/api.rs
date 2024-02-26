@@ -1,8 +1,7 @@
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::protocol;
 
-use crate::app::{App, AppBinary, AppId, InstalledApp, InstalledAppId};
+use crate::app;
 
 // API
 #[derive(Serialize, Deserialize, Debug)]
@@ -12,48 +11,37 @@ pub enum ApiError {
     ExecutionError(String),
 }
 
-impl fmt::Display for ApiError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ApiError::SerdeError(message) => write!(f, "Serde error: {}", message),
-            ApiError::ExecutionError(message) => write!(f, "Execution error: {}", message),
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum ApiRequest {
     ListRemoteApps(),
     ListInstalledApps(),
-    InstallBinaryApp(AppBinary),
-    InstallRemoteApp(AppId),
-    UninstallApp(InstalledAppId),
-    Subscribe(InstalledAppId),
-    Unsubscribe(InstalledAppId),
+    InstallBinaryApp(app::AppBinary),
+    InstallRemoteApp(app::AppId),
+    UninstallApp(app::InstalledAppId),
+    Subscribe(app::InstalledAppId),
+    Unsubscribe(app::InstalledAppId),
     UnsubscribeFromAll(),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum ApiResponse {
-    ListRemoteApps(Vec<App>),
-    ListInstalledApps(Vec<InstalledApp>),
-    GetInstalledApp(InstalledApp),
-    InstallBinaryApp(InstalledAppId),
-    InstallRemoteApp(InstalledAppId),
-    UninstallApp(InstalledAppId),
-    Subscribe(InstalledAppId),
-    Unsubscribe(InstalledAppId),
-    UnsubscribeFromAll(),
+    ListRemoteApps(Vec<app::App>),
+    ListInstalledApps(Vec<app::InstalledApp>),
+    GetInstalledApp(app::InstalledApp),
+    InstallBinaryApp(app::InstalledAppId),
+    InstallRemoteApp(app::InstalledAppId),
+    UninstallApp(app::InstalledAppId),
+    Subscribe(app::InstalledAppId),
+    Unsubscribe(app::InstalledAppId),
+    UnsubscribeFromAll,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum ApiResponseResult {
-    #[serde(rename = "ok")]
     Ok(ApiResponse),
-    #[serde(rename = "err")]
     Err(ApiError),
 }
 
@@ -75,4 +63,9 @@ pub struct WsRequest {
 pub struct WsResponse {
     pub id: Option<WsRequestId>,
     pub result: ApiResponseResult,
+}
+
+pub enum WsCommand {
+    Close(protocol::frame::coding::CloseCode, String),
+    Reply(WsResponse),
 }

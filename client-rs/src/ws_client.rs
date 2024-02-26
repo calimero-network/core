@@ -106,7 +106,7 @@ pub async fn list_remote_apps(ws_address: &String, method: &String) {
                                 }
                             }
                             api::ApiResponseResult::Err(err) => {
-                                println!("Error fetching data: {}", err);
+                                println!("Error fetching data: {:?}", err);
                                 continue;
                             }
                         }
@@ -163,7 +163,7 @@ pub async fn list_installed_apps(ws_address: &String, method: &String) {
                                 }
                             }
                             api::ApiResponseResult::Err(err) => {
-                                println!("Error fetching data: {}", err);
+                                println!("Error fetching data: {:?}", err);
                                 continue;
                             }
                         }
@@ -215,7 +215,7 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
                                 }
                             }
                             api::ApiResponseResult::Err(err) => {
-                                println!("Error fetching data: {}", err);
+                                println!("Error fetching data: {:?}", err);
                                 continue;
                             }
                         }
@@ -270,7 +270,7 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
                                 }
                             }
                             api::ApiResponseResult::Err(err) => {
-                                println!("Error fetching data: {}", err);
+                                println!("Error fetching data: {:?}", err);
                                 continue;
                             }
                         }
@@ -322,7 +322,7 @@ pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
                                 }
                             }
                             api::ApiResponseResult::Err(err) => {
-                                println!("Error fetching data: {}", err);
+                                println!("Error fetching data: {:?}", err);
                                 continue;
                             }
                         }
@@ -374,7 +374,7 @@ pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
                                 }
                             }
                             api::ApiResponseResult::Err(err) => {
-                                println!("Error fetching data: {}", err);
+                                println!("Error fetching data: {:?}", err);
                                 continue;
                             }
                         }
@@ -425,7 +425,7 @@ pub async fn unsubscribe(ws_address: &String, method: &String, app_id: &u32) {
                                 }
                             }
                             api::ApiResponseResult::Err(err) => {
-                                println!("Error fetching data: {}", err);
+                                println!("Error fetching data: {:?}", err);
                                 continue;
                             }
                         }
@@ -467,7 +467,7 @@ pub async fn unsubscribe_all(ws_address: &String, method: &String) {
                         match result {
                             api::ApiResponseResult::Ok(response) => {
                                 match response {
-                                    api::ApiResponse::UnsubscribeFromAll() => {
+                                    api::ApiResponse::UnsubscribeFromAll => {
                                         println!("Unsubscribed from all.");
                                         return;
                                     }
@@ -477,7 +477,7 @@ pub async fn unsubscribe_all(ws_address: &String, method: &String) {
                                 }
                             }
                             api::ApiResponseResult::Err(err) => {
-                                println!("Error fetching data: {}", err);
+                                println!("Error fetching data: {:?}", err);
                                 continue;
                             }
                         }
