@@ -1,16 +1,18 @@
-use std::{env, str::FromStr};
+use std::env;
+use std::str::FromStr;
 
+use calimero_api::ws;
+use calimero_peer::cli::RootCommand;
+use calimero_peer::config::Config;
 use clap::Parser;
 use color_eyre::eyre;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::Level;
-use tracing_subscriber::{filter::Targets, fmt, prelude::*};
-
-use calimero_api::ws;
-use calimero_peer::cli::RootCommand;
-use calimero_peer::config::Config;
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::fmt;
+use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {

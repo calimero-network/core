@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use calimero_primitives::api;
 use color_eyre::eyre;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use tokio::sync::{mpsc, RwLock};
@@ -9,8 +10,6 @@ use tokio_tungstenite::tungstenite::protocol;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 use warp::Filter;
-
-use calimero_primitives::api;
 
 use crate::subscriptions::Subscriptions;
 
@@ -80,7 +79,7 @@ async fn client_connected(
                         .unwrap_or_else(|e| {
                             error!(
                                 %e,
-                                "failed to send Message::close_with(client_id={})",
+                                "failed to send ws::Message::close_with(client_id={})",
                                 client_id,
                             );
                         })
@@ -94,7 +93,7 @@ async fn client_connected(
                         Err(e) => {
                             error!(
                                 %e,
-                                "failed to serialize WsResponse(client_id={})",
+                                "failed to serialize api::WsCommand::WsResponse(client_id={})",
                                 client_id,
                             );
                             continue;
@@ -105,7 +104,7 @@ async fn client_connected(
                         .unwrap_or_else(|e| {
                             error!(
                                 %e,
-                                "failed to send Message(client_id={})",
+                                "failed to send ws::Message(client_id={})",
                                 client_id,
 
                             );
@@ -122,7 +121,7 @@ async fn client_connected(
         let message = match message {
             Ok(message) => message,
             Err(e) => {
-                error!(%e, "failed to read Message(client_id={})", client_id);
+                error!(%e, "failed to read ws::Message(client_id={})", client_id);
                 break;
             }
         };
@@ -142,11 +141,13 @@ async fn client_connected(
             debug!("received close message");
             break;
         } else {
-            error!("unsupported Ws Message type(client_id={})", client_id)
+            error!("unsupported ws::Message type(client_id={})", client_id)
         }
     }
 
-    client_disconnected(client_id, connections, subscriptions).await;
+    info!("client disconnected(client_id={})", client_id);
+    subscriptions.write().await.unsubscribe_from_all(client_id);
+    connections.write().await.remove(&client_id);
 }
 
 async fn handle_text_message(
@@ -158,17 +159,20 @@ async fn handle_text_message(
     let message = match message.to_str() {
         Ok(s) => s,
         Err(_) => {
-            eyre::bail!("can not get string from Ws Message");
+            eyre::bail!("can not get string from ws::Message");
         }
     };
 
-    let message: api::WsRequest = serde_json::from_str(message)?;
+    let request: api::WsRequest = serde_json::from_str(message)?;
 
     tokio::task::spawn(async move {
-        handle_api_request(client_id, message, connections, subscriptions)
+        handle_api_request(client_id, request, connections, subscriptions)
             .await
             .unwrap_or_else(|e| {
-                error!("failed to send WsResponse (client_id={}): {}", client_id, e);
+                error!(
+                    "failed to process api::WsRequest (client_id={}): {}",
+                    client_id, e
+                );
             });
     });
 
@@ -232,15 +236,4 @@ async fn handle_api_request(
     };
 
     Ok(())
-}
-
-async fn client_disconnected(
-    client_id: api::WsClientId,
-    connections: ConnectionsState,
-    subscriptions: SubscriptionsState,
-) {
-    info!("client disconnected(client_id={})", client_id);
-
-    subscriptions.write().await.unsubscribe_from_all(client_id);
-    connections.write().await.remove(&client_id);
 }

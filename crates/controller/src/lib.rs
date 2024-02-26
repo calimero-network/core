@@ -1,8 +1,7 @@
 use std::time::Duration;
 
-use color_eyre::eyre;
-
 use calimero_primitives::app;
+use color_eyre::eyre;
 use tracing::info;
 
 pub async fn list_remote_apps() -> eyre::Result<Vec<calimero_primitives::app::App>> {
