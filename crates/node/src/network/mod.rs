@@ -44,21 +44,15 @@ struct Storage {
     last_known_transaction_hash: Arc<Mutex<Hash>>,
     nonce: u64,
     node_type: NodeType,
+
+    peer_id: PeerId,
+    chosen_coordinator: CoordinatorState,
 }
 
 pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     if !Config::exists(&args.home) {
         eyre::bail!("chat node is not initialized in {:?}", args.home);
     }
-
-    let mut storage = Storage {
-        transactions: Arc::new(Mutex::new(HashMap::new())),
-        confirmations: Arc::new(Mutex::new(HashMap::new())),
-        senders: Arc::new(Mutex::new(HashMap::new())),
-        last_known_transaction_hash: Default::default(),
-        nonce: 0,
-        node_type: args.node_type,
-    };
 
     let config: Config = Config::load(&args.home)?;
 
@@ -90,6 +84,19 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     // Setup the P2P network
     let peer_id = config.identity.public().to_peer_id();
     info!("Peer ID: {}", peer_id);
+
+    let mut storage = Storage {
+        transactions: Arc::new(Mutex::new(HashMap::new())),
+        confirmations: Arc::new(Mutex::new(HashMap::new())),
+        senders: Arc::new(Mutex::new(HashMap::new())),
+        last_known_transaction_hash: Default::default(),
+        nonce: 0,
+        node_type: args.node_type,
+        peer_id,
+
+        chosen_coordinator: CoordinatorState::None,
+    };
+
     let (mut client, mut event_receiver, event_loop) = init(peer_id, &config).await?;
     tokio::spawn(event_loop.run());
 
@@ -99,11 +106,29 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
 
     let _ = client.bootstrap().await;
 
+    // TODO coordinator should join only on request
     let topic = client
         .subscribe(gossipsub::IdentTopic::new(
             "/calimero/experimental/chat-p0c".to_owned(),
         ))
         .await?;
+
+    let coordinators_topic = client
+        .subscribe(gossipsub::IdentTopic::new(
+            "/calimero/experimental/coordinators".to_owned(),
+        ))
+        .await?;
+
+    if !storage.node_type.is_coordinator()
+        && client.mesh_peer_count(coordinators_topic.hash()).await != 0
+    {
+        client
+            .publish(
+                coordinators_topic.hash(),
+                serde_json::to_vec(&CeremonyAction::RequestForCoordinator)?,
+            )
+            .await?;
+    }
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     //let handler = handler_read.clone();
@@ -112,7 +137,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         tokio::select! {
             event = event_receiver.recv() => {
                 match event {
-                    Some(event) => event_recipient(client.clone(), topic.hash(), event, &mut storage).await?,
+                    Some(event) => event_recipient(client.clone(), topic.hash(), event, &mut storage, coordinators_topic.hash()).await?,
                     None => break,
                 }
             }
@@ -128,7 +153,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                             continue;
                         }
                         client
-                            .publish(topic.hash(), serde_json::to_vec(&create_transaction(&line, &storage, peer_id)?)?)
+                            .publish(topic.hash(), serde_json::to_vec(&create_transaction(&line, &storage)?)?)
                             .await
                             .expect("Failed to publish message.");
                     }
@@ -169,6 +194,7 @@ async fn event_recipient(
     our_topic_hash: gossipsub::TopicHash,
     event: Event,
     storage: &mut Storage,
+    coordinator_topic_hash: gossipsub::TopicHash,
 ) -> eyre::Result<()> {
     match event {
         Event::Subscribed {
@@ -185,60 +211,134 @@ async fn event_recipient(
         }
         Event::Message { message, .. } => {
             let source = message.source;
-            let message: NetworkAction = serde_json::from_slice(&message.data)?;
+            if message.topic == our_topic_hash {
+                let message: NetworkAction = serde_json::from_slice(&message.data)?;
 
-            match message {
-                NetworkAction::Transaction(transaction) => {
-                    let transaction_hash = store_transaction(transaction, storage, source)?;
+                match message {
+                    NetworkAction::Transaction(transaction) => {
+                        let transaction_hash = store_transaction(transaction, storage, source)?;
 
-                    if storage.node_type.is_coordinator() {
-                        storage.nonce += 1;
-                        let confirmation =
-                            NetworkAction::TransactionConfirmation(TransactionConfirmation {
-                                nonce: storage.nonce,
-                                transaction_hash: transaction_hash.clone(),
-                                // TODO proper confirmation hash
-                                confirmation_hash: transaction_hash,
-                            });
-                        client
-                            .publish(our_topic_hash, serde_json::to_vec(&confirmation)?)
-                            .await?;
+                        if storage.node_type.is_coordinator() {
+                            storage.nonce += 1;
+                            let confirmation =
+                                NetworkAction::TransactionConfirmation(TransactionConfirmation {
+                                    nonce: storage.nonce,
+                                    transaction_hash: transaction_hash.clone(),
+                                    // TODO proper confirmation hash
+                                    confirmation_hash: transaction_hash,
+                                });
+                            client
+                                .publish(our_topic_hash, serde_json::to_vec(&confirmation)?)
+                                .await?;
+                        }
+                    }
+                    NetworkAction::TransactionConfirmation(confirmation) => {
+                        if source != storage.chosen_coordinator.to_option() {
+                            info!("Ignoring confirmation from wrong coordinator");
+                        } else {
+                            info!(
+                                "Confirmation -> nonce: {}, transaction_hash: {:02X?}",
+                                confirmation.nonce, confirmation.transaction_hash
+                            );
+                            let src = if let Some(peer_id) = storage
+                                .senders
+                                .lock()
+                                .map_err(|guard| eyre::eyre!("{:?}", guard))?
+                                .get(&confirmation.transaction_hash)
+                            {
+                                peer_id.green().to_string()
+                            } else {
+                                "<unknown>".to_owned()
+                            };
+                            println!(
+                                "{}: {}",
+                                src,
+                                if let Some(transaction) = storage
+                                    .transactions
+                                    .lock()
+                                    .map_err(|guard| eyre::eyre!("{:?}", guard))?
+                                    .get(&confirmation.transaction_hash)
+                                {
+                                    match std::str::from_utf8(&transaction.payload[..]) {
+                                        Ok(s) => s,
+                                        Err(_) => "<binary>",
+                                    }
+                                } else {
+                                    "<unknown>"
+                                }
+                            );
+                        }
+                    }
+                    _ => println!("UNKNOWN"),
+                }
+            } else if message.topic == coordinator_topic_hash {
+                let message: CeremonyAction = serde_json::from_slice(&message.data)?;
+
+                match message {
+                    CeremonyAction::RequestForCoordinator => {
+                        info!("REQUEST FROM: {:?}", source);
+                        if storage.node_type.is_coordinator() {
+                            client
+                                .publish(
+                                    coordinator_topic_hash,
+                                    serde_json::to_vec(&CeremonyAction::CoordinatorOffer)?,
+                                )
+                                .await?;
+                        } else if storage.node_type.is_leader()
+                            && storage.chosen_coordinator.is_chosen()
+                        {
+                            // TODO this may need to come from coordinator
+                            // retrigger message to newly joined peer
+                            client
+                                .publish(
+                                    coordinator_topic_hash,
+                                    serde_json::to_vec(&CeremonyAction::AcceptCoordinator(
+                                        storage.chosen_coordinator.to_id(),
+                                    ))?,
+                                )
+                                .await?;
+                        }
+                    }
+                    CeremonyAction::CoordinatorOffer => {
+                        if storage.node_type.is_leader() {
+                            info!("OFFER FROM: {:?}", source);
+                            if storage.chosen_coordinator.is_none() {
+                                info!("ACCEPTING {:?}", source);
+                                client
+                                    .publish(
+                                        coordinator_topic_hash,
+                                        serde_json::to_vec(&CeremonyAction::AcceptCoordinator(
+                                            source.expect("coordinator has no address"),
+                                        ))?,
+                                    )
+                                    .await?;
+                                // TODO this should be propageted, even in simple version
+                                storage.chosen_coordinator =
+                                    CoordinatorState::Pending(source.expect("From nowhere"));
+                            }
+                        }
+                    }
+                    CeremonyAction::AcceptCoordinator(coordinator_id) => {
+                        if coordinator_id == storage.peer_id {
+                            info!("I AM ACCEPTED");
+                            // TODO should coordinator store this information?
+                            client
+                                .publish(
+                                    coordinator_topic_hash,
+                                    serde_json::to_vec(&CeremonyAction::CoordinatorConfirm)?,
+                                )
+                                .await?;
+                        }
+                    }
+                    CeremonyAction::CoordinatorConfirm => {
+                        if !storage.node_type.is_coordinator() {
+                            info!("CONFIRMATION FROM: {:?}", source);
+                            // TODO check that it is from the one that is accepted
+                            storage.chosen_coordinator =
+                                CoordinatorState::Chosen(source.expect("From nowhere"));
+                        }
                     }
                 }
-                NetworkAction::TransactionConfirmation(confirmation) => {
-                    info!(
-                        "Confirmation -> nonce: {}, transaction_hash: {:02X?}",
-                        confirmation.nonce, confirmation.transaction_hash
-                    );
-                    let src = if let Some(peer_id) = storage
-                        .senders
-                        .lock()
-                        .map_err(|guard| eyre::eyre!("{:?}", guard))?
-                        .get(&confirmation.transaction_hash)
-                    {
-                        peer_id.green().to_string()
-                    } else {
-                        "<unknown>".to_owned()
-                    };
-                    println!(
-                        "{}: {}",
-                        src,
-                        if let Some(transaction) = storage
-                            .transactions
-                            .lock()
-                            .map_err(|guard| eyre::eyre!("{:?}", guard))?
-                            .get(&confirmation.transaction_hash)
-                        {
-                            match std::str::from_utf8(&transaction.payload[..]) {
-                                Ok(s) => s,
-                                Err(_) => "<binary>",
-                            }
-                        } else {
-                            "<unknown>"
-                        }
-                    );
-                }
-                _ => println!("UNKNOWN"),
             }
         }
     }
@@ -246,17 +346,13 @@ async fn event_recipient(
     Ok(())
 }
 
-fn create_transaction(
-    message: &str,
-    storage: &Storage,
-    peer_id: PeerId,
-) -> eyre::Result<NetworkAction> {
+fn create_transaction(message: &str, storage: &Storage) -> eyre::Result<NetworkAction> {
     let transaction = Transaction {
         method: String::from("send_message"),
         payload: message.as_bytes().to_vec(),
         last_known_transaction_hash: storage.last_known_transaction_hash.lock().unwrap().clone(),
     };
-    store_transaction(transaction.clone(), storage, Some(peer_id))?;
+    store_transaction(transaction.clone(), storage, Some(storage.peer_id))?;
 
     Ok(NetworkAction::Transaction(transaction))
 }
@@ -713,7 +809,61 @@ pub enum NetworkAction {
 }
 
 #[derive(Serialize, Deserialize)]
+pub enum CeremonyAction {
+    RequestForCoordinator,
+    CoordinatorOffer,
+    AcceptCoordinator(PeerId),
+    CoordinatorConfirm,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct SignedNetworkAction {
     pub action: NetworkAction,
     pub signature: Signature,
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum CoordinatorState {
+    None,
+    Pending(PeerId),
+    Chosen(PeerId),
+}
+
+impl CoordinatorState {
+    pub fn is_none(&self) -> bool {
+        match *self {
+            CoordinatorState::None => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_pending(&self) -> bool {
+        match *self {
+            CoordinatorState::Pending(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_chosen(&self) -> bool {
+        match *self {
+            CoordinatorState::Chosen(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn to_option(&self) -> Option<PeerId> {
+        match *self {
+            CoordinatorState::None => None,
+            CoordinatorState::Pending(x) => Some(x),
+            CoordinatorState::Chosen(x) => Some(x),
+        }
+    }
+
+    pub fn to_id(&self) -> PeerId {
+        match *self {
+            CoordinatorState::None => panic!("No chosen coordinator"),
+            CoordinatorState::Pending(x) => x,
+            CoordinatorState::Chosen(x) => x,
+        }
+    }
 }

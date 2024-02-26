@@ -32,13 +32,22 @@ pub enum NodeType {
     #[default]
     Peer,
     Coordinator,
+    // preconfig version, one node should choose coordinator
+    LeaderPeer,
 }
 
 impl NodeType {
     pub fn is_coordinator(&self) -> bool {
         match *self {
             NodeType::Coordinator => true,
-            NodeType::Peer => false,
+            _ => false,
+        }
+    }
+
+    pub fn is_leader(&self) -> bool {
+        match *self {
+            NodeType::LeaderPeer => true,
+            _ => false,
         }
     }
 }
