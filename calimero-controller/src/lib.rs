@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
 use calimero_api::ws;
 use calimero_primitives::api;
@@ -16,12 +17,12 @@ pub async fn start(
     clients: ws::ClientsState,
     mut rx: ReceiverStream<controller::Command>,
 ) {
-    tracing::info!("controller started");
+    info!("controller started");
     let mut subscriptions = Subscriptions::new();
     loop {
         tokio::select! {
             _ = cancellation_token.cancelled() => {
-                tracing::info!("graceful controller shutdown initiated");
+                info!("graceful controller shutdown initiated");
                 break
             }
             command = rx.next() => match command {
@@ -29,7 +30,7 @@ pub async fn start(
                     handle_command(&mut subscriptions, &clients, command).await;
                 },
                 None => {
-                    tracing::warn!("got empty command");
+                    warn!("got empty command");
                 },
             }
         }
@@ -44,8 +45,8 @@ async fn handle_command(
     match command {
         controller::Command::WsApiRequest(client_id, request_id, request) => {
             let response = match request {
-                api::ApiRequest::ListRemoteApps() => handle_list_remote_apps().await,
-                api::ApiRequest::ListInstalledApps() => todo!(),
+                api::ApiRequest::ListRemoteApps => handle_list_remote_apps().await,
+                api::ApiRequest::ListInstalledApps => todo!(),
                 api::ApiRequest::InstallBinaryApp(_) => todo!(),
                 api::ApiRequest::InstallRemoteApp(_) => todo!(),
                 api::ApiRequest::UninstallApp(_) => todo!(),
@@ -57,9 +58,9 @@ async fn handle_command(
                     subscriptions.unsubscribe(installed_app_id, client_id);
                     api::ApiResponse::Unsubscribe(installed_app_id)
                 }
-                api::ApiRequest::UnsubscribeFromAll() => {
+                api::ApiRequest::UnsubscribeFromAll => {
                     subscriptions.unsubscribe_from_all(client_id);
-                    api::ApiResponse::UnsubscribeFromAll()
+                    api::ApiResponse::UnsubscribeFromAll
                 }
             };
 
@@ -72,11 +73,7 @@ async fn handle_command(
                 tx.send(api::WsCommand::Reply(response))
                     .await
                     .unwrap_or_else(|e| {
-                        tracing::error!(
-                            "failed to send WsResponse (client_id={}): {}",
-                            client_id,
-                            e
-                        );
+                        error!("failed to send WsResponse (client_id={}): {}", client_id, e);
                     });
             }
         }

@@ -7,9 +7,11 @@ use std::sync::{
 
 use color_eyre::eyre;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
+use rand::distributions::DistString;
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::tungstenite::protocol;
 use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 use warp::Filter;
 
 use calimero_primitives::api;
@@ -38,7 +40,7 @@ pub async fn start(
 
     let (_addr, server) = warp::serve(routes).bind_with_graceful_shutdown(addr, async move {
         cancellation_token.cancelled().await;
-        tracing::info!("agraceful api shutdown initiated");
+        info!("agraceful api shutdown initiated");
         futures_util::stream::iter(shutdown_clients.write().await.drain())
             .for_each_concurrent(None, |(client_id, client)| async move {
                 let command = api::WsCommand::Close(
@@ -46,7 +48,7 @@ pub async fn start(
                     String::from("Server shuting down"),
                 );
                 if let Err(e) = client.send(command).await {
-                    tracing::error!(
+                    error!(
                         %e,
                         "failed to send WsCommand::Close(client_id={})",
                         client_id,
@@ -56,7 +58,7 @@ pub async fn start(
             .await;
     });
 
-    tracing::info!("api started");
+    info!("api started");
     server.await;
 }
 
@@ -65,8 +67,10 @@ async fn client_connected(
     clients: ClientsState,
     controller_tx: mpsc::Sender<controller::Command>,
 ) {
+    let app_id = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 10);
+
     let client_id = NEXT_CLIENT_ID.fetch_add(1, Ordering::Relaxed);
-    tracing::info!("new client connected(client_id={})", client_id);
+    info!("new client connected(client_id={})", client_id);
 
     let (mut ws_tx, mut ws_rx) = ws.split();
     let (tx, mut rx) = mpsc::channel::<api::WsCommand>(32);
@@ -78,7 +82,7 @@ async fn client_connected(
                     ws_tx
                         .send(warp::ws::Message::close_with(code, reason))
                         .unwrap_or_else(|e| {
-                            tracing::error!(
+                            error!(
                                 %e,
                                 "failed to send Message::close_with(client_id={})",
                                 client_id,
@@ -92,7 +96,7 @@ async fn client_connected(
                     let response = match serde_json::to_string(&response) {
                         Ok(message) => message,
                         Err(e) => {
-                            tracing::error!(
+                            error!(
                                 %e,
                                 "failed to serialize WsResponse(client_id={})",
                                 client_id,
@@ -103,7 +107,7 @@ async fn client_connected(
                     ws_tx
                         .send(warp::ws::Message::text(response))
                         .unwrap_or_else(|e| {
-                            tracing::error!(
+                            error!(
                                 %e,
                                 "failed to send Message(client_id={})",
                                 client_id,
@@ -122,20 +126,20 @@ async fn client_connected(
         let message = match message {
             Ok(message) => message,
             Err(e) => {
-                tracing::error!(%e, "failed to read Message(client_id={})", client_id);
+                error!(%e, "failed to read Message(client_id={})", client_id);
                 break;
             }
         };
         if message.is_text() {
             if let Err(e) = process_text_message(client_id, message, &controller_tx).await {
-                tracing::error!(
+                error!(
                     %e,
                     "failed to process text Ws Message (client_id={})",
                     client_id,
                 );
             }
         } else {
-            tracing::error!("unsupported Ws Message type(client_id={})", client_id)
+            error!("unsupported Ws Message type(client_id={})", client_id)
         }
     }
 
@@ -166,16 +170,15 @@ async fn client_disconnected(
     clients: ClientsState,
     controller_tx: &mpsc::Sender<controller::Command>,
 ) {
-    tracing::info!("client disconnected(client_id={})", client_id);
+    info!("client disconnected(client_id={})", client_id);
 
-    let api_request = api::ApiRequest::UnsubscribeFromAll();
+    let api_request = api::ApiRequest::UnsubscribeFromAll;
     let message = controller::Command::WsApiRequest(client_id, None, api_request);
 
     controller_tx.send(message).await.unwrap_or_else(|e| {
-        tracing::error!(
+        error!(
             "failed to send controller command(client_id={}): {}",
-            client_id,
-            e
+            client_id, e
         );
     });
 

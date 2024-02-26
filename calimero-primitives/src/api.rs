@@ -14,14 +14,14 @@ pub enum ApiError {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum ApiRequest {
-    ListRemoteApps(),
-    ListInstalledApps(),
+    ListRemoteApps,
+    ListInstalledApps,
     InstallBinaryApp(app::AppBinary),
     InstallRemoteApp(app::AppId),
     UninstallApp(app::InstalledAppId),
     Subscribe(app::InstalledAppId),
     Unsubscribe(app::InstalledAppId),
-    UnsubscribeFromAll(),
+    UnsubscribeFromAll,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
