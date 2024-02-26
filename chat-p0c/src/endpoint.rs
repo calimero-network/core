@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
-use jsonrpsee_core::async_trait;
-use jsonrpsee_proc_macros::rpc;
-use jsonrpsee_types::ErrorObjectOwned;
+use jsonrpsee::core::async_trait;
+use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::types::ErrorObjectOwned;
 use tracing::info;
 
 #[rpc(server)]

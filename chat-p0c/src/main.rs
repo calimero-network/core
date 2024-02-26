@@ -1,6 +1,5 @@
 use clap::Parser;
 use color_eyre::eyre;
-use jsonrpc_http_server::*;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
