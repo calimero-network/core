@@ -7,11 +7,12 @@ license = "MIT OR Apache-2.0"
 [workspace]
 resolver = "2"
 members = [
-  "./chat-p0c",
+  "./crates/node",
+  "./crates/identity",
+  "./crates/sdk",
+  "./crates/runtime",
+
   "./apps/kv-store",
-  "./sdk",
-  "./vm-runner",
-  "./identity-rs",
 ]
 
 [workspace.dependencies]

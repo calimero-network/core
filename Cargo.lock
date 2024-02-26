@@ -738,14 +738,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-sdk"
+name = "calimero-identity"
 version = "0.1.0"
 dependencies = [
- "borsh",
+ "libp2p",
+ "multibase",
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
 ]
 
 [[package]]
-name = "calimero-vm-runner"
+name = "calimero-node"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bs58",
+ "camino",
+ "clap",
+ "color-eyre",
+ "dirs",
+ "jsonrpsee",
+ "libp2p",
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "calimero-runtime"
 version = "0.1.0"
 dependencies = [
  "clap",
@@ -758,6 +783,13 @@ dependencies = [
  "thiserror",
  "wasmer",
  "wasmer-types",
+]
+
+[[package]]
+name = "calimero-sdk"
+version = "0.1.0"
+dependencies = [
+ "borsh",
 ]
 
 [[package]]
@@ -818,27 +850,6 @@ dependencies = [
  "cipher",
  "poly1305",
  "zeroize",
-]
-
-[[package]]
-name = "chat-p0c"
-version = "0.1.0"
-dependencies = [
- "axum",
- "bs58",
- "camino",
- "clap",
- "color-eyre",
- "dirs",
- "jsonrpsee",
- "libp2p",
- "serde",
- "serde_json",
- "sha2 0.10.8",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2088,17 +2099,6 @@ name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
-
-[[package]]
-name = "identity"
-version = "0.1.0"
-dependencies = [
- "libp2p",
- "multibase",
- "serde",
- "serde_json",
- "sha2 0.10.8",
-]
 
 [[package]]
 name = "idna"
