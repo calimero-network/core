@@ -12,7 +12,7 @@ members = [
   "./crates/sdk",
   "./crates/runtime",
 
-  "./apps/kv-store",
+  "./apps/kv-store", "apps/only-peers-server", "apps/only-peers-client",
 ]
 
 [workspace.dependencies]
