@@ -1,5 +1,6 @@
 use std::time::Duration;
 use std::thread;
+
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 
@@ -9,14 +10,13 @@ use color_eyre::owo_colors::OwoColorize;
 
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
-use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
+use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
 
 use crate::api;
 use crate::output;
-
-use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
-use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
 pub struct WSClientStream {
     pub write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
@@ -147,7 +147,6 @@ pub async fn list_remote_apps(ws_address: &String, method: &String) {
 }
 
 pub async fn list_installed_apps(ws_address: &String, method: &String) {
-    // TODO - error handling and program exit
     let mut ws_client_stream = WSClientStream::get_stream(ws_address)
         .await
         .expect("Failed to get WebSocket stream");
@@ -174,16 +173,16 @@ pub async fn list_installed_apps(ws_address: &String, method: &String) {
                             api::ApiResponseResult::Ok(response) => {
                                 match response {
                                     api::ApiResponse::ListInstalledApps(apps) => {
-                                        let asset = String::from("Remote Apps");
+                                        let asset = String::from("Installed Apps");
                                         let header: Vec<[&str; 2]> = vec![
                                             ["ID", "Description"]
                                         ];
-                                        // Handle response and test when ready
                                         output::print_table_installed_apps(&asset, &header, apps);
-                                        return;
+                                        break;
                                     }
                                     _ => {
-                                        // Handle other ApiResponse variants if needed
+                                        println!("Error - Unknown result");
+                                        break;
                                     }
                                 }
                             }
@@ -201,6 +200,7 @@ pub async fn list_installed_apps(ws_address: &String, method: &String) {
             }
         }
     }
+    close_connection(&mut ws_client_stream).await;
 }
 
 pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u32) {
@@ -219,7 +219,7 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
     let pb = ProgressBar::new_spinner();
     let style = ProgressStyle::default_spinner()
         .tick_chars("/|\\- ");
-    
+
     let style = match style.template("{spinner:.green} {msg}") {
         Ok(style) => style,
         Err(e) => {
@@ -231,12 +231,12 @@ pub async fn install_remote_app(ws_address: &String, method: &String, app_id: &u
 
     loop {
         pb.enable_steady_tick(Duration::from_millis(100));
-        
+
         for _ in 0..100 {
             pb.set_message("Loading...");
             thread::sleep(Duration::from_millis(50));
         }
-        
+
         pb.disable_steady_tick();
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
@@ -292,7 +292,28 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
 
     ws_client_stream.write.send(msg).await.expect("Failed to send message");
 
+    let pb = ProgressBar::new_spinner();
+    let style = ProgressStyle::default_spinner()
+        .tick_chars("/|\\- ");
+
+    let style = match style.template("{spinner:.green} {msg}") {
+        Ok(style) => style,
+        Err(e) => {
+            eprintln!("Error setting progress bar template: {:?}", e);
+            return;
+        }
+    };
+    pb.set_style(style);
+
     loop {
+        pb.enable_steady_tick(Duration::from_millis(100));
+
+        for _ in 0..100 {
+            pb.set_message("Loading...");
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        pb.disable_steady_tick();
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
                 if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
@@ -308,10 +329,11 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
                                 match response {
                                     api::ApiResponse::InstallBinaryApp(app_id) => {
                                         println!("App with id: {} installed", app_id.green());
-                                        return;
+                                        break;
                                     }
                                     _ => {
-                                        // Handle other ApiResponse variants if needed
+                                        println!("Error - Unknown result");
+                                        break;
                                     }
                                 }
                             }
@@ -329,6 +351,8 @@ pub async fn install_binary_app(ws_address: &String, method: &String, binary_pat
             }
         }
     }
+    pb.finish_with_message("Application Installed!");
+    close_connection(&mut ws_client_stream).await;
 }
 
 pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
@@ -343,6 +367,19 @@ pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
     let msg = Message::Text(r#json_string_reqest.to_string().into());
 
     ws_client_stream.write.send(msg).await.expect("Failed to send message");
+
+    let pb = ProgressBar::new_spinner();
+    let style = ProgressStyle::default_spinner()
+        .tick_chars("/|\\- ");
+
+    let style = match style.template("{spinner:.green} {msg}") {
+        Ok(style) => style,
+        Err(e) => {
+            eprintln!("Error setting progress bar template: {:?}", e);
+            return;
+        }
+    };
+    pb.set_style(style);
 
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
@@ -360,10 +397,11 @@ pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
                                 match response {
                                     api::ApiResponse::UninstallApp(app_id) => {
                                         println!("App with id: {} uninstalled", app_id.green());
-                                        return;
+                                        break;
                                     }
                                     _ => {
-                                        // Handle other ApiResponse variants if needed
+                                        println!("Error - Unknown result");
+                                        break;
                                     }
                                 }
                             }
@@ -381,6 +419,8 @@ pub async fn uninstall_app(ws_address: &String, method: &String, app_id: &u32) {
             }
         }
     }
+    pb.finish_with_message("Application Uninstalled!");
+    close_connection(&mut ws_client_stream).await;
 }
 
 pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
@@ -399,6 +439,7 @@ pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
     loop {
         if let Some(message) = ws_client_stream.read.next().await {
             if let Ok(text) = message.expect("Failed to read message").into_text() {
+                //Handle ws messages
                 if let Ok(json_request) = serde_json::from_str::<api::WsResponse>(text.as_str()) {
                     let response_id = json_request.id.unwrap();
                     if response_id == request_object.id.unwrap() {
@@ -411,11 +452,12 @@ pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
                                 match response {
                                     api::ApiResponse::Subscribe(app_id) => {
                                         println!("Subscribed to App with id: {}", app_id.green());
-                                        // Handle more info -> better structure for subscribe and what it does
-                                        return;
+                                        println!("Waiting for messages...");
+                                        continue;
                                     }
                                     _ => {
-                                        // Handle other ApiResponse variants if needed
+                                        println!("Error - Unknown result");
+                                        break;
                                     }
                                 }
                             }
@@ -433,6 +475,7 @@ pub async fn subscribe(ws_address: &String, method: &String, app_id: &u32) {
             }
         }
     }
+    close_connection(&mut ws_client_stream).await;
 }
 
 pub async fn unsubscribe(ws_address: &String, method: &String, app_id: &u32) {
@@ -463,10 +506,11 @@ pub async fn unsubscribe(ws_address: &String, method: &String, app_id: &u32) {
                                 match response {
                                     api::ApiResponse::Unsubscribe(app_id) => {
                                         println!("Unsubscribed to App with id: {}", app_id.green());
-                                        return;
+                                        break;
                                     }
                                     _ => {
-                                        // Handle other ApiResponse variants if needed
+                                        println!("Error - Unknown result");
+                                        break;
                                     }
                                 }
                             }
@@ -484,6 +528,7 @@ pub async fn unsubscribe(ws_address: &String, method: &String, app_id: &u32) {
             }
         }
     }
+    close_connection(&mut ws_client_stream).await;
 }
 
 pub async fn unsubscribe_all(ws_address: &String, method: &String) {
@@ -515,10 +560,11 @@ pub async fn unsubscribe_all(ws_address: &String, method: &String) {
                                 match response {
                                     api::ApiResponse::UnsubscribeFromAll => {
                                         println!("Unsubscribed from all.");
-                                        return;
+                                        break;
                                     }
                                     _ => {
-                                        // Handle other ApiResponse variants if needed
+                                        println!("Error - Unknown result");
+                                        break;
                                     }
                                 }
                             }
@@ -536,4 +582,5 @@ pub async fn unsubscribe_all(ws_address: &String, method: &String) {
             }
         }
     }
+    close_connection(&mut ws_client_stream).await;
 }
