@@ -2,28 +2,24 @@ use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use axum::response::IntoResponse;
-use axum::routing::{get_service, Router};
+use calimero_primitives::hash::Hash;
 use color_eyre::eyre;
 use color_eyre::owo_colors::OwoColorize;
-use jsonrpsee::server::stop_channel;
 use libp2p::futures::prelude::*;
 use libp2p::multiaddr::{self, Multiaddr};
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::{gossipsub, identify, kad, mdns, ping, relay, PeerId};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::cli::{self, NodeType};
-use crate::config::Config;
-use crate::endpoint::{self, CalimeroRPCServer};
-
+pub mod config;
 mod events;
+
+use config::NetworkConfig;
 
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
@@ -43,49 +39,18 @@ struct Storage {
     senders: Arc<Mutex<HashMap<Hash, PeerId>>>,
     last_known_transaction_hash: Arc<Mutex<Hash>>,
     nonce: u64,
-    node_type: NodeType,
+    node_type: calimero_primitives::types::NodeType,
 }
 
-pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
-    if !Config::exists(&args.home) {
-        eyre::bail!("chat node is not initialized in {:?}", args.home);
-    }
-
+pub async fn run(config: NetworkConfig) -> eyre::Result<()> {
     let mut storage = Storage {
         transactions: Arc::new(Mutex::new(HashMap::new())),
         confirmations: Arc::new(Mutex::new(HashMap::new())),
         senders: Arc::new(Mutex::new(HashMap::new())),
         last_known_transaction_hash: Default::default(),
         nonce: 0,
-        node_type: args.node_type,
+        node_type: calimero_primitives::types::NodeType::Peer, // todo! extract from Networking
     };
-
-    let config: Config = Config::load(&args.home)?;
-
-    let addr: std::net::SocketAddr =
-        format!("{}:{}", config.endpoint.host, config.endpoint.port).parse()?;
-
-    tokio::spawn(async move {
-        let (stop_handle, _server_handle) = stop_channel();
-        let service_builder = jsonrpsee::server::ServerBuilder::new().to_service_builder();
-
-        let server =
-            service_builder.build(endpoint::CalimeroRPCImpl::new().into_rpc(), stop_handle);
-
-        let app = Router::new().route(
-            "/",
-            get_service(server).handle_error(
-                |err: Box<dyn std::error::Error + Send + Sync>| async move {
-                    err.to_string().into_response()
-                },
-            ),
-        );
-
-        axum::Server::bind(&addr)
-            .serve(app.into_make_service())
-            .await
-            .unwrap();
-    });
 
     // Setup the P2P network
     let peer_id = config.identity.public().to_peer_id();
@@ -147,7 +112,7 @@ fn store_transaction(
     storage: &Storage,
     sender: Option<PeerId>,
 ) -> eyre::Result<Hash> {
-    let transaction_hash = hash(&transaction)?;
+    let transaction_hash = Hash::hash(&serde_json::to_vec(&transaction)?);
     let mut transactions_mutex = storage
         .transactions
         .lock()
@@ -263,12 +228,12 @@ fn create_transaction(
 
 async fn init(
     peer_id: PeerId,
-    config: &Config,
+    config: &NetworkConfig,
 ) -> eyre::Result<(Client, mpsc::Receiver<Event>, EventLoop)> {
     let bootstrap_peers = {
         let mut peers = vec![];
 
-        for mut addr in config.bootstrap.nodes.clone() {
+        for mut addr in config.bootstrap.nodes.list.iter().cloned() {
             let Some(multiaddr::Protocol::P2p(peer_id)) = addr.pop() else {
                 eyre::bail!("Failed to parse peer id from addr {:?}", addr);
             };
@@ -661,14 +626,6 @@ pub(crate) enum Event {
         id: gossipsub::MessageId,
         message: gossipsub::Message,
     },
-}
-
-type Hash = Vec<u8>;
-
-fn hash<T: Serialize>(item: &T) -> eyre::Result<Hash> {
-    let mut hasher = Sha256::new();
-    hasher.update(serde_json::to_vec(&item)?);
-    Ok(hasher.finalize().to_vec())
 }
 
 type Signature = Vec<u8>;

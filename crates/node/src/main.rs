@@ -4,10 +4,6 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
-mod config;
-mod endpoint;
-mod init;
-mod network;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -15,12 +11,7 @@ async fn main() -> eyre::Result<()> {
 
     let command = cli::RootCommand::parse();
 
-    match command.action {
-        Some(cli::SubCommands::Init(init)) => init::run(command.args, init).await?,
-        None => network::run(command.args).await?,
-    }
-
-    Ok(())
+    command.run().await
 }
 
 pub fn setup() -> eyre::Result<()> {
@@ -32,7 +23,5 @@ pub fn setup() -> eyre::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    color_eyre::install()?;
-
-    Ok(())
+    color_eyre::install()
 }

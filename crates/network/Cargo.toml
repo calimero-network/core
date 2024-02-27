@@ -1,0 +1,17 @@
+[package]
+name = "calimero-network"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+color-eyre.workspace = true
+libp2p = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
+tracing.workspace = true
+
+calimero-primitives = { path = "../primitives" }
