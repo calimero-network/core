@@ -4,7 +4,7 @@ use std::net::IpAddr;
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, DiscoveryConfig, EndpointConfig, SwarmConfig,
 };
-use calimero_node::config::{self, ConfigFile, NetworkConfig};
+use calimero_node::config::{self, ConfigFile, NetworkConfig, StoreConfig};
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
 use libp2p::{identity, Multiaddr};
@@ -117,6 +117,9 @@ impl InitCommand {
 
         let config = ConfigFile {
             identity,
+            store: StoreConfig {
+                path: "data".into(),
+            },
             network: NetworkConfig {
                 swarm: SwarmConfig { listen },
                 bootstrap: BootstrapConfig {

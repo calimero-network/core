@@ -18,6 +18,8 @@ pub struct ConfigFile {
 
     #[serde(flatten)]
     pub network: NetworkConfig,
+
+    pub store: StoreConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,6 +34,11 @@ pub struct NetworkConfig {
 
     #[serde(default)]
     pub endpoint: calimero_network::config::EndpointConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StoreConfig {
+    pub path: camino::Utf8PathBuf,
 }
 
 impl ConfigFile {

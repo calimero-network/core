@@ -78,7 +78,7 @@ impl<'a> VMLogic<'a> {
 
 #[derive(Debug)]
 pub struct Outcome {
-    pub returns: Option<Result<Vec<u8>, FunctionCallError>>,
+    pub returns: Result<Option<Vec<u8>>, FunctionCallError>,
     pub logs: Vec<String>,
     // execution runtime
     // current storage usage of the app
@@ -87,7 +87,7 @@ pub struct Outcome {
 impl<'a> VMLogic<'a> {
     pub fn finish(self, err: Option<FunctionCallError>) -> Outcome {
         Outcome {
-            returns: err.map(Err).or_else(|| self.returns.map(Ok)),
+            returns: err.map(Err).or_else(|| self.returns.map(Ok)).transpose(),
             logs: self.logs,
         }
     }
@@ -199,8 +199,7 @@ impl<'a> VMHostFunctions<'a> {
         let key = self.get_string(key_len, key_ptr)?;
         let value = self.get_string(value_len, value_ptr)?;
 
-        let evicted =
-            self.with_logic_mut(|logic| logic.storage.set(key.as_bytes(), value.as_bytes()));
+        let evicted = self.with_logic_mut(|logic| logic.storage.set(key.into(), value.into()));
 
         if let Some(evicted) = evicted {
             self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, evicted))?;
@@ -220,7 +219,7 @@ impl<'a> VMHostFunctions<'a> {
 
         let key = self.get_string(key_len, key_ptr)?;
 
-        if let Some(value) = logic.storage.get(key.as_bytes()) {
+        if let Some(value) = logic.storage.get(&key.into()) {
             self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, value))?;
 
             return Ok(1);

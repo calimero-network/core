@@ -18,8 +18,11 @@ pub const IPFS_BOOT_NODES: &[&str] = &[
     "/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
 ];
 
+#[derive(Debug)]
+
 pub struct NetworkConfig {
     pub identity: identity::Keypair,
+    pub node_type: calimero_primitives::types::NodeType,
 
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,

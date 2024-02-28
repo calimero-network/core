@@ -5,7 +5,7 @@ use std::str::FromStr;
 use sha2::Digest;
 
 const BYTES_LEN: usize = 32;
-const MAX_STR_LEN: usize = 44;
+const MAX_STR_LEN: usize = (BYTES_LEN + 1) * 4 / 3;
 
 #[derive(Copy, Clone)]
 pub struct Hash {
@@ -51,11 +51,11 @@ impl Hash {
     fn from_str(s: &str) -> Result<Self, Option<bs58::decode::Error>> {
         let mut bytes = [0; BYTES_LEN];
         let mut bs58 = [0; MAX_STR_LEN];
-        bs58.copy_from_slice(s.as_bytes());
+        (&mut bs58[..s.len()]).copy_from_slice(s.as_bytes());
         match bs58::decode(s).onto(&mut bytes) {
             Ok(len) if len == bytes.len() => Ok(Self {
                 bytes,
-                bs58: MaybeUninit::new((len, bs58)),
+                bs58: MaybeUninit::new((s.len(), bs58)),
             }),
             Ok(_) => Err(None),
             Err(err) => Err(Some(err)),
@@ -189,6 +189,24 @@ mod tests {
         assert_eq!(
             (*&*&*&*&*&*&hash).as_str(),
             "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
+        );
+    }
+
+    #[test]
+    fn test_serde() {
+        let hash = Hash::hash(b"Hello World");
+
+        assert_eq!(
+            serde_json::to_string(&hash).unwrap(),
+            "\"C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK\""
+        );
+
+        assert_eq!(
+            serde_json::from_value::<Hash>(serde_json::json!(
+                "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
+            ))
+            .unwrap(),
+            hash
         );
     }
 }

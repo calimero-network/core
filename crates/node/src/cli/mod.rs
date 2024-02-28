@@ -28,9 +28,13 @@ pub struct RootArgs {
     #[clap(long, value_name = "TYPE")]
     #[clap(value_enum, default_value_t)]
     pub node_type: NodeType,
+
+    #[clap(value_name = "PATH")]
+    /// Path to the application (*.wasm file)
+    pub app_path: camino::Utf8PathBuf, // todo! think about this well
 }
 
-#[derive(Clone, Debug, Default, ValueEnum)]
+#[derive(Copy, Clone, Debug, Default, ValueEnum)]
 pub enum NodeType {
     #[default]
     Peer,
@@ -65,10 +69,16 @@ impl RootCommand {
         let config = ConfigFile::load(&self.args.home)?;
 
         calimero_node::start(calimero_node::NodeConfig {
-            home: self.args.home,
+            home: self.args.home.clone(),
+            app_path: self.args.app_path,
             node_type: self.args.node_type.into(),
+            identity: config.identity.clone(),
+            store: calimero_store::config::StoreConfig {
+                path: self.args.home.join(config.store.path),
+            },
             network: calimero_network::config::NetworkConfig {
                 identity: config.identity,
+                node_type: self.args.node_type.into(),
                 swarm: config.network.swarm,
                 bootstrap: config.network.bootstrap,
                 discovery: config.network.discovery,

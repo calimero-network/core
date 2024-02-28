@@ -13,6 +13,7 @@ members = [
   "./crates/primitives",
   "./crates/runtime",
   "./crates/sdk",
+  "./crates/store",
 
   "./apps/kv-store",
 ]
@@ -26,9 +27,11 @@ color-eyre = "0.6.2"
 dirs = "5.0.1"
 eyre = "0.6.12"
 fragile = "2.0.0"
+hex = "0.4.3"
 libp2p = "0.53.2"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
+rocksdb = "0.22.0"
 serde = "1.0.196"
 serde_json = "1.0.113"
 thiserror = "1.0.56"
