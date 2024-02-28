@@ -85,7 +85,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     };
 
     #[allow(non_snake_case)]
-    let IND = " •  ".cyan();
+    let IND = " │".yellow();
 
     match command {
         "call" => {
@@ -102,7 +102,36 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         tokio::spawn(async move {
                             if let Ok(outcome) = rx.await {
-                                println!("{IND} {:?}: {:#?}", tx_hash, outcome);
+                                println!("{IND} {:?}", tx_hash);
+
+                                match outcome.returns {
+                                    Ok(result) => match result {
+                                        Some(result) => {
+                                            println!("{IND}   Return Value:");
+                                            let result = if let Ok(value) =
+                                                serde_json::from_slice::<serde_json::Value>(&result)
+                                            {
+                                                format!("{:#}", value)
+                                            } else {
+                                                format!("(raw): {:?}", result)
+                                            };
+
+                                            for line in result.lines() {
+                                                println!("{IND}     > {}", line.cyan());
+                                            }
+                                        }
+                                        None => println!("{IND}   (No return value)"),
+                                    },
+                                    Err(_) => todo!(),
+                                }
+
+                                if !outcome.logs.is_empty() {
+                                    println!("{IND}   Logs:");
+
+                                    for log in outcome.logs {
+                                        println!("{IND}     > {}", log.cyan());
+                                    }
+                                }
                             }
                         });
                     }
@@ -120,7 +149,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             } else {
                 println!(
                     "{IND} Garbage collecting {} transactions.",
-                    node.tx_pool.transactions.len()
+                    node.tx_pool.transactions.len().cyan()
                 );
                 node.tx_pool = TransactionPool::default();
             }
@@ -130,11 +159,11 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 println!("{IND} Transaction pool is empty.");
             }
             for (hash, entry) in &node.tx_pool.transactions {
-                println!("{IND} {:?}", hash);
-                println!("{IND}     Sender: {}", entry.sender);
-                println!("{IND}     Method: {:?}", entry.transaction.method);
-                println!("{IND}     Payload: {:?}", entry.transaction.payload);
-                println!("{IND}     Prior: {:?}", entry.transaction.prior_hash);
+                println!("{IND} • {:?}", hash.cyan());
+                println!("{IND}     Sender: {}", entry.sender.cyan());
+                println!("{IND}     Method: {:?}", entry.transaction.method.cyan());
+                println!("{IND}     Payload: {:?}", entry.transaction.payload.cyan());
+                println!("{IND}     Prior: {:?}", entry.transaction.prior_hash.cyan());
             }
         }
         "peers" => {
@@ -143,11 +172,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 node.network_client.mesh_peer_count(node.app_topic.clone()),
             );
 
-            println!("{IND} Peers (General): {:#?}", all_peers);
-            println!("{IND} Peers (Session): {:#?}", session_peers);
+            println!("{IND} Peers (General): {:#?}", all_peers.cyan());
+            println!("{IND} Peers (Session): {:#?}", session_peers.cyan());
         }
         "store" => {
-            println!("{IND} {:#?}", node.store.get(&b"STATE".to_vec()));
+            let state = format!("{:#?}", node.store.get(&b"STATE".to_vec()));
+            for line in state.lines() {
+                println!("{IND} {}", line.cyan());
+            }
         }
         unknown => {
             println!("{IND} Unknown command: `{}`", unknown);
@@ -230,11 +262,6 @@ impl Node {
                     }
                     types::PeerAction::TransactionConfirmation(confirmation) => {
                         // todo! ensure this was only sent by a coordinator
-                        info!(
-                            "Confirmation -> nonce: {}, transaction_hash: {:?}",
-                            confirmation.nonce, confirmation.transaction_hash
-                        );
-
                         self.execute(confirmation.transaction_hash).await?;
                     }
                     message => error!("Unhandled PeerAction: {:?}", message),
