@@ -1,5 +1,5 @@
-use std::cell::Cell;
 use std::fmt;
+use std::mem::MaybeUninit;
 use std::str::FromStr;
 
 use sha2::Digest;
@@ -7,10 +7,10 @@ use sha2::Digest;
 const BYTES_LEN: usize = 32;
 const MAX_STR_LEN: usize = 44;
 
-#[derive(Clone, Default)]
+#[derive(Copy, Clone)]
 pub struct Hash {
     bytes: [u8; BYTES_LEN],
-    bs58: Cell<Option<(usize, [u8; MAX_STR_LEN])>>,
+    bs58: MaybeUninit<(usize, [u8; MAX_STR_LEN])>,
 }
 
 impl Hash {
@@ -21,30 +21,30 @@ impl Hash {
     pub fn hash(data: &[u8]) -> Self {
         Self {
             bytes: sha2::Sha256::digest(data).into(),
-            bs58: Default::default(),
+            bs58: MaybeUninit::zeroed(),
         }
     }
 
-    pub fn hash_json<T: serde::Serialize>(data: &T) -> Self {
+    pub fn hash_json<T: serde::Serialize>(data: &T) -> serde_json::Result<Self> {
         let mut hasher = sha2::Sha256::default();
-        serde_json::to_writer(&mut hasher, data).unwrap();
-        Hash {
+
+        serde_json::to_writer(&mut hasher, data)?;
+
+        Ok(Hash {
             bytes: hasher.finalize().into(),
-            bs58: Default::default(),
-        }
+            bs58: MaybeUninit::zeroed(),
+        })
     }
 
     // todo! pub fn hash_borsh
 
     pub fn as_str(&self) -> &str {
-        let bs58 = unsafe { &mut *self.bs58.as_ptr() };
-        if bs58.is_none() {
-            let mut buf = [0; MAX_STR_LEN];
-            let len = bs58::encode(&self.bytes).onto(&mut buf[..]).unwrap();
-            *bs58 = Some((len, buf));
+        let (len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
+
+        if *len == 0 {
+            *len = bs58::encode(&self.bytes).onto(&mut bs58[..]).unwrap();
         }
 
-        let (len, bs58) = bs58.as_ref().unwrap();
         std::str::from_utf8(&bs58[..*len]).unwrap()
     }
 
@@ -55,10 +55,19 @@ impl Hash {
         match bs58::decode(s).onto(&mut bytes) {
             Ok(len) if len == bytes.len() => Ok(Self {
                 bytes,
-                bs58: Cell::new(Some((s.len(), bs58))),
+                bs58: MaybeUninit::new((len, bs58)),
             }),
             Ok(_) => Err(None),
             Err(err) => Err(Some(err)),
+        }
+    }
+}
+
+impl Default for Hash {
+    fn default() -> Self {
+        Self {
+            bytes: [0; BYTES_LEN],
+            bs58: MaybeUninit::zeroed(),
         }
     }
 }
@@ -76,6 +85,18 @@ impl PartialEq for Hash {
 }
 
 impl Eq for Hash {}
+
+impl PartialOrd for Hash {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.bytes.partial_cmp(&other.bytes)
+    }
+}
+
+impl Ord for Hash {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.bytes.cmp(&other.bytes)
+    }
+}
 
 impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -128,5 +149,46 @@ impl<'de> serde::Deserialize<'de> for Hash {
         }
 
         deserializer.deserialize_str(HashVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hash_43() {
+        let hash = Hash::hash(b"Hello, World");
+
+        assert_eq!(
+            hex::encode(hash.as_bytes()),
+            "03675ac53ff9cd1535ccc7dfcdfa2c458c5218371f418dc136f2d19ac1fbe8a5"
+        );
+
+        assert_eq!(hash.as_str(), "EHdZfnzn717B56XYH8sWLAHfDC3icGEkccNzpAF4PwS");
+        assert_eq!(
+            (*&*&*&*&*&*&hash).as_str(),
+            "EHdZfnzn717B56XYH8sWLAHfDC3icGEkccNzpAF4PwS"
+        );
+    }
+
+    #[test]
+    fn test_hash_44() {
+        let hash = Hash::hash(b"Hello World");
+
+        assert_eq!(
+            hex::encode(hash.as_bytes()),
+            "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+        );
+
+        assert_eq!(
+            hash.as_str(),
+            "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
+        );
+
+        assert_eq!(
+            (*&*&*&*&*&*&hash).as_str(),
+            "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
+        );
     }
 }
