@@ -115,7 +115,7 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     let coordinators_topic =
         gossipsub::IdentTopic::new("/calimero/experimental/coordinators".to_owned());
 
-    // TODO coordinator should join only on request
+    // coordinator should join only on request
     if !storage.node_type.is_coordinator() {
         join_topic(&mut client, &application_topic).await?;
     }
@@ -311,7 +311,6 @@ async fn coordinator_event_recipient(
                         if coordinator_id == storage.peer_id {
                             info!("I AM ACCEPTED");
                             join_topic(&mut client, &application_topic).await?;
-                            // TODO should coordinator store this information?
                             client
                                 .publish(
                                     coordinator_topic_hash,
@@ -346,7 +345,10 @@ async fn peer_event_recipient(
             topic: topic_hash,
         } => {
             if application_topic_hash == topic_hash {
-                println!("info: {} joined the application network.", their_peer_id.cyan());
+                println!(
+                    "info: {} joined the application network.",
+                    their_peer_id.cyan()
+                );
             }
         }
         Event::Message { message, .. } => {
