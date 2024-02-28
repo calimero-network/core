@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use owo_colors::OwoColorize;
 use libp2p::kad;
+use owo_colors::OwoColorize;
 use tracing::debug;
 
 use super::{EventHandler, EventLoop};

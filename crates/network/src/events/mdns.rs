@@ -1,5 +1,5 @@
-use owo_colors::OwoColorize;
 use libp2p::mdns;
+use owo_colors::OwoColorize;
 use tracing::debug;
 
 use super::{EventHandler, EventLoop};
