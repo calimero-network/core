@@ -18,7 +18,8 @@ wasmer-types.workspace = true
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
-color-eyre.workspace = true
+eyre.workspace = true
+owo-colors.workspace = true
 
 [[example]]
 name = "demo"

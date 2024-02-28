@@ -1,6 +1,6 @@
 use std::fs;
 
-use color_eyre::eyre::{self, WrapErr};
+use eyre::WrapErr;
 use libp2p::identity;
 use serde::{Deserialize, Serialize};
 

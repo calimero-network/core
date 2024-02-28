@@ -3,13 +3,12 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use calimero_primitives::hash::Hash;
-use color_eyre::eyre;
-use color_eyre::owo_colors::OwoColorize;
 use libp2p::futures::prelude::*;
 use libp2p::multiaddr::{self, Multiaddr};
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::{gossipsub, identify, kad, mdns, ping, relay, PeerId};
+use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{mpsc, oneshot};

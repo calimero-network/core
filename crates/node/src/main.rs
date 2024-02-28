@@ -1,5 +1,4 @@
 use clap::Parser;
-use color_eyre::eyre;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 

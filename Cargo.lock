@@ -695,8 +695,9 @@ name = "calimero-network"
 version = "0.1.0"
 dependencies = [
  "calimero-primitives",
- "color-eyre",
+ "eyre",
  "libp2p",
+ "owo-colors",
  "serde",
  "serde_json",
  "tokio",
@@ -714,6 +715,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "dirs",
+ "eyre",
  "libp2p",
  "serde",
  "sha2 0.10.8",
@@ -738,7 +740,7 @@ name = "calimero-runtime"
 version = "0.1.0"
 dependencies = [
  "clap",
- "color-eyre",
+ "eyre",
  "fragile",
  "ouroboros",
  "owo-colors",

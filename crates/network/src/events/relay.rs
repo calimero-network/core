@@ -1,4 +1,4 @@
-use color_eyre::owo_colors::OwoColorize;
+use owo_colors::OwoColorize;
 use libp2p::relay;
 use tracing::debug;
 

@@ -1,5 +1,3 @@
-use color_eyre::eyre;
-
 pub mod config;
 
 pub struct NodeConfig {

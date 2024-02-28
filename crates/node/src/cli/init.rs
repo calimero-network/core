@@ -6,7 +6,7 @@ use calimero_network::config::{
 };
 use calimero_node::config::{self, ConfigFile, NetworkConfig};
 use clap::{Parser, ValueEnum};
-use color_eyre::eyre::{self, WrapErr};
+use eyre::WrapErr;
 use libp2p::{identity, Multiaddr};
 use tracing::{info, warn};
 

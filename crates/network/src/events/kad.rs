@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use color_eyre::owo_colors::OwoColorize;
+use owo_colors::OwoColorize;
 use libp2p::kad;
 use tracing::debug;
 

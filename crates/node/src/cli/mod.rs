@@ -1,6 +1,5 @@
 use calimero_node::config::{self, ConfigFile};
 use clap::{Parser, Subcommand, ValueEnum};
-use color_eyre::eyre;
 
 mod init;
 
