@@ -50,6 +50,13 @@ impl NodeType {
             _ => false,
         }
     }
+
+    pub fn is_peer(&self) -> bool {
+        match *self {
+            NodeType::Peer => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]

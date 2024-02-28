@@ -1,6 +1,7 @@
 use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use axum::response::IntoResponse;
 use axum::routing::{get_service, Router};
@@ -46,7 +47,8 @@ struct Storage {
     node_type: NodeType,
 
     peer_id: PeerId,
-    chosen_coordinator: CoordinatorState,
+    chosen_coordinator: Arc<Mutex<CoordinatorState>>,
+    last_network_event_timestamp: SystemTime,
 }
 
 pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
@@ -94,7 +96,8 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
         node_type: args.node_type,
         peer_id,
 
-        chosen_coordinator: CoordinatorState::None,
+        chosen_coordinator: Arc::new(Mutex::new(CoordinatorState::None)),
+        last_network_event_timestamp: SystemTime::now(),
     };
 
     let (mut client, mut event_receiver, event_loop) = init(peer_id, &config).await?;
@@ -106,26 +109,29 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
 
     let _ = client.bootstrap().await;
 
-    // TODO coordinator should join only on request
-    let topic = client
-        .subscribe(gossipsub::IdentTopic::new(
-            "/calimero/experimental/chat-p0c".to_owned(),
-        ))
-        .await?;
+    let application_topic =
+        gossipsub::IdentTopic::new("/calimero/experimental/chat-p0c".to_owned());
 
-    let coordinators_topic = client
-        .subscribe(gossipsub::IdentTopic::new(
-            "/calimero/experimental/coordinators".to_owned(),
-        ))
-        .await?;
+    let coordinators_topic =
+        gossipsub::IdentTopic::new("/calimero/experimental/coordinators".to_owned());
+
+    // TODO coordinator should join only on request
+    if !storage.node_type.is_coordinator() {
+        join_topic(&mut client, &application_topic).await?;
+    }
+
+    // join leader and coordinators to topic
+    if !storage.node_type.is_peer() {
+        join_topic(&mut client, &coordinators_topic).await?;
+    }
 
     if !storage.node_type.is_coordinator()
-        && client.mesh_peer_count(coordinators_topic.hash()).await != 0
+        && client.mesh_peer_count(application_topic.hash()).await != 0
     {
         client
             .publish(
-                coordinators_topic.hash(),
-                serde_json::to_vec(&CeremonyAction::RequestForCoordinator)?,
+                application_topic.hash(),
+                serde_json::to_vec(&NetworkAction::WhoIsCoordinator)?,
             )
             .await?;
     }
@@ -135,9 +141,18 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
 
     loop {
         tokio::select! {
+            _ = choose_coordinator(client.clone(), &mut storage, application_topic.hash(), coordinators_topic.clone()), if !storage.node_type.is_coordinator() => {
+
+            }
             event = event_receiver.recv() => {
                 match event {
-                    Some(event) => event_recipient(client.clone(), topic.hash(), event, &mut storage, coordinators_topic.hash()).await?,
+                    Some(event) => {
+                        if storage.node_type.is_coordinator() {
+                            coordinator_event_recipient(client.clone(), application_topic.clone(), event, &mut storage, coordinators_topic.hash()).await?
+                        } else {
+                            peer_event_recipient(client.clone(), application_topic.hash(), event, &mut storage, coordinators_topic.clone()).await?
+                        }
+                    },
                     None => break,
                 }
             }
@@ -148,12 +163,12 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
                             error!("Coordinator can not create transactions!");
                             continue;
                         }
-                        if client.mesh_peer_count(topic.hash()).await == 0 {
+                        if client.mesh_peer_count(application_topic.hash()).await == 0 {
                             info!("No connected peers to send message to.");
                             continue;
                         }
                         client
-                            .publish(topic.hash(), serde_json::to_vec(&create_transaction(&line, &storage)?)?)
+                            .publish(application_topic.hash(), serde_json::to_vec(&create_transaction(&line, &storage)?)?)
                             .await
                             .expect("Failed to publish message.");
                     }
@@ -163,6 +178,18 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
             }
         }
     }
+
+    Ok(())
+}
+
+async fn join_topic(client: &mut Client, topic: &gossipsub::IdentTopic) -> eyre::Result<()> {
+    client.subscribe(topic.clone()).await?;
+
+    Ok(())
+}
+
+async fn leave_topic(client: &mut Client, topic: &gossipsub::IdentTopic) -> eyre::Result<()> {
+    client.unsubscribe(topic.clone()).await?;
 
     Ok(())
 }
@@ -189,9 +216,48 @@ fn store_transaction(
     Ok(transaction_hash)
 }
 
-async fn event_recipient(
+async fn choose_coordinator(
     mut client: Client,
-    our_topic_hash: gossipsub::TopicHash,
+    storage: &mut Storage,
+    application_topic_hash: gossipsub::TopicHash,
+    coordinator_topic: gossipsub::IdentTopic,
+) -> eyre::Result<()> {
+    let mut chosen_coordinator = storage
+        .chosen_coordinator
+        .lock()
+        .map_err(|guard| eyre::eyre!("{:?}", guard))?;
+    if chosen_coordinator.is_none()
+        || chosen_coordinator.is_chosen()
+            && !client
+                .mesh_peer_online(application_topic_hash, chosen_coordinator.to_id())
+                .await
+    {
+        *chosen_coordinator = CoordinatorState::None;
+
+        if storage.node_type.is_leader()
+            && SystemTime::now()
+                .duration_since(storage.last_network_event_timestamp)?
+                .as_secs()
+                > 0
+        {
+            if client.mesh_peer_count(coordinator_topic.hash()).await != 0 {
+                info!("REQUESTING COORDINATOR");
+                client
+                    .publish(
+                        coordinator_topic.hash(),
+                        serde_json::to_vec(&CeremonyAction::RequestForCoordinator)?,
+                    )
+                    .await?;
+                storage.last_network_event_timestamp = SystemTime::now();
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn coordinator_event_recipient(
+    mut client: Client,
+    application_topic: gossipsub::IdentTopic,
     event: Event,
     storage: &mut Storage,
     coordinator_topic_hash: gossipsub::TopicHash,
@@ -201,39 +267,116 @@ async fn event_recipient(
             peer_id: their_peer_id,
             topic: topic_hash,
         } => {
-            if our_topic_hash == topic_hash {
-                println!("info: {} joined the chat.", their_peer_id.cyan());
-
-                //                    client
-                //                        .publish(our_topic_hash, serde_json::to_vec(&create_transaction("Welcome to the chat", &storage)?).?)
-                //                        .await?;
+            if coordinator_topic_hash == topic_hash {
+                println!("info: {} joined the coordinators.", their_peer_id.cyan());
             }
         }
         Event::Message { message, .. } => {
             let source = message.source;
-            if message.topic == our_topic_hash {
+            if message.topic == application_topic.hash() {
                 let message: NetworkAction = serde_json::from_slice(&message.data)?;
 
                 match message {
                     NetworkAction::Transaction(transaction) => {
                         let transaction_hash = store_transaction(transaction, storage, source)?;
 
-                        if storage.node_type.is_coordinator() {
-                            storage.nonce += 1;
-                            let confirmation =
-                                NetworkAction::TransactionConfirmation(TransactionConfirmation {
-                                    nonce: storage.nonce,
-                                    transaction_hash: transaction_hash.clone(),
-                                    // TODO proper confirmation hash
-                                    confirmation_hash: transaction_hash,
-                                });
+                        storage.nonce += 1;
+                        let confirmation =
+                            NetworkAction::TransactionConfirmation(TransactionConfirmation {
+                                nonce: storage.nonce,
+                                transaction_hash: transaction_hash.clone(),
+                                // TODO proper confirmation hash
+                                confirmation_hash: transaction_hash,
+                            });
+                        client
+                            .publish(application_topic.hash(), serde_json::to_vec(&confirmation)?)
+                            .await?;
+                    }
+                    NetworkAction::WhoIsCoordinator | NetworkAction::ChosenCoordinator(_) => {}
+                    _ => error!("UNKNOWN message"),
+                }
+            } else if message.topic == coordinator_topic_hash {
+                let message: CeremonyAction = serde_json::from_slice(&message.data)?;
+
+                match message {
+                    CeremonyAction::RequestForCoordinator => {
+                        client
+                            .publish(
+                                coordinator_topic_hash,
+                                serde_json::to_vec(&CeremonyAction::CoordinatorOffer)?,
+                            )
+                            .await?;
+                    }
+                    CeremonyAction::AcceptCoordinator(coordinator_id) => {
+                        if coordinator_id == storage.peer_id {
+                            info!("I AM ACCEPTED");
+                            join_topic(&mut client, &application_topic).await?;
+                            // TODO should coordinator store this information?
                             client
-                                .publish(our_topic_hash, serde_json::to_vec(&confirmation)?)
+                                .publish(
+                                    coordinator_topic_hash,
+                                    serde_json::to_vec(&CeremonyAction::CoordinatorConfirm)?,
+                                )
                                 .await?;
                         }
                     }
+                    _ => (),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn peer_event_recipient(
+    mut client: Client,
+    application_topic_hash: gossipsub::TopicHash,
+    event: Event,
+    storage: &mut Storage,
+    coordinator_topic: gossipsub::IdentTopic,
+) -> eyre::Result<()> {
+    let mut chosen_coordinator = storage
+        .chosen_coordinator
+        .lock()
+        .map_err(|guard| eyre::eyre!("{:?}", guard))?;
+    match event {
+        Event::Subscribed {
+            peer_id: their_peer_id,
+            topic: topic_hash,
+        } => {
+            if application_topic_hash == topic_hash {
+                println!("info: {} joined the application network.", their_peer_id.cyan());
+            }
+        }
+        Event::Message { message, .. } => {
+            let source = message.source;
+            if message.topic == application_topic_hash {
+                let message: NetworkAction = serde_json::from_slice(&message.data)?;
+
+                match message {
+                    NetworkAction::WhoIsCoordinator => {
+                        if chosen_coordinator.is_chosen() {
+                            info!("SENDING COORDINATOR INFO");
+                            client
+                                .publish(
+                                    application_topic_hash,
+                                    serde_json::to_vec(&NetworkAction::ChosenCoordinator(
+                                        chosen_coordinator.to_id(),
+                                    ))?,
+                                )
+                                .await?;
+                        }
+                    }
+                    NetworkAction::ChosenCoordinator(coordinator_id) => {
+                        info!("ACCEPTING COORDINATOR INFO");
+                        *chosen_coordinator = CoordinatorState::Chosen(coordinator_id);
+                    }
+                    NetworkAction::Transaction(transaction) => {
+                        store_transaction(transaction, storage, source)?;
+                    }
                     NetworkAction::TransactionConfirmation(confirmation) => {
-                        if source != storage.chosen_coordinator.to_option() {
+                        if source != chosen_coordinator.to_option() {
                             info!("Ignoring confirmation from wrong coordinator");
                         } else {
                             info!(
@@ -269,75 +412,47 @@ async fn event_recipient(
                             );
                         }
                     }
-                    _ => println!("UNKNOWN"),
+                    _ => error!("UNKNOWN"),
                 }
-            } else if message.topic == coordinator_topic_hash {
+            } else if message.topic == coordinator_topic.hash() {
                 let message: CeremonyAction = serde_json::from_slice(&message.data)?;
 
                 match message {
-                    CeremonyAction::RequestForCoordinator => {
-                        info!("REQUEST FROM: {:?}", source);
-                        if storage.node_type.is_coordinator() {
-                            client
-                                .publish(
-                                    coordinator_topic_hash,
-                                    serde_json::to_vec(&CeremonyAction::CoordinatorOffer)?,
-                                )
-                                .await?;
-                        } else if storage.node_type.is_leader()
-                            && storage.chosen_coordinator.is_chosen()
-                        {
-                            // TODO this may need to come from coordinator
-                            // retrigger message to newly joined peer
-                            client
-                                .publish(
-                                    coordinator_topic_hash,
-                                    serde_json::to_vec(&CeremonyAction::AcceptCoordinator(
-                                        storage.chosen_coordinator.to_id(),
-                                    ))?,
-                                )
-                                .await?;
-                        }
-                    }
                     CeremonyAction::CoordinatorOffer => {
                         if storage.node_type.is_leader() {
                             info!("OFFER FROM: {:?}", source);
-                            if storage.chosen_coordinator.is_none() {
+                            if chosen_coordinator.is_none() {
                                 info!("ACCEPTING {:?}", source);
                                 client
                                     .publish(
-                                        coordinator_topic_hash,
+                                        coordinator_topic.hash(),
                                         serde_json::to_vec(&CeremonyAction::AcceptCoordinator(
                                             source.expect("coordinator has no address"),
                                         ))?,
                                     )
                                     .await?;
-                                // TODO this should be propageted, even in simple version
-                                storage.chosen_coordinator =
+                                *chosen_coordinator =
                                     CoordinatorState::Pending(source.expect("From nowhere"));
                             }
                         }
                     }
-                    CeremonyAction::AcceptCoordinator(coordinator_id) => {
-                        if coordinator_id == storage.peer_id {
-                            info!("I AM ACCEPTED");
-                            // TODO should coordinator store this information?
+                    CeremonyAction::CoordinatorConfirm => {
+                        info!("CONFIRMATION FROM: {:?}", source);
+                        let coordinator_id = source.expect("from nowhere");
+                        if coordinator_id == chosen_coordinator.to_id() {
+                            *chosen_coordinator = CoordinatorState::Chosen(coordinator_id);
+
                             client
                                 .publish(
-                                    coordinator_topic_hash,
-                                    serde_json::to_vec(&CeremonyAction::CoordinatorConfirm)?,
+                                    application_topic_hash,
+                                    serde_json::to_vec(&NetworkAction::ChosenCoordinator(
+                                        chosen_coordinator.to_id(),
+                                    ))?,
                                 )
                                 .await?;
                         }
                     }
-                    CeremonyAction::CoordinatorConfirm => {
-                        if !storage.node_type.is_coordinator() {
-                            info!("CONFIRMATION FROM: {:?}", source);
-                            // TODO check that it is from the one that is accepted
-                            storage.chosen_coordinator =
-                                CoordinatorState::Chosen(source.expect("From nowhere"));
-                        }
-                    }
+                    _ => error!("UNKNOWN "),
                 }
             }
         }
@@ -495,6 +610,25 @@ impl Client {
             .expect("Command receiver not to be dropped.");
 
         receiver.await.expect("Sender not to be dropped.")
+    }
+
+    pub(crate) async fn mesh_peer_online(
+        &mut self,
+        topic: gossipsub::TopicHash,
+        peer_id: PeerId,
+    ) -> bool {
+        let (sender, receiver) = oneshot::channel();
+
+        self.sender
+            .send(Command::MeshPeerOnline {
+                topic,
+                sender,
+                peer_id,
+            })
+            .await
+            .expect("Command receiver not to be dropped.");
+
+        receiver.await.expect("Sender not to be dropped.") != 0
     }
 
     pub(crate) async fn publish(
@@ -671,6 +805,19 @@ impl EventLoop {
                         .count(),
                 );
             }
+            Command::MeshPeerOnline {
+                topic,
+                sender,
+                peer_id,
+            } => {
+                let _ = sender.send(
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .mesh_peers(&topic)
+                        .any(|p| p == &peer_id) as usize,
+                );
+            }
             Command::Publish {
                 topic,
                 data,
@@ -732,6 +879,11 @@ enum Command {
         topic: gossipsub::TopicHash,
         sender: oneshot::Sender<usize>,
     },
+    MeshPeerOnline {
+        topic: gossipsub::TopicHash,
+        sender: oneshot::Sender<usize>,
+        peer_id: PeerId,
+    },
     Publish {
         topic: gossipsub::TopicHash,
         data: Vec<u8>,
@@ -769,14 +921,14 @@ fn hash<T: Serialize>(item: &T) -> eyre::Result<Hash> {
 
 type Signature = Vec<u8>;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Transaction {
     pub method: String,
     pub payload: Vec<u8>,
     pub last_known_transaction_hash: Hash,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct TransactionConfirmation {
     pub nonce: u64,
     pub transaction_hash: Hash,
@@ -784,28 +936,30 @@ pub struct TransactionConfirmation {
     pub confirmation_hash: Hash,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct CatchupRequest {
     pub last_executed_transaction_hash: Hash,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct TransactionWithConfirmation {
     pub transaction: Transaction,
     pub confirmation: TransactionConfirmation,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct CatchupResponse {
     pub transactions: Vec<TransactionWithConfirmation>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum NetworkAction {
     Transaction(Transaction),
     TransactionConfirmation(TransactionConfirmation),
     CatchupRequest(CatchupRequest),
     CatchupResponse(CatchupResponse),
+    WhoIsCoordinator,
+    ChosenCoordinator(PeerId),
 }
 
 #[derive(Serialize, Deserialize)]
