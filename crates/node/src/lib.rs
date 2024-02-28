@@ -363,7 +363,9 @@ impl Node {
             &limits,
         )?;
 
-        storage.inner.commit()?;
+        if outcome.returns.is_ok() {
+            storage.inner.commit()?;
+        }
 
         if let Some(outcome_rx) = outcome_rx {
             outcome_rx.send(outcome).ok();
