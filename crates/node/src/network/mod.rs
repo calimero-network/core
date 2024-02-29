@@ -93,6 +93,8 @@ pub async fn run(args: cli::RootArgs) -> eyre::Result<()> {
     let (mut client, mut event_receiver, event_loop) = init(peer_id, &config).await?;
     tokio::spawn(event_loop.run());
 
+    info!("App wasm path {:?}", config.app.wasm_path);
+
     for addr in &config.swarm.listen {
         client.listen_on(addr.clone()).await?;
     }
