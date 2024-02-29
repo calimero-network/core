@@ -35,7 +35,6 @@ pub struct Config {
     pub discovery: DiscoveryConfig,
     #[serde(default)]
     pub endpoint: EndpointConfig,
-    pub app: AppConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,11 +82,6 @@ impl Default for EndpointConfig {
             port: DEFAULT_RPC_PORT,
         }
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AppConfig {
-    pub wasm_path: String,
 }
 
 impl Config {
