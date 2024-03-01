@@ -89,7 +89,8 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
     match command {
         "call" => {
-            if let Some((method, payload)) = args.and_then(|args| args.split_once(' ')) {
+            if let Some(args) = args {
+                let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
                         let (tx, rx) = oneshot::channel();
@@ -105,7 +106,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             }
                         };
 
-                        println!("{IND} Sent Transaction! {:?}", tx_hash);
+                        println!("{IND} Scheduled Transaction! {:?}", tx_hash);
 
                         tokio::spawn(async move {
                             if let Ok(outcome) = rx.await {
