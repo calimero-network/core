@@ -47,11 +47,8 @@ pub async fn run(
         tokio::select! {
             Some(event) = event_receiver.recv() => {
                 match event {
-                    types::NetworkEvent::ListeningOn {
-                        listener_id,
-                        address,
-                    } => {
-                        info!("Listening on(listener_id={}): {}", listener_id, address)
+                    types::NetworkEvent::ListeningOn { address, .. } => {
+                        info!("Listening on: {}", address)
                     }
                     _ => {
                         error!("Recieved unexpected network event: {:?}", event)

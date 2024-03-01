@@ -274,14 +274,8 @@ impl Node {
                     message => error!("Unhandled PeerAction: {:?}", message),
                 }
             }
-            calimero_network::types::NetworkEvent::ListeningOn {
-                listener_id,
-                address,
-            } => {
-                warn!(
-                    "listening on not really expected here(listener_id={}): {}",
-                    listener_id, address
-                );
+            calimero_network::types::NetworkEvent::ListeningOn { address, .. } => {
+                warn!("listening on not expected here: {}", address);
             }
         }
 
