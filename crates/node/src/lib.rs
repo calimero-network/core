@@ -280,21 +280,6 @@ impl Node {
     }
 
     pub async fn push_action(&mut self, action: types::PeerAction) -> eyre::Result<()> {
-        if matches!(action, types::PeerAction::Transaction(_)) && self.typ.is_coordinator() {
-            error!("Coordinator can not create transactions!");
-            return Ok(());
-        }
-
-        if self
-            .network_client
-            .mesh_peer_count(self.app_topic.clone())
-            .await
-            == 0
-        {
-            info!("No connected peers to send message to.");
-            return Ok(());
-        }
-
         self.network_client
             .publish(self.app_topic.clone(), serde_json::to_vec(&action)?)
             .await
@@ -309,6 +294,19 @@ impl Node {
         payload: Vec<u8>,
         tx: oneshot::Sender<calimero_runtime::logic::Outcome>,
     ) -> eyre::Result<calimero_primitives::hash::Hash> {
+        if self.typ.is_coordinator() {
+            eyre::bail!("Coordinator can not create transactions!");
+        }
+
+        if self
+            .network_client
+            .mesh_peer_count(self.app_topic.clone())
+            .await
+            == 0
+        {
+            eyre::bail!("No connected peers to send message to.");
+        }
+
         let transaction = calimero_primitives::transaction::Transaction {
             method,
             payload,
