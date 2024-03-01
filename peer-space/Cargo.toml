@@ -1,0 +1,14 @@
+[package]
+name = "peer-space"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+async-graphql = "7.0.1"
+async-graphql-actix-web = "7.0.1"
+actix-web = { version = "4.0.1", default-features = false, features = ["macros"] }
+tokio = { workspace = true, features = ["macros","rt-multi-thread"] }
+actix-cors = "0.7.0"
