@@ -89,16 +89,24 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
     match command {
         "call" => {
-            if let Some((method, payload)) = args.and_then(|args| args.split_once(' ')) {
+            if let Some(args) = args {
+                let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
                         let (tx, rx) = oneshot::channel();
 
-                        let tx_hash = node
+                        let tx_hash = match node
                             .call(method.to_owned(), payload.as_bytes().to_owned(), tx)
-                            .await?;
+                            .await
+                        {
+                            Ok(tx_hash) => tx_hash,
+                            Err(e) => {
+                                println!("{IND} Failed to send transaction: {}", e);
+                                return Ok(());
+                            }
+                        };
 
-                        println!("{IND} Sent Transaction! {:?}", tx_hash);
+                        println!("{IND} Scheduled Transaction! {:?}", tx_hash);
 
                         tokio::spawn(async move {
                             if let Ok(outcome) = rx.await {
@@ -111,13 +119,20 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                             let result = if let Ok(value) =
                                                 serde_json::from_slice::<serde_json::Value>(&result)
                                             {
-                                                format!("{:#}", value)
+                                                format!(
+                                                    "(json): {}",
+                                                    format!("{:#}", value)
+                                                        .lines()
+                                                        .map(|line| line.cyan().to_string())
+                                                        .collect::<Vec<_>>()
+                                                        .join("\n")
+                                                )
                                             } else {
-                                                format!("(raw): {:?}", result)
+                                                format!("(raw): {:?}", result.cyan())
                                             };
 
                                             for line in result.lines() {
-                                                println!("{IND}     > {}", line.cyan());
+                                                println!("{IND}     > {}", line);
                                             }
                                         }
                                         None => println!("{IND}   (No return value)"),
@@ -169,7 +184,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 println!("{IND} • {:?}", hash.cyan());
                 println!("{IND}     Sender: {}", entry.sender.cyan());
                 println!("{IND}     Method: {:?}", entry.transaction.method.cyan());
-                println!("{IND}     Payload: {:?}", entry.transaction.payload.cyan());
+                println!("{IND}     Payload:");
+                let payload = if let Ok(value) =
+                    serde_json::from_slice::<serde_json::Value>(&entry.transaction.payload)
+                {
+                    format!(
+                        "(json): {}",
+                        format!("{:#}", value)
+                            .lines()
+                            .map(|line| line.cyan().to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                } else {
+                    format!("(raw): {:?}", entry.transaction.payload.cyan())
+                };
+
+                for line in payload.lines() {
+                    println!("{IND}       > {}", line);
+                }
                 println!("{IND}     Prior: {:?}", entry.transaction.prior_hash.cyan());
             }
         }
@@ -280,21 +313,6 @@ impl Node {
     }
 
     pub async fn push_action(&mut self, action: types::PeerAction) -> eyre::Result<()> {
-        if matches!(action, types::PeerAction::Transaction(_)) && self.typ.is_coordinator() {
-            error!("Coordinator can not create transactions!");
-            return Ok(());
-        }
-
-        if self
-            .network_client
-            .mesh_peer_count(self.app_topic.clone())
-            .await
-            == 0
-        {
-            info!("No connected peers to send message to.");
-            return Ok(());
-        }
-
         self.network_client
             .publish(self.app_topic.clone(), serde_json::to_vec(&action)?)
             .await
@@ -309,6 +327,19 @@ impl Node {
         payload: Vec<u8>,
         tx: oneshot::Sender<calimero_runtime::logic::Outcome>,
     ) -> eyre::Result<calimero_primitives::hash::Hash> {
+        if self.typ.is_coordinator() {
+            eyre::bail!("Coordinator can not create transactions!");
+        }
+
+        if self
+            .network_client
+            .mesh_peer_count(self.app_topic.clone())
+            .await
+            == 0
+        {
+            eyre::bail!("No connected peers to send message to.");
+        }
+
         let transaction = calimero_primitives::transaction::Transaction {
             method,
             payload,
