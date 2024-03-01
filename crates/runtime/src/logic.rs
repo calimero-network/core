@@ -104,6 +104,22 @@ pub struct VMHostFunctions<'a> {
 }
 
 impl<'a> VMHostFunctions<'a> {
+    fn read_guest_memory(&self, len: u64, ptr: u64) -> Result<Vec<u8>> {
+        let mut buf = vec![0; len as usize];
+
+        self.borrow_memory().read(ptr, &mut buf)?;
+
+        Ok(buf)
+    }
+
+    fn get_string(&self, len: u64, ptr: u64) -> Result<String> {
+        let buf = self.read_guest_memory(len, ptr)?;
+
+        String::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
+    }
+}
+
+impl<'a> VMHostFunctions<'a> {
     pub fn read_register(&mut self, register_id: u64, ptr: u64) -> Result<()> {
         let data = self.borrow_logic().registers.get(register_id)?;
         self.borrow_memory().write(ptr, data)?;
@@ -136,14 +152,6 @@ impl<'a> VMHostFunctions<'a> {
         .into())
     }
 
-    fn get_string(&self, len: u64, ptr: u64) -> Result<String> {
-        let mut buf = vec![0; len as usize];
-
-        self.borrow_memory().read(ptr, &mut buf)?;
-
-        String::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
-    }
-
     pub fn panic_utf8(&self, len: u64, ptr: u64) -> Result<()> {
         let message = self.get_string(len, ptr)?;
 
@@ -155,9 +163,7 @@ impl<'a> VMHostFunctions<'a> {
     }
 
     pub fn value_return(&mut self, len: u64, ptr: u64) -> Result<()> {
-        let mut buf = vec![0; len as usize];
-
-        self.borrow_memory().read(ptr, &mut buf)?;
+        let buf = self.read_guest_memory(len, ptr)?;
 
         self.with_logic_mut(|logic| logic.returns = Some(buf));
 
@@ -196,10 +202,10 @@ impl<'a> VMHostFunctions<'a> {
             return Err(HostError::ValueLengthOverflow.into());
         }
 
-        let key = self.get_string(key_len, key_ptr)?;
-        let value = self.get_string(value_len, value_ptr)?;
+        let key = self.read_guest_memory(key_len, key_ptr)?;
+        let value = self.read_guest_memory(value_len, value_ptr)?;
 
-        let evicted = self.with_logic_mut(|logic| logic.storage.set(key.into(), value.into()));
+        let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
 
         if let Some(evicted) = evicted {
             self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, evicted))?;
@@ -217,9 +223,9 @@ impl<'a> VMHostFunctions<'a> {
             return Err(HostError::KeyLengthOverflow.into());
         }
 
-        let key = self.get_string(key_len, key_ptr)?;
+        let key = self.read_guest_memory(key_len, key_ptr)?;
 
-        if let Some(value) = logic.storage.get(&key.into()) {
+        if let Some(value) = logic.storage.get(&key) {
             self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, value))?;
 
             return Ok(1);
