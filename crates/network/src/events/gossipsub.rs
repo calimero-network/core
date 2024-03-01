@@ -1,8 +1,8 @@
-use color_eyre::owo_colors::OwoColorize;
 use libp2p::gossipsub;
+use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
-use super::{Event, EventHandler, EventLoop};
+use super::{types, EventHandler, EventLoop};
 
 impl EventHandler<gossipsub::Event> for EventLoop {
     async fn handle(&mut self, event: gossipsub::Event) {
@@ -14,14 +14,18 @@ impl EventHandler<gossipsub::Event> for EventLoop {
                 message,
                 ..
             } => {
-                if let Err(err) = self.event_sender.send(Event::Message { id, message }).await {
+                if let Err(err) = self
+                    .event_sender
+                    .send(types::NetworkEvent::Message { id, message })
+                    .await
+                {
                     error!("Failed to send message event: {:?}", err);
                 }
             }
             gossipsub::Event::Subscribed { peer_id, topic } => {
                 if let Err(_) = self
                     .event_sender
-                    .send(Event::Subscribed { peer_id, topic })
+                    .send(types::NetworkEvent::Subscribed { peer_id, topic })
                     .await
                 {
                     error!("Failed to send subscribed event");

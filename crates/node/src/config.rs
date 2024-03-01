@@ -1,90 +1,47 @@
-use std::{fmt, fs};
+use std::fs;
 
-use color_eyre::eyre::{self, Context};
+use eyre::WrapErr;
 use libp2p::identity;
-use libp2p::multiaddr::{self, Multiaddr};
 use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "config.toml";
-pub const DEFAULT_PORT: u16 = 2428;
-pub const DEFAULT_RPC_HOST: &str = "127.0.0.1";
-pub const DEFAULT_RPC_PORT: u16 = 3030;
+
 pub const DEFAULT_CALIMERO_CHAT_HOME: &str = ".calimero/experiments/chat-p0c";
 
-// https://github.com/ipfs/kubo/blob/efdef7fdcfeeb30e2f1ce3dbf65b6460b58afaaf/config/bootstrap_peers.go#L17-L24
-pub const DEFAULT_BOOTSTRAP_NODES: &[&str] = &[
-    "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-    "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-    "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
-    "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
-    "/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
-];
-
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Config {
+pub struct ConfigFile {
     #[serde(
         with = "serde_identity",
         default = "identity::Keypair::generate_ed25519"
     )]
     pub identity: identity::Keypair,
-    pub swarm: SwarmConfig,
+
+    #[serde(flatten)]
+    pub network: NetworkConfig,
+
+    pub store: StoreConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    pub swarm: calimero_network::config::SwarmConfig,
+
     #[serde(default)]
-    pub bootstrap: BootstrapConfig,
+    pub bootstrap: calimero_network::config::BootstrapConfig,
+
     #[serde(default)]
-    pub discovery: DiscoveryConfig,
+    pub discovery: calimero_network::config::DiscoveryConfig,
+
     #[serde(default)]
-    pub endpoint: EndpointConfig,
+    pub endpoint: calimero_network::config::EndpointConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SwarmConfig {
-    pub listen: Vec<Multiaddr>,
+pub struct StoreConfig {
+    pub path: camino::Utf8PathBuf,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct BootstrapConfig {
-    #[serde(default = "default_bootstrap")]
-    #[serde(deserialize_with = "deserialize_bootstrap")]
-    pub nodes: Vec<Multiaddr>,
-}
-
-impl Default for BootstrapConfig {
-    fn default() -> Self {
-        Self {
-            nodes: default_bootstrap(),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DiscoveryConfig {
-    #[serde(default = "bool_true")]
-    pub mdns: bool,
-}
-
-impl Default for DiscoveryConfig {
-    fn default() -> Self {
-        Self { mdns: bool_true() }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EndpointConfig {
-    pub host: String,
-    pub port: u16,
-}
-
-impl Default for EndpointConfig {
-    fn default() -> Self {
-        Self {
-            host: DEFAULT_RPC_HOST.to_string(),
-            port: DEFAULT_RPC_PORT,
-        }
-    }
-}
-
-impl Config {
+impl ConfigFile {
     pub fn exists(dir: &camino::Utf8Path) -> bool {
         dir.join(CONFIG_FILE).is_file()
     }
@@ -123,53 +80,6 @@ pub fn default_chat_dir() -> camino::Utf8PathBuf {
     }
 
     Default::default()
-}
-
-pub fn default_bootstrap() -> Vec<Multiaddr> {
-    DEFAULT_BOOTSTRAP_NODES
-        .iter()
-        .map(|s| s.parse().expect("invalid multiaddr"))
-        .collect()
-}
-
-const fn bool_true() -> bool {
-    true
-}
-
-fn deserialize_bootstrap<'de, D>(deserializer: D) -> Result<Vec<Multiaddr>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de;
-
-    struct BootstrapVisitor;
-
-    impl<'de> de::Visitor<'de> for BootstrapVisitor {
-        type Value = Vec<Multiaddr>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a list of multiaddresses")
-        }
-
-        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-        where
-            A: de::SeqAccess<'de>,
-        {
-            let mut addrs = Vec::new();
-
-            while let Some(addr) = seq.next_element::<Multiaddr>()? {
-                let Some(multiaddr::Protocol::P2p(_)) = addr.iter().last() else {
-                    return Err(serde::de::Error::custom("peer ID not allowed"));
-                };
-
-                addrs.push(addr);
-            }
-
-            Ok(addrs)
-        }
-    }
-
-    deserializer.deserialize_seq(BootstrapVisitor)
 }
 
 mod serde_identity {
