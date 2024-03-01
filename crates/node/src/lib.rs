@@ -118,13 +118,20 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                             let result = if let Ok(value) =
                                                 serde_json::from_slice::<serde_json::Value>(&result)
                                             {
-                                                format!("{:#}", value)
+                                                format!(
+                                                    "(json): {}",
+                                                    format!("{:#}", value)
+                                                        .lines()
+                                                        .map(|line| line.cyan().to_string())
+                                                        .collect::<Vec<_>>()
+                                                        .join("\n")
+                                                )
                                             } else {
-                                                format!("(raw): {:?}", result)
+                                                format!("(raw): {:?}", result.cyan())
                                             };
 
                                             for line in result.lines() {
-                                                println!("{IND}     > {}", line.cyan());
+                                                println!("{IND}     > {}", line);
                                             }
                                         }
                                         None => println!("{IND}   (No return value)"),
@@ -176,7 +183,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 println!("{IND} • {:?}", hash.cyan());
                 println!("{IND}     Sender: {}", entry.sender.cyan());
                 println!("{IND}     Method: {:?}", entry.transaction.method.cyan());
-                println!("{IND}     Payload: {:?}", entry.transaction.payload.cyan());
+                println!("{IND}     Payload:");
+                let payload = if let Ok(value) =
+                    serde_json::from_slice::<serde_json::Value>(&entry.transaction.payload)
+                {
+                    format!(
+                        "(json): {}",
+                        format!("{:#}", value)
+                            .lines()
+                            .map(|line| line.cyan().to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                } else {
+                    format!("(raw): {:?}", entry.transaction.payload.cyan())
+                };
+
+                for line in payload.lines() {
+                    println!("{IND}       > {}", line);
+                }
                 println!("{IND}     Prior: {:?}", entry.transaction.prior_hash.cyan());
             }
         }
