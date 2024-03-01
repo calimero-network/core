@@ -15,6 +15,12 @@ impl KvStore {
         self.items.insert(key, value);
     }
 
+    fn entries(&self) -> &HashMap<String, String> {
+        env::log(&format!("Getting all entries"));
+
+        &self.items
+    }
+
     fn get(&self, key: &str) -> Option<&str> {
         env::log(&format!("Getting key: {:?}", key));
 
@@ -54,6 +60,27 @@ mod code_generated_from_calimero_sdk_macros {
         app.set(key, value);
 
         env::state_write(&app);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn entries() {
+        env::setup_panic_hook();
+
+        #[derive(Serialize, Deserialize)]
+        struct Input {}
+
+        let Input {}: Input = serde_json::from_slice(
+            &env::input().expect("Expected input since method has arguments."),
+        )
+        .expect("Failed to deserialize input from JSON.");
+
+        let app: KvStore = env::state_read().expect("Failed to read app state.");
+
+        let value = app.entries();
+
+        let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+
+        env::value_return(&output);
     }
 
     #[no_mangle]
