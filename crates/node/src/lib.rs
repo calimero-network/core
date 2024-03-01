@@ -94,9 +94,16 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     Ok(_) => {
                         let (tx, rx) = oneshot::channel();
 
-                        let tx_hash = node
+                        let tx_hash = match node
                             .call(method.to_owned(), payload.as_bytes().to_owned(), tx)
-                            .await?;
+                            .await
+                        {
+                            Ok(tx_hash) => tx_hash,
+                            Err(e) => {
+                                println!("{IND} Failed to send transaction: {}", e);
+                                return Ok(());
+                            }
+                        };
 
                         println!("{IND} Sent Transaction! {:?}", tx_hash);
 
