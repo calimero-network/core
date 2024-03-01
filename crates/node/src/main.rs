@@ -16,7 +16,7 @@ async fn main() -> eyre::Result<()> {
 pub fn setup() -> eyre::Result<()> {
     tracing_subscriber::registry()
         .with(EnvFilter::builder().parse(format!(
-            "info,{}",
+            "info,calimero_network=debug,{}",
             // "debug,libp2p_core=warn,libp2p_gossipsub=warn,{}",
             std::env::var("RUST_LOG").unwrap_or_default()
         ))?)

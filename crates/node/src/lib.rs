@@ -6,7 +6,7 @@ use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub mod config;
 pub mod types;
@@ -273,6 +273,15 @@ impl Node {
                     }
                     message => error!("Unhandled PeerAction: {:?}", message),
                 }
+            }
+            calimero_network::types::NetworkEvent::ListeningOn {
+                listener_id,
+                address,
+            } => {
+                warn!(
+                    "listening on not really expected here(listener_id={}): {}",
+                    listener_id, address
+                );
             }
         }
 
