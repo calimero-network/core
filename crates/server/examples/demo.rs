@@ -9,7 +9,7 @@ async fn main() -> eyre::Result<()> {
     setup()?;
 
     let config = calimero_server::config::ServerConfig {
-        listen: vec![([127, 0, 0, 1], 2529).into()],
+        listen: vec!["/ip4/127.0.0.1/tcp/2528".parse()?],
 
         #[cfg(feature = "graphql")]
         graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
