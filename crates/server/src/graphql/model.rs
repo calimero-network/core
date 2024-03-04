@@ -34,7 +34,7 @@ impl GQLAppQuery {
         graphql::call(&self.sender, "posts".to_string(), vec![]).await
     }
 
-    async fn post<'a>(&self, _ctx: &Context<'a>, id: i32) -> async_graphql::Result<Post> {
+    async fn post<'a>(&self, _ctx: &Context<'a>, id: i32) -> async_graphql::Result<Option<Post>> {
         graphql::call(
             &self.sender,
             "post".to_string(),
