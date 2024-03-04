@@ -1,24 +1,27 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+
+pub type Key = Vec<u8>;
+pub type Value = Vec<u8>;
 
 pub trait Storage: Send {
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
-    fn set(&mut self, key: &[u8], value: &[u8]) -> Option<Vec<u8>>;
+    fn get(&self, key: &Key) -> Option<Value>;
+    fn set(&mut self, key: Key, value: Value) -> Option<Value>;
     // fn remove(&mut self, key: &[u8]);
-    fn has(&self, key: &[u8]) -> bool;
+    fn has(&self, key: &Key) -> bool;
 }
 
 #[derive(Debug, Default)]
 pub struct InMemoryStorage {
-    inner: HashMap<Vec<u8>, Vec<u8>>,
+    inner: BTreeMap<Key, Value>,
 }
 
 impl Storage for InMemoryStorage {
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, key: &Key) -> Option<Value> {
         self.inner.get(key).cloned()
     }
 
-    fn set(&mut self, key: &[u8], value: &[u8]) -> Option<Vec<u8>> {
-        self.inner.insert(key.to_vec(), value.to_vec())
+    fn set(&mut self, key: Key, value: Value) -> Option<Value> {
+        self.inner.insert(key, value)
     }
 
     // todo! revisit this, should we return the value by default?
@@ -26,7 +29,7 @@ impl Storage for InMemoryStorage {
     //     self.inner.remove(key);
     // }
 
-    fn has(&self, key: &[u8]) -> bool {
+    fn has(&self, key: &Key) -> bool {
         self.inner.contains_key(key)
     }
 }

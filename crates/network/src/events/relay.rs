@@ -1,5 +1,5 @@
-use color_eyre::owo_colors::OwoColorize;
 use libp2p::relay;
+use owo_colors::OwoColorize;
 use tracing::debug;
 
 use super::{EventHandler, EventLoop};
