@@ -1,7 +1,6 @@
-use std::collections::HashMap;
-
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::env;
+use serde::Serialize;
 
 mod code_generated_from_calimero_sdk_macros;
 
@@ -10,7 +9,7 @@ struct OnlyPeers {
     posts: Vec<Post>,
 }
 
-#[derive(Default, BorshSerialize, BorshDeserialize)]
+#[derive(Default, Serialize, BorshSerialize, BorshDeserialize)]
 struct Post {
     id: usize,
     title: String,
@@ -18,7 +17,7 @@ struct Post {
     comments: Vec<Comment>,
 }
 
-#[derive(Default, BorshSerialize, BorshDeserialize)]
+#[derive(Default, Serialize, BorshSerialize, BorshDeserialize)]
 struct Comment {
     text: String,
     user: String,
