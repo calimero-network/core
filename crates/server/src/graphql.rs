@@ -1,3 +1,5 @@
+use axum::response::IntoResponse;
+use axum::routing::{get, MethodRouter};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::info;
@@ -13,19 +15,7 @@ pub struct GraphQLConfig {
 pub fn service(
     config: &crate::config::ServerConfig,
     sender: crate::Sender,
-) -> eyre::Result<
-    Option<(
-        &'static str,
-        async_graphql_axum::GraphQL<
-            /* executor::GraphQLExecutor */
-            async_graphql::Schema<
-                model::GQLAppQuery,
-                model::GQLAppMutation,
-                async_graphql::EmptySubscription,
-            >,
-        >,
-    )>,
-> {
+) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
     let _config = match &config.graphql {
         Some(config) if config.enabled => config,
         _ => {
@@ -40,19 +30,24 @@ pub fn service(
         info!("GraphQL server listening on {}/http{{{}}}", listen, path);
     }
 
-    Ok(Some((
-        path,
-        async_graphql_axum::GraphQL::new(
-            /* executor::GraphQLExecutor */
-            async_graphql::Schema::new(
-                model::GQLAppQuery {
-                    sender: sender.clone(),
-                },
-                model::GQLAppMutation { sender },
-                async_graphql::EmptySubscription,
-            ),
-        ),
-    )))
+    let graphql = async_graphql_axum::GraphQL::new(async_graphql::Schema::new(
+        model::AppQuery {
+            sender: sender.clone(),
+        },
+        model::AppMutation { sender },
+        async_graphql::EmptySubscription,
+    ));
+
+    Ok(Some((path, get(|| graphiql(path)).post_service(graphql))))
+}
+
+async fn graphiql(path: &str) -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        async_graphql::http::GraphiQLSource::build()
+            .endpoint(path)
+            .finish(),
+    )
 }
 
 async fn call<T>(

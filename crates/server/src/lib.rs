@@ -41,8 +41,8 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
 
     #[cfg(feature = "graphql")]
     {
-        if let Some((path, service)) = graphql::service(&config, sender.clone())? {
-            app = app.route_service(path, service);
+        if let Some((path, handler)) = graphql::service(&config, sender.clone())? {
+            app = app.route(path, handler);
             serviced = true;
         }
     }
