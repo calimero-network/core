@@ -71,10 +71,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 }
             }
             line = stdin.next_line() => {
-                match line {
-                    Ok(Some(line)) => handle_line(&mut node, line).await?,
-                    Ok(None) => (),
-                    Err(e) => eyre::bail!(e),
+                if let Some(line) = line? {
+                    handle_line(&mut node, line).await?;
                 }
             }
             result = &mut server => {
