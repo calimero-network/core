@@ -83,7 +83,7 @@ impl GQLAppMutation {
         &self,
         _ctx: &Context<'a>,
         input: CreateCommentInput,
-    ) -> async_graphql::Result<Post> {
+    ) -> async_graphql::Result<Comment> {
         graphql::call(
             &self.sender,
             "create_comment".to_string(),

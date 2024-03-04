@@ -57,16 +57,16 @@ impl OnlyPeers {
         post_id: usize,
         user: String, // todo! expose executor identity to app context
         text: String,
-    ) -> &Post {
+    ) -> Option<&Comment> {
         env::log(&format!(
             "Creating comment under post with id: {:?} as user: {:?} with text: {:?}",
-            post, user, text
+            post_id, user, text
         ));
 
-        let post = self.posts.get_mut(post_id).unwrap();
+        let post = self.posts.get_mut(post_id)?;
 
         post.comments.push(Comment { user, text });
 
-        post
+        Some(post.comments.last().unwrap())
     }
 }
