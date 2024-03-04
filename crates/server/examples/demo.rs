@@ -9,7 +9,7 @@ async fn main() -> eyre::Result<()> {
     setup()?;
 
     let config = calimero_server::config::ServerConfig {
-        listen: vec!["/ip4/127.0.0.1/tcp/2528".parse()?],
+        listen: calimero_server::config::default_addrs(),
 
         #[cfg(feature = "graphql")]
         graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
@@ -17,9 +17,9 @@ async fn main() -> eyre::Result<()> {
 
     info!("Starting server with config: {:#?}", config);
 
-    let (tx, mut rx) = mpsc::channel(32);
+    let (server_sender, mut server_receiver) = mpsc::channel(32);
 
-    let mut server = Box::pin(calimero_server::start(config, tx));
+    let mut server = Box::pin(calimero_server::start(config, server_sender));
 
     loop {
         tokio::select! {
@@ -27,7 +27,7 @@ async fn main() -> eyre::Result<()> {
                 result?;
                 break;
             },
-            Some((method, payload, reply)) = rx.recv() => {
+            Some((method, payload, reply)) = server_receiver.recv() => {
                 handle_rpc(method, payload, reply).await?;
             }
         }
