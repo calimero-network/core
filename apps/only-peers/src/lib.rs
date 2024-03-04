@@ -54,7 +54,7 @@ impl OnlyPeers {
 
     pub fn create_comment(
         &mut self,
-        post: usize,
+        post_id: usize,
         user: String, // todo! expose executor identity to app context
         text: String,
     ) -> &Post {
@@ -63,7 +63,7 @@ impl OnlyPeers {
             post, user, text
         ));
 
-        let post = self.posts.get_mut(post).unwrap();
+        let post = self.posts.get_mut(post_id).unwrap();
 
         post.comments.push(Comment { user, text });
 

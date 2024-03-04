@@ -46,7 +46,7 @@ impl GQLAppQuery {
 
 #[derive(InputObject)]
 struct CreateCommentInput {
-    post: usize,
+    post_id: usize,
     user: String,
     text: String,
 }
@@ -88,7 +88,7 @@ impl GQLAppMutation {
             &self.sender,
             "create_comment".to_string(),
             serde_json::to_vec(&json!({
-                "post": input.post,
+                "post_id": input.post_id,
                 "user": input.user,
                 "text": input.text,
             }))?,
