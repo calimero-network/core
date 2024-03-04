@@ -18,7 +18,6 @@ members = [
 
   "./apps/kv-store",
   "./apps/only-peers",
-  "./peer-space",
 ]
 
 [workspace.dependencies]
