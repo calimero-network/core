@@ -13,7 +13,7 @@ async fn main() -> eyre::Result<()> {
     command.run().await
 }
 
-pub fn setup() -> eyre::Result<()> {
+fn setup() -> eyre::Result<()> {
     tracing_subscriber::registry()
         .with(EnvFilter::builder().parse(format!(
             "info,{}",

@@ -16,13 +16,13 @@ thiserror.workspace = true
 wasmer.workspace = true
 wasmer-types.workspace = true
 
+[[example]]
+name = "demo"
+
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 owo-colors.workspace = true
-
-[[example]]
-name = "demo"
 
 [features]
 host-traces = ["owo-colors"]

@@ -14,6 +14,7 @@ color-eyre.workspace = true
 dirs.workspace = true
 eyre.workspace = true
 libp2p.workspace = true
+multiaddr.workspace = true
 owo-colors.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -26,3 +27,4 @@ calimero-network = { path = "../network" }
 calimero-primitives = { path = "../primitives" }
 calimero-runtime = { path = "../runtime" }
 calimero-store = { path = "../store" }
+calimero-server = { path = "../server", features = ["graphql"] }

@@ -1,19 +1,23 @@
 use std::fs;
 use std::net::IpAddr;
 
-use calimero_network::config::{
-    BootstrapConfig, BootstrapNodes, DiscoveryConfig, EndpointConfig, SwarmConfig,
-};
+use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
 use calimero_node::config::{self, ConfigFile, NetworkConfig, StoreConfig};
+use calimero_server::config::ServerConfig;
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
-use libp2p::{identity, Multiaddr};
+use libp2p::identity;
+use multiaddr::Multiaddr;
 use tracing::{info, warn};
 
 use crate::cli;
 
 #[derive(Debug, Parser)]
 /// Initialize node configuration
+// todo! simplify this, by splitting the steps
+// todo! $ calimero node init
+// todo! $ calimero node config 'swarm.listen:=["", ""]' server.graphql:=true discovery.mdns:=false
+// todo! $ calimero node config discovery.mdns
 pub struct InitCommand {
     /// List of bootstrap nodes
     #[clap(long, value_name = "ADDR")]
@@ -34,15 +38,15 @@ pub struct InitCommand {
     #[clap(default_value_t = calimero_network::config::DEFAULT_PORT)]
     pub port: u16,
 
-    /// Host to listen on
-    #[clap(long, value_name = "RPC_HOST")]
-    #[clap(default_value = "127.0.0.1")]
-    pub rpc_host: String,
+    /// Host to listen on for RPC
+    #[clap(long, value_name = "HOST")]
+    #[clap(default_value = "127.0.0.1,::")]
+    pub server_host: Vec<IpAddr>,
 
-    /// Port to listen on
-    #[clap(long, value_name = "RPC_PORT")]
-    #[clap(default_value_t = calimero_network::config::DEFAULT_RPC_PORT)]
-    pub rpc_port: u16,
+    /// Port to listen on for RPC
+    #[clap(long, value_name = "PORT")]
+    #[clap(default_value_t = calimero_server::config::DEFAULT_PORT)]
+    pub server_port: u16,
 
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
@@ -126,9 +130,15 @@ impl InitCommand {
                     nodes: BootstrapNodes { list: boot_nodes },
                 },
                 discovery: DiscoveryConfig { mdns },
-                endpoint: EndpointConfig {
-                    host: self.rpc_host,
-                    port: self.rpc_port,
+                server: ServerConfig {
+                    listen: self
+                        .server_host
+                        .into_iter()
+                        .map(|host| {
+                            Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
+                        })
+                        .collect(),
+                    graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
                 },
             },
         };
