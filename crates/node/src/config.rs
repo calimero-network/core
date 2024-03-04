@@ -85,7 +85,7 @@ pub fn default_chat_dir() -> camino::Utf8PathBuf {
 mod serde_identity {
     use std::fmt;
 
-    use libp2p::identity::Keypair;
+    use libp2p::identity::{Keypair, PublicKey};
     use serde::de::{self, MapAccess};
     use serde::ser::{self, SerializeMap};
     use serde::{Deserializer, Serializer};
@@ -99,6 +99,11 @@ mod serde_identity {
         keypair.serialize_entry(
             "PrivKey",
             &bs58::encode(&key.to_protobuf_encoding().map_err(ser::Error::custom)?).into_string(),
+        )?;
+
+        keypair.serialize_entry(
+            "PubKey",
+            &bs58::encode(&key.public().encode_protobuf()).into_string(),
         )?;
         keypair.end()
     }
@@ -122,11 +127,13 @@ mod serde_identity {
             {
                 let mut peer_id = None::<String>;
                 let mut priv_key = None::<String>;
+                let mut pub_key = None::<String>;
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "PeerID" => peer_id = Some(map.next_value()?),
                         "PrivKey" => priv_key = Some(map.next_value()?),
+                        "PubKey" => pub_key = Some(map.next_value()?),
                         _ => {
                             let _ = map.next_value::<de::IgnoredAny>();
                         }
@@ -135,13 +142,31 @@ mod serde_identity {
 
                 let peer_id = peer_id.ok_or_else(|| de::Error::missing_field("PeerID"))?;
                 let priv_key = priv_key.ok_or_else(|| de::Error::missing_field("PrivKey"))?;
+                let pub_key = pub_key.ok_or_else(|| de::Error::missing_field("PubKey"))?;
 
                 let priv_key = bs58::decode(priv_key)
                     .into_vec()
                     .map_err(|_| de::Error::custom("invalid base58"))?;
 
+                let pub_key = bs58::decode(pub_key)
+                    .into_vec()
+                    .map_err(|_| de::Error::custom("invalid base58"))?;
+
+                let pub_key = PublicKey::try_decode_protobuf(&pub_key)
+                    .map_err(|_| de::Error::custom("invalid pubkey"))?;
+
                 let keypair = Keypair::from_protobuf_encoding(&priv_key)
                     .map_err(|_| de::Error::custom("invalid protobuf"))?;
+
+                let verify_result = pub_key.verify(
+                    "cali_test".as_bytes(),
+                    &keypair.sign("cali_test".as_bytes()).unwrap(),
+                );
+
+                assert!(
+                    verify_result,
+                    "Public and private keys do not belong to each other."
+                );
 
                 if peer_id != keypair.public().to_peer_id().to_base58() {
                     return Err(de::Error::custom("PeerID does not match public key"));
@@ -151,6 +176,10 @@ mod serde_identity {
             }
         }
 
-        deserializer.deserialize_struct("Keypair", &["PeerID", "PrivKey"], IdentityVisitor)
+        deserializer.deserialize_struct(
+            "Keypair",
+            &["PeerID", "PrivKey", "PubKey"],
+            IdentityVisitor,
+        )
     }
 }
