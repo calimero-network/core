@@ -2,7 +2,7 @@ use std::fs;
 use std::net::IpAddr;
 
 use calimero_network::config::{
-    BootstrapConfig, BootstrapNodes, DiscoveryConfig, EndpointConfig, SwarmConfig,
+    AppConfig, BootstrapConfig, BootstrapNodes, DiscoveryConfig, EndpointConfig, SwarmConfig,
 };
 use calimero_node::config::{self, ConfigFile, NetworkConfig, StoreConfig};
 use clap::{Parser, ValueEnum};
