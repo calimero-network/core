@@ -7,18 +7,22 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-axum.workspace = true
 bs58.workspace = true
-camino.workspace = true
+camino = { workspace = true, features = ["serde1"] }
 clap = { workspace = true, features = ["env", "derive"] }
 color-eyre.workspace = true
 dirs.workspace = true
-jsonrpsee = { workspace = true, features = ["server", "macros"] }
-libp2p = { workspace = true, features = ["full"] }
+eyre.workspace = true
+libp2p.workspace = true
+owo-colors.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-sha2.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+calimero-network = { path = "../network" }
+calimero-primitives = { path = "../primitives" }
+calimero-runtime = { path = "../runtime" }
+calimero-store = { path = "../store" }

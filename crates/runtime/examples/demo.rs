@@ -1,8 +1,8 @@
 use calimero_runtime::{logic, run, store, Constraint};
-use color_eyre::owo_colors::OwoColorize;
+use owo_colors::OwoColorize;
 use serde_json::json;
 
-fn main() -> color_eyre::Result<()> {
+fn main() -> eyre::Result<()> {
     let file = include_bytes!("../../../apps/kv-store/res/kv_store.wasm");
 
     let mut storage = store::InMemoryStorage::default();

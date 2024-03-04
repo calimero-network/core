@@ -7,6 +7,8 @@ TARGET="${CARGO_TARGET_DIR:-../../target}"
 
 cargo build --target wasm32-unknown-unknown --profile app-release
 
+mkdir -p res
+
 cp $TARGET/wasm32-unknown-unknown/app-release/kv_store.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then

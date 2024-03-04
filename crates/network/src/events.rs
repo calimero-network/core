@@ -1,3 +1,5 @@
+use tracing::error;
+
 use super::*;
 
 mod gossipsub;
@@ -22,12 +24,21 @@ impl EventLoop {
                 BehaviourEvent::Relay(event) => events::EventHandler::handle(self, event).await,
                 BehaviourEvent::Ping(event) => events::EventHandler::handle(self, event).await,
             },
-            SwarmEvent::NewListenAddr { address, .. } => {
+            SwarmEvent::NewListenAddr {
+                listener_id,
+                address,
+            } => {
                 let local_peer_id = *self.swarm.local_peer_id();
-                info!(
-                    "Listening on {}",
-                    address.with(multiaddr::Protocol::P2p(local_peer_id))
-                );
+                if let Err(err) = self
+                    .event_sender
+                    .send(types::NetworkEvent::ListeningOn {
+                        listener_id,
+                        address: address.with(multiaddr::Protocol::P2p(local_peer_id)),
+                    })
+                    .await
+                {
+                    error!("Failed to send listening on event: {:?}", err);
+                }
             }
             SwarmEvent::IncomingConnection { .. } => {}
             SwarmEvent::ConnectionEstablished {
