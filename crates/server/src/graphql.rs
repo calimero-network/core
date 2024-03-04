@@ -55,7 +55,7 @@ pub fn service(
     )))
 }
 
-pub async fn call<T>(
+async fn call<T>(
     sender: &crate::Sender,
     method: String,
     args: Vec<u8>,
@@ -70,7 +70,7 @@ where
     let outcome = rx.await?;
 
     for log in outcome.logs {
-        info!("{}", log);
+        info!("RPC log: {}", log);
     }
 
     let result = serde_json::from_slice(&outcome.returns?.unwrap_or_default())?;
