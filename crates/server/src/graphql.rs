@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::info;
 
-pub mod executor;
 mod model;
 
 #[derive(Debug, Serialize, Deserialize)]

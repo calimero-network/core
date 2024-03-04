@@ -1268,7 +1268,6 @@ dependencies = [
  "calimero-runtime",
  "color-eyre",
  "eyre",
- "futures-util",
  "multiaddr",
  "serde",
  "serde_json",
