@@ -1,8 +1,11 @@
+use axum::http;
+use axum::response::Html;
+use axum::routing::{get, MethodRouter};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+use tower_http::cors;
 use tracing::info;
 
-pub mod executor;
 mod model;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -14,19 +17,7 @@ pub struct GraphQLConfig {
 pub fn service(
     config: &crate::config::ServerConfig,
     sender: crate::Sender,
-) -> eyre::Result<
-    Option<(
-        &'static str,
-        async_graphql_axum::GraphQL<
-            /* executor::GraphQLExecutor */
-            async_graphql::Schema<
-                model::GQLAppQuery,
-                model::GQLAppMutation,
-                async_graphql::EmptySubscription,
-            >,
-        >,
-    )>,
-> {
+) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
     let _config = match &config.graphql {
         Some(config) if config.enabled => config,
         _ => {
@@ -41,22 +32,34 @@ pub fn service(
         info!("GraphQL server listening on {}/http{{{}}}", listen, path);
     }
 
+    let graphql = async_graphql_axum::GraphQL::new(async_graphql::Schema::new(
+        model::AppQuery {
+            sender: sender.clone(),
+        },
+        model::AppMutation { sender },
+        async_graphql::EmptySubscription,
+    ));
+
     Ok(Some((
         path,
-        async_graphql_axum::GraphQL::new(
-            /* executor::GraphQLExecutor */
-            async_graphql::Schema::new(
-                model::GQLAppQuery {
-                    sender: sender.clone(),
-                },
-                model::GQLAppMutation { sender },
-                async_graphql::EmptySubscription,
-            ),
+        get(|| graphiql(path)).post_service(graphql).layer(
+            cors::CorsLayer::new()
+                .allow_origin(cors::Any)
+                .allow_headers(cors::Any)
+                .allow_methods([http::Method::POST]),
         ),
     )))
 }
 
-pub async fn call<T>(
+async fn graphiql(path: &str) -> Html<String> {
+    Html(
+        async_graphql::http::GraphiQLSource::build()
+            .endpoint(path)
+            .finish(),
+    )
+}
+
+async fn call<T>(
     sender: &crate::Sender,
     method: String,
     args: Vec<u8>,
@@ -71,7 +74,7 @@ where
     let outcome = rx.await?;
 
     for log in outcome.logs {
-        info!("{}", log);
+        info!("RPC log: {}", log);
     }
 
     let result = serde_json::from_slice(&outcome.returns?.unwrap_or_default())?;

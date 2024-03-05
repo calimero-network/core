@@ -4,7 +4,7 @@ use serde_json::json;
 
 use crate::graphql;
 
-pub struct GQLAppQuery {
+pub struct AppQuery {
     pub sender: crate::Sender,
 }
 
@@ -22,16 +22,10 @@ struct Comment {
     user: String,
 }
 
-impl GQLAppQuery {
-    pub fn new(sender: crate::Sender) -> Self {
-        Self { sender }
-    }
-}
-
 #[Object]
-impl GQLAppQuery {
+impl AppQuery {
     async fn posts<'a>(&self, _ctx: &Context<'a>) -> async_graphql::Result<Vec<Post>> {
-        graphql::call(&self.sender, "posts".to_string(), vec![]).await
+        graphql::call(&self.sender, "posts".to_string(), b"{}".to_vec()).await
     }
 
     async fn post<'a>(&self, _ctx: &Context<'a>, id: i32) -> async_graphql::Result<Option<Post>> {
@@ -46,7 +40,7 @@ impl GQLAppQuery {
 
 #[derive(InputObject)]
 struct CreateCommentInput {
-    post: usize,
+    post_id: usize,
     user: String,
     text: String,
 }
@@ -57,12 +51,12 @@ struct CreatePostInput {
     content: String,
 }
 
-pub struct GQLAppMutation {
+pub struct AppMutation {
     pub sender: crate::Sender,
 }
 
 #[Object]
-impl GQLAppMutation {
+impl AppMutation {
     async fn create_post<'a>(
         &self,
         _ctx: &Context<'a>,
@@ -83,12 +77,12 @@ impl GQLAppMutation {
         &self,
         _ctx: &Context<'a>,
         input: CreateCommentInput,
-    ) -> async_graphql::Result<Post> {
+    ) -> async_graphql::Result<Option<Comment>> {
         graphql::call(
             &self.sender,
             "create_comment".to_string(),
             serde_json::to_vec(&json!({
-                "post": input.post,
+                "post_id": input.post_id,
                 "user": input.user,
                 "text": input.text,
             }))?,

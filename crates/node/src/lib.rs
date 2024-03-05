@@ -56,9 +56,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let mut node = Node::new(&config, network_client).await?;
 
-    let (client_tx, mut client_rx) = mpsc::channel(32);
+    let (server_sender, mut server_receiver) = mpsc::channel(32);
 
-    let mut server = Box::pin(calimero_server::start(config.server, client_tx));
+    let mut server = Box::pin(calimero_server::start(config.server, server_sender));
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
@@ -71,17 +71,15 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 }
             }
             line = stdin.next_line() => {
-                match line {
-                    Ok(Some(line)) => handle_line(&mut node, line).await?,
-                    Ok(None) => (),
-                    Err(e) => eyre::bail!(e),
+                if let Some(line) = line? {
+                    handle_line(&mut node, line).await?;
                 }
             }
             result = &mut server => {
                 result?;
                 break;
             }
-            Some((method, payload, tx)) = client_rx.recv() => {
+            Some((method, payload, tx)) = server_receiver.recv() => {
                 node.call(method, payload, tx).await?;
             }
         }
