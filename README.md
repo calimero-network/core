@@ -23,7 +23,7 @@ export RUST_LOG=debug
 #### First, compile the kv-store application
 
 ```console
-$ ./apps/kv-store/build.sh
+$ ./apps/only-peers/build.sh
    Compiling calimero-sdk v0.1.0 (/git/calimero-is-near/cali2.0-experimental/crates/sdk)
    Compiling kv-store v0.1.0 (/git/calimero-is-near/cali2.0-experimental/apps/kv-store)
     Finished app-release [optimized] target(s) in 2.35s
@@ -38,37 +38,41 @@ $ mkdir data
 #### Spin up a coordinator node
 
 ```console
-$ cargo run -p calimero-node -- --home data/coordinator init --port 2429
+$ cargo run -p calimero-node -- --home data/coordinator init --server-port 2427
     Finished dev [unoptimized + debuginfo] target(s) in 0.20s
      Running `target/debug/calimero-node --home data/coordinator init`
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWCiyHe2yeu53qSyRs4g9sTGwgEPjR8iGdi4XG5iv11TgH")
 2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/coordinator"
 
-$ cargo run -p calimero-node -- --home data/coordinator run apps/kv-store/res/kv_store.wasm --node-type coordinator
+$ cargo run -p calimero-node -- --home data/coordinator run apps/only-peers/res/only_peers.wasm --node-type coordinator
 ```
 
 #### Spin up node 1
 
 ```console
-$ cargo run -p calimero-node -- --home data/node1 init --port 2428
+$ cargo run -p calimero-node -- --home data/node1 init --server-port 2428
     Finished dev [unoptimized + debuginfo] target(s) in 0.20s
      Running `target/debug/calimero-node --home data/node1 init`
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHJMh2hv9wai6UqPoHf5jED2gNaUbTTx6ZThAUqroCgtF")
 2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/node1"
 
-$ cargo run -p calimero-node -- --home data/node1 run apps/kv-store/res/kv_store.wasm
+$ cargo run -p calimero-node -- --home data/node1 run apps/only-peers/res/only_peers.wasm
+```
+
+```
+Check if config file has set correct port in all places. If not, update it per given port value.
 ```
 
 #### Spin up node 2
 
 ```console
-$ cargo run -p calimero-node -- --home data/node2 init --port 2430
+$ cargo run -p calimero-node -- --home data/node2 init --server-port 2429
     Finished dev [unoptimized + debuginfo] target(s) in 0.20s
      Running `target/debug/calimero-node --home data/node2 init`
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHDWr9mCgZiXQXKDsMjWgDioAt9mVHAKEuYUuSKtYdv75")
 2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/node2"
 
-$ cargo run -p calimero-node -- --home data/node2 run apps/kv-store/res/kv_store.wasm
+$ cargo run -p calimero-node -- --home data/node2 run apps/only-peers/res/only_peers.wasm
 ```
 
 All sessions will fall into interactive mode
