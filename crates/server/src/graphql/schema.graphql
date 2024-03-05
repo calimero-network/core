@@ -10,7 +10,7 @@ type Query {
 
 type Mutation {
     createPost(input: CreatePost!): Post!,
-    createComment(input: CreateComment!): Comment!
+    createComment(input: CreateComment!): Comment
 }
 
 input CreatePost {
