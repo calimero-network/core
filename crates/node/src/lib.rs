@@ -5,7 +5,7 @@ use calimero_runtime::Constraint;
 use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
 pub mod config;
@@ -18,6 +18,7 @@ pub struct NodeConfig {
     pub identity: identity::Keypair,
     pub node_type: calimero_primitives::types::NodeType,
     pub network: calimero_network::config::NetworkConfig,
+    pub server: calimero_server::config::ServerConfig,
     pub store: calimero_store::config::StoreConfig,
 }
 
@@ -55,6 +56,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let mut node = Node::new(&config, network_client).await?;
 
+    let (server_sender, mut server_receiver) = mpsc::channel(32);
+
+    let mut server = Box::pin(calimero_server::start(config.server, server_sender));
+
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
     loop {
@@ -66,11 +71,16 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 }
             }
             line = stdin.next_line() => {
-                match line {
-                    Ok(Some(line)) => handle_line(&mut node, line).await?,
-                    Ok(None) => (),
-                    Err(e) => eyre::bail!(e),
+                if let Some(line) = line? {
+                    handle_line(&mut node, line).await?;
                 }
+            }
+            result = &mut server => {
+                result?;
+                break;
+            }
+            Some((method, payload, tx)) = server_receiver.recv() => {
+                node.call(method, payload, tx).await?;
             }
         }
     }

@@ -26,21 +26,25 @@ pub struct ConfigFile {
 pub struct NetworkConfig {
     pub swarm: calimero_network::config::SwarmConfig,
 
+    pub server: calimero_server::config::ServerConfig,
+
     #[serde(default)]
     pub bootstrap: calimero_network::config::BootstrapConfig,
 
     #[serde(default)]
     pub discovery: calimero_network::config::DiscoveryConfig,
 
-    #[serde(default)]
-    pub endpoint: calimero_network::config::EndpointConfig,
-
-    pub app: calimero_network::config::AppConfig,
+    pub app: AppConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StoreConfig {
     pub path: camino::Utf8PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub wasm_path: String,
 }
 
 impl ConfigFile {

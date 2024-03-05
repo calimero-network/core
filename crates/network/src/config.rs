@@ -1,12 +1,10 @@
 use std::fmt;
 
 use libp2p::identity;
-use libp2p::multiaddr::{self, Multiaddr};
+use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_PORT: u16 = 2428;
-pub const DEFAULT_RPC_HOST: &str = "127.0.0.1";
-pub const DEFAULT_RPC_PORT: u16 = 3030;
+pub const DEFAULT_PORT: u16 = 2428; // CHAT in T9
 
 // https://github.com/ipfs/kubo/blob/efdef7fdcfeeb30e2f1ce3dbf65b6460b58afaaf/config/bootstrap_peers.go#L17-L24
 pub const IPFS_BOOT_NODES: &[&str] = &[
@@ -19,7 +17,6 @@ pub const IPFS_BOOT_NODES: &[&str] = &[
 ];
 
 #[derive(Debug)]
-
 pub struct NetworkConfig {
     pub identity: identity::Keypair,
     pub node_type: calimero_primitives::types::NodeType,
@@ -27,7 +24,6 @@ pub struct NetworkConfig {
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
     pub discovery: DiscoveryConfig,
-    pub endpoint: EndpointConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,38 +65,14 @@ impl BootstrapNodes {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
-    #[serde(default = "bool_true")]
+    #[serde(default = "calimero_primitives::common::bool_true")]
     pub mdns: bool,
-}
-
-const fn bool_true() -> bool {
-    true
 }
 
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self { mdns: true }
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EndpointConfig {
-    pub host: String,
-    pub port: u16,
-}
-
-impl Default for EndpointConfig {
-    fn default() -> Self {
-        Self {
-            host: DEFAULT_RPC_HOST.to_string(),
-            port: DEFAULT_RPC_PORT,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AppConfig {
-    pub wasm_path: String,
 }
 
 fn deserialize_bootstrap<'de, D>(deserializer: D) -> Result<Vec<Multiaddr>, D::Error>

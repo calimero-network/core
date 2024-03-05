@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 eyre.workspace = true
 libp2p = { workspace = true, features = ["full"] }
+multiaddr.workspace = true
 owo-colors.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

@@ -3,10 +3,10 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use libp2p::futures::prelude::*;
-use libp2p::multiaddr::{self, Multiaddr};
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::{gossipsub, identify, kad, mdns, ping, relay, PeerId};
+use multiaddr::Multiaddr;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tracing::{debug, error, info, trace, warn};
