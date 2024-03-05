@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use axum::routing::Router;
 use tokio::sync::{mpsc, oneshot};
@@ -15,9 +15,11 @@ type Sender = mpsc::Sender<(
 )>;
 
 pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result<()> {
+    let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
-
-    for addr in config.listen.iter() {
+    let mut listeners = Vec::with_capacity(config.listen.len());
+    let mut want_listeners = config.listen.into_iter().peekable();
+    while let Some(addr) = want_listeners.next() {
         let mut components = addr.iter();
 
         let host: IpAddr = match components.next() {
@@ -30,10 +32,23 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
             eyre::bail!("Invalid multiaddr, expected TCP component");
         };
 
-        addrs.push((host, port).into());
+        match tokio::net::TcpListener::bind(SocketAddr::from((host, port))).await {
+            Ok(listener) => {
+                let local_port = listener.local_addr()?.port();
+                addrs.push(
+                    addr.replace(1, |_| Some(multiaddr::Protocol::Tcp(local_port)))
+                        .unwrap(), // safety: we know the index is valid
+                );
+                listeners.push(listener);
+            }
+            Err(err) => {
+                if want_listeners.peek().is_none() {
+                    eyre::bail!(err);
+                }
+            }
+        }
     }
-
-    let listener = tokio::net::TcpListener::bind(addrs.as_slice()).await?;
+    config.listen = addrs;
 
     let mut app = Router::new();
 
@@ -53,7 +68,16 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
         return Ok(());
     }
 
-    axum::serve(listener, app).await?;
+    let mut set = tokio::task::JoinSet::new();
+
+    for listener in listeners {
+        let app = app.clone();
+        set.spawn(async { axum::serve(listener, app).await });
+    }
+
+    while let Some(result) = set.join_next().await {
+        result??;
+    }
 
     Ok(())
 }
