@@ -75,6 +75,13 @@ $ cargo run -p calimero-node -- --home data/node2 init --server-port 2429
 $ cargo run -p calimero-node -- --home data/node2 run apps/only-peers/res/only_peers.wasm
 ```
 
+```
+Important!!
+If you receive error
+"message": "guest panicked: panicked at apps/only-peers/src/code_generated_from_calimero_sdk_macros.rs:41:44: Failed to read app state.",
+that means that storage is empty. Before fetching any data, create new post.
+```
+
 All sessions will fall into interactive mode
 
 ```console
