@@ -1,3 +1,7 @@
+use std::env;
+use std::net::{Ipv4Addr, SocketAddr};
+
+use multiaddr::Multiaddr;
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info};
@@ -8,8 +12,35 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> eyre::Result<()> {
     setup()?;
 
+    let mut listen = vec![];
+    for arg in env::args().skip(1) {
+        if let Ok(port) = arg.parse::<u16>() {
+            listen.push(
+                Multiaddr::from(Ipv4Addr::from([0, 0, 0, 0])).with(multiaddr::Protocol::Tcp(port)),
+            );
+            continue;
+        }
+        if let Ok(socket) = arg.parse::<SocketAddr>() {
+            match socket {
+                SocketAddr::V4(v4) => {
+                    listen.push(Multiaddr::from(*v4.ip()).with(multiaddr::Protocol::Tcp(v4.port())))
+                }
+                SocketAddr::V6(v6) => {
+                    listen.push(Multiaddr::from(*v6.ip()).with(multiaddr::Protocol::Tcp(v6.port())))
+                }
+            }
+            continue;
+        }
+
+        listen.push(arg.parse::<Multiaddr>()?);
+    }
+
+    if listen.is_empty() {
+        listen = calimero_server::config::default_addrs();
+    }
+
     let config = calimero_server::config::ServerConfig {
-        listen: calimero_server::config::default_addrs(),
+        listen,
 
         #[cfg(feature = "graphql")]
         graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
