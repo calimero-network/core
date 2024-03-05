@@ -7,13 +7,7 @@ Calimero 2.0
 ./crates/node/gen_localnet_configs.sh 3
 ```
 
-## Download app wasm and specify wasm_path in config
-```
-[app]
-wasm_path = "./app.wasm"
-```
-
-## Turn on debug mode
+## Turn on debug mode (optional)
 ```
 export RUST_LOG=debug
 ```
@@ -44,7 +38,7 @@ $ cargo run -p calimero-node -- --home data/coordinator init --server-port 2427
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWCiyHe2yeu53qSyRs4g9sTGwgEPjR8iGdi4XG5iv11TgH")
 2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/coordinator"
 
-$ cargo run -p calimero-node -- --home data/coordinator run apps/only-peers/res/only_peers.wasm --node-type coordinator
+$ cargo run -p calimero-node -- --home data/coordinator run --node-type coordinator
 ```
 
 #### Spin up node 1
@@ -56,7 +50,7 @@ $ cargo run -p calimero-node -- --home data/node1 init --server-port 2428
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHJMh2hv9wai6UqPoHf5jED2gNaUbTTx6ZThAUqroCgtF")
 2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/node1"
 
-$ cargo run -p calimero-node -- --home data/node1 run apps/only-peers/res/only_peers.wasm
+$ cargo run -p calimero-node -- --home data/node1 run
 ```
 
 ```
@@ -72,7 +66,7 @@ $ cargo run -p calimero-node -- --home data/node2 init --server-port 2429
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHDWr9mCgZiXQXKDsMjWgDioAt9mVHAKEuYUuSKtYdv75")
 2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/node2"
 
-$ cargo run -p calimero-node -- --home data/node2 run apps/only-peers/res/only_peers.wasm
+$ cargo run -p calimero-node -- --home data/node2 run
 ```
 
 ```
