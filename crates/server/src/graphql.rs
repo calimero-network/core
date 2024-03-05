@@ -1,5 +1,5 @@
 use axum::http;
-use axum::response::IntoResponse;
+use axum::response::Html;
 use axum::routing::{get, MethodRouter};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -51,9 +51,8 @@ pub fn service(
     )))
 }
 
-async fn graphiql(path: &str) -> impl IntoResponse {
-    (
-        [(http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+async fn graphiql(path: &str) -> Html<String> {
+    Html(
         async_graphql::http::GraphiQLSource::build()
             .endpoint(path)
             .finish(),
