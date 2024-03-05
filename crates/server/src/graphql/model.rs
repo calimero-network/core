@@ -77,7 +77,7 @@ impl AppMutation {
         &self,
         _ctx: &Context<'a>,
         input: CreateCommentInput,
-    ) -> async_graphql::Result<Comment> {
+    ) -> async_graphql::Result<Option<Comment>> {
         graphql::call(
             &self.sender,
             "create_comment".to_string(),
