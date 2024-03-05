@@ -52,7 +52,10 @@ impl RunCommand {
                 swarm: config.network.swarm,
                 bootstrap: config.network.bootstrap,
                 discovery: config.network.discovery,
-                endpoint: config.network.endpoint,
+            },
+            server: calimero_server::config::ServerConfig {
+                listen: config.network.server.listen,
+                graphql: config.network.server.graphql,
             },
         })
         .await

@@ -26,14 +26,13 @@ pub struct ConfigFile {
 pub struct NetworkConfig {
     pub swarm: calimero_network::config::SwarmConfig,
 
+    pub server: calimero_server::config::ServerConfig,
+
     #[serde(default)]
     pub bootstrap: calimero_network::config::BootstrapConfig,
 
     #[serde(default)]
     pub discovery: calimero_network::config::DiscoveryConfig,
-
-    #[serde(default)]
-    pub endpoint: calimero_network::config::EndpointConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
