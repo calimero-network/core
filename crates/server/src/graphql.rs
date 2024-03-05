@@ -1,7 +1,9 @@
+use axum::http;
 use axum::response::IntoResponse;
 use axum::routing::{get, MethodRouter};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+use tower_http::cors;
 use tracing::info;
 
 mod model;
@@ -38,12 +40,20 @@ pub fn service(
         async_graphql::EmptySubscription,
     ));
 
-    Ok(Some((path, get(|| graphiql(path)).post_service(graphql))))
+    Ok(Some((
+        path,
+        get(|| graphiql(path)).post_service(graphql).layer(
+            cors::CorsLayer::new()
+                .allow_origin(cors::Any)
+                .allow_headers(cors::Any)
+                .allow_methods([http::Method::POST]),
+        ),
+    )))
 }
 
 async fn graphiql(path: &str) -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        [(http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
         async_graphql::http::GraphiQLSource::build()
             .endpoint(path)
             .finish(),
