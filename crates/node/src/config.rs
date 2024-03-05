@@ -1,5 +1,6 @@
 use std::fs;
 
+use camino::Utf8PathBuf;
 use eyre::WrapErr;
 use libp2p::identity;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,8 @@ pub struct ConfigFile {
     pub network: NetworkConfig,
 
     pub store: StoreConfig,
+
+    pub app: AppConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,8 +36,6 @@ pub struct NetworkConfig {
 
     #[serde(default)]
     pub discovery: calimero_network::config::DiscoveryConfig,
-
-    pub app: AppConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,7 +45,8 @@ pub struct StoreConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub wasm_path: String,
+    /// Path to the application (*.wasm file)
+    pub path: Utf8PathBuf,
 }
 
 impl ConfigFile {
