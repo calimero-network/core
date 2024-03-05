@@ -40,7 +40,7 @@ pub struct InitCommand {
 
     /// Host to listen on for RPC
     #[clap(long, value_name = "HOST")]
-    #[clap(default_value = "127.0.0.1,::1")]
+    #[clap(default_value = "127.0.0.1")]
     pub server_host: Vec<IpAddr>,
 
     /// Port to listen on for RPC
