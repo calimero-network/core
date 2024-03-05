@@ -31,12 +31,12 @@ pub struct InitCommand {
     #[clap(long, value_name = "HOST")]
     #[clap(default_value = "0.0.0.0,::")]
     #[clap(use_value_delimiter = true)]
-    pub host: Vec<IpAddr>,
+    pub swarm_host: Vec<IpAddr>,
 
     /// Port to listen on
     #[clap(long, value_name = "PORT")]
     #[clap(default_value_t = calimero_network::config::DEFAULT_PORT)]
-    pub port: u16,
+    pub swarm_port: u16,
 
     /// Host to listen on for RPC
     #[clap(long, value_name = "HOST")]
@@ -101,7 +101,7 @@ impl InitCommand {
 
         let mut listen: Vec<Multiaddr> = vec![];
 
-        for host in self.host {
+        for host in self.swarm_host {
             let host = format!(
                 "/{}/{}",
                 match host {
@@ -110,8 +110,8 @@ impl InitCommand {
                 },
                 host,
             );
-            listen.push(format!("{}/tcp/{}", host, self.port).parse()?);
-            listen.push(format!("{}/udp/{}/quic-v1", host, self.port).parse()?);
+            listen.push(format!("{}/tcp/{}", host, self.swarm_port).parse()?);
+            listen.push(format!("{}/udp/{}/quic-v1", host, self.swarm_port).parse()?);
         }
 
         let mut boot_nodes = self.boot_nodes;
