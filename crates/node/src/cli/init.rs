@@ -121,8 +121,7 @@ impl InitCommand {
             boot_nodes.extend(BootstrapNodes::ipfs().list);
         }
 
-        let mut app_path = Utf8PathBuf::new();
-        app_path.push("apps/only-peers/res/only_peers.wasm");
+        let app_path = Utf8PathBuf::from("apps/only-peers/res/only_peers.wasm");
 
         let config = ConfigFile {
             identity,
