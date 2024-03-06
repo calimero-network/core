@@ -8,10 +8,6 @@ pub struct RunCommand {
     #[clap(long, value_name = "TYPE")]
     #[clap(value_enum, default_value_t)]
     pub node_type: NodeType,
-
-    /// Path to the application (*.wasm file)
-    #[clap(value_name = "PATH")]
-    pub app_path: camino::Utf8PathBuf,
 }
 
 #[derive(Copy, Clone, Debug, Default, ValueEnum)]
@@ -40,7 +36,7 @@ impl RunCommand {
 
         calimero_node::start(calimero_node::NodeConfig {
             home: root_args.home.clone(),
-            app_path: self.app_path,
+            app_path: config.app.path,
             node_type: self.node_type.into(),
             identity: config.identity.clone(),
             store: calimero_store::config::StoreConfig {
@@ -52,7 +48,10 @@ impl RunCommand {
                 swarm: config.network.swarm,
                 bootstrap: config.network.bootstrap,
                 discovery: config.network.discovery,
-                endpoint: config.network.endpoint,
+            },
+            server: calimero_server::config::ServerConfig {
+                listen: config.network.server.listen,
+                graphql: config.network.server.graphql,
             },
         })
         .await
