@@ -11,6 +11,8 @@ use tracing::{error, info, warn};
 pub mod config;
 pub mod types;
 
+type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
+
 #[derive(Debug)]
 pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
@@ -58,7 +60,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
-    let mut server = Box::pin(calimero_server::start(config.server, server_sender));
+    let mut server = Box::pin(calimero_server::start(config.server, server_sender))
+        as BoxedFuture<eyre::Result<()>>;
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
@@ -77,7 +80,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             }
             result = &mut server => {
                 result?;
-                break;
+                server = Box::pin(std::future::pending());
+                continue;
             }
             Some((method, payload, tx)) = server_receiver.recv() => {
                 node.call(method, payload, tx).await?;
