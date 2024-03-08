@@ -58,7 +58,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
-    let mut server = Box::pin(calimero_server::start(config.server, server_sender));
+    let mut server = Box::pin(calimero_server::start(
+        config.server,
+        server_sender,
+        config.identity,
+    ));
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 

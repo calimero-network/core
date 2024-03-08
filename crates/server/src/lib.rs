@@ -1,9 +1,13 @@
 use std::net::{IpAddr, SocketAddr};
 
-use axum::routing::Router;
+use axum::Router;
+use libp2p::identity::Keypair;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
+use crate::auth_signature_middleware::AuthSignatureLayer;
+
+mod auth_signature_middleware;
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
@@ -14,11 +18,16 @@ type Sender = mpsc::Sender<(
     oneshot::Sender<calimero_runtime::logic::Outcome>,
 )>;
 
-pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result<()> {
+pub async fn start(
+    config: config::ServerConfig,
+    sender: Sender,
+    keypair: Keypair,
+) -> eyre::Result<()> {
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
+
     while let Some(addr) = want_listeners.next() {
         let mut components = addr.iter();
 
@@ -57,7 +66,9 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
     #[cfg(feature = "graphql")]
     {
         if let Some((path, handler)) = graphql::service(&config, sender.clone())? {
-            app = app.route(path, handler);
+            app = app
+                .route(path, handler)
+                .layer(AuthSignatureLayer::new(keypair));
             serviced = true;
         }
     }

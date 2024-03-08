@@ -1,6 +1,7 @@
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
 
+use libp2p::identity::Keypair;
 use multiaddr::Multiaddr;
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
@@ -50,7 +51,10 @@ async fn main() -> eyre::Result<()> {
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
-    let mut server = Box::pin(calimero_server::start(config, server_sender));
+    let keypair = Keypair::generate_ed25519();
+    let pk = &bs58::encode(&keypair.to_protobuf_encoding().unwrap()).into_string();
+    println!("Private key {:?}", pk);
+    let mut server = Box::pin(calimero_server::start(config, server_sender, keypair));
 
     loop {
         tokio::select! {
