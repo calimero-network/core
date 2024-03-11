@@ -1,13 +1,8 @@
 use clap::Parser;
-use color_eyre::eyre;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
-mod config;
-mod endpoint;
-mod init;
-mod network;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -15,24 +10,18 @@ async fn main() -> eyre::Result<()> {
 
     let command = cli::RootCommand::parse();
 
-    match command.action {
-        Some(cli::SubCommands::Init(init)) => init::run(command.args, init).await?,
-        None => network::run(command.args).await?,
-    }
-
-    Ok(())
+    command.run().await
 }
 
-pub fn setup() -> eyre::Result<()> {
+fn setup() -> eyre::Result<()> {
     tracing_subscriber::registry()
         .with(EnvFilter::builder().parse(format!(
-            "chat_p0c=info,{}",
+            "info,{}",
+            // "debug,libp2p_core=warn,libp2p_gossipsub=warn,{}",
             std::env::var("RUST_LOG").unwrap_or_default()
         ))?)
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    color_eyre::install()?;
-
-    Ok(())
+    color_eyre::install()
 }

@@ -1,0 +1,38 @@
+schema {
+    query: Query,
+    mutation: Mutation
+}
+
+type Query {
+    post(id: ID!): Post,
+    posts: [Post!]!
+}
+
+type Mutation {
+    createPost(input: CreatePost!): Post!,
+    createComment(input: CreateComment!): Comment
+}
+
+input CreatePost {
+    title: String!,
+    content: String!,
+}
+
+input CreateComment {
+    post: ID!,
+    user: String!,
+    text: String!
+}
+
+type Comment {
+    text: String!,
+    user: String!,
+}
+
+type Post {
+    id: ID!,
+    title: String!,
+    content: String!,
+    comments: [Comment!]!,
+}
+
