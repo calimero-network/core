@@ -59,17 +59,18 @@ async fn graphiql(path: &str) -> Html<String> {
     )
 }
 
-async fn call<T>(
+async fn _call<T>(
     sender: &crate::Sender,
     method: String,
     args: Vec<u8>,
+    writes: bool,
 ) -> Result<T, async_graphql::Error>
 where
     T: for<'de> Deserialize<'de>,
 {
     let (tx, rx) = oneshot::channel();
 
-    sender.send((method, args, tx)).await?;
+    sender.send((method, args, writes, tx)).await?;
 
     let outcome = rx.await?;
 
@@ -80,4 +81,26 @@ where
     let result = serde_json::from_slice(&outcome.returns?.unwrap_or_default())?;
 
     Ok(result)
+}
+
+async fn call<T>(
+    sender: &crate::Sender,
+    method: String,
+    args: Vec<u8>,
+) -> Result<T, async_graphql::Error>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    _call(sender, method, args, false).await
+}
+
+async fn call_mut<T>(
+    sender: &crate::Sender,
+    method: String,
+    args: Vec<u8>,
+) -> Result<T, async_graphql::Error>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    _call(sender, method, args, true).await
 }

@@ -79,8 +79,19 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 result?;
                 break;
             }
-            Some((method, payload, tx)) = server_receiver.recv() => {
-                node.call(method, payload, tx).await?;
+            Some((method, payload, write, tx)) = server_receiver.recv() => {
+                if write {
+                    if let Err(err) = node.call_mut(method, payload, tx).await {
+                        error!("Failed to send transaction: {}", err);
+                    }
+                } else {
+                    match node.call(method, payload).await {
+                        Ok(outcome) => {
+                            let _ = tx.send(outcome);
+                        },
+                        Err(err) => error!("Failed to execute transaction: {}", err)
+                    };
+                }
             }
         }
     }
@@ -106,7 +117,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         let (tx, rx) = oneshot::channel();
 
                         let tx_hash = match node
-                            .call(method.to_owned(), payload.as_bytes().to_owned(), tx)
+                            .call_mut(method.to_owned(), payload.as_bytes().to_owned(), tx)
                             .await
                         {
                             Ok(tx_hash) => tx_hash,
@@ -312,7 +323,7 @@ impl Node {
                     }
                     types::PeerAction::TransactionConfirmation(confirmation) => {
                         // todo! ensure this was only sent by a coordinator
-                        self.execute(confirmation.transaction_hash).await?;
+                        self.execute_in_pool(confirmation.transaction_hash).await?;
                     }
                     message => error!("Unhandled PeerAction: {:?}", message),
                 }
@@ -335,6 +346,14 @@ impl Node {
     }
 
     pub async fn call(
+        &mut self,
+        method: String,
+        payload: Vec<u8>,
+    ) -> eyre::Result<calimero_runtime::logic::Outcome> {
+        self.execute(method, payload, false).await
+    }
+
+    pub async fn call_mut(
         &mut self,
         method: String,
         payload: Vec<u8>,
@@ -363,9 +382,6 @@ impl Node {
             .tx_pool
             .insert(self.id, transaction.clone(), Some(tx))?;
 
-        // todo! distinguish between mutable calls and immutable
-        // todo! calls to avoid broadcasting immutable calls
-
         // todo! consider including the outcome hash in the transaction
         self.push_action(types::PeerAction::Transaction(transaction))
             .await?;
@@ -375,7 +391,7 @@ impl Node {
         Ok(tx_hash)
     }
 
-    pub async fn execute(
+    async fn execute_in_pool(
         &mut self,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<Option<()>> {
@@ -388,8 +404,27 @@ impl Node {
             None => return Ok(None),
         };
 
-        let mut storage = TemporalRuntimeStore {
-            inner: calimero_store::TemporalStore::new(&self.store),
+        let outcome = self
+            .execute(transaction.method, transaction.payload, true)
+            .await?;
+
+        if let Some(tx) = outcome_rx {
+            let _ = tx.send(outcome);
+        }
+
+        Ok(Some(()))
+    }
+
+    async fn execute(
+        &mut self,
+        method: String,
+        payload: Vec<u8>,
+        writes: bool,
+    ) -> eyre::Result<calimero_runtime::logic::Outcome> {
+        let mut storage = if writes {
+            TemporalRuntimeStore::Write(calimero_store::TemporalStore::new(&self.store))
+        } else {
+            TemporalRuntimeStore::Read(calimero_store::ReadOnlyStore::new(&self.store))
         };
 
         let limits = calimero_runtime::logic::VMLimits {
@@ -399,40 +434,46 @@ impl Node {
             max_register_size: (100 << 20).validate()?, // 100 MiB
             max_registers_capacity: 1 << 30,            // 1 GiB
             max_logs: 100,
-            max_log_size: 16 << 10,                         // 16 KiB
-            max_storage_key_size: (1 << 20).try_into()?,    // 1 MiB
+            max_log_size: 16 << 10,                      // 16 KiB
+            max_storage_key_size: (1 << 20).try_into()?, // 1 MiB
             max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
+                                                         // can_write: writes, // todo!
         };
 
         let outcome = calimero_runtime::run(
             &self.app_blob,
-            &transaction.method,
-            calimero_runtime::logic::VMContext {
-                input: transaction.payload,
-            },
+            &method,
+            calimero_runtime::logic::VMContext { input: payload },
             &mut storage,
             &limits,
         )?;
 
-        if outcome.returns.is_ok() {
-            storage.inner.commit()?;
+        if let (Ok(_), TemporalRuntimeStore::Write(storage)) = (&outcome.returns, storage) {
+            if storage.has_changes() {
+                storage.commit()?;
+            }
+            /* else {
+                todo!("return an error to the caller that the method did not write to storage")
+            } */
         }
 
-        if let Some(outcome_rx) = outcome_rx {
-            outcome_rx.send(outcome).ok();
-        }
-
-        Ok(Some(()))
+        Ok(outcome)
     }
 }
 
-pub struct TemporalRuntimeStore {
-    inner: calimero_store::TemporalStore,
+pub enum TemporalRuntimeStore {
+    Read(calimero_store::ReadOnlyStore),
+    Write(calimero_store::TemporalStore),
 }
 
 impl calimero_runtime::store::Storage for TemporalRuntimeStore {
     fn get(&self, key: &calimero_runtime::store::Key) -> Option<Vec<u8>> {
-        self.inner.get(&key.to_owned()).ok().flatten()
+        match self {
+            Self::Read(store) => store.get(key),
+            Self::Write(store) => store.get(key),
+        }
+        .ok()
+        .flatten()
     }
 
     fn set(
@@ -440,12 +481,18 @@ impl calimero_runtime::store::Storage for TemporalRuntimeStore {
         key: calimero_runtime::store::Key,
         value: calimero_runtime::store::Value,
     ) -> Option<calimero_runtime::store::Value> {
-        self.inner.put(key, value)
+        match self {
+            Self::Read(_) => unimplemented!("Can not write to read-only store."),
+            Self::Write(store) => store.put(key, value),
+        }
     }
 
     fn has(&self, key: &calimero_runtime::store::Key) -> bool {
         // todo! optimize to avoid eager reads
-        self.inner.get(key).is_ok()
+        match self {
+            Self::Read(store) => store.get(key).ok().is_some(),
+            Self::Write(store) => store.get(key).ok().is_some(),
+        }
     }
 }
 
