@@ -2,23 +2,21 @@ use std::collections::{hash_map, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use calimero_primitives::api;
-use color_eyre::eyre;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use tokio::sync::{mpsc, RwLock};
-use tokio_tungstenite::tungstenite::protocol;
-use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 use warp::Filter;
 
-use crate::subscriptions::Subscriptions;
+use calimero_primitives::api;
+use subscriptions::Subscriptions;
+
+mod subscriptions;
 
 type ConnectionsState = Arc<RwLock<HashMap<api::WsClientId, mpsc::Sender<api::WsCommand>>>>;
 type SubscriptionsState = Arc<RwLock<Subscriptions>>;
 
-pub async fn start(addr: SocketAddr, cancellation_token: CancellationToken) {
+pub async fn start(addr: SocketAddr) -> () {
     let server_state = ConnectionsState::default();
-    let shutdown_clients = server_state.clone();
 
     let subscription_state = SubscriptionsState::default();
 
@@ -35,28 +33,30 @@ pub async fn start(addr: SocketAddr, cancellation_token: CancellationToken) {
         );
     let routes = ws_route;
 
-    let (_addr, server) = warp::serve(routes).bind_with_graceful_shutdown(addr, async move {
-        cancellation_token.cancelled().await;
-        info!("agraceful api shutdown initiated");
-        futures_util::stream::iter(shutdown_clients.write().await.drain())
-            .for_each_concurrent(None, |(client_id, state)| async move {
-                let command = api::WsCommand::Close(
-                    protocol::frame::coding::CloseCode::Away,
-                    String::from("Server shuting down"),
-                );
-                if let Err(e) = state.send(command).await {
-                    error!(
-                        %e,
-                        "failed to send WsCommand::Close(client_id={})",
-                        client_id,
-                    );
-                }
-            })
-            .await;
-    });
+    warp::serve(routes).run(addr).await;
 
-    info!("api started");
-    server.await;
+    // TODO: uncomment once rest of the system is ready for graceful shutdown
+    // let (addr, fut) = warp::serve(routes).bind_with_graceful_shutdown(addr, async move {
+    //     let _ = tokio::signal::ctrl_c().await;
+    //     info!("graceful websocket server shutdown initiated");
+    //     futures_util::stream::iter(shutdown_clients.write().await.drain())
+    //         .for_each_concurrent(None, |(client_id, state)| async move {
+    //             let command = api::WsCommand::Close(
+    //                 protocol::frame::coding::CloseCode::Away,
+    //                 String::from("Server shuting down"),
+    //             );
+    //             if let Err(e) = state.send(command).await {
+    //                 error!(
+    //                     %e,
+    //                     "failed to send WsCommand::Close(client_id={})",
+    //                     client_id,
+    //                 );
+    //             }
+    //         })
+    //         .await;
+    //     info!("ola");
+    // });
+    // info!("websocket server started on {}", addr);
 }
 
 async fn client_connected(
@@ -99,7 +99,7 @@ async fn client_connected(
                     let _ = ws_tx.close().await;
                     break;
                 }
-                api::WsCommand::Reply(response) => {
+                api::WsCommand::Response(response) => {
                     let response = match serde_json::to_string(&response) {
                         Ok(message) => message,
                         Err(e) => {
@@ -196,26 +196,6 @@ async fn handle_api_request(
     subscriptions: SubscriptionsState,
 ) -> eyre::Result<()> {
     let response = match message.command {
-        api::ApiRequest::ListRemoteApps => {
-            let response = calimero_controller::list_remote_apps().await?;
-            calimero_primitives::api::ApiResponse::ListRemoteApps(response)
-        }
-        api::ApiRequest::ListInstalledApps => {
-            let response = calimero_controller::list_installed_apps().await?;
-            calimero_primitives::api::ApiResponse::ListInstalledApps(response)
-        }
-        api::ApiRequest::InstallBinaryApp(app) => {
-            let response = calimero_controller::install_binary_app(app).await?;
-            calimero_primitives::api::ApiResponse::InstallBinaryApp(response)
-        }
-        api::ApiRequest::InstallRemoteApp(app_id) => {
-            let response = calimero_controller::install_remote_app(app_id).await?;
-            calimero_primitives::api::ApiResponse::InstallRemoteApp(response)
-        }
-        api::ApiRequest::UninstallApp(installed_app_id) => {
-            let response = calimero_controller::uninstall_app(installed_app_id).await?;
-            calimero_primitives::api::ApiResponse::UninstallApp(response)
-        }
         api::ApiRequest::Subscribe(installed_app_id) => {
             subscriptions
                 .write()
@@ -242,7 +222,7 @@ async fn handle_api_request(
     };
 
     if let Some(tx) = connections.read().await.get(&client_id) {
-        tx.send(api::WsCommand::Reply(response)).await?
+        tx.send(api::WsCommand::Response(response)).await?
     };
 
     Ok(())

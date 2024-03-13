@@ -7,6 +7,7 @@ use tracing::warn;
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+pub mod websocket;
 
 type Sender = mpsc::Sender<(
     String,
@@ -73,6 +74,22 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
     for listener in listeners {
         let app = app.clone();
         set.spawn(async { axum::serve(listener, app).await });
+    }
+
+    for listen in config.websocket_listen {
+        let mut components = listen.iter();
+
+        let host: IpAddr = match components.next() {
+            Some(multiaddr::Protocol::Ip4(host)) => host.into(),
+            Some(multiaddr::Protocol::Ip6(host)) => host.into(),
+            _ => eyre::bail!("Invalid multiaddr, expected IP4 or IP6 component"),
+        };
+
+        let Some(multiaddr::Protocol::Tcp(port)) = components.next() else {
+            eyre::bail!("Invalid multiaddr, expected TCP component");
+        };
+
+        tokio::task::spawn(async move { websocket::start(SocketAddr::from((host, port))).await });
     }
 
     while let Some(result) = set.join_next().await {

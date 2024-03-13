@@ -11,12 +11,18 @@ axum.workspace = true
 async-graphql = { workspace = true, optional = true }
 async-graphql-axum = { workspace = true, optional = true }
 eyre.workspace = true
+futures-util.workspace = true
 multiaddr.workspace = true
+rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
+tokio-stream = { workspace = true, features = ["signal"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tokio-tungstenite.workspace = true
 tower-http = { workspace = true, optional = true }
 tracing.workspace = true
+warp.workspace = true
 
 calimero-primitives = { path = "../primitives" }
 calimero-runtime = { path = "../runtime" }

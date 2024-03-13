@@ -42,6 +42,8 @@ async fn main() -> eyre::Result<()> {
     let config = calimero_server::config::ServerConfig {
         listen,
 
+        websocket_listen: Vec::new(),
+
         #[cfg(feature = "graphql")]
         graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
     };

@@ -899,39 +899,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-api"
-version = "0.1.0"
-dependencies = [
- "calimero-controller",
- "calimero-primitives",
- "color-eyre",
- "futures-util",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.20.1",
- "tokio-util",
- "tracing",
- "warp",
-]
-
-[[package]]
-name = "calimero-controller"
-version = "0.1.0"
-dependencies = [
- "calimero-primitives",
- "color-eyre",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "calimero-identity"
 version = "0.1.0"
 dependencies = [
@@ -978,24 +945,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "calimero-peer"
-version = "0.1.0"
-dependencies = [
- "calimero-api",
- "camino",
- "clap",
- "color-eyre",
- "dirs",
- "serde",
- "tokio",
- "tokio-stream",
- "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -1049,13 +998,19 @@ dependencies = [
  "calimero-runtime",
  "color-eyre",
  "eyre",
+ "futures-util",
  "multiaddr",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-stream",
+ "tokio-tungstenite 0.20.1",
+ "tokio-util",
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "warp",
 ]
 
 [[package]]

@@ -50,6 +50,11 @@ pub struct InitCommand {
     #[clap(default_value_t = calimero_server::config::DEFAULT_PORT)]
     pub server_port: u16,
 
+    /// Port to listen on for Websocket
+    #[clap(long, value_name = "WEBSOCKET_PORT")]
+    #[clap(default_value_t = calimero_server::config::DEFAULT_PORT)]
+    pub server_websocket_port: u16,
+
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
     #[clap(overrides_with("no_mdns"))]
@@ -143,6 +148,7 @@ impl InitCommand {
                             Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
                         })
                         .collect(),
+                    websocket_listen: Vec::new(),
                     graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
                 },
             },
