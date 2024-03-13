@@ -473,11 +473,9 @@ pub enum TemporalRuntimeStore {
 impl calimero_runtime::store::Storage for TemporalRuntimeStore {
     fn get(&self, key: &calimero_runtime::store::Key) -> Option<Vec<u8>> {
         match self {
-            Self::Read(store) => store.get(key),
-            Self::Write(store) => store.get(key),
+            Self::Read(store) => store.get(key).ok().flatten(),
+            Self::Write(store) => store.get(key).ok().flatten(),
         }
-        .ok()
-        .flatten()
     }
 
     fn set(
