@@ -70,4 +70,24 @@ impl TemporalStore {
 
         self.inner.apply(tx)
     }
+
+    pub fn has_changes(&self) -> bool {
+        !self.shadow.is_empty()
+    }
+}
+
+pub struct ReadOnlyStore {
+    inner: Store,
+}
+
+impl ReadOnlyStore {
+    pub fn new(store: &Store) -> Self {
+        Self {
+            inner: store.clone(),
+        }
+    }
+
+    pub fn get(&self, key: &db::Key) -> eyre::Result<Option<db::Value>> {
+        self.inner.get(key)
+    }
 }
