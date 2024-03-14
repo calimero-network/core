@@ -7,7 +7,6 @@ license = "MIT OR Apache-2.0"
 [workspace]
 resolver = "2"
 members = [
-  "./apps/kv-store",
   "./crates/identity",
   "./crates/network",
   "./crates/node",
