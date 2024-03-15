@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::http;
 use axum::response::Html;
 use axum::routing::{get, MethodRouter};
@@ -14,10 +16,10 @@ pub struct GraphQLConfig {
     pub enabled: bool,
 }
 
-pub fn service(
+pub(crate) fn service(
     config: &crate::config::ServerConfig,
-    sender: crate::Sender,
-) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
+    sender: crate::ServerSender,
+) -> eyre::Result<Option<(&'static str, MethodRouter<Arc<crate::AppState>>)>> {
     let _config = match &config.graphql {
         Some(config) if config.enabled => config,
         _ => {
@@ -60,7 +62,7 @@ async fn graphiql(path: &str) -> Html<String> {
 }
 
 async fn call<T>(
-    sender: &crate::Sender,
+    sender: &crate::ServerSender,
     method: String,
     args: Vec<u8>,
 ) -> Result<T, async_graphql::Error>

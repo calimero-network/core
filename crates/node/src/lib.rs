@@ -5,7 +5,7 @@ use calimero_runtime::Constraint;
 use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info, warn};
 
 pub mod config;
@@ -28,7 +28,7 @@ pub struct NodeConfig {
 pub struct TransactionPoolEntry {
     sender: calimero_network::types::PeerId,
     transaction: calimero_primitives::transaction::Transaction,
-    outcome_rx: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
+    outcome_sender: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
 }
 
 #[derive(Debug, Default)]
@@ -44,6 +44,7 @@ pub struct Node {
     app_blob: Vec<u8>,
     app_topic: calimero_network::types::TopicHash,
     network_client: calimero_network::NetworkClient,
+    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
     nonce: u64,
     last_tx: calimero_primitives::hash::Hash,
@@ -54,14 +55,19 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     info!("Peer ID: {}", peer_id);
 
+    let node_events = broadcast::channel(32).0;
+
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let mut node = Node::new(&config, network_client).await?;
+    let mut node = Node::new(&config, network_client, node_events.clone()).await?;
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
-    let mut server = Box::pin(calimero_server::start(config.server, server_sender))
-        as BoxedFuture<eyre::Result<()>>;
+    let mut server = Box::pin(calimero_server::start(
+        config.server,
+        server_sender,
+        node_events,
+    )) as BoxedFuture<eyre::Result<()>>;
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
@@ -248,6 +254,7 @@ impl Node {
     pub async fn new(
         config: &NodeConfig,
         network_client: calimero_network::NetworkClient,
+        node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     ) -> eyre::Result<Self> {
         let store = calimero_store::Store::open(&config.store)?;
 
@@ -271,6 +278,7 @@ impl Node {
             app_blob,
             app_topic,
             network_client,
+            node_events,
             // --
             nonce: 0,
             last_tx: calimero_primitives::hash::Hash::default(),
@@ -288,6 +296,11 @@ impl Node {
             } => {
                 if self.app_topic == topic_hash {
                     info!("{} joined the session.", their_peer_id.cyan());
+                    if self.node_events.receiver_count() > 0 {
+                        self.node_events.send(
+                            calimero_primitives::events::NodeEvent::PeerJoined(their_peer_id),
+                        )?;
+                    }
                 }
             }
             calimero_network::types::NetworkEvent::Message { message, .. } => {
@@ -385,7 +398,7 @@ impl Node {
     ) -> eyre::Result<Option<()>> {
         let TransactionPoolEntry {
             transaction,
-            outcome_rx,
+            outcome_sender,
             ..
         } = match self.tx_pool.remove(&hash) {
             Some(entry) => entry,
@@ -412,18 +425,29 @@ impl Node {
             &self.app_blob,
             &transaction.method,
             calimero_runtime::logic::VMContext {
-                input: transaction.payload,
+                input: transaction.payload.clone(),
             },
             &mut storage,
             &limits,
         )?;
 
+        let mut status = calimero_primitives::events::TransactionExecutionStatus::Failed;
         if outcome.returns.is_ok() {
+            status = calimero_primitives::events::TransactionExecutionStatus::Succeeded;
             storage.inner.commit()?;
         }
 
-        if let Some(outcome_rx) = outcome_rx {
-            outcome_rx.send(outcome).ok();
+        if self.node_events.receiver_count() > 0 {
+            let event = calimero_primitives::events::NodeEvent::TransactionExecuted(
+                status,
+                transaction,
+                outcome.logs.clone(),
+            );
+            self.node_events.send(event)?;
+        }
+
+        if let Some(outcome_sender) = outcome_sender {
+            outcome_sender.send(outcome).ok();
         }
 
         Ok(Some(()))
@@ -468,7 +492,7 @@ impl TransactionPool {
             TransactionPoolEntry {
                 sender,
                 transaction,
-                outcome_rx,
+                outcome_sender: outcome_rx,
             },
         );
 

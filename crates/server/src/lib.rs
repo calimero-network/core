@@ -1,21 +1,32 @@
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
 use axum::routing::Router;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tracing::warn;
 
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+#[cfg(feature = "websocket")]
 pub mod websocket;
 
-type Sender = mpsc::Sender<(
+type ServerSender = mpsc::Sender<(
     String,
     Vec<u8>,
     oneshot::Sender<calimero_runtime::logic::Outcome>,
 )>;
 
-pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result<()> {
+pub(crate) struct AppState {
+    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+    ws_state: RwLock<websocket::WsState>,
+}
+
+pub async fn start(
+    config: config::ServerConfig,
+    server_sender: ServerSender,
+    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+) -> eyre::Result<()> {
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
@@ -57,7 +68,15 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
 
     #[cfg(feature = "graphql")]
     {
-        if let Some((path, handler)) = graphql::service(&config, sender.clone())? {
+        if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
+            app = app.route(path, handler);
+            serviced = true;
+        }
+    }
+
+    #[cfg(feature = "websocket")]
+    {
+        if let Some((path, handler)) = websocket::service(&config)? {
             app = app.route(path, handler);
             serviced = true;
         }
@@ -72,24 +91,12 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
     let mut set = tokio::task::JoinSet::new();
 
     for listener in listeners {
-        let app = app.clone();
+        let app_state = Arc::new(AppState {
+            node_events: node_events.clone(),
+            ws_state: Default::default(),
+        });
+        let app = app.clone().with_state(app_state.clone());
         set.spawn(async { axum::serve(listener, app).await });
-    }
-
-    for listen in config.websocket_listen {
-        let mut components = listen.iter();
-
-        let host: IpAddr = match components.next() {
-            Some(multiaddr::Protocol::Ip4(host)) => host.into(),
-            Some(multiaddr::Protocol::Ip6(host)) => host.into(),
-            _ => eyre::bail!("Invalid multiaddr, expected IP4 or IP6 component"),
-        };
-
-        let Some(multiaddr::Protocol::Tcp(port)) = components.next() else {
-            eyre::bail!("Invalid multiaddr, expected TCP component");
-        };
-
-        tokio::task::spawn(async move { websocket::start(SocketAddr::from((host, port))).await });
     }
 
     while let Some(result) = set.join_next().await {

@@ -17,12 +17,11 @@ rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
-tokio-stream = { workspace = true, features = ["signal"] }
+tokio-stream = { workspace = true, features = ["signal"], optional = true }
 tokio-util = { workspace = true, features = ["rt"] }
 tokio-tungstenite.workspace = true
 tower-http = { workspace = true, optional = true }
 tracing.workspace = true
-warp.workspace = true
 
 calimero-primitives = { path = "../primitives" }
 calimero-runtime = { path = "../runtime" }
@@ -37,3 +36,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum", "tower-http/cors"]
+websocket = ["dep:tokio-stream"]

@@ -13,11 +13,13 @@ pub const DEFAULT_ADDRS: [IpAddr; 2] = [
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
-    pub websocket_listen: Vec<Multiaddr>,
-
     #[serde(default)]
     #[cfg(feature = "graphql")]
     pub graphql: Option<crate::graphql::GraphQLConfig>,
+
+    #[serde(default)]
+    #[cfg(feature = "websocket")]
+    pub websocket: Option<crate::websocket::WsConfig>,
 }
 
 pub fn default_addrs() -> Vec<Multiaddr> {

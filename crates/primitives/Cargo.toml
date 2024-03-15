@@ -8,12 +8,12 @@ license.workspace = true
 
 [dependencies]
 bs58.workspace = true
+libp2p.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
-warp.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
