@@ -72,7 +72,7 @@ pub async fn start(
 
     #[cfg(feature = "websocket")]
     {
-        if let Some((path, handler)) = websocket::service2(&config, node_events.clone())? {
+        if let Some((path, handler)) = websocket::service(&config, node_events.clone())? {
             app = app.route(path, handler);
             serviced = true;
         }

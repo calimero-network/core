@@ -13,24 +13,23 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info};
 
-#[derive(Default)]
-pub(crate) struct WsState {
-    connections: HashMap<server::WsClientId, mpsc::Sender<server::WsCommand>>,
-    subscriptions: HashSet<calimero_primitives::server::WsClientId>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WsConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
 }
 
-pub struct AppWsState {
+#[derive(Default)]
+struct InnerState {
+    connections: HashMap<server::WsClientId, mpsc::Sender<server::WsCommand>>,
+    subscriptions: HashSet<calimero_primitives::server::WsClientId>,
+}
+struct ServiceState {
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-    ws_state: RwLock<WsState>,
+    state: RwLock<InnerState>,
 }
 
-pub(crate) fn service2(
+pub(crate) fn service(
     config: &crate::config::ServerConfig,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
 ) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
@@ -44,31 +43,31 @@ pub(crate) fn service2(
 
     let path = "/ws"; // todo! source from config
 
-    let shared_state = Arc::new(AppWsState {
-        node_events,
-        ws_state: Default::default(),
-    });
-
     for listen in config.listen.iter() {
         info!("WebSocket server listening on {}/ws{{{}}}", listen, path);
     }
 
-    Ok(Some((path, get(ws_handler).layer(Extension(shared_state)))))
+    let state = Arc::new(ServiceState {
+        node_events,
+        state: Default::default(),
+    });
+
+    Ok(Some((path, get(ws_handler).layer(Extension(state)))))
 }
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    Extension(state): Extension<Arc<AppWsState>>,
+    Extension(state): Extension<Arc<ServiceState>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AppWsState>) {
+async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     let (commands_sender, commands_receiver) = mpsc::channel(32);
     let client_id = loop {
         let peer_id = rand::random();
 
-        let mut ws_state = state.ws_state.write().await;
+        let mut ws_state = state.state.write().await;
         match ws_state.connections.entry(peer_id) {
             hash_map::Entry::Occupied(_) => continue,
             hash_map::Entry::Vacant(entry) => {
@@ -127,7 +126,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppWsState>) {
     }
 
     info!("client disconnected(client_id={})", client_id);
-    let mut ws_state = state.ws_state.write().await;
+    let mut ws_state = state.state.write().await;
     ws_state.subscriptions.remove(&client_id);
     ws_state.connections.remove(&client_id);
 }
@@ -136,7 +135,7 @@ fn handle_node_events(
     client_id: server::WsClientId,
     mut node_events_receiver: broadcast::Receiver<calimero_primitives::events::NodeEvent>,
     command_sender: mpsc::Sender<WsCommand>,
-    state: Arc<AppWsState>,
+    state: Arc<ServiceState>,
 ) {
     tokio::task::spawn(async move {
         while let Ok(message) = node_events_receiver.recv().await {
@@ -145,7 +144,7 @@ fn handle_node_events(
                 body: server::WsResonseBody::Ok(server::WsResponseBodyResult::Event(message)),
             };
 
-            let ws_state = state.ws_state.read().await;
+            let ws_state = state.state.read().await;
             if ws_state.subscriptions.contains(&client_id) {
                 command_sender
                     .send(server::WsCommand::Send(response))
@@ -219,17 +218,17 @@ fn handle_commands(
 fn handle_ws_request(
     client_id: server::WsClientId,
     message: server::WsRequest,
-    state: Arc<AppWsState>,
+    state: Arc<ServiceState>,
 ) {
     tokio::task::spawn(async move {
         let response = match message.body {
             server::WsRequestBody::Subscribe => {
-                let mut ws_state = state.ws_state.write().await;
+                let mut ws_state = state.state.write().await;
                 ws_state.subscriptions.insert(client_id);
                 server::WsResponseBodyResult::Subscribed
             }
             server::WsRequestBody::Unsubscribe => {
-                let mut ws_state = state.ws_state.write().await;
+                let mut ws_state = state.state.write().await;
                 ws_state.subscriptions.remove(&client_id);
                 server::WsResponseBodyResult::Unsubscribed
             }
@@ -240,7 +239,7 @@ fn handle_ws_request(
             body: server::WsResonseBody::Ok(response),
         };
 
-        let ws_state = state.ws_state.read().await;
+        let ws_state = state.state.read().await;
         if let Some(sender) = ws_state.connections.get(&client_id) {
             sender
                 .send(server::WsCommand::Send(response))
