@@ -3,14 +3,14 @@ use std::collections::{hash_map, HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::routing::{get, MethodRouter};
+use axum::Extension;
 use calimero_primitives::server::{self, WsCommand};
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt, TryFutureExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info};
 
 #[derive(Default)]
@@ -25,9 +25,15 @@ pub struct WsConfig {
     pub enabled: bool,
 }
 
-pub(crate) fn service(
+pub struct AppWsState {
+    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+    ws_state: RwLock<WsState>,
+}
+
+pub(crate) fn service2(
     config: &crate::config::ServerConfig,
-) -> eyre::Result<Option<(&'static str, MethodRouter<Arc<crate::AppState>>)>> {
+    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
     let _config = match &config.websocket {
         Some(config) if config.enabled => config,
         _ => {
@@ -38,21 +44,26 @@ pub(crate) fn service(
 
     let path = "/ws"; // todo! source from config
 
+    let shared_state = Arc::new(AppWsState {
+        node_events,
+        ws_state: Default::default(),
+    });
+
     for listen in config.listen.iter() {
         info!("WebSocket server listening on {}/ws{{{}}}", listen, path);
     }
 
-    Ok(Some((path, get(ws_handler))))
+    Ok(Some((path, get(ws_handler).layer(Extension(shared_state)))))
 }
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(state): State<Arc<crate::AppState>>,
+    Extension(state): Extension<Arc<AppWsState>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<crate::AppState>) {
+async fn handle_socket(socket: WebSocket, state: Arc<AppWsState>) {
     let (commands_sender, commands_receiver) = mpsc::channel(32);
     let client_id = loop {
         let peer_id = rand::random();
@@ -69,14 +80,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<crate::AppState>) {
 
     info!("new client connected(client_id={})", client_id);
 
-    let (socket_sender, mut socket_receiver) = socket.split();
-
     handle_node_events(
         client_id,
         state.node_events.subscribe(),
         commands_sender.clone(),
         state.clone(),
     );
+
+    let (socket_sender, mut socket_receiver) = socket.split();
 
     handle_commands(client_id, commands_receiver, socket_sender);
 
@@ -125,7 +136,7 @@ fn handle_node_events(
     client_id: server::WsClientId,
     mut node_events_receiver: broadcast::Receiver<calimero_primitives::events::NodeEvent>,
     command_sender: mpsc::Sender<WsCommand>,
-    state: Arc<crate::AppState>,
+    state: Arc<AppWsState>,
 ) {
     tokio::task::spawn(async move {
         while let Ok(message) = node_events_receiver.recv().await {
@@ -208,7 +219,7 @@ fn handle_commands(
 fn handle_ws_request(
     client_id: server::WsClientId,
     message: server::WsRequest,
-    state: Arc<crate::AppState>,
+    state: Arc<AppWsState>,
 ) {
     tokio::task::spawn(async move {
         let response = match message.body {

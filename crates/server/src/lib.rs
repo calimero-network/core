@@ -1,8 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 
 use axum::routing::Router;
-use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::warn;
 
 pub mod config;
@@ -18,11 +17,6 @@ type ServerSender = mpsc::Sender<(
     bool,
     oneshot::Sender<calimero_runtime::logic::Outcome>,
 )>;
-
-pub(crate) struct AppState {
-    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-    ws_state: RwLock<websocket::WsState>,
-}
 
 pub async fn start(
     config: config::ServerConfig,
@@ -78,7 +72,7 @@ pub async fn start(
 
     #[cfg(feature = "websocket")]
     {
-        if let Some((path, handler)) = websocket::service(&config)? {
+        if let Some((path, handler)) = websocket::service2(&config, node_events.clone())? {
             app = app.route(path, handler);
             serviced = true;
         }
@@ -93,11 +87,7 @@ pub async fn start(
     let mut set = tokio::task::JoinSet::new();
 
     for listener in listeners {
-        let app_state = Arc::new(AppState {
-            node_events: node_events.clone(),
-            ws_state: Default::default(),
-        });
-        let app = app.clone().with_state(app_state.clone());
+        let app = app.clone();
         set.spawn(async { axum::serve(listener, app).await });
     }
 

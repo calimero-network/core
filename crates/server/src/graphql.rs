@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::http;
 use axum::response::Html;
 use axum::routing::{get, MethodRouter};
@@ -19,7 +17,7 @@ pub struct GraphQLConfig {
 pub(crate) fn service(
     config: &crate::config::ServerConfig,
     sender: crate::ServerSender,
-) -> eyre::Result<Option<(&'static str, MethodRouter<Arc<crate::AppState>>)>> {
+) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
     let _config = match &config.graphql {
         Some(config) if config.enabled => config,
         _ => {
