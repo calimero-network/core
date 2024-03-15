@@ -62,7 +62,7 @@ impl AppMutation {
         _ctx: &Context<'a>,
         input: CreatePostInput,
     ) -> async_graphql::Result<Post> {
-        graphql::call(
+        graphql::call_mut(
             &self.sender,
             "create_post".to_string(),
             serde_json::to_vec(&json!({
@@ -78,7 +78,7 @@ impl AppMutation {
         _ctx: &Context<'a>,
         input: CreateCommentInput,
     ) -> async_graphql::Result<Option<Comment>> {
-        graphql::call(
+        graphql::call_mut(
             &self.sender,
             "create_comment".to_string(),
             serde_json::to_vec(&json!({

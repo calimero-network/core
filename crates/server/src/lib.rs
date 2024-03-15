@@ -12,8 +12,10 @@ pub mod graphql;
 pub mod websocket;
 
 type ServerSender = mpsc::Sender<(
+    // todo! move to calimero-node-primitives
     String,
     Vec<u8>,
+    bool,
     oneshot::Sender<calimero_runtime::logic::Outcome>,
 )>;
 
