@@ -422,8 +422,26 @@ impl Node {
         };
 
         let outcome = self
-            .execute(transaction.method, transaction.payload, true)
+            .execute(
+                transaction.method.clone(),
+                transaction.payload.clone(),
+                true,
+            )
             .await?;
+
+        let mut status = calimero_primitives::events::TransactionExecutionStatus::Failed;
+        if outcome.returns.is_ok() {
+            status = calimero_primitives::events::TransactionExecutionStatus::Succeeded;
+        }
+
+        if self.node_events.receiver_count() > 0 {
+            let event = calimero_primitives::events::NodeEvent::TransactionExecuted(
+                status,
+                transaction,
+                outcome.logs.clone(),
+            );
+            self.node_events.send(event)?;
+        }
 
         if let Some(sender) = outcome_sender {
             let _ = sender.send(outcome);
