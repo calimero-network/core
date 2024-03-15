@@ -12,7 +12,6 @@ libp2p.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
-tokio.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
