@@ -20,8 +20,8 @@ pub enum WsResponseBodyResult {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum WsResonseBody {
-    Ok(WsResponseBodyResult),
-    Err(WsError),
+    Result(WsResponseBodyResult),
+    Error(WsError),
 }
 
 #[derive(Serialize, Deserialize, Debug)]

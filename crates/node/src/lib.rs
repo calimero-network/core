@@ -309,7 +309,11 @@ impl Node {
                     info!("{} joined the session.", their_peer_id.cyan());
                     if self.node_events.receiver_count() > 0 {
                         self.node_events.send(
-                            calimero_primitives::events::NodeEvent::PeerJoined(their_peer_id),
+                            calimero_primitives::events::NodeEvent::PeerJoined(
+                                calimero_primitives::events::PeerJoinedInfo {
+                                    peer_id: their_peer_id,
+                                },
+                            ),
                         )?;
                     }
                 }
@@ -429,16 +433,9 @@ impl Node {
             )
             .await?;
 
-        let mut status = calimero_primitives::events::TransactionExecutionStatus::Failed;
-        if outcome.returns.is_ok() {
-            status = calimero_primitives::events::TransactionExecutionStatus::Succeeded;
-        }
-
-        if self.node_events.receiver_count() > 0 {
+        if outcome.returns.is_ok() && self.node_events.receiver_count() > 0 {
             let event = calimero_primitives::events::NodeEvent::TransactionExecuted(
-                status,
-                transaction,
-                outcome.logs.clone(),
+                calimero_primitives::events::ExecutedTransactionInfo { hash },
             );
             self.node_events.send(event)?;
         }

@@ -141,7 +141,7 @@ fn handle_node_events(
         while let Ok(message) = node_events_receiver.recv().await {
             let response = server::WsResponse {
                 id: None,
-                body: server::WsResonseBody::Ok(server::WsResponseBodyResult::Event(message)),
+                body: server::WsResonseBody::Result(server::WsResponseBodyResult::Event(message)),
             };
 
             let ws_state = state.state.read().await;
@@ -236,7 +236,7 @@ fn handle_ws_request(
 
         let response = server::WsResponse {
             id: message.id,
-            body: server::WsResonseBody::Ok(response),
+            body: server::WsResonseBody::Result(response),
         };
 
         let ws_state = state.state.read().await;
