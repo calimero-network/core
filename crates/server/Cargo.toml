@@ -11,15 +11,12 @@ axum.workspace = true
 async-graphql = { workspace = true, optional = true }
 async-graphql-axum = { workspace = true, optional = true }
 eyre.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, optional = true }
 multiaddr.workspace = true
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
-tokio-stream = { workspace = true, features = ["signal"], optional = true }
-tokio-util = { workspace = true, features = ["rt"] }
-tokio-tungstenite.workspace = true
 tower-http = { workspace = true, optional = true }
 tracing.workspace = true
 
@@ -36,4 +33,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum", "tower-http/cors"]
-websocket = ["dep:tokio-stream"]
+websocket = ["dep:futures-util"]
