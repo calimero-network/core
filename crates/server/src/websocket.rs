@@ -81,9 +81,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
     handle_node_events(
         client_id,
+        state.clone(),
         state.node_events.subscribe(),
         commands_sender.clone(),
-        state.clone(),
     );
 
     let (socket_sender, mut socket_receiver) = socket.split();
@@ -100,15 +100,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
         };
 
         match message {
-            Message::Text(message) => {
-                match serde_json::from_str(message.as_str()) {
-                    Ok(request) => handle_ws_request(client_id, request, state.clone()),
-                    Err(e) => {
-                        error!(%e,"failed to deserialize from a string of JSON text.");
-                        continue;
-                    }
-                };
-            }
+            Message::Text(message) => handle_ws_text_message(client_id, state.clone(), message),
             Message::Binary(_) => {
                 debug!("received binary message");
             }
@@ -133,9 +125,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
 fn handle_node_events(
     client_id: server::WsClientId,
+    state: Arc<ServiceState>,
     mut node_events_receiver: broadcast::Receiver<calimero_primitives::events::NodeEvent>,
     command_sender: mpsc::Sender<WsCommand>,
-    state: Arc<ServiceState>,
 ) {
     tokio::task::spawn(async move {
         while let Ok(message) = node_events_receiver.recv().await {
@@ -215,29 +207,44 @@ fn handle_commands(
     });
 }
 
-fn handle_ws_request(
+fn handle_ws_text_message(
     client_id: server::WsClientId,
-    message: server::WsRequest,
     state: Arc<ServiceState>,
+    message: String,
 ) {
     tokio::task::spawn(async move {
-        let response = match message.body {
-            server::WsRequestBody::Subscribe => {
-                let mut ws_state = state.state.write().await;
-                ws_state.subscriptions.insert(client_id);
-                server::WsResponseBodyResult::Subscribed
-            }
-            server::WsRequestBody::Unsubscribe => {
-                let mut ws_state = state.state.write().await;
-                ws_state.subscriptions.remove(&client_id);
-                server::WsResponseBodyResult::Unsubscribed
-            }
-        };
+        let response =
+            match serde_json::from_str::<calimero_primitives::server::WsRequest>(&message) {
+                Ok(message) => {
+                    let response_body = match message.body {
+                        server::WsRequestBody::Subscribe => {
+                            let mut ws_state = state.state.write().await;
+                            ws_state.subscriptions.insert(client_id);
+                            server::WsResponseBodyResult::Subscribed
+                        }
+                        server::WsRequestBody::Unsubscribe => {
+                            let mut ws_state = state.state.write().await;
+                            ws_state.subscriptions.remove(&client_id);
+                            server::WsResponseBodyResult::Unsubscribed
+                        }
+                    };
+                    server::WsResponse {
+                        id: message.id,
+                        body: server::WsResonseBody::Result(response_body),
+                    }
+                }
+                Err(e) => {
+                    error!(%e, "failed to deserialize request: {message}");
 
-        let response = server::WsResponse {
-            id: message.id,
-            body: server::WsResonseBody::Result(response),
-        };
+                    let error_body = server::WsError::SerdeError(String::from(format!(
+                        "failed to deserialize request: {message}"
+                    )));
+                    server::WsResponse {
+                        id: None,
+                        body: server::WsResonseBody::Error(error_body),
+                    }
+                }
+            };
 
         let ws_state = state.state.read().await;
         if let Some(sender) = ws_state.connections.get(&client_id) {
