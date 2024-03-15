@@ -100,7 +100,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
         };
 
         match message {
-            Message::Text(message) => handle_ws_text_message(client_id, state.clone(), message),
+            Message::Text(message) => handle_text_message(client_id, state.clone(), message),
             Message::Binary(_) => {
                 debug!("received binary message");
             }
@@ -207,11 +207,7 @@ fn handle_commands(
     });
 }
 
-fn handle_ws_text_message(
-    client_id: server::WsClientId,
-    state: Arc<ServiceState>,
-    message: String,
-) {
+fn handle_text_message(client_id: server::WsClientId, state: Arc<ServiceState>, message: String) {
     tokio::task::spawn(async move {
         let response =
             match serde_json::from_str::<calimero_primitives::server::WsRequest>(&message) {
