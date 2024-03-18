@@ -85,7 +85,15 @@ pub mod auth {
         keypair: &'a Keypair,
     ) -> Result<(), UnauthorizedError<'a>> {
         match get_auth_headers(&headers) {
-            Ok(auth_headers) if token_is_valid(&keypair, &auth_headers) => Ok(()),
+            Ok(auth_headers)
+                if verify_peer_auth(
+                    keypair,
+                    auth_headers.challenge.as_slice(),
+                    auth_headers.signature.as_slice(),
+                ) =>
+            {
+                Ok(())
+            }
             Ok(_) => Err(UnauthorizedError::new("Keypair not matching signature.")),
             Err(error) => Err(error),
         }
@@ -111,18 +119,6 @@ pub mod auth {
             challenge,
         };
         Ok(auth)
-    }
-
-    fn token_is_valid(keypair: &Keypair, auth_headers: &AuthHeaders) -> bool {
-        let verify_result = verify_peer_auth(
-            keypair,
-            auth_headers.challenge.as_slice(),
-            auth_headers.signature.as_slice(),
-        );
-        if verify_result.is_err() {
-            return false;
-        }
-        verify_result.unwrap()
     }
 
     #[derive(Debug)]

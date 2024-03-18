@@ -1,7 +1,7 @@
 use libp2p::identity::Keypair;
 
-pub fn verify_peer_auth(keypair: &Keypair, msg: &[u8], signature: &[u8]) -> Result<bool, String> {
-    Ok(keypair.public().verify(msg, signature))
+pub fn verify_peer_auth(keypair: &Keypair, msg: &[u8], signature: &[u8]) -> bool {
+    keypair.public().verify(msg, signature)
 }
 
 #[cfg(test)]
@@ -21,7 +21,7 @@ mod tests {
 
         assert_eq!(
             verify_peer_auth(&keypair, msg.as_bytes(), signature.as_slice()),
-            Ok(true)
+            true
         );
     }
 
