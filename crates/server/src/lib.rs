@@ -1,8 +1,10 @@
 use std::net::{IpAddr, SocketAddr};
 
-use axum::Router;
+use axum::{http, Router};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
+
+use tower_http::cors;
 
 pub mod config;
 #[cfg(feature = "graphql")]
@@ -67,9 +69,16 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
         }
     }
 
-    app = app.layer(middleware::auth::auth::AuthSignatureLayer::new(
-        config.identity,
-    ));
+    app = app
+        .layer(middleware::auth::auth::AuthSignatureLayer::new(
+            config.identity,
+        ))
+        .layer(
+            cors::CorsLayer::new()
+                .allow_origin(cors::Any)
+                .allow_headers(cors::Any)
+                .allow_methods([http::Method::POST]),
+        );
 
     if !serviced {
         warn!("No services enabled, enable at least one service to start the server");
