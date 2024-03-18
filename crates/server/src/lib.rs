@@ -4,12 +4,10 @@ use axum::Router;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
-use crate::auth_signature_middleware::AuthSignatureLayer;
-
-mod auth_signature_middleware;
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+mod middleware;
 
 type Sender = mpsc::Sender<(
     // todo! move to calimero-node-primitives
@@ -63,12 +61,15 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
     #[cfg(feature = "graphql")]
     {
         if let Some((path, handler)) = graphql::service(&config, sender.clone())? {
-            app = app
-                .route(path, handler)
-                .layer(AuthSignatureLayer::new(config.identity));
+            app = app.route(path, handler);
+
             serviced = true;
         }
     }
+
+    app = app.layer(middleware::auth::auth::AuthSignatureLayer::new(
+        config.identity,
+    ));
 
     if !serviced {
         warn!("No services enabled, enable at least one service to start the server");
