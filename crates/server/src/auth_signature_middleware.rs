@@ -92,35 +92,24 @@ pub fn auth<'a>(
 }
 
 fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
-    let signature = headers.get("signature");
-    if signature.is_none() {
-        return Err(UnauthorizedError::new("Missing signature header"));
-    }
-    let signature = signature.unwrap().to_str();
-    if signature.is_err() {
-        return Err(UnauthorizedError::new("Cannot unwrap signature"));
-    }
-    let signature = bs58::decode(signature.unwrap()).into_vec();
-    if signature.is_err() {
-        return Err(UnauthorizedError::new("Invalid base58"));
-    }
-    let signature = signature.unwrap();
+    let signature = headers
+        .get("signature")
+        .ok_or_else(|| UnauthorizedError::new("Missing signature header"))?;
+    let signature = bs58::decode(signature)
+        .into_vec()
+        .map_err(|_| UnauthorizedError::new("Invalid base58 signature"))?;
 
-    let challenge = headers.get("challenge");
-    if challenge.is_none() {
-        return Err(UnauthorizedError::new("Missing challenge header"));
-    }
-    let challenge = challenge.unwrap().to_str();
-    if challenge.is_err() {
-        return Err(UnauthorizedError::new("Cannot unwrap challenge"));
-    }
-    let challenge = bs58::decode(challenge.unwrap()).into_vec();
-    if challenge.is_err() {
-        return Err(UnauthorizedError::new("Invalid base58"));
-    }
-    let challenge = challenge.unwrap();
+    let challenge = headers
+        .get("challenge")
+        .ok_or_else(|| UnauthorizedError::new("Missing challenge header"))?;
+    let challenge = bs58::decode(challenge)
+        .into_vec()
+        .map_err(|_| UnauthorizedError::new("Invalid base58 challenge"))?;
 
-    let auth = AuthHeaders { signature, challenge };
+    let auth = AuthHeaders {
+        signature,
+        challenge,
+    };
     Ok(auth)
 }
 
