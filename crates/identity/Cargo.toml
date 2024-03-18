@@ -10,8 +10,10 @@ license.workspace = true
 
 [dependencies]
 bs58.workspace = true
+hex.workspace = true
 libp2p = { workspace = true, features = ["full"] }
 serde_json.workspace = true
 sha2.workspace = true
 multibase.workspace = true
 serde.workspace = true
+web3.workspace = true
