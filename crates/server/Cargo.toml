@@ -10,6 +10,7 @@ license.workspace = true
 axum.workspace = true
 async-graphql = { workspace = true, optional = true }
 async-graphql-axum = { workspace = true, optional = true }
+bs58.workspace = true
 eyre.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
@@ -25,7 +26,6 @@ calimero-runtime = { path = "../runtime" }
 calimero-identity = { path = "../identity" }
 tower-service = "0.3.2"
 tower-layer = "0.3.2"
-bs58.workspace = true
 
 [[example]]
 name = "demo"

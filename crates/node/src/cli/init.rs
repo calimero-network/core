@@ -124,7 +124,7 @@ impl InitCommand {
         let app_path = Utf8PathBuf::from("apps/only-peers/res/only_peers.wasm");
 
         let config = ConfigFile {
-            identity,
+            identity: identity.clone(),
             store: StoreConfig {
                 path: "data".into(),
             },
@@ -144,6 +144,7 @@ impl InitCommand {
                         })
                         .collect(),
                     graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
+                    identity,
                 },
             },
         };

@@ -1,7 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::Router;
-use libp2p::identity::Keypair;
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
@@ -20,11 +19,7 @@ type Sender = mpsc::Sender<(
     oneshot::Sender<calimero_runtime::logic::Outcome>,
 )>;
 
-pub async fn start(
-    config: config::ServerConfig,
-    sender: Sender,
-    keypair: Keypair,
-) -> eyre::Result<()> {
+pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result<()> {
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
@@ -70,7 +65,7 @@ pub async fn start(
         if let Some((path, handler)) = graphql::service(&config, sender.clone())? {
             app = app
                 .route(path, handler)
-                .layer(AuthSignatureLayer::new(keypair));
+                .layer(AuthSignatureLayer::new(config.identity));
             serviced = true;
         }
     }

@@ -13,6 +13,12 @@ pub const DEFAULT_ADDRS: [IpAddr; 2] = [
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
+    #[serde(
+        with = "calimero_identity::config::serde_identity",
+        default = "libp2p::identity::Keypair::generate_ed25519"
+    )]
+    pub identity: libp2p::identity::Keypair,
+
     #[serde(default)]
     #[cfg(feature = "graphql")]
     pub graphql: Option<crate::graphql::GraphQLConfig>,
