@@ -60,8 +60,8 @@ where
     fn call(&mut self, request: Request<Body>) -> Self::Future {
         let result = auth(request.headers(), &self.keypair);
 
-        if result.is_err() {
-            let error_response: Response<Body> = result.err().unwrap().into_response();
+        if let Err(err) = result {
+            let error_response = err.into_response();
             return Box::pin(async move { Ok(error_response) });
         }
 
@@ -76,7 +76,7 @@ where
 
 struct AuthHeaders {
     signature: Vec<u8>,
-    content: Vec<u8>,
+    challenge: Vec<u8>,
 }
 
 pub fn auth<'a>(
@@ -106,28 +106,28 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
     }
     let signature = signature.unwrap();
 
-    let content = headers.get("content");
-    if content.is_none() {
-        return Err(UnauthorizedError::new("Missing content header"));
+    let challenge = headers.get("challenge");
+    if challenge.is_none() {
+        return Err(UnauthorizedError::new("Missing challenge header"));
     }
-    let content = content.unwrap().to_str();
-    if content.is_err() {
-        return Err(UnauthorizedError::new("Cannot unwrap content"));
+    let challenge = challenge.unwrap().to_str();
+    if challenge.is_err() {
+        return Err(UnauthorizedError::new("Cannot unwrap challenge"));
     }
-    let content = bs58::decode(content.unwrap()).into_vec();
-    if content.is_err() {
+    let challenge = bs58::decode(challenge.unwrap()).into_vec();
+    if challenge.is_err() {
         return Err(UnauthorizedError::new("Invalid base58"));
     }
-    let content = content.unwrap();
+    let challenge = challenge.unwrap();
 
-    let auth = AuthHeaders { signature, content };
+    let auth = AuthHeaders { signature, challenge };
     Ok(auth)
 }
 
 fn token_is_valid(keypair: &Keypair, auth_headers: &AuthHeaders) -> bool {
     let verify_result = verify_peer_auth(
         keypair,
-        auth_headers.content.as_slice(),
+        auth_headers.challenge.as_slice(),
         auth_headers.signature.as_slice(),
     );
     if verify_result.is_err() {
