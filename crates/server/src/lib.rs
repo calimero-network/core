@@ -69,9 +69,7 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
     }
 
     app = app
-        .layer(middleware::auth::auth::AuthSignatureLayer::new(
-            config.identity,
-        ))
+        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
         .layer(
             cors::CorsLayer::new()
                 .allow_origin(cors::Any)
