@@ -9,11 +9,10 @@ mod tests {
     use super::*;
 
     #[test]
-    // Use for obtaining test samples
     fn valid_headers() {
         let keypair = get_peer_keypair().unwrap();
         let msg = "blabla";
-        println!("content header= {:?}", bs58::encode(msg).into_string());
+        println!("challenge header= {:?}", bs58::encode(msg).into_string());
 
         let signature = keypair.sign(msg.as_bytes()).unwrap();
         let signature_header = bs58::encode(&signature).into_string();

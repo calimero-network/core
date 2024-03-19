@@ -49,7 +49,12 @@ impl RunCommand {
                 bootstrap: config.network.bootstrap,
                 discovery: config.network.discovery,
             },
-            server: config.network.server,
+            server: calimero_server::config::ServerConfig {
+                listen: config.network.server.listen,
+                identity: config.identity,
+                graphql: config.network.server.graphql,
+                websocket: config.network.server.websocket,
+            },
         })
         .await
     }

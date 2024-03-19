@@ -1,6 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::routing::Router;
+use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::warn;
 
@@ -20,7 +21,7 @@ type ServerSender = mpsc::Sender<(
 )>;
 
 pub async fn start(
-    config: config::ServerConfig,
+    config: ServerConfig,
     server_sender: ServerSender,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
 ) -> eyre::Result<()> {

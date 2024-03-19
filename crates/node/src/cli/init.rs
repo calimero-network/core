@@ -3,7 +3,6 @@ use std::net::IpAddr;
 
 use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
 use calimero_node::config::{self, AppConfig, ConfigFile, NetworkConfig, StoreConfig};
-use calimero_server::config::ServerConfig;
 use camino::Utf8PathBuf;
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
@@ -135,7 +134,7 @@ impl InitCommand {
                     nodes: BootstrapNodes { list: boot_nodes },
                 },
                 discovery: DiscoveryConfig { mdns },
-                server: ServerConfig {
+                server: calimero_node::config::ServerConfig {
                     listen: self
                         .server_host
                         .into_iter()
@@ -144,7 +143,6 @@ impl InitCommand {
                         })
                         .collect(),
                     graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
-                    identity,
                     websocket: Some(calimero_server::websocket::WsConfig { enabled: true }),
                 },
             },
