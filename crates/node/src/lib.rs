@@ -5,7 +5,7 @@ use calimero_runtime::Constraint;
 use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info, warn};
 
 pub mod config;
@@ -28,7 +28,7 @@ pub struct NodeConfig {
 pub struct TransactionPoolEntry {
     sender: calimero_network::types::PeerId,
     transaction: calimero_primitives::transaction::Transaction,
-    outcome_rx: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
+    outcome_sender: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
 }
 
 #[derive(Debug, Default)]
@@ -44,6 +44,7 @@ pub struct Node {
     app_blob: Vec<u8>,
     app_topic: calimero_network::types::TopicHash,
     network_client: calimero_network::NetworkClient,
+    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
     nonce: u64,
     last_tx: calimero_primitives::hash::Hash,
@@ -54,14 +55,19 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     info!("Peer ID: {}", peer_id);
 
+    let node_events = broadcast::channel(32).0;
+
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let mut node = Node::new(&config, network_client).await?;
+    let mut node = Node::new(&config, network_client, node_events.clone()).await?;
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
-    let mut server = Box::pin(calimero_server::start(config.server, server_sender))
-        as BoxedFuture<eyre::Result<()>>;
+    let mut server = Box::pin(calimero_server::start(
+        config.server,
+        server_sender,
+        node_events,
+    )) as BoxedFuture<eyre::Result<()>>;
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
@@ -259,6 +265,7 @@ impl Node {
     pub async fn new(
         config: &NodeConfig,
         network_client: calimero_network::NetworkClient,
+        node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     ) -> eyre::Result<Self> {
         let store = calimero_store::Store::open(&config.store)?;
 
@@ -282,6 +289,7 @@ impl Node {
             app_blob,
             app_topic,
             network_client,
+            node_events,
             // --
             nonce: 0,
             last_tx: calimero_primitives::hash::Hash::default(),
@@ -299,6 +307,13 @@ impl Node {
             } => {
                 if self.app_topic == topic_hash {
                     info!("{} joined the session.", their_peer_id.cyan());
+                    let _ =
+                        self.node_events
+                            .send(calimero_primitives::events::NodeEvent::PeerJoined(
+                                calimero_primitives::events::PeerJoinedInfo {
+                                    peer_id: their_peer_id,
+                                },
+                            ));
                 }
             }
             calimero_network::types::NetworkEvent::Message { message, .. } => {
@@ -354,7 +369,7 @@ impl Node {
         method: String,
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
-        self.execute(method, payload, false).await
+        self.execute(None, method, payload).await
     }
 
     pub async fn call_mut(
@@ -401,7 +416,7 @@ impl Node {
     ) -> eyre::Result<Option<()>> {
         let TransactionPoolEntry {
             transaction,
-            outcome_rx,
+            outcome_sender,
             ..
         } = match self.tx_pool.remove(&hash) {
             Some(entry) => entry,
@@ -409,11 +424,11 @@ impl Node {
         };
 
         let outcome = self
-            .execute(transaction.method, transaction.payload, true)
+            .execute(Some(hash), transaction.method, transaction.payload)
             .await?;
 
-        if let Some(tx) = outcome_rx {
-            let _ = tx.send(outcome);
+        if let Some(sender) = outcome_sender {
+            let _ = sender.send(outcome);
         }
 
         Ok(Some(()))
@@ -421,14 +436,13 @@ impl Node {
 
     async fn execute(
         &mut self,
+        hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
-        writes: bool,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
-        let mut storage = if writes {
-            TemporalRuntimeStore::Write(calimero_store::TemporalStore::new(&self.store))
-        } else {
-            TemporalRuntimeStore::Read(calimero_store::ReadOnlyStore::new(&self.store))
+        let mut storage = match hash {
+            Some(_) => TemporalRuntimeStore::Write(calimero_store::TemporalStore::new(&self.store)),
+            None => TemporalRuntimeStore::Read(calimero_store::ReadOnlyStore::new(&self.store)),
         };
 
         let limits = calimero_runtime::logic::VMLimits {
@@ -452,13 +466,21 @@ impl Node {
             &limits,
         )?;
 
-        if let (Ok(_), TemporalRuntimeStore::Write(storage)) = (&outcome.returns, storage) {
+        if let (Ok(_), TemporalRuntimeStore::Write(storage), Some(hash)) =
+            (&outcome.returns, storage, hash)
+        {
             if storage.has_changes() {
                 storage.commit()?;
             }
             /* else {
                 todo!("return an error to the caller that the method did not write to storage")
             } */
+
+            let _ =
+                self.node_events
+                    .send(calimero_primitives::events::NodeEvent::TransactionExecuted(
+                        calimero_primitives::events::ExecutedTransactionInfo { hash },
+                    ));
         }
 
         Ok(outcome)
@@ -503,7 +525,7 @@ impl TransactionPool {
         &mut self,
         sender: calimero_network::types::PeerId,
         transaction: calimero_primitives::transaction::Transaction,
-        outcome_rx: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
+        outcome_sender: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
     ) -> eyre::Result<calimero_primitives::hash::Hash> {
         let transaction_hash = calimero_primitives::hash::Hash::hash_json(&transaction)
             .expect("Failed to hash transaction. This is a bug and should be reported.");
@@ -513,7 +535,7 @@ impl TransactionPool {
             TransactionPoolEntry {
                 sender,
                 transaction,
-                outcome_rx,
+                outcome_sender,
             },
         );
 

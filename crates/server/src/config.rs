@@ -22,6 +22,10 @@ pub struct ServerConfig {
     #[serde(default)]
     #[cfg(feature = "graphql")]
     pub graphql: Option<crate::graphql::GraphQLConfig>,
+
+    #[serde(default)]
+    #[cfg(feature = "websocket")]
+    pub websocket: Option<crate::websocket::WsConfig>,
 }
 
 pub fn default_addrs() -> Vec<Multiaddr> {

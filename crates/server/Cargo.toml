@@ -13,7 +13,9 @@ async-graphql-axum = { workspace = true, optional = true }
 bs58.workspace = true
 eyre.workspace = true
 libp2p.workspace = true
+futures-util = { workspace = true, optional = true }
 multiaddr.workspace = true
+rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
@@ -37,3 +39,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum", "tower-http/cors"]
+websocket = ["dep:futures-util"]
