@@ -76,15 +76,6 @@ pub async fn start(
         }
     }
 
-    app = app
-        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
-        .layer(
-            cors::CorsLayer::new()
-                .allow_origin(cors::Any)
-                .allow_headers(cors::Any)
-                .allow_methods([http::Method::POST]),
-        );
-
     #[cfg(feature = "websocket")]
     {
         if let Some((path, handler)) = websocket::service(&config, node_events.clone())? {
@@ -99,6 +90,15 @@ pub async fn start(
 
         return Ok(());
     }
+
+    app = app
+        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
+        .layer(
+            cors::CorsLayer::new()
+                .allow_origin(cors::Any)
+                .allow_headers(cors::Any)
+                .allow_methods([http::Method::POST]),
+        );
 
     let mut set = tokio::task::JoinSet::new();
 
