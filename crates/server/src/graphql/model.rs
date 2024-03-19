@@ -5,7 +5,7 @@ use serde_json::json;
 use crate::graphql;
 
 pub struct AppQuery {
-    pub sender: crate::Sender,
+    pub sender: crate::ServerSender,
 }
 
 #[derive(SimpleObject, Clone, Serialize, Deserialize)]
@@ -52,7 +52,7 @@ struct CreatePostInput {
 }
 
 pub struct AppMutation {
-    pub sender: crate::Sender,
+    pub sender: crate::ServerSender,
 }
 
 #[Object]

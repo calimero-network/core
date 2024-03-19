@@ -14,9 +14,9 @@ pub struct GraphQLConfig {
     pub enabled: bool,
 }
 
-pub fn service(
+pub(crate) fn service(
     config: &crate::config::ServerConfig,
-    sender: crate::Sender,
+    sender: crate::ServerSender,
 ) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
     let _config = match &config.graphql {
         Some(config) if config.enabled => config,
@@ -60,7 +60,7 @@ async fn graphiql(path: &str) -> Html<String> {
 }
 
 async fn _call<T>(
-    sender: &crate::Sender,
+    sender: &crate::ServerSender,
     method: String,
     args: Vec<u8>,
     writes: bool,
@@ -84,7 +84,7 @@ where
 }
 
 async fn call<T>(
-    sender: &crate::Sender,
+    sender: &crate::ServerSender,
     method: String,
     args: Vec<u8>,
 ) -> Result<T, async_graphql::Error>
@@ -95,7 +95,7 @@ where
 }
 
 async fn call_mut<T>(
-    sender: &crate::Sender,
+    sender: &crate::ServerSender,
     method: String,
     args: Vec<u8>,
 ) -> Result<T, async_graphql::Error>

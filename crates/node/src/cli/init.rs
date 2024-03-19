@@ -144,6 +144,7 @@ impl InitCommand {
                         })
                         .collect(),
                     graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
+                    websocket: Some(calimero_server::websocket::WsConfig { enabled: true }),
                 },
             },
         };

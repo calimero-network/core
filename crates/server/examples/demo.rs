@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 
 use multiaddr::Multiaddr;
 use serde_json::json;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
@@ -44,13 +44,21 @@ async fn main() -> eyre::Result<()> {
 
         #[cfg(feature = "graphql")]
         graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
+
+        #[cfg(feature = "websocket")]
+        websocket: Some(calimero_server::websocket::WsConfig { enabled: true }),
     };
 
     info!("Starting server with config: {:#?}", config);
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
+    let subscriptions_sender = broadcast::channel(32).0;
 
-    let mut server = Box::pin(calimero_server::start(config, server_sender));
+    let mut server = Box::pin(calimero_server::start(
+        config,
+        server_sender,
+        subscriptions_sender,
+    ));
 
     loop {
         tokio::select! {
