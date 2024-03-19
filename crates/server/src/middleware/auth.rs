@@ -1,17 +1,14 @@
 pub mod auth {
-    use std::{
-        convert::Infallible,
-        task::{Context, Poll},
-    };
+    use std::convert::Infallible;
+    use std::task::{Context, Poll};
 
-    use axum::{
-        body::Body,
-        extract::Request,
-        http::{HeaderMap, StatusCode},
-        response::{IntoResponse, Response},
-    };
+    use axum::body::Body;
+    use axum::extract::Request;
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::response::{IntoResponse, Response};
     use calimero_identity::auth::verify_peer_auth;
-    use libp2p::{futures::future::BoxFuture, identity::Keypair};
+    use libp2p::futures::future::BoxFuture;
+    use libp2p::identity::Keypair;
     use tower::{Layer, Service};
 
     #[derive(Clone)]

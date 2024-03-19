@@ -2,9 +2,8 @@ use std::net::{IpAddr, SocketAddr};
 
 use axum::{http, Router};
 use tokio::sync::{mpsc, oneshot};
-use tracing::warn;
-
 use tower_http::cors;
+use tracing::warn;
 
 pub mod config;
 #[cfg(feature = "graphql")]
