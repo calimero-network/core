@@ -1,12 +1,16 @@
 use std::net::{IpAddr, SocketAddr};
 
+use axum::http;
 use axum::routing::Router;
+use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tower_http::cors;
 use tracing::warn;
 
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+mod middleware;
 #[cfg(feature = "websocket")]
 pub mod websocket;
 
@@ -21,7 +25,7 @@ type ServerSender = mpsc::Sender<(
 )>;
 
 pub async fn start(
-    config: config::ServerConfig,
+    config: ServerConfig,
     server_sender: ServerSender,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
 ) -> eyre::Result<()> {
@@ -29,6 +33,7 @@ pub async fn start(
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
+
     while let Some(addr) = want_listeners.next() {
         let mut components = addr.iter();
 
@@ -68,6 +73,7 @@ pub async fn start(
     {
         if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
             app = app.route(path, handler);
+
             serviced = true;
         }
     }
@@ -76,6 +82,7 @@ pub async fn start(
     {
         if let Some((path, handler)) = websocket::service(&config, node_events.clone())? {
             app = app.route(path, handler);
+
             serviced = true;
         }
     }
@@ -85,6 +92,15 @@ pub async fn start(
 
         return Ok(());
     }
+
+    app = app
+        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
+        .layer(
+            cors::CorsLayer::new()
+                .allow_origin(cors::Any)
+                .allow_headers(cors::Any)
+                .allow_methods([http::Method::POST]),
+        );
 
     let mut set = tokio::task::JoinSet::new();
 

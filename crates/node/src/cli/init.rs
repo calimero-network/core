@@ -122,7 +122,7 @@ impl InitCommand {
         }
 
         let config = ConfigFile {
-            identity,
+            identity: identity.clone(),
             store: StoreConfig {
                 path: "data".into(),
             },
@@ -132,7 +132,7 @@ impl InitCommand {
                     nodes: BootstrapNodes { list: boot_nodes },
                 },
                 discovery: DiscoveryConfig { mdns },
-                server: ServerConfig {
+                server: calimero_node::config::ServerConfig {
                     listen: self
                         .server_host
                         .into_iter()

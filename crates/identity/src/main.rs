@@ -1,21 +1,14 @@
+mod auth;
+
 use std::borrow::BorrowMut;
 use std::error::Error;
 
+use calimero_identity::identity_provider::{create_identity, get_identifier, Authentication};
+use calimero_identity::types::{AlgorithmType, WalletType};
+use calimero_identity::vc::create_wallet_verifiable_credentials;
+use calimero_identity::vp::{create_verifiable_presentation, validate_verifiable_presentation};
 use libp2p::identity::Keypair;
 use libp2p::kad::store::MemoryStore;
-
-mod dht;
-mod identity_provider;
-mod types;
-mod vc;
-mod vp;
-
-use identity_provider::{create_identity, get_identifier, Authentication};
-use types::AlgorithmType;
-
-use crate::types::WalletType;
-use crate::vc::create_wallet_verifiable_credentials;
-use crate::vp::{create_verifiable_presentation, validate_verifiable_presentation};
 
 fn main() -> Result<(), Box<dyn Error>> {
     //generate keypair in any way

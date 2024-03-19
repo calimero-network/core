@@ -902,6 +902,7 @@ dependencies = [
 name = "calimero-identity"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "libp2p",
  "multibase",
  "serde",
@@ -929,6 +930,7 @@ name = "calimero-node"
 version = "0.1.0"
 dependencies = [
  "bs58",
+ "calimero-identity",
  "calimero-network",
  "calimero-primitives",
  "calimero-runtime",
@@ -992,17 +994,23 @@ dependencies = [
  "async-graphql",
  "async-graphql-axum",
  "axum",
+ "bs58",
+ "calimero-identity",
  "calimero-primitives",
  "calimero-runtime",
  "color-eyre",
  "eyre",
  "futures-util",
+ "libp2p",
  "multiaddr",
  "rand 0.8.5",
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "tower-http",
+ "tower-layer",
+ "tower-service",
  "tracing",
  "tracing-subscriber",
 ]
