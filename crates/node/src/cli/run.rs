@@ -43,13 +43,18 @@ impl RunCommand {
                 path: root_args.home.join(config.store.path),
             },
             network: calimero_network::config::NetworkConfig {
-                identity: config.identity,
+                identity: config.identity.clone(),
                 node_type: self.node_type.into(),
                 swarm: config.network.swarm,
                 bootstrap: config.network.bootstrap,
                 discovery: config.network.discovery,
             },
-            server: config.network.server,
+            server: calimero_server::config::ServerConfig {
+                listen: config.network.server.listen,
+                identity: config.identity,
+                graphql: config.network.server.graphql,
+                websocket: config.network.server.websocket,
+            },
         })
         .await
     }

@@ -3,7 +3,6 @@ use std::net::IpAddr;
 
 use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
 use calimero_node::config::{self, AppConfig, ConfigFile, NetworkConfig, StoreConfig};
-use calimero_server::config::ServerConfig;
 use camino::Utf8PathBuf;
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
@@ -124,7 +123,7 @@ impl InitCommand {
         let app_path = Utf8PathBuf::from("apps/only-peers/res/only_peers.wasm");
 
         let config = ConfigFile {
-            identity,
+            identity: identity.clone(),
             store: StoreConfig {
                 path: "data".into(),
             },
@@ -135,7 +134,7 @@ impl InitCommand {
                     nodes: BootstrapNodes { list: boot_nodes },
                 },
                 discovery: DiscoveryConfig { mdns },
-                server: ServerConfig {
+                server: calimero_node::config::ServerConfig {
                     listen: self
                         .server_host
                         .into_iter()
