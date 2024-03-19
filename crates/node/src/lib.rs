@@ -369,7 +369,7 @@ impl Node {
         method: String,
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
-        self.execute(None, method, payload, false).await
+        self.execute(None, method, payload).await
     }
 
     pub async fn call_mut(
@@ -424,7 +424,7 @@ impl Node {
         };
 
         let outcome = self
-            .execute(Some(hash), transaction.method, transaction.payload, true)
+            .execute(Some(hash), transaction.method, transaction.payload)
             .await?;
 
         if let Some(sender) = outcome_sender {
@@ -439,12 +439,10 @@ impl Node {
         hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
-        writes: bool,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
-        let mut storage = if writes {
-            TemporalRuntimeStore::Write(calimero_store::TemporalStore::new(&self.store))
-        } else {
-            TemporalRuntimeStore::Read(calimero_store::ReadOnlyStore::new(&self.store))
+        let mut storage = match hash {
+            Some(_) => TemporalRuntimeStore::Write(calimero_store::TemporalStore::new(&self.store)),
+            None => TemporalRuntimeStore::Read(calimero_store::ReadOnlyStore::new(&self.store)),
         };
 
         let limits = calimero_runtime::logic::VMLimits {
