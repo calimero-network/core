@@ -79,16 +79,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
     info!("new client connected(client_id={})", client_id);
 
-    handle_node_events(
+    tokio::spawn(handle_node_events(
         client_id,
         state.clone(),
         state.node_events.subscribe(),
         commands_sender.clone(),
-    );
+    ));
 
     let (socket_sender, mut socket_receiver) = socket.split();
 
-    handle_commands(client_id, commands_receiver, socket_sender);
+    tokio::spawn(handle_commands(client_id, commands_receiver, socket_sender));
 
     while let Some(message) = socket_receiver.next().await {
         let message = match message {
@@ -100,7 +100,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
         };
 
         match message {
-            Message::Text(message) => handle_text_message(client_id, state.clone(), message),
+            Message::Text(message) => {
+                tokio::spawn(handle_text_message(client_id, state.clone(), message));
+            }
             Message::Binary(_) => {
                 debug!("received binary message");
             }
@@ -123,136 +125,133 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     ws_state.connections.remove(&client_id);
 }
 
-fn handle_node_events(
+async fn handle_node_events(
     client_id: server::WsClientId,
     state: Arc<ServiceState>,
     mut node_events_receiver: broadcast::Receiver<calimero_primitives::events::NodeEvent>,
     command_sender: mpsc::Sender<WsCommand>,
 ) {
-    tokio::task::spawn(async move {
-        while let Ok(message) = node_events_receiver.recv().await {
-            let response = server::WsResponse {
-                id: None,
-                body: server::WsResonseBody::Result(server::WsResponseBodyResult::Event(message)),
-            };
+    while let Ok(message) = node_events_receiver.recv().await {
+        let response = server::WsResponse {
+            id: None,
+            body: server::WsResonseBody::Result(server::WsResponseBodyResult::Event(message)),
+        };
 
-            let ws_state = state.state.read().await;
-            if ws_state.subscriptions.contains(&client_id) {
-                command_sender
-                    .send(server::WsCommand::Send(response))
+        let ws_state = state.state.read().await;
+        if ws_state.subscriptions.contains(&client_id) {
+            command_sender
+                .send(server::WsCommand::Send(response))
+                .unwrap_or_else(|e| {
+                    error!(
+                        %e,
+                        "failed to send WsCommand::Event(client_id={})",
+                        client_id,
+                    );
+                })
+                .await;
+        }
+    }
+}
+
+async fn handle_commands(
+    client_id: server::WsClientId,
+    mut command_receiver: mpsc::Receiver<WsCommand>,
+    mut socket_sender: SplitSink<WebSocket, Message>,
+) {
+    while let Some(action) = command_receiver.recv().await {
+        match action {
+            server::WsCommand::Close(code, reason) => {
+                socket_sender
+                    .send(Message::Close(Some(CloseFrame {
+                        code,
+                        reason: Cow::from(reason),
+                    })))
                     .unwrap_or_else(|e| {
                         error!(
                             %e,
-                            "failed to send WsCommand::Event(client_id={})",
+                            "failed to send Message::Close(client_id={})",
                             client_id,
+                        );
+                    })
+                    .await;
+                let _ = socket_sender.close().await;
+                break;
+            }
+            server::WsCommand::Send(response) => {
+                let response = match serde_json::to_string(&response) {
+                    Ok(message) => message,
+                    Err(e) => {
+                        error!(
+                            %e,
+                            "failed to serialize api::WsCommand::WsResponse(client_id={})",
+                            client_id,
+                        );
+                        continue;
+                    }
+                };
+                socket_sender
+                    .send(Message::Text(response))
+                    .unwrap_or_else(|e| {
+                        error!(
+                            %e,
+                            "failed to send Message::Text(client_id={})",
+                            client_id,
+
                         );
                     })
                     .await;
             }
         }
-    });
+    }
 }
 
-fn handle_commands(
+async fn handle_text_message(
     client_id: server::WsClientId,
-    mut command_receiver: mpsc::Receiver<WsCommand>,
-    mut socket_sender: SplitSink<WebSocket, Message>,
+    state: Arc<ServiceState>,
+    message: String,
 ) {
-    tokio::task::spawn(async move {
-        while let Some(action) = command_receiver.recv().await {
-            match action {
-                server::WsCommand::Close(code, reason) => {
-                    socket_sender
-                        .send(Message::Close(Some(CloseFrame {
-                            code,
-                            reason: Cow::from(reason),
-                        })))
-                        .unwrap_or_else(|e| {
-                            error!(
-                                %e,
-                                "failed to send Message::Close(client_id={})",
-                                client_id,
-                            );
-                        })
-                        .await;
-                    let _ = socket_sender.close().await;
-                    break;
+    let response = match serde_json::from_str::<calimero_primitives::server::WsRequest>(&message) {
+        Ok(message) => {
+            let response_body = match message.body {
+                server::WsRequestBody::Subscribe => {
+                    let mut ws_state = state.state.write().await;
+                    ws_state.subscriptions.insert(client_id);
+                    server::WsResponseBodyResult::Subscribed
                 }
-                server::WsCommand::Send(response) => {
-                    let response = match serde_json::to_string(&response) {
-                        Ok(message) => message,
-                        Err(e) => {
-                            error!(
-                                %e,
-                                "failed to serialize api::WsCommand::WsResponse(client_id={})",
-                                client_id,
-                            );
-                            continue;
-                        }
-                    };
-                    socket_sender
-                        .send(Message::Text(response))
-                        .unwrap_or_else(|e| {
-                            error!(
-                                %e,
-                                "failed to send Message::Text(client_id={})",
-                                client_id,
-
-                            );
-                        })
-                        .await;
-                }
-            }
-        }
-    });
-}
-
-fn handle_text_message(client_id: server::WsClientId, state: Arc<ServiceState>, message: String) {
-    tokio::task::spawn(async move {
-        let response =
-            match serde_json::from_str::<calimero_primitives::server::WsRequest>(&message) {
-                Ok(message) => {
-                    let response_body = match message.body {
-                        server::WsRequestBody::Subscribe => {
-                            let mut ws_state = state.state.write().await;
-                            ws_state.subscriptions.insert(client_id);
-                            server::WsResponseBodyResult::Subscribed
-                        }
-                        server::WsRequestBody::Unsubscribe => {
-                            let mut ws_state = state.state.write().await;
-                            ws_state.subscriptions.remove(&client_id);
-                            server::WsResponseBodyResult::Unsubscribed
-                        }
-                    };
-                    server::WsResponse {
-                        id: message.id,
-                        body: server::WsResonseBody::Result(response_body),
-                    }
-                }
-                Err(e) => {
-                    error!(%e, "failed to deserialize request: {message}");
-
-                    let error_body = server::WsError::SerdeError(String::from(format!(
-                        "failed to deserialize request: {message}"
-                    )));
-                    server::WsResponse {
-                        id: None,
-                        body: server::WsResonseBody::Error(error_body),
-                    }
+                server::WsRequestBody::Unsubscribe => {
+                    let mut ws_state = state.state.write().await;
+                    ws_state.subscriptions.remove(&client_id);
+                    server::WsResponseBodyResult::Unsubscribed
                 }
             };
+            server::WsResponse {
+                id: message.id,
+                body: server::WsResonseBody::Result(response_body),
+            }
+        }
+        Err(e) => {
+            error!(%e, "failed to deserialize request: {message}");
 
-        let ws_state = state.state.read().await;
-        if let Some(sender) = ws_state.connections.get(&client_id) {
-            sender
-                .send(server::WsCommand::Send(response))
-                .await
-                .unwrap_or_else(|e| {
-                    error!(
-                        "failed to process api::WsRequest (client_id={}): {}",
-                        client_id, e
-                    );
-                });
-        };
-    });
+            let error_body = server::WsError::SerdeError(String::from(format!(
+                "failed to deserialize request: {message}"
+            )));
+            server::WsResponse {
+                id: None,
+                body: server::WsResonseBody::Error(error_body),
+            }
+        }
+    };
+
+    let ws_state = state.state.read().await;
+    if let Some(sender) = ws_state.connections.get(&client_id) {
+        sender
+            .send(server::WsCommand::Send(response))
+            .await
+            .unwrap_or_else(|e| {
+                error!(
+                    "failed to process api::WsRequest (client_id={}): {}",
+                    client_id, e
+                );
+            });
+    };
 }
