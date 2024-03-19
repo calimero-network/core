@@ -69,6 +69,7 @@ where
     }
 }
 
+#[derive(Debug)]
 struct AuthHeaders {
     signature: Vec<u8>,
     challenge: Vec<u8>,

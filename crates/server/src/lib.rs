@@ -1,7 +1,9 @@
 use std::net::{IpAddr, SocketAddr};
 
-use axum::{http, Router};
-use tokio::sync::{mpsc, oneshot};
+use axum::http;
+use axum::routing::Router;
+use config::ServerConfig;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
 use tracing::warn;
 
@@ -9,8 +11,10 @@ pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
 mod middleware;
+#[cfg(feature = "websocket")]
+pub mod websocket;
 
-type Sender = mpsc::Sender<(
+type ServerSender = mpsc::Sender<(
     // todo! move to calimero-node-primitives
     String,
     Vec<u8>,
@@ -18,7 +22,11 @@ type Sender = mpsc::Sender<(
     oneshot::Sender<calimero_runtime::logic::Outcome>,
 )>;
 
-pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result<()> {
+pub async fn start(
+    config: ServerConfig,
+    server_sender: ServerSender,
+    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+) -> eyre::Result<()> {
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
@@ -61,7 +69,7 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
 
     #[cfg(feature = "graphql")]
     {
-        if let Some((path, handler)) = graphql::service(&config, sender.clone())? {
+        if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
             app = app.route(path, handler);
 
             serviced = true;
@@ -76,6 +84,15 @@ pub async fn start(config: config::ServerConfig, sender: Sender) -> eyre::Result
                 .allow_headers(cors::Any)
                 .allow_methods([http::Method::POST]),
         );
+
+    #[cfg(feature = "websocket")]
+    {
+        if let Some((path, handler)) = websocket::service(&config, node_events.clone())? {
+            app = app.route(path, handler);
+
+            serviced = true;
+        }
+    }
 
     if !serviced {
         warn!("No services enabled, enable at least one service to start the server");

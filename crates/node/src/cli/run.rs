@@ -51,8 +51,9 @@ impl RunCommand {
             },
             server: calimero_server::config::ServerConfig {
                 listen: config.network.server.listen,
-                graphql: config.network.server.graphql,
                 identity: config.identity,
+                graphql: config.network.server.graphql,
+                websocket: config.network.server.websocket,
             },
         })
         .await

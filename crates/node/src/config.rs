@@ -2,7 +2,7 @@ use std::fs;
 
 use camino::Utf8PathBuf;
 use eyre::WrapErr;
-use libp2p::identity;
+use libp2p::{identity, Multiaddr};
 use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "config.toml";
@@ -29,13 +29,24 @@ pub struct ConfigFile {
 pub struct NetworkConfig {
     pub swarm: calimero_network::config::SwarmConfig,
 
-    pub server: calimero_server::config::ServerConfig,
+    pub server: ServerConfig,
 
     #[serde(default)]
     pub bootstrap: calimero_network::config::BootstrapConfig,
 
     #[serde(default)]
     pub discovery: calimero_network::config::DiscoveryConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServerConfig {
+    pub listen: Vec<Multiaddr>,
+
+    #[serde(default)]
+    pub graphql: Option<calimero_server::graphql::GraphQLConfig>,
+
+    #[serde(default)]
+    pub websocket: Option<calimero_server::websocket::WsConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
