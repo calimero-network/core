@@ -61,6 +61,7 @@ async fn graphiql(path: &str) -> Html<String> {
 
 async fn _call<T>(
     sender: &crate::ServerSender,
+    application_id: String,
     method: String,
     args: Vec<u8>,
     writes: bool,
@@ -70,7 +71,9 @@ where
 {
     let (tx, rx) = oneshot::channel();
 
-    sender.send((method, args, writes, tx)).await?;
+    sender
+        .send((application_id, method, args, writes, tx))
+        .await?;
 
     let outcome = rx.await?;
 
@@ -85,22 +88,24 @@ where
 
 async fn call<T>(
     sender: &crate::ServerSender,
+    application_id: String,
     method: String,
     args: Vec<u8>,
 ) -> Result<T, async_graphql::Error>
 where
     T: for<'de> Deserialize<'de>,
 {
-    _call(sender, method, args, false).await
+    _call(sender, application_id, method, args, false).await
 }
 
 async fn call_mut<T>(
     sender: &crate::ServerSender,
+    application_id: String,
     method: String,
     args: Vec<u8>,
 ) -> Result<T, async_graphql::Error>
 where
     T: for<'de> Deserialize<'de>,
 {
-    _call(sender, method, args, true).await
+    _call(sender, application_id, method, args, true).await
 }

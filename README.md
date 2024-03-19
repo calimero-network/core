@@ -14,13 +14,11 @@ export RUST_LOG=debug
 
 ### Testing
 
-#### First, compile the kv-store application
+#### First, compile the only-peers and kv-store applications
 
 ```console
 $ ./apps/only-peers/build.sh
-   Compiling calimero-sdk v0.1.0 (/git/calimero-is-near/cali2.0-experimental/crates/sdk)
-   Compiling kv-store v0.1.0 (/git/calimero-is-near/cali2.0-experimental/apps/kv-store)
-    Finished app-release [optimized] target(s) in 2.35s
+$ ./apps/kv-store/build.sh                                                                                        
 ```
 
 #### Create a data folder for all configs
@@ -44,7 +42,7 @@ $ cargo run -p calimero-node -- --home data/coordinator run --node-type coordina
 #### Spin up node 1
 
 ```console
-$ cargo run -p calimero-node -- --home data/node1 init --server-port 2428
+$ cargo run -p calimero-node -- --home data/node1 init --server-port 2527 --swarm-port 2528
     Finished dev [unoptimized + debuginfo] target(s) in 0.20s
      Running `target/debug/calimero-node --home data/node1 init`
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHJMh2hv9wai6UqPoHf5jED2gNaUbTTx6ZThAUqroCgtF")
@@ -60,7 +58,7 @@ Check if config file has set correct port in all places. If not, update it per g
 #### Spin up node 2
 
 ```console
-$ cargo run -p calimero-node -- --home data/node2 init --server-port 2429
+$ cargo run -p calimero-node -- --home data/node2 init --server-port 2627 --swarm-port 2628
     Finished dev [unoptimized + debuginfo] target(s) in 0.20s
      Running `target/debug/calimero-node --home data/node2 init`
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHDWr9mCgZiXQXKDsMjWgDioAt9mVHAKEuYUuSKtYdv75")
