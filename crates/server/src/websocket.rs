@@ -8,7 +8,7 @@ use axum::routing::{get, MethodRouter};
 use axum::Extension;
 use calimero_primitives::server::{self, WsCommand};
 use futures_util::stream::SplitSink;
-use futures_util::{SinkExt, StreamExt, TryFutureExt};
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info};
@@ -26,7 +26,7 @@ struct InnerState {
 }
 struct ServiceState {
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-    state: RwLock<InnerState>,
+    inner: RwLock<InnerState>,
 }
 
 pub(crate) fn service(
@@ -49,7 +49,7 @@ pub(crate) fn service(
 
     let state = Arc::new(ServiceState {
         node_events,
-        state: Default::default(),
+        inner: Default::default(),
     });
 
     Ok(Some((path, get(ws_handler).layer(Extension(state)))))
@@ -65,19 +65,18 @@ async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     let (commands_sender, commands_receiver) = mpsc::channel(32);
     let client_id = loop {
-        let peer_id = rand::random();
+        let client_id = rand::random();
 
-        let mut ws_state = state.state.write().await;
-        match ws_state.connections.entry(peer_id) {
+        match state.inner.write().await.connections.entry(client_id) {
             hash_map::Entry::Occupied(_) => continue,
             hash_map::Entry::Vacant(entry) => {
                 entry.insert(commands_sender.clone());
-                break peer_id;
+                break client_id;
             }
         }
     };
 
-    info!("new client connected(client_id={})", client_id);
+    info!(%client_id, "new client connected");
 
     tokio::spawn(handle_node_events(
         client_id,
@@ -94,7 +93,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
         let message = match message {
             Ok(message) => message,
             Err(e) => {
-                error!(%e, "failed to read ws::Message(client_id={})", client_id);
+                error!(%client_id, %e, "failed to read ws::Message");
                 break;
             }
         };
@@ -119,10 +118,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
         }
     }
 
-    info!("client disconnected(client_id={})", client_id);
-    let mut ws_state = state.state.write().await;
-    ws_state.subscriptions.remove(&client_id);
-    ws_state.connections.remove(&client_id);
+    info!(%client_id, "client disconnected");
+    let mut state = state.inner.write().await;
+    state.subscriptions.remove(&client_id);
+    state.connections.remove(&client_id);
 }
 
 async fn handle_node_events(
@@ -132,23 +131,19 @@ async fn handle_node_events(
     command_sender: mpsc::Sender<WsCommand>,
 ) {
     while let Ok(message) = node_events_receiver.recv().await {
-        let response = server::WsResponse {
-            id: None,
-            body: server::WsResonseBody::Result(server::WsResponseBodyResult::Event(message)),
-        };
+        if state.inner.read().await.subscriptions.contains(&client_id) {
+            let response = server::WsResponse {
+                id: None,
+                body: server::WsResonseBody::Result(server::WsResponseBodyResult::Event(message)),
+            };
 
-        let ws_state = state.state.read().await;
-        if ws_state.subscriptions.contains(&client_id) {
-            command_sender
-                .send(server::WsCommand::Send(response))
-                .unwrap_or_else(|e| {
-                    error!(
-                        %e,
-                        "failed to send WsCommand::Event(client_id={})",
-                        client_id,
-                    );
-                })
-                .await;
+            if let Err(e) = command_sender.send(server::WsCommand::Send(response)).await {
+                error!(
+                    %client_id,
+                    %e,
+                    "failed to send server::WsCommand::Send",
+                );
+            }
         }
     }
 }
@@ -161,19 +156,17 @@ async fn handle_commands(
     while let Some(action) = command_receiver.recv().await {
         match action {
             server::WsCommand::Close(code, reason) => {
-                socket_sender
-                    .send(Message::Close(Some(CloseFrame {
-                        code,
-                        reason: Cow::from(reason),
-                    })))
-                    .unwrap_or_else(|e| {
-                        error!(
-                            %e,
-                            "failed to send Message::Close(client_id={})",
-                            client_id,
-                        );
-                    })
-                    .await;
+                let close_frame = Some(CloseFrame {
+                    code,
+                    reason: Cow::from(reason),
+                });
+                if let Err(e) = socket_sender.send(Message::Close(close_frame)).await {
+                    error!(
+                        %client_id,
+                        %e,
+                        "failed to send ws::Message::Close",
+                    );
+                }
                 let _ = socket_sender.close().await;
                 break;
             }
@@ -182,24 +175,21 @@ async fn handle_commands(
                     Ok(message) => message,
                     Err(e) => {
                         error!(
+                            %client_id,
                             %e,
-                            "failed to serialize api::WsCommand::WsResponse(client_id={})",
-                            client_id,
+                            "failed to serialize server::WsResponse",
                         );
                         continue;
                     }
                 };
-                socket_sender
-                    .send(Message::Text(response))
-                    .unwrap_or_else(|e| {
-                        error!(
-                            %e,
-                            "failed to send Message::Text(client_id={})",
-                            client_id,
+                if let Err(e) = socket_sender.send(Message::Text(response)).await {
+                    error!(
+                        %client_id,
+                        %e,
+                        "failed to send ws::Message::Text",
 
-                        );
-                    })
-                    .await;
+                    );
+                }
             }
         }
     }
@@ -214,13 +204,11 @@ async fn handle_text_message(
         Ok(message) => {
             let response_body = match message.body {
                 server::WsRequestBody::Subscribe => {
-                    let mut ws_state = state.state.write().await;
-                    ws_state.subscriptions.insert(client_id);
+                    state.inner.write().await.subscriptions.insert(client_id);
                     server::WsResponseBodyResult::Subscribed
                 }
                 server::WsRequestBody::Unsubscribe => {
-                    let mut ws_state = state.state.write().await;
-                    ws_state.subscriptions.remove(&client_id);
+                    state.inner.write().await.subscriptions.remove(&client_id);
                     server::WsResponseBodyResult::Unsubscribed
                 }
             };
@@ -230,7 +218,7 @@ async fn handle_text_message(
             }
         }
         Err(e) => {
-            error!(%e, "failed to deserialize request: {message}");
+            error!(%message, %e, "failed to deserialize server::WsRequest");
 
             let error_body = server::WsError::SerdeError(String::from(format!(
                 "failed to deserialize request: {message}"
@@ -242,16 +230,13 @@ async fn handle_text_message(
         }
     };
 
-    let ws_state = state.state.read().await;
-    if let Some(sender) = ws_state.connections.get(&client_id) {
-        sender
-            .send(server::WsCommand::Send(response))
-            .await
-            .unwrap_or_else(|e| {
-                error!(
-                    "failed to process api::WsRequest (client_id={}): {}",
-                    client_id, e
-                );
-            });
+    if let Some(sender) = state.inner.read().await.connections.get(&client_id) {
+        if let Err(e) = sender.send(server::WsCommand::Send(response)).await {
+            error!(
+                %client_id,
+                %e,
+                "failed send server::WsCommand::Send",
+            );
+        }
     };
 }
