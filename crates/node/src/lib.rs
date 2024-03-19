@@ -307,15 +307,13 @@ impl Node {
             } => {
                 if self.app_topic == topic_hash {
                     info!("{} joined the session.", their_peer_id.cyan());
-                    if self.node_events.receiver_count() > 0 {
-                        self.node_events.send(
-                            calimero_primitives::events::NodeEvent::PeerJoined(
+                    let _ =
+                        self.node_events
+                            .send(calimero_primitives::events::NodeEvent::PeerJoined(
                                 calimero_primitives::events::PeerJoinedInfo {
                                     peer_id: their_peer_id,
                                 },
-                            ),
-                        )?;
-                    }
+                            ));
                 }
             }
             calimero_network::types::NetworkEvent::Message { message, .. } => {
@@ -371,7 +369,7 @@ impl Node {
         method: String,
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
-        self.execute(method, payload, false).await
+        self.execute(None, method, payload, false).await
     }
 
     pub async fn call_mut(
@@ -426,19 +424,8 @@ impl Node {
         };
 
         let outcome = self
-            .execute(
-                transaction.method.clone(),
-                transaction.payload.clone(),
-                true,
-            )
+            .execute(Some(hash), transaction.method, transaction.payload, true)
             .await?;
-
-        if outcome.returns.is_ok() && self.node_events.receiver_count() > 0 {
-            let event = calimero_primitives::events::NodeEvent::TransactionExecuted(
-                calimero_primitives::events::ExecutedTransactionInfo { hash },
-            );
-            self.node_events.send(event)?;
-        }
 
         if let Some(sender) = outcome_sender {
             let _ = sender.send(outcome);
@@ -449,6 +436,7 @@ impl Node {
 
     async fn execute(
         &mut self,
+        hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
         writes: bool,
@@ -480,13 +468,21 @@ impl Node {
             &limits,
         )?;
 
-        if let (Ok(_), TemporalRuntimeStore::Write(storage)) = (&outcome.returns, storage) {
+        if let (Ok(_), TemporalRuntimeStore::Write(storage), Some(hash)) =
+            (&outcome.returns, storage, hash)
+        {
             if storage.has_changes() {
                 storage.commit()?;
             }
             /* else {
                 todo!("return an error to the caller that the method did not write to storage")
             } */
+
+            let _ =
+                self.node_events
+                    .send(calimero_primitives::events::NodeEvent::TransactionExecuted(
+                        calimero_primitives::events::ExecutedTransactionInfo { hash },
+                    ));
         }
 
         Ok(outcome)
@@ -541,7 +537,7 @@ impl TransactionPool {
             TransactionPoolEntry {
                 sender,
                 transaction,
-                outcome_sender: outcome_sender,
+                outcome_sender,
             },
         );
 
