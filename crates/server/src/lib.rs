@@ -85,6 +85,12 @@ pub async fn start(
         }
     }
 
+    if !serviced {
+        warn!("No services enabled, enable at least one service to start the server");
+
+        return Ok(());
+    }
+
     app = app
         .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
         .layer(
@@ -93,12 +99,6 @@ pub async fn start(
                 .allow_headers(cors::Any)
                 .allow_methods([http::Method::POST]),
         );
-
-    if !serviced {
-        warn!("No services enabled, enable at least one service to start the server");
-
-        return Ok(());
-    }
 
     let mut set = tokio::task::JoinSet::new();
 
