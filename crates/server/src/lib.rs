@@ -1,8 +1,10 @@
 use std::net::{IpAddr, SocketAddr};
 
+use axum::http;
 use axum::routing::Router;
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tower_http::cors;
 use tracing::warn;
 
 pub mod config;
@@ -69,9 +71,19 @@ pub async fn start(
     {
         if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
             app = app.route(path, handler);
+
             serviced = true;
         }
     }
+
+    app = app
+        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
+        .layer(
+            cors::CorsLayer::new()
+                .allow_origin(cors::Any)
+                .allow_headers(cors::Any)
+                .allow_methods([http::Method::POST]),
+        );
 
     #[cfg(feature = "websocket")]
     {
@@ -81,8 +93,6 @@ pub async fn start(
             serviced = true;
         }
     }
-
-    app = app.layer(middleware::auth::AuthSignatureLayer::new(config.identity));
 
     if !serviced {
         warn!("No services enabled, enable at least one service to start the server");

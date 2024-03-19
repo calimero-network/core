@@ -60,6 +60,7 @@ async fn main() -> eyre::Result<()> {
 
     let pk = &bs58::encode(&keypair.to_protobuf_encoding()?).into_string();
     println!("Private key {:?}", pk);
+
     let mut server = Box::pin(calimero_server::start(
         config,
         server_sender,
