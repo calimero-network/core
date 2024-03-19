@@ -1,6 +1,7 @@
 use std::env;
 use std::net::{Ipv4Addr, SocketAddr};
 
+use libp2p::identity;
 use multiaddr::Multiaddr;
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
@@ -39,7 +40,7 @@ async fn main() -> eyre::Result<()> {
         listen = calimero_server::config::default_addrs();
     }
 
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
+    let keypair = identity::Keypair::generate_ed25519();
 
     let config = calimero_server::config::ServerConfig {
         listen,
