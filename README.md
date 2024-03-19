@@ -58,7 +58,7 @@ Check if config file has set correct port in all places. If not, update it per g
 #### Spin up node 2
 
 ```console
-$ cargo run -p calimero-node -- --home data/node2 init --server-port 2627 --swarm-port 2628
+$ cargo run -p calimero-node -- --home data/node1 init --server-port 2429 --swarm-port 2529
     Finished dev [unoptimized + debuginfo] target(s) in 0.20s
      Running `target/debug/calimero-node --home data/node2 init`
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHDWr9mCgZiXQXKDsMjWgDioAt9mVHAKEuYUuSKtYdv75")
