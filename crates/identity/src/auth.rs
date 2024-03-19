@@ -1,5 +1,4 @@
 use libp2p::identity::Keypair;
-
 use web3::signing::{keccak256, recover};
 
 pub fn verify_peer_auth(keypair: &Keypair, msg: &[u8], signature: &[u8]) -> bool {
@@ -65,11 +64,10 @@ mod tests {
     }
 
     #[test]
-    // Use for obtaining test samples
     fn valid_headers() {
         let keypair = get_peer_keypair().unwrap();
         let msg = "blabla";
-        println!("content header= {:?}", bs58::encode(msg).into_string());
+        println!("challenge header= {:?}", bs58::encode(msg).into_string());
 
         let signature = keypair.sign(msg.as_bytes()).unwrap();
         let signature_header = bs58::encode(&signature).into_string();

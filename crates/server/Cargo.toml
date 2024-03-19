@@ -13,12 +13,14 @@ async-graphql-axum = { workspace = true, optional = true }
 bs58.workspace = true
 eyre.workspace = true
 libp2p.workspace = true
+futures-util = { workspace = true, optional = true }
 multiaddr.workspace = true
+rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
 tower = "0.4.13"
-tower-http = { workspace = true, optional = true }
+tower-http = { workspace = true, features = ["cors"] }
 tracing.workspace = true
 
 calimero-primitives = { path = "../primitives" }
@@ -36,4 +38,5 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
-graphql = ["dep:async-graphql", "dep:async-graphql-axum", "tower-http/cors"]
+graphql = ["dep:async-graphql", "dep:async-graphql-axum"]
+websocket = ["dep:futures-util"]
