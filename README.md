@@ -42,7 +42,7 @@ $ cargo run -p calimero-node -- --home data/coordinator run --node-type coordina
 #### Spin up node 1
 
 ```console
-$ cargo run -p calimero-node -- --home data/node1 init --server-port 2527 --swarm-port 2528
+$ cargo run -p calimero-node -- --home data/node1 init --server-port 2428 --swarm-port 2528
     Finished dev [unoptimized + debuginfo] target(s) in 0.20s
      Running `target/debug/calimero-node --home data/node1 init`
 2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHJMh2hv9wai6UqPoHf5jED2gNaUbTTx6ZThAUqroCgtF")
