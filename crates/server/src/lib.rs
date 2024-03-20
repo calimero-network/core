@@ -10,6 +10,7 @@ use tracing::warn;
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+pub mod jsonrpc;
 mod middleware;
 #[cfg(feature = "websocket")]
 pub mod websocket;
@@ -85,6 +86,12 @@ pub async fn start(
         }
     }
 
+    if let Some((path, handler)) = jsonrpc::service(&config)? {
+        app = app.route(path, handler);
+
+        serviced = true;
+    }
+
     if !serviced {
         warn!("No services enabled, enable at least one service to start the server");
 
@@ -92,7 +99,7 @@ pub async fn start(
     }
 
     app = app
-        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
+        // .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
         .layer(
             cors::CorsLayer::new()
                 .allow_origin(cors::Any)
