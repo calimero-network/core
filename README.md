@@ -100,18 +100,18 @@ Evict all transactions in the transaction pool that are awaiting confirmation
 Print the DB state
 ```
 
-Example
+Example - KV Store
 
 #### From Peer 1
 
 ```console
-> call set { "key": "name", "value": "Adam Smith" }
+> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc set { "key": "name", "value": "Adam Smith" }
  │ Sent Transaction! Hash("DWSBHcnDnNVkQTf5xha891kfQvXyQt6WMhyReghcLW5A")
  │ Hash("DWSBHcnDnNVkQTf5xha891kfQvXyQt6WMhyReghcLW5A")
  │   (No return value)
  │   Logs:
  │     > Setting key: "name" to value: "Adam Smith"
-> call get { "key": "name" }
+> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc get { "key": "name" }
  │ Sent Transaction! Hash("9Y5jZVsmEs1P74qhi2uJ82jr7WFFUCg1X6TvHtoLo45W")
  │ Hash("9Y5jZVsmEs1P74qhi2uJ82jr7WFFUCg1X6TvHtoLo45W")
  │   Return Value:
@@ -123,20 +123,20 @@ Example
 #### From Peer 2
 
 ```console
-> call get { "key": "name" }
+> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc get { "key": "name" }
  │ Sent Transaction! Hash("EFthDcmVbpevfYw1T7WfQ75tY7PHV7DVKieRNFa2uanh")
  │ Hash("EFthDcmVbpevfYw1T7WfQ75tY7PHV7DVKieRNFa2uanh")
  │   Return Value:
  │     > "Adam Smith"
  │   Logs:
  │     > Getting key: "name"
-> call set { "key": "name", "value": "Adam Smitten" }
+> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc set { "key": "name", "value": "Adam Smitten" }
  │ Sent Transaction! Hash("7eU6aJHgB4rpZn8oV7VbWMxERDDKMCP2Ao2yj5G96WZD")
  │ Hash("7eU6aJHgB4rpZn8oV7VbWMxERDDKMCP2Ao2yj5G96WZD")
  │   (No return value)
  │   Logs:
  │     > Setting key: "name" to value: "Adam Smitten"
-> call get { "key": "name" }
+> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc get { "key": "name" }
  │ Sent Transaction! Hash("86Rfq6zEpjDSMjXFfxwmLLscHob9ZBtJEwvhwEDptjhM")
  │ Hash("86Rfq6zEpjDSMjXFfxwmLLscHob9ZBtJEwvhwEDptjhM")
  │   Return Value:
@@ -144,3 +144,32 @@ Example
  │   Logs:
  │     > Getting key: "name"
 ```
+
+Example - Only Peers 
+```
+call /calimero/experimental/app/8eVTNKLwmF28pdDR7RRpT5C1XwUXoJuDuPF6hhbMCu98 create_post {"title": "title", "content": "content"}
+ │ Scheduled Transaction! Hash("FCBsYV5cch9kpkDuc3a1mYG7XNYapFTN3g4nAH7CWXPG")
+ │ Hash("FCBsYV5cch9kpkDuc3a1mYG7XNYapFTN3g4nAH7CWXPG")
+ │   Return Value:
+ │     > (json): {
+ │     >   "comments": [],
+ │     >   "content": "content",
+ │     >   "id": 0,
+ │     >   "title": "title"
+ │     > }
+ │   Logs:
+ │     > Creating post with title: "title" and content: "content"
+
+ call /calimero/experimental/app/8eVTNKLwmF28pdDR7RRpT5C1XwUXoJuDuPF6hhbMCu98 post {"id": 0}
+ │ Scheduled Transaction! Hash("EWTmQg71zhj5SDs91uWqrBsK7NRa3zBU5vALFPuhgFd3")
+ │ Hash("EWTmQg71zhj5SDs91uWqrBsK7NRa3zBU5vALFPuhgFd3")
+ │   Return Value:
+ │     > (json): {
+ │     >   "comments": [],
+ │     >   "content": "content",
+ │     >   "id": 0,
+ │     >   "title": "title"
+ │     > }
+ │   Logs:
+ │     > Getting post with id: 0
+ ```

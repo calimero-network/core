@@ -496,14 +496,20 @@ impl Node {
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let mut storage = match hash {
-            Some(_) => TemporalRuntimeStore::Write(calimero_store::TemporalStore::new(&self.store)),
-            None => TemporalRuntimeStore::Read(calimero_store::ReadOnlyStore::new(&self.store)),
+            Some(_) => TemporalRuntimeStore::Write(calimero_store::TemporalStore::new(
+                application_id.clone(),
+                &self.store,
+            )),
+            None => TemporalRuntimeStore::Read(calimero_store::ReadOnlyStore::new(
+                application_id.clone(),
+                &self.store,
+            )),
         };
 
         let outcome = calimero_runtime::run(
             &self
                 .application_manager
-                .load_application_blob(TopicHash::from_raw(application_id)),
+                .load_application_blob(TopicHash::from_raw(application_id.clone())),
             &method,
             calimero_runtime::logic::VMContext { input: payload },
             &mut storage,
