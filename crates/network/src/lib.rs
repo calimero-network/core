@@ -2,7 +2,6 @@ use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
 use std::time::Duration;
 
-use client::NetworkClient;
 use libp2p::futures::prelude::*;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
@@ -17,6 +16,7 @@ pub mod config;
 mod events;
 pub mod types;
 
+use client::NetworkClient;
 use config::NetworkConfig;
 
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));

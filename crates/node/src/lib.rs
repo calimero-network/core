@@ -1,15 +1,12 @@
-use application_manager::ApplicationManager;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use camino::Utf8PathBuf;
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
 use owo_colors::OwoColorize;
-use temporal_runtime_store::TemporalRuntimeStore;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info, warn};
-use transaction_pool::{TransactionPool, TransactionPoolEntry};
 
 pub mod application_manager;
 pub mod config;
@@ -33,8 +30,8 @@ pub struct Node {
     id: calimero_network::types::PeerId,
     typ: calimero_primitives::types::NodeType,
     store: calimero_store::Store,
-    tx_pool: TransactionPool,
-    application_manager: ApplicationManager,
+    tx_pool: transaction_pool::TransactionPool,
+    application_manager: application_manager::ApplicationManager,
     network_client: calimero_network::client::NetworkClient,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
@@ -114,85 +111,84 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     match command {
         "call" => {
             if let Some(args) = args {
-                let (application_id, method_and_payload) =
-                    args.split_once(' ').unwrap_or_else(|| (args, "{}"));
-                let (method, payload) = method_and_payload
-                    .split_once(' ')
-                    .unwrap_or_else(|| (args, "{}"));
+                if let Some((application_id, args)) = args.split_once(' ') {
+                    let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
 
-                match serde_json::from_str::<serde_json::Value>(payload) {
-                    Ok(_) => {
-                        let (tx, rx) = oneshot::channel();
+                    match serde_json::from_str::<serde_json::Value>(payload) {
+                        Ok(_) => {
+                            let (tx, rx) = oneshot::channel();
 
-                        let tx_hash = match node
-                            .call_mut(
-                                application_id.to_string(),
-                                method.to_owned(),
-                                payload.as_bytes().to_owned(),
-                                tx,
-                            )
-                            .await
-                        {
-                            Ok(tx_hash) => tx_hash,
-                            Err(e) => {
-                                println!("{IND} Failed to send transaction: {}", e);
-                                return Ok(());
-                            }
-                        };
+                            let tx_hash = match node
+                                .call_mut(
+                                    application_id.to_string(),
+                                    method.to_owned(),
+                                    payload.as_bytes().to_owned(),
+                                    tx,
+                                )
+                                .await
+                            {
+                                Ok(tx_hash) => tx_hash,
+                                Err(e) => {
+                                    println!("{IND} Failed to send transaction: {}", e);
+                                    return Ok(());
+                                }
+                            };
 
-                        println!("{IND} Scheduled Transaction! {:?}", tx_hash);
+                            println!("{IND} Scheduled Transaction! {:?}", tx_hash);
 
-                        tokio::spawn(async move {
-                            if let Ok(outcome) = rx.await {
-                                println!("{IND} {:?}", tx_hash);
+                            tokio::spawn(async move {
+                                if let Ok(outcome) = rx.await {
+                                    println!("{IND} {:?}", tx_hash);
 
-                                match outcome.returns {
-                                    Ok(result) => match result {
-                                        Some(result) => {
-                                            println!("{IND}   Return Value:");
-                                            let result = if let Ok(value) =
-                                                serde_json::from_slice::<serde_json::Value>(&result)
-                                            {
-                                                format!(
-                                                    "(json): {}",
-                                                    format!("{:#}", value)
-                                                        .lines()
-                                                        .map(|line| line.cyan().to_string())
-                                                        .collect::<Vec<_>>()
-                                                        .join("\n")
-                                                )
-                                            } else {
-                                                format!("(raw): {:?}", result.cyan())
-                                            };
+                                    match outcome.returns {
+                                        Ok(result) => match result {
+                                            Some(result) => {
+                                                println!("{IND}   Return Value:");
+                                                let result = if let Ok(value) =
+                                                    serde_json::from_slice::<serde_json::Value>(
+                                                        &result,
+                                                    ) {
+                                                    format!(
+                                                        "(json): {}",
+                                                        format!("{:#}", value)
+                                                            .lines()
+                                                            .map(|line| line.cyan().to_string())
+                                                            .collect::<Vec<_>>()
+                                                            .join("\n")
+                                                    )
+                                                } else {
+                                                    format!("(raw): {:?}", result.cyan())
+                                                };
 
-                                            for line in result.lines() {
-                                                println!("{IND}     > {}", line);
+                                                for line in result.lines() {
+                                                    println!("{IND}     > {}", line);
+                                                }
+                                            }
+                                            None => println!("{IND}   (No return value)"),
+                                        },
+                                        Err(err) => {
+                                            let err = format!("{:#?}", err);
+
+                                            println!("{IND}   Error:");
+                                            for line in err.lines() {
+                                                println!("{IND}     > {}", line.yellow());
                                             }
                                         }
-                                        None => println!("{IND}   (No return value)"),
-                                    },
-                                    Err(err) => {
-                                        let err = format!("{:#?}", err);
+                                    }
 
-                                        println!("{IND}   Error:");
-                                        for line in err.lines() {
-                                            println!("{IND}     > {}", line.yellow());
+                                    if !outcome.logs.is_empty() {
+                                        println!("{IND}   Logs:");
+
+                                        for log in outcome.logs {
+                                            println!("{IND}     > {}", log.cyan());
                                         }
                                     }
                                 }
-
-                                if !outcome.logs.is_empty() {
-                                    println!("{IND}   Logs:");
-
-                                    for log in outcome.logs {
-                                        println!("{IND}     > {}", log.cyan());
-                                    }
-                                }
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        println!("{IND} Failed to parse payload: {}", e);
+                            });
+                        }
+                        Err(e) => {
+                            println!("{IND} Failed to parse payload: {}", e);
+                        }
                     }
                 }
             } else {
@@ -207,7 +203,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     "{IND} Garbage collecting {} transactions.",
                     node.tx_pool.transactions.len().cyan()
                 );
-                node.tx_pool = TransactionPool::default();
+                node.tx_pool = transaction_pool::TransactionPool::default();
             }
         }
         "pool" => {
@@ -249,9 +245,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             if let Some(args) = args {
                 // TODO: implement print all and/or specific topic
                 let topic = TopicHash::from_raw(args);
-                if (node
+                if node
                     .application_manager
-                    .is_application_registered(topic.clone()))
+                    .is_application_registered(topic.clone())
                 {
                     println!(
                         "{IND} Peers (Session) for Topic {}: {:#?}",
@@ -283,7 +279,7 @@ impl Node {
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     ) -> eyre::Result<Self> {
         let store = calimero_store::Store::open(&config.store)?;
-        let tx_pool = TransactionPool::default();
+        let tx_pool = transaction_pool::TransactionPool::default();
 
         let mut application_manager =
             application_manager::ApplicationManager::new(network_client.clone());
@@ -463,7 +459,7 @@ impl Node {
         application_id: String,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<Option<()>> {
-        let TransactionPoolEntry {
+        let transaction_pool::TransactionPoolEntry {
             transaction,
             outcome_sender,
             ..
@@ -496,14 +492,12 @@ impl Node {
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let mut storage = match hash {
-            Some(_) => TemporalRuntimeStore::Write(calimero_store::TemporalStore::new(
-                application_id.clone(),
-                &self.store,
-            )),
-            None => TemporalRuntimeStore::Read(calimero_store::ReadOnlyStore::new(
-                application_id.clone(),
-                &self.store,
-            )),
+            Some(_) => temporal_runtime_store::TemporalRuntimeStore::Write(
+                calimero_store::TemporalStore::new(application_id.clone(), &self.store),
+            ),
+            None => temporal_runtime_store::TemporalRuntimeStore::Read(
+                calimero_store::ReadOnlyStore::new(application_id.clone(), &self.store),
+            ),
         };
 
         let outcome = calimero_runtime::run(
@@ -516,7 +510,7 @@ impl Node {
             &get_runtime_limits()?,
         )?;
 
-        if let (Ok(_), TemporalRuntimeStore::Write(storage), Some(hash)) =
+        if let (Ok(_), temporal_runtime_store::TemporalRuntimeStore::Write(storage), Some(hash)) =
             (&outcome.returns, storage, hash)
         {
             if storage.has_changes() {
