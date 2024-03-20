@@ -241,15 +241,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             }
         }
         "peers" => {
-            // TODO: implement print all and/or specific topic
-            let apps = node.application_manager.get_registered_applications();
-            let (session_peers, all_peers) = tokio::join!(
-                node.network_client.peer_count(),
-                node.network_client.mesh_peer_count(apps[0].clone()),
+            println!(
+                "{IND} Peers (General): {:#?}",
+                node.network_client.peer_count().await.cyan()
             );
 
-            println!("{IND} Peers (General): {:#?}", all_peers.cyan());
-            println!("{IND} Peers (Session): {:#?}", session_peers.cyan());
+            if let Some(args) = args {
+                // TODO: implement print all and/or specific topic
+                let topic = TopicHash::from_raw(args);
+                if (node
+                    .application_manager
+                    .is_application_registered(topic.clone()))
+                {
+                    println!(
+                        "{IND} Peers (Session) for Topic {}: {:#?}",
+                        topic.clone(),
+                        node.network_client.mesh_peer_count(topic).await.cyan()
+                    );
+                }
+            }
         }
         "store" => {
             let state = format!("{:#?}", node.store.get(&b"STATE".to_vec()));
