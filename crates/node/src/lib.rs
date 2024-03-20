@@ -110,6 +110,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     #[allow(non_snake_case)]
     let IND = " │".yellow();
 
+    // TODO: should be replaced with RPC endpoints
     match command {
         "call" => {
             if let Some(args) = args {
