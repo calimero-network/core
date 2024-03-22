@@ -1,50 +1,47 @@
-use std::sync::{Arc, Mutex};
-
-use jsonrpsee_core::async_trait;
-use jsonrpsee_proc_macros::rpc;
-use jsonrpsee_types::ErrorObjectOwned;
+use serde::Deserialize;
+use tokio::sync::oneshot;
 use tracing::info;
 
-#[rpc(server)]
-pub trait CalimeroRPC {
-    #[method(name = "send")]
-    async fn send(&self, message: String);
+use crate::ServerSender;
 
-    #[method(name = "read")]
-    async fn read(&self) -> Result<Option<String>, ErrorObjectOwned>;
+pub(crate) async fn handle_execute_method(
+    sender: crate::ServerSender,
+    // method: String,
+    // args: Vec<u8>,
+) -> eyre::Result<()> {
+    // call(sender, method, args, false).await;
+
+    Ok(())
 }
 
-pub struct CalimeroRPCImpl {
-    mempool: Arc<Mutex<Vec<String>>>,
+pub(crate) async fn handle_read_method(
+    sender: crate::ServerSender,
+    // method: String,
+    // args: Vec<u8>,
+) -> eyre::Result<()> {
+    Ok(())
 }
 
-impl CalimeroRPCImpl {
-    pub fn new() -> Self {
-        CalimeroRPCImpl {
-            mempool: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-}
+async fn call<T>(
+    sender: crate::ServerSender,
+    method: String,
+    args: Vec<u8>,
+    writes: bool,
+) -> eyre::Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let (result_sender, result_receiver) = oneshot::channel();
 
-#[async_trait]
-impl CalimeroRPCServer for CalimeroRPCImpl {
-    async fn send(&self, message: String) {
-        let mut list = self.mempool.lock().unwrap();
-        list.push(message.clone());
+    sender.send((method, args, writes, result_sender)).await?;
 
-        info!("Broadcasting: {}", message);
+    let outcome = result_receiver.await?;
+
+    for log in outcome.logs {
+        info!("RPC log: {}", log);
     }
 
-    async fn read(&self) -> Result<Option<String>, ErrorObjectOwned> {
-        let mut list = self.mempool.lock().unwrap(); // In real code, handle lock errors
-        Ok(list.pop())
-    }
-}
+    let result = serde_json::from_slice(&outcome.returns?.unwrap_or_default())?;
 
-impl Clone for CalimeroRPCImpl {
-    fn clone(&self) -> Self {
-        CalimeroRPCImpl {
-            mempool: self.mempool.clone(),
-        }
-    }
+    Ok(result)
 }

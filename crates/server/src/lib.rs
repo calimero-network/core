@@ -10,6 +10,7 @@ use tracing::warn;
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+#[cfg(feature = "jsonrpc")]
 pub mod jsonrpc;
 mod middleware;
 #[cfg(feature = "websocket")]
@@ -77,6 +78,15 @@ pub async fn start(
         }
     }
 
+    #[cfg(feature = "jsonrpc")]
+    {
+        if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone())? {
+            app = app.route(path, handler);
+
+            serviced = true;
+        }
+    }
+
     #[cfg(feature = "websocket")]
     {
         if let Some((path, handler)) = websocket::service(&config, node_events.clone())? {
@@ -84,12 +94,6 @@ pub async fn start(
 
             serviced = true;
         }
-    }
-
-    if let Some((path, handler)) = jsonrpc::service(&config)? {
-        app = app.route(path, handler);
-
-        serviced = true;
     }
 
     if !serviced {

@@ -13,15 +13,6 @@ async-graphql-axum = { workspace = true, optional = true }
 bs58.workspace = true
 eyre.workspace = true
 futures-util = { workspace = true, optional = true }
-jsonrpc = "0.17.0"
-jsonrpsee = { workspace = true, features = ["full"] }
-jsonrpsee-core = "0.22"
-jsonrpsee-client-transport = { version = "0.22", features = ["ws"] }
-jsonrpsee-ws-client = { version = "0.22", default-features = false }
-jsonrpc-http-server = "18.0.0"
-jsonrpsee-proc-macros = "0.22.0"
-jsonrpsee-types = "0.22.0"
-
 libp2p.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
@@ -47,5 +38,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
+jsonrpc = []
 graphql = ["dep:async-graphql", "dep:async-graphql-axum"]
 websocket = ["dep:futures-util"]
