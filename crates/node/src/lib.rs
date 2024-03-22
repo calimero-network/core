@@ -111,7 +111,6 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     match command {
         "call" => {
             if let Some((application_id, args)) = args.and_then(|args| args.split_once(' ')) {
-                if let Some((application_id, args)) = args.split_once(' ') {
                     let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
 
                     match serde_json::from_str::<serde_json::Value>(payload) {
