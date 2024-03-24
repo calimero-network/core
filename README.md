@@ -146,3 +146,14 @@ Example
  │   Logs:
  │     > Getting key: "name"
 ```
+
+# Generate admin site
+The admin site is built with React and integrated into an Axum server at /admin/. Source code is located in node-ui/.
+
+## Development
+Navigate to the app directory: `cd node-ui`
+Start the development server: `pnpm dev`
+
+## Building for Production
+Generate a production build: `pnpm build`
+Axum serves the build from node-ui/dist at /admin/.

@@ -1,10 +1,11 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::http;
-use axum::routing::Router;
+use axum::routing::{Router, get_service};
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
+use tower_http::services::ServeDir;
 use tracing::warn;
 
 pub mod config;
@@ -91,8 +92,21 @@ pub async fn start(
         return Ok(());
     }
 
+    let static_files_path = "./node-ui/dist";
+
+    let react_router = get_service(ServeDir::new(static_files_path)).handle_error(|error| async move {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Error serving static files: {}", error),
+        )
+    });
+    // Create a router that serves static files from the `dist` folder
+    app = app.nest_service(
+        "/admin",
+        react_router
+    );
+
     app = app
-        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
         .layer(
             cors::CorsLayer::new()
                 .allow_origin(cors::Any)

@@ -20,7 +20,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
 tower = "0.4.13"
-tower-http = { workspace = true, features = ["cors"] }
+tower-http = { workspace = true, features = ["cors", "fs"] }
 tracing.workspace = true
 
 calimero-primitives = { path = "../primitives" }
