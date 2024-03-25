@@ -8,7 +8,7 @@ pub(crate) async fn handle_execute_method(
 ) -> eyre::Result<Option<calimero_primitives::server::JsonRpcResponseResult>> {
     let args = serde_json::to_vec(&params.args_json)?;
 
-    let result = call(sender, params.method, args, true).await?;
+    let result = call(sender, params.app_id, params.method, args, true).await?;
 
     Ok(result)
 }
@@ -19,20 +19,23 @@ pub(crate) async fn handle_read_method(
 ) -> eyre::Result<Option<calimero_primitives::server::JsonRpcResponseResult>> {
     let args = serde_json::to_vec(&params.args_json)?;
 
-    let result = call(sender, params.method, args, false).await?;
+    let result = call(sender, params.app_id, params.method, args, false).await?;
 
     Ok(result)
 }
 
 async fn call(
     sender: crate::ServerSender,
+    app_id: String,
     method: String,
     args: Vec<u8>,
     writes: bool,
 ) -> eyre::Result<Option<calimero_primitives::server::JsonRpcResponseResult>> {
     let (result_sender, result_receiver) = oneshot::channel();
 
-    sender.send((method, args, writes, result_sender)).await?;
+    sender
+        .send((method, app_id, args, writes, result_sender))
+        .await?;
 
     let outcome = result_receiver.await?;
 
