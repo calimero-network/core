@@ -1,0 +1,1 @@
+{"@context":"https://www.w3.org/ns/did/v1","id":"did:calimero:123","verificationMethod":[{"id":"did:calimero:123#keys-1","type_":"Ed25519VerificationKey2018","controller":"did:calimero:123","publicKeyBase58":"1234567890"}],"authentication":["did:calimero:123#keys-1"],"service":[]}

@@ -1,31 +1,21 @@
-import './App.css'
-import { setupWalletSelector } from "@near-wallet-selector/core";
-import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
-import { Buffer } from 'buffer';
+import React from "react";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Bootstrap from "./pages/Bootstrap";
+import ConfirmWallet from "./pages/ConfirmWallet";
 
-const nonce = Buffer.alloc(32, 'hardcoded-string-for-testing-only');
-
-const verifyOwner = async () => {
-  const selector = await setupWalletSelector({
-    network: "testnet",
-    modules: [setupMyNearWallet()],
-  });
-  const wallet = await selector.wallet("my-near-wallet");
-  await wallet.signMessage({ message: "helloworld", recipient: "me", nonce, callbackUrl: window.location.href });
-}
-
-function App() {
+export default function App() {
   return (
     <>
-
-      <h1>Calimero node admin page</h1>
-      <div className="card">
-        <button onClick={() => verifyOwner()}>
-          Login with Near
-        </button>
-        </div>
+    <BrowserRouter basename="/admin">
+      <Routes>
+      <Route path="/" element={<Bootstrap />}/>
+      <Route path="/confirm-wallet" element={<ConfirmWallet />}/>
+          {/* <Route index element={<Home />} />
+          <Route path="blogs" element={<Blogs />} />
+          <Route path="contact" element={<Contact />} />
+          <Route path="*" element={<NoPage />} /> */}
+      </Routes>
+    </BrowserRouter>
     </>
-  )
+  );
 }
-
-export default App

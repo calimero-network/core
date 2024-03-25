@@ -1,11 +1,12 @@
 use std::net::{IpAddr, SocketAddr};
 
+use admin::bootstrap_router;
 use axum::http;
-use axum::routing::{Router, get_service};
+use axum::routing::Router;
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
 pub mod config;
@@ -14,6 +15,8 @@ pub mod graphql;
 mod middleware;
 #[cfg(feature = "websocket")]
 pub mod websocket;
+
+pub mod admin;
 
 type ServerSender = mpsc::Sender<(
     // todo! move to calimero-node-primitives
@@ -92,19 +95,19 @@ pub async fn start(
         return Ok(());
     }
 
-    let static_files_path = "./node-ui/dist";
+    let react_static_files_path = "./node-ui/dist";
 
-    let react_router = get_service(ServeDir::new(static_files_path)).handle_error(|error| async move {
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Error serving static files: {}", error),
-        )
-    });
+    let react_app_serve_dir = ServeDir::new(react_static_files_path)
+            .not_found_service(ServeFile::new(format!("{}/index.html", react_static_files_path))
+        );
+        
     // Create a router that serves static files from the `dist` folder
     app = app.nest_service(
         "/admin",
-        react_router
+        react_app_serve_dir
     );
+
+    app = app.nest("/admin-api", bootstrap_router());
 
     app = app
         .layer(
