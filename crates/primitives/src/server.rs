@@ -87,23 +87,16 @@ impl<'de> Deserialize<'de> for JsonRpcVersion {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct JsonRpcRequestCall {
+pub struct JsonRpcRequestParamsCall {
     pub app_id: String,
     pub method: String,
-    pub params: serde_json::Value,
+    pub args_json: serde_json::Value,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JsonRpcRequestParams {
-    pub call: JsonRpcRequestCall,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub enum JsonRpcRequestParam2s {
-    Read,
-    Call,
+#[serde(untagged)]
+pub enum JsonRpcRequestParams {
+    Call(JsonRpcRequestParamsCall),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -116,6 +109,16 @@ pub struct JsonRpcRequest {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(untagged)]
+pub enum JsonRpcResponseResult {
+    Call(String),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct JsonRpcUnsupportedMethodError {}
+
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonRpcResponseError {
     pub code: u64,
@@ -126,7 +129,7 @@ pub struct JsonRpcResponseError {
 #[serde(rename_all = "camelCase")]
 pub struct JsonRpcResponse {
     pub jsonrpc: JsonRpcVersion,
-    pub result: String,
+    pub result: Option<JsonRpcResponseResult>,
     pub error: Option<JsonRpcResponseError>,
     pub id: Option<WsRequestId>,
 }

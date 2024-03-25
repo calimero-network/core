@@ -1,36 +1,35 @@
-use serde::Deserialize;
+use eyre::Ok;
 use tokio::sync::oneshot;
 use tracing::info;
 
-use crate::ServerSender;
-
 pub(crate) async fn handle_execute_method(
     sender: crate::ServerSender,
-    // method: String,
-    // args: Vec<u8>,
-) -> eyre::Result<()> {
-    // call(sender, method, args, false).await;
+    params: calimero_primitives::server::JsonRpcRequestParamsCall,
+) -> eyre::Result<Option<calimero_primitives::server::JsonRpcResponseResult>> {
+    let args = serde_json::to_vec(&params.args_json)?;
 
-    Ok(())
+    let result = call(sender, params.method, args, true).await?;
+
+    Ok(result)
 }
 
 pub(crate) async fn handle_read_method(
     sender: crate::ServerSender,
-    // method: String,
-    // args: Vec<u8>,
-) -> eyre::Result<()> {
-    Ok(())
+    params: calimero_primitives::server::JsonRpcRequestParamsCall,
+) -> eyre::Result<Option<calimero_primitives::server::JsonRpcResponseResult>> {
+    let args = serde_json::to_vec(&params.args_json)?;
+
+    let result = call(sender, params.method, args, false).await?;
+
+    Ok(result)
 }
 
-async fn call<T>(
+async fn call(
     sender: crate::ServerSender,
     method: String,
     args: Vec<u8>,
     writes: bool,
-) -> eyre::Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
+) -> eyre::Result<Option<calimero_primitives::server::JsonRpcResponseResult>> {
     let (result_sender, result_receiver) = oneshot::channel();
 
     sender.send((method, args, writes, result_sender)).await?;
@@ -41,7 +40,10 @@ where
         info!("RPC log: {}", log);
     }
 
-    let result = serde_json::from_slice(&outcome.returns?.unwrap_or_default())?;
-
-    Ok(result)
+    match outcome.returns? {
+        Some(returns) => Ok(Some(
+            calimero_primitives::server::JsonRpcResponseResult::Call(String::from_utf8(returns)?),
+        )),
+        None => Ok(None),
+    }
 }

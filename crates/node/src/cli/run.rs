@@ -53,6 +53,7 @@ impl RunCommand {
                 listen: config.network.server.listen,
                 identity: config.identity,
                 graphql: config.network.server.graphql,
+                jsonrpc: config.network.server.jsonrpc,
                 websocket: config.network.server.websocket,
             },
         })

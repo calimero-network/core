@@ -17,6 +17,9 @@ pub struct ServerConfig {
     #[cfg(feature = "graphql")]
     pub graphql: Option<crate::graphql::GraphQLConfig>,
 
+    #[cfg(feature = "jsonrpc")]
+    pub jsonrpc: Option<crate::jsonrpc::JsonRpcConfig>,
+
     #[cfg(feature = "websocket")]
     pub websocket: Option<crate::websocket::WsConfig>,
 }

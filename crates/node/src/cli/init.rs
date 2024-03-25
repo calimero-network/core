@@ -143,6 +143,7 @@ impl InitCommand {
                         })
                         .collect(),
                     graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
+                    jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
                     websocket: Some(calimero_server::websocket::WsConfig { enabled: true }),
                 },
             },

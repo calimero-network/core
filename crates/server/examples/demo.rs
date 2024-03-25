@@ -49,6 +49,9 @@ async fn main() -> eyre::Result<()> {
         #[cfg(feature = "graphql")]
         graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
 
+        #[cfg(feature = "jsonrpc")]
+        jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
+
         #[cfg(feature = "websocket")]
         websocket: Some(calimero_server::websocket::WsConfig { enabled: true }),
     };
