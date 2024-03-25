@@ -111,83 +111,81 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     match command {
         "call" => {
             if let Some((application_id, args)) = args.and_then(|args| args.split_once(' ')) {
-                    let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
+                let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
 
-                    match serde_json::from_str::<serde_json::Value>(payload) {
-                        Ok(_) => {
-                            let (tx, rx) = oneshot::channel();
+                match serde_json::from_str::<serde_json::Value>(payload) {
+                    Ok(_) => {
+                        let (tx, rx) = oneshot::channel();
 
-                            let tx_hash = match node
-                                .call_mut(
-                                    application_id.to_string(),
-                                    method.to_owned(),
-                                    payload.as_bytes().to_owned(),
-                                    tx,
-                                )
-                                .await
-                            {
-                                Ok(tx_hash) => tx_hash,
-                                Err(e) => {
-                                    println!("{IND} Failed to send transaction: {}", e);
-                                    return Ok(());
-                                }
-                            };
+                        let tx_hash = match node
+                            .call_mut(
+                                application_id.to_string(),
+                                method.to_owned(),
+                                payload.as_bytes().to_owned(),
+                                tx,
+                            )
+                            .await
+                        {
+                            Ok(tx_hash) => tx_hash,
+                            Err(e) => {
+                                println!("{IND} Failed to send transaction: {}", e);
+                                return Ok(());
+                            }
+                        };
 
-                            println!("{IND} Scheduled Transaction! {:?}", tx_hash);
+                        println!("{IND} Scheduled Transaction! {:?}", tx_hash);
 
-                            tokio::spawn(async move {
-                                if let Ok(outcome) = rx.await {
-                                    println!("{IND} {:?}", tx_hash);
+                        tokio::spawn(async move {
+                            if let Ok(outcome) = rx.await {
+                                println!("{IND} {:?}", tx_hash);
 
-                                    match outcome.returns {
-                                        Ok(result) => match result {
-                                            Some(result) => {
-                                                println!("{IND}   Return Value:");
-                                                let result = if let Ok(value) =
-                                                    serde_json::from_slice::<serde_json::Value>(
-                                                        &result,
-                                                    ) {
-                                                    format!(
-                                                        "(json): {}",
-                                                        format!("{:#}", value)
-                                                            .lines()
-                                                            .map(|line| line.cyan().to_string())
-                                                            .collect::<Vec<_>>()
-                                                            .join("\n")
-                                                    )
-                                                } else {
-                                                    format!("(raw): {:?}", result.cyan())
-                                                };
+                                match outcome.returns {
+                                    Ok(result) => match result {
+                                        Some(result) => {
+                                            println!("{IND}   Return Value:");
+                                            let result = if let Ok(value) =
+                                                serde_json::from_slice::<serde_json::Value>(&result)
+                                            {
+                                                format!(
+                                                    "(json): {}",
+                                                    format!("{:#}", value)
+                                                        .lines()
+                                                        .map(|line| line.cyan().to_string())
+                                                        .collect::<Vec<_>>()
+                                                        .join("\n")
+                                                )
+                                            } else {
+                                                format!("(raw): {:?}", result.cyan())
+                                            };
 
-                                                for line in result.lines() {
-                                                    println!("{IND}     > {}", line);
-                                                }
-                                            }
-                                            None => println!("{IND}   (No return value)"),
-                                        },
-                                        Err(err) => {
-                                            let err = format!("{:#?}", err);
-
-                                            println!("{IND}   Error:");
-                                            for line in err.lines() {
-                                                println!("{IND}     > {}", line.yellow());
+                                            for line in result.lines() {
+                                                println!("{IND}     > {}", line);
                                             }
                                         }
-                                    }
+                                        None => println!("{IND}   (No return value)"),
+                                    },
+                                    Err(err) => {
+                                        let err = format!("{:#?}", err);
 
-                                    if !outcome.logs.is_empty() {
-                                        println!("{IND}   Logs:");
-
-                                        for log in outcome.logs {
-                                            println!("{IND}     > {}", log.cyan());
+                                        println!("{IND}   Error:");
+                                        for line in err.lines() {
+                                            println!("{IND}     > {}", line.yellow());
                                         }
                                     }
                                 }
-                            });
-                        }
-                        Err(e) => {
-                            println!("{IND} Failed to parse payload: {}", e);
-                        }
+
+                                if !outcome.logs.is_empty() {
+                                    println!("{IND}   Logs:");
+
+                                    for log in outcome.logs {
+                                        println!("{IND}     > {}", log.cyan());
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        println!("{IND} Failed to parse payload: {}", e);
                     }
                 }
             } else {
