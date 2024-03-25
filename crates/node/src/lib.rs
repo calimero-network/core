@@ -1,14 +1,17 @@
-use std::collections::BTreeMap;
-use std::fs;
-
+use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
+use camino::Utf8PathBuf;
+use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info, warn};
 
+pub mod application_manager;
 pub mod config;
+pub mod temporal_runtime_store;
+pub mod transaction_pool;
 pub mod types;
 
 type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
@@ -16,7 +19,6 @@ type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
 #[derive(Debug)]
 pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
-    pub app_path: camino::Utf8PathBuf,
     pub identity: identity::Keypair,
     pub node_type: calimero_primitives::types::NodeType,
     pub network: calimero_network::config::NetworkConfig,
@@ -24,26 +26,13 @@ pub struct NodeConfig {
     pub store: calimero_store::config::StoreConfig,
 }
 
-#[derive(Debug)]
-pub struct TransactionPoolEntry {
-    sender: calimero_network::types::PeerId,
-    transaction: calimero_primitives::transaction::Transaction,
-    outcome_sender: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
-}
-
-#[derive(Debug, Default)]
-pub struct TransactionPool {
-    transactions: BTreeMap<calimero_primitives::hash::Hash, TransactionPoolEntry>,
-}
-
 pub struct Node {
     id: calimero_network::types::PeerId,
     typ: calimero_primitives::types::NodeType,
     store: calimero_store::Store,
-    tx_pool: TransactionPool,
-    app_blob: Vec<u8>,
-    app_topic: calimero_network::types::TopicHash,
-    network_client: calimero_network::NetworkClient,
+    tx_pool: transaction_pool::TransactionPool,
+    application_manager: application_manager::ApplicationManager,
+    network_client: calimero_network::client::NetworkClient,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
     nonce: u64,
@@ -89,13 +78,13 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((method, payload, write, tx)) = server_receiver.recv() => {
+            Some((application_id, method, payload, write, tx)) = server_receiver.recv() => {
                 if write {
-                    if let Err(err) = node.call_mut(method, payload, tx).await {
+                    if let Err(err) = node.call_mut(application_id, method, payload, tx).await {
                         error!("Failed to send transaction: {}", err);
                     }
                 } else {
-                    match node.call(method, payload).await {
+                    match node.call(application_id, method, payload).await {
                         Ok(outcome) => {
                             let _ = tx.send(outcome);
                         },
@@ -118,16 +107,23 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     #[allow(non_snake_case)]
     let IND = " │".yellow();
 
+    // TODO: should be replaced with RPC endpoints
     match command {
         "call" => {
-            if let Some(args) = args {
+            if let Some((application_id, args)) = args.and_then(|args| args.split_once(' ')) {
                 let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
+
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
                         let (tx, rx) = oneshot::channel();
 
                         let tx_hash = match node
-                            .call_mut(method.to_owned(), payload.as_bytes().to_owned(), tx)
+                            .call_mut(
+                                application_id.to_string(),
+                                method.to_owned(),
+                                payload.as_bytes().to_owned(),
+                                tx,
+                            )
                             .await
                         {
                             Ok(tx_hash) => tx_hash,
@@ -204,7 +200,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     "{IND} Garbage collecting {} transactions.",
                     node.tx_pool.transactions.len().cyan()
                 );
-                node.tx_pool = TransactionPool::default();
+                node.tx_pool = transaction_pool::TransactionPool::default();
             }
         }
         "pool" => {
@@ -238,13 +234,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             }
         }
         "peers" => {
-            let (all_peers, session_peers) = tokio::join!(
-                node.network_client.peer_count(),
-                node.network_client.mesh_peer_count(node.app_topic.clone()),
+            println!(
+                "{IND} Peers (General): {:#?}",
+                node.network_client.peer_count().await.cyan()
             );
 
-            println!("{IND} Peers (General): {:#?}", all_peers.cyan());
-            println!("{IND} Peers (Session): {:#?}", session_peers.cyan());
+            if let Some(args) = args {
+                // TODO: implement print all and/or specific topic
+                let topic = TopicHash::from_raw(args);
+                if node
+                    .application_manager
+                    .is_application_registered(topic.clone())
+                {
+                    println!(
+                        "{IND} Peers (Session) for Topic {}: {:#?}",
+                        topic.clone(),
+                        node.network_client.mesh_peer_count(topic).await.cyan()
+                    );
+                }
+            }
         }
         "store" => {
             let state = format!("{:#?}", node.store.get(&b"STATE".to_vec()));
@@ -264,30 +272,38 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 impl Node {
     pub async fn new(
         config: &NodeConfig,
-        network_client: calimero_network::NetworkClient,
+        network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     ) -> eyre::Result<Self> {
         let store = calimero_store::Store::open(&config.store)?;
+        let tx_pool = transaction_pool::TransactionPool::default();
 
-        let tx_pool = TransactionPool::default();
+        let mut application_manager =
+            application_manager::ApplicationManager::new(network_client.clone());
 
-        let app_blob = fs::read(&config.app_path)?;
+        // register the chat application with currently have
+        // TODO: register another application
+        // TODO: implement registration via transaction
+        application_manager
+            .register_application(application_manager::Application {
+                name: "kv-store".to_string(),
+                path: Utf8PathBuf::from("apps/kv-store/res/kv_store.wasm"),
+            })
+            .await;
 
-        let app_topic = network_client
-            .subscribe(calimero_network::types::IdentTopic::new(format!(
-                "/calimero/experimental/app/{}",
-                calimero_primitives::hash::Hash::hash(&app_blob),
-            )))
-            .await?
-            .hash();
+        application_manager
+            .register_application(application_manager::Application {
+                name: "only-peers".to_string(),
+                path: Utf8PathBuf::from("apps/only-peers/res/only_peers.wasm"),
+            })
+            .await;
 
         Ok(Self {
             id: config.identity.public().to_peer_id(),
             typ: config.node_type,
             store,
             tx_pool,
-            app_blob,
-            app_topic,
+            application_manager,
             network_client,
             node_events,
             // --
@@ -305,7 +321,10 @@ impl Node {
                 peer_id: their_peer_id,
                 topic: topic_hash,
             } => {
-                if self.app_topic == topic_hash {
+                if self
+                    .application_manager
+                    .is_application_registered(topic_hash)
+                {
                     info!("{} joined the session.", their_peer_id.cyan());
                     let _ =
                         self.node_events
@@ -322,19 +341,24 @@ impl Node {
                 };
                 match serde_json::from_slice(&message.data)? {
                     types::PeerAction::Transaction(transaction) => {
-                        let transaction_hash = self.tx_pool.insert(source, transaction, None)?;
+                        let transaction_hash =
+                            self.tx_pool.insert(source, transaction.clone(), None)?;
 
                         if self.typ.is_coordinator() {
                             self.nonce += 1;
 
-                            self.push_action(types::PeerAction::TransactionConfirmation(
-                                types::TransactionConfirmation {
-                                    nonce: self.nonce,
-                                    transaction_hash,
-                                    // todo! proper confirmation hash
-                                    confirmation_hash: transaction_hash,
-                                },
-                            ))
+                            self.push_action(
+                                transaction.application_id.clone(),
+                                types::PeerAction::TransactionConfirmation(
+                                    types::TransactionConfirmation {
+                                        application_id: transaction.application_id.clone(),
+                                        nonce: self.nonce,
+                                        transaction_hash,
+                                        // todo! proper confirmation hash
+                                        confirmation_hash: transaction_hash,
+                                    },
+                                ),
+                            )
                             .await?;
 
                             self.tx_pool.remove(&transaction_hash);
@@ -342,7 +366,11 @@ impl Node {
                     }
                     types::PeerAction::TransactionConfirmation(confirmation) => {
                         // todo! ensure this was only sent by a coordinator
-                        self.execute_in_pool(confirmation.transaction_hash).await?;
+                        self.execute_in_pool(
+                            confirmation.application_id,
+                            confirmation.transaction_hash,
+                        )
+                        .await?;
                     }
                     message => error!("Unhandled PeerAction: {:?}", message),
                 }
@@ -355,9 +383,16 @@ impl Node {
         Ok(())
     }
 
-    pub async fn push_action(&mut self, action: types::PeerAction) -> eyre::Result<()> {
+    pub async fn push_action(
+        &mut self,
+        application_id: String,
+        action: types::PeerAction,
+    ) -> eyre::Result<()> {
         self.network_client
-            .publish(self.app_topic.clone(), serde_json::to_vec(&action)?)
+            .publish(
+                TopicHash::from_raw(application_id),
+                serde_json::to_vec(&action)?,
+            )
             .await
             .expect("Failed to publish message.");
 
@@ -366,14 +401,16 @@ impl Node {
 
     pub async fn call(
         &mut self,
+        application_id: String,
         method: String,
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
-        self.execute(None, method, payload).await
+        self.execute(application_id, None, method, payload).await
     }
 
     pub async fn call_mut(
         &mut self,
+        application_id: String,
         method: String,
         payload: Vec<u8>,
         tx: oneshot::Sender<calimero_runtime::logic::Outcome>,
@@ -384,7 +421,7 @@ impl Node {
 
         if self
             .network_client
-            .mesh_peer_count(self.app_topic.clone())
+            .mesh_peer_count(TopicHash::from_raw(application_id.clone()))
             .await
             == 0
         {
@@ -392,6 +429,7 @@ impl Node {
         }
 
         let transaction = calimero_primitives::transaction::Transaction {
+            application_id: application_id.clone(),
             method,
             payload,
             prior_hash: self.last_tx,
@@ -402,8 +440,11 @@ impl Node {
             .insert(self.id, transaction.clone(), Some(tx))?;
 
         // todo! consider including the outcome hash in the transaction
-        self.push_action(types::PeerAction::Transaction(transaction))
-            .await?;
+        self.push_action(
+            application_id.clone(),
+            types::PeerAction::Transaction(transaction),
+        )
+        .await?;
 
         self.last_tx = tx_hash;
 
@@ -412,9 +453,10 @@ impl Node {
 
     async fn execute_in_pool(
         &mut self,
+        application_id: String,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<Option<()>> {
-        let TransactionPoolEntry {
+        let transaction_pool::TransactionPoolEntry {
             transaction,
             outcome_sender,
             ..
@@ -424,7 +466,12 @@ impl Node {
         };
 
         let outcome = self
-            .execute(Some(hash), transaction.method, transaction.payload)
+            .execute(
+                application_id,
+                Some(hash),
+                transaction.method,
+                transaction.payload,
+            )
             .await?;
 
         if let Some(sender) = outcome_sender {
@@ -436,37 +483,31 @@ impl Node {
 
     async fn execute(
         &mut self,
+        application_id: String,
         hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let mut storage = match hash {
-            Some(_) => TemporalRuntimeStore::Write(calimero_store::TemporalStore::new(&self.store)),
-            None => TemporalRuntimeStore::Read(calimero_store::ReadOnlyStore::new(&self.store)),
-        };
-
-        let limits = calimero_runtime::logic::VMLimits {
-            max_stack_size: 200 << 10, // 200 KiB
-            max_memory_pages: 1 << 10, // 1 KiB
-            max_registers: 100,
-            max_register_size: (100 << 20).validate()?, // 100 MiB
-            max_registers_capacity: 1 << 30,            // 1 GiB
-            max_logs: 100,
-            max_log_size: 16 << 10,                      // 16 KiB
-            max_storage_key_size: (1 << 20).try_into()?, // 1 MiB
-            max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
-                                                         // can_write: writes, // todo!
+            Some(_) => temporal_runtime_store::TemporalRuntimeStore::Write(
+                calimero_store::TemporalStore::new(application_id.clone(), &self.store),
+            ),
+            None => temporal_runtime_store::TemporalRuntimeStore::Read(
+                calimero_store::ReadOnlyStore::new(application_id.clone(), &self.store),
+            ),
         };
 
         let outcome = calimero_runtime::run(
-            &self.app_blob,
+            &self
+                .application_manager
+                .load_application_blob(TopicHash::from_raw(application_id.clone())),
             &method,
             calimero_runtime::logic::VMContext { input: payload },
             &mut storage,
-            &limits,
+            &get_runtime_limits()?,
         )?;
 
-        if let (Ok(_), TemporalRuntimeStore::Write(storage), Some(hash)) =
+        if let (Ok(_), temporal_runtime_store::TemporalRuntimeStore::Write(storage), Some(hash)) =
             (&outcome.returns, storage, hash)
         {
             if storage.has_changes() {
@@ -487,62 +528,19 @@ impl Node {
     }
 }
 
-pub enum TemporalRuntimeStore {
-    Read(calimero_store::ReadOnlyStore),
-    Write(calimero_store::TemporalStore),
-}
-
-impl calimero_runtime::store::Storage for TemporalRuntimeStore {
-    fn get(&self, key: &calimero_runtime::store::Key) -> Option<Vec<u8>> {
-        match self {
-            Self::Read(store) => store.get(key).ok().flatten(),
-            Self::Write(store) => store.get(key).ok().flatten(),
-        }
-    }
-
-    fn set(
-        &mut self,
-        key: calimero_runtime::store::Key,
-        value: calimero_runtime::store::Value,
-    ) -> Option<calimero_runtime::store::Value> {
-        match self {
-            Self::Read(_) => unimplemented!("Can not write to read-only store."),
-            Self::Write(store) => store.put(key, value),
-        }
-    }
-
-    fn has(&self, key: &calimero_runtime::store::Key) -> bool {
-        // todo! optimize to avoid eager reads
-        match self {
-            Self::Read(store) => store.get(key).ok().is_some(),
-            Self::Write(store) => store.get(key).ok().is_some(),
-        }
-    }
-}
-
-impl TransactionPool {
-    fn insert(
-        &mut self,
-        sender: calimero_network::types::PeerId,
-        transaction: calimero_primitives::transaction::Transaction,
-        outcome_sender: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
-    ) -> eyre::Result<calimero_primitives::hash::Hash> {
-        let transaction_hash = calimero_primitives::hash::Hash::hash_json(&transaction)
-            .expect("Failed to hash transaction. This is a bug and should be reported.");
-
-        self.transactions.insert(
-            transaction_hash,
-            TransactionPoolEntry {
-                sender,
-                transaction,
-                outcome_sender,
-            },
-        );
-
-        Ok(transaction_hash)
-    }
-
-    fn remove(&mut self, hash: &calimero_primitives::hash::Hash) -> Option<TransactionPoolEntry> {
-        self.transactions.remove(hash)
-    }
+// TODO: move this into the config
+// TODO: also this would be nice to have global default with per application customization
+fn get_runtime_limits() -> eyre::Result<VMLimits> {
+    Ok(calimero_runtime::logic::VMLimits {
+        max_stack_size: 200 << 10, // 200 KiB
+        max_memory_pages: 1 << 10, // 1 KiB
+        max_registers: 100,
+        max_register_size: (100 << 20).validate()?, // 100 MiB
+        max_registers_capacity: 1 << 30,            // 1 GiB
+        max_logs: 100,
+        max_log_size: 16 << 10,                      // 16 KiB
+        max_storage_key_size: (1 << 20).try_into()?, // 1 MiB
+        max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
+                                                     // can_write: writes, // todo!
+    })
 }

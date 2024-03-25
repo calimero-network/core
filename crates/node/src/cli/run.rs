@@ -36,7 +36,6 @@ impl RunCommand {
 
         calimero_node::start(calimero_node::NodeConfig {
             home: root_args.home.clone(),
-            app_path: config.app.path,
             node_type: self.node_type.into(),
             identity: config.identity.clone(),
             store: calimero_store::config::StoreConfig {
