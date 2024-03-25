@@ -23,6 +23,14 @@ pub(crate) fn service(
     config: &crate::config::ServerConfig,
     server_sender: ServerSender,
 ) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
+    let _config = match &config.jsonrpc {
+        Some(config) if config.enabled => config,
+        _ => {
+            info!("JSON RPC server is disabled");
+            return Ok(None);
+        }
+    };
+
     let path = "/jsonrpc"; // todo! source from config
 
     for listen in config.listen.iter() {
