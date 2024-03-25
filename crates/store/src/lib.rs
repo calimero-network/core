@@ -26,28 +26,34 @@ impl Store {
 }
 
 pub struct TemporalStore {
+    application_id: String,
     inner: Store,
     shadow: BTreeMap<db::Key, db::Value>,
 }
 
 impl TemporalStore {
-    pub fn new(store: &Store) -> Self {
+    pub fn new(application_id: String, store: &Store) -> Self {
         Self {
+            application_id: application_id.clone(),
             inner: store.clone(),
             shadow: BTreeMap::new(),
         }
     }
 
     pub fn get(&self, key: &db::Key) -> eyre::Result<Option<db::Value>> {
-        if let Some(value) = self.shadow.get(key) {
+        let application_key = get_application_key(self.application_id.clone(), key);
+
+        if let Some(value) = self.shadow.get(&application_key) {
             return Ok(Some(value.clone()));
         }
 
-        self.inner.get(key)
+        self.inner.get(&application_key)
     }
 
     pub fn put(&mut self, key: db::Key, value: db::Value) -> Option<db::Value> {
-        match self.shadow.entry(key) {
+        let application_key = get_application_key(self.application_id.clone(), &key);
+
+        match self.shadow.entry(application_key) {
             btree_map::Entry::Occupied(mut entry) => Some(entry.insert(value)),
             btree_map::Entry::Vacant(entry) => {
                 let evicted = self.inner.get(entry.key()).unwrap_or(None);
@@ -77,17 +83,26 @@ impl TemporalStore {
 }
 
 pub struct ReadOnlyStore {
+    application_id: String,
     inner: Store,
 }
 
 impl ReadOnlyStore {
-    pub fn new(store: &Store) -> Self {
+    pub fn new(application_id: String, store: &Store) -> Self {
         Self {
+            application_id: application_id.clone(),
             inner: store.clone(),
         }
     }
 
     pub fn get(&self, key: &db::Key) -> eyre::Result<Option<db::Value>> {
-        self.inner.get(key)
+        self.inner
+            .get(&get_application_key(self.application_id.clone(), key))
     }
+}
+
+pub fn get_application_key(application_id: String, key: &db::Key) -> Vec<u8> {
+    let mut application_key = Vec::from((application_id.clone() + ":").as_bytes());
+    application_key.append(&mut key.clone());
+    application_key
 }

@@ -14,8 +14,10 @@ mod middleware;
 #[cfg(feature = "websocket")]
 pub mod websocket;
 
+// TODO: add comments or even better make it explicit types
 type ServerSender = mpsc::Sender<(
     // todo! move to calimero-node-primitives
+    String,
     String,
     Vec<u8>,
     bool,
