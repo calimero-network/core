@@ -3,21 +3,25 @@ use borsh::{BorshSerialize, BorshDeserialize};
 use sha2::{Digest, Sha256};
 use near_crypto::{KeyType, PublicKey, Signature};
 use std::str::FromStr;
+use std::convert::TryInto;
 
 #[derive(Default, BorshSerialize, BorshDeserialize)]
 struct Payload {
+    tag: u32,
     message: String,
-    nonce: Vec<u8>,
+    nonce: [u8; 32],
     recipient: String,
-    callback_url: String,
+    callback_url: Option<String>,
 }
 
-fn create_payload(message: &str, nonce: Vec<u8>, recipient: &str, callback_url: &str) -> Payload {
+
+fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url: &str) -> Payload {
     Payload {
+        tag: 2147484061,
         message: message.to_string(),
         nonce,
         recipient: recipient.to_string(),
-        callback_url: callback_url.to_string(),
+        callback_url: Some(callback_url.to_string()),
     }
 }
 
@@ -34,7 +38,7 @@ fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     hash_array
 }
 
-pub fn verify_signature(challenge: &str, message: &str, app: &str, curl: &str, signature_base64: &str, public_key_str: &str) -> bool {
+fn verify_signature(challenge: &str, message: &str, app: &str, curl: &str, signature_base64: &str, public_key_str: &str) -> bool {
     let decoded_bytes = match base64::decode(&challenge) {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -42,13 +46,15 @@ pub fn verify_signature(challenge: &str, message: &str, app: &str, curl: &str, s
             return false;
         }
     };
-    let nonce = decoded_bytes.to_vec();
+
+    let mut nonce_vec = decoded_bytes.to_vec();
+    nonce_vec.resize(32, 0);
+    let nonce: [u8; 32] = nonce_vec.try_into().unwrap();
 
     let payload = create_payload(message, nonce, app, curl);
-    
     let mut borsh_payload: Vec<u8> = Vec::new();
     payload.serialize(&mut borsh_payload).unwrap();
-    
+
     let message_signed = hash_bytes(&borsh_payload);
 
     let real_signature = match base64::decode(signature_base64) {
@@ -60,7 +66,6 @@ pub fn verify_signature(challenge: &str, message: &str, app: &str, curl: &str, s
     };
 
     let signature_type = KeyType::ED25519;
-
 
     let public_key = match PublicKey::from_str(public_key_str) {
         Ok(pk) => pk,
@@ -87,24 +92,24 @@ mod tests {
 
     #[test]
     fn test_verify_signature_valid() {
-        let challenge = "oXY3ssl/va5Gv5FCb896AXa1z0WEQVVDl9tnl+udUuo=";
+        let challenge = "89qdrkz1egXlJ2wwF1tcZpuFT0LXT4AHhnAnFvG3N/E=";
         let message = "helloworld";
         let app = "me";
-        let curl = "http://127.0.0.1:2428/adminconfirm-wallet";
-        let signature_base64 = "0Mhn7KKHL72BKsMzokCHatv/NvshfSYtcVrj3Jk952ykSEEWgRlmQIUSGNghaAOu5nvbtktrMyvt6olyCnbmDg==";
-        let public_key = "ed25519:62WU79rjHuyBT7dcE1iYBHEcamSkmURGoRbcNDYB65rV";
+        let curl = "http://127.0.0.1:2428/admin/confirm-wallet";
+        let signature_base64 = "rkBQLYN7xxe1oetSfktrqL5jgVsZWKNvKZJmoZLNh756KIUBseYIzK3Dt17O60aPMl6S17lDnIlLVLOLdi5OCw==";
+        let public_key = "ed25519:DxdDEdfg4sARk2YteEvp6KsqUGAgKyCZkYTqrboGWwiV";
 
         assert!(verify_signature(challenge, message, app, curl, signature_base64, public_key));
     }
 
     #[test]
     fn test_verify_signature_invalid() {
-        let challenge = "oXY3ssl/va5Gv5FCb896AXa1z0WEQVVDl9tnl+udUuo=";
+        let challenge = "89qdrkz1egXlJ2wwF1tcZpuFT0LXT4AHhnAnFvG3N/E=";
         let message = "helloworld";
         let app = "me";
-        let curl = "http://127.0.0.1:2428/adminconfirm-wallet";
-        let signature_base64 = "0Mhn7KKHL72BKsMzokCHatv/NvshfSYtcVrj3Jk952ykSEEWgRlmQIUSGNghaAOu5nvbtktrMyvt6xlyCnbmDg==";
-        let public_key = "ed25519:62WU79rjHuyBT7dcE1iYBHEcamSkmURGoRbcNDYB65rV";
+        let curl = "http://127.0.0.1:2428/admin/confirm-wallet";
+        let signature_base64 = "rkBQLYN7xxe1oetSfktrqL5jgVsZWKNvKZJmoZLNh756KIUBseYIzK3Dt17O60aPMl6S17lDnIlLVsOLdi5OCw==";
+        let public_key = "ed25519:DxdDEdfg4sARk2YteEvp6KsqUGAgKyCZkYTqrboGWwiV";
 
         assert!(!verify_signature(challenge, message, app, curl, signature_base64, public_key));
     }
