@@ -1,12 +1,15 @@
 use std::net::{IpAddr, SocketAddr};
 
+use crate::admin::admin_router;
 use axum::http;
-use axum::routing::Router;
+use axum::Router;
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
+mod admin;
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
@@ -72,7 +75,10 @@ pub async fn start(
     #[cfg(feature = "graphql")]
     {
         if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
-            app = app.route(path, handler);
+            let identity = config.identity.clone();
+            app = app
+                .route(path, handler)
+                .layer(middleware::auth::AuthSignatureLayer::new(identity));
 
             serviced = true;
         }
@@ -93,14 +99,20 @@ pub async fn start(
         return Ok(());
     }
 
-    app = app
-        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
-        .layer(
-            cors::CorsLayer::new()
-                .allow_origin(cors::Any)
-                .allow_headers(cors::Any)
-                .allow_methods([http::Method::POST]),
-        );
+    let react_static_files_path = "./node-ui/dist";
+    let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
+        ServeFile::new(format!("{}/index.html", react_static_files_path)),
+    );
+    app = app.nest_service("/admin", react_app_serve_dir);
+
+    app = app.nest("/admin-api", admin_router());
+
+    app = app.layer(
+        cors::CorsLayer::new()
+            .allow_origin(cors::Any)
+            .allow_headers(cors::Any)
+            .allow_methods([http::Method::POST]),
+    );
 
     let mut set = tokio::task::JoinSet::new();
 
