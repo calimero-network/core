@@ -26,7 +26,7 @@ const getParams = (location) => {
 
 
 const submitRootKeyRequest = async (params) => {
-    const response = await axios.post("/admin-api/node-key", params);
+    const response = await axios.post("/admin-api/root-key", params);
     const data = response.data;
     console.log('Response received:', data);
     return data;

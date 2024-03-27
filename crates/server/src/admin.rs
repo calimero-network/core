@@ -39,7 +39,7 @@ pub(crate) fn service(
     let session_layer = SessionManagerLayer::new(session_store);
     let admin_router = Router::new()
         .route("/health", get(health_check_handler))
-        .route("/node-key", post(create_root_key_handler))
+        .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .layer(session_layer);
 
