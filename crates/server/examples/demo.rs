@@ -46,6 +46,9 @@ async fn main() -> eyre::Result<()> {
         listen,
         identity: keypair.clone(),
 
+        #[cfg(feature = "admin")]
+        admin: Some(calimero_server::admin::AdminConfig { enabled: true }),
+
         #[cfg(feature = "graphql")]
         graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
 

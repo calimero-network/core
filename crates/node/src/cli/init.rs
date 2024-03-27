@@ -138,6 +138,7 @@ impl InitCommand {
                             Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
                         })
                         .collect(),
+                    admin: Some(calimero_server::admin::AdminConfig { enabled: true }),
                     graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
                     websocket: Some(calimero_server::websocket::WsConfig { enabled: true }),
                 },

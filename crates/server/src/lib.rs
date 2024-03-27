@@ -1,15 +1,14 @@
 use std::net::{IpAddr, SocketAddr};
 
-use crate::admin::admin_router;
 use axum::http;
 use axum::Router;
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
-use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
-mod admin;
+#[cfg(feature = "admin")]
+pub mod admin;
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
@@ -94,19 +93,21 @@ pub async fn start(
         }
     }
 
+    #[cfg(feature = "admin")] {
+        if let Some((api_path, router)) = admin::service(&config)? {
+            if let Some((site_path, serve_dir)) = admin::site(&config)? {
+                app = app.nest_service(site_path, serve_dir);
+            }
+            app = app.nest(api_path, router);
+            serviced = true;
+        }
+    }
+    
     if !serviced {
         warn!("No services enabled, enable at least one service to start the server");
 
         return Ok(());
     }
-
-    let react_static_files_path = "./node-ui/dist";
-    let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
-        ServeFile::new(format!("{}/index.html", react_static_files_path)),
-    );
-    app = app.nest_service("/admin", react_app_serve_dir);
-
-    app = app.nest("/admin-api", admin_router());
 
     app = app.layer(
         cors::CorsLayer::new()
