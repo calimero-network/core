@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use axum::routing::{post, MethodRouter};
 use axum::{extract, Extension, Json};
+use calimero_primitives::server::jsonrpc as jsonrpc_primitives;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::ServerSender;
 
 mod call;
-mod callmut;
+mod call_mut;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcConfig {
@@ -46,29 +47,82 @@ pub(crate) fn service(
 
 async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
-    extract::Json(request): extract::Json<calimero_primitives::server::jsonrpc::Request>,
-) -> Json<calimero_primitives::server::jsonrpc::Response> {
-    let result = match request.payload {
-        calimero_primitives::server::jsonrpc::RequestPayload::Call(request) => {
-            JsonRpcMethod::handle(request, state).await
+    extract::Json(request): extract::Json<jsonrpc_primitives::Request>,
+) -> Json<jsonrpc_primitives::Response> {
+    let body = match request.payload {
+        jsonrpc_primitives::RequestPayload::Call(request) => {
+            request.handle(state).await.to_res_body()
         }
-        calimero_primitives::server::jsonrpc::RequestPayload::CallMut(request) => {
-            JsonRpcMethod::handle(request, state).await
+        jsonrpc_primitives::RequestPayload::CallMut(request) => {
+            request.handle(state).await.to_res_body()
         }
     };
 
-    let (result, error) = match result {
-        Ok(result) => (Some(result), None),
-        Err(error) => (None, Some(error)),
-    };
+    if let jsonrpc_primitives::ResponseBody::Error(err) = &body {
+        error!(?err, "Failed to execute JSON RPC method");
+    }
 
-    let response = calimero_primitives::server::jsonrpc::Response {
+    let response = jsonrpc_primitives::Response {
         jsonrpc: request.jsonrpc,
-        result,
-        error,
+        body,
         id: request.id,
     };
     Json(response)
+}
+
+pub(crate) trait Request {
+    type Response;
+    type Error;
+
+    async fn handle(
+        self,
+        state: Arc<ServiceState>,
+    ) -> Result<Self::Response, RpcError<Self::Error>>;
+}
+
+pub enum RpcError<E> {
+    MethodCallError(E),
+    InternalError(eyre::Error),
+}
+
+trait ToResponseBody {
+    fn to_res_body(self) -> jsonrpc_primitives::ResponseBody;
+}
+
+impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
+    fn to_res_body(self) -> jsonrpc_primitives::ResponseBody {
+        match self {
+            Ok(r) => match serde_json::to_value(r) {
+                Ok(v) => jsonrpc_primitives::ResponseBody::Result(
+                    jsonrpc_primitives::ResponseBodyResult(v),
+                ),
+                Err(err) => jsonrpc_primitives::ResponseBody::Error(
+                    jsonrpc_primitives::ResponseBodyError::ServerError(
+                        jsonrpc_primitives::ServerResponseError::InternalError {
+                            err: Some(err.into()),
+                        },
+                    ),
+                ),
+            },
+            Err(RpcError::MethodCallError(err)) => match serde_json::to_value(err) {
+                Ok(v) => jsonrpc_primitives::ResponseBody::Error(
+                    jsonrpc_primitives::ResponseBodyError::HandlerError(v),
+                ),
+                Err(err) => jsonrpc_primitives::ResponseBody::Error(
+                    jsonrpc_primitives::ResponseBodyError::ServerError(
+                        jsonrpc_primitives::ServerResponseError::InternalError {
+                            err: Some(err.into()),
+                        },
+                    ),
+                ),
+            },
+            Err(RpcError::InternalError(err)) => jsonrpc_primitives::ResponseBody::Error(
+                jsonrpc_primitives::ResponseBodyError::ServerError(
+                    jsonrpc_primitives::ServerResponseError::InternalError { err: Some(err) },
+                ),
+            ),
+        }
+    }
 }
 
 pub(crate) async fn call(
@@ -94,21 +148,4 @@ pub(crate) async fn call(
         Some(returns) => Ok(Some(String::from_utf8(returns)?)),
         None => Ok(None),
     }
-}
-
-pub(crate) trait JsonRpcRequest {
-    type Response;
-    type Error;
-
-    async fn handle(self, state: Arc<ServiceState>) -> Result<Self::Response, Self::Error>;
-}
-
-pub(crate) trait JsonRpcMethod {
-    async fn handle(
-        self,
-        state: Arc<ServiceState>,
-    ) -> Result<
-        calimero_primitives::server::jsonrpc::ResponseResult,
-        calimero_primitives::server::jsonrpc::ResponseError,
-    >;
 }

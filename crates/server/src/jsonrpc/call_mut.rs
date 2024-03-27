@@ -4,9 +4,9 @@ use calimero_primitives::server::jsonrpc as jsonrpc_primitives;
 
 use crate::jsonrpc;
 
-impl jsonrpc::Request for jsonrpc_primitives::CallRequest {
-    type Response = jsonrpc_primitives::CallResponse;
-    type Error = jsonrpc_primitives::CallError;
+impl jsonrpc::Request for jsonrpc_primitives::CallMutRequest {
+    type Response = jsonrpc_primitives::CallMutResponse;
+    type Error = jsonrpc_primitives::CallMutError;
 
     async fn handle(
         self,
@@ -23,13 +23,13 @@ impl jsonrpc::Request for jsonrpc_primitives::CallRequest {
 }
 
 async fn handle(
-    request: jsonrpc_primitives::CallRequest,
+    request: jsonrpc_primitives::CallMutRequest,
     state: Arc<jsonrpc::ServiceState>,
-) -> eyre::Result<jsonrpc_primitives::CallResponse> {
+) -> eyre::Result<jsonrpc_primitives::CallMutResponse> {
     let args = match serde_json::to_vec(&request.args_json) {
         Ok(args) => args,
         Err(err) => {
-            eyre::bail!(jsonrpc_primitives::CallError::SerdeError {
+            eyre::bail!(jsonrpc_primitives::CallMutError::SerdeError {
                 message: err.to_string()
             })
         }
@@ -40,12 +40,12 @@ async fn handle(
         request.application_id,
         request.method,
         args,
-        false,
+        true,
     )
     .await
     {
-        Ok(output) => Ok(jsonrpc_primitives::CallResponse { output }),
-        Err(err) => eyre::bail!(jsonrpc_primitives::CallError::ExecutionError {
+        Ok(output) => Ok(jsonrpc_primitives::CallMutResponse { output }),
+        Err(err) => eyre::bail!(jsonrpc_primitives::CallMutError::ExecutionError {
             message: err.to_string()
         }),
     }

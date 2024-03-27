@@ -957,6 +957,7 @@ name = "calimero-primitives"
 version = "0.1.0"
 dependencies = [
  "bs58",
+ "eyre",
  "hex",
  "libp2p",
  "serde",

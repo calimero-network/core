@@ -105,7 +105,7 @@ pub async fn start(
     }
 
     app = app
-        // .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
+        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
         .layer(
             cors::CorsLayer::new()
                 .allow_origin(cors::Any)
