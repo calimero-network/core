@@ -1,4 +1,5 @@
-use base64::engine::{general_purpose::STANDARD, Engine};
+use base64::engine::general_purpose::STANDARD;
+use base64::engine::Engine;
 use borsh::BorshSerialize;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};

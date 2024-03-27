@@ -149,3 +149,27 @@ pub(crate) async fn call(
         None => Ok(None),
     }
 }
+
+macro_rules! _mount_method {
+    ($request:ident -> Result<$response:ident, $error:ident>, $handle:path) => {
+        impl crate::jsonrpc::Request for $request {
+            type Response = $response;
+            type Error = $error;
+
+            async fn handle(
+                self,
+                state: std::sync::Arc<crate::jsonrpc::ServiceState>,
+            ) -> std::result::Result<Self::Response, crate::jsonrpc::RpcError<Self::Error>> {
+                match $handle(self, state).await {
+                    Ok(response) => Ok(response),
+                    Err(err) => match err.downcast::<Self::Error>() {
+                        Ok(err) => Err(jsonrpc::RpcError::MethodCallError(err)),
+                        Err(err) => Err(jsonrpc::RpcError::InternalError(err)),
+                    },
+                }
+            }
+        }
+    };
+}
+
+pub(crate) use _mount_method as mount_method;

@@ -81,7 +81,11 @@ impl PackageManager {
 
         self.releases
             .entry(name.clone())
-            .or_insert_with(|| LookupMap::new(StorageKeys::Release { package: name.clone() }))
+            .or_insert_with(|| {
+                LookupMap::new(StorageKeys::Release {
+                    package: name.clone(),
+                })
+            })
             .insert(
                 version.clone(),
                 Release {
@@ -100,9 +104,7 @@ impl PackageManager {
     // with pagination (offset+limit) to avoid hitting the gas limit from excessive storage reads
 
     pub fn get_package(&self, name: String) -> &Package {
-        self.packages
-            .get(&name)
-            .expect("Package doesn't exist")
+        self.packages.get(&name).expect("Package doesn't exist")
     }
 
     pub fn get_release(&self, name: String, version: String) -> &Release {
@@ -127,10 +129,10 @@ impl Package {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use near_sdk::test_utils::VMContextBuilder;
-    use near_sdk::MockedBlockchain;
-    use near_sdk::{testing_env, VMContext};
+    use near_sdk::{testing_env, MockedBlockchain, VMContext};
+
+    use super::*;
 
     fn get_context(is_view: bool) -> VMContext {
         VMContextBuilder::new()

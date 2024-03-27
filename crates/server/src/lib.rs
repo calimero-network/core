@@ -1,7 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 
-use axum::http;
-use axum::Router;
+use axum::{http, Router};
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
@@ -104,7 +103,8 @@ pub async fn start(
         }
     }
 
-    #[cfg(feature = "admin")] {
+    #[cfg(feature = "admin")]
+    {
         if let Some((api_path, router)) = admin::service(&config)? {
             if let Some((site_path, serve_dir)) = admin::site(&config)? {
                 app = app.nest_service(site_path, serve_dir);
@@ -113,7 +113,7 @@ pub async fn start(
             serviced = true;
         }
     }
-    
+
     if !serviced {
         warn!("No services enabled, enable at least one service to start the server");
 

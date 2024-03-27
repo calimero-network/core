@@ -1,35 +1,19 @@
 use std::sync::Arc;
 
-use calimero_primitives::server::jsonrpc as jsonrpc_primitives;
+use calimero_primitives::server::jsonrpc::{CallMutError, CallMutRequest, CallMutResponse};
 
 use crate::jsonrpc;
 
-impl jsonrpc::Request for jsonrpc_primitives::CallMutRequest {
-    type Response = jsonrpc_primitives::CallMutResponse;
-    type Error = jsonrpc_primitives::CallMutError;
-
-    async fn handle(
-        self,
-        state: Arc<jsonrpc::ServiceState>,
-    ) -> Result<Self::Response, jsonrpc::RpcError<Self::Error>> {
-        match handle(self, state).await {
-            Ok(response) => Ok(response),
-            Err(err) => match err.downcast::<Self::Error>() {
-                Ok(err) => Err(jsonrpc::RpcError::MethodCallError(err)),
-                Err(err) => Err(jsonrpc::RpcError::InternalError(err)),
-            },
-        }
-    }
-}
+jsonrpc::mount_method!(CallMutRequest-> Result<CallMutResponse, CallMutError>, handle);
 
 async fn handle(
-    request: jsonrpc_primitives::CallMutRequest,
+    request: CallMutRequest,
     state: Arc<jsonrpc::ServiceState>,
-) -> eyre::Result<jsonrpc_primitives::CallMutResponse> {
+) -> eyre::Result<CallMutResponse> {
     let args = match serde_json::to_vec(&request.args_json) {
         Ok(args) => args,
         Err(err) => {
-            eyre::bail!(jsonrpc_primitives::CallMutError::SerdeError {
+            eyre::bail!(CallMutError::SerdeError {
                 message: err.to_string()
             })
         }
@@ -44,8 +28,8 @@ async fn handle(
     )
     .await
     {
-        Ok(output) => Ok(jsonrpc_primitives::CallMutResponse { output }),
-        Err(err) => eyre::bail!(jsonrpc_primitives::CallMutError::ExecutionError {
+        Ok(output) => Ok(CallMutResponse { output }),
+        Err(err) => eyre::bail!(CallMutError::ExecutionError {
             message: err.to_string()
         }),
     }

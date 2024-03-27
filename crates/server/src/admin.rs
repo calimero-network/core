@@ -1,18 +1,14 @@
-use axum::{
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
-};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
-use tower_http::{
-    services::{ServeDir, ServeFile},
-    set_status::SetStatus,
-};
-use tower_sessions::Session;
-use tower_sessions::{MemoryStore, SessionManagerLayer};
+use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_status::SetStatus;
+use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
 use crate::verifysignature;
@@ -73,7 +69,8 @@ struct ApiResponse<T: Serialize> {
 }
 impl<T> IntoResponse for ApiResponse<T>
 where
-    T: Serialize {
+    T: Serialize,
+{
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
         let body = serde_json::to_string(&self.payload).unwrap();
         axum::http::Response::builder()
@@ -93,17 +90,23 @@ pub async fn request_challenge_handler(session: Session) -> impl IntoResponse {
     if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
         ApiResponse {
             payload: RequestChallengeBody { challenge },
-        }.into_response()
+        }
+        .into_response()
     } else {
         let challenge = generate_challenge();
 
         if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
             error!("Failed to insert challenge into session: {}", err);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to insert challenge into session").into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to insert challenge into session",
+            )
+                .into_response();
         }
         ApiResponse {
             payload: RequestChallengeBody { challenge },
-        }.into_response()
+        }
+        .into_response()
     }
 }
 
@@ -132,7 +135,7 @@ async fn create_root_key_handler(
     let app = "me";
     let curl = "http://127.0.0.1:2428/admin/confirm-wallet";
 
-     match session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
+    match session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
         Some(challenge) => {
             if verifysignature::verify_signature(
                 &challenge,
@@ -146,10 +149,8 @@ async fn create_root_key_handler(
             } else {
                 (StatusCode::BAD_REQUEST, "Invalid signature")
             }
-        },
-        _ => {
-            (StatusCode::BAD_REQUEST, "Challenge not found")
-        },
+        }
+        _ => (StatusCode::BAD_REQUEST, "Challenge not found"),
     }
 }
 
