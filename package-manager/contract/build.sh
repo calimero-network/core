@@ -6,7 +6,7 @@ cd "$(dirname $0)"
 
 TARGET="${CARGO_TARGET_DIR:-../../target}"
 
-cargo build --target wasm32-unknown-unknown --app-release
+cargo build --target wasm32-unknown-unknown --profile app-release
 
 mkdir -p res
 
