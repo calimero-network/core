@@ -1,4 +1,5 @@
-use std::{collections::HashMap, fs};
+use std::collections::HashMap;
+use std::fs;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;

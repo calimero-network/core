@@ -2,6 +2,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::events;
 
+pub mod jsonrpc;
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum WsRequestBody {
@@ -54,82 +56,4 @@ pub struct WsResponse {
 pub enum WsCommand {
     Close(u16, String),
     Send(WsResponse),
-}
-
-#[derive(Debug)]
-pub enum JsonRpcVersion {
-    TwoPointZero,
-}
-
-impl Serialize for JsonRpcVersion {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match *self {
-            JsonRpcVersion::TwoPointZero => serializer.serialize_str("2.0"),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for JsonRpcVersion {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let version_str = String::deserialize(deserializer)?;
-        match version_str.as_str() {
-            "2.0" => Ok(JsonRpcVersion::TwoPointZero),
-            _ => Err(serde::de::Error::custom("Invalid JSON-RPC version")),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JsonRpcRequestParamsCall {
-    pub app_id: String,
-    pub method: String,
-    pub args_json: serde_json::Value,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(untagged)]
-pub enum JsonRpcRequestParams {
-    Call(JsonRpcRequestParamsCall),
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JsonRpcRequest {
-    pub jsonrpc: JsonRpcVersion,
-    pub method: String,
-    pub params: Option<JsonRpcRequestParams>,
-    pub id: Option<WsRequestId>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(untagged)]
-pub enum JsonRpcResponseResult {
-    Call(String),
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JsonRpcUnsupportedMethodError {}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JsonRpcResponseError {
-    pub code: u64,
-    pub message: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct JsonRpcResponse {
-    pub jsonrpc: JsonRpcVersion,
-    pub result: Option<JsonRpcResponseResult>,
-    pub error: Option<JsonRpcResponseError>,
-    pub id: Option<WsRequestId>,
 }

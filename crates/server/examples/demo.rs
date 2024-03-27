@@ -76,7 +76,7 @@ async fn main() -> eyre::Result<()> {
                 result?;
                 break;
             },
-            Some((method, payload, _writes, reply)) = server_receiver.recv() => {
+            Some((_app_id, method, payload, _writes, reply)) = server_receiver.recv() => {
                 handle_rpc(method, payload, reply).await?;
             }
         }

@@ -3,11 +3,13 @@ use std::sync::Arc;
 use axum::routing::{post, MethodRouter};
 use axum::{extract, Extension, Json};
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 use tracing::info;
 
 use crate::ServerSender;
 
-mod service;
+mod call;
+mod callmut;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcConfig {
@@ -15,7 +17,7 @@ pub struct JsonRpcConfig {
     pub enabled: bool,
 }
 
-struct ServiceState {
+pub(crate) struct ServiceState {
     server_sender: ServerSender,
 }
 
@@ -44,55 +46,69 @@ pub(crate) fn service(
 
 async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
-    extract::Json(request): extract::Json<calimero_primitives::server::JsonRpcRequest>,
-) -> Json<calimero_primitives::server::JsonRpcResponse> {
-    let result = match request.method.as_str() {
-        "execute" => match request.params {
-            Some(params) => match params {
-                calimero_primitives::server::JsonRpcRequestParams::Call(params) => {
-                    service::handle_execute_method(state.server_sender.clone(), params).await
-                }
-                _ => Err(eyre::eyre!(
-                    "invalid params type, method={}",
-                    request.method,
-                )),
-            },
-            None => Err(eyre::eyre!("missing params, method={}", request.method)),
-        },
-        "read" => match request.params {
-            Some(params) => match params {
-                calimero_primitives::server::JsonRpcRequestParams::Call(params) => {
-                    service::handle_read_method(state.server_sender.clone(), params).await
-                }
-                _ => Err(eyre::eyre!(
-                    "invalid params type, method={}",
-                    request.method,
-                )),
-            },
-            None => Err(eyre::eyre!("missing params, method={}", request.method)),
-        },
-        method => Err(eyre::eyre!(
-            "unsupported RPC method invoked, method={}",
-            method,
-        )),
+    extract::Json(request): extract::Json<calimero_primitives::server::jsonrpc::Request>,
+) -> Json<calimero_primitives::server::jsonrpc::Response> {
+    let result = match request.payload {
+        calimero_primitives::server::jsonrpc::RequestPayload::Call(request) => {
+            JsonRpcMethod::handle(request, state).await
+        }
+        calimero_primitives::server::jsonrpc::RequestPayload::CallMut(request) => {
+            JsonRpcMethod::handle(request, state).await
+        }
     };
 
     let (result, error) = match result {
-        Ok(result) => (result, None),
-        Err(e) => (
-            None,
-            Some(calimero_primitives::server::JsonRpcResponseError {
-                code: 1,
-                message: e.to_string(),
-            }),
-        ),
+        Ok(result) => (Some(result), None),
+        Err(error) => (None, Some(error)),
     };
 
-    let response = calimero_primitives::server::JsonRpcResponse {
+    let response = calimero_primitives::server::jsonrpc::Response {
         jsonrpc: request.jsonrpc,
         result,
         error,
         id: request.id,
     };
     Json(response)
+}
+
+pub(crate) async fn call(
+    sender: crate::ServerSender,
+    app_id: String,
+    method: String,
+    args: Vec<u8>,
+    writes: bool,
+) -> eyre::Result<Option<String>> {
+    let (result_sender, result_receiver) = oneshot::channel();
+
+    sender
+        .send((app_id, method, args, writes, result_sender))
+        .await?;
+
+    let outcome = result_receiver.await?;
+
+    for log in outcome.logs {
+        info!("RPC log: {}", log);
+    }
+
+    match outcome.returns? {
+        Some(returns) => Ok(Some(String::from_utf8(returns)?)),
+        None => Ok(None),
+    }
+}
+
+pub(crate) trait JsonRpcRequest {
+    type Response;
+    type Error;
+
+    async fn handle(self, state: Arc<ServiceState>) -> Result<Self::Response, Self::Error>;
+}
+
+pub(crate) trait JsonRpcMethod {
+    async fn handle(
+        self,
+        state: Arc<ServiceState>,
+    ) -> Result<
+        calimero_primitives::server::jsonrpc::ResponseResult,
+        calimero_primitives::server::jsonrpc::ResponseError,
+    >;
 }
