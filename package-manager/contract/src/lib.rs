@@ -148,7 +148,7 @@ mod tests {
         contract.add_package(
             "application".to_string(),
             "Demo Application".to_string(),
-            "https://shithub.com/application".to_string(),
+            "https://github.com/application".to_string(),
         );
         let package = contract.get_package("application".to_string());
 
@@ -165,7 +165,7 @@ mod tests {
         contract.add_package(
             "application".to_string(),
             "Demo Application".to_string(),
-            "https://shithub.com/application".to_string(),
+            "https://github.com/application".to_string(),
         );
         contract.add_release(
             "application".to_string(),

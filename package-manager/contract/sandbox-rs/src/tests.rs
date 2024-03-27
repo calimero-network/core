@@ -34,7 +34,7 @@ async fn test_add_package_and_release(
         .args_json(json!({
             "name": "application",
             "description": "Demo Application",
-            "repository": "https://shithub.com/application",
+            "repository": "https://github.com/application",
         }))
         .transact()
         .await?;
