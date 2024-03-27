@@ -14,6 +14,9 @@ pub struct ServerConfig {
 
     pub identity: libp2p::identity::Keypair,
 
+    #[cfg(feature = "admin")]
+    pub admin: Option<crate::admin::AdminConfig>,
+
     #[cfg(feature = "graphql")]
     pub graphql: Option<crate::graphql::GraphQLConfig>,
 

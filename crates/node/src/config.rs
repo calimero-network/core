@@ -40,6 +40,9 @@ pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
     #[serde(default)]
+    pub admin: Option<calimero_server::admin::AdminConfig>,
+
+    #[serde(default)]
     pub graphql: Option<calimero_server::graphql::GraphQLConfig>,
 
     #[serde(default)]

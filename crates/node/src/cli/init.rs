@@ -3,8 +3,6 @@ use std::net::IpAddr;
 
 use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
 use calimero_node::config::{self, ConfigFile, NetworkConfig, StoreConfig};
-use calimero_server::config::ServerConfig;
-use camino::Utf8PathBuf;
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
 use libp2p::identity;
@@ -140,6 +138,7 @@ impl InitCommand {
                             Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
                         })
                         .collect(),
+                    admin: Some(calimero_server::admin::AdminConfig { enabled: true }),
                     graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
                     jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
                     websocket: Some(calimero_server::websocket::WsConfig { enabled: true }),

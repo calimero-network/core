@@ -51,6 +51,7 @@ impl RunCommand {
             server: calimero_server::config::ServerConfig {
                 listen: config.network.server.listen,
                 identity: config.identity,
+                admin: config.network.server.admin,
                 graphql: config.network.server.graphql,
                 jsonrpc: config.network.server.jsonrpc,
                 websocket: config.network.server.websocket,
