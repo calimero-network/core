@@ -71,11 +71,9 @@ impl PackageManager {
         path: String,
         hash: String,
     ) {
-        if !self.packages.contains_key(&name) {
-            panic!("Package doesn't exist.")
-        }
-
-        let package = self.packages.get(&name).unwrap();
+        let Some(package) = self.packages.get(&name) else {
+            env::panic("Package doesn't exist.");
+        };
         if package.owner != env::signer_account_id() {
             panic!("Sender is not the owner of the package");
         }
