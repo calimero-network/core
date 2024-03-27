@@ -289,14 +289,14 @@ impl Node {
                 name: "kv-store".to_string(),
                 path: Utf8PathBuf::from("apps/kv-store/res/kv_store.wasm"),
             })
-            .await;
+            .await?;
 
         application_manager
             .register_application(application_manager::Application {
                 name: "only-peers".to_string(),
                 path: Utf8PathBuf::from("apps/only-peers/res/only_peers.wasm"),
             })
-            .await;
+            .await?;
 
         Ok(Self {
             id: config.identity.public().to_peer_id(),
@@ -500,7 +500,7 @@ impl Node {
         let outcome = calimero_runtime::run(
             &self
                 .application_manager
-                .load_application_blob(TopicHash::from_raw(application_id.clone())),
+                .load_application_blob(TopicHash::from_raw(application_id.clone()))?,
             &method,
             calimero_runtime::logic::VMContext { input: payload },
             &mut storage,
