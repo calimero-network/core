@@ -46,6 +46,9 @@ pub struct ServerConfig {
     pub graphql: Option<calimero_server::graphql::GraphQLConfig>,
 
     #[serde(default)]
+    pub jsonrpc: Option<calimero_server::jsonrpc::JsonRpcConfig>,
+
+    #[serde(default)]
     pub websocket: Option<calimero_server::websocket::WsConfig>,
 }
 

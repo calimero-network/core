@@ -53,6 +53,7 @@ impl RunCommand {
                 identity: config.identity,
                 admin: config.network.server.admin,
                 graphql: config.network.server.graphql,
+                jsonrpc: config.network.server.jsonrpc,
                 websocket: config.network.server.websocket,
             },
         })

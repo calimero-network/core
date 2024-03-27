@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::events;
 
+pub mod jsonrpc;
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub enum WsRequestBody {

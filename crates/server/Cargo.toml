@@ -12,8 +12,8 @@ async-graphql = { workspace = true, optional = true }
 async-graphql-axum = { workspace = true, optional = true }
 bs58.workspace = true
 eyre.workspace = true
-libp2p.workspace = true
 futures-util = { workspace = true, optional = true }
+libp2p.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -44,5 +44,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 graphql = ["dep:async-graphql", "dep:async-graphql-axum"]
+jsonrpc = []
 websocket = ["dep:futures-util"]
 admin = ["dep:tower-sessions"]

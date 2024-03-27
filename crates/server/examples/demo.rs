@@ -52,6 +52,9 @@ async fn main() -> eyre::Result<()> {
         #[cfg(feature = "graphql")]
         graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
 
+        #[cfg(feature = "jsonrpc")]
+        jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
+
         #[cfg(feature = "websocket")]
         websocket: Some(calimero_server::websocket::WsConfig { enabled: true }),
     };
@@ -76,7 +79,7 @@ async fn main() -> eyre::Result<()> {
                 result?;
                 break;
             },
-            Some((method, payload, _writes, reply)) = server_receiver.recv() => {
+            Some((_app_id, method, payload, _writes, reply)) = server_receiver.recv() => {
                 handle_rpc(method, payload, reply).await?;
             }
         }
