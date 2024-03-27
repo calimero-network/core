@@ -5,7 +5,7 @@ pub fn verify_peer_auth(keypair: &Keypair, msg: &[u8], signature: &[u8]) -> bool
     keypair.public().verify(msg, signature)
 }
 
-pub fn verify_eth_message(account: String, message: String, signature: String) -> bool {
+pub fn verify_eth_signature(account: String, message: String, signature: String) -> bool {
     let signature_bytes = match hex::decode(signature.trim_start_matches("0x")) {
         Ok(bytes) => bytes,
         Err(_) => return false,
