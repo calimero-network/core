@@ -6,10 +6,11 @@ use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
 #[derive(BorshStorageKey, BorshSerialize)]
 pub enum StorageKeys {
     Packages,
-    Release,
+    Release { package: String },
     Releases,
 }
 
+// TODO: enable ABI generation support
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct PackageManager {
@@ -72,31 +73,31 @@ impl PackageManager {
         hash: String,
     ) {
         let Some(package) = self.packages.get(&name) else {
-            env::panic("Package doesn't exist.");
+            env::panic_str("Package doesn't exist.");
         };
         if package.owner != env::signer_account_id() {
-            panic!("Sender is not the owner of the package");
+            env::panic_str("Sender is not the owner of the package");
         }
 
-        if !self.releases.contains_key(&name) {
-            self.releases
-                .insert(name.clone(), LookupMap::new(StorageKeys::Release));
-        }
-
-        self.releases.get_mut(&name).unwrap().insert(
-            version.clone(),
-            Release {
-                version,
-                notes,
-                path,
-                hash,
-            },
-        );
+        self.releases
+            .entry(name.clone())
+            .or_insert_with(|| LookupMap::new(StorageKeys::Release { package: name.clone() }))
+            .insert(
+                version.clone(),
+                Release {
+                    version,
+                    notes,
+                    path,
+                    hash,
+                },
+            );
     }
 
     // TODO: implement `pub fn get_packages(&self) -> Vec<Package> {}`
+    // with pagination (offset+limit) to avoid hitting the gas limit from excessive storage reads
 
     // TODO: implement `pub fn get_releases(&self) -> Vec<Release> {}`
+    // with pagination (offset+limit) to avoid hitting the gas limit from excessive storage reads
 
     pub fn get_package(&self, name: String) -> &Package {
         self.packages
@@ -104,13 +105,12 @@ impl PackageManager {
             .expect("Package doesn't exist")
     }
 
-    pub fn get_release(&self, name: String, version: String) -> Release {
+    pub fn get_release(&self, name: String, version: String) -> &Release {
         self.releases
             .get(&name)
             .expect("Package doesn't exist")
             .get(&version)
             .expect("Version doesn't exist")
-            .clone()
     }
 }
 

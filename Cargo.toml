@@ -18,6 +18,8 @@ members = [
 
   "./apps/kv-store",
   "./apps/only-peers",
+  "./package-manager/contract",
+  "./package-manager/contract/sandbox-rs",
 ]
 
 [workspace.dependencies]
@@ -37,6 +39,8 @@ hex = "0.4.3"
 libp2p = "0.53.2"
 multiaddr = "0.18.1"
 multibase = "0.9.1"
+near-sdk = "4.1.1"
+near-workspaces = "0.10.0"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
 rand = "0.8.5"
@@ -50,6 +54,7 @@ toml = "0.8.9"
 tower-http = "0.5.2"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+uint = "0.9.3"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
 
@@ -63,3 +68,6 @@ debug = false
 panic = "abort"
 # Opt into extra safety checks on arithmetic operations https://stackoverflow.com/a/64136471/249801
 overflow-checks = true
+
+[patch.crates-io]
+parity-secp256k1 = { git = 'https://github.com/paritytech/rust-secp256k1.git' }
