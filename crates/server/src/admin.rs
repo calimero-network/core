@@ -13,7 +13,7 @@ use tower_http::{
 };
 use tower_sessions::Session;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
-use tracing::info;
+use tracing::{error, info};
 
 use crate::verifysignature;
 
@@ -68,14 +68,42 @@ pub(crate) fn site(
 
 pub const CHALLENGE_KEY: &str = "challenge";
 
+struct ApiResponse<T: Serialize> {
+    payload: T,
+}
+impl<T> IntoResponse for ApiResponse<T>
+where
+    T: Serialize {
+    fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        let body = serde_json::to_string(&self.payload).unwrap();
+        axum::http::Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(body))
+            .unwrap()
+    }
+}
+
+#[derive(Serialize)]
+struct RequestChallengeBody {
+    challenge: String,
+}
+
 pub async fn request_challenge_handler(session: Session) -> impl IntoResponse {
-    if let Some(challenge) = session.get(CHALLENGE_KEY).await.unwrap_or(None) {
-        (StatusCode::OK, challenge)
+    if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
+        ApiResponse {
+            payload: RequestChallengeBody { challenge },
+        }.into_response()
     } else {
-        // No challenge in session, generate a new one
         let challenge = generate_challenge();
-        session.insert(CHALLENGE_KEY, &challenge).await.unwrap();
-        (StatusCode::OK, challenge)
+
+        if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
+            error!("Failed to insert challenge into session: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to insert challenge into session").into_response();
+        }
+        ApiResponse {
+            payload: RequestChallengeBody { challenge },
+        }.into_response()
     }
 }
 
@@ -92,8 +120,8 @@ fn generate_challenge() -> String {
     encoded
 }
 
-async fn health_check_handler() -> Json<&'static str> {
-    Json("{\"status\":\"ok\"}")
+async fn health_check_handler() -> impl IntoResponse {
+    (StatusCode::OK, "alive")
 }
 
 async fn create_root_key_handler(
@@ -104,7 +132,7 @@ async fn create_root_key_handler(
     let app = "me";
     let curl = "http://127.0.0.1:2428/admin/confirm-wallet";
 
-    match session.get::<String>(CHALLENGE_KEY).await.unwrap_or(None) {
+     match session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
         Some(challenge) => {
             if verifysignature::verify_signature(
                 &challenge,
@@ -114,19 +142,18 @@ async fn create_root_key_handler(
                 &req.signature,
                 &req.public_key,
             ) {
-                (StatusCode::OK, Json("\"status\": \"Root key created\""))
+                (StatusCode::OK, "Root key created")
             } else {
-                (StatusCode::OK, Json("\"status\": \"Invalid signature\""))
+                (StatusCode::BAD_REQUEST, "Invalid signature")
             }
-        }
-        None => (
-            StatusCode::BAD_REQUEST,
-            Json("\"status\": \"No challenge found\""),
-        ),
+        },
+        _ => {
+            (StatusCode::BAD_REQUEST, "Challenge not found")
+        },
     }
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PubKeyRequest {
     account_id: String,

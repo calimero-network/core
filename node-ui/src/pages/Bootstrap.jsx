@@ -6,9 +6,9 @@ import axios from 'axios';
 
 const fetchChallenge = async() => {
     const response = await axios.post("/admin-api/request-challenge");
-    const challenge = response.data;
-    console.log('Challenge received:', challenge);
-    return challenge;
+    const payload = response.data;
+    console.log('Challenge received:', payload.challenge);
+    return payload.challenge;
 }
 
 const verifyOwner = async () => {

@@ -1,18 +1,7 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
-use borsh::{BorshDeserialize, BorshSerialize};
-use near_crypto::{KeyType, PublicKey, Signature};
+use base64::engine::{general_purpose::STANDARD, Engine};
+use borsh::BorshSerialize;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
-use std::convert::TryInto;
-use std::str::FromStr;
-
-#[derive(Default, BorshSerialize, BorshDeserialize)]
-struct Payload {
-    tag: u32,
-    message: String,
-    nonce: [u8; 32],
-    recipient: String,
-    callback_url: Option<String>,
-}
 
 fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url: &str) -> Payload {
     Payload {
@@ -45,51 +34,64 @@ pub(crate) fn verify_signature(
     signature_base64: &str,
     public_key_str: &str,
 ) -> bool {
-    let decoded_bytes = match STANDARD.decode(&challenge) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("Error decoding base64: {:?}", err);
-            return false;
-        }
+    let nonce = match decode_to_fixed_array::<32>(Encoding::Base64, challenge) {
+        Ok(nonce) => nonce,
+        Err(_) => return false,
     };
-
-    let mut nonce_vec = decoded_bytes.to_vec();
-    nonce_vec.resize(32, 0);
-    let nonce: [u8; 32] = nonce_vec.try_into().unwrap();
-
-    let payload = create_payload(message, nonce, app, curl);
+    let payload: Payload = create_payload(message, nonce, app, curl);
     let mut borsh_payload: Vec<u8> = Vec::new();
     payload.serialize(&mut borsh_payload).unwrap();
 
-    let message_signed = hash_bytes(&borsh_payload);
+    let payload_hash = hash_bytes(&borsh_payload);
 
-    let real_signature = match STANDARD.decode(signature_base64) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("Error decoding base64 signature: {:?}", err);
-            return false;
-        }
+    verify(public_key_str, &payload_hash, signature_base64).is_ok()
+}
+
+enum Encoding {
+    Base64,
+    Base58,
+}
+
+fn decode_to_fixed_array<const N: usize>(
+    encoding: Encoding,
+    encoded: &str,
+) -> eyre::Result<[u8; N]> {
+    let decoded_vec = match encoding {
+        Encoding::Base58 => bs58::decode(encoded)
+            .into_vec()
+            .map_err(|e| eyre::Report::new(e))?,
+        Encoding::Base64 => STANDARD.decode(encoded).map_err(|e| eyre::Report::new(e))?,
     };
 
-    let signature_type = KeyType::ED25519;
+    let fixed_array: [u8; N] = decoded_vec
+        .try_into()
+        .map_err(|_| eyre::Report::msg("Incorrect length"))?;
+    Ok(fixed_array)
+}
 
-    let public_key = match PublicKey::from_str(public_key_str) {
-        Ok(pk) => pk,
-        Err(err) => {
-            eprintln!("Error creating public key: {:?}", err);
-            return false;
-        }
-    };
+fn verify(public_key_str: &str, message: &[u8], signature: &str) -> eyre::Result<()> {
+    let encoded_key = public_key_str.trim_start_matches("ed25519:");
 
-    let signature = match Signature::from_parts(signature_type, &real_signature) {
-        Ok(sig) => sig,
-        Err(err) => {
-            eprintln!("Error creating signature: {:?}", err);
-            return false;
-        }
-    };
+    let decoded_key: [u8; 32] =
+        decode_to_fixed_array(Encoding::Base58, encoded_key).map_err(|e| eyre::eyre!(e))?;
+    let vk = VerifyingKey::from_bytes(&decoded_key).map_err(|e| eyre::eyre!(e))?;
 
-    signature.verify(&message_signed, &public_key)
+    let decoded_signature: [u8; 64] =
+        decode_to_fixed_array(Encoding::Base64, signature).map_err(|e| eyre::eyre!(e))?;
+    let signature = Signature::from_bytes(&decoded_signature);
+
+    vk.verify(message, &signature).map_err(|e| eyre::eyre!(e))?;
+
+    Ok(())
+}
+
+#[derive(BorshSerialize)]
+struct Payload {
+    tag: u32,
+    message: String,
+    nonce: [u8; 32],
+    recipient: String,
+    callback_url: Option<String>,
 }
 
 #[cfg(test)]

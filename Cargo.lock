@@ -1252,11 +1252,11 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "color-eyre",
+ "ed25519-dalek 2.1.1",
  "eyre",
  "futures-util",
  "libp2p",
  "multiaddr",
- "near-crypto 0.21.2",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -4717,7 +4717,7 @@ dependencies = [
  "bytesize",
  "chrono",
  "derive_more",
- "near-config-utils 0.20.1",
+ "near-config-utils",
  "near-crypto 0.20.1",
  "near-parameters",
  "near-primitives 0.20.1",
@@ -4735,18 +4735,6 @@ name = "near-config-utils"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ae1eaab1d545a9be7a55b6ef09f365c2017f93a03063547591d12c0c6d27e58"
-dependencies = [
- "anyhow",
- "json_comments",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "near-config-utils"
-version = "0.21.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae1c9ff519efa8c778d341fa34971dee93e8adf4e8ae51feaefaa63bdf7e496a"
 dependencies = [
  "anyhow",
  "json_comments",
@@ -4795,35 +4783,8 @@ dependencies = [
  "ed25519-dalek 2.1.1",
  "hex",
  "near-account-id 1.0.0",
- "near-config-utils 0.20.1",
- "near-stdx 0.20.1",
- "once_cell",
- "primitive-types",
- "rand 0.7.3",
- "secp256k1",
- "serde",
- "serde_json",
- "subtle",
- "thiserror",
-]
-
-[[package]]
-name = "near-crypto"
-version = "0.21.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d927e95742aea981b9fd60996fbeba3b61e90acafd54c2c3c2a4ed40065ff03"
-dependencies = [
- "blake2 0.9.2",
- "borsh 1.4.0",
- "bs58 0.4.0",
- "c2-chacha",
- "curve25519-dalek 4.1.2",
- "derive_more",
- "ed25519-dalek 2.1.1",
- "hex",
- "near-account-id 1.0.0",
- "near-config-utils 0.21.2",
- "near-stdx 0.21.2",
+ "near-config-utils",
+ "near-stdx",
  "once_cell",
  "primitive-types",
  "rand 0.7.3",
@@ -4987,7 +4948,7 @@ dependencies = [
  "near-parameters",
  "near-primitives-core 0.20.1",
  "near-rpc-error-macro 0.20.1",
- "near-stdx 0.20.1",
+ "near-stdx",
  "near-vm-runner",
  "num-rational",
  "once_cell",
@@ -5147,12 +5108,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "855fd5540e3b4ff6fedf12aba2db1ee4b371b36f465da1363a6d022b27cb43b8"
 
 [[package]]
-name = "near-stdx"
-version = "0.21.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73a697f311c110d0fabae6c8c49ab0a8eff0ec37df82cc860deba92156e77c43"
-
-[[package]]
 name = "near-sys"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5215,7 +5170,7 @@ dependencies = [
  "near-crypto 0.20.1",
  "near-parameters",
  "near-primitives-core 0.20.1",
- "near-stdx 0.20.1",
+ "near-stdx",
  "num-rational",
  "once_cell",
  "prefix-sum-vec",
