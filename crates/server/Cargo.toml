@@ -30,6 +30,9 @@ tower-service = "0.3.2"
 tower-layer = "0.3.2"
 tower-sessions = "0.12.0"
 base64 = "0.22.0"
+borsh.workspace = true
+near-crypto = "0.21.2"
+sha2.workspace = true
 
 [[example]]
 name = "demo"

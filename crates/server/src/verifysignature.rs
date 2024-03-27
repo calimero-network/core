@@ -1,9 +1,9 @@
-use base64;
-use borsh::{BorshSerialize, BorshDeserialize};
-use sha2::{Digest, Sha256};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use borsh::{BorshDeserialize, BorshSerialize};
 use near_crypto::{KeyType, PublicKey, Signature};
-use std::str::FromStr;
+use sha2::{Digest, Sha256};
 use std::convert::TryInto;
+use std::str::FromStr;
 
 #[derive(Default, BorshSerialize, BorshDeserialize)]
 struct Payload {
@@ -13,7 +13,6 @@ struct Payload {
     recipient: String,
     callback_url: Option<String>,
 }
-
 
 fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url: &str) -> Payload {
     Payload {
@@ -38,8 +37,15 @@ fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     hash_array
 }
 
-fn verify_signature(challenge: &str, message: &str, app: &str, curl: &str, signature_base64: &str, public_key_str: &str) -> bool {
-    let decoded_bytes = match base64::decode(&challenge) {
+pub(crate) fn verify_signature(
+    challenge: &str,
+    message: &str,
+    app: &str,
+    curl: &str,
+    signature_base64: &str,
+    public_key_str: &str,
+) -> bool {
+    let decoded_bytes = match STANDARD.decode(&challenge) {
         Ok(bytes) => bytes,
         Err(err) => {
             eprintln!("Error decoding base64: {:?}", err);
@@ -57,7 +63,7 @@ fn verify_signature(challenge: &str, message: &str, app: &str, curl: &str, signa
 
     let message_signed = hash_bytes(&borsh_payload);
 
-    let real_signature = match base64::decode(signature_base64) {
+    let real_signature = match STANDARD.decode(signature_base64) {
         Ok(bytes) => bytes,
         Err(err) => {
             eprintln!("Error decoding base64 signature: {:?}", err);
@@ -79,7 +85,7 @@ fn verify_signature(challenge: &str, message: &str, app: &str, curl: &str, signa
         Ok(sig) => sig,
         Err(err) => {
             eprintln!("Error creating signature: {:?}", err);
-            return false; 
+            return false;
         }
     };
 
@@ -99,7 +105,14 @@ mod tests {
         let signature_base64 = "rkBQLYN7xxe1oetSfktrqL5jgVsZWKNvKZJmoZLNh756KIUBseYIzK3Dt17O60aPMl6S17lDnIlLVLOLdi5OCw==";
         let public_key = "ed25519:DxdDEdfg4sARk2YteEvp6KsqUGAgKyCZkYTqrboGWwiV";
 
-        assert!(verify_signature(challenge, message, app, curl, signature_base64, public_key));
+        assert!(verify_signature(
+            challenge,
+            message,
+            app,
+            curl,
+            signature_base64,
+            public_key
+        ));
     }
 
     #[test]
@@ -111,6 +124,13 @@ mod tests {
         let signature_base64 = "rkBQLYN7xxe1oetSfktrqL5jgVsZWKNvKZJmoZLNh756KIUBseYIzK3Dt17O60aPMl6S17lDnIlLVsOLdi5OCw==";
         let public_key = "ed25519:DxdDEdfg4sARk2YteEvp6KsqUGAgKyCZkYTqrboGWwiV";
 
-        assert!(!verify_signature(challenge, message, app, curl, signature_base64, public_key));
+        assert!(!verify_signature(
+            challenge,
+            message,
+            app,
+            curl,
+            signature_base64,
+            public_key
+        ));
     }
 }

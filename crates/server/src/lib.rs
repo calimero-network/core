@@ -14,6 +14,7 @@ pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
 mod middleware;
+mod verifysignature;
 #[cfg(feature = "websocket")]
 pub mod websocket;
 

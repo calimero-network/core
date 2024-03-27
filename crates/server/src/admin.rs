@@ -6,9 +6,10 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rand::{thread_rng, RngCore};
-use serde_json::to_string_pretty;
 use tower_sessions::Session;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
+
+use crate::verifysignature;
 
 pub const CHALLENGE_KEY: &str = "challenge";
 
@@ -18,7 +19,7 @@ pub async fn request_challenge_handler(session: Session) -> impl IntoResponse {
     } else {
         // No challenge in session, generate a new one
         let challenge = generate_challenge();
-        session.insert("challenge", &challenge).await.unwrap();
+        session.insert(CHALLENGE_KEY, &challenge).await.unwrap();
         (StatusCode::OK, challenge)
     }
 }
@@ -36,27 +37,24 @@ fn generate_challenge() -> String {
     encoded
 }
 
-async fn health_check() -> Json<&'static str> {
+async fn health_check_handler() -> Json<&'static str> {
     Json("{\"status\":\"ok\"}")
 }
 
-async fn create_root_key(session: Session, Json(req): Json<PubKeyRequest>) -> impl IntoResponse {
-    let pretty_json = to_string_pretty(&req).unwrap_or_else(|_| "Failed to serialize".into());
+async fn create_root_key_handler(session: Session, Json(req): Json<PubKeyRequest>) -> impl IntoResponse {
+    let message = "helloworld";
+    let app = "me";
+    let curl = "http://127.0.0.1:2428/admin/confirm-wallet";
 
-    println!("Pretty printed JSON body:\n{}", pretty_json);
-
-    // Retrieve the challenge from the session
-    if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.unwrap_or(None) {
-        // TODO: Verify the challenge
-        // TODO: Verify the signature
-        // TODO: Create DidDocument
-        println!("Challenge: {:?}", challenge);
-        (StatusCode::OK, Json("{\"status\":\"Root key created\"}"))
-    } else {
-        (
-            StatusCode::BAD_REQUEST,
-            Json("{\"status\":\"No challenge found\"}"),
-        )
+    match session.get::<String>(CHALLENGE_KEY).await.unwrap_or(None) {
+        Some(challenge) => {
+            if verifysignature::verify_signature(&challenge, message, app, curl, &req.signature, &req.public_key) {
+                (StatusCode::OK, Json("\"status\": \"Root key created\""))
+            } else {
+                (StatusCode::OK, Json("\"status\": \"Invalid signature\""))
+            }
+        },
+        None => (StatusCode::BAD_REQUEST, Json("\"status\": \"No challenge found\""))
     }
 }
 
@@ -72,8 +70,8 @@ pub fn admin_router() -> Router {
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
     Router::new()
-        .route("/health", get(health_check))
-        .route("/node-key", post(create_root_key))
+        .route("/health", get(health_check_handler))
+        .route("/node-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .layer(session_layer)
 }
