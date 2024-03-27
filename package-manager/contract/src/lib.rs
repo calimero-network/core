@@ -98,11 +98,10 @@ impl PackageManager {
 
     // TODO: implement `pub fn get_releases(&self) -> Vec<Release> {}`
 
-    pub fn get_package(&self, name: String) -> Package {
+    pub fn get_package(&self, name: String) -> &Package {
         self.packages
             .get(&name)
             .expect("Package doesn't exist")
-            .clone()
     }
 
     pub fn get_release(&self, name: String, version: String) -> Release {
