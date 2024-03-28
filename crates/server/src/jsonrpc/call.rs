@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use calimero_primitives::server::jsonrpc::{CallError, CallRequest, CallResponse};
+use calimero_server_primitives::jsonrpc::{CallError, CallRequest, CallResponse};
 
 use crate::jsonrpc;
 

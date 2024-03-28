@@ -24,7 +24,7 @@ pub struct ServerConfig {
     pub jsonrpc: Option<crate::jsonrpc::JsonRpcConfig>,
 
     #[cfg(feature = "websocket")]
-    pub websocket: Option<crate::websocket::WsConfig>,
+    pub websocket: Option<crate::ws::WsConfig>,
 }
 
 pub fn default_addrs() -> Vec<Multiaddr> {
