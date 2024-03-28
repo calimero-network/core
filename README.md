@@ -173,3 +173,39 @@ call /calimero/experimental/app/8eVTNKLwmF28pdDR7RRpT5C1XwUXoJuDuPF6hhbMCu98 cre
  │   Logs:
  │     > Getting post with id: 0
  ```
+
+JSON RPC
+- success example
+```
+curl -X POST -H "Content-Type: application/json" -d '
+{
+  "jsonrpc": "2.0",
+  "method": "call_mut",
+  "params": {
+    "applicationId": "/calimero/experimental/app/6P8KrqtyD4YgcSrDZovZ5dGDFJjvx8jXLrCohpj2VtZh",
+    "method": "create_post",
+    "argsJson": {
+      "title": "Your Post Title",
+      "content": "Your Post Content"
+    }
+  },
+  "id": "dontcare"
+}' 'http://localhost:2529/jsonrpc'
+```
+- failure example
+```
+curl -X POST -H "Content-Type: application/json" -d '
+{
+  "jsonrpc": "2.0",
+  "method": "call_mut",
+  "params": {
+    "applicationId": "/calimero/experimental/app/6P8KrqtyD4YgcSrDZovZ5dGDFJjvx8jXLrCohpj2VtZh",
+    "method": "create_post",
+    "argsJson": {
+      "title_FiBo": "Your Post Title",
+      "content": "Your Post Content"
+    }
+  },
+  "id": 123
+}' 'http://localhost:2529/jsonrpc'
+```

@@ -1,18 +1,22 @@
 use std::net::{IpAddr, SocketAddr};
 
-use axum::http;
-use axum::routing::Router;
+use axum::{http, Router};
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
 use tracing::warn;
 
+#[cfg(feature = "admin")]
+pub mod admin;
 pub mod config;
 #[cfg(feature = "graphql")]
 pub mod graphql;
+#[cfg(feature = "jsonrpc")]
+pub mod jsonrpc;
 mod middleware;
+mod verifysignature;
 #[cfg(feature = "websocket")]
-pub mod websocket;
+pub mod ws;
 
 // TODO: add comments or even better make it explicit types
 type ServerSender = mpsc::Sender<(
@@ -72,6 +76,18 @@ pub async fn start(
     #[cfg(feature = "graphql")]
     {
         if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
+            let identity = config.identity.clone();
+            app = app
+                .route(path, handler)
+                .layer(middleware::auth::AuthSignatureLayer::new(identity));
+
+            serviced = true;
+        }
+    }
+
+    #[cfg(feature = "jsonrpc")]
+    {
+        if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone())? {
             app = app.route(path, handler);
 
             serviced = true;
@@ -80,9 +96,20 @@ pub async fn start(
 
     #[cfg(feature = "websocket")]
     {
-        if let Some((path, handler)) = websocket::service(&config, node_events.clone())? {
+        if let Some((path, handler)) = ws::service(&config, node_events.clone())? {
             app = app.route(path, handler);
 
+            serviced = true;
+        }
+    }
+
+    #[cfg(feature = "admin")]
+    {
+        if let Some((api_path, router)) = admin::service(&config)? {
+            if let Some((site_path, serve_dir)) = admin::site(&config)? {
+                app = app.nest_service(site_path, serve_dir);
+            }
+            app = app.nest(api_path, router);
             serviced = true;
         }
     }
@@ -93,14 +120,12 @@ pub async fn start(
         return Ok(());
     }
 
-    app = app
-        .layer(middleware::auth::AuthSignatureLayer::new(config.identity))
-        .layer(
-            cors::CorsLayer::new()
-                .allow_origin(cors::Any)
-                .allow_headers(cors::Any)
-                .allow_methods([http::Method::POST]),
-        );
+    app = app.layer(
+        cors::CorsLayer::new()
+            .allow_origin(cors::Any)
+            .allow_headers(cors::Any)
+            .allow_methods([http::Method::POST]),
+    );
 
     let mut set = tokio::task::JoinSet::new();
 

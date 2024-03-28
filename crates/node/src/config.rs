@@ -40,10 +40,16 @@ pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
     #[serde(default)]
+    pub admin: Option<calimero_server::admin::AdminConfig>,
+
+    #[serde(default)]
     pub graphql: Option<calimero_server::graphql::GraphQLConfig>,
 
     #[serde(default)]
-    pub websocket: Option<calimero_server::websocket::WsConfig>,
+    pub jsonrpc: Option<calimero_server::jsonrpc::JsonRpcConfig>,
+
+    #[serde(default)]
+    pub websocket: Option<calimero_server::ws::WsConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

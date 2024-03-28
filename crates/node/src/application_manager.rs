@@ -1,4 +1,5 @@
-use std::{collections::HashMap, fs};
+use std::collections::HashMap;
+use std::fs;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
@@ -24,7 +25,7 @@ impl ApplicationManager {
         }
     }
 
-    pub async fn register_application(&mut self, application: Application) {
+    pub async fn register_application(&mut self, application: Application) -> eyre::Result<()> {
         let app_blob = fs::read(&application.path).unwrap();
         let app_topic = self
             .network_client
@@ -43,6 +44,8 @@ impl ApplicationManager {
             "Registered application {} with hash: {}",
             application.name, app_topic
         );
+
+        Ok(())
     }
 
     pub fn get_registered_applications(&self) -> Vec<&TopicHash> {
@@ -53,7 +56,7 @@ impl ApplicationManager {
         self.applications.contains_key(&application_id)
     }
 
-    pub fn load_application_blob(&self, application_id: TopicHash) -> Vec<u8> {
-        fs::read(&self.applications.get(&application_id).unwrap().path).unwrap()
+    pub fn load_application_blob(&self, application_id: TopicHash) -> eyre::Result<Vec<u8>> {
+        Ok(fs::read(&self.applications.get(&application_id).unwrap().path).unwrap())
     }
 }

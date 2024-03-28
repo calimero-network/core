@@ -14,11 +14,17 @@ pub struct ServerConfig {
 
     pub identity: libp2p::identity::Keypair,
 
+    #[cfg(feature = "admin")]
+    pub admin: Option<crate::admin::AdminConfig>,
+
     #[cfg(feature = "graphql")]
     pub graphql: Option<crate::graphql::GraphQLConfig>,
 
+    #[cfg(feature = "jsonrpc")]
+    pub jsonrpc: Option<crate::jsonrpc::JsonRpcConfig>,
+
     #[cfg(feature = "websocket")]
-    pub websocket: Option<crate::websocket::WsConfig>,
+    pub websocket: Option<crate::ws::WsConfig>,
 }
 
 pub fn default_addrs() -> Vec<Multiaddr> {
