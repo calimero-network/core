@@ -56,7 +56,7 @@ async fn main() -> eyre::Result<()> {
         jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
 
         #[cfg(feature = "websocket")]
-        websocket: Some(calimero_server::websocket::WsConfig { enabled: true }),
+        websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
     };
 
     info!("Starting server with config: {:#?}", config);

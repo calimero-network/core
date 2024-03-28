@@ -49,7 +49,7 @@ pub struct ServerConfig {
     pub jsonrpc: Option<calimero_server::jsonrpc::JsonRpcConfig>,
 
     #[serde(default)]
-    pub websocket: Option<calimero_server::websocket::WsConfig>,
+    pub websocket: Option<calimero_server::ws::WsConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

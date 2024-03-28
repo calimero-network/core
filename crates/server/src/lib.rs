@@ -16,7 +16,7 @@ pub mod jsonrpc;
 mod middleware;
 mod verifysignature;
 #[cfg(feature = "websocket")]
-pub mod websocket;
+pub mod ws;
 
 // TODO: add comments or even better make it explicit types
 type ServerSender = mpsc::Sender<(
@@ -96,7 +96,7 @@ pub async fn start(
 
     #[cfg(feature = "websocket")]
     {
-        if let Some((path, handler)) = websocket::service(&config, node_events.clone())? {
+        if let Some((path, handler)) = ws::service(&config, node_events.clone())? {
             app = app.route(path, handler);
 
             serviced = true;

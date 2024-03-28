@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::routing::{post, MethodRouter};
 use axum::{extract, Extension, Json};
-use calimero_primitives::server::jsonrpc as jsonrpc_primitives;
+use calimero_server_primitives::jsonrpc as jsonrpc_primitives;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::{error, info};
