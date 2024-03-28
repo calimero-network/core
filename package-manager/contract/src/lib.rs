@@ -8,6 +8,7 @@ pub enum StorageKeys {
     Packages,
     Release { package: String },
     Releases,
+    Versions,
 }
 
 // TODO: enable ABI generation support
@@ -15,7 +16,10 @@ pub enum StorageKeys {
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct PackageManager {
     packages: LookupMap<String, Package>,
+    package_keys: Vec<String>,
     releases: LookupMap<String, LookupMap<String, Release>>,
+    release_keys: Vec<String>,
+    release_versions: LookupMap<String, Vec<String>>,
 }
 
 //  TODO: add multiple owners
@@ -46,7 +50,10 @@ impl Default for PackageManager {
     fn default() -> Self {
         Self {
             packages: LookupMap::new(StorageKeys::Packages),
+            package_keys: Vec::new(),
             releases: LookupMap::new(StorageKeys::Releases),
+            release_keys: Vec::new(),
+            release_versions: LookupMap::new(StorageKeys::Versions),
         }
     }
 }
@@ -57,7 +64,7 @@ impl PackageManager {
         if self.packages.contains_key(&name) {
             panic!("Package already exists.")
         }
-
+        self.package_keys.push(name.clone());
         self.packages.insert(
             name.clone(),
             Package::new(name, description, repository, env::signer_account_id()),
@@ -79,6 +86,14 @@ impl PackageManager {
             env::panic_str("Sender is not the owner of the package");
         }
 
+        if !self.release_keys.contains(&name) {
+            self.release_keys.push(name.clone());
+        }
+
+        let versions_vec = self.release_versions.entry(name.clone()).or_insert(Vec::new());
+
+        versions_vec.push(version.clone());
+
         self.releases
             .entry(name.clone())
             .or_insert_with(|| {
@@ -97,11 +112,42 @@ impl PackageManager {
             );
     }
 
-    // TODO: implement `pub fn get_packages(&self) -> Vec<Package> {}`
-    // with pagination (offset+limit) to avoid hitting the gas limit from excessive storage reads
+    pub fn get_packages(&self, offset: u64, limit: u64) -> Vec<Package> {
+        let offset_usize = offset as usize;
+        let limit_usize = limit as usize;
+        let end_index = (offset_usize + limit_usize).min(self.package_keys.len());
+        let keys = self.package_keys[offset_usize..end_index].to_vec();
+        let mut result = Vec::with_capacity(keys.len());
 
-    // TODO: implement `pub fn get_releases(&self) -> Vec<Release> {}`
-    // with pagination (offset+limit) to avoid hitting the gas limit from excessive storage reads
+        for key in keys {
+            if let Some(package) = self.packages.get(&key) {
+                result.push(package.clone());
+            }
+        }
+        //ALSO RETURN OFFSET IF NEEDED
+
+        result
+    }
+
+    pub fn get_releases(&self, offset: u64, limit: u64) -> Vec<Release> {
+        let offset_usize = offset as usize;
+        let limit_usize = limit as usize;
+        let end_index = (offset_usize + limit_usize).min(self.release_keys.len());
+        let release_keys = self.release_keys[offset_usize..end_index].to_vec();
+        let mut result = Vec::with_capacity(release_keys.len());
+
+        for name in release_keys {
+            if let Some(versions) = self.release_versions.get(&name) {
+                for version in versions {
+                    let release = self.get_release(name.clone(), version.to_string());
+                    result.push(release.clone());
+                }
+                
+            }
+        }
+
+        result
+    }
 
     pub fn get_package(&self, name: String) -> &Package {
         self.packages.get(&name).expect("Package doesn't exist")
@@ -176,5 +222,97 @@ mod tests {
             "https://gateway/ipfs/CID".to_string(),
             "123456789".to_string(),
         );
+    }
+    #[test]
+    fn test_get_packages_pagination() {
+        let context = get_context(false);
+        testing_env!(context);
+        let mut contract = PackageManager::default();
+
+        contract.add_package(
+            "package1".to_string(),
+            "Description 1".to_string(),
+            "https://github.com/package1".to_string(),
+        );
+        contract.add_package(
+            "package2".to_string(),
+            "Description 2".to_string(),
+            "https://github.com/package2".to_string(),
+        );
+        contract.add_package(
+            "package3".to_string(),
+            "Description 3".to_string(),
+            "https://github.com/package3".to_string(),
+        );
+
+        let packages_page1 = contract.get_packages(0, 2);
+        assert_eq!(packages_page1.len(), 2);
+        assert_eq!(packages_page1[0].name, "package1");
+        assert_eq!(packages_page1[1].name, "package2");
+
+        let packages_page2 = contract.get_packages(1, 2);
+        assert_eq!(packages_page2.len(), 2);
+        assert_eq!(packages_page2[0].name, "package2");
+        assert_eq!(packages_page2[1].name, "package3");
+
+        let packages_page3 = contract.get_packages(2, 2);
+        assert_eq!(packages_page3.len(), 1);
+        assert_eq!(packages_page3[0].name, "package3");
+    }
+
+    #[test]
+    fn test_get_releases() {
+        let context = get_context(false);
+        testing_env!(context);
+        let mut contract = PackageManager::default();
+
+        contract.add_package(
+            "application".to_string(),
+            "Demo Application".to_string(),
+            "https://github.com/application".to_string(),
+        );
+        contract.add_release(
+            "application".to_string(),
+            "0.1.0".to_string(),
+            "".to_string(),
+            "https://gateway/ipfs/CID1".to_string(),
+            "123456789".to_string(),
+        );
+        contract.add_release(
+            "application".to_string(),
+            "0.2.0".to_string(),
+            "".to_string(),
+            "https://gateway/ipfs/CID2".to_string(),
+            "987654321".to_string(),
+        );
+
+        let releases = contract.get_releases(0, 2);
+        assert_eq!(releases.len(), 2);
+
+        assert_eq!(releases[0].version, "0.1.0");
+        assert_eq!(releases[0].path, "https://gateway/ipfs/CID1");
+        assert_eq!(releases[0].hash, "123456789");
+
+        assert_eq!(releases[1].version, "0.2.0");
+        assert_eq!(releases[1].path, "https://gateway/ipfs/CID2");
+        assert_eq!(releases[1].hash, "987654321");
+
+        contract.add_package(
+            "application2".to_string(),
+            "Demo Application".to_string(),
+            "https://github.com/application".to_string(),
+        );
+
+        contract.add_release(
+            "application2".to_string(),
+            "0.2.0".to_string(),
+            "".to_string(),
+            "https://gateway/ipfs/CID2".to_string(),
+            "987654321".to_string(),
+        );
+
+        let releases2 = contract.get_releases(1, 10);
+        assert_eq!(releases.len(), 2);
+        assert_eq!(releases[0].hash, "123456789");
     }
 }
