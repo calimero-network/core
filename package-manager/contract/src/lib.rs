@@ -1,9 +1,10 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::store::LookupMap;
+use near_sdk::store::UnorderedMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
 
 #[derive(BorshStorageKey, BorshSerialize)]
+#[borsh(crate = "near_sdk::borsh")]
 pub enum StorageKeys {
     Packages,
     Release { package: String },
@@ -13,15 +14,16 @@ pub enum StorageKeys {
 // TODO: enable ABI generation support
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize)]
+#[borsh(crate = "near_sdk::borsh")]
 pub struct PackageManager {
-    packages: LookupMap<String, Package>,
-    releases: LookupMap<String, LookupMap<String, Release>>,
+    packages: UnorderedMap<String, Package>,
+    releases: UnorderedMap<String, UnorderedMap<String, Release>>,
 }
 
 //  TODO: add multiple owners
-#[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
 #[serde(crate = "near_sdk::serde")]
+#[borsh(crate = "near_sdk::borsh")]
 pub struct Package {
     name: String,
     description: String,
@@ -32,9 +34,9 @@ pub struct Package {
 // TODO: add a checksum in the future
 // TODO: figure out status of reproduciable builds
 // TODO: add better error checking for URL path
-#[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
 #[serde(crate = "near_sdk::serde")]
+#[borsh(crate = "near_sdk::borsh")]
 pub struct Release {
     version: String,
     notes: String,
@@ -45,8 +47,8 @@ pub struct Release {
 impl Default for PackageManager {
     fn default() -> Self {
         Self {
-            packages: LookupMap::new(StorageKeys::Packages),
-            releases: LookupMap::new(StorageKeys::Releases),
+            packages: UnorderedMap::new(StorageKeys::Packages),
+            releases: UnorderedMap::new(StorageKeys::Releases),
         }
     }
 }
@@ -82,7 +84,7 @@ impl PackageManager {
         self.releases
             .entry(name.clone())
             .or_insert_with(|| {
-                LookupMap::new(StorageKeys::Release {
+                UnorderedMap::new(StorageKeys::Release {
                     package: name.clone(),
                 })
             })
@@ -97,8 +99,14 @@ impl PackageManager {
             );
     }
 
-    // TODO: implement `pub fn get_packages(&self) -> Vec<Package> {}`
-    // with pagination (offset+limit) to avoid hitting the gas limit from excessive storage reads
+    pub fn get_packages(&self, offset: usize, limit: usize) -> Vec<Package> {
+        self.packages
+            .keys()
+            .skip(offset)
+            .take(limit)
+            .filter_map(|key| self.packages.get(key).cloned())
+            .collect()
+    }
 
     // TODO: implement `pub fn get_releases(&self) -> Vec<Release> {}`
     // with pagination (offset+limit) to avoid hitting the gas limit from excessive storage reads
@@ -127,12 +135,12 @@ impl Package {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(test)]
 mod tests {
-    use near_sdk::test_utils::VMContextBuilder;
-    use near_sdk::{testing_env, MockedBlockchain, VMContext};
-
     use super::*;
+    use near_sdk::test_utils::VMContextBuilder;
+    use near_sdk::{testing_env, VMContext};
 
     fn get_context(is_view: bool) -> VMContext {
         VMContextBuilder::new()
@@ -154,7 +162,7 @@ mod tests {
         );
         let package = contract.get_package("application".to_string());
 
-        assert_eq!(package.owner, "bobo".parse().unwrap());
+        assert_eq!(package.owner, "bobo".to_string());
         assert_eq!(package.name, "application".to_string());
     }
 
@@ -176,5 +184,52 @@ mod tests {
             "https://gateway/ipfs/CID".to_string(),
             "123456789".to_string(),
         );
+    }
+
+    #[test]
+    fn test_get_packages_with_multiple_offsets_and_limits() {
+        let mut contract = PackageManager::default();
+
+        contract.add_package(
+            "application".to_string(),
+            "Demo Application".to_string(),
+            "https://github.com/application".to_string(),
+        );
+
+        contract.add_package(
+            "package1".to_string(),
+            "Package 1".to_string(),
+            "https://github.com/package1".to_string(),
+        );
+
+        contract.add_package(
+            "package2".to_string(),
+            "Package 2".to_string(),
+            "https://github.com/package2".to_string(),
+        );
+
+        // Test with offset 0 and limit 1
+        let packages_offset0_limit1 = contract.get_packages(0, 1);
+        assert_eq!(packages_offset0_limit1.len(), 1);
+        assert_eq!(packages_offset0_limit1[0].owner, "bob.near".to_string());
+        assert_eq!(packages_offset0_limit1[0].name, "application".to_string());
+
+        // Test with offset 1 and limit 1
+        let packages_offset1_limit1 = contract.get_packages(1, 1);
+        assert_eq!(packages_offset1_limit1.len(), 1);
+        assert_eq!(packages_offset1_limit1[0].owner, "bob.near".to_string());
+        assert_eq!(packages_offset1_limit1[0].name, "package1".to_string());
+
+        // Test with offset 0 and limit 2
+        let packages_offset0_limit2 = contract.get_packages(0, 2);
+        assert_eq!(packages_offset0_limit2.len(), 2);
+        assert_eq!(packages_offset0_limit2[0].name, "application".to_string());
+        assert_eq!(packages_offset0_limit2[1].name, "package1".to_string());
+
+        // Test with offset 1 and limit 2
+        let packages_offset1_limit2 = contract.get_packages(1, 2);
+        assert_eq!(packages_offset1_limit2.len(), 2);
+        assert_eq!(packages_offset1_limit2[0].name, "package1".to_string());
+        assert_eq!(packages_offset1_limit2[1].name, "package2".to_string());
     }
 }
