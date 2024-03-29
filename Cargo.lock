@@ -5407,6 +5407,7 @@ name = "package_manager"
 version = "0.1.0"
 dependencies = [
  "near-sdk",
+ "semver",
  "uint",
 ]
 

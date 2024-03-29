@@ -58,6 +58,7 @@ tracing-subscriber = "0.3.17"
 uint = "0.9.3"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
+semver = "1.0.22"
 
 [profile.app-release]
 inherits = "release"
