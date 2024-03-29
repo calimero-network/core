@@ -1,3 +1,6 @@
+![Discord](https://img.shields.io/discord/1217086310288855191)
+
+
 # core
 Calimero 2.0
 
