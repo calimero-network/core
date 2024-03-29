@@ -1,4 +1,7 @@
-![Discord](https://img.shields.io/discord/1217086310288855191)
+[![](https://dcbadge.vercel.app/api/server/7HjWChbE?style=flat
+(https://discord.gg/7HjWChbE))](https://discord.gg/7HjWChbE(https://discord.gg/7HjWChbE))
+
+
 
 
 # core
