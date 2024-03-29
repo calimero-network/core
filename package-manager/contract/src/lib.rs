@@ -58,7 +58,7 @@ impl Default for PackageManager {
 impl PackageManager {
     pub fn add_package(&mut self, name: String, description: String, repository: String) {
         if self.packages.contains_key(&name) {
-            panic!("Package already exists.")
+            env::panic_str("Package already exists.")
         }
 
         self.packages.insert(
@@ -94,14 +94,16 @@ impl PackageManager {
             let current_version =
                 semver::Version::parse(&version).expect("Failed to parse current version");
             if current_version <= last_version {
-                panic!("New release version must be greater than the last release version.");
+                env::panic_str(
+                    "New release version must be greater than the last release version.",
+                );
             }
         }
 
         // Check if the sender is the owner of the package
         let package = self.packages.get(&name).expect("Package doesn't exist.");
         if package.owner != env::signer_account_id() {
-            panic!("Sender is not the owner of the package");
+            env::panic_str("Sender is not the owner of the package");
         }
 
         // Insert the new release
@@ -132,12 +134,14 @@ impl PackageManager {
             .collect()
     }
 
-    pub fn get_releases(&self, offset: usize, limit: usize) -> Vec<Release> {
+    pub fn get_releases(&self, name: String, offset: usize, limit: usize) -> Vec<&Release> {
         self.releases
-            .values()
-            .flat_map(|version_map| version_map.values().cloned())
+            .get(&name)
+            .expect("Package doesn't exist.")
+            .iter()
             .skip(offset)
             .take(limit)
+            .map(|(_, release)| release)
             .collect()
     }
 
@@ -264,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_realses() {
+    fn test_get_releases() {
         let mut contract = PackageManager::default();
         contract.add_package(
             "application".to_string(),
@@ -305,8 +309,12 @@ mod tests {
             "https://gateway/ipfs/CID".to_string(),
             "123456789".to_string(),
         );
-        let relases_versions = contract.get_releases(1, 2);
-        assert_eq!(relases_versions.len(), 2);
-        assert_eq!(relases_versions[0].version, "0.0.2".to_string());
+        let app_releases_versions = contract.get_releases("application".to_string(), 0, 10);
+        let pkg_releases_versions = contract.get_releases("package1".to_string(), 0, 10);
+        assert_eq!(app_releases_versions.len(), 3);
+        assert_eq!(pkg_releases_versions.len(), 1);
+
+        assert_eq!(app_releases_versions[2].version, "0.1.0".to_string());
+        assert_eq!(pkg_releases_versions[0].version, "0.1.1".to_string());
     }
 }
