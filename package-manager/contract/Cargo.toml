@@ -12,3 +12,7 @@ crate-type = ["cdylib"]
 [dependencies]
 near-sdk.workspace = true
 uint.workspace = true
+semver.workspace = true
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }
