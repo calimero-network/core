@@ -1241,6 +1241,9 @@ dependencies = [
  "futures-util",
  "libp2p",
  "multiaddr",
+ "near-jsonrpc-client",
+ "near-jsonrpc-primitives",
+ "near-primitives",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -4402,9 +4405,9 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
 name = "memchr"
-version = "2.7.1"
+version = "2.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "523dc4f511e55ab87b694dc30d0f820d60906ef06413f93d4d7a1385599cc149"
+checksum = "6c8640c5d730cb13ebd907d8d04b52f55ac9a2eec55b440c8892f40d56c76c1d"
 
 [[package]]
 name = "memmap2"
@@ -4892,9 +4895,9 @@ dependencies = [
 
 [[package]]
 name = "near-sdk"
-version = "5.0.0"
+version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5c2e7c9524308b1b301cca05d875de13b3b20dc8b92e71f3890b380372e4c88"
+checksum = "520234cfdf04a805ac2f04715889d096eb83fdd5b99ca7d0f8027ae473f891a8"
 dependencies = [
  "base64 0.21.7",
  "borsh 1.4.0",
@@ -4917,9 +4920,9 @@ dependencies = [
 
 [[package]]
 name = "near-sdk-macros"
-version = "5.0.0"
+version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1e9b23d9d7757ade258921c9cbc7923542e64d9d3b52a6cd91f746c77cb0a0f"
+checksum = "ee2fe3fc30068c5f20e89b0985d6104c5cc1c6742dbc6efbf352be4189b9bbf7"
 dependencies = [
  "Inflector",
  "darling",
@@ -5294,9 +5297,9 @@ checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.101"
+version = "0.9.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dda2b0f344e78efc2facf7d195d098df0dd72151b26ab98da807afc26c198dff"
+checksum = "c597637d56fbc83893a35eb0dd04b2b8e7a50c91e64e9493e398b5df4fb45fa2"
 dependencies = [
  "cc",
  "libc",
@@ -7468,9 +7471,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.36.0"
+version = "1.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61285f6515fa018fb2d1e46eb21223fff441ee8db5d0f1435e8ab4f5cdb80931"
+checksum = "1adbebffeca75fcfd058afa480fb6c0b81e165a0323f9c9d39c9697e37c46787"
 dependencies = [
  "backtrace",
  "bytes",

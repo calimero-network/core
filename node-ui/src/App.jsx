@@ -3,8 +3,12 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Bootstrap from "./pages/Bootstrap";
 import ConfirmWallet from "./pages/ConfirmWallet";
 import Identity from "./pages/Identity";
+import Applications from "./pages/Applications";
+
+import 'bootstrap/dist/css/bootstrap.min.css';
 
 export default function App() {
+
   return (
     <>
       <BrowserRouter basename="/admin">

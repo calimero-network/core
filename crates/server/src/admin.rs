@@ -4,12 +4,18 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use near_jsonrpc_client::{methods, JsonRpcClient};
+use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_primitives::types::{AccountId, BlockReference, Finality, FunctionArgs};
+use near_primitives::views::QueryRequest;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
+use serde_json::{from_slice, json};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
+
 
 use crate::verifysignature;
 
@@ -37,6 +43,8 @@ pub(crate) fn service(
         .route("/health", get(health_check_handler))
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
+        .route("/install-application", post(install_application_handler))
+        .route("/get-applications", get(get_installed_applications_handler))
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
@@ -152,6 +160,76 @@ async fn create_root_key_handler(
         }
         _ => (StatusCode::BAD_REQUEST, "Challenge not found"),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Package {
+    name: String,
+    description: String,
+    repository: String,
+    owner: AccountId
+}
+
+pub async fn get_application_metadata(application: String, version: String) -> eyre::Result<()>{
+    let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+
+    let request = methods::query::RpcQueryRequest {
+        block_reference: BlockReference::Finality(Finality::Final),
+        request: QueryRequest::CallFunction {
+            account_id: "calimero-package-manager.testnet".parse()?,
+            method_name: "get_release".to_string(),
+            args: FunctionArgs::from(
+                json!({
+                    "application": application,
+                    "version": version
+                })
+                .to_string()
+                .into_bytes(),
+            ),
+        },
+    };
+
+    let response = client.call(request).await?;
+    if let QueryResponseKind::CallResult(result) = response.kind {
+        println!("{:#?}", from_slice::<Package>(&result.result)?);
+    }
+
+    Ok(())
+}
+
+pub async fn download_application(application: String, version: String) -> eyre::Result<()> {
+    let app_path = "";
+    Ok(())
+}
+
+pub async fn verify_application(application: String, version: String, blob: String) {
+
+}
+
+pub fn install_application(application: String, version: String) -> eyre::Result<()> {
+    get_application_metadata(application, version);
+
+    //let blob = download_application((application), version);
+
+    //verify_application(blob)
+    Ok(())
+}
+
+pub fn get_installed_applications() {
+
+}
+
+async fn install_application_handler(session: Session) {
+    if let (Some(application), Some(version)) = (
+            session.get::<String>("application").await.ok().flatten(),
+            session.get::<String>("version").await.ok().flatten()
+        ) {
+            install_application(application, version);
+    }
+}
+
+async fn get_installed_applications_handler(session: String) -> impl IntoResponse {
+    (StatusCode::OK, "alive")
 }
 
 #[derive(Deserialize)]

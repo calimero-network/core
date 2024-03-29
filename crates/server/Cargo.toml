@@ -18,6 +18,9 @@ eyre.workspace = true
 futures-util = { workspace = true, optional = true }
 libp2p.workspace = true
 multiaddr.workspace = true
+near-jsonrpc-client.workspace = true
+near-jsonrpc-primitives.workspace = true
+near-primitives.workspace = true
 rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
