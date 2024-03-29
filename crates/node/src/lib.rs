@@ -323,16 +323,24 @@ impl Node {
             } => {
                 if self
                     .application_manager
-                    .is_application_registered(topic_hash)
+                    .is_application_registered(topic_hash.clone())
                 {
                     info!("{} joined the session.", their_peer_id.cyan());
                     let _ =
                         self.node_events
-                            .send(calimero_primitives::events::NodeEvent::PeerJoined(
-                                calimero_primitives::events::PeerJoinedInfo {
-                                    peer_id: their_peer_id,
-                                },
-                            ));
+                            .send(calimero_primitives::events::NodeEvent::ApplicationEvent(
+                            calimero_primitives::events::ApplicationEventPayload {
+                                application_id: calimero_primitives::application::ApplicationId(
+                                    topic_hash.into_string().clone(),
+                                ),
+                                event:
+                                    calimero_primitives::events::ApplicationEventType::PeerJoined(
+                                        calimero_primitives::events::PeerJoinedPayload {
+                                            peer_id: their_peer_id,
+                                        },
+                                    ),
+                            },
+                        ));
                 }
             }
             calimero_network::types::NetworkEvent::Message { message, .. } => {
@@ -519,9 +527,17 @@ impl Node {
 
             let _ =
                 self.node_events
-                    .send(calimero_primitives::events::NodeEvent::TransactionExecuted(
-                        calimero_primitives::events::ExecutedTransactionInfo { hash },
-                    ));
+                    .send(calimero_primitives::events::NodeEvent::ApplicationEvent(
+                    calimero_primitives::events::ApplicationEventPayload {
+                        application_id: calimero_primitives::application::ApplicationId(
+                            application_id.clone(),
+                        ),
+                        event:
+                            calimero_primitives::events::ApplicationEventType::TransactionExecuted(
+                                calimero_primitives::events::ExecutedTransactionPayload { hash },
+                            ),
+                    },
+                ));
         }
 
         Ok(outcome)

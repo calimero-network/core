@@ -1,22 +1,36 @@
 use serde::{Deserialize, Serialize};
 
+use crate::application::ApplicationId;
 use crate::hash;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum NodeEvent {
-    TransactionExecuted(ExecutedTransactionInfo),
-    PeerJoined(PeerJoinedInfo),
+    ApplicationEvent(ApplicationEventPayload),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct ExecutedTransactionInfo {
+pub struct ApplicationEventPayload {
+    pub application_id: ApplicationId,
+    pub event: ApplicationEventType,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum ApplicationEventType {
+    TransactionExecuted(ExecutedTransactionPayload),
+    PeerJoined(PeerJoinedPayload),
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutedTransactionPayload {
     pub hash: hash::Hash,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct PeerJoinedInfo {
+pub struct PeerJoinedPayload {
     pub peer_id: libp2p::PeerId,
 }

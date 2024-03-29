@@ -43,9 +43,9 @@ impl<'de> Deserialize<'de> for Version {
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub jsonrpc: Version,
+    pub id: Option<RequestId>,
     #[serde(flatten)]
     pub payload: RequestPayload,
-    pub id: Option<RequestId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -61,9 +61,9 @@ pub enum RequestPayload {
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     pub jsonrpc: Version,
+    pub id: Option<RequestId>,
     #[serde(flatten)]
     pub body: ResponseBody,
-    pub id: Option<RequestId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

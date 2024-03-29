@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Client ID is a locally unique identifier of a WebSocket client connection.
-pub type ClientId = u64;
+pub type ConnectionId = u64;
 /// Request Id is a locally unique identifier of a WebSocket request.
 pub type RequestId = u64;
 
@@ -10,14 +10,15 @@ pub type RequestId = u64;
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub id: Option<RequestId>,
-    pub body: RequestBody,
+    #[serde(flatten)]
+    pub payload: RequestPayload,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RequestBody {
-    Subscribe,
-    Unsubscribe,
+#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+pub enum RequestPayload {
+    Subscribe(SubscribeRequest),
+    Unsubscribe(UnsubscribeRequest),
 }
 // *************************************************************************
 
@@ -26,29 +27,64 @@ pub enum RequestBody {
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     pub id: Option<RequestId>,
-    pub body: ResonseBody,
+    #[serde(flatten)]
+    pub body: ResponseBody,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum ResponseBodyResult {
-    Subscribed,
-    Unsubscribed,
-    Event(calimero_primitives::events::NodeEvent),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ResonseBody {
+pub enum ResponseBody {
     Result(ResponseBodyResult),
     Error(ResponseBodyError),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ResponseBodyResult(pub serde_json::Value);
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum ResponseBodyError {
-    SerdeError(String),
-    ExecutionError(String),
+    ServerError(ServerResponseError),
+    HandlerError(serde_json::Value),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum ServerResponseError {
+    ParseError(String),
+    InternalError {
+        #[serde(skip)]
+        err: Option<eyre::Error>,
+    },
+}
+// *************************************************************************
+
+// **************************** subscribe method *******************************
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribeRequest {
+    pub application_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscribeResponse {
+    pub application_ids: Vec<String>,
+}
+// *************************************************************************
+
+// **************************** unsubscribe method *******************************
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsubscribeRequest {
+    pub application_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsubscribeResponse {
+    pub application_ids: Vec<String>,
 }
 // *************************************************************************
 
