@@ -1,6 +1,7 @@
-use crate::sys;
+use crate::sys::{self, PtrSized};
+pub use sys::RegisterId;
 
-const DATA_REGISTER: u64 = u64::MAX - 1;
+const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(PtrSized::MAX.as_usize() - 1);
 
 const STATE_KEY: &[u8] = b"STATE";
 
@@ -8,18 +9,12 @@ fn expected_register<T>() -> T {
     panic_str("Expected a register to be set, but it was not.");
 }
 
-pub fn abort() -> ! {
-    #[cfg(target_arch = "wasm32")]
-    core::arch::wasm32::unreachable();
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe {
-        sys::panic()
-    }
+pub fn panic() -> ! {
+    unsafe { sys::panic() }
 }
 
 pub fn panic_str(message: &str) -> ! {
-    unsafe { sys::panic_utf8(message.len() as u64, message.as_ptr() as u64) }
+    unsafe { sys::panic_utf8(sys::Buffer::from(message)) }
 }
 
 pub fn setup_panic_hook() {
@@ -41,16 +36,31 @@ pub fn setup_panic_hook() {
     }));
 }
 
-pub fn read_register(register_id: u64) -> Option<Vec<u8>> {
-    let len = match register_len(register_id)?.try_into() {
-        Ok(len) => len,
-        Err(_) => abort(),
-    };
+pub fn abort() -> ! {
+    #[cfg(target_arch = "wasm32")]
+    core::arch::wasm32::unreachable();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    panic()
+}
+
+pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
+    let len = unsafe { sys::register_len(register_id) };
+
+    if len == PtrSized::MAX {
+        return None;
+    }
+
+    Some(len.into())
+}
+
+pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
+    let len = register_len(register_id)?;
 
     let mut buffer = Vec::with_capacity(len);
 
     unsafe {
-        sys::read_register(register_id, buffer.as_mut_ptr() as u64);
+        sys::read_register(register_id, sys::PtrSized::from(buffer.as_mut_ptr()));
 
         buffer.set_len(len);
     }
@@ -58,34 +68,24 @@ pub fn read_register(register_id: u64) -> Option<Vec<u8>> {
     Some(buffer)
 }
 
-pub fn register_len(register_id: u64) -> Option<u64> {
-    let len = unsafe { sys::register_len(register_id) };
-
-    if len == std::u64::MAX {
-        None
-    } else {
-        Some(len)
-    }
-}
-
 pub fn input() -> Option<Vec<u8>> {
     unsafe { sys::input(DATA_REGISTER) };
     read_register(DATA_REGISTER)
 }
 
-pub fn value_return(value: &[u8]) {
-    unsafe { sys::value_return(value.len() as _, value.as_ptr() as _) }
+pub fn value_return(result: &[u8]) {
+    unsafe { sys::value_return(sys::Buffer::from(result)) }
 }
 
 pub fn log(message: &str) {
-    unsafe { sys::log_utf8(message.len() as _, message.as_ptr() as _) }
+    unsafe { sys::log_utf8(sys::Buffer::from(message)) }
 }
 
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    match unsafe { sys::storage_read(key.len() as _, key.as_ptr() as _, DATA_REGISTER) } {
-        0 => None,
-        1 => Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register)),
-        _ => abort(),
+    match unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }.as_bool() {
+        Some(false) => None,
+        Some(true) => Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register)),
+        None => panic_str("Storage read failed."),
     }
 }
 
@@ -98,19 +98,15 @@ pub fn state_read<T: borsh::BorshDeserialize>() -> Option<T> {
 }
 
 pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
-    match unsafe {
+    unsafe {
         sys::storage_write(
-            key.len() as _,
-            key.as_ptr() as _,
-            value.len() as _,
-            value.as_ptr() as _,
+            sys::Buffer::from(key),
+            sys::Buffer::from(value),
             DATA_REGISTER,
         )
-    } {
-        0 => false,
-        1 => true,
-        _ => abort(),
+        .as_bool()
     }
+    .unwrap_or_else(|| panic_str("Storage write failed."))
 }
 
 pub fn state_write<T: borsh::BorshSerialize>(state: &T) {
