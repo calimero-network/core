@@ -1235,8 +1235,6 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http",
- "tower-layer",
- "tower-service",
  "tower-sessions",
  "tracing",
  "tracing-subscriber",
