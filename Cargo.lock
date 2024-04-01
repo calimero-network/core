@@ -1206,6 +1206,8 @@ name = "calimero-sdk"
 version = "0.1.0"
 dependencies = [
  "borsh 1.4.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
