@@ -13,7 +13,7 @@ extern "C" {
     pub fn read_register(register_id: RegisterId, ptr: PtrSized<Pointer<&mut u8>>);
     // --
     pub fn input(register_id: RegisterId);
-    pub fn value_return(value: Buffer);
+    pub fn value_return(value: ValueReturn);
     pub fn log_utf8(msg: Buffer);
     // --
     pub fn storage_read(key: Buffer, register_id: RegisterId) -> Bool;

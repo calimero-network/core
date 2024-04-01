@@ -1,5 +1,4 @@
 use crate::sys::{self, PtrSized};
-pub use sys::RegisterId;
 
 const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(PtrSized::MAX.as_usize() - 1);
 
@@ -54,7 +53,7 @@ pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
     Some(len.into())
 }
 
-pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
+pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
     let len = register_len(register_id)?;
 
     let mut buffer = Vec::with_capacity(len);
@@ -73,8 +72,12 @@ pub fn input() -> Option<Vec<u8>> {
     read_register(DATA_REGISTER)
 }
 
-pub fn value_return(result: &[u8]) {
-    unsafe { sys::value_return(sys::Buffer::from(result)) }
+pub fn value_return<T, E>(result: Result<T, E>)
+where
+    T: AsRef<[u8]>,
+    E: AsRef<[u8]>,
+{
+    unsafe { sys::value_return(sys::ValueReturn::from(result)) }
 }
 
 pub fn log(message: &str) {

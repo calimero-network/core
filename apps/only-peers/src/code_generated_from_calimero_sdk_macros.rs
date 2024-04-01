@@ -22,9 +22,18 @@ pub extern "C" fn post() {
 
     let value = app.post(id);
 
-    let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+    let output = {
+        use calimero_sdk::__private::IntoResult;
+        match calimero_sdk::__private::WrappedReturn::new(value)
+            .into_result()
+            .to_json()
+        {
+            Ok(value) => value,
+            Err(err) => env::panic_str(&format!("Failed to serialize output to JSON: {:?}", err)),
+        }
+    };
 
-    env::value_return(&output);
+    env::value_return(output);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -44,9 +53,18 @@ pub extern "C" fn posts() {
 
     let value = app.posts();
 
-    let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+    let output = {
+        use calimero_sdk::__private::IntoResult;
+        match calimero_sdk::__private::WrappedReturn::new(value)
+            .into_result()
+            .to_json()
+        {
+            Ok(value) => value,
+            Err(err) => env::panic_str(&format!("Failed to serialize output to JSON: {:?}", err)),
+        }
+    };
 
-    env::value_return(&output);
+    env::value_return(output);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -69,9 +87,18 @@ pub extern "C" fn create_post() {
 
     let value = app.create_post(title, content);
 
-    let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+    let output = {
+        use calimero_sdk::__private::IntoResult;
+        match calimero_sdk::__private::WrappedReturn::new(value)
+            .into_result()
+            .to_json()
+        {
+            Ok(value) => value,
+            Err(err) => env::panic_str(&format!("Failed to serialize output to JSON: {:?}", err)),
+        }
+    };
 
-    env::value_return(&output);
+    env::value_return(output);
 
     env::state_write(&app);
 }
@@ -100,9 +127,18 @@ pub extern "C" fn create_comment() {
 
     let value = app.create_comment(post_id, user, text);
 
-    let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+    let output = {
+        use calimero_sdk::__private::IntoResult;
+        match calimero_sdk::__private::WrappedReturn::new(value)
+            .into_result()
+            .to_json()
+        {
+            Ok(value) => value,
+            Err(err) => env::panic_str(&format!("Failed to serialize output to JSON: {:?}", err)),
+        }
+    };
 
-    env::value_return(&output);
+    env::value_return(output);
 
     env::state_write(&app);
 }

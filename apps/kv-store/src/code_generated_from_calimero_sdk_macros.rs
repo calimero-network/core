@@ -43,9 +43,18 @@ pub extern "C" fn entries() {
 
     let value = app.entries();
 
-    let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+    let output = {
+        use calimero_sdk::__private::IntoResult;
+        match calimero_sdk::__private::WrappedReturn::new(value)
+            .into_result()
+            .to_json()
+        {
+            Ok(value) => value,
+            Err(err) => env::panic_str(&format!("Failed to serialize output to JSON: {:?}", err)),
+        }
+    };
 
-    env::value_return(&output);
+    env::value_return(output);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -67,9 +76,18 @@ pub extern "C" fn get() {
 
     let value = app.get(&key);
 
-    let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+    let output = {
+        use calimero_sdk::__private::IntoResult;
+        match calimero_sdk::__private::WrappedReturn::new(value)
+            .into_result()
+            .to_json()
+        {
+            Ok(value) => value,
+            Err(err) => env::panic_str(&format!("Failed to serialize output to JSON: {:?}", err)),
+        }
+    };
 
-    env::value_return(&output);
+    env::value_return(output);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -91,9 +109,18 @@ pub extern "C" fn get_unchecked() {
 
     let value = app.get_unchecked(&key);
 
-    let output = serde_json::to_vec(&value).expect("Failed to serialize output to JSON.");
+    let output = {
+        use calimero_sdk::__private::IntoResult;
+        match calimero_sdk::__private::WrappedReturn::new(value)
+            .into_result()
+            .to_json()
+        {
+            Ok(value) => value,
+            Err(err) => env::panic_str(&format!("Failed to serialize output to JSON: {:?}", err)),
+        }
+    };
 
-    env::value_return(&output);
+    env::value_return(output);
 }
 
 #[cfg(target_arch = "wasm32")]
