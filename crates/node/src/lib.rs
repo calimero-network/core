@@ -63,10 +63,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     loop {
         tokio::select! {
             event = network_events.recv() => {
-                match event {
-                    Some(event) => node.handle_event(event).await?,
-                    None => break,
-                }
+                let Some(event) = event else {
+                    break;
+                };
+                node.handle_event(event).await?;
             }
             line = stdin.next_line() => {
                 if let Some(line) = line? {
@@ -456,13 +456,13 @@ impl Node {
         application_id: String,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<Option<()>> {
-        let transaction_pool::TransactionPoolEntry {
+        let Some(transaction_pool::TransactionPoolEntry {
             transaction,
             outcome_sender,
             ..
-        } = match self.tx_pool.remove(&hash) {
-            Some(entry) => entry,
-            None => return Ok(None),
+        }) = self.tx_pool.remove(&hash)
+        else {
+            return Ok(None);
         };
 
         let outcome = self
