@@ -13,5 +13,5 @@ mkdir -p res
 cp $TARGET/wasm32-unknown-unknown/app-release/package_manager.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/package_manager.wasm -o ./res/packager_manager.wasm
+  wasm-opt -Oz ./res/package_manager.wasm -o ./res/package_manager.wasm
 fi
