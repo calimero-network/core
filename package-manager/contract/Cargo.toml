@@ -1,5 +1,5 @@
 [package]
-name = "package_manager"
+name = "package-manager"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -7,12 +7,14 @@ repository.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 near-sdk.workspace = true
-uint.workspace = true
 semver.workspace = true
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }
+near-workspaces.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

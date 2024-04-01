@@ -2,7 +2,6 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::store::UnorderedMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
-use semver;
 
 #[derive(BorshStorageKey, BorshSerialize)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -17,8 +16,8 @@ pub enum StorageKeys {
 #[derive(BorshDeserialize, BorshSerialize)]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct PackageManager {
-    packages: UnorderedMap<String, Package>,
-    releases: UnorderedMap<String, UnorderedMap<String, Release>>,
+    pub packages: UnorderedMap<String, Package>,
+    pub releases: UnorderedMap<String, UnorderedMap<String, Release>>,
 }
 
 //  TODO: add multiple owners
@@ -26,10 +25,10 @@ pub struct PackageManager {
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct Package {
-    name: String,
-    description: String,
-    repository: String,
-    owner: AccountId,
+    pub name: String,
+    pub description: String,
+    pub repository: String,
+    pub owner: AccountId,
 }
 
 // TODO: add a checksum in the future
@@ -39,10 +38,10 @@ pub struct Package {
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct Release {
-    version: String,
-    notes: String,
-    path: String,
-    hash: String,
+    pub version: String,
+    pub notes: String,
+    pub path: String,
+    pub hash: String,
 }
 
 impl Default for PackageManager {
@@ -166,155 +165,5 @@ impl Package {
             repository: repository,
             owner: owner,
         }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use near_sdk::test_utils::VMContextBuilder;
-    use near_sdk::{testing_env, VMContext};
-
-    fn get_context(is_view: bool) -> VMContext {
-        VMContextBuilder::new()
-            .signer_account_id("bobo".parse().unwrap())
-            .is_view(is_view)
-            .build()
-    }
-
-    #[test]
-    fn test_add_package() {
-        let context = get_context(false);
-        testing_env!(context);
-        let mut contract = PackageManager::default();
-
-        contract.add_package(
-            "application".to_string(),
-            "Demo Application".to_string(),
-            "https://github.com/application".to_string(),
-        );
-        let package = contract.get_package("application".to_string());
-
-        assert_eq!(package.owner, "bobo".to_string());
-        assert_eq!(package.name, "application".to_string());
-    }
-
-    #[test]
-    fn test_add_release() {
-        let context = get_context(false);
-        testing_env!(context);
-        let mut contract = PackageManager::default();
-
-        contract.add_package(
-            "application".to_string(),
-            "Demo Application".to_string(),
-            "https://github.com/application".to_string(),
-        );
-        contract.add_release(
-            "application".to_string(),
-            "0.1.0".to_string(),
-            "".to_string(),
-            "https://gateway/ipfs/CID".to_string(),
-            "123456789".to_string(),
-        );
-    }
-
-    #[test]
-    fn test_get_packages_with_multiple_offsets_and_limits() {
-        let mut contract = PackageManager::default();
-
-        contract.add_package(
-            "application".to_string(),
-            "Demo Application".to_string(),
-            "https://github.com/application".to_string(),
-        );
-
-        contract.add_package(
-            "package1".to_string(),
-            "Package 1".to_string(),
-            "https://github.com/package1".to_string(),
-        );
-
-        contract.add_package(
-            "package2".to_string(),
-            "Package 2".to_string(),
-            "https://github.com/package2".to_string(),
-        );
-
-        // Test with offset 0 and limit 1
-        let packages_offset0_limit1 = contract.get_packages(0, 1);
-        assert_eq!(packages_offset0_limit1.len(), 1);
-        assert_eq!(packages_offset0_limit1[0].owner, "bob.near".to_string());
-        assert_eq!(packages_offset0_limit1[0].name, "application".to_string());
-
-        // Test with offset 1 and limit 1
-        let packages_offset1_limit1 = contract.get_packages(1, 1);
-        assert_eq!(packages_offset1_limit1.len(), 1);
-        assert_eq!(packages_offset1_limit1[0].owner, "bob.near".to_string());
-        assert_eq!(packages_offset1_limit1[0].name, "package1".to_string());
-
-        // Test with offset 0 and limit 2
-        let packages_offset0_limit2 = contract.get_packages(0, 2);
-        assert_eq!(packages_offset0_limit2.len(), 2);
-        assert_eq!(packages_offset0_limit2[0].name, "application".to_string());
-        assert_eq!(packages_offset0_limit2[1].name, "package1".to_string());
-
-        // Test with offset 1 and limit 2
-        let packages_offset1_limit2 = contract.get_packages(1, 2);
-        assert_eq!(packages_offset1_limit2.len(), 2);
-        assert_eq!(packages_offset1_limit2[0].name, "package1".to_string());
-        assert_eq!(packages_offset1_limit2[1].name, "package2".to_string());
-    }
-
-    #[test]
-    fn test_get_releases() {
-        let mut contract = PackageManager::default();
-        contract.add_package(
-            "application".to_string(),
-            "Demo Application".to_string(),
-            "https://github.com/application".to_string(),
-        );
-
-        contract.add_package(
-            "package1".to_string(),
-            "Package 1".to_string(),
-            "https://github.com/package1".to_string(),
-        );
-        contract.add_release(
-            "application".to_string(),
-            "0.0.1".to_string(),
-            "".to_string(),
-            "https://gateway/ipfs/CID".to_string(),
-            "123456789".to_string(),
-        );
-        contract.add_release(
-            "application".to_string(),
-            "0.0.2".to_string(),
-            "".to_string(),
-            "https://gateway/ipfs/CID".to_string(),
-            "123456789".to_string(),
-        );
-        contract.add_release(
-            "application".to_string(),
-            "0.1.0".to_string(),
-            "".to_string(),
-            "https://gateway/ipfs/CID".to_string(),
-            "123456789".to_string(),
-        );
-        contract.add_release(
-            "package1".to_string(),
-            "0.1.1".to_string(),
-            "".to_string(),
-            "https://gateway/ipfs/CID".to_string(),
-            "123456789".to_string(),
-        );
-        let app_releases_versions = contract.get_releases("application".to_string(), 0, 10);
-        let pkg_releases_versions = contract.get_releases("package1".to_string(), 0, 10);
-        assert_eq!(app_releases_versions.len(), 3);
-        assert_eq!(pkg_releases_versions.len(), 1);
-
-        assert_eq!(app_releases_versions[2].version, "0.1.0".to_string());
-        assert_eq!(pkg_releases_versions[0].version, "0.1.1".to_string());
     }
 }
