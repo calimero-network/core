@@ -10,7 +10,7 @@ license.workspace = true
 fragile.workspace = true
 ouroboros.workspace = true
 owo-colors = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"] }
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 wasmer.workspace = true
