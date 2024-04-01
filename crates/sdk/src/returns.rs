@@ -36,7 +36,8 @@ impl<T> WrappedReturn<T> {
 
 impl<T, E> WrappedReturn<Result<T, E>> {
     pub fn into_result(self) -> ReturnsResult<T, E> {
-        ReturnsResult(self.0)
+        let WrappedReturn(value) = self;
+        ReturnsResult(value)
     }
 }
 
@@ -52,6 +53,7 @@ where
     type Err = Infallible;
 
     fn into_result(self) -> ReturnsResult<Self::Ok, Self::Err> {
-        ReturnsResult(Ok(self.0))
+        let WrappedReturn(value) = self;
+        ReturnsResult(Ok(value))
     }
 }
