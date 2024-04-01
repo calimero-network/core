@@ -154,7 +154,7 @@ pub extern "C" fn get_unchecked() {
 pub extern "C" fn get_result() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         key: String,
     }
@@ -189,6 +189,7 @@ pub extern "C" fn get_result() {
     env::value_return(output);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn remove() {
     env::setup_panic_hook();
