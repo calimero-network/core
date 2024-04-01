@@ -43,6 +43,14 @@ pub fn abort() -> ! {
     panic()
 }
 
+pub fn unreachable() -> ! {
+    #[cfg(target_arch = "wasm32")]
+    core::arch::wasm32::unreachable();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unreachable!()
+}
+
 pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
     let len = unsafe { sys::register_len(register_id) };
 
