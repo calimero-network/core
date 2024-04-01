@@ -151,6 +151,45 @@ pub extern "C" fn get_unchecked() {
 
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
+pub extern "C" fn get_result() {
+    env::setup_panic_hook();
+
+    #[derive(Serialize, Deserialize)]
+    struct Input {
+        key: String,
+    }
+
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
+
+    let Input { key } = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
+
+    let Some(app) = env::state_read::<KvStore>() else {
+        env::panic_str("Failed to read app state.")
+    };
+
+    let value = app.get_result(&key);
+
+    let output = {
+        #[allow(unused_imports)]
+        use calimero_sdk::__private::IntoResult;
+        match calimero_sdk::__private::WrappedReturn::new(value)
+            .into_result()
+            .to_json()
+        {
+            Ok(value) => value,
+            Err(err) => env::panic_str(&format!("Failed to serialize output to JSON: {:?}", err)),
+        }
+    };
+
+    env::value_return(output);
+}
+
+#[no_mangle]
 pub extern "C" fn remove() {
     env::setup_panic_hook();
 

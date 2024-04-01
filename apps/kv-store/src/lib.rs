@@ -38,6 +38,12 @@ impl KvStore {
         }
     }
 
+    fn get_result(&self, key: &str) -> Result<&str, &str> {
+        env::log(&format!("Getting key, possibly failing: {:?}", key));
+
+        self.get(key).ok_or("Key not found.")
+    }
+
     fn remove(&mut self, key: &str) {
         env::log(&format!("Removing key: {:?}", key));
 
