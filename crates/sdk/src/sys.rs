@@ -1,29 +1,21 @@
 #![allow(dead_code)]
 
-#[cfg(not(target_arch = "wasm32"))]
-const _: () = {
-    compile_error!(
-        "Incompatible target architecture, no polyfill available, only wasm32 is supported."
-    );
-};
+mod guard;
+mod types;
+
+pub use types::*;
 
 extern "C" {
-    pub fn read_register(register_id: u64, ptr: u64);
-    pub fn register_len(register_id: u64) -> u64;
-    // --
-    pub fn input(register_id: u64);
-    // --
     pub fn panic() -> !;
-    pub fn panic_utf8(len: u64, ptr: u64) -> !;
-    pub fn value_return(value_len: u64, value_ptr: u64);
-    pub fn log_utf8(len: u64, ptr: u64);
+    pub fn panic_utf8(msg: Buffer) -> !;
     // --
-    pub fn storage_write(
-        key_len: u64,
-        key_ptr: u64,
-        value_len: u64,
-        value_ptr: u64,
-        register_id: u64,
-    ) -> u64;
-    pub fn storage_read(key_len: u64, key_ptr: u64, register_id: u64) -> u64;
+    pub fn register_len(register_id: RegisterId) -> PtrSized<Integer>;
+    pub fn read_register(register_id: RegisterId, ptr: PtrSized<Pointer<&mut u8>>);
+    // --
+    pub fn input(register_id: RegisterId);
+    pub fn value_return(value: Buffer);
+    pub fn log_utf8(msg: Buffer);
+    // --
+    pub fn storage_read(key: Buffer, register_id: RegisterId) -> Bool;
+    pub fn storage_write(key: Buffer, value: Buffer, register_id: RegisterId) -> Bool;
 }
