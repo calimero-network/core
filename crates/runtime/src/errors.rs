@@ -1,3 +1,4 @@
+use serde::Serialize;
 use thiserror::Error;
 use wasmer_types::TrapCode;
 
@@ -13,27 +14,31 @@ pub enum VMRuntimeError {
 #[derive(Debug, Error)]
 pub enum StorageError {}
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "error", content = "data")]
 pub enum FunctionCallError {
     #[error("compilation error: {}", .source)]
     CompilationError {
         #[from]
+        #[serde(skip)]
         source: wasmer::CompileError,
     },
     #[error("link error: {}", .source)]
     LinkError {
         #[from]
+        #[serde(skip)]
         source: wasmer::LinkError,
     },
-    #[error("{0}")]
+    #[error(transparent)]
     MethodResolutionError(MethodResolutionError),
-    #[error("{0:?}")]
+    #[error(transparent)]
     WasmTrap(WasmTrap),
     #[error(transparent)]
     HostError(HostError),
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "type", content = "data")]
 pub enum MethodResolutionError {
     #[error("method {name:?} has invalid signature: expected no arguments and no return value")]
     InvalidSignature { name: String },
@@ -41,7 +46,8 @@ pub enum MethodResolutionError {
     MethodNotFound { name: String },
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Serialize)]
+#[serde(tag = "type", content = "data")]
 pub enum HostError {
     #[error("invalid register id: {id}")]
     InvalidRegisterId { id: u64 },
@@ -65,13 +71,14 @@ pub enum HostError {
     LogsOverflow,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum PanicContext {
     Guest,
     Host,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error, Serialize)]
+#[error("{self:?}")]
 pub enum WasmTrap {
     StackOverflow,
     MemoryOutOfBounds,
