@@ -1,13 +1,14 @@
 use calimero_sdk::env;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::OnlyPeers;
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn post() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         id: usize,
     }
@@ -26,11 +27,12 @@ pub extern "C" fn post() {
     env::value_return(&output);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn posts() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {}
 
     let input = env::input().expect("Expected input since method has arguments.");
@@ -47,11 +49,12 @@ pub extern "C" fn posts() {
     env::value_return(&output);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn create_post() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         title: String,
         content: String,
@@ -73,11 +76,12 @@ pub extern "C" fn create_post() {
     env::state_write(&app);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn create_comment() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         post_id: usize,
         user: String,

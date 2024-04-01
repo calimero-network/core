@@ -1,13 +1,14 @@
 use calimero_sdk::env;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::KvStore;
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn set() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         key: String,
         value: String,
@@ -25,11 +26,12 @@ pub extern "C" fn set() {
     env::state_write(&app);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn entries() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {}
 
     let input = env::input().expect("Expected input since method has arguments.");
@@ -46,11 +48,12 @@ pub extern "C" fn entries() {
     env::value_return(&output);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn get() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         key: String,
     }
@@ -69,11 +72,12 @@ pub extern "C" fn get() {
     env::value_return(&output);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn get_unchecked() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         key: String,
     }
@@ -92,11 +96,12 @@ pub extern "C" fn get_unchecked() {
     env::value_return(&output);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn remove() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input<'a> {
         key: &'a str,
     }
@@ -113,11 +118,12 @@ pub extern "C" fn remove() {
     env::state_write(&app);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn clear() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {}
 
     let input = env::input().expect("Expected input since method has arguments.");
