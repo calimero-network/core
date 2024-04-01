@@ -1,5 +1,5 @@
 use calimero_sdk::env;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use super::KvStore;
 
@@ -7,7 +7,7 @@ use super::KvStore;
 pub extern "C" fn set() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         key: String,
         value: String,
@@ -29,7 +29,7 @@ pub extern "C" fn set() {
 pub extern "C" fn entries() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {}
 
     let input = env::input().expect("Expected input since method has arguments.");
@@ -50,7 +50,7 @@ pub extern "C" fn entries() {
 pub extern "C" fn get() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         key: String,
     }
@@ -73,7 +73,7 @@ pub extern "C" fn get() {
 pub extern "C" fn get_unchecked() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {
         key: String,
     }
@@ -96,7 +96,7 @@ pub extern "C" fn get_unchecked() {
 pub extern "C" fn remove() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input<'a> {
         key: &'a str,
     }
@@ -117,7 +117,7 @@ pub extern "C" fn remove() {
 pub extern "C" fn clear() {
     env::setup_panic_hook();
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Deserialize)]
     struct Input {}
 
     let input = env::input().expect("Expected input since method has arguments.");
