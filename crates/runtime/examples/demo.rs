@@ -21,6 +21,14 @@ fn main() -> eyre::Result<()> {
 
     let cx = logic::VMContext {
         input: serde_json::to_vec(&json!({
+            "key": "foo"
+        }))?,
+    };
+    let get_outcome = run(file, "get", cx, &mut storage, &limits)?;
+    dbg!(get_outcome);
+
+    let cx = logic::VMContext {
+        input: serde_json::to_vec(&json!({
             "key": "foo",
             "value": "bar"
         }))?,
@@ -33,16 +41,16 @@ fn main() -> eyre::Result<()> {
             "key": "foo"
         }))?,
     };
-    let set_outcome = run(file, "get", cx, &mut storage, &limits)?;
-    dbg!(set_outcome);
+    let get_outcome = run(file, "get", cx, &mut storage, &limits)?;
+    dbg!(get_outcome);
 
     let cx = logic::VMContext {
         input: serde_json::to_vec(&json!({
             "key": "food"
         }))?,
     };
-    let set_outcome = run(file, "get_unchecked", cx, &mut storage, &limits)?;
-    dbg!(set_outcome);
+    let get_unchecked_outcome = run(file, "get_unchecked", cx, &mut storage, &limits)?;
+    dbg!(get_unchecked_outcome);
 
     println!("{}", "--".repeat(20).dimmed());
     println!("{:>35}", "Now, let's inspect the storage".bold());
