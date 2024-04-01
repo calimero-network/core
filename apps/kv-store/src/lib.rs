@@ -32,7 +32,10 @@ impl KvStore {
     fn get_unchecked(&self, key: &str) -> &str {
         env::log(&format!("Getting key without checking: {:?}", key));
 
-        self.items.get(key).expect("Key not found.").as_str()
+        match self.items.get(key) {
+            Some(value) => value.as_str(),
+            None => env::panic_str("Key not found."),
+        }
     }
 
     fn remove(&mut self, key: &str) {

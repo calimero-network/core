@@ -13,10 +13,14 @@ pub extern "C" fn set() {
         value: String,
     }
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
-    let Input { key, value }: Input =
-        serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    let Input { key, value } = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
     let mut app: KvStore = env::state_read().unwrap_or_default();
 
@@ -32,12 +36,18 @@ pub extern "C" fn entries() {
     #[derive(Serialize, Deserialize)]
     struct Input {}
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
-    let Input {}: Input =
-        serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    let Input {} = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
-    let app: KvStore = env::state_read().expect("Failed to read app state.");
+    let Some(app) = env::state_read::<KvStore>() else {
+        env::panic_str("Failed to read app state.")
+    };
 
     let value = app.entries();
 
@@ -64,12 +74,19 @@ pub extern "C" fn get() {
         key: String,
     }
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
-    let Input { key }: Input =
-        serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    let Input { key } = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
-    let app: KvStore = env::state_read().expect("Failed to read app state.");
+    let app = match env::state_read::<KvStore>() {
+        Some(value) => value,
+        None => env::panic_str("Failed to read app state."),
+    };
 
     let value = app.get(&key);
 
@@ -96,12 +113,18 @@ pub extern "C" fn get_unchecked() {
         key: String,
     }
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
-    let Input { key }: Input =
-        serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    let Input { key } = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
-    let app: KvStore = env::state_read().expect("Failed to read app state.");
+    let Some(app) = env::state_read::<KvStore>() else {
+        env::panic_str("Failed to read app state.")
+    };
 
     let value = app.get_unchecked(&key);
 
@@ -128,10 +151,14 @@ pub extern "C" fn remove() {
         key: &'a str,
     }
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
-    let Input { key }: Input =
-        serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    let Input { key } = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
     let mut app: KvStore = env::state_read().unwrap_or_default();
 
@@ -147,10 +174,14 @@ pub extern "C" fn clear() {
     #[derive(Serialize, Deserialize)]
     struct Input {}
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
-    let Input {}: Input =
-        serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    let Input {} = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
     let mut app: KvStore = env::state_read().unwrap_or_default();
 

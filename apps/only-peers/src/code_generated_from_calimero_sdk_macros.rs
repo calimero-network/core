@@ -12,12 +12,18 @@ pub extern "C" fn post() {
         id: usize,
     }
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
-    let Input { id }: Input =
-        serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    let Input { id } = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
-    let app: OnlyPeers = env::state_read().expect("Failed to read app state.");
+    let Some(app) = env::state_read::<OnlyPeers>() else {
+        env::panic_str("Failed to read app state.")
+    };
 
     let value = app.post(id);
 
@@ -42,12 +48,18 @@ pub extern "C" fn posts() {
     #[derive(Serialize, Deserialize)]
     struct Input {}
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
-    let Input {}: Input =
-        serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    let Input {} = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
-    let app: OnlyPeers = env::state_read().expect("Failed to read app state.");
+    let Some(app) = env::state_read::<OnlyPeers>() else {
+        env::panic_str("Failed to read app state.")
+    };
 
     let value = app.posts();
 
@@ -75,12 +87,18 @@ pub extern "C" fn create_post() {
         content: String,
     }
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
-    let Input { title, content }: Input =
-        serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    let Input { title, content } = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
-    let mut app: OnlyPeers = env::state_read().unwrap_or_default();
+    let Some(mut app) = env::state_read::<OnlyPeers>() else {
+        env::panic_str("Failed to read app state.")
+    };
 
     let value = app.create_post(title, content);
 
@@ -111,15 +129,20 @@ pub extern "C" fn create_comment() {
         text: String,
     }
 
-    let input = env::input().expect("Expected input since method has arguments.");
+    let Some(input) = env::input() else {
+        env::panic_str("Expected input since method has arguments.")
+    };
 
     let Input {
         post_id,
         user,
         text,
-    }: Input = serde_json::from_slice(&input).expect("Failed to deserialize input from JSON.");
+    } = match serde_json::from_slice(&input) {
+        Ok(value) => value,
+        Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
+    };
 
-    let mut app: OnlyPeers = env::state_read().unwrap_or_default();
+    let mut app = env::state_read::<OnlyPeers>().unwrap_or_default();
 
     let value = app.create_comment(post_id, user, text);
 
