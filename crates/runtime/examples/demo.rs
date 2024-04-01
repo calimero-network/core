@@ -49,6 +49,14 @@ fn main() -> eyre::Result<()> {
             "key": "food"
         }))?,
     };
+    let get_result_outcome = run(file, "get_result", cx, &mut storage, &limits)?;
+    dbg!(get_result_outcome);
+
+    let cx = logic::VMContext {
+        input: serde_json::to_vec(&json!({
+            "key": "food"
+        }))?,
+    };
     let get_unchecked_outcome = run(file, "get_unchecked", cx, &mut storage, &limits)?;
     dbg!(get_unchecked_outcome);
 
