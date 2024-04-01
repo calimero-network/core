@@ -35,6 +35,8 @@ pub enum FunctionCallError {
     WasmTrap(WasmTrap),
     #[error(transparent)]
     HostError(HostError),
+    #[error("the method call returned an error")]
+    ExecutionError(Vec<u8>),
 }
 
 #[derive(Debug, Error, Serialize)]

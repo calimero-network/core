@@ -25,7 +25,7 @@ impl<'a> VMLogic<'a> {
             fn read_register(register_id: u64, ptr: u64);
 
             fn input(register_id: u64);
-            fn value_return(value_len: u64, value_ptr: u64);
+            fn value_return(tag: u64, value_len: u64, value_ptr: u64);
             fn log_utf8(len: u64, ptr: u64);
 
             fn storage_write(
