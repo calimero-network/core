@@ -62,7 +62,7 @@ async fn main() -> eyre::Result<()> {
     info!("Starting server with config: {:#?}", config);
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
-    let subscriptions_sender = broadcast::channel(32).0;
+    let (subscriptions_sender, _) = broadcast::channel(32);
 
     let pk = &bs58::encode(&keypair.to_protobuf_encoding()?).into_string();
     println!("Private key {:?}", pk);

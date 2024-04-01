@@ -1235,8 +1235,6 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http",
- "tower-layer",
- "tower-service",
  "tower-sessions",
  "tracing",
  "tracing-subscriber",
@@ -5403,12 +5401,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "package_manager"
+name = "package-manager"
 version = "0.1.0"
 dependencies = [
  "near-sdk",
+ "near-workspaces",
  "semver",
- "uint",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -6553,16 +6553,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97a22f5af31f73a954c10289c93e8a50cc23d971e80ee446f1f6f7137a088213"
 dependencies = [
  "cipher 0.4.4",
-]
-
-[[package]]
-name = "sandbox"
-version = "1.0.0"
-dependencies = [
- "near-workspaces",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -8972,8 +8962,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "parity-secp256k1"
-version = "0.7.0"
-source = "git+https://github.com/paritytech/rust-secp256k1.git#d05fd8e152f8d110b587906e3d854196b086e42a"
