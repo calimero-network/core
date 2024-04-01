@@ -23,6 +23,7 @@ pub extern "C" fn post() {
     let value = app.post(id);
 
     let output = {
+        #[allow(unused_imports)]
         use calimero_sdk::__private::IntoResult;
         match calimero_sdk::__private::WrappedReturn::new(value)
             .into_result()
@@ -54,6 +55,7 @@ pub extern "C" fn posts() {
     let value = app.posts();
 
     let output = {
+        #[allow(unused_imports)]
         use calimero_sdk::__private::IntoResult;
         match calimero_sdk::__private::WrappedReturn::new(value)
             .into_result()
@@ -88,6 +90,7 @@ pub extern "C" fn create_post() {
     let value = app.create_post(title, content);
 
     let output = {
+        #[allow(unused_imports)]
         use calimero_sdk::__private::IntoResult;
         match calimero_sdk::__private::WrappedReturn::new(value)
             .into_result()
@@ -128,6 +131,7 @@ pub extern "C" fn create_comment() {
     let value = app.create_comment(post_id, user, text);
 
     let output = {
+        #[allow(unused_imports)]
         use calimero_sdk::__private::IntoResult;
         match calimero_sdk::__private::WrappedReturn::new(value)
             .into_result()

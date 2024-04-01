@@ -44,6 +44,7 @@ pub extern "C" fn entries() {
     let value = app.entries();
 
     let output = {
+        #[allow(unused_imports)]
         use calimero_sdk::__private::IntoResult;
         match calimero_sdk::__private::WrappedReturn::new(value)
             .into_result()
@@ -77,6 +78,7 @@ pub extern "C" fn get() {
     let value = app.get(&key);
 
     let output = {
+        #[allow(unused_imports)]
         use calimero_sdk::__private::IntoResult;
         match calimero_sdk::__private::WrappedReturn::new(value)
             .into_result()
@@ -110,6 +112,7 @@ pub extern "C" fn get_unchecked() {
     let value = app.get_unchecked(&key);
 
     let output = {
+        #[allow(unused_imports)]
         use calimero_sdk::__private::IntoResult;
         match calimero_sdk::__private::WrappedReturn::new(value)
             .into_result()
