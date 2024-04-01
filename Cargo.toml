@@ -13,9 +13,9 @@ members = [
   "./crates/primitives",
   "./crates/runtime",
   "./crates/sdk",
-  "./crates/store",
-  "./crates/server-primitives",
   "./crates/server",
+  "./crates/server-primitives",
+  "./crates/store",
 
   "./apps/kv-store",
   "./apps/only-peers",
