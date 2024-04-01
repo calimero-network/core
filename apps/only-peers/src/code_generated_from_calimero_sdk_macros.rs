@@ -3,6 +3,7 @@ use serde::Deserialize;
 
 use super::OnlyPeers;
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn post() {
     env::setup_panic_hook();
@@ -26,6 +27,7 @@ pub extern "C" fn post() {
     env::value_return(&output);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn posts() {
     env::setup_panic_hook();
@@ -47,6 +49,7 @@ pub extern "C" fn posts() {
     env::value_return(&output);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn create_post() {
     env::setup_panic_hook();
@@ -73,6 +76,7 @@ pub extern "C" fn create_post() {
     env::state_write(&app);
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn create_comment() {
     env::setup_panic_hook();
