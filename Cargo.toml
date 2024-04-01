@@ -19,7 +19,8 @@ members = [
 
   "./apps/kv-store",
   "./apps/only-peers",
-  "./package-manager/contract",
+
+  "./contracts/package-manager",
 ]
 
 [workspace.dependencies]
