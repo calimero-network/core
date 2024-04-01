@@ -44,7 +44,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     info!("Peer ID: {}", peer_id);
 
-    let node_events = broadcast::channel(32).0;
+    let (node_events, _) = broadcast::channel(32);
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
