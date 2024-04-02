@@ -14,11 +14,7 @@ async fn handle(
 ) -> eyre::Result<UnsubscribeResponse> {
     let mut inner = connection_state.inner.write().await;
     request.application_ids.iter().for_each(|id| {
-        inner
-            .subscriptions
-            .remove(&calimero_primitives::application::ApplicationId(
-                id.to_string(),
-            ));
+        inner.subscriptions.remove(id);
     });
 
     Ok(UnsubscribeResponse {

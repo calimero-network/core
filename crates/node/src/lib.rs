@@ -119,7 +119,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let tx_hash = match node
                             .call_mut(
-                                application_id.to_string(),
+                                calimero_primitives::application::ApplicationId(
+                                    application_id.to_string(),
+                                ),
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
                                 tx,
@@ -242,10 +244,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             if let Some(args) = args {
                 // TODO: implement print all and/or specific topic
                 let topic = TopicHash::from_raw(args);
-                if node
-                    .application_manager
-                    .is_application_registered(topic.clone())
-                {
+                if node.application_manager.is_application_registered(
+                    &calimero_primitives::application::ApplicationId(topic.clone().into_string()),
+                ) {
                     println!(
                         "{IND} Peers (Session) for Topic {}: {:#?}",
                         topic.clone(),
@@ -321,10 +322,11 @@ impl Node {
                 peer_id: their_peer_id,
                 topic: topic_hash,
             } => {
-                if self
-                    .application_manager
-                    .is_application_registered(topic_hash.clone())
-                {
+                if self.application_manager.is_application_registered(
+                    &calimero_primitives::application::ApplicationId(
+                        topic_hash.clone().into_string(),
+                    ),
+                ) {
                     info!("{} joined the session.", their_peer_id.cyan());
                     let _ =
                         self.node_events
@@ -393,12 +395,12 @@ impl Node {
 
     pub async fn push_action(
         &mut self,
-        application_id: String,
+        application_id: calimero_primitives::application::ApplicationId,
         action: types::PeerAction,
     ) -> eyre::Result<()> {
         self.network_client
             .publish(
-                TopicHash::from_raw(application_id),
+                TopicHash::from_raw(application_id.to_string()),
                 serde_json::to_vec(&action)?,
             )
             .await
@@ -409,7 +411,7 @@ impl Node {
 
     pub async fn call(
         &mut self,
-        application_id: String,
+        application_id: calimero_primitives::application::ApplicationId,
         method: String,
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
@@ -418,7 +420,7 @@ impl Node {
 
     pub async fn call_mut(
         &mut self,
-        application_id: String,
+        application_id: calimero_primitives::application::ApplicationId,
         method: String,
         payload: Vec<u8>,
         tx: oneshot::Sender<calimero_runtime::logic::Outcome>,
@@ -429,7 +431,7 @@ impl Node {
 
         if self
             .network_client
-            .mesh_peer_count(TopicHash::from_raw(application_id.clone()))
+            .mesh_peer_count(TopicHash::from_raw(application_id.clone().to_string()))
             .await
             == 0
         {
@@ -461,7 +463,7 @@ impl Node {
 
     async fn execute_in_pool(
         &mut self,
-        application_id: String,
+        application_id: calimero_primitives::application::ApplicationId,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<Option<()>> {
         let Some(transaction_pool::TransactionPoolEntry {
@@ -491,7 +493,7 @@ impl Node {
 
     async fn execute(
         &mut self,
-        application_id: String,
+        application_id: calimero_primitives::application::ApplicationId,
         hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
@@ -508,7 +510,7 @@ impl Node {
         let outcome = calimero_runtime::run(
             &self
                 .application_manager
-                .load_application_blob(TopicHash::from_raw(application_id.clone()))?,
+                .load_application_blob(&application_id)?,
             &method,
             calimero_runtime::logic::VMContext { input: payload },
             &mut storage,
@@ -529,9 +531,7 @@ impl Node {
                 self.node_events
                     .send(calimero_primitives::events::NodeEvent::ApplicationEvent(
                     calimero_primitives::events::ApplicationEventPayload {
-                        application_id: calimero_primitives::application::ApplicationId(
-                            application_id.clone(),
-                        ),
+                        application_id,
                         event:
                             calimero_primitives::events::ApplicationEventType::TransactionExecuted(
                                 calimero_primitives::events::ExecutedTransactionPayload { hash },

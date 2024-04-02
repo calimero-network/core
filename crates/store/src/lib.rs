@@ -26,13 +26,16 @@ impl Store {
 }
 
 pub struct TemporalStore {
-    application_id: String,
+    application_id: calimero_primitives::application::ApplicationId,
     inner: Store,
     shadow: BTreeMap<db::Key, db::Value>,
 }
 
 impl TemporalStore {
-    pub fn new(application_id: String, store: &Store) -> Self {
+    pub fn new(
+        application_id: calimero_primitives::application::ApplicationId,
+        store: &Store,
+    ) -> Self {
         Self {
             application_id: application_id.clone(),
             inner: store.clone(),
@@ -83,12 +86,15 @@ impl TemporalStore {
 }
 
 pub struct ReadOnlyStore {
-    application_id: String,
+    application_id: calimero_primitives::application::ApplicationId,
     inner: Store,
 }
 
 impl ReadOnlyStore {
-    pub fn new(application_id: String, store: &Store) -> Self {
+    pub fn new(
+        application_id: calimero_primitives::application::ApplicationId,
+        store: &Store,
+    ) -> Self {
         Self {
             application_id: application_id.clone(),
             inner: store.clone(),
@@ -101,8 +107,11 @@ impl ReadOnlyStore {
     }
 }
 
-pub fn get_application_key(application_id: String, key: &db::Key) -> Vec<u8> {
-    let mut application_key = Vec::from((application_id.clone() + ":").as_bytes());
+pub fn get_application_key(
+    application_id: calimero_primitives::application::ApplicationId,
+    key: &db::Key,
+) -> Vec<u8> {
+    let mut application_key = Vec::from((application_id.clone().to_string() + ":").as_bytes());
     application_key.append(&mut key.clone());
     application_key
 }

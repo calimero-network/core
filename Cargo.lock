@@ -1257,6 +1257,7 @@ dependencies = [
 name = "calimero-store"
 version = "0.1.0"
 dependencies = [
+ "calimero-primitives",
  "camino",
  "eyre",
  "rocksdb",

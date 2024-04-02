@@ -62,7 +62,13 @@ where
     let (tx, rx) = oneshot::channel();
 
     sender
-        .send((application_id, method, args, writes, tx))
+        .send((
+            calimero_primitives::application::ApplicationId(application_id),
+            method,
+            args,
+            writes,
+            tx,
+        ))
         .await?;
 
     let outcome = rx.await?;

@@ -14,11 +14,7 @@ async fn handle(
 ) -> eyre::Result<SubscribeResponse> {
     let mut inner = connection_state.inner.write().await;
     request.application_ids.iter().for_each(|id| {
-        inner
-            .subscriptions
-            .insert(calimero_primitives::application::ApplicationId(
-                id.to_string(),
-            ));
+        inner.subscriptions.insert(id.clone());
     });
 
     Ok(SubscribeResponse {

@@ -98,7 +98,7 @@ pub enum ServerResponseError {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallRequest {
-    pub application_id: String,
+    pub application_id: calimero_primitives::application::ApplicationId,
     pub method: String,
     pub args_json: serde_json::Value,
 }
@@ -121,7 +121,7 @@ pub enum CallError {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallMutRequest {
-    pub application_id: String,
+    pub application_id: calimero_primitives::application::ApplicationId,
     pub method: String,
     pub args_json: serde_json::Value,
 }

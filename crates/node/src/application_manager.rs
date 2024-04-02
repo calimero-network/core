@@ -3,7 +3,6 @@ use std::fs;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
-use libp2p::gossipsub::TopicHash;
 use tracing::info;
 
 #[derive(Clone)]
@@ -14,13 +13,13 @@ pub struct Application {
 
 pub(crate) struct ApplicationManager {
     pub network_client: NetworkClient,
-    pub applications: HashMap<TopicHash, Application>,
+    pub applications: HashMap<calimero_primitives::application::ApplicationId, Application>,
 }
 
 impl ApplicationManager {
     pub fn new(network_client: NetworkClient) -> Self {
         Self {
-            network_client: network_client,
+            network_client,
             applications: HashMap::default(),
         }
     }
@@ -37,8 +36,10 @@ impl ApplicationManager {
             .unwrap()
             .hash();
 
-        self.applications
-            .insert(app_topic.clone(), application.clone());
+        self.applications.insert(
+            calimero_primitives::application::ApplicationId(app_topic.clone().into_string()),
+            application.clone(),
+        );
 
         info!(
             "Registered application {} with hash: {}",
@@ -48,15 +49,24 @@ impl ApplicationManager {
         Ok(())
     }
 
-    pub fn get_registered_applications(&self) -> Vec<&TopicHash> {
-        Vec::from_iter(self.applications.keys())
+    // unused ATM, uncomment when used
+    // pub fn get_registered_applications(
+    //     &self,
+    // ) -> Vec<&calimero_primitives::application::ApplicationId> {
+    //     Vec::from_iter(self.applications.keys())
+    // }
+
+    pub fn is_application_registered(
+        &self,
+        application_id: &calimero_primitives::application::ApplicationId,
+    ) -> bool {
+        self.applications.contains_key(application_id)
     }
 
-    pub fn is_application_registered(&self, application_id: TopicHash) -> bool {
-        self.applications.contains_key(&application_id)
-    }
-
-    pub fn load_application_blob(&self, application_id: TopicHash) -> eyre::Result<Vec<u8>> {
-        Ok(fs::read(&self.applications.get(&application_id).unwrap().path).unwrap())
+    pub fn load_application_blob(
+        &self,
+        application_id: &calimero_primitives::application::ApplicationId,
+    ) -> eyre::Result<Vec<u8>> {
+        Ok(fs::read(&self.applications.get(application_id).unwrap().path).unwrap())
     }
 }
