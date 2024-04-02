@@ -1,3 +1,9 @@
+
+<a href="https://discord.gg/7HjWChbE"><img src="https://dcbadge.vercel.app/api/server/7HjWChbE?style=flat&theme=default-inverted"></a>
+
+<a href="https://t.me/+_6h-gJlnXO83OGVk"><img src="https://img.shields.io/badge/Join-Telegram%20Group-blue.svg?logo=telegram"></a>
+
+
 # core
 Calimero 2.0
 

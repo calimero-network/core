@@ -41,7 +41,7 @@ pub struct VMLogic<'a> {
     context: VMContext,
     limits: &'a VMLimits,
     registers: Registers,
-    returns: Option<Vec<u8>>,
+    returns: Option<Result<Vec<u8>, Vec<u8>>>,
     logs: Vec<String>,
 }
 
@@ -86,8 +86,16 @@ pub struct Outcome {
 
 impl<'a> VMLogic<'a> {
     pub fn finish(self, err: Option<FunctionCallError>) -> Outcome {
+        let returns = match err {
+            Some(err) => Err(err),
+            None => self
+                .returns
+                .map(|t| t.map_err(FunctionCallError::ExecutionError))
+                .transpose(),
+        };
+
         Outcome {
-            returns: err.map(Err).or_else(|| self.returns.map(Ok)).transpose(),
+            returns,
             logs: self.logs,
         }
     }
@@ -120,30 +128,6 @@ impl<'a> VMHostFunctions<'a> {
 }
 
 impl<'a> VMHostFunctions<'a> {
-    pub fn read_register(&mut self, register_id: u64, ptr: u64) -> Result<()> {
-        let data = self.borrow_logic().registers.get(register_id)?;
-        self.borrow_memory().write(ptr, data)?;
-        Ok(())
-    }
-
-    pub fn register_len(&self, register_id: u64) -> Result<u64> {
-        Ok(self
-            .borrow_logic()
-            .registers
-            .get_len(register_id)
-            .unwrap_or(u64::MAX))
-    }
-
-    pub fn input(&mut self, register_id: u64) -> Result<()> {
-        self.with_logic_mut(|logic| {
-            logic
-                .registers
-                .set(&logic.limits, register_id, &logic.context.input[..])
-        })?;
-
-        Ok(())
-    }
-
     pub fn panic(&self) -> Result<()> {
         Err(HostError::Panic {
             context: PanicContext::Guest,
@@ -162,10 +146,40 @@ impl<'a> VMHostFunctions<'a> {
         .into())
     }
 
-    pub fn value_return(&mut self, len: u64, ptr: u64) -> Result<()> {
+    pub fn register_len(&self, register_id: u64) -> Result<u64> {
+        Ok(self
+            .borrow_logic()
+            .registers
+            .get_len(register_id)
+            .unwrap_or(u64::MAX))
+    }
+
+    pub fn read_register(&mut self, register_id: u64, ptr: u64) -> Result<()> {
+        let data = self.borrow_logic().registers.get(register_id)?;
+        self.borrow_memory().write(ptr, data)?;
+        Ok(())
+    }
+
+    pub fn input(&mut self, register_id: u64) -> Result<()> {
+        self.with_logic_mut(|logic| {
+            logic
+                .registers
+                .set(&logic.limits, register_id, &logic.context.input[..])
+        })?;
+
+        Ok(())
+    }
+
+    pub fn value_return(&mut self, tag: u64, len: u64, ptr: u64) -> Result<()> {
         let buf = self.read_guest_memory(len, ptr)?;
 
-        self.with_logic_mut(|logic| logic.returns = Some(buf));
+        let result = match tag {
+            0 => Ok(buf),
+            1 => Err(buf),
+            _ => return Err(HostError::InvalidMemoryAccess.into()),
+        };
+
+        self.with_logic_mut(|logic| logic.returns = Some(result));
 
         Ok(())
     }
@@ -184,6 +198,24 @@ impl<'a> VMHostFunctions<'a> {
         Ok(())
     }
 
+    pub fn storage_read(&mut self, key_len: u64, key_ptr: u64, register_id: u64) -> Result<u32> {
+        let logic = self.borrow_logic();
+
+        if key_len > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+
+        let key = self.read_guest_memory(key_len, key_ptr)?;
+
+        if let Some(value) = logic.storage.get(&key) {
+            self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, value))?;
+
+            return Ok(1);
+        }
+
+        Ok(0)
+    }
+
     pub fn storage_write(
         &mut self,
         key_len: u64,
@@ -191,7 +223,7 @@ impl<'a> VMHostFunctions<'a> {
         value_len: u64,
         value_ptr: u64,
         register_id: u64,
-    ) -> Result<u64> {
+    ) -> Result<u32> {
         let logic = self.borrow_logic();
 
         if key_len > logic.limits.max_storage_key_size.get() {
@@ -212,24 +244,6 @@ impl<'a> VMHostFunctions<'a> {
 
             return Ok(1);
         };
-
-        Ok(0)
-    }
-
-    pub fn storage_read(&mut self, key_len: u64, key_ptr: u64, register_id: u64) -> Result<u64> {
-        let logic = self.borrow_logic();
-
-        if key_len > logic.limits.max_storage_key_size.get() {
-            return Err(HostError::KeyLengthOverflow.into());
-        }
-
-        let key = self.read_guest_memory(key_len, key_ptr)?;
-
-        if let Some(value) = logic.storage.get(&key) {
-            self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, value))?;
-
-            return Ok(1);
-        }
 
         Ok(0)
     }

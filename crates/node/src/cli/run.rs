@@ -3,6 +3,7 @@ use clap::{Parser, ValueEnum};
 
 use crate::cli;
 
+/// Run a node
 #[derive(Debug, Parser)]
 pub struct RunCommand {
     #[clap(long, value_name = "TYPE")]

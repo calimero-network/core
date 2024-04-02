@@ -35,10 +35,10 @@ pub(crate) fn verify_signature(
     signature_base64: &str,
     public_key_str: &str,
 ) -> bool {
-    let nonce = match decode_to_fixed_array::<32>(Encoding::Base64, challenge) {
-        Ok(nonce) => nonce,
-        Err(_) => return false,
+    let Ok(nonce) = decode_to_fixed_array::<32>(Encoding::Base64, challenge) else {
+        return false;
     };
+
     let payload: Payload = create_payload(message, nonce, app, curl);
     let mut borsh_payload: Vec<u8> = Vec::new();
     payload.serialize(&mut borsh_payload).unwrap();

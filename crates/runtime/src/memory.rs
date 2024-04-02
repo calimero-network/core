@@ -3,19 +3,19 @@ use std::ptr::NonNull;
 use crate::logic::VMLimits;
 
 pub struct WasmerTunables {
-    base: wasmer::BaseTunables,
-    vmconfig: wasmer::VMConfig,
+    base: wasmer::sys::BaseTunables,
+    vmconfig: wasmer::sys::VMConfig,
 }
 
 impl WasmerTunables {
     pub fn new(limits: &VMLimits) -> Self {
-        let base = wasmer::BaseTunables {
+        let base = wasmer::sys::BaseTunables {
             static_memory_bound: wasmer_types::Pages(limits.max_memory_pages),
             static_memory_offset_guard_size: wasmer_types::WASM_MAX_PAGES as _,
             dynamic_memory_offset_guard_size: wasmer_types::WASM_MAX_PAGES as _,
         };
 
-        let vmconfig = wasmer::VMConfig {
+        let vmconfig = wasmer::sys::VMConfig {
             wasm_stack_size: Some(limits.max_stack_size),
         };
 
@@ -24,7 +24,7 @@ impl WasmerTunables {
 }
 
 impl wasmer::Tunables for WasmerTunables {
-    fn vmconfig(&self) -> &wasmer::VMConfig {
+    fn vmconfig(&self) -> &wasmer::sys::VMConfig {
         &self.vmconfig
     }
 

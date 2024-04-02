@@ -49,7 +49,7 @@ impl OnlyPeers {
             comments: Vec::new(),
         });
 
-        self.posts.last().unwrap()
+        self.posts.last().unwrap_or_else(env::unreachable)
     }
 
     pub fn create_comment(
@@ -67,6 +67,6 @@ impl OnlyPeers {
 
         post.comments.push(Comment { user, text });
 
-        Some(post.comments.last().unwrap())
+        post.comments.last()
     }
 }

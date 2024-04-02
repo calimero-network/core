@@ -17,15 +17,15 @@ impl<'a> VMLogic<'a> {
             store;
             logic: self;
 
-            // todo! custom memory injection
-            fn read_register(register_id: u64, ptr: u64);
-            fn register_len(register_id: u64) -> u64;
-
-            fn input(register_id: u64);
-
             fn panic();
             fn panic_utf8(len: u64, ptr: u64);
-            fn value_return(value_len: u64, value_ptr: u64);
+
+            // todo! custom memory injection
+            fn register_len(register_id: u64) -> u64;
+            fn read_register(register_id: u64, ptr: u64);
+
+            fn input(register_id: u64);
+            fn value_return(tag: u64, value_len: u64, value_ptr: u64);
             fn log_utf8(len: u64, ptr: u64);
 
             fn storage_write(
@@ -34,8 +34,8 @@ impl<'a> VMLogic<'a> {
                 value_len: u64,
                 value_ptr: u64,
                 register_id: u64,
-            ) -> u64;
-            fn storage_read(key_len: u64, key_ptr: u64, register_id: u64) -> u64;
+            ) -> u32;
+            fn storage_read(key_len: u64, key_ptr: u64, register_id: u64) -> u32;
         }
     }
 }
@@ -117,8 +117,16 @@ macro_rules! _imports {
                     }.into()));
                     HOST_CTX.with(|ctx| ctx.store(false, Ordering::Relaxed));
 
-                    #[cfg(feature = "host-traces")]
-                    println!(" ⇲ {}(..) -> {:?}", stringify!($func).fg_rgb::<166, 226, 46>(), res);
+                    #[cfg(feature = "host-traces")] {
+                        #[allow(unused_mut, unused_assignments)]
+                        let mut return_ty = "()".to_string();
+                        $( return_ty = stringify!($returns).to_string(); )?
+                        println!(
+                            " ⇲ {}(..) -> {} = {res:?}",
+                            stringify!($func).fg_rgb::<166, 226, 46>(),
+                            return_ty.fg_rgb::<102, 217, 239>()
+                        );
+                    }
 
                     res.map_err(|err| wasmer::RuntimeError::user(Box::new(err)))
                 }
