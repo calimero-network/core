@@ -6,7 +6,7 @@
             "esnext",
             "dom"
         ],
-        "module": "commonjs",
+        "module": "ESNext",
         "target": "ESNext",
         "moduleResolution": "node",
         "alwaysStrict": true,
