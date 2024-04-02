@@ -40,10 +40,8 @@ impl ApplicationManager {
             application.name, application_topic
         );
 
-        self.applications.insert(
-            application_topic.as_str().to_owned().into(),
-            application.clone(),
-        );
+        self.applications
+            .insert(application_topic.as_str().to_owned().into(), application);
 
         Ok(())
     }
@@ -68,10 +66,7 @@ impl ApplicationManager {
     ) -> eyre::Result<Vec<u8>> {
         match self.applications.get(application_id) {
             Some(application) => Ok(fs::read(&application.path)?),
-            None => eyre::bail!(
-                "failed to get application with id: {}",
-                application_id.as_ref()
-            ),
+            None => eyre::bail!("failed to get application with id: {}", application_id),
         }
     }
 }
