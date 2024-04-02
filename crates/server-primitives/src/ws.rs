@@ -8,10 +8,10 @@ pub type RequestId = u64;
 // **************************** request *******************************
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Request {
+pub struct Request<P> {
     pub id: Option<RequestId>,
     #[serde(flatten)]
-    pub payload: RequestPayload,
+    pub payload: P,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

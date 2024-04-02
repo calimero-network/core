@@ -264,41 +264,41 @@ async fn handle_text_message(
         return;
     };
 
-    let response = match serde_json::from_str::<ws_primitives::Request>(&message) {
-        Ok(message) => {
-            let body = match message.payload {
-                ws_primitives::RequestPayload::Subscribe(request) => request
-                    .handle(state.clone(), connection_state.clone())
-                    .await
-                    .to_res_body(),
-                ws_primitives::RequestPayload::Unsubscribe(request) => request
-                    .handle(state.clone(), connection_state.clone())
-                    .await
-                    .to_res_body(),
-            };
-
-            ws_primitives::Response {
-                id: message.id,
-                body,
-            }
-        }
+    let message = match serde_json::from_str::<ws_primitives::Request<serde_json::Value>>(&message)
+    {
+        Ok(message) => message,
         Err(err) => {
-            error!(%connection_id, %err, %message, "Failed to deserialize ws_primitives::WsRequest");
+            error!(%connection_id, %err, "Failed to deserialize ws_primitives::Request<serde_json::Value>");
+            return;
+        }
+    };
 
-            let body =
-                ws_primitives::ResponseBody::Error(ws_primitives::ResponseBodyError::ServerError(
-                    ws_primitives::ServerResponseError::ParseError(format!(
-                        "failed to deserialize request: {message}"
-                    )),
-                ));
+    let body = match serde_json::from_value::<ws_primitives::RequestPayload>(message.payload) {
+        Ok(payload) => match payload {
+            ws_primitives::RequestPayload::Subscribe(request) => request
+                .handle(state.clone(), connection_state.clone())
+                .await
+                .to_res_body(),
+            ws_primitives::RequestPayload::Unsubscribe(request) => request
+                .handle(state.clone(), connection_state.clone())
+                .await
+                .to_res_body(),
+        },
+        Err(err) => {
+            error!(%connection_id, %err, "Failed to deserialize ws_primitives::RequestPayload");
 
-            ws_primitives::Response { id: None, body }
+            ws_primitives::ResponseBody::Error(ws_primitives::ResponseBodyError::ServerError(
+                ws_primitives::ServerResponseError::ParseError(err.to_string()),
+            ))
         }
     };
 
     if let Err(err) = connection_state
         .commands
-        .send(ws_primitives::Command::Send(response))
+        .send(ws_primitives::Command::Send(ws_primitives::Response {
+            id: message.id,
+            body,
+        }))
         .await
     {
         error!(
