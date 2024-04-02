@@ -181,7 +181,7 @@ async fn handle_node_events(
         };
 
         let body = match serde_json::to_value(event) {
-            Ok(v) => ws_primitives::ResponseBody::Result(ws_primitives::ResponseBodyResult(v)),
+            Ok(v) => ws_primitives::ResponseBody::Result(v),
             Err(err) => {
                 ws_primitives::ResponseBody::Error(ws_primitives::ResponseBodyError::ServerError(
                     ws_primitives::ServerResponseError::InternalError {
@@ -336,7 +336,7 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, WsError<E>> {
     fn to_res_body(self) -> ws_primitives::ResponseBody {
         match self {
             Ok(r) => match serde_json::to_value(r) {
-                Ok(v) => ws_primitives::ResponseBody::Result(ws_primitives::ResponseBodyResult(v)),
+                Ok(v) => ws_primitives::ResponseBody::Result(v),
                 Err(err) => ws_primitives::ResponseBody::Error(
                     ws_primitives::ResponseBodyError::ServerError(
                         ws_primitives::ServerResponseError::InternalError {

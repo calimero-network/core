@@ -34,13 +34,9 @@ pub struct Response {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ResponseBody {
-    Result(ResponseBodyResult),
+    Result(serde_json::Value),
     Error(ResponseBodyError),
 }
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResponseBodyResult(pub serde_json::Value);
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
