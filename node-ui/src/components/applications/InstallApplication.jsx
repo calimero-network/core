@@ -113,7 +113,14 @@ export function InstallApplication({
 }) {
   return (
     <InstallApplicationForm>
-      <div onClick={() => setSwitchInstall(false)} className="back-button">
+      <div
+        onClick={() => {
+          setSwitchInstall(false);
+          setSelectedPackage(null);
+          setSelectedRelease(null);
+        }}
+        className="back-button"
+      >
         <ArrowLeftIcon className="arrow-icon" />
         Back to Applications
       </div>
@@ -128,6 +135,7 @@ export function InstallApplication({
               <Dropdown.Item
                 onClick={async () => {
                   setSelectedPackage(pkg);
+                  setSelectedRelease(null);
                   setReleases(await getReleases(pkg.name));
                 }}
                 key={id}
