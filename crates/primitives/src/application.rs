@@ -5,12 +5,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Eq, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ApplicationId(pub String);
 
-impl ApplicationId {
-    pub fn to_string(self) -> String {
-        self.0
-    }
-}
-
 impl Display for ApplicationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.0, f)
