@@ -5,10 +5,9 @@ import ConfirmWallet from "./pages/ConfirmWallet";
 import Identity from "./pages/Identity";
 import Applications from "./pages/Applications";
 
-import 'bootstrap/dist/css/bootstrap.min.css';
+import "bootstrap/dist/css/bootstrap.min.css";
 
 export default function App() {
-
   return (
     <>
       <BrowserRouter basename="/admin">
@@ -16,7 +15,7 @@ export default function App() {
           <Route path="/" element={<Bootstrap />} />
           <Route path="/confirm-wallet" element={<ConfirmWallet />} />
           <Route path="/identity" element={<Identity />} />
-          <Route path="/applications" element={<Identity />} />
+          <Route path="/applications" element={<Applications />} />
           <Route path="/keys" element={<Identity />} />
         </Routes>
       </BrowserRouter>

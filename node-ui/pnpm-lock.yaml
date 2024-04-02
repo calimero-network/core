@@ -5,12 +5,12 @@ settings:
   excludeLinksFromLockfile: false
 
 dependencies:
-  '@heroicons/react':
-    specifier: ^2.1.3
-    version: 2.1.3(react@18.2.0)
   '@floating-ui/react-native':
     specifier: ^0.10.4
     version: 0.10.4(react-native@0.73.6)(react@18.2.0)
+  '@heroicons/react':
+    specifier: ^2.1.3
+    version: 2.1.3(react@18.2.0)
   '@near-wallet-selector/core':
     specifier: ^8.9.5
     version: 8.9.5(near-api-js@3.0.4)
@@ -1786,13 +1786,13 @@ packages:
       '@floating-ui/utils': 0.2.1
     dev: false
 
-<<<<<<< HEAD
   /@floating-ui/dom@1.6.3:
     resolution: {integrity: sha512-RnDthu3mzPlQ31Ss/BTwQ1zjzIhr3lk1gZB1OC56h/1vEtaXkESrOqL5fQVMfXpwGtRwX+YsZBdyHtJMQnkArw==}
     dependencies:
       '@floating-ui/core': 1.6.0
       '@floating-ui/utils': 0.2.1
-=======
+    dev: false
+
   /@floating-ui/react-native@0.10.4(react-native@0.73.6)(react@18.2.0):
     resolution: {integrity: sha512-R0RiZ+XiC+S2Xw11i+HjXj8/ik006edp2SDGKELOlkP55SNE1UMfxackchi/rJfnv+qL9YHQRNySte967+kyVA==}
     peerDependencies:
@@ -1802,15 +1802,12 @@ packages:
       '@floating-ui/core': 1.6.0
       react: 18.2.0
       react-native: 0.73.6(@babel/core@7.24.3)(@babel/preset-env@7.24.3)(react@18.2.0)
->>>>>>> 4ffcef4 (save)
     dev: false
 
   /@floating-ui/utils@0.2.1:
     resolution: {integrity: sha512-9TANp6GPoMtYzQdt54kfAyMmz1+osLlXdg2ENroU7zzrtflTLrrC/lgrIfaSe+Wu0b89GKccT7vxXA0MoAIO+Q==}
     dev: false
 
-<<<<<<< HEAD
-=======
   /@hapi/hoek@9.3.0:
     resolution: {integrity: sha512-/c6rf4UJlmHlC9b5BaNvzAcFv7HZ2QHaV0D4/HNlBdvFnvQq8RI4kYdhyPCl7Xj+oWvTWQ8ujhqS53LIgAe6KQ==}
     dev: false
@@ -1821,7 +1818,6 @@ packages:
       '@hapi/hoek': 9.3.0
     dev: false
 
->>>>>>> 4ffcef4 (save)
   /@here-wallet/core@1.5.1(bn.js@5.2.1)(borsh@0.7.0)(near-api-js@3.0.4):
     resolution: {integrity: sha512-gCzB27k0QfviyJQUhxqX3kAH3g3mRHb6B5RJdUhX9tTsLlPW6AMV/PJiYBudPCt0EeyeyU4i8kEh223ACHXOjw==}
     peerDependencies:
@@ -4322,8 +4318,6 @@ packages:
     resolution: {integrity: sha512-saHYOzhIQs6wy2sVxTM6bUDsQO4F50V9RQ22qBpEdCW+I+/Wmke2HOl6lS6dTpdxVhb88/I6+Hs+438c3lfUow==}
     dev: false
 
-<<<<<<< HEAD
-=======
   /cli-cursor@3.1.0:
     resolution: {integrity: sha512-I/zHAwsKf9FqGoXM4WWRACob9+SNukZTd94DWF57E4toouRulbCxcUh6RKUEOQlYTHJnzkPMySvPNaaSLNfLZw==}
     engines: {node: '>=8'}
@@ -4336,7 +4330,6 @@ packages:
     engines: {node: '>=6'}
     dev: false
 
->>>>>>> 4ffcef4 (save)
   /clipboardy@4.0.0:
     resolution: {integrity: sha512-5mOlNS0mhX0707P2I0aZ2V/cmHUEO/fL7VFLqszkhUsxt7RwnmrInf/eEQKlf5GzvYeHIjT+Ov1HRfNmymlG0w==}
     engines: {node: '>=18'}
@@ -7745,16 +7738,6 @@ packages:
       react: 18.2.0
     dev: false
 
-<<<<<<< HEAD
-  /react-tooltip@5.26.3(react-dom@18.2.0)(react@18.2.0):
-    resolution: {integrity: sha512-MpYAws8CEHUd/RC4GaDCdoceph/T4KHM5vS5Dbk8FOmLMvvIht2ymP2htWdrke7K6lqPO8rz8+bnwWUIXeDlzg==}
-    peerDependencies:
-      react: '>=16.14.0'
-      react-dom: '>=16.14.0'
-    dependencies:
-      '@floating-ui/dom': 1.6.3
-      classnames: 2.5.1
-=======
   /react-shallow-renderer@16.15.0(react@18.2.0):
     resolution: {integrity: sha512-oScf2FqQ9LFVQgA73vr86xl2NaOIX73rh+YFqcOp68CWj56tSfgtGKrEbyhCj0rSijyG9M1CYprTh39fBi5hzA==}
     peerDependencies:
@@ -7763,6 +7746,18 @@ packages:
       object-assign: 4.1.1
       react: 18.2.0
       react-is: 18.2.0
+    dev: false
+
+  /react-tooltip@5.26.3(react-dom@18.2.0)(react@18.2.0):
+    resolution: {integrity: sha512-MpYAws8CEHUd/RC4GaDCdoceph/T4KHM5vS5Dbk8FOmLMvvIht2ymP2htWdrke7K6lqPO8rz8+bnwWUIXeDlzg==}
+    peerDependencies:
+      react: '>=16.14.0'
+      react-dom: '>=16.14.0'
+    dependencies:
+      '@floating-ui/dom': 1.6.3
+      classnames: 2.5.1
+      react: 18.2.0
+      react-dom: 18.2.0(react@18.2.0)
     dev: false
 
   /react-transition-group@4.4.5(react-dom@18.2.0)(react@18.2.0):
@@ -7775,7 +7770,6 @@ packages:
       dom-helpers: 5.2.1
       loose-envify: 1.4.0
       prop-types: 15.8.1
->>>>>>> 4ffcef4 (save)
       react: 18.2.0
       react-dom: 18.2.0(react@18.2.0)
     dev: false
