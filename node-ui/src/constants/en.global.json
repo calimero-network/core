@@ -7,5 +7,9 @@
     },
     "footer": {
         "title": "Calimero Network"
+    },
+    "navigation": {
+        "logoDashboardText": "Admin Dashboard",
+        "pkTest": "Public Key"
     }
 }
