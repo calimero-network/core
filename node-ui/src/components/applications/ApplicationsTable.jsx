@@ -23,8 +23,8 @@ const Table = styled.div`
     grid-template-columns: repeat(11, 1fr);
     grid-template-rows: auto;
     gap: 40px;
-    color: rbg(255, 255, 255, 0.7);
-    font-size: 12px;
+    color: rbg(255, 255, 255, 0.9);
+    font-size: 16px;
   }
 
   .background-item {
@@ -179,7 +179,7 @@ export function ApplicationsTable({ applications, install, uninstall }) {
 }
 
 ApplicationsTable.propTypes = {
-  applications: PropTypes.object.isRequired,
+  applications: PropTypes.array.isRequired,
   install: PropTypes.func.isRequired,
   uninstall: PropTypes.func.isRequired,
 };

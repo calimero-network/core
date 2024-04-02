@@ -1,6 +1,6 @@
 import React from "react";
 import styled from "styled-components";
-import { ApplicationsTable } from "./ApplicationsTable";
+import PropTypes from "prop-types";
 
 const ContentLayout = styled.div`
   padding: 42px 26px 26px 26px;
@@ -20,13 +20,17 @@ const ContentLayout = styled.div`
   }
 `;
 
-export function ApplicationsContent() {
+export function ApplicationsContent({ children }) {
   return (
     <ContentLayout>
       <div className="content-card">
         <div className="page-title">Applications</div>
-        <ApplicationsTable />
+        {children}
       </div>
     </ContentLayout>
   );
 }
+
+ApplicationsContent.propTypes = {
+  children: PropTypes.node.isRequired,
+};

@@ -1,130 +1,55 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import React from "react";
-import Button from "react-bootstrap/Button";
-import Dropdown from "react-bootstrap/Dropdown";
-import * as nearAPI from "near-api-js";
 import { Navigation } from "../components/Navigation";
-import styled from "styled-components";
-
-const LayoutWrapper = styled.div`
-  display: flex;
-  background-color: #121216;
-  .content {
-    padding-left: 26px;
-    padding-right: 26px;
-    padding-top: 48px;
-    padding-bottom: 26px;
-    width: 100%;
-  }
-  .content-card {
-    background-color: #353540;
-    border-radius: 4px;
-    width: 100%;
-    height: 100%;
-  }
-  .title {
-    color: #fff;
-  }
-`;
+import { FlexLayout } from "../components/layout/FlexLayout";
+import { ApplicationsContent } from "../components/applications/ApplicationsContent";
+import { ApplicationsTable } from "../components/applications/ApplicationsTable";
+import { InstallApplication } from "../components/applications/InstallApplication";
+import { useRPC } from "../hooks/useNear";
 
 export default function Applications() {
-  const [selectedPackage, setSelectedPackage] = useState("");
+  const { getPackages, getReleases, installApplication } = useRPC();
+  const [swithInstall, setSwitchInstall] = useState(true);
+  const [selectedPackage, setSelectedPackage] = useState();
+  const [selectedRelease, setSelectedRelease] = useState();
   const [packages, setPackages] = useState([]);
   const [releases, setReleases] = useState([]);
 
-  const provider = new nearAPI.providers.JsonRpcProvider(
-    `https://rpc.testnet.near.org`
-  );
-
-  if (!packages.length) {
-    (async () => { setPackages(await getPackages()); })();
-  }
+  useEffect(() => {
+    if (!packages.length) {
+      (async () => {
+        setPackages(await getPackages());
+      })();
+    }
+  }, [packages]);
 
   return (
-    <LayoutWrapper>
+    <FlexLayout>
       <Navigation />
-      <div className="content">
-        <div className="content-card">
-          <h1 className="title">Applications</h1>
-          <Dropdown>
-            <Dropdown.Toggle variant="success" id="dropdown-basic">
-              Pick application
-            </Dropdown.Toggle>
-            <Dropdown.Menu>
-            {packages.map((pkg) => (
-              <Dropdown.Item onClick={async () => {
-                setSelectedPackage(pkg.name);
-                setReleases(await getReleases(pkg.name));
-              }}>
-                {pkg.name}
-              </Dropdown.Item>
-            ))}
-            </Dropdown.Menu>
-          </Dropdown>
-          {
-            releases.map((release) => (
-              <div>
-                <h3>{release.version}</h3>
-                <p>{release.description}</p>
-              </div>
-            ))
-          }
-          <br></br>
-          <Button
-            onClick={() => installApplication(selectedPackage)}
-            variant="primary"
-          >
-            Install
-          </Button>{" "}
-        </div>
-      </div>
-    </LayoutWrapper>
+      {swithInstall ? (
+        <ApplicationsContent>
+          <InstallApplication
+            getReleases={getReleases}
+            installApplication={installApplication}
+            packages={packages}
+            releases={releases}
+            selectedPackage={selectedPackage}
+            setReleases={setReleases}
+            selectedRelease={selectedRelease}
+            setSelectedRelease={setSelectedRelease}
+            setSelectedPackage={setSelectedPackage}
+            setSwitchInstall={setSwitchInstall}
+          />
+        </ApplicationsContent>
+      ) : (
+        <ApplicationsContent>
+          <ApplicationsTable
+            applications={[]}
+            install={() => setSwitchInstall(true)}
+            uninstall={() => console.log("uninstall ?!?")}
+          />
+        </ApplicationsContent>
+      )}
+    </FlexLayout>
   );
 }
-
-const getPackages = async () => {
-  const provider = new nearAPI.providers.JsonRpcProvider(
-    `https://rpc.testnet.near.org`
-  );
-
-  const rawResult = await provider.query({
-    request_type: "call_function",
-    account_id: "calimero-package-manager.testnet",
-    method_name: "get_packages",
-    args_base64: btoa(
-      JSON.stringify({
-        offset: 0,
-        limit: 10,
-      })
-    ),
-    finality: "optimistic",
-  });
-  
-  return JSON.parse(Buffer.from(rawResult.result).toString());
-}
-
-const getReleases = async (packageName) => {
-  const provider = new nearAPI.providers.JsonRpcProvider(
-    `https://rpc.testnet.near.org`
-  );
-
-  const rawResult = await provider.query({
-    request_type: "call_function",
-    account_id: "calimero-package-manager.testnet",
-    method_name: "get_releases",
-    args_base64: btoa(
-      JSON.stringify({
-        name: packageName,
-        offset: 0,
-        limit: 10,
-      })
-    ),
-    finality: "optimistic",
-  });
-  
-  return JSON.parse(Buffer.from(rawResult.result).toString());
-}
-
-const installApplication = async (selectedPackage) => {
-  console.log(selectedPackage);
-};
