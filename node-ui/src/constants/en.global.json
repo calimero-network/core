@@ -11,5 +11,13 @@
     "navigation": {
         "logoDashboardText": "Admin Dashboard",
         "pkTest": "Public Key"
+    },
+    "applicationsTable": {
+        "title": "Applications",
+        "headerNameText": "Name",
+        "headerDescText": "Description",
+        "headerRepoText": "Repository",
+        "uninstallButtonText": "Uninstall",
+        "installButtonText": "Install new application"
     }
 }
