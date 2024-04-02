@@ -49,7 +49,10 @@ impl OnlyPeers {
             comments: Vec::new(),
         });
 
-        self.posts.last().unwrap_or_else(env::unreachable)
+        match self.posts.last() {
+            Some(post) => post,
+            None => env::unreachable(),
+        }
     }
 
     pub fn create_comment(
