@@ -67,6 +67,12 @@ impl ApplicationManager {
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
     ) -> eyre::Result<Vec<u8>> {
-        Ok(fs::read(&self.applications.get(application_id).unwrap().path).unwrap())
+        match self.applications.get(application_id) {
+            Some(application) => Ok(fs::read(&application.path)?),
+            None => eyre::bail!(
+                "failed to get application with id: {}",
+                application_id.clone().to_string()
+            ),
+        }
     }
 }

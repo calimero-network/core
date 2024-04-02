@@ -157,7 +157,8 @@ async fn create_root_key_handler(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PubKeyRequest {
-    account_id: String,
+    // unused ATM, uncomment when used
+    // account_id: String,
     public_key: String,
     signature: String,
 }
