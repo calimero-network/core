@@ -20,6 +20,7 @@ wasmer-types.workspace = true
 name = "demo"
 
 [dev-dependencies]
+assert-json-diff.workspace = true
 clap = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 owo-colors.workspace = true
