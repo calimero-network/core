@@ -24,6 +24,7 @@ members = [
 ]
 
 [workspace.dependencies]
+assert-json-diff = "2.0.2"
 async-graphql = "7.0.2"
 async-graphql-axum = "7.0.2"
 axum = "0.7.4"

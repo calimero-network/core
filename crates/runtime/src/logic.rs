@@ -1,6 +1,7 @@
 use std::num::NonZeroU64;
 
 use ouroboros::self_referencing;
+use serde::Serialize;
 
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, PanicContext};
@@ -76,7 +77,7 @@ impl<'a> VMLogic<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Outcome {
     pub returns: Result<Option<Vec<u8>>, FunctionCallError>,
     pub logs: Vec<String>,
