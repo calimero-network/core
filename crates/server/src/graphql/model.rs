@@ -30,7 +30,7 @@ impl AppQuery {
     async fn posts<'a>(&self, _ctx: &Context<'a>) -> async_graphql::Result<Vec<Post>> {
         graphql::call(
             &self.sender,
-            APPLICATION_ID.to_string(),
+            calimero_primitives::application::ApplicationId(APPLICATION_ID.to_string()),
             "posts".to_string(),
             b"{}".to_vec(),
         )
@@ -40,7 +40,7 @@ impl AppQuery {
     async fn post<'a>(&self, _ctx: &Context<'a>, id: i32) -> async_graphql::Result<Option<Post>> {
         graphql::call(
             &self.sender,
-            APPLICATION_ID.to_string(),
+            calimero_primitives::application::ApplicationId(APPLICATION_ID.to_string()),
             "post".to_string(),
             serde_json::to_vec(&json!({ "id": id }))?,
         )
@@ -74,7 +74,7 @@ impl AppMutation {
     ) -> async_graphql::Result<Post> {
         graphql::call_mut(
             &self.sender,
-            APPLICATION_ID.to_string(),
+            calimero_primitives::application::ApplicationId(APPLICATION_ID.to_string()),
             "create_post".to_string(),
             serde_json::to_vec(&json!({
                 "title": input.title,
@@ -91,7 +91,7 @@ impl AppMutation {
     ) -> async_graphql::Result<Option<Comment>> {
         graphql::call_mut(
             &self.sender,
-            APPLICATION_ID.to_string(),
+            calimero_primitives::application::ApplicationId(APPLICATION_ID.to_string()),
             "create_comment".to_string(),
             serde_json::to_vec(&json!({
                 "post_id": input.post_id,
