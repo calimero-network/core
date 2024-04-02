@@ -119,9 +119,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let tx_hash = match node
                             .call_mut(
-                                calimero_primitives::application::ApplicationId(
-                                    application_id.to_string(),
-                                ),
+                                application_id.to_owned().into(),
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
                                 tx,

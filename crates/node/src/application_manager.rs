@@ -35,16 +35,14 @@ impl ApplicationManager {
             .await?
             .hash();
 
-        self.applications.insert(
-            calimero_primitives::application::ApplicationId(
-                application_topic.clone().into_string(),
-            ),
-            application.clone(),
-        );
-
         info!(
             "Registered application {} with hash: {}",
             application.name, application_topic
+        );
+
+        self.applications.insert(
+            application_topic.as_str().to_owned().into(),
+            application.clone(),
         );
 
         Ok(())
@@ -72,7 +70,7 @@ impl ApplicationManager {
             Some(application) => Ok(fs::read(&application.path)?),
             None => eyre::bail!(
                 "failed to get application with id: {}",
-                application_id.clone().to_string()
+                application_id.as_ref()
             ),
         }
     }

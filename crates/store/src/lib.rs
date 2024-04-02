@@ -111,7 +111,7 @@ pub fn get_application_key(
     application_id: calimero_primitives::application::ApplicationId,
     key: &db::Key,
 ) -> Vec<u8> {
-    let mut application_key = Vec::from((application_id.clone().to_string() + ":").as_bytes());
+    let mut application_key = Vec::from((application_id.as_ref().to_owned() + ":").as_bytes());
     application_key.append(&mut key.clone());
     application_key
 }
