@@ -287,9 +287,9 @@ async fn handle_text_message(
 
             let body =
                 ws_primitives::ResponseBody::Error(ws_primitives::ResponseBodyError::ServerError(
-                    ws_primitives::ServerResponseError::ParseError(String::from(format!(
+                    ws_primitives::ServerResponseError::ParseError(format!(
                         "failed to deserialize request: {message}"
-                    ))),
+                    )),
                 ));
 
             ws_primitives::Response { id: None, body }
