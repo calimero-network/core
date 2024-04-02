@@ -4,3 +4,10 @@ data/
 target/
 .DS_Store
 .vscode/
+
+# typescript
+node_modules
+*.map
+coverage/
+lib/
+dist/

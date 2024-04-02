@@ -1,0 +1,59 @@
+{
+    "name": "calimero-p2p-sdk",
+    "version": "0.0.1",
+    "description": "Javascript library to interact with Calimero node",
+    "main": "lib/index.js",
+    "types": "lib/index.d.ts",
+    "dependencies": {
+        "axios": "^1.6.8"
+    },
+    "devDependencies": {
+        "@types/bn.js": "^5.1.1",
+        "@types/node": "^18.7.14",
+        "@types/uuid": "^8.3.4",
+        "browserify": "^16.2.3",
+        "bundlewatch": "^0.3.1",
+        "concurrently": "^7.3.0",
+        "jest": "^26.0.1",
+        "rimraf": "^3.0.0",
+        "semver": "^7.1.1",
+        "ts-jest": "^26.5.6",
+        "typescript": "^4.7.4",
+        "uglifyify": "^5.0.1"
+    },
+    "scripts": {
+        "dist": "pnpm browserify",
+        "browserify": "browserify -i node-fetch -i http -i https -o dist/calimero-sdk.js && browserify -i node-fetch -g uglifyify -o dist/calimero-sdk.min.js",
+        "compile": "tsc -p ./tsconfig.json",
+        "dev": "pnpm compile -w",
+        "build": "pnpm compile && pnpm browserify",
+        "test": "jest test",
+        "lint": "concurrently \"pnpm:lint:*(!fix)\"",
+        "lint:src": "eslint --ext .ts src",
+        "lint:test": "eslint --ext .js test",
+        "lint:fix": "concurrently \"pnpm:lint:*:fix\"",
+        "lint:src:fix": "eslint --ext .ts --fix src",
+        "lint:test:fix": "eslint --ext .js --fix test",
+        "prefuzz": "pnpm build",
+        "fuzz": "jsfuzz test/fuzz/borsh-roundtrip.js test/fuzz/corpus/",
+        "clean": "pnpm rimraf lib node_modules",
+        "prepare": "pnpm build",
+        "bundlewatch": "bundlewatch"
+    },
+    "bundlewatch": {
+        "files": [
+            {
+                "path": "dist/calimero-sdk.min.js",
+                "maxSize": "105kB"
+            }
+        ]
+    },
+    "files": [
+        "lib",
+        "dist",
+        "browser-exports.js"
+    ],
+    "keywords": [],
+    "license": "(MIT)",
+    "author": "Calimero Ltd"
+}
