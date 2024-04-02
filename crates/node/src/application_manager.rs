@@ -25,25 +25,26 @@ impl ApplicationManager {
     }
 
     pub async fn register_application(&mut self, application: Application) -> eyre::Result<()> {
-        let app_blob = fs::read(&application.path).unwrap();
-        let app_topic = self
+        let application_blob = fs::read(&application.path)?;
+        let application_topic = self
             .network_client
             .subscribe(calimero_network::types::IdentTopic::new(format!(
                 "/calimero/experimental/app/{}",
-                calimero_primitives::hash::Hash::hash(&app_blob),
+                calimero_primitives::hash::Hash::hash(&application_blob),
             )))
-            .await
-            .unwrap()
+            .await?
             .hash();
 
         self.applications.insert(
-            calimero_primitives::application::ApplicationId(app_topic.clone().into_string()),
+            calimero_primitives::application::ApplicationId(
+                application_topic.clone().into_string(),
+            ),
             application.clone(),
         );
 
         info!(
             "Registered application {} with hash: {}",
-            application.name, app_topic
+            application.name, application_topic
         );
 
         Ok(())
