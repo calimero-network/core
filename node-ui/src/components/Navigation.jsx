@@ -7,12 +7,11 @@ import { useLocation } from "react-router-dom";
 
 const NavigationWrapper = styled.div`
   background-color: #121216;
-  height: 100vh;
-  width: 200px;
+  width: 224px;
   padding-left: 24px;
   padding-right: 24px;
   padding-top: 12px;
-
+  height: 100vh;
   .logo-wrapper {
     display: flex;
     -webkit-box-pack: justify;
