@@ -73,7 +73,7 @@ async fn ws_handler(
 
 async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     let (commands_sender, commands_receiver) = mpsc::channel(32);
-    let (connection_id, connection_state) = loop {
+    let (connection_id, _) = loop {
         let connection_id = rand::random();
 
         match state.connections.write().await.entry(connection_id) {
@@ -117,12 +117,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
         match message {
             Message::Text(message) => {
-                tokio::spawn(handle_text_message(
-                    connection_id,
-                    state.clone(),
-                    connection_state.clone(),
-                    message,
-                ));
+                tokio::spawn(handle_text_message(connection_id, state.clone(), message));
             }
             Message::Binary(_) => {
                 debug!("Received binary message");
@@ -256,9 +251,17 @@ async fn handle_commands(
 async fn handle_text_message(
     connection_id: ws_primitives::ConnectionId,
     state: Arc<ServiceState>,
-    connection_state: ConnectionState,
     message: String,
 ) {
+    let connections = state.connections.read().await;
+    let connection_state = match connections.get(&connection_id) {
+        Some(state) => state,
+        None => {
+            error!(%connection_id, "Unexpected state, client_id not found in client state map");
+            return;
+        }
+    };
+
     if let None = state.connections.read().await.get(&connection_id) {
         error!(%connection_id, "Unexpected state, client_id not found in client state map");
         return;
