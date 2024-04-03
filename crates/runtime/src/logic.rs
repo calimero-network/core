@@ -4,7 +4,7 @@ use ouroboros::self_referencing;
 use serde::Serialize;
 
 use crate::constraint::{Constrained, MaxU64};
-use crate::errors::{FunctionCallError, HostError, PanicContext};
+use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
 use crate::store::Storage;
 
 mod errors;
@@ -129,20 +129,32 @@ impl<'a> VMHostFunctions<'a> {
 }
 
 impl<'a> VMHostFunctions<'a> {
-    pub fn panic(&self) -> Result<()> {
+    pub fn panic(&self, file_len: u64, file_ptr: u64, line: u32, column: u32) -> Result<()> {
+        let file = self.get_string(file_len, file_ptr)?;
         Err(HostError::Panic {
             context: PanicContext::Guest,
             message: "explicit panic".to_owned(),
+            location: Location::At { file, line, column },
         }
         .into())
     }
 
-    pub fn panic_utf8(&self, len: u64, ptr: u64) -> Result<()> {
-        let message = self.get_string(len, ptr)?;
+    pub fn panic_utf8(
+        &self,
+        msg_len: u64,
+        msg_ptr: u64,
+        file_len: u64,
+        file_ptr: u64,
+        line: u32,
+        column: u32,
+    ) -> Result<()> {
+        let message = self.get_string(msg_len, msg_ptr)?;
+        let file = self.get_string(file_len, file_ptr)?;
 
         Err(HostError::Panic {
             context: PanicContext::Guest,
             message,
+            location: Location::At { file, line, column },
         }
         .into())
     }
