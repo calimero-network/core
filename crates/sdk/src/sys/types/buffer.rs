@@ -3,13 +3,13 @@ use super::{Pointer, PtrSized};
 #[repr(C)]
 #[derive(Eq, Copy, Clone, Debug, PartialEq)]
 pub struct Buffer<'a> {
-    len: u64,
     ptr: PtrSized<Pointer<&'a u8>>,
+    len: u64,
 }
 
 impl<'a> Buffer<'a> {
-    pub fn new(len: usize, ptr: PtrSized<Pointer<&'a u8>>) -> Self {
-        Self { len: len as _, ptr }
+    pub fn new(ptr: PtrSized<Pointer<&'a u8>>, len: usize) -> Self {
+        Self { ptr, len: len as _ }
     }
 
     pub fn len(&self) -> usize {
@@ -21,13 +21,13 @@ impl<'a> Buffer<'a> {
     }
 
     pub fn empty() -> Self {
-        Self::new(0, PtrSized::null())
+        Self::new(PtrSized::null(), 0)
     }
 }
 
 impl From<&[u8]> for Buffer<'_> {
     fn from(slice: &[u8]) -> Self {
-        Self::new(slice.len(), slice.as_ptr().into())
+        Self::new(slice.as_ptr().into(), slice.len())
     }
 }
 
