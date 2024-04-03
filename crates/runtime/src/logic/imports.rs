@@ -17,25 +17,32 @@ impl<'a> VMLogic<'a> {
             store;
             logic: self;
 
-            fn panic(file_len: u64, file_ptr: u64, line: u32, column: u32);
-            fn panic_utf8(msg_len: u64, msg_ptr: u64, file_len: u64, file_ptr: u64, line: u32, column: u32);
+            fn panic(file_ptr: u64, file_len: u64, line: u32, column: u32);
+            fn panic_utf8(
+                msg_ptr: u64,
+                msg_len: u64,
+                file_ptr: u64,
+                file_len: u64,
+                line: u32,
+                column: u32
+            );
 
             // todo! custom memory injection
             fn register_len(register_id: u64) -> u64;
             fn read_register(register_id: u64, ptr: u64);
 
             fn input(register_id: u64);
-            fn value_return(tag: u64, value_len: u64, value_ptr: u64);
-            fn log_utf8(len: u64, ptr: u64);
+            fn value_return(tag: u64, value_ptr: u64, value_len: u64);
+            fn log_utf8(ptr: u64, len: u64);
 
             fn storage_write(
-                key_len: u64,
                 key_ptr: u64,
-                value_len: u64,
+                key_len: u64,
                 value_ptr: u64,
+                value_len: u64,
                 register_id: u64,
             ) -> u32;
-            fn storage_read(key_len: u64, key_ptr: u64, register_id: u64) -> u32;
+            fn storage_read(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
         }
     }
 }
