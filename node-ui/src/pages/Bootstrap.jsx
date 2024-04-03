@@ -6,6 +6,7 @@ import axios from "axios";
 import { Login } from "../components/login/Login";
 import { Footer } from "../components/footer/Footer";
 import styled from "styled-components";
+import { getWalletCallbackUrl } from "../utils/wallet";
 
 const fetchChallenge = async () => {
   const response = await axios.post("/admin-api/request-challenge");
@@ -29,7 +30,7 @@ const verifyOwner = async () => {
     modules: [setupMyNearWallet()],
   });
   const wallet = await selector.wallet("my-near-wallet");
-  const callbackUrl = window.location.href + "/confirm-wallet";
+  const callbackUrl = getWalletCallbackUrl();
   const message = "helloworld";
   const recipient = "me";
   console.log("Signing message:", {

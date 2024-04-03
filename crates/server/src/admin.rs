@@ -133,7 +133,6 @@ async fn create_root_key_handler(
 ) -> impl IntoResponse {
     let message = "helloworld";
     let app = "me";
-    let curl = "http://127.0.0.1:2428/admin/confirm-wallet";
 
     match session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
         Some(challenge) => {
@@ -141,7 +140,7 @@ async fn create_root_key_handler(
                 &challenge,
                 message,
                 app,
-                curl,
+                &req.callback_url,
                 &req.signature,
                 &req.public_key,
             ) {
@@ -161,4 +160,5 @@ struct PubKeyRequest {
     // account_id: String,
     public_key: String,
     signature: String,
+    callback_url: String,
 }
