@@ -44,7 +44,6 @@ pub(crate) fn service(
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
-        .route("/get-applications", get(get_installed_applications_handler))
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
@@ -170,10 +169,7 @@ pub struct Release {
     pub hash: String,
 }
 
-pub async fn get_release(
-    application: &String,
-    version: &String,
-) -> eyre::Result<Release> {
+pub async fn get_release(application: &String, version: &String) -> eyre::Result<Release> {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let request = methods::query::RpcQueryRequest {
         block_reference: BlockReference::Finality(Finality::Final),
@@ -208,9 +204,7 @@ pub async fn download_release(release: Release) -> eyre::Result<()> {
 pub async fn verify_release(release: Release, blob: String) {}
 
 pub async fn install_application(application: &String, version: &String) -> eyre::Result<()> {
-    download_release(
-        get_release(application, version).await?
-    ).await
+    download_release(get_release(application, version).await?).await
 }
 
 async fn install_application_handler(session: Session, Json(req): Json<InstallApplicationRequest>) {
