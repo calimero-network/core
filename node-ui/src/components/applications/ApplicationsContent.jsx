@@ -2,7 +2,7 @@ import React from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
 
-const ContentLayout = styled.div`
+export const ContentLayout = styled.div`
   padding: 42px 26px 26px 26px;
   display: flex;
   flex: 1;
