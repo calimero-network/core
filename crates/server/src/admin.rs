@@ -4,6 +4,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use eyre::eyre;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{AccountId, BlockReference, Finality, FunctionArgs};
@@ -15,7 +16,6 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
-
 
 use crate::verifysignature;
 
@@ -163,16 +163,18 @@ async fn create_root_key_handler(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Package {
-    name: String,
-    description: String,
-    repository: String,
-    owner: AccountId
+pub struct Release {
+    pub version: String,
+    pub notes: String,
+    pub path: String,
+    pub hash: String,
 }
 
-pub async fn get_application_metadata(application: String, version: String) -> eyre::Result<()>{
+pub async fn get_release(
+    application: &String,
+    version: &String,
+) -> eyre::Result<Release> {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
-
     let request = methods::query::RpcQueryRequest {
         block_reference: BlockReference::Finality(Finality::Final),
         request: QueryRequest::CallFunction {
@@ -180,7 +182,7 @@ pub async fn get_application_metadata(application: String, version: String) -> e
             method_name: "get_release".to_string(),
             args: FunctionArgs::from(
                 json!({
-                    "application": application,
+                    "name": application,
                     "version": version
                 })
                 .to_string()
@@ -191,45 +193,28 @@ pub async fn get_application_metadata(application: String, version: String) -> e
 
     let response = client.call(request).await?;
     if let QueryResponseKind::CallResult(result) = response.kind {
-        println!("{:#?}", from_slice::<Package>(&result.result)?);
+        return Ok(from_slice::<Release>(&result.result)?);
+    } else {
+        Err(eyre!("Failed to fetch data from the rpc endpoint"))
     }
-
-    Ok(())
 }
 
-pub async fn download_application(application: String, version: String) -> eyre::Result<()> {
+pub async fn download_release(release: Release) -> eyre::Result<()> {
     let app_path = "";
+    //verify_release(release, blob);
     Ok(())
 }
 
-pub async fn verify_application(application: String, version: String, blob: String) {
+pub async fn verify_release(release: Release, blob: String) {}
 
+pub async fn install_application(application: &String, version: &String) -> eyre::Result<()> {
+    download_release(
+        get_release(application, version).await?
+    ).await
 }
 
-pub fn install_application(application: String, version: String) -> eyre::Result<()> {
-    get_application_metadata(application, version);
-
-    //let blob = download_application((application), version);
-
-    //verify_application(blob)
-    Ok(())
-}
-
-pub fn get_installed_applications() {
-
-}
-
-async fn install_application_handler(session: Session) {
-    if let (Some(application), Some(version)) = (
-            session.get::<String>("application").await.ok().flatten(),
-            session.get::<String>("version").await.ok().flatten()
-        ) {
-            install_application(application, version);
-    }
-}
-
-async fn get_installed_applications_handler(session: String) -> impl IntoResponse {
-    (StatusCode::OK, "alive")
+async fn install_application_handler(session: Session, Json(req): Json<InstallApplicationRequest>) {
+    install_application(&req.application, &req.version).await;
 }
 
 #[derive(Deserialize)]
@@ -238,4 +223,10 @@ struct PubKeyRequest {
     account_id: String,
     public_key: String,
     signature: String,
+}
+
+#[derive(Deserialize)]
+struct InstallApplicationRequest {
+    application: String,
+    version: String,
 }
