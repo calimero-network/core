@@ -43,9 +43,5 @@ export function useRPC() {
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
-  const installApplication = async (selectedPackage, selectedVersion) => {
-    console.log(selectedPackage, selectedVersion);
-  };
-
-  return { getPackages, getReleases, installApplication };
+  return { getPackages, getReleases };
 }

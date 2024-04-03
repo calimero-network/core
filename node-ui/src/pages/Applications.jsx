@@ -6,9 +6,11 @@ import { ApplicationsContent } from "../components/applications/ApplicationsCont
 import { ApplicationsTable } from "../components/applications/ApplicationsTable";
 import { InstallApplication } from "../components/applications/InstallApplication";
 import { useRPC } from "../hooks/useNear";
+import { useAdminClient } from "../hooks/useAdminClient";
 
 export default function Applications() {
-  const { getPackages, getReleases, installApplication } = useRPC();
+  const { getPackages, getReleases } = useRPC();
+  const { installApplication } = useAdminClient();
   const [swithInstall, setSwitchInstall] = useState(true);
   const [selectedPackage, setSelectedPackage] = useState();
   const [selectedRelease, setSelectedRelease] = useState();
