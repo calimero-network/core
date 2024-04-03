@@ -19,5 +19,14 @@
         "headerRepoText": "Repository",
         "uninstallButtonText": "Uninstall",
         "installButtonText": "Install new application"
+    },
+    "confirmWallet": {
+        "logoText": "Admin Dashboard",
+        "title": "Confirm Wallet",
+        "accountIdText": "Account Id",
+        "signatureText": "Signature",
+        "publicKeyText": "PublicKey",
+        "callbackUrlText": "Callback Url",
+        "submitButtonText": "Submit Request"
     }
 }
