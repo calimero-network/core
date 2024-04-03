@@ -4,16 +4,19 @@ const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(PtrSized::MAX.as_usi
 
 const STATE_KEY: &[u8] = b"STATE";
 
+#[track_caller]
 fn expected_register<T>() -> T {
     panic_str("Expected a register to be set, but it was not.");
 }
 
+#[track_caller]
 pub fn panic() -> ! {
-    unsafe { sys::panic() }
+    unsafe { sys::panic(sys::Location::caller()) }
 }
 
+#[track_caller]
 pub fn panic_str(message: &str) -> ! {
-    unsafe { sys::panic_utf8(sys::Buffer::from(message)) }
+    unsafe { sys::panic_utf8(sys::Buffer::from(message), sys::Location::caller()) }
 }
 
 pub fn setup_panic_hook() {
@@ -26,23 +29,16 @@ pub fn setup_panic_hook() {
             },
         };
 
-        let payload = match info.location() {
-            Some(location) => format!("panicked at {}: {}", location, message),
-            None => format!("fatal: panicked at unknown location: {}", message),
-        };
-
-        panic_str(&payload);
+        unsafe {
+            sys::panic_utf8(
+                sys::Buffer::from(message),
+                sys::Location::from(info.location()),
+            )
+        }
     }));
 }
 
-pub fn abort() -> ! {
-    #[cfg(target_arch = "wasm32")]
-    core::arch::wasm32::unreachable();
-
-    #[cfg(not(target_arch = "wasm32"))]
-    panic()
-}
-
+#[track_caller]
 pub fn unreachable() -> ! {
     #[cfg(target_arch = "wasm32")]
     core::arch::wasm32::unreachable();

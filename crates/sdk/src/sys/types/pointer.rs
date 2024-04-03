@@ -26,6 +26,10 @@ impl<T> PtrSized<Pointer<&T>> {
             _phantom: PhantomData,
         }
     }
+
+    pub fn null() -> Self {
+        Self::new(std::ptr::null())
+    }
 }
 
 impl<T> PtrSized<Pointer<&mut T>> {
