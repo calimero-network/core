@@ -51,7 +51,7 @@ async fn graphiql(path: &str) -> Html<String> {
 
 async fn _call<T>(
     sender: &crate::ServerSender,
-    application_id: String,
+    application_id: calimero_primitives::application::ApplicationId,
     method: String,
     args: Vec<u8>,
     writes: bool,
@@ -78,7 +78,7 @@ where
 
 async fn call<T>(
     sender: &crate::ServerSender,
-    application_id: String,
+    application_id: calimero_primitives::application::ApplicationId,
     method: String,
     args: Vec<u8>,
 ) -> Result<T, async_graphql::Error>
@@ -90,7 +90,7 @@ where
 
 async fn call_mut<T>(
     sender: &crate::ServerSender,
-    application_id: String,
+    application_id: calimero_primitives::application::ApplicationId,
     method: String,
     args: Vec<u8>,
 ) -> Result<T, async_graphql::Error>

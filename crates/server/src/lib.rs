@@ -21,7 +21,7 @@ pub mod ws;
 // TODO: add comments or even better make it explicit types
 type ServerSender = mpsc::Sender<(
     // todo! move to calimero-node-primitives
-    String,
+    calimero_primitives::application::ApplicationId,
     String,
     Vec<u8>,
     bool,
