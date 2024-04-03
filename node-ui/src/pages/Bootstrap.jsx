@@ -29,7 +29,7 @@ const verifyOwner = async () => {
     modules: [setupMyNearWallet()],
   });
   const wallet = await selector.wallet("my-near-wallet");
-  const callbackUrl = window.location.href + "confirm-wallet";
+  const callbackUrl = window.location.href + "/confirm-wallet";
   const message = "helloworld";
   const recipient = "me";
   console.log("Signing message:", {
