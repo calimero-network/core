@@ -67,11 +67,11 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
             register_id,
             sys::BufferMut::new(sys::PtrSized::from(buffer.as_mut_ptr()), len),
         )
-        .as_bool()
+        .try_into()
         {
-            Some(true) => (),
-            Some(false) => panic_str("Buffer is too small."),
-            None => panic_str("Unexpected read register result."),
+            Ok(true) => (),
+            Ok(false) => panic_str("Buffer is too small."),
+            Err(val) => panic_str(&format!("Expected bool as 0|1, got: {}.", val)),
         }
     }
 
@@ -98,10 +98,10 @@ pub fn log(message: &str) {
 }
 
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    match unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }.as_bool() {
-        Some(false) => None,
-        Some(true) => Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register)),
-        None => panic_str("Storage read failed."),
+    match unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }.try_into() {
+        Ok(false) => None,
+        Ok(true) => Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register)),
+        Err(val) => panic_str(&format!("Expected bool as 0|1, got: {}.", val)),
     }
 }
 
@@ -120,9 +120,9 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
             sys::Buffer::from(value),
             DATA_REGISTER,
         )
-        .as_bool()
+        .try_into()
     }
-    .unwrap_or_else(|| panic_str("Storage write failed."))
+    .unwrap_or_else(|val| panic_str(&format!("Expected bool as 0|1, got: {}.", val)))
 }
 
 pub fn state_write<T: borsh::BorshSerialize>(state: &T) {
