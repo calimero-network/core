@@ -54,7 +54,7 @@ pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
         return None;
     }
 
-    Some(len.into())
+    Some(len.as_usize())
 }
 
 pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
@@ -63,10 +63,19 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
     let mut buffer = Vec::with_capacity(len);
 
     unsafe {
-        sys::read_register(register_id, sys::PtrSized::from(buffer.as_mut_ptr()));
-
-        buffer.set_len(len);
+        match sys::read_register(
+            register_id,
+            sys::BufferMut::new(sys::PtrSized::from(buffer.as_mut_ptr()), len),
+        )
+        .as_bool()
+        {
+            Some(true) => (),
+            Some(false) => panic_str("Buffer is too small."),
+            None => panic_str("Unexpected read register result."),
+        }
     }
+
+    unsafe { buffer.set_len(len) };
 
     Some(buffer)
 }
