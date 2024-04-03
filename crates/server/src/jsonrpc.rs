@@ -127,7 +127,7 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
 
 pub(crate) async fn call(
     sender: crate::ServerSender,
-    app_id: String,
+    application_id: calimero_primitives::application::ApplicationId,
     method: String,
     args: Vec<u8>,
     writes: bool,
@@ -135,7 +135,7 @@ pub(crate) async fn call(
     let (result_sender, result_receiver) = oneshot::channel();
 
     sender
-        .send((app_id, method, args, writes, result_sender))
+        .send((application_id, method, args, writes, result_sender))
         .await?;
 
     let outcome = result_receiver.await?;
@@ -144,10 +144,11 @@ pub(crate) async fn call(
         info!("RPC log: {}", log);
     }
 
-    match outcome.returns? {
-        Some(returns) => Ok(Some(String::from_utf8(returns)?)),
-        None => Ok(None),
-    }
+    let Some(returns) = outcome.returns? else {
+        return Ok(None);
+    };
+
+    Ok(Some(String::from_utf8(returns)?))
 }
 
 macro_rules! _mount_method {

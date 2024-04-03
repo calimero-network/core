@@ -1,3 +1,4 @@
+pub mod application;
 pub mod common;
 pub mod events;
 pub mod hash;

@@ -11,8 +11,8 @@ use tracing::{info, warn};
 
 use crate::cli;
 
-#[derive(Debug, Parser)]
 /// Initialize node configuration
+#[derive(Debug, Parser)]
 // todo! simplify this, by splitting the steps
 // todo! $ calimero node init
 // todo! $ calimero node config 'swarm.listen:=["", ""]' server.graphql:=true discovery.mdns:=false

@@ -1,0 +1,23 @@
+{
+    "loginPage": {
+        "logoDashboardText": "Admin Dashboard",
+        "title": "Calimero Node Admin Dashboard",
+        "subtitle": "Start using Calimero by selecting your wallet.",
+        "buttonConnectText": "Connect Wallet"
+    },
+    "footer": {
+        "title": "Calimero Network"
+    },
+    "navigation": {
+        "logoDashboardText": "Admin Dashboard",
+        "pkTest": "Public Key"
+    },
+    "applicationsTable": {
+        "title": "Applications",
+        "headerNameText": "Name",
+        "headerDescText": "Description",
+        "headerRepoText": "Repository",
+        "uninstallButtonText": "Uninstall",
+        "installButtonText": "Install new application"
+    }
+}

@@ -10,3 +10,5 @@ license.workspace = true
 camino.workspace = true
 eyre.workspace = true
 rocksdb.workspace = true
+
+calimero-primitives = { path = "../primitives" }

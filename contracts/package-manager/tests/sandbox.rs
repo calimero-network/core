@@ -1,16 +1,14 @@
-use std::{env, fs};
+use std::env;
 
 use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract};
 use serde_json::json;
+use tokio::fs;
 
-#[tokio::main]
+#[tokio::test]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let wasm_arg: &str = &(env::args().nth(1).unwrap());
-    let wasm_filepath = fs::canonicalize(env::current_dir()?.join(wasm_arg))?;
-
     let worker = near_workspaces::sandbox().await?;
-    let wasm = std::fs::read(wasm_filepath)?;
+    let wasm = tokio::fs::read("res/package_manager.wasm").await?;
     let contract = worker.dev_deploy(&wasm).await?;
 
     // create accounts

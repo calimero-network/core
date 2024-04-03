@@ -174,9 +174,9 @@ impl EventLoop {
         loop {
             tokio::select! {
                 event = self.swarm.next() => self.handle_swarm_event(event.expect("Swarm stream to be infinite.")).await,
-                command = self.command_receiver.recv() => match command {
-                    Some(c) => self.handle_command(c).await,
-                    None => break,
+                command = self.command_receiver.recv() => {
+                    let Some(c) = command else { break };
+                    self.handle_command(c).await;
                 }
             }
         }

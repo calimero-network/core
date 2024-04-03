@@ -21,10 +21,10 @@ impl RocksDB {
 
 impl Database for RocksDB {
     fn get(&self, key: &Key) -> eyre::Result<Option<Vec<u8>>> {
-        match self.inner.get(key)? {
-            Some(value) => Ok(Some(value.to_vec())),
-            None => Ok(None),
-        }
+        let Some(value) = self.inner.get(key)? else {
+            return Ok(None);
+        };
+        Ok(Some(value.to_vec()))
     }
 
     fn put(&self, key: &Key, value: Value) -> eyre::Result<()> {
