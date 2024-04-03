@@ -44,6 +44,7 @@ pub(crate) fn service(
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
+        .route("/add-client-key", post(add_client_key_handler))
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
@@ -160,6 +161,24 @@ async fn create_root_key_handler(
     }
 }
 
+//* Register client key to authenticate client requests  */
+async fn add_client_key_handler(
+    session: Session,
+    Json(req): Json<AddClientKeyRequest>,
+) -> impl IntoResponse {
+
+    // Detect which root key is used by checking wallet type -> NEAR or ETH.
+
+    // Use signing key to check if it exists in root keys list
+
+    // Use that signing key and check node signature to validate that challenge is fine
+
+    // Check challenge to verify if it has expired or not
+
+    // Extract clientPublicKey and add it to list of client keys
+
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Release {
     pub version: String,
@@ -224,4 +243,10 @@ struct PubKeyRequest {
 struct InstallApplicationRequest {
     application: String,
     version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddClientKeyRequest {
+    public_key: String,
 }
