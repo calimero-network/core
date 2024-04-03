@@ -20,6 +20,8 @@ pub struct ConfigFile {
     pub network: NetworkConfig,
 
     pub store: StoreConfig,
+
+    pub application: ApplicationConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,6 +56,11 @@ pub struct ServerConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StoreConfig {
+    pub path: camino::Utf8PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApplicationConfig {
     pub path: camino::Utf8PathBuf,
 }
 

@@ -1,7 +1,10 @@
+use std::io::Cursor;
+use std::sync::Arc;
+
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use eyre::eyre;
@@ -23,12 +26,16 @@ use crate::verifysignature;
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
+    pub application_dir: camino::Utf8PathBuf,
+}
+pub(crate) struct ServiceState {
+    application_dir: camino::Utf8PathBuf,
 }
 
 pub(crate) fn service(
     config: &crate::config::ServerConfig,
 ) -> eyre::Result<Option<(&'static str, Router)>> {
-    let _config = match &config.admin {
+    let config = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
             info!("Admin api is disabled");
@@ -39,11 +46,17 @@ pub(crate) fn service(
 
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
+    let state = Arc::new(ServiceState {
+        application_dir: config.application_dir.clone(),
+    });
     let admin_router = Router::new()
         .route("/health", get(health_check_handler))
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
-        .route("/install-application", post(install_application_handler))
+        .route(
+            "/install-application",
+            post(install_application_handler).layer(Extension(state)),
+        )
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
@@ -194,20 +207,30 @@ pub async fn get_release(application: &String, version: &String) -> eyre::Result
     }
 }
 
-pub async fn download_release(release: Release) -> eyre::Result<()> {
-    let app_path = "";
-    //verify_release(release, blob);
+pub async fn download_release(application: &String, release: &Release, dir: &camino::Utf8PathBuf) -> eyre::Result<()> {
+    let mut file = std::fs::File::create(dir.join("/".to_owned() + application + "/" + &release.version + "/binary.wasm"))?;
+    let mut content = Cursor::new(reqwest::get(&release.path).await?.bytes().await?);
+    std::io::copy(&mut content, &mut file)?;
     Ok(())
 }
 
 pub async fn verify_release(release: Release, blob: String) {}
 
-pub async fn install_application(application: &String, version: &String) -> eyre::Result<()> {
-    download_release(get_release(application, version).await?).await
+pub async fn install_application(
+    application: &String,
+    version: &String,
+    dir: &camino::Utf8PathBuf,
+) -> eyre::Result<()> {
+    let release = get_release(application, version).await?;
+    download_release(application, &release, dir).await
 }
 
-async fn install_application_handler(session: Session, Json(req): Json<InstallApplicationRequest>) {
-    install_application(&req.application, &req.version).await;
+async fn install_application_handler(
+    Extension(state): Extension<Arc<ServiceState>>,
+    session: Session,
+    Json(req): Json<InstallApplicationRequest>,
+) {
+    install_application(&req.application, &req.version, &state.application_dir).await;
 }
 
 #[derive(Deserialize)]
