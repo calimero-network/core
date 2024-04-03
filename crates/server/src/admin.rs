@@ -4,8 +4,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use eyre::eyre;
+use near_jsonrpc_client::{methods, JsonRpcClient};
+use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_primitives::types::{AccountId, BlockReference, Finality, FunctionArgs};
+use near_primitives::views::QueryRequest;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
+use serde_json::{from_slice, json};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
@@ -37,6 +43,7 @@ pub(crate) fn service(
         .route("/health", get(health_check_handler))
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
+        .route("/install-application", post(install_application_handler))
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
@@ -133,7 +140,6 @@ async fn create_root_key_handler(
 ) -> impl IntoResponse {
     let message = "helloworld";
     let app = "me";
-    let curl = "http://127.0.0.1:2428/admin/confirm-wallet";
 
     match session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
         Some(challenge) => {
@@ -141,7 +147,7 @@ async fn create_root_key_handler(
                 &challenge,
                 message,
                 app,
-                curl,
+                &req.callback_url,
                 &req.signature,
                 &req.public_key,
             ) {
@@ -154,6 +160,56 @@ async fn create_root_key_handler(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct Release {
+    pub version: String,
+    pub notes: String,
+    pub path: String,
+    pub hash: String,
+}
+
+pub async fn get_release(application: &String, version: &String) -> eyre::Result<Release> {
+    let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+    let request = methods::query::RpcQueryRequest {
+        block_reference: BlockReference::Finality(Finality::Final),
+        request: QueryRequest::CallFunction {
+            account_id: "calimero-package-manager.testnet".parse()?,
+            method_name: "get_release".to_string(),
+            args: FunctionArgs::from(
+                json!({
+                    "name": application,
+                    "version": version
+                })
+                .to_string()
+                .into_bytes(),
+            ),
+        },
+    };
+
+    let response = client.call(request).await?;
+    if let QueryResponseKind::CallResult(result) = response.kind {
+        return Ok(from_slice::<Release>(&result.result)?);
+    } else {
+        Err(eyre!("Failed to fetch data from the rpc endpoint"))
+    }
+}
+
+pub async fn download_release(release: Release) -> eyre::Result<()> {
+    let app_path = "";
+    //verify_release(release, blob);
+    Ok(())
+}
+
+pub async fn verify_release(release: Release, blob: String) {}
+
+pub async fn install_application(application: &String, version: &String) -> eyre::Result<()> {
+    download_release(get_release(application, version).await?).await
+}
+
+async fn install_application_handler(session: Session, Json(req): Json<InstallApplicationRequest>) {
+    install_application(&req.application, &req.version).await;
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PubKeyRequest {
@@ -161,4 +217,11 @@ struct PubKeyRequest {
     // account_id: String,
     public_key: String,
     signature: String,
+    callback_url: String,
+}
+
+#[derive(Deserialize)]
+struct InstallApplicationRequest {
+    application: String,
+    version: String,
 }

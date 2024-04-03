@@ -31,7 +31,7 @@ pub(crate) fn verify_signature(
     challenge: &str,
     message: &str,
     app: &str,
-    curl: &str,
+    callback_url: &str,
     signature_base64: &str,
     public_key_str: &str,
 ) -> bool {
@@ -39,7 +39,7 @@ pub(crate) fn verify_signature(
         return false;
     };
 
-    let payload: Payload = create_payload(message, nonce, app, curl);
+    let payload: Payload = create_payload(message, nonce, app, callback_url);
     let mut borsh_payload: Vec<u8> = Vec::new();
     payload.serialize(&mut borsh_payload).unwrap();
 

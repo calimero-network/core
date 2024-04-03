@@ -30,8 +30,8 @@ const NavigationWrapper = styled.div`
   }
   .dashboard-text {
     position: absolute;
-    left: 3.2rem;
-    top: 1rem;
+    left: 2.8rem;
+    top: 2rem;
     width: max-content;
     font-size: 10px;
     color: #fff;
