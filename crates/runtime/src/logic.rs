@@ -4,7 +4,7 @@ use ouroboros::self_referencing;
 use serde::Serialize;
 
 use crate::constraint::{Constrained, MaxU64};
-use crate::errors::{FunctionCallError, HostError, PanicContext};
+use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
 use crate::store::Storage;
 
 mod errors;
@@ -113,7 +113,7 @@ pub struct VMHostFunctions<'a> {
 }
 
 impl<'a> VMHostFunctions<'a> {
-    fn read_guest_memory(&self, len: u64, ptr: u64) -> Result<Vec<u8>> {
+    fn read_guest_memory(&self, ptr: u64, len: u64) -> Result<Vec<u8>> {
         let mut buf = vec![0; len as usize];
 
         self.borrow_memory().read(ptr, &mut buf)?;
@@ -121,28 +121,40 @@ impl<'a> VMHostFunctions<'a> {
         Ok(buf)
     }
 
-    fn get_string(&self, len: u64, ptr: u64) -> Result<String> {
-        let buf = self.read_guest_memory(len, ptr)?;
+    fn get_string(&self, ptr: u64, len: u64) -> Result<String> {
+        let buf = self.read_guest_memory(ptr, len)?;
 
         String::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
     }
 }
 
 impl<'a> VMHostFunctions<'a> {
-    pub fn panic(&self) -> Result<()> {
+    pub fn panic(&self, file_ptr: u64, file_len: u64, line: u32, column: u32) -> Result<()> {
+        let file = self.get_string(file_ptr, file_len)?;
         Err(HostError::Panic {
             context: PanicContext::Guest,
             message: "explicit panic".to_owned(),
+            location: Location::At { file, line, column },
         }
         .into())
     }
 
-    pub fn panic_utf8(&self, len: u64, ptr: u64) -> Result<()> {
-        let message = self.get_string(len, ptr)?;
+    pub fn panic_utf8(
+        &self,
+        msg_ptr: u64,
+        msg_len: u64,
+        file_ptr: u64,
+        file_len: u64,
+        line: u32,
+        column: u32,
+    ) -> Result<()> {
+        let message = self.get_string(msg_ptr, msg_len)?;
+        let file = self.get_string(file_ptr, file_len)?;
 
         Err(HostError::Panic {
             context: PanicContext::Guest,
             message,
+            location: Location::At { file, line, column },
         }
         .into())
     }
@@ -171,8 +183,8 @@ impl<'a> VMHostFunctions<'a> {
         Ok(())
     }
 
-    pub fn value_return(&mut self, tag: u64, len: u64, ptr: u64) -> Result<()> {
-        let buf = self.read_guest_memory(len, ptr)?;
+    pub fn value_return(&mut self, tag: u64, ptr: u64, len: u64) -> Result<()> {
+        let buf = self.read_guest_memory(ptr, len)?;
 
         let result = match tag {
             0 => Ok(buf),
@@ -185,28 +197,28 @@ impl<'a> VMHostFunctions<'a> {
         Ok(())
     }
 
-    pub fn log_utf8(&mut self, len: u64, ptr: u64) -> Result<()> {
+    pub fn log_utf8(&mut self, ptr: u64, len: u64) -> Result<()> {
         let logic = self.borrow_logic();
 
         if logic.logs.len() >= logic.limits.max_logs as usize {
             return Err(HostError::LogsOverflow.into());
         }
 
-        let message = self.get_string(len, ptr)?;
+        let message = self.get_string(ptr, len)?;
 
         self.with_logic_mut(|logic| logic.logs.push(message));
 
         Ok(())
     }
 
-    pub fn storage_read(&mut self, key_len: u64, key_ptr: u64, register_id: u64) -> Result<u32> {
+    pub fn storage_read(&mut self, key_ptr: u64, key_len: u64, register_id: u64) -> Result<u32> {
         let logic = self.borrow_logic();
 
         if key_len > logic.limits.max_storage_key_size.get() {
             return Err(HostError::KeyLengthOverflow.into());
         }
 
-        let key = self.read_guest_memory(key_len, key_ptr)?;
+        let key = self.read_guest_memory(key_ptr, key_len)?;
 
         if let Some(value) = logic.storage.get(&key) {
             self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, value))?;
@@ -219,10 +231,10 @@ impl<'a> VMHostFunctions<'a> {
 
     pub fn storage_write(
         &mut self,
-        key_len: u64,
         key_ptr: u64,
-        value_len: u64,
+        key_len: u64,
         value_ptr: u64,
+        value_len: u64,
         register_id: u64,
     ) -> Result<u32> {
         let logic = self.borrow_logic();
@@ -235,8 +247,8 @@ impl<'a> VMHostFunctions<'a> {
             return Err(HostError::ValueLengthOverflow.into());
         }
 
-        let key = self.read_guest_memory(key_len, key_ptr)?;
-        let value = self.read_guest_memory(value_len, value_ptr)?;
+        let key = self.read_guest_memory(key_ptr, key_len)?;
+        let value = self.read_guest_memory(value_ptr, value_len)?;
 
         let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
 

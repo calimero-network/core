@@ -6,8 +6,8 @@ mod types;
 pub use types::*;
 
 extern "C" {
-    pub fn panic() -> !;
-    pub fn panic_utf8(msg: Buffer) -> !;
+    pub fn panic(loc: Location) -> !;
+    pub fn panic_utf8(msg: Buffer, loc: Location) -> !;
     // --
     pub fn register_len(register_id: RegisterId) -> PtrSized<Integer>;
     pub fn read_register(register_id: RegisterId, ptr: PtrSized<Pointer<&mut u8>>);
