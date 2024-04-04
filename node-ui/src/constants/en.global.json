@@ -39,5 +39,17 @@
         "expandEditorTitle": "Edit DID",
         "cancelButtonText": "Cancel",
         "saveButtonText": "Save"
+    },
+    "uploadPage": {
+        "title": "Upload Application"
+    },
+    "uploadApplication": {
+        "title": "IPFS Application upload",
+        "inputLabelText": "Select Application .wasm file to upload",
+        "buttonUploadLabel": "Upload to IPFS",
+        "buttonUploadText": "Upload",
+        "cidLabelText": "File IPFS CID",
+        "downloadButtonText": "Create Download Url",
+        "downloadText": "Download:"
     }
 }

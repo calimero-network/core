@@ -7,6 +7,7 @@ import Applications from "./pages/Applications";
 import Keys from "./pages/KeyManagement";
 
 import "bootstrap/dist/css/bootstrap.min.css";
+import UploadApp from "./pages/UploadApp";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/identity" element={<Identity />} />
           <Route path="/applications" element={<Applications />} />
           <Route path="/keys" element={<Keys />} />
+          <Route path="/upload-app" element={<UploadApp />} />
         </Routes>
       </BrowserRouter>
     </>
