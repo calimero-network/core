@@ -9,8 +9,8 @@ extern "C" {
     pub fn panic(loc: Location) -> !;
     pub fn panic_utf8(msg: Buffer, loc: Location) -> !;
     // --
-    pub fn register_len(register_id: RegisterId) -> PtrSized<Integer>;
-    pub fn read_register(register_id: RegisterId, ptr: PtrSized<Pointer<&mut u8>>);
+    pub fn register_len(register_id: RegisterId) -> PtrSizedInt;
+    pub fn read_register(register_id: RegisterId, buf: BufferMut) -> Bool;
     // --
     pub fn input(register_id: RegisterId);
     pub fn value_return(value: ValueReturn);

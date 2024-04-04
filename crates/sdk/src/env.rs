@@ -1,6 +1,6 @@
-use crate::sys::{self, PtrSized};
+use crate::sys;
 
-const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(PtrSized::MAX.as_usize() - 1);
+const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(sys::PtrSizedInt::MAX.as_usize() - 1);
 
 const STATE_KEY: &[u8] = b"STATE";
 
@@ -50,11 +50,11 @@ pub fn unreachable() -> ! {
 pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
     let len = unsafe { sys::register_len(register_id) };
 
-    if len == PtrSized::MAX {
+    if len == sys::PtrSizedInt::MAX {
         return None;
     }
 
-    Some(len.into())
+    Some(len.as_usize())
 }
 
 pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
@@ -63,9 +63,13 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
     let mut buffer = Vec::with_capacity(len);
 
     unsafe {
-        sys::read_register(register_id, sys::PtrSized::from(buffer.as_mut_ptr()));
-
         buffer.set_len(len);
+
+        match sys::read_register(register_id, sys::BufferMut::new(&mut buffer)).try_into() {
+            Ok(true) => (),
+            Ok(false) => panic_str("Buffer is too small."),
+            Err(val) => panic_str(&format!("Expected bool as 0|1, got: {}.", val)),
+        }
     }
 
     Some(buffer)
@@ -81,7 +85,7 @@ where
     T: AsRef<[u8]>,
     E: AsRef<[u8]>,
 {
-    unsafe { sys::value_return(sys::ValueReturn::from(result)) }
+    unsafe { sys::value_return(sys::ValueReturn::from(result.as_ref())) }
 }
 
 pub fn log(message: &str) {
@@ -89,10 +93,10 @@ pub fn log(message: &str) {
 }
 
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    match unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }.as_bool() {
-        Some(false) => None,
-        Some(true) => Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register)),
-        None => panic_str("Storage read failed."),
+    match unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }.try_into() {
+        Ok(false) => None,
+        Ok(true) => Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register)),
+        Err(val) => panic_str(&format!("Expected bool as 0|1, got: {}.", val)),
     }
 }
 
@@ -111,9 +115,9 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
             sys::Buffer::from(value),
             DATA_REGISTER,
         )
-        .as_bool()
+        .try_into()
     }
-    .unwrap_or_else(|| panic_str("Storage write failed."))
+    .unwrap_or_else(|val| panic_str(&format!("Expected bool as 0|1, got: {}.", val)))
 }
 
 pub fn state_write<T: borsh::BorshSerialize>(state: &T) {

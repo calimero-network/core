@@ -101,9 +101,7 @@ pub extern "C" fn create_post() {
         Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
     };
 
-    let Some(mut app) = env::state_read::<OnlyPeers>() else {
-        env::panic_str("Failed to read app state.")
-    };
+    let mut app = env::state_read::<OnlyPeers>().unwrap_or_default();
 
     let value = app.create_post(title, content);
 

@@ -36,7 +36,7 @@ const LoginWrapper = styled.div`
   .dashboard-text {
     position: absolute;
     left: 3.2rem;
-    top: 1rem;
+    top: 2rem;
     width: max-content;
     font-size: 12px;
     color: #fff;

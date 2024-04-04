@@ -29,7 +29,7 @@ impl<'a> VMLogic<'a> {
 
             // todo! custom memory injection
             fn register_len(register_id: u64) -> u64;
-            fn read_register(register_id: u64, ptr: u64);
+            fn read_register(register_id: u64, ptr: u64, len: u64) -> u32;
 
             fn input(register_id: u64);
             fn value_return(tag: u64, value_ptr: u64, value_len: u64);
