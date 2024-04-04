@@ -39,5 +39,18 @@
         "expandEditorTitle": "Edit DID",
         "cancelButtonText": "Cancel",
         "saveButtonText": "Save"
+    },
+    "keysPage": {
+        "title": "Keys"
+    },
+    "keysTable": {
+        "noKeysText": "No keys found in the node.",
+        "headerPkText": "Public Key",
+        "headerTypeText": "Type",
+        "badgeActiveText": "Active",
+        "badgeRevokedText": "Revoked",
+        "setActiveText": "Set Active",
+        "revokeKeyText": "Revoke Key",
+        "addNewText": "Add new Key"
     }
 }
