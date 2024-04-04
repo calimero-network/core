@@ -39,14 +39,6 @@ impl<'a, T> Slice<'a, T> {
     fn as_mut_slice(&mut self) -> &'a mut [T] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr.as_mut_ptr(), self.len()) }
     }
-
-    pub fn as_ptr(&self) -> *const T {
-        self.ptr.as_ptr()
-    }
-
-    pub fn as_mut_ptr(&self) -> *mut T {
-        self.ptr.as_mut_ptr()
-    }
 }
 
 impl<'a, T> AsRef<[T]> for Slice<'a, T> {
