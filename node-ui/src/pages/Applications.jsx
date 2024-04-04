@@ -11,7 +11,7 @@ import { useAdminClient } from "../hooks/useAdminClient";
 export default function Applications() {
   const { getPackages, getReleases } = useRPC();
   const { installApplication } = useAdminClient();
-  const [swithInstall, setSwitchInstall] = useState(true);
+  const [swithInstall, setSwitchInstall] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState();
   const [selectedRelease, setSelectedRelease] = useState();
   const [packages, setPackages] = useState([]);
