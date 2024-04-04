@@ -167,10 +167,13 @@ impl<'a> VMHostFunctions<'a> {
             .unwrap_or(u64::MAX))
     }
 
-    pub fn read_register(&mut self, register_id: u64, ptr: u64) -> Result<()> {
+    pub fn read_register(&mut self, register_id: u64, ptr: u64, len: u64) -> Result<u32> {
         let data = self.borrow_logic().registers.get(register_id)?;
+        if data.len() != len as usize {
+            return Ok(0);
+        }
         self.borrow_memory().write(ptr, data)?;
-        Ok(())
+        Ok(1)
     }
 
     pub fn input(&mut self, register_id: u64) -> Result<()> {

@@ -19,6 +19,15 @@ impl<T> PtrSized<T> {
     };
 }
 
+impl<T> PtrSized<Pointer<T>> {
+    pub fn null() -> Self {
+        Self {
+            value: 0,
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<T> PtrSized<Pointer<&T>> {
     pub fn new(ptr: *const T) -> Self {
         Self {
@@ -27,8 +36,8 @@ impl<T> PtrSized<Pointer<&T>> {
         }
     }
 
-    pub fn null() -> Self {
-        Self::new(std::ptr::null())
+    pub fn as_ptr(&self) -> *const T {
+        self.value as _
     }
 }
 
@@ -39,17 +48,13 @@ impl<T> PtrSized<Pointer<&mut T>> {
             _phantom: PhantomData,
         }
     }
-}
 
-impl<T> From<PtrSized<Pointer<&T>>> for *const T {
-    fn from(ptr: PtrSized<Pointer<&T>>) -> Self {
-        ptr.value as _
+    pub fn as_ptr(&self) -> *const T {
+        self.value as _
     }
-}
 
-impl<T> From<PtrSized<Pointer<&mut T>>> for *mut T {
-    fn from(ptr: PtrSized<Pointer<&mut T>>) -> Self {
-        ptr.value as _
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.value as _
     }
 }
 
@@ -84,11 +89,5 @@ impl PtrSized<Integer> {
 impl From<usize> for PtrSized<Integer> {
     fn from(value: usize) -> Self {
         Self::new(value)
-    }
-}
-
-impl From<PtrSized<Integer>> for usize {
-    fn from(ptr: PtrSized<Integer>) -> Self {
-        ptr.value as _
     }
 }
