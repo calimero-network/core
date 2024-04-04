@@ -1,10 +1,12 @@
 mod bool;
 mod buffer;
+mod location;
 mod pointer;
 mod register;
 
 pub use bool::*;
 pub use buffer::*;
+pub use location::*;
 pub use pointer::*;
 pub use register::*;
 
@@ -15,15 +17,15 @@ pub enum ValueReturn<'a> {
     Err(Buffer<'a>),
 }
 
-impl<T, E> From<Result<T, E>> for ValueReturn<'_>
+impl<'a, T, E> From<Result<&'a T, &'a E>> for ValueReturn<'a>
 where
     T: AsRef<[u8]>,
     E: AsRef<[u8]>,
 {
-    fn from(result: Result<T, E>) -> Self {
+    fn from(result: Result<&'a T, &'a E>) -> Self {
         match result {
-            Ok(value) => ValueReturn::Ok(Buffer::from(value.as_ref())),
-            Err(value) => ValueReturn::Err(Buffer::from(value.as_ref())),
+            Ok(value) => ValueReturn::Ok(Buffer::new(value)),
+            Err(value) => ValueReturn::Err(Buffer::new(value)),
         }
     }
 }

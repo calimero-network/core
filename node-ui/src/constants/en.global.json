@@ -28,5 +28,16 @@
         "publicKeyText": "PublicKey",
         "callbackUrlText": "Callback Url",
         "submitButtonText": "Submit Request"
+    },
+    "identityTable": {
+        "title": "Identity",
+        "headerIdText": "Id",
+        "headerTypeText": "Type",
+        "headerPkText": "PublicKey Multibase",
+        "deleteButtonText": "Delete",
+        "addButtonText": "Add new identity",
+        "expandEditorTitle": "Edit DID",
+        "cancelButtonText": "Cancel",
+        "saveButtonText": "Save"
     }
 }

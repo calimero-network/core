@@ -55,13 +55,22 @@ pub enum HostError {
     InvalidRegisterId { id: u64 },
     #[error("invalid memory access")]
     InvalidMemoryAccess,
-    #[error("{} panicked: {message}", match .context {
-        PanicContext::Guest => "guest",
-        PanicContext::Host => "host",
-    })]
+    #[error(
+        "{} panicked: {message}{}",
+        match .context {
+            PanicContext::Guest => "guest",
+            PanicContext::Host => "host",
+        },
+        match .location {
+            Location::Unknown => "".to_owned(),
+            Location::At { file, line, column } => format!(" at {}:{}:{}", file, line, column),
+        }
+    )]
     Panic {
         context: PanicContext,
         message: String,
+        #[serde(skip_serializing_if = "Location::is_unknown")]
+        location: Location,
     },
     #[error("invalid UTF-8 string")]
     BadUTF8,
@@ -101,6 +110,33 @@ pub enum WasmTrap {
     UnalignedAtomic,
     #[error("indeterminate trap")]
     Indeterminate,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum Location {
+    At {
+        file: String,
+        line: u32,
+        column: u32,
+    },
+    Unknown,
+}
+
+impl Location {
+    fn is_unknown(&self) -> bool {
+        matches!(self, Location::Unknown)
+    }
+}
+
+impl From<&std::panic::Location<'_>> for Location {
+    fn from(location: &std::panic::Location<'_>) -> Self {
+        Location::At {
+            file: location.file().to_owned(),
+            line: location.line(),
+            column: location.column(),
+        }
+    }
 }
 
 impl From<wasmer::ExportError> for FunctionCallError {
@@ -279,10 +315,15 @@ mod tests {
     }
 
     #[test]
-    fn panic() {
+    fn panic_host() {
         let error = FunctionCallError::HostError(HostError::Panic {
-            context: PanicContext::Guest,
-            message: "explicit panic".to_string(),
+            context: PanicContext::Host,
+            message: "explicit panic".to_owned(),
+            location: Location::At {
+                file: "path/to/file.rs".to_owned(),
+                line: 42,
+                column: 24,
+            },
         });
 
         let expected = json!({
@@ -290,7 +331,38 @@ mod tests {
             "data": {
                 "type": "Panic",
                 "data": {
-                    "context": "guest",
+                    "context": "Host",
+                    "message": "explicit panic",
+                    "location": {
+                        "file": "path/to/file.rs",
+                        "line": 42,
+                        "column": 24
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            error.to_string(),
+            "host panicked: explicit panic at path/to/file.rs:42:24"
+        );
+        assert_json_eq!(json!(error), expected);
+    }
+
+    #[test]
+    fn panic_guest() {
+        let error = FunctionCallError::HostError(HostError::Panic {
+            context: PanicContext::Guest,
+            message: "explicit panic".to_owned(),
+            location: Location::Unknown,
+        });
+
+        let expected = json!({
+            "type": "HostError",
+            "data": {
+                "type": "Panic",
+                "data": {
+                    "context": "Guest",
                     "message": "explicit panic"
                 }
             }

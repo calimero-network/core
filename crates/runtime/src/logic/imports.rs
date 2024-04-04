@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
-use super::{HostError, PanicContext, VMLogic};
+use super::{HostError, Location, PanicContext, VMLogic};
 
 thread_local! {
     // https://open.spotify.com/track/7DPUuTaTZCtQ6o4Xx00qzT
     static HOOKER: Once = Once::new();
-    static PAYLOAD: RefCell<Option<String>> = RefCell::new(None);
+    static PAYLOAD: RefCell<Option<(String, Location)>> = RefCell::new(None);
     static HOST_CTX: AtomicBool = AtomicBool::new(false);
 }
 
@@ -17,25 +17,32 @@ impl<'a> VMLogic<'a> {
             store;
             logic: self;
 
-            fn panic();
-            fn panic_utf8(len: u64, ptr: u64);
+            fn panic(file_ptr: u64, file_len: u64, line: u32, column: u32);
+            fn panic_utf8(
+                msg_ptr: u64,
+                msg_len: u64,
+                file_ptr: u64,
+                file_len: u64,
+                line: u32,
+                column: u32
+            );
 
             // todo! custom memory injection
             fn register_len(register_id: u64) -> u64;
-            fn read_register(register_id: u64, ptr: u64);
+            fn read_register(register_id: u64, ptr: u64, len: u64) -> u32;
 
             fn input(register_id: u64);
-            fn value_return(tag: u64, value_len: u64, value_ptr: u64);
-            fn log_utf8(len: u64, ptr: u64);
+            fn value_return(tag: u64, value_ptr: u64, value_len: u64);
+            fn log_utf8(ptr: u64, len: u64);
 
             fn storage_write(
-                key_len: u64,
                 key_ptr: u64,
-                value_len: u64,
+                key_len: u64,
                 value_ptr: u64,
+                value_len: u64,
                 register_id: u64,
             ) -> u32;
-            fn storage_read(key_len: u64, key_ptr: u64, register_id: u64) -> u32;
+            fn storage_read(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
         }
     }
 }
@@ -63,8 +70,8 @@ macro_rules! _imports {
                             };
 
                             *payload.borrow_mut() = Some(match info.location() {
-                                Some(location) => format!("panicked at {}: {}", location, message),
-                                None => format!("fatal: panicked at unknown location: {}", message),
+                                Some(location) => (message.to_owned(), Location::from(location)),
+                                None => (message.to_owned(), Location::Unknown),
                             });
                         });
 
@@ -109,18 +116,24 @@ macro_rules! _imports {
                         let data = unsafe { &mut *(*data.get_mut() as *mut VMLogic) };
 
                         data.host_functions(store).$func($($arg),*)
-                    })).unwrap_or_else(|_| Err(HostError::Panic {
-                        context: PanicContext::Host,
-                        message: PAYLOAD.with(|payload| {
-                            payload.borrow_mut().take().unwrap_or_else(|| "<no message>".to_string())
-                        })
-                    }.into()));
+                    })).unwrap_or_else(|_| {
+                        let (message, location) = PAYLOAD.with(|payload| {
+                            payload.borrow_mut().take().unwrap_or_else(|| ("<no message>".to_owned(), Location::Unknown))
+                        });
+
+                        Err(HostError::Panic {
+                            context: PanicContext::Host,
+                            message,
+                            location,
+                        }.into())
+                    });
                     HOST_CTX.with(|ctx| ctx.store(false, Ordering::Relaxed));
 
-                    #[cfg(feature = "host-traces")] {
+                    #[cfg(feature = "host-traces")]
+                    {
                         #[allow(unused_mut, unused_assignments)]
-                        let mut return_ty = "()".to_string();
-                        $( return_ty = stringify!($returns).to_string(); )?
+                        let mut return_ty = "()";
+                        $( return_ty = stringify!($returns); )?
                         println!(
                             " ⇲ {}(..) -> {} = {res:?}",
                             stringify!($func).fg_rgb::<166, 226, 46>(),
