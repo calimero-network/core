@@ -41,11 +41,11 @@ impl<'de> Deserialize<'de> for Version {
 // **************************** request *******************************
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Request {
+pub struct Request<P> {
     pub jsonrpc: Version,
     pub id: Option<RequestId>,
     #[serde(flatten)]
-    pub payload: RequestPayload,
+    pub payload: P,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
