@@ -25,24 +25,28 @@ const Wrapper = styled.div`
       color: #fff;
       display: flex;
       gap: 12px;
+      width: fit-content;
     }
 
-    .install-button, .download-button {
+    .upload-button, .download-button {
       border-radius: 4px;
       background-color: rgba(255, 255, 255, 0.06);
       width: fit-content;
       height: 30px;
+      width: 97.28px;
       padding-left: 14px;
       padding-right: 14px;
+      margin-top: 8px;
       cursor: pointer;
       border: none;
       outline: none;
     }
-    .install-button:hover, .download-button:hover {
+    .upload-button:hover, .download-button:hover {
       background-color: rgba(255, 255, 255, 0.12);
     }
     .download-button {
       margin-top: 8px;
+      width: fit-content;
     }
     .file-details {
       margin-top: 24px;
@@ -91,7 +95,7 @@ export function UploadApplication({
         />
         <label className="label">{t.buttonUploadLabel}</label>
         <button
-          className="install-button"
+          className="upload-button"
           onClick={handleFileUpload}
           disabled={!wasmFile}
         >

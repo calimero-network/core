@@ -33,8 +33,7 @@
     "react-tooltip": "^5.26.3",
     "styled-components": "^6.1.8",
     "@helia/unixfs": "^3.0.0",
-    "helia": "^4.0.1",
-    "rimraf": "^5.0.0"
+    "helia": "^4.0.1"
   },
   "devDependencies": {
     "@types/react": "^18.2.66",
