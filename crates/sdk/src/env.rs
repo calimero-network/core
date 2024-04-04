@@ -1,6 +1,6 @@
-use crate::sys::{self, PtrSized};
+use crate::sys;
 
-const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(PtrSized::MAX.as_usize() - 1);
+const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(sys::PtrSizedInt::MAX.as_usize() - 1);
 
 const STATE_KEY: &[u8] = b"STATE";
 
@@ -50,7 +50,7 @@ pub fn unreachable() -> ! {
 pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
     let len = unsafe { sys::register_len(register_id) };
 
-    if len == PtrSized::MAX {
+    if len == sys::PtrSizedInt::MAX {
         return None;
     }
 
@@ -63,19 +63,14 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
     let mut buffer = Vec::with_capacity(len);
 
     unsafe {
-        match sys::read_register(
-            register_id,
-            sys::BufferMut::new(sys::PtrSized::from(buffer.as_mut_ptr()), len),
-        )
-        .try_into()
-        {
+        buffer.set_len(len);
+
+        match sys::read_register(register_id, sys::BufferMut::new(&mut buffer)).try_into() {
             Ok(true) => (),
             Ok(false) => panic_str("Buffer is too small."),
             Err(val) => panic_str(&format!("Expected bool as 0|1, got: {}.", val)),
         }
     }
-
-    unsafe { buffer.set_len(len) };
 
     Some(buffer)
 }
@@ -90,7 +85,7 @@ where
     T: AsRef<[u8]>,
     E: AsRef<[u8]>,
 {
-    unsafe { sys::value_return(sys::ValueReturn::from(result)) }
+    unsafe { sys::value_return(sys::ValueReturn::from(result.as_ref())) }
 }
 
 pub fn log(message: &str) {
