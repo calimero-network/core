@@ -46,36 +46,7 @@ export default function Applications() {
       ) : (
         <ApplicationsContent>
           <ApplicationsTable
-            applications={[
-              {
-                id: 0,
-                name: "my app",
-                description:
-                  "applicationn descriptions fomthgn waodjawdjawidjawoidjawoidjwaoidjaoiwjdioajodjwadjaijdoia aidjwiodjawoidja",
-                repository: "https://github.com/fr_/doc/file.wasm",
-              },
-              {
-                id: 1,
-                name: "my app",
-                description:
-                  "applicationn descriptions fomthgn waodjawdjawidjawoidjawoidjwaoidjaoiwjdioajodjwadjaijdoia aidjwiodjawoidja",
-                repository: "https://github.com/fr_/doc/file.wasm",
-              },
-              {
-                id: 2,
-                name: "my app",
-                description:
-                  "applicationn descriptions fomthgn waodjawdjawidjawoidjawoidjwaoidjaoiwjdioajodjwadjaijdoia aidjwiodjawoidja",
-                repository: "https://github.com/fr_/doc/file.wasm",
-              },
-              {
-                id: 3,
-                name: "my app",
-                description:
-                  "applicationn descriptions fomthgn waodjawdjawidjawoidjawoidjwaoidjaoiwjdioajodjwadjaijdoia aidjwiodjawoidja",
-                repository: "https://github.com/fr_/doc/file.wasm",
-              },
-            ]}
+            applications={[]}
             install={() => setSwitchInstall(true)}
             uninstall={() => console.log("uninstall ?!?")}
           />
