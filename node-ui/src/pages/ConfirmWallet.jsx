@@ -1,35 +1,31 @@
 import React from "react";
-import { useLocation } from "react-router-dom";
-import axios from "axios";
-import { getWalletCallbackUrl } from "../utils/wallet";
+import { useLocation, useNavigate } from "react-router-dom";
+import { RootKeyContainer } from "../components/confirmWallet/RootKeyContainer";
+import { useEffect, useState } from "react";
+import {
+  getParams,
+  submitRootKeyRequest,
+  isRootKeyAdded,
+} from "../utils/rootkey";
 
 export default function ConfirmWallet() {
   const location = useLocation();
+  const navigate = useNavigate();
   const params = getParams(location);
-  return (
-    <>
-      <h1>Confirm Wallet</h1>
-      <p>Account ID: {params.accountId}</p>
-      <p>Signature: {params.signature}</p>
-      <p>Public Key: {params.publicKey}</p>
-      <p>Callback Url: {params.callbackUrl}</p>
-      <button onClick={() => submitRootKeyRequest(params)}>Submit</button>
-    </>
-  );
+  const [rootkeyAdded, setRootKeyAdded] = useState(false);
+
+  useEffect(() => {
+    if (isRootKeyAdded() || rootkeyAdded) {
+      navigate("/identity");
+    }
+  }, [rootkeyAdded, navigate]);
+
+  const addRootKey = async () => {
+    let data = submitRootKeyRequest(params);
+    if (data) {
+      setRootKeyAdded(true);
+    }
+  };
+
+  return <RootKeyContainer params={params} submitRootKeyRequest={addRootKey} />;
 }
-
-const getParams = (location) => {
-  const queryParams = new URLSearchParams(location.hash.substring(1)); // skip the leading '#'
-  const accountId = queryParams.get("accountId");
-  const signature = queryParams.get("signature");
-  const publicKey = queryParams.get("publicKey");
-  const callbackUrl = getWalletCallbackUrl();
-  return { accountId, signature, publicKey, callbackUrl };
-};
-
-const submitRootKeyRequest = async (params) => {
-  const response = await axios.post("/admin-api/root-key", params);
-  const data = response.data;
-  console.log("Response received:", data);
-  return data;
-};
