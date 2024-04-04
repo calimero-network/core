@@ -3,82 +3,15 @@ use std::marker::PhantomData;
 #[repr(C)]
 #[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
 
-pub struct PtrSized<T> {
+pub struct PtrSizedInt {
     value: u64,
-    _phantom: PhantomData<T>,
 }
 
-#[repr(C)]
-#[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
-pub struct Pointer<T>(PhantomData<T>);
+impl PtrSizedInt {
+    pub const MAX: Self = Self { value: u64::MAX };
 
-impl<T> PtrSized<T> {
-    pub const MAX: Self = Self {
-        value: u64::MAX,
-        _phantom: PhantomData,
-    };
-}
-
-impl<T> PtrSized<Pointer<T>> {
-    pub fn null() -> Self {
-        Self {
-            value: 0,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<T> PtrSized<Pointer<&T>> {
-    pub fn new(ptr: *const T) -> Self {
-        Self {
-            value: ptr as _,
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn as_ptr(&self) -> *const T {
-        self.value as _
-    }
-}
-
-impl<T> PtrSized<Pointer<&mut T>> {
-    pub fn new(ptr: *mut T) -> Self {
-        Self {
-            value: ptr as _,
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn as_ptr(&self) -> *const T {
-        self.value as _
-    }
-
-    pub fn as_mut_ptr(&mut self) -> *mut T {
-        self.value as _
-    }
-}
-
-impl<T> From<*const T> for PtrSized<Pointer<&T>> {
-    fn from(ptr: *const T) -> Self {
-        Self::new(ptr)
-    }
-}
-
-impl<T> From<*mut T> for PtrSized<Pointer<&mut T>> {
-    fn from(ptr: *mut T) -> Self {
-        Self::new(ptr)
-    }
-}
-
-#[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
-pub enum Integer {}
-
-impl PtrSized<Integer> {
     pub const fn new(value: usize) -> Self {
-        Self {
-            value: value as _,
-            _phantom: PhantomData,
-        }
+        Self { value: value as _ }
     }
 
     pub const fn as_usize(self) -> usize {
@@ -86,8 +19,48 @@ impl PtrSized<Integer> {
     }
 }
 
-impl From<usize> for PtrSized<Integer> {
+impl From<usize> for PtrSizedInt {
     fn from(value: usize) -> Self {
         Self::new(value)
+    }
+}
+
+#[repr(C)]
+#[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
+pub struct Pointer<T> {
+    value: PtrSizedInt,
+    _phantom: PhantomData<T>,
+}
+
+impl<T> Pointer<T> {
+    pub fn new(ptr: *const T) -> Self {
+        Self {
+            value: PtrSizedInt::new(ptr as _),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn null() -> Self {
+        Self::new(std::ptr::null())
+    }
+
+    pub fn as_ptr(&self) -> *const T {
+        self.value.as_usize() as _
+    }
+
+    pub fn as_mut_ptr(&self) -> *mut T {
+        self.value.as_usize() as _
+    }
+}
+
+impl<T> From<*const T> for Pointer<T> {
+    fn from(ptr: *const T) -> Self {
+        Self::new(ptr)
+    }
+}
+
+impl<T> From<*mut T> for Pointer<T> {
+    fn from(ptr: *mut T) -> Self {
+        Self::new(ptr)
     }
 }

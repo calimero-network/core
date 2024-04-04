@@ -36,8 +36,8 @@ impl<'a> Location<'a> {
     }
 }
 
-impl From<&std::panic::Location<'_>> for Location<'_> {
-    fn from(location: &std::panic::Location<'_>) -> Self {
+impl<'a> From<&'a std::panic::Location<'_>> for Location<'a> {
+    fn from(location: &'a std::panic::Location<'_>) -> Self {
         Location {
             file: Buffer::from(location.file()),
             line: location.line(),
@@ -46,8 +46,8 @@ impl From<&std::panic::Location<'_>> for Location<'_> {
     }
 }
 
-impl From<Option<&std::panic::Location<'_>>> for Location<'_> {
-    fn from(location: Option<&std::panic::Location<'_>>) -> Self {
+impl<'a> From<Option<&'a std::panic::Location<'_>>> for Location<'a> {
+    fn from(location: Option<&'a std::panic::Location<'_>>) -> Self {
         location.map_or_else(Location::unknown, Location::from)
     }
 }

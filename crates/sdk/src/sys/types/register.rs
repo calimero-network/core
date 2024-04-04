@@ -1,12 +1,12 @@
-use super::{Integer, PtrSized};
+use super::PtrSizedInt;
 
 #[repr(C)]
 #[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
-pub struct RegisterId(PtrSized<Integer>);
+pub struct RegisterId(PtrSizedInt);
 
 impl RegisterId {
     pub const fn new(value: usize) -> Self {
-        Self(PtrSized::<Integer>::new(value))
+        Self(PtrSizedInt::new(value))
     }
 }
 
