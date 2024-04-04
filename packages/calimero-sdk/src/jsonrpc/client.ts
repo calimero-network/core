@@ -1,21 +1,35 @@
-import { IJsonRpcRequest } from "./request";
-import { ITransport } from "./transports/transport";
+import { ResponseBody, RpcClient, RpcRequestPayload, JsonRpcRequest, JsonRpcResponse } from "../rpc";
+import axios, { AxiosInstance } from "axios";
 
-export class JsonRpcClient {
-    readonly transport: ITransport;
+export class JsonRpcClient implements RpcClient {
+    readonly path: string;
+    readonly axiosInstance: AxiosInstance;
 
-    public constructor(transport: ITransport) {
-        this.transport = transport;
+    public constructor(baseUrl: string, path: string, defaultTimeout: number = 1000) {
+        this.path = path;
+        this.axiosInstance = axios.create({
+            baseURL: baseUrl,
+            timeout: defaultTimeout,
+        });
     }
 
-    public async request(method: string, params?: object) {
-        const data: IJsonRpcRequest = {
+    public async request(payload: RpcRequestPayload, timeout?: number): Promise<ResponseBody> {
+        const data: JsonRpcRequest = {
             jsonrpc: '2.0',
             id: 1,
-            method: method,
-            params: params,
+            payload: payload,
         };
 
-        return this.transport.sendData(data);
+        let requestConfig: any = {};
+        if (typeof timeout !== 'undefined' && timeout !== null) {
+            requestConfig.timeout = timeout;
+        }
+
+        try {
+            const response = await this.axiosInstance.post<JsonRpcResponse>(this.path, data, requestConfig);
+            return response.data.body;
+        } catch (error: any) {
+            throw new Error("Post request failed: " + error.message);
+        }
     }
 }
