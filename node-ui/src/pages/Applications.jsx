@@ -11,7 +11,7 @@ import { useAdminClient } from "../hooks/useAdminClient";
 export default function Applications() {
   const { getPackages, getReleases } = useRPC();
   const { installApplication } = useAdminClient();
-  const [swithInstall, setSwitchInstall] = useState(true);
+  const [swithInstall, setSwitchInstall] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState();
   const [selectedRelease, setSelectedRelease] = useState();
   const [packages, setPackages] = useState([]);
@@ -46,7 +46,36 @@ export default function Applications() {
       ) : (
         <ApplicationsContent>
           <ApplicationsTable
-            applications={[]}
+            applications={[
+              {
+                id: 0,
+                name: "my app",
+                description:
+                  "applicationn descriptions fomthgn waodjawdjawidjawoidjawoidjwaoidjaoiwjdioajodjwadjaijdoia aidjwiodjawoidja",
+                repository: "https://github.com/fr_/doc/file.wasm",
+              },
+              {
+                id: 1,
+                name: "my app",
+                description:
+                  "applicationn descriptions fomthgn waodjawdjawidjawoidjawoidjwaoidjaoiwjdioajodjwadjaijdoia aidjwiodjawoidja",
+                repository: "https://github.com/fr_/doc/file.wasm",
+              },
+              {
+                id: 2,
+                name: "my app",
+                description:
+                  "applicationn descriptions fomthgn waodjawdjawidjawoidjawoidjwaoidjaoiwjdioajodjwadjaijdoia aidjwiodjawoidja",
+                repository: "https://github.com/fr_/doc/file.wasm",
+              },
+              {
+                id: 3,
+                name: "my app",
+                description:
+                  "applicationn descriptions fomthgn waodjawdjawidjawoidjawoidjwaoidjaoiwjdioajodjwadjaijdoia aidjwiodjawoidja",
+                repository: "https://github.com/fr_/doc/file.wasm",
+              },
+            ]}
             install={() => setSwitchInstall(true)}
             uninstall={() => console.log("uninstall ?!?")}
           />

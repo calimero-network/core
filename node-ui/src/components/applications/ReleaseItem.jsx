@@ -9,13 +9,18 @@ const Item = styled.div`
   padding-right: 12px;
   padding-top: 10px;
   padding-bottom: 10px;
-  display: flex;
-  gap: 40px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: auto;
   color: rbg(255, 255, 255, 0.9);
   font-size: 16px;
+
   .app-item {
     color: #fff;
     font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .app-item-desc,
@@ -23,12 +28,17 @@ const Item = styled.div`
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    width: 250px;
   }
 
   .app-item-repo {
     text-decoration: none;
     color: #ff842d;
+  }
+
+  @media (max-width: 768px) {
+    .app-item-desc {
+      grid-column: span 3;
+    }
   }
 `;
 

@@ -70,11 +70,15 @@ const InstallApplicationForm = styled.div`
     background-color: rgba(255, 255, 255, 0.12);
   }
   .release-item {
+    margin-bottom: 4px;
   }
   .radio-item {
     display: inline-block;
     margin-right: 10px;
     padding-left: 0px;
+    width: 140px;
+    height: 24px;
+    margin-bottom: 8px;
   }
 
   .radio-item input[type="radio"] {
@@ -82,12 +86,14 @@ const InstallApplicationForm = styled.div`
   }
 
   .radio-item label {
-    display: inline-block;
+    display: flex;
+    justify-content: center;
+    align-items: center;
     cursor: pointer;
-    padding: 8px 15px;
     background-color: #17171d;
     color: white;
     border-radius: 5px;
+    padding: 4px;
   }
 
   .radio-item input[type="radio"]:checked + label {
