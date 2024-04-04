@@ -66,7 +66,7 @@ const config: Config = {
         },
         {to: '/blog', label: 'Blog', position: 'left'},
         {
-          href: 'https://github.com/facebook/docusaurus',
+          href: 'https://github.com/calimero-is-near/cali2.0-experimental',
           label: 'GitHub',
           position: 'right',
         },
@@ -88,17 +88,21 @@ const config: Config = {
           title: 'Community',
           items: [
             {
-              label: 'Stack Overflow',
-              href: 'https://stackoverflow.com/questions/tagged/docusaurus',
+              label: 'Stack Overflow (TBD)',
+              href: 'https://stackoverflow.com/questions/tagged/calimero-network',
             },
             {
               label: 'Discord',
-              href: 'https://discordapp.com/invite/docusaurus',
+              href: 'https://discord.gg/bp7uKv9kBv',
             },
             {
               label: 'Twitter',
-              href: 'https://twitter.com/docusaurus',
+              href: 'https://twitter.com/CalimeroNetwork',
             },
+            {
+              label: 'Telegram',
+              href: 'https://t.me/+_6h-gJlnXO83OGVk',
+            }
           ],
         },
         {
@@ -110,12 +114,12 @@ const config: Config = {
             },
             {
               label: 'GitHub',
-              href: 'https://github.com/facebook/docusaurus',
+              href: 'https://github.com/calimero-is-near/cali2.0-experimental',
             },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} My Project, Inc. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Calimero Limited LLC.`,
     },
     prism: {
       theme: prismThemes.github,
