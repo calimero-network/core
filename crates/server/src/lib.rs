@@ -77,9 +77,8 @@ pub async fn start(
     {
         if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
             let identity = config.identity.clone();
-            app = app
-                .route(path, handler)
-                .layer(middleware::auth::AuthSignatureLayer::new(identity));
+            app = app.route(path, handler);
+            //.layer(middleware::auth::AuthSignatureLayer::new(identity)); //TODO will be replaced with json RPC
 
             serviced = true;
         }

@@ -1,3 +1,4 @@
+use eyre::eyre;
 use libp2p::identity::Keypair;
 use web3::signing::{keccak256, recover};
 
@@ -5,15 +6,15 @@ pub fn verify_peer_auth(keypair: &Keypair, msg: &[u8], signature: &[u8]) -> bool
     keypair.public().verify(msg, signature)
 }
 
-pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> bool {
+pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> eyre::Result<bool> {
     let signature_bytes = match hex::decode(signature.trim_start_matches("0x")) {
         Ok(bytes) => bytes,
-        Err(_) => return false,
+        Err(_) => return Err(eyre!("Cannot decode signature.")),
     };
 
     // Ensure the signature is the correct length (65 bytes)
     if signature_bytes.len() != 65 {
-        return false;
+        return Err(eyre!("Signature must be 65 bytes long."));
     }
 
     let message_hash = eth_message(message);
@@ -23,11 +24,15 @@ pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> bo
     match recover(&message_hash, &signature_bytes[..64], recovery_id) {
         Ok(pubkey) => {
             // Format the recovered public key as a hex string
-            let pubkey_hex = format!("{:02X}", pubkey);
+            let pubkey_hex = format!("{:02X?}", pubkey);
             // Compare the recovered public key with the account address in a case-insensitive manner
-            account.eq_ignore_ascii_case(&pubkey_hex)
+            let result = account.eq_ignore_ascii_case(&pubkey_hex);
+            if !result {
+                return Err(eyre!("Public key and account does not match."));
+            }
+            Ok(true)
         }
-        Err(_) => false,
+        Err(_) => return Err(eyre!("Cannot recover public key.")),
     }
 }
 
@@ -49,14 +54,14 @@ mod tests {
 
     #[test]
     fn test_recover() {
-        let account = "0x63f9a92d8d61b48a9fff8d58080425a3012d05c8".to_string();
-        let message = "0x63f9a92d8d61b48a9fff8d58080425a3012d05c8igwyk4r1o7o";
-        let message = eth_message(message);
-        let signature ="0x382a3e04daf88f322730f6a2972475fc5646ea8c4a7f3b5e83a90b10ba08a7364cd2f55348f2b6d210fbed7fc485abf19ecb2f3967e410d6349dd7dd1d4487751b".trim_start_matches("0x");
+        let account = "0x04a4e95eeebe44a0f37b75f40957445d2d16a88c".to_string();
+        let message = "blabla";
+        let message_hash = eth_message(message);
+        let signature ="0x15a88c2b8f3f3a0549c88dcbdba063de517ce55e68fdf2ad443f2c24f71904c740f212f0d74b94e271b9d549a8825894d0869b173709a5e798ec6997a1c72d5b1b".trim_start_matches("0x");
         let signature = hex::decode(signature).unwrap();
-        println!("{} {:?} {:?}", account, message, signature);
+        println!("{} {:?} {:?}", account, message_hash, signature);
         let recovery_id = signature[64] as i32 - 27;
-        let pubkey = recover(&message, &signature[..64], recovery_id);
+        let pubkey = recover(&message_hash, &signature[..64], recovery_id);
         assert!(pubkey.is_ok());
         let pubkey = pubkey.unwrap();
         let pubkey = format!("{:02X?}", pubkey);
