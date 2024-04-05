@@ -6,6 +6,7 @@ import { ArrowLeftIcon } from "@heroicons/react/24/solid";
 import { PackageItem } from "./Item";
 import { Form } from "react-bootstrap";
 import { ReleaseItem } from "./ReleaseItem";
+import translations from "../../constants/en.global.json";
 
 const InstallApplicationForm = styled.div`
   color: #fff;
@@ -117,6 +118,7 @@ export function InstallApplication({
   setSelectedRelease,
   setSwitchInstall,
 }) {
+  const t = translations.applicationsPage.installApplication;
   return (
     <InstallApplicationForm>
       <div
@@ -128,13 +130,13 @@ export function InstallApplication({
         className="back-button"
       >
         <ArrowLeftIcon className="arrow-icon" />
-        Back to Applications
+        {t.backbuttonText}
       </div>
       <div className="install-form">
-        <label className="label">Select Application to Install</label>
+        <label className="label">{t.selectAppLabel}</label>
         <Dropdown>
           <Dropdown.Toggle className="app-dropdown">
-            {selectedPackage ? selectedPackage.name : "Applications"}
+            {selectedPackage ? selectedPackage.name : t.dropdownPlaceholder}
           </Dropdown.Toggle>
           <Dropdown.Menu className="dropdown-menu">
             {packages.map((pkg, id) => (
@@ -154,9 +156,9 @@ export function InstallApplication({
         </Dropdown>
         {selectedPackage && (
           <>
-            <label className="label">Package Details</label>
+            <label className="label">{t.packageDetailsLabel}</label>
             <PackageItem selectedItem={selectedPackage} />
-            <label className="label">Select Application Release</label>
+            <label className="label">{t.releaseSelectionLabel}</label>
             <Form>
               <Form.Group>
                 {releases.map((release, id) => {
@@ -181,7 +183,7 @@ export function InstallApplication({
             </Form>
             {selectedRelease && (
               <>
-                <label className="label">Release Details</label>
+                <label className="label">{t.releaseDetailsLabel}</label>
                 <ReleaseItem release={selectedRelease} />
               </>
             )}
