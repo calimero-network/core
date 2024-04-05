@@ -1,4 +1,3 @@
-use eyre::bail;
 use libp2p::identity::Keypair;
 use web3::signing::{keccak256, recover};
 
