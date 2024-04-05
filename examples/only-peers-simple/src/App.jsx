@@ -1,29 +1,26 @@
-import { JsonRpcClient, CalimeroClient } from 'calimero-p2p-sdk'
+import { JsonRpcClient } from 'calimero-p2p-sdk'
 
 function App() {
-  const rpcClient = new JsonRpcClient("http://localhost:2529", "/jsonrpc");
-  const calimeroClient = new CalimeroClient(rpcClient);
+  const client = new JsonRpcClient('http://localhost:2529', '/jsonrpc');
 
   const executeRpcRequest = async () => {
     try {
-      const response = await calimeroClient.callMethod(
-        "/calimero/experimental/app/9GBJQtDr2XcAhipZT8F5ZD677QTuXavX1PHoBCH68RGv",
+      const resp = await client.callMut(
+        "/calimero/experimental/app/FyweziaTzQAahZmdZ3kjUwFr52RCKQYqcpiPDXCNMNzN",
         "create_post",
         {
           title: "Your Post Title",
           content: "Your Post Content"
         }
       );
-      console.log(response.data);
+      console.log(resp);
     } catch (error) {
       console.log(error);
     }
-
   }
 
   executeRpcRequest();
   return <div></div>;
-
 }
 
 export default App

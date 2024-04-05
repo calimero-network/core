@@ -1,4 +1,5 @@
-import { ResponseBody, RpcClient, RpcRequestPayload, JsonRpcRequest, JsonRpcResponse } from "../rpc";
+import { RpcClient, RpcRequest, RpcResponse, RpcCallRequest, RpcCallResponse, RpcCallMutRequest, RpcCallMutResponse } from "../rpc";
+import { JsonRpcRequest, JsonRpcResponse } from "./request";
 import axios, { AxiosInstance } from "axios";
 
 export class JsonRpcClient implements RpcClient {
@@ -13,11 +14,43 @@ export class JsonRpcClient implements RpcClient {
         });
     }
 
-    public async request(payload: RpcRequestPayload, timeout?: number): Promise<ResponseBody> {
+    public async call(applicationId: string, method: string, argsJson: object): Promise<any[] | object> {
+        const payload: RpcCallRequest = {
+            method: 'call',
+            params: {
+                applicationId: applicationId,
+                method: method,
+                argsJson: argsJson
+            }
+        };
+
+        const response = await this.request<RpcCallRequest, RpcCallResponse>(payload);
+        return JSON.parse(response.output);
+    }
+
+    public async callMut(applicationId: string, method: string, argsJson: object): Promise<any[] | object> {
+        const payload: RpcCallMutRequest = {
+            method: 'call_mut',
+            params: {
+                applicationId: applicationId,
+                method: method,
+                argsJson: argsJson
+            }
+        };
+
+        const response = await this.request<RpcCallMutRequest, RpcCallMutResponse>(payload);
+        return JSON.parse(response.output);
+    }
+
+    public async request<
+        Request extends RpcRequest,
+        Response extends RpcResponse,
+    >(rpcRequest: Request, timeout?: number): Promise<Response> {
         const data: JsonRpcRequest = {
             jsonrpc: '2.0',
             id: 1,
-            payload: payload,
+            method: rpcRequest.method,
+            params: rpcRequest.params,
         };
 
         let requestConfig: any = {};
@@ -26,10 +59,17 @@ export class JsonRpcClient implements RpcClient {
         }
 
         try {
-            const response = await this.axiosInstance.post<JsonRpcResponse>(this.path, data, requestConfig);
-            return response.data.body;
+            const response = await this.axiosInstance.post<JsonRpcResponse<Response>>(this.path, data, requestConfig);
+            if (response.status === 200) {
+                if (response.data.error) {
+                    throw new Error("JSON RPC server returned error: " + response.data.error);
+                }
+                return response.data.result;
+            } else {
+                throw new Error("JSON RPC server returned error HTTP code: " + response.status);
+            }
         } catch (error: any) {
-            throw new Error("Post request failed: " + error.message);
+            throw new Error("Error occurred during JSON RPC request: " + error.message);
         }
     }
 }

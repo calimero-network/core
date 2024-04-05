@@ -3,43 +3,17 @@ export type JsonRpcRequestId = string | number;
 export type ApplicationId = string;
 
 export interface RpcClient {
-    request(payload: RpcRequestPayload): Promise<ResponseBody>;
+    request<Request extends RpcRequest, Response extends RpcResponse>(payload: Request): Promise<Response>;
 }
 
-// **************************** response *******************************
-export interface JsonRpcRequest {
-    jsonrpc: JsonRpcVersion;
-    id: JsonRpcRequestId | null;
-    payload: RpcRequestPayload;
-}
-
-export type RpcRequestPayload = RpcCallPayload | RpcCallMutPayload;
-
-export interface RpcCallPayload {
-    method: 'call';
-    params: RpcCallRequest;
-}
-
-export interface RpcCallMutPayload {
-    method: 'call_mut';
-    params: RpcCallMutRequest;
-}
+// **************************** request *******************************
+export type RpcRequest = RpcCallRequest | RpcCallMutRequest;
+export type RpcRequestParams = RpcCallRequestParams | RpcCallMutRequestParams;
 // *************************************************************************
 
 // **************************** response *******************************
-export interface JsonRpcResponse {
-    jsonrpc: JsonRpcVersion;
-    id: JsonRpcRequestId | null;
-    body: ResponseBody;
-}
-
-export type ResponseBody = RpcResponseBodyResult | RpcResponseBodyError;
-
-export interface RpcResponseBodyResult {
-    result: RpcCallResponse | RpcCallMutResponse;
-}
-
-export type RpcResponseBodyError = RpcServerResponseError | RpcHandlerError;
+export type RpcResponse = RpcCallResponse | RpcCallMutResponse | RpcCallsResponse;
+export type RpcResponseError = RpcServerResponseError | RpcHandlerError;
 
 export interface RpcHandlerError {
     handlerError: any; // Replace with actual type
@@ -62,6 +36,11 @@ export interface RpcInternalError {
 
 // **************************** call method *******************************
 export interface RpcCallRequest {
+    method: 'call';
+    params: RpcCallRequestParams;
+}
+
+export interface RpcCallRequestParams {
     applicationId: ApplicationId;
     method: string;
     argsJson: any; // Replace with actual type
@@ -71,10 +50,18 @@ export interface RpcCallResponse {
     output: string | null;
 }
 
+export interface RpcCallsResponse {
+    outpust: string | null;
+}
 export type RpcCallError = RpcSerdeError | RpcExecutionError;
 
 // **************************** call_mut method ****************************
 export interface RpcCallMutRequest {
+    method: 'call_mut';
+    params: RpcCallMutRequestParams;
+}
+
+export interface RpcCallMutRequestParams {
     applicationId: ApplicationId;
     method: string;
     argsJson: any; // Replace with actual type
