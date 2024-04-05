@@ -5,7 +5,7 @@ import PropTypes from "prop-types";
 const AddNewButton = styled.div`
   display: flex;
   color: #fff;
-  font-size: 12px;
+  font-size: 14px;
   gap: 4px;
   cursor: pointer;
 
