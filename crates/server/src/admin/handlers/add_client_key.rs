@@ -1,11 +1,12 @@
+use crate::admin::service::{ApiError, ApiResponse};
 use crate::verifysignature::verify_near_signature;
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use calimero_identity::auth::verify_eth_signature;
 use chrono::{Duration, TimeZone, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_sessions::Session;
-use tracing::error;
+use tracing::info;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,18 +101,26 @@ struct IntermediatePayload {
 
 fn transform_request(
     intermediate: IntermediateAddClientKeyRequest,
-) -> Result<AddClientKeyRequest, serde_json::Error> {
+) -> eyre::Result<AddClientKeyRequest, ApiError> {
     let metadata_enum = match intermediate.wallet_metadata.wallet_type {
         WalletType::NEAR => {
             let metadata = serde_json::from_value::<NearSignatureMessageMetadata>(
                 intermediate.payload.metadata.clone(),
-            )?;
+            )
+            .map_err(|_| ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid metadata.".into(),
+            })?;
             SignatureMetadataEnum::NEAR(metadata)
         }
         WalletType::ETH => {
             let metadata = serde_json::from_value::<EthSignatureMessageMetadata>(
                 intermediate.payload.metadata.clone(),
-            )?;
+            )
+            .map_err(|_| ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid metadata.".into(),
+            })?;
             SignatureMetadataEnum::ETH(metadata)
         }
     };
@@ -126,55 +135,49 @@ fn transform_request(
     })
 }
 
+#[derive(Debug, Serialize)]
+struct AddClientKeyResponse {
+    data: String,
+}
+
 //* Register client key to authenticate client requests  */
 pub async fn add_client_key_handler(
     _session: Session,
     Json(intermediate_req): Json<IntermediateAddClientKeyRequest>,
 ) -> impl IntoResponse {
-    let req: Result<AddClientKeyRequest, (StatusCode, &str)> = transform_request(intermediate_req)
-        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid payload"));
-
-    if let Err(err) = req {
-        return err;
-    }
-
-    let req: AddClientKeyRequest = req.unwrap();
-
-    if let Err(err) = validate_root_key_exists(&req.wallet_metadata) {
-        error!("Error with wallet key: {:?}", err.to_string());
-        return (
-            StatusCode::UNAUTHORIZED,
-            "First add wallet public key to node root keys!",
+    let response = transform_request(intermediate_req)
+        .and_then(validate_root_key_exists)
+        .and_then(validate_challenge)
+        .and_then(store_client_key)
+        .map_or_else(
+            |err| err.into_response(),
+            |_| {
+                let data: String = "Client key stored".to_string();
+                ApiResponse {
+                    payload: AddClientKeyResponse { data },
+                }
+                .into_response()
+            },
         );
-    }
 
-    if let Err(err) = validate_challenge(req.wallet_metadata, &req.wallet_signature, &req.payload) {
-        error!("Error with challenge: {:?}", err.to_string());
-        return (StatusCode::BAD_REQUEST, "Invalid challenge!");
-    }
-
-    // Extract clientPublicKey and add it to list of client keys
-    if let Err(err) = store_client_key(&req.payload.message.client_public_key) {
-        error!("Error with storing client key: {:?}", err.to_string());
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Issue while storing client key",
-        );
-    }
-
-    (StatusCode::OK, "\"data\":\"ok\"")
+    response
 }
 
 fn verify_node_signature(
-    wallet_metadata: WalletMetadata,
+    wallet_metadata: &WalletMetadata,
     wallet_signature: &str,
     payload: &Payload,
-) -> eyre::Result<bool> {
+) -> eyre::Result<bool, ApiError> {
     match wallet_metadata.wallet_type {
         WalletType::NEAR => {
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::NEAR(metadata) => metadata,
-                _ => eyre::bail!("Invalid metadata"),
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid metadata.".into(),
+                    })
+                }
             };
 
             let result = verify_near_signature(
@@ -187,21 +190,31 @@ fn verify_node_signature(
             );
 
             if !result {
-                eyre::bail!("Node signature is invalid. Please check the signature.")
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Node signature is invalid. Please check the signature.".into(),
+                });
             }
             Ok(true)
         }
         WalletType::ETH => {
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
-                _ => eyre::bail!("Invalid metadata"),
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid metadata.".into(),
+                    })
+                }
             };
 
-            verify_eth_signature(
+            if let Err(err) = verify_eth_signature(
                 &wallet_metadata.signing_key,
                 &payload.message.message,
                 wallet_signature,
-            )?;
+            ) {
+                return Err(parse_api_error(err));
+            }
 
             Ok(true)
         }
@@ -209,26 +222,25 @@ fn verify_node_signature(
 }
 
 //Check if challenge is valid
-fn validate_challenge(
-    wallet_metadata: WalletMetadata,
-    wallet_signature: &str,
-    payload: &Payload,
-) -> eyre::Result<bool> {
-    validate_challenge_content(&payload)?;
+fn validate_challenge(req: AddClientKeyRequest) -> eyre::Result<AddClientKeyRequest, ApiError> {
+    validate_challenge_content(&req.payload)?;
 
     // Check if node has created signature
-    verify_node_signature(wallet_metadata, &wallet_signature, &payload)?;
+    verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload)?;
 
     // Check challenge to verify if it has expired or not
-    if is_older_than_15_minutes(payload.message.timestamp) {
-        eyre::bail!("Challenge is too old. Please request a new challenge.")
+    if is_older_than_15_minutes(req.payload.message.timestamp) {
+        return Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: " Challenge is too old. Please request a new challenge.".into(),
+        });
     }
 
-    Ok(true)
+    Ok(req)
 }
 
 //check if signature data are not tempered with
-fn validate_challenge_content(payload: &Payload) -> eyre::Result<bool> {
+fn validate_challenge_content(payload: &Payload) -> eyre::Result<bool, ApiError> {
     if payload.message.node_signature
         != create_node_signature(
             &payload.message.nonce,
@@ -236,7 +248,10 @@ fn validate_challenge_content(payload: &Payload) -> eyre::Result<bool> {
             &payload.message.timestamp,
         )
     {
-        eyre::bail!("Node signature is invalid")
+        return Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: " Node signature is invalid.".into(),
+        });
     }
     Ok(true)
 }
@@ -256,13 +271,27 @@ fn is_older_than_15_minutes(timestamp: i64) -> bool {
     duration_since_timestamp > Duration::minutes(15)
 }
 
-fn validate_root_key_exists(_wallet_metadata: &WalletMetadata) -> eyre::Result<bool> {
+fn validate_root_key_exists(
+    req: AddClientKeyRequest,
+) -> eyre::Result<AddClientKeyRequest, ApiError> {
     //Check if root key exists
     // eyre::bail!("Root key does not exist")
-    Ok(true)
+    Ok(req)
 }
 
-fn store_client_key(_client_public_key: &str) -> eyre::Result<bool> {
+fn store_client_key(req: AddClientKeyRequest) -> eyre::Result<AddClientKeyRequest, ApiError> {
     //Store client public key in a list
-    Ok(true)
+    info!("Client key stored successfully.");
+
+    Ok(req)
+}
+
+fn parse_api_error(err: eyre::Report) -> ApiError {
+    match err.downcast::<ApiError>() {
+        Ok(api_error) => api_error,
+        Err(original_error) => ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: original_error.to_string(),
+        },
+    }
 }

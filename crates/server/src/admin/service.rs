@@ -1,3 +1,5 @@
+use super::handlers::add_client_key::add_client_key_handler;
+use crate::verifysignature;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -11,14 +13,12 @@ use near_primitives::views::QueryRequest;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice, json};
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
-
-use crate::verifysignature;
-
-use super::handlers::add_client_key::add_client_key_handler;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
@@ -73,17 +73,44 @@ pub(crate) fn site(
 
 pub const CHALLENGE_KEY: &str = "challenge";
 
-struct ApiResponse<T: Serialize> {
-    payload: T,
+pub struct ApiResponse<T: Serialize> {
+    pub(crate) payload: T,
 }
+
 impl<T> IntoResponse for ApiResponse<T>
 where
     T: Serialize,
 {
     fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        //TODO add data to response
         let body = serde_json::to_string(&self.payload).unwrap();
         axum::http::Response::builder()
             .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(axum::body::Body::from(body))
+            .unwrap()
+    }
+}
+
+#[derive(Debug)]
+pub struct ApiError {
+    pub(crate) status_code: StatusCode,
+    pub(crate) message: String,
+}
+
+impl Display for ApiError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.status_code, self.message)
+    }
+}
+
+impl Error for ApiError {}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::http::Response<axum::body::Body> {
+        let body = json!({ "error": self.message }).to_string();
+        axum::http::Response::builder()
+            .status(&self.status_code)
             .header("Content-Type", "application/json")
             .body(axum::body::Body::from(body))
             .unwrap()
