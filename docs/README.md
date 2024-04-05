@@ -53,11 +53,6 @@ Commit your changes:
 Push your branch and open a pull request against the main branch.
 
 5. Deployment
-Our documentation is hosted on GitHub Pages and is deployed from the gh-pages branch. To deploy the latest version of the documentation:
-
-    ```bash
-    pnpm run deploy
-    ```
 
 This command builds the documentation and pushes it to the gh-pages branch, automatically updating the live documentation site.
 

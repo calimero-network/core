@@ -9,25 +9,30 @@ const Item = styled.div`
   padding-right: 12px;
   padding-top: 10px;
   padding-bottom: 10px;
-  display: flex;
-  gap: 40px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: auto;
   color: rbg(255, 255, 255, 0.9);
   font-size: 16px;
+
   .app-item {
     color: #fff;
     font-size: 14px;
-  }
-
-  .app-item-desc,
-  .app-item-repo {
-    overflow: hidden;
+    grid-column: span 1;
     white-space: nowrap;
+    overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .app-item-repo {
     text-decoration: none;
     color: #ff842d;
+  }
+
+  @media (max-width: 768px) {
+    .app-item-desc {
+      grid-column: span 3;
+    }
   }
 `;
 

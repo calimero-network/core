@@ -6,6 +6,7 @@ import { ArrowLeftIcon } from "@heroicons/react/24/solid";
 import { PackageItem } from "./Item";
 import { Form } from "react-bootstrap";
 import { ReleaseItem } from "./ReleaseItem";
+import translations from "../../constants/en.global.json";
 
 const InstallApplicationForm = styled.div`
   color: #fff;
@@ -70,11 +71,15 @@ const InstallApplicationForm = styled.div`
     background-color: rgba(255, 255, 255, 0.12);
   }
   .release-item {
+    margin-bottom: 4px;
   }
   .radio-item {
     display: inline-block;
     margin-right: 10px;
     padding-left: 0px;
+    width: 140px;
+    height: 24px;
+    margin-bottom: 8px;
   }
 
   .radio-item input[type="radio"] {
@@ -82,12 +87,14 @@ const InstallApplicationForm = styled.div`
   }
 
   .radio-item label {
-    display: inline-block;
+    display: flex;
+    justify-content: center;
+    align-items: center;
     cursor: pointer;
-    padding: 8px 15px;
     background-color: #17171d;
     color: white;
     border-radius: 5px;
+    padding: 4px;
   }
 
   .radio-item input[type="radio"]:checked + label {
@@ -111,6 +118,7 @@ export function InstallApplication({
   setSelectedRelease,
   setSwitchInstall,
 }) {
+  const t = translations.applicationsPage.installApplication;
   return (
     <InstallApplicationForm>
       <div
@@ -122,13 +130,13 @@ export function InstallApplication({
         className="back-button"
       >
         <ArrowLeftIcon className="arrow-icon" />
-        Back to Applications
+        {t.backbuttonText}
       </div>
       <div className="install-form">
-        <label className="label">Select Application to Install</label>
+        <label className="label">{t.selectAppLabel}</label>
         <Dropdown>
           <Dropdown.Toggle className="app-dropdown">
-            {selectedPackage ? selectedPackage.name : "Applications"}
+            {selectedPackage ? selectedPackage.name : t.dropdownPlaceholder}
           </Dropdown.Toggle>
           <Dropdown.Menu className="dropdown-menu">
             {packages.map((pkg, id) => (
@@ -148,9 +156,9 @@ export function InstallApplication({
         </Dropdown>
         {selectedPackage && (
           <>
-            <label className="label">Package Details</label>
+            <label className="label">{t.packageDetailsLabel}</label>
             <PackageItem selectedItem={selectedPackage} />
-            <label className="label">Select Application Release</label>
+            <label className="label">{t.releaseSelectionLabel}</label>
             <Form>
               <Form.Group>
                 {releases.map((release, id) => {
@@ -175,7 +183,7 @@ export function InstallApplication({
             </Form>
             {selectedRelease && (
               <>
-                <label className="label">Release Details</label>
+                <label className="label">{t.releaseDetailsLabel}</label>
                 <ReleaseItem release={selectedRelease} />
               </>
             )}
