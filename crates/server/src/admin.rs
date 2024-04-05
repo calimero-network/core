@@ -1,6 +1,4 @@
-use std::pin::Pin;
-
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -8,7 +6,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_identity::auth::verify_eth_signature;
 use chrono::{Duration, TimeZone, Utc};
-use eyre::eyre;
+use eyre::bail;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
@@ -207,7 +205,7 @@ fn check_node_signature(
         WalletType::NEAR => {
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::NEAR(metadata) => metadata,
-                _ => return Err(eyre!("Invalid metadata")),
+                _ => eyre::bail!("Invalid metadata"),
             };
 
             //Check node signature to make sure that challenge was signed with node root key
@@ -224,16 +222,14 @@ fn check_node_signature(
 
             info!("NEAR login verify_signature result: {:?}", result);
             if !result {
-                return Err(eyre!(
-                    "Node signature is invalid. Please check the signature."
-                ));
+                eyre::bail!("Node signature is invalid. Please check the signature.")
             }
             Ok(true)
         }
         WalletType::ETH => {
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
-                _ => return Err(eyre!("Invalid metadata")),
+                _ => eyre::bail!("Invalid metadata"),
             };
 
             let result = verify_eth_signature(
@@ -257,7 +253,7 @@ fn validate_challenge_content(payload: &Payload) -> eyre::Result<bool> {
             &payload.message.timestamp,
         )
     {
-        return Err(eyre!("Node signature is invalid"));
+        eyre::bail!("Node signature is invalid")
     }
     Ok(true)
 }
@@ -280,36 +276,27 @@ fn validate_challenge(
 
     // Check challenge to verify if it has expired or not
     if is_older_than_15_minutes(payload.message.timestamp) {
-        return Err(eyre!(
-            "Challenge is too old. Please request a new challenge."
-        ));
+        eyre::bail!("Challenge is too old. Please request a new challenge.")
     }
 
     Ok(true)
 }
 
 fn is_older_than_15_minutes(timestamp: i64) -> bool {
-    //Check if timestamp is older than 15 minutes
     let timestamp_datetime = Utc.timestamp_opt(timestamp, 0).unwrap();
-
-    // Current time in UTC
     let now = Utc::now();
-
-    // Difference between now and the timestamp
+    //TODO check if timestamp is greater than now
     let duration_since_timestamp = now.signed_duration_since(timestamp_datetime);
-
-    // Check if the duration is more than 15 minutes
     duration_since_timestamp > Duration::minutes(15)
 }
 
 fn validate_root_key_exists(_wallet_metadata: &WalletMetadata) -> eyre::Result<bool> {
     //Check if root key exists
-    // Err(eyre!("Root key does not exist"))
-
+    // eyre::bail!("Root key does not exist")
     Ok(true)
 }
 
-fn store_client_key(client_public_key: &str) -> eyre::Result<bool> {
+fn store_client_key(_client_public_key: &str) -> eyre::Result<bool> {
     //Store client public key in a list
     Ok(true)
 }
@@ -344,7 +331,7 @@ pub async fn get_release(application: &String, version: &String) -> eyre::Result
     if let QueryResponseKind::CallResult(result) = response.kind {
         return Ok(from_slice::<Release>(&result.result)?);
     } else {
-        Err(eyre!("Failed to fetch data from the rpc endpoint"))
+        eyre::bail!("Failed to fetch data from the rpc endpoint")
     }
 }
 

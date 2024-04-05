@@ -1,4 +1,4 @@
-use eyre::eyre;
+use eyre::bail;
 use libp2p::identity::Keypair;
 use web3::signing::{keccak256, recover};
 
@@ -9,12 +9,12 @@ pub fn verify_peer_auth(keypair: &Keypair, msg: &[u8], signature: &[u8]) -> bool
 pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> eyre::Result<bool> {
     let signature_bytes = match hex::decode(signature.trim_start_matches("0x")) {
         Ok(bytes) => bytes,
-        Err(_) => return Err(eyre!("Cannot decode signature.")),
+        Err(_) => eyre::bail!("Cannot decode signature."),
     };
 
     // Ensure the signature is the correct length (65 bytes)
     if signature_bytes.len() != 65 {
-        return Err(eyre!("Signature must be 65 bytes long."));
+        eyre::bail!("Signature must be 65 bytes long.")
     }
 
     let message_hash = eth_message(message);
@@ -28,11 +28,11 @@ pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> ey
             // Compare the recovered public key with the account address in a case-insensitive manner
             let result = account.eq_ignore_ascii_case(&pubkey_hex);
             if !result {
-                return Err(eyre!("Public key and account does not match."));
+                eyre::bail!("Public key and account does not match.")
             }
             Ok(true)
         }
-        Err(_) => return Err(eyre!("Cannot recover public key.")),
+        Err(_) => eyre::bail!("Cannot recover public key."),
     }
 }
 
