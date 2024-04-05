@@ -3,6 +3,7 @@
 
 <a href="https://t.me/+_6h-gJlnXO83OGVk"><img src="https://img.shields.io/badge/Join-Telegram%20Group-blue.svg?logo=telegram"></a>
 
+<a href="https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml"><img src="https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml/badge.svg"></a>
 
 # core
 Calimero 2.0
