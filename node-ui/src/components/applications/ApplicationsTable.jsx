@@ -88,7 +88,7 @@ const Table = styled.div`
 `;
 
 export function ApplicationsTable({ applications, install, uninstall }) {
-  const t = translations.applicationsTable;
+  const t = translations.applicationsPage.applicationsTable;
 
   return (
     <Table>
