@@ -104,7 +104,7 @@ struct IntermediatePayload {
 
 fn transform_request(
     intermediate: IntermediateAddClientKeyRequest,
-) -> eyre::Result<AddClientKeyRequest, ApiError> {
+) -> Result<AddClientKeyRequest, ApiError> {
     let metadata_enum = match intermediate.wallet_metadata.wallet_type {
         WalletType::NEAR => {
             let metadata = serde_json::from_value::<NearSignatureMessageMetadata>(
@@ -170,7 +170,7 @@ fn verify_node_signature(
     wallet_metadata: &WalletMetadata,
     wallet_signature: &str,
     payload: &Payload,
-) -> eyre::Result<bool, ApiError> {
+) -> Result<bool, ApiError> {
     match wallet_metadata.wallet_type {
         WalletType::NEAR => {
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
@@ -225,7 +225,7 @@ fn verify_node_signature(
 }
 
 //Check if challenge is valid
-fn validate_challenge(req: AddClientKeyRequest) -> eyre::Result<AddClientKeyRequest, ApiError> {
+fn validate_challenge(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, ApiError> {
     validate_challenge_content(&req.payload)?;
 
     // Check if node has created signature
@@ -243,7 +243,7 @@ fn validate_challenge(req: AddClientKeyRequest) -> eyre::Result<AddClientKeyRequ
 }
 
 //check if signature data are not tempered with
-fn validate_challenge_content(payload: &Payload) -> eyre::Result<bool, ApiError> {
+fn validate_challenge_content(payload: &Payload) -> Result<bool, ApiError> {
     if payload.message.node_signature
         != create_node_signature(
             &payload.message.nonce,
@@ -274,15 +274,13 @@ fn is_older_than_15_minutes(timestamp: i64) -> bool {
     duration_since_timestamp > Duration::minutes(15)
 }
 
-fn validate_root_key_exists(
-    req: AddClientKeyRequest,
-) -> eyre::Result<AddClientKeyRequest, ApiError> {
+fn validate_root_key_exists(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, ApiError> {
     //Check if root key exists
-    // eyre::bail!("Root key does not exist")
+    // ("Root key does not exist")
     Ok(req)
 }
 
-fn store_client_key(req: AddClientKeyRequest) -> eyre::Result<AddClientKeyRequest, ApiError> {
+fn store_client_key(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, ApiError> {
     //Store client public key in a list
     info!("Client key stored successfully.");
 
