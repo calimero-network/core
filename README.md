@@ -1,12 +1,14 @@
 
-<a href="https://discord.gg/7HjWChbE"><img src="https://dcbadge.vercel.app/api/server/7HjWChbE?style=flat&theme=default-inverted"></a>
+[![Discord](https://dcbadge.vercel.app/api/server/wmW28dps?style=flat&theme=default-inverted)](https://discord.gg/7HjWChbE)
+[![Telegram Group](https://img.shields.io/badge/Join-Telegram%20Group-blue.svg?logo=telegram)](https://t.me/+_6h-gJlnXO83OGVk)
+[![Build Status](https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml/badge.svg)](https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml)
 
-<a href="https://t.me/+_6h-gJlnXO83OGVk"><img src="https://img.shields.io/badge/Join-Telegram%20Group-blue.svg?logo=telegram"></a>
-
-<a href="https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml"><img src="https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml/badge.svg"></a>
-
-# core
-Calimero 2.0
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://assets-global.website-files.com/6256e0ccf395021e66e913b6/65cb5711287e06754d171147_calimero_logo_white.svg">
+    <img alt="Daytona logo" style="" src="https://assets-global.website-files.com/6256e0ccf395021e66e913b6/65cb5711287e06754d171147_calimero_logo_white.svg" width="40%">
+  </picture>
+</div>
 
 # Run
 ## Setup number of peers (here 3)
