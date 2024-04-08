@@ -17,7 +17,7 @@ export function useRPC() {
           limit: 10,
         })
       ),
-      finality: "optimistic",
+      finality: "final",
     });
 
     return JSON.parse(Buffer.from(rawResult.result).toString());
@@ -37,7 +37,7 @@ export function useRPC() {
           limit: 10,
         })
       ),
-      finality: "optimistic",
+      finality: "final",
     });
 
     return JSON.parse(Buffer.from(rawResult.result).toString());
