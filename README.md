@@ -1,217 +1,59 @@
 
-<a href="https://discord.gg/7HjWChbE"><img src="https://dcbadge.vercel.app/api/server/7HjWChbE?style=flat&theme=default-inverted"></a>
+[![Discord](https://dcbadge.vercel.app/api/server/wmW28dps?style=flat&theme=default-inverted)](https://discord.gg/7HjWChbE)
+[![Telegram Group](https://img.shields.io/badge/Join-Telegram%20Group-blue.svg?logo=telegram)](https://t.me/+_6h-gJlnXO83OGVk)
+[![Build Status](https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml/badge.svg)](https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml)
+[![License](https://img.shields.io/badge/License-Apache--2.0-blue)](#license)
+[![Issues - calimero](https://img.shields.io/github/issues/calimero-is-near/cali2.0-experimental)](https://github.com/calimero-is-near/cali2.0-experimental/issues)
 
-<a href="https://t.me/+_6h-gJlnXO83OGVk"><img src="https://img.shields.io/badge/Join-Telegram%20Group-blue.svg?logo=telegram"></a>
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://assets-global.website-files.com/6256e0ccf395021e66e913b6/65cb5711287e06754d171147_calimero_logo_white.svg">
+    <img alt="Daytona logo" style="" src="https://assets-global.website-files.com/6256e0ccf395021e66e913b6/65cb5711287e06754d171147_calimero_logo_white.svg" width="40%">
+  </picture>
+</div>
+
+Calimero Network is designed as an innovative framework for building decentralized application protocols and facilitating private data sharing, addressing the critical need for privacy and data ownership in the digital age. It empowers developers with tools like the Protocol SDK for defining application-specific communication rules and the Client SDK for seamless interaction with the network, alongside a specialized compute market for executing demanding tasks. The network's architecture supports peer-to-peer encrypted communication, ensuring data privacy and security through end-to-end encryption methods, such as the Double Ratchet Algorithm. Calimero stands out by offering localized consensus, which contrasts with traditional global consensus models, allowing for scalable and efficient application performance without sacrificing user privacy. Intended for developers seeking to create privacy-preserving applications and users desiring control over their data, Calimero Network promises a decentralized computing environment where privacy is paramount, and data remains under the user's control.
+
+## Why Calimero?
+
+The name Calimero Network symbolizes a pioneering spirit and a commitment to addressing the nuanced challenges within the decentralized digital landscape. Inspired by the concept of breaking new ground and offering innovative solutions, Calimero Network was conceived to redefine the paradigms of privacy, security, and user autonomy in the decentralized space.
+
+At its core, Calimero Network is about empowerment and transformation, providing robust tools and a secure framework for developers and users alike. It champions the principles of user privacy and data sovereignty, addressing the pressing need for a platform that prioritizes these elements without compromising on efficiency and scalability.
+
+The ethos of Calimero Network is rooted in the idea of creating a significant impact and driving change within the decentralized ecosystem, much like a catalyst that sparks a broader movement towards a more secure, private, and user-centric digital world. It stands as a testament to the power of innovation and the relentless pursuit of a more equitable and decentralized internet.
+
+## Backstory
+
+In the early days of decentralized technology, a visionary team observed the challenges and limitations of existing blockchain infrastructures, particularly around privacy, data sovereignty, and scalability. Inspired by the core principles of Web3, they embarked on a mission to reimagine how decentralized applications could operate, with a strong emphasis on user privacy and data control. This led to the birth of Calimero Network, a groundbreaking ecosystem designed from the ground up to address these challenges. The team's commitment to innovation resulted in the creation of unique components like the Protocol SDK, specialized nodes, and an integrated approach to managing decentralized identities (DIDs) within client nodes, ensuring user anonymity and security. Calimero Network's story is one of relentless pursuit of a more private, efficient, and user-centric decentralized web, setting a new standard for what decentralized platforms can achieve.
+
+## Contributing
+
+Calimero is Open Source under the [Apache License 2.0](LICENSE), and is the [copyright of its contributors](NOTICE). If you would like to contribute to the software, you must:
+
+1. Read the Developer Certificate of Origin Version 1.1 (https://developercertificate.org/)
+2. Signing all commits to the Calimero project.
+
+This ensures that users, distributors, and other contributors can rely on all the software related to Calimero being contributed under the terms of the [License](LICENSE). No contributions will be accepted without following this process.
+
+Afterwards, navigate to the [contributing guide](CONTRIBUTING.md) to get started.
+
+## License
+
+This repository contains Calimero, covered under the [Apache License 2.0](LICENSE), except where noted (any Calimero logos or trademarks are not covered under the Apache License, and should be explicitly noted by a LICENSE file.)
+
+Calimero is a product produced from this open source software, exclusively by Calimero, Ltd. It is distributed under our commercial terms.
+
+Others are allowed to make their own distribution of the software, but they cannot use any of the Calimero trademarks, cloud services, etc.
+
+We explicitly grant permission for you to make a build that includes our trademarks while developing Calimero itself. You may not publish or share the build, and you may not use that build to run Calimero for any other purpose.
+
+## Code of Conduct
+
+This project has adapted the Code of Conduct from the [Contributor Covenant](https://www.contributor-covenant.org/). For more information see the [Code of Conduct](CODE_OF_CONDUCT.md) or contact [info@calimero.network.](mailto:info@calimero.network) with any additional questions or comments.
+
+## Questions
 
 
-# core
-Calimero 2.0
+For more information on how to use and develop Calimero, talk to us on
+[Discord](https://discord.gg/7HjWChbE).
 
-# Run
-## Setup number of peers (here 3)
-```
-./crates/node/gen_localnet_configs.sh 3
-```
-
-## Turn on debug mode (optional)
-```
-export RUST_LOG=debug
-```
-
-### Testing
-
-#### First, compile the only-peers and kv-store applications
-
-```console
-$ ./apps/only-peers/build.sh
-$ ./apps/kv-store/build.sh                                                                                        
-```
-
-#### Create a data folder for all configs
-
-```console
-$ mkdir data
-```
-
-#### Spin up a coordinator node
-
-```console
-$ cargo run -p calimero-node -- --home data/coordinator init --server-port 2427
-    Finished dev [unoptimized + debuginfo] target(s) in 0.20s
-     Running `target/debug/calimero-node --home data/coordinator init`
-2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWCiyHe2yeu53qSyRs4g9sTGwgEPjR8iGdi4XG5iv11TgH")
-2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/coordinator"
-
-$ cargo run -p calimero-node -- --home data/coordinator run --node-type coordinator
-```
-
-#### Spin up node 1
-
-```console
-$ cargo run -p calimero-node -- --home data/node1 init --server-port 2428 --swarm-port 2528
-    Finished dev [unoptimized + debuginfo] target(s) in 0.20s
-     Running `target/debug/calimero-node --home data/node1 init`
-2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHJMh2hv9wai6UqPoHf5jED2gNaUbTTx6ZThAUqroCgtF")
-2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/node1"
-
-$ cargo run -p calimero-node -- --home data/node1 run
-```
-
-```
-Check if config file has set correct port in all places. If not, update it per given port value.
-```
-
-#### Spin up node 2
-
-```console
-$ cargo run -p calimero-node -- --home data/node2 init --server-port 2429 --swarm-port 2529
-    Finished dev [unoptimized + debuginfo] target(s) in 0.20s
-     Running `target/debug/calimero-node --home data/node2 init`
-2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHDWr9mCgZiXQXKDsMjWgDioAt9mVHAKEuYUuSKtYdv75")
-2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/node2"
-
-$ cargo run -p calimero-node -- --home data/node2 run
-```
-
-```
-Important!!
-If you receive error
-"message": "guest panicked: panicked at apps/only-peers/src/code_generated_from_calimero_sdk_macros.rs:41:44: Failed to read app state.",
-that means that storage is empty. Before fetching any data, create new post.
-```
-
-All sessions will fall into interactive mode
-
-```console
-Usage: [call|peers|pool|gc|store] [args]
-
-> call <method> <JSON args>
-
-Call a method on the app with the provided JSON args
-
-> peers
-
-Show a count of connected peers
-
-> pool
-
-Show the transaction pool
-
-> gc
-
-Evict all transactions in the transaction pool that are awaiting confirmation
-
-> store
-
-Print the DB state
-```
-
-Example - KV Store
-
-#### From Peer 1
-
-```console
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc set { "key": "name", "value": "Adam Smith" }
- │ Sent Transaction! Hash("DWSBHcnDnNVkQTf5xha891kfQvXyQt6WMhyReghcLW5A")
- │ Hash("DWSBHcnDnNVkQTf5xha891kfQvXyQt6WMhyReghcLW5A")
- │   (No return value)
- │   Logs:
- │     > Setting key: "name" to value: "Adam Smith"
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc get { "key": "name" }
- │ Sent Transaction! Hash("9Y5jZVsmEs1P74qhi2uJ82jr7WFFUCg1X6TvHtoLo45W")
- │ Hash("9Y5jZVsmEs1P74qhi2uJ82jr7WFFUCg1X6TvHtoLo45W")
- │   Return Value:
- │     > "Adam Smith"
- │   Logs:
- │     > Getting key: "name"
-```
-
-#### From Peer 2
-
-```console
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc get { "key": "name" }
- │ Sent Transaction! Hash("EFthDcmVbpevfYw1T7WfQ75tY7PHV7DVKieRNFa2uanh")
- │ Hash("EFthDcmVbpevfYw1T7WfQ75tY7PHV7DVKieRNFa2uanh")
- │   Return Value:
- │     > "Adam Smith"
- │   Logs:
- │     > Getting key: "name"
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc set { "key": "name", "value": "Adam Smitten" }
- │ Sent Transaction! Hash("7eU6aJHgB4rpZn8oV7VbWMxERDDKMCP2Ao2yj5G96WZD")
- │ Hash("7eU6aJHgB4rpZn8oV7VbWMxERDDKMCP2Ao2yj5G96WZD")
- │   (No return value)
- │   Logs:
- │     > Setting key: "name" to value: "Adam Smitten"
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc get { "key": "name" }
- │ Sent Transaction! Hash("86Rfq6zEpjDSMjXFfxwmLLscHob9ZBtJEwvhwEDptjhM")
- │ Hash("86Rfq6zEpjDSMjXFfxwmLLscHob9ZBtJEwvhwEDptjhM")
- │   Return Value:
- │     > "Adam Smitten"
- │   Logs:
- │     > Getting key: "name"
-```
-
-Example - Only Peers 
-```
-call /calimero/experimental/app/8eVTNKLwmF28pdDR7RRpT5C1XwUXoJuDuPF6hhbMCu98 create_post {"title": "title", "content": "content"}
- │ Scheduled Transaction! Hash("FCBsYV5cch9kpkDuc3a1mYG7XNYapFTN3g4nAH7CWXPG")
- │ Hash("FCBsYV5cch9kpkDuc3a1mYG7XNYapFTN3g4nAH7CWXPG")
- │   Return Value:
- │     > (json): {
- │     >   "comments": [],
- │     >   "content": "content",
- │     >   "id": 0,
- │     >   "title": "title"
- │     > }
- │   Logs:
- │     > Creating post with title: "title" and content: "content"
-
- call /calimero/experimental/app/8eVTNKLwmF28pdDR7RRpT5C1XwUXoJuDuPF6hhbMCu98 post {"id": 0}
- │ Scheduled Transaction! Hash("EWTmQg71zhj5SDs91uWqrBsK7NRa3zBU5vALFPuhgFd3")
- │ Hash("EWTmQg71zhj5SDs91uWqrBsK7NRa3zBU5vALFPuhgFd3")
- │   Return Value:
- │     > (json): {
- │     >   "comments": [],
- │     >   "content": "content",
- │     >   "id": 0,
- │     >   "title": "title"
- │     > }
- │   Logs:
- │     > Getting post with id: 0
- ```
-
-JSON RPC
-- success example
-```
-curl -X POST -H "Content-Type: application/json" -d '
-{
-  "jsonrpc": "2.0",
-  "method": "call_mut",
-  "params": {
-    "applicationId": "/calimero/experimental/app/6P8KrqtyD4YgcSrDZovZ5dGDFJjvx8jXLrCohpj2VtZh",
-    "method": "create_post",
-    "argsJson": {
-      "title": "Your Post Title",
-      "content": "Your Post Content"
-    }
-  },
-  "id": "dontcare"
-}' 'http://localhost:2529/jsonrpc'
-```
-- failure example
-```
-curl -X POST -H "Content-Type: application/json" -d '
-{
-  "jsonrpc": "2.0",
-  "method": "call_mut",
-  "params": {
-    "applicationId": "/calimero/experimental/app/6P8KrqtyD4YgcSrDZovZ5dGDFJjvx8jXLrCohpj2VtZh",
-    "method": "create_post",
-    "argsJson": {
-      "title_FiBo": "Your Post Title",
-      "content": "Your Post Content"
-    }
-  },
-  "id": 123
-}' 'http://localhost:2529/jsonrpc'
-```

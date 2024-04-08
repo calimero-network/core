@@ -12,13 +12,23 @@
         "logoDashboardText": "Admin Dashboard",
         "pkTest": "Public Key"
     },
-    "applicationsTable": {
-        "title": "Applications",
-        "headerNameText": "Name",
-        "headerDescText": "Description",
-        "headerRepoText": "Repository",
-        "uninstallButtonText": "Uninstall",
-        "installButtonText": "Install new application"
+    "applicationsPage": {
+        "applicationsTable": {
+            "title": "Applications",
+            "headerNameText": "Name",
+            "headerDescText": "Description",
+            "headerRepoText": "Repository",
+            "uninstallButtonText": "Uninstall",
+            "installButtonText": "Install new application"
+        },
+        "installApplication": {
+            "backbuttonText": "Back to Applications",
+            "selectAppLabel": "Select Application to Install",
+            "dropdownPlaceholder": "Applications",
+            "packageDetailsLabel": "Package Details",
+            "releaseSelectionLabel": "Select Application Release",
+            "releaseDetailsLabel": "Release Details"
+        }
     },
     "confirmWallet": {
         "logoText": "Admin Dashboard",
