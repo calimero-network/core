@@ -1,12 +1,15 @@
-use crate::admin::service::{ApiError, ApiResponse};
-use crate::verifysignature::verify_near_signature;
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::Json;
 use calimero_identity::auth::verify_eth_signature;
 use chrono::{Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_sessions::Session;
 use tracing::info;
+
+use crate::admin::service::{ApiError, ApiResponse};
+use crate::verifysignature::verify_near_signature;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,7 +108,7 @@ fn transform_request(
     let metadata_enum = match intermediate.wallet_metadata.wallet_type {
         WalletType::NEAR => {
             let metadata = serde_json::from_value::<NearSignatureMessageMetadata>(
-                intermediate.payload.metadata.clone(),
+                intermediate.payload.metadata,
             )
             .map_err(|_| ApiError {
                 status_code: StatusCode::BAD_REQUEST,
@@ -115,7 +118,7 @@ fn transform_request(
         }
         WalletType::ETH => {
             let metadata = serde_json::from_value::<EthSignatureMessageMetadata>(
-                intermediate.payload.metadata.clone(),
+                intermediate.payload.metadata,
             )
             .map_err(|_| ApiError {
                 status_code: StatusCode::BAD_REQUEST,
