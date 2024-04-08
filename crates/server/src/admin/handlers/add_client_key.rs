@@ -2,6 +2,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use calimero_identity::auth::verify_eth_signature;
+use calimero_primitives::application::ApplicationId;
 use chrono::{Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,6 +10,7 @@ use tower_sessions::Session;
 use tracing::info;
 
 use crate::admin::service::{ApiError, ApiResponse};
+use crate::storage::did::{get_root_key, RootKey};
 use crate::verifysignature::verify_near_signature;
 
 #[derive(Debug, Deserialize)]
@@ -276,7 +278,20 @@ fn is_older_than_15_minutes(timestamp: i64) -> bool {
 
 fn validate_root_key_exists(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, ApiError> {
     //Check if root key exists
-    // ("Root key does not exist")
+
+    let application_id: ApplicationId = ApplicationId(
+        "/calimero/experimental/app/9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP".to_string(),
+    );
+
+    let root_key = RootKey {
+        signing_key: req.wallet_metadata.signing_key.clone(),
+    };
+
+    get_root_key(application_id, &root_key).ok_or_else(|| ApiError {
+        status_code: StatusCode::BAD_REQUEST,
+        message: "Root key does not exist".into(),
+    })?;
+
     Ok(req)
 }
 

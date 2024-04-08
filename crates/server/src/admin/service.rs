@@ -7,6 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use calimero_primitives::application::ApplicationId;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
@@ -20,6 +21,7 @@ use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
 use super::handlers::add_client_key::add_client_key_handler;
+use crate::storage::did::{add_root_key, RootKey};
 use crate::verifysignature;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -182,7 +184,22 @@ async fn create_root_key_handler(
                 &req.signature,
                 &req.public_key,
             ) {
-                (StatusCode::OK, "Root key created")
+                let application_id = ApplicationId("node".to_string());
+                let success = add_root_key(
+                    application_id,
+                    RootKey {
+                        signing_key: req.public_key.clone(),
+                    },
+                );
+
+                if success {
+                    (StatusCode::OK, "Root key created")
+                } else {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to store root key",
+                    )
+                }
             } else {
                 (StatusCode::BAD_REQUEST, "Invalid signature")
             }
