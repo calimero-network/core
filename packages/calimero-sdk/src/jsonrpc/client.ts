@@ -7,7 +7,8 @@ import {
     RpcCallMutRequest,
     RpcCallMutResponse,
     RpcCallRequestParams,
-    RpcCallMutRequestParams
+    RpcCallMutRequestParams,
+    RequestConfig
 } from "../rpc";
 import { JsonRpcRequest, JsonRpcResponse } from "./request";
 import axios, { AxiosInstance } from "axios";
@@ -24,28 +25,28 @@ export class JsonRpcClient implements RpcClient {
         });
     }
 
-    public async call(params: RpcCallRequestParams): Promise<RpcCallResponse> {
+    public async call(params: RpcCallRequestParams, config: RequestConfig): Promise<RpcCallResponse> {
         const payload: RpcCallRequest = {
             method: 'call',
             params
         };
 
-        return await this.request<RpcCallRequest, RpcCallResponse>(payload);
+        return await this.request<RpcCallRequest, RpcCallResponse>(payload, config);
     }
 
-    public async callMut(params: RpcCallMutRequestParams): Promise<RpcCallMutResponse> {
+    public async callMut(params: RpcCallMutRequestParams, config: RequestConfig): Promise<RpcCallMutResponse> {
         const payload: RpcCallMutRequest = {
             method: 'call_mut',
             params
         };
 
-        return await this.request<RpcCallMutRequest, RpcCallMutResponse>(payload);
+        return await this.request<RpcCallMutRequest, RpcCallMutResponse>(payload, config);
     }
 
     async request<
         Request extends RpcRequest,
         Response extends RpcResponse,
-    >(rpcRequest: Request, timeout?: number): Promise<Response> {
+    >(rpcRequest: Request, config: RequestConfig,): Promise<Response> {
         const data: JsonRpcRequest = {
             jsonrpc: '2.0',
             id: 1,
@@ -53,13 +54,8 @@ export class JsonRpcClient implements RpcClient {
             params: rpcRequest.params,
         };
 
-        let requestConfig: any = {};
-        if (typeof timeout !== 'undefined' && timeout !== null) {
-            requestConfig.timeout = timeout;
-        }
-
         try {
-            const response = await this.axiosInstance.post<JsonRpcResponse<Response>>(this.path, data, requestConfig);
+            const response = await this.axiosInstance.post<JsonRpcResponse<Response>>(this.path, data, config);
             if (response.status === 200) {
                 if (response.data.error) {
                     throw new Error("JSON RPC server returned error: " + response.data.error);

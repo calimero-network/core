@@ -3,8 +3,12 @@ export type JsonRpcRequestId = string | number;
 export type ApplicationId = string;
 
 export interface RpcClient {
-    call(params: RpcCallRequestParams): Promise<RpcCallResponse>;
-    callMut(params: RpcCallRequestParams): Promise<RpcCallResponse>;
+    call(params: RpcCallRequestParams, config: RequestConfig): Promise<RpcCallResponse>;
+    callMut(params: RpcCallRequestParams, config: RequestConfig): Promise<RpcCallResponse>;
+}
+
+export interface RequestConfig {
+    timeout?: number
 }
 
 // **************************** request *******************************
