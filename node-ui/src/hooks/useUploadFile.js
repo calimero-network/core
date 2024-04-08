@@ -14,12 +14,9 @@ export const useUploadFile = () => {
           const cid = await fs.addBytes(binary, helia.blockstore);
           setCid(cid);
           setCidString(cid.toString());
-          console.log("Added file:", cid.toString());
         } catch (e) {
           console.error(e);
         }
-      } else {
-        console.log("please wait for helia to start");
       }
     },
     [error, starting, helia, fs]
@@ -39,8 +36,6 @@ export const useUploadFile = () => {
       } catch (e) {
         console.error(e);
       }
-    } else {
-      console.log("Please wait for helia to start.");
     }
   }, [error, starting, cid, helia, fs]);
 

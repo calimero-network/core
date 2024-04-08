@@ -20,16 +20,12 @@ export const HeliaProvider = ({ children }) => {
   const [error, setError] = useState(null);
 
   const startHelia = useCallback(async () => {
-    if (helia) {
-      console.info("helia already started");
-    } else if (window.helia) {
-      console.info("found a windowed instance of helia, populating ...");
+    if (!helia && window.helia) {
       setHelia(window.helia);
       setFs(unixfs(helia));
       setStarting(false);
     } else {
       try {
-        console.info("Starting Helia");
         const helia = await createHelia();
         setHelia(helia);
         setFs(unixfs(helia));
