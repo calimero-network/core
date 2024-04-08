@@ -7,6 +7,7 @@ pub struct Sanitizer<'a> {
     self_: Option<&'a syn::Path>,
     lifetime: Option<MaybeOwned<'a, String>>,
     entries: MaybeOwned<'a, Box<[SanitizerAtom<'a>]>>,
+    metrics: MaybeOwned<'a, Metrics>,
 }
 
 #[derive(Debug)]
@@ -45,6 +46,12 @@ enum LifetimeAtom {
     Named(syn::Lifetime),
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Metrics {
+    pub selves: usize,
+    pub lifetimes: usize,
+}
+
 impl<'a> Sanitizer<'a> {
     pub fn with_self(mut self, self_: &'a syn::Path) -> Self {
         self.self_ = Some(self_);
@@ -54,6 +61,10 @@ impl<'a> Sanitizer<'a> {
     pub fn with_lifetime(mut self, lifetime: &'a syn::Ident) -> Self {
         self.lifetime = Some(MaybeOwned::Owned(format!("'{}", lifetime)));
         self
+    }
+
+    pub fn metrics(&self) -> &Metrics {
+        self.metrics.as_ref()
     }
 }
 
@@ -106,6 +117,7 @@ impl<'a> ToTokens for Sanitizer<'a> {
                             .as_ref()
                             .map(|lifetime| MaybeOwned::Borrowed(lifetime.as_ref())),
                         entries: MaybeOwned::Borrowed(entry.entries.as_ref()),
+                        metrics: MaybeOwned::Borrowed(entry.metrics.as_ref()),
                     };
                     let mut group = proc_macro2::Group::new(*delimiter, entry.to_token_stream());
                     group.set_span(*span);
@@ -119,12 +131,15 @@ impl<'a> ToTokens for Sanitizer<'a> {
 impl<'a> Parse for Sanitizer<'a> {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut entries = Vec::new();
+        let mut metrics = Metrics::default();
 
         while !input.is_empty() {
             if input.peek(syn::Token![Self]) {
                 entries.push(SanitizerAtom::Self_(input.parse()?));
+                metrics.selves += 1;
             } else if input.peek(syn::Lifetime) {
                 entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Named(input.parse()?)));
+                metrics.lifetimes += 1;
             } else if input.peek(syn::Token![&]) {
                 let and = input.parse::<proc_macro2::TokenTree>()?;
                 let and_span = and.span();
@@ -134,6 +149,7 @@ impl<'a> Parse for Sanitizer<'a> {
                 } else {
                     entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Elided(and_span)));
                 }
+                metrics.lifetimes += 1;
             } else {
                 match input.parse::<TokenTree>()? {
                     TokenTree::Group(group) => {
@@ -152,6 +168,7 @@ impl<'a> Parse for Sanitizer<'a> {
             entries: MaybeOwned::Owned(entries.into_boxed_slice()),
             self_: None,
             lifetime: None,
+            metrics: MaybeOwned::Owned(metrics),
         })
     }
 }
@@ -178,6 +195,11 @@ mod tests {
             sanitized.to_token_stream().to_string(),
             expected.to_string()
         );
+
+        let metrics = sanitized.metrics();
+
+        assert_eq!(metrics.selves, 1);
+        assert_eq!(metrics.lifetimes, 0);
     }
 
     #[test]
@@ -192,9 +214,14 @@ mod tests {
         let expected = quote! { &Some<Really<[Complex, Deep, crate::MyCustomType<'a>, Type], Of, &mut crate::MyCustomType<'a> >> };
 
         assert_eq!(
-            dbg!(sanitized).to_token_stream().to_string(),
+            sanitized.to_token_stream().to_string(),
             expected.to_string()
         );
+
+        let metrics = sanitized.metrics();
+
+        assert_eq!(metrics.selves, 2);
+        assert_eq!(metrics.lifetimes, 2);
     }
 
     #[test]
@@ -204,11 +231,16 @@ mod tests {
         let sanitized = syn::parse2::<Sanitizer>(ty.clone()).unwrap();
 
         assert_eq!(sanitized.to_token_stream().to_string(), ty.to_string());
+
+        let metrics = sanitized.metrics();
+
+        assert_eq!(metrics.selves, 2);
+        assert_eq!(metrics.lifetimes, 2);
     }
 
     #[test]
     fn test_lifetime_sanitizer_simple() {
-        let ty = dbg!(quote! { &'a Some<'a, Complex<&&&Deep, &Type>> });
+        let ty = quote! { &'a Some<'a, Complex<&&&Deep, &Type>> };
         let replace_with: syn::Ident = syn::Ident::new("static", proc_macro2::Span::call_site());
 
         let sanitized = syn::parse2::<Sanitizer>(ty)
@@ -221,13 +253,16 @@ mod tests {
             sanitized.to_token_stream().to_string(),
             expected.to_string()
         );
+
+        let metrics = sanitized.metrics();
+
+        assert_eq!(metrics.selves, 0);
+        assert_eq!(metrics.lifetimes, 6);
     }
 
     #[test]
     fn test_lifetime_sanitizer_complex() {
-        let ty = dbg!(
-            quote! { &'a Some<'a, Complex<&&&Deep, &Type, Box<dyn MyTrait<'a, Output = &str> + 'a>>> }
-        );
+        let ty = quote! { &'a Some<'a, Complex<&&&Deep, &Type, Box<dyn MyTrait<'a, Output = &str> + 'a>>> };
         let replace_with: syn::Ident = syn::Ident::new("static", proc_macro2::Span::call_site());
 
         let sanitized = syn::parse2::<Sanitizer>(ty)
@@ -246,6 +281,11 @@ mod tests {
             sanitized.to_token_stream().to_string(),
             expected.to_string()
         );
+
+        let metrics = sanitized.metrics();
+
+        assert_eq!(metrics.selves, 0);
+        assert_eq!(metrics.lifetimes, 9);
     }
 
     #[test]
@@ -255,5 +295,10 @@ mod tests {
         let sanitized = syn::parse2::<Sanitizer>(ty.clone()).unwrap();
 
         assert_eq!(sanitized.to_token_stream().to_string(), ty.to_string());
+
+        let metrics = sanitized.metrics();
+
+        assert_eq!(metrics.selves, 0);
+        assert_eq!(metrics.lifetimes, 6);
     }
 }
