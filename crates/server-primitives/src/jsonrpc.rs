@@ -51,8 +51,8 @@ pub struct Request<P> {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum RequestPayload {
-    Call(CallRequest),
-    CallMut(CallMutRequest),
+    Query(QueryRequest),
+    Mutate(MutateRequest),
 }
 // *************************************************************************
 
@@ -97,7 +97,7 @@ pub enum ServerResponseError {
 // **************************** call method *******************************
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CallRequest {
+pub struct QueryRequest {
     pub application_id: calimero_primitives::application::ApplicationId,
     pub method: String,
     pub args_json: serde_json::Value,
@@ -105,13 +105,13 @@ pub struct CallRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CallResponse {
+pub struct QueryResponse {
     pub output: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Error)]
-#[error("CallError")]
-pub enum CallError {
+#[error("QueryError")]
+pub enum QueryError {
     SerdeError { message: String },
     ExecutionError { message: String },
 }
@@ -120,7 +120,7 @@ pub enum CallError {
 // **************************** call_mut method ****************************
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CallMutRequest {
+pub struct MutateRequest {
     pub application_id: calimero_primitives::application::ApplicationId,
     pub method: String,
     pub args_json: serde_json::Value,
@@ -128,13 +128,13 @@ pub struct CallMutRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CallMutResponse {
+pub struct MutateResponse {
     pub output: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Error)]
-#[error("CallMut")]
-pub enum CallMutError {
+#[error("MutateError")]
+pub enum MutateError {
     SerdeError { message: String },
     ExecutionError { message: String },
 }

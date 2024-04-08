@@ -3,8 +3,8 @@ export type JsonRpcRequestId = string | number;
 export type ApplicationId = string;
 
 export interface RpcClient {
-    call<Args, Out>(params: RpcCallRequestParams<Args>, config: RequestConfig): Promise<RpcCallResponse<Out>>;
-    callMut<Args, Out>(params: RpcCallMutRequestParams<Args>, config: RequestConfig): Promise<RpcCallMutResponse<Out>>;
+    query<Args, Out>(params: RpcQueryParams<Args>, config: RequestConfig): Promise<RpcQueryResponse<Out>>;
+    mutate<Args, Out>(params: RpcMutateParams<Args>, config: RequestConfig): Promise<RpcMutateResponse<Out>>;
 }
 
 export interface RequestConfig {
@@ -31,29 +31,29 @@ export interface RpcInternalError {
     };
 }
 
-export interface RpcCallRequestParams<Args> {
+export interface RpcQueryParams<Args> {
     applicationId: ApplicationId;
     method: string;
     argsJson: Args;
 }
 
-export interface RpcCallResponse<T> {
+export interface RpcQueryResponse<T> {
     output?: T;
 }
 
-export type RpcCallError = RpcSerdeError | RpcExecutionError;
+export type RpcQueryError = RpcSerdeError | RpcExecutionError;
 
-export interface RpcCallMutRequestParams<Args> {
+export interface RpcMutateParams<Args> {
     applicationId: ApplicationId;
     method: string;
     argsJson: Args;
 }
 
-export interface RpcCallMutResponse<Out> {
+export interface RpcMutateResponse<Out> {
     output?: Out;
 }
 
-export type RpcCallMutError = RpcSerdeError | RpcExecutionError;
+export type RpcMutateError = RpcSerdeError | RpcExecutionError;
 
 export interface RpcSerdeError {
     type: 'SerdeError';
