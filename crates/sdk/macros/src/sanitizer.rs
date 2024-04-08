@@ -52,6 +52,13 @@ pub struct Metrics {
     pub lifetimes: usize,
 }
 
+impl Metrics {
+    fn subsume(&mut self, other: &Self) {
+        self.selves += other.selves;
+        self.lifetimes += other.lifetimes;
+    }
+}
+
 impl<'a> Sanitizer<'a> {
     pub fn with_self(mut self, self_: &'a syn::Path) -> Self {
         self.self_ = Some(self_);
@@ -153,8 +160,10 @@ impl<'a> Parse for Sanitizer<'a> {
             } else {
                 match input.parse::<TokenTree>()? {
                     TokenTree::Group(group) => {
+                        let entry: Self = syn::parse2(group.stream())?;
+                        metrics.subsume(entry.metrics());
                         entries.push(SanitizerAtom::Group {
-                            entry: syn::parse2(group.stream())?,
+                            entry,
                             delimiter: group.delimiter(),
                             span: group.span(),
                         });
