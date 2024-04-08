@@ -46,9 +46,10 @@ export class JsonRpcClient implements RpcClient {
     }
 
     async request<Params, Result>(method: string, params: Params, config?: RequestConfig): Promise<Result> {
+        const requestId = this.getRandomRequestId()
         const data: JsonRpcRequest<Params> = {
             jsonrpc: '2.0',
-            id: 1,
+            id: requestId,
             method,
             params,
         };
@@ -59,12 +60,19 @@ export class JsonRpcClient implements RpcClient {
                 if (response.data.error) {
                     throw new Error("JSON RPC server returned error: " + response.data.error);
                 }
+                if (response.data.id !== requestId) {
+                    throw new Error(`JSON RPC server returned response with invalid ID, expected: ${requestId} got: ${response.data.id}`);
+                }
                 return response.data.result;
             } else {
-                throw new Error("JSON RPC server returned error HTTP code: " + response.status);
+                throw new Error(`JSON RPC server returned error HTTP code: ${response.status}`);
             }
         } catch (error: any) {
-            throw new Error("Error occurred during JSON RPC request: " + error.message);
+            throw new Error(`Error occurred during JSON RPC request: ${error.message}`);
         }
+    }
+
+    getRandomRequestId(): number {
+        return Math.floor(Math.random() * Math.pow(2, 32));
     }
 }
