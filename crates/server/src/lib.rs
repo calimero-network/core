@@ -76,10 +76,9 @@ pub async fn start(
     #[cfg(feature = "graphql")]
     {
         if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
-            let identity = config.identity.clone();
-            app = app
-                .route(path, handler)
-                .layer(middleware::auth::AuthSignatureLayer::new(identity));
+            // let identity = config.identity.clone();
+            app = app.route(path, handler);
+            //.layer(middleware::auth::AuthSignatureLayer::new(identity)); //TODO will be replaced with json RPC
 
             serviced = true;
         }
@@ -105,8 +104,8 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = admin::service(&config)? {
-            if let Some((site_path, serve_dir)) = admin::site(&config)? {
+        if let Some((api_path, router)) = admin::service::setup(&config)? {
+            if let Some((site_path, serve_dir)) = admin::service::site(&config)? {
                 app = app.nest_service(site_path, serve_dir);
             }
             app = app.nest(api_path, router);

@@ -5,7 +5,7 @@ use serde_json::json;
 use crate::graphql;
 
 const APPLICATION_ID: &str =
-    "/calimero/experimental/app/8eVTNKLwmF28pdDR7RRpT5C1XwUXoJuDuPF6hhbMCu98";
+    "/calimero/experimental/app/9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP";
 
 pub struct AppQuery {
     pub sender: crate::ServerSender,
