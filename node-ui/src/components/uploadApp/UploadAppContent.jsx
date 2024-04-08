@@ -7,6 +7,7 @@ export const ContentLayout = styled.div`
   padding: 42px 26px 26px 26px;
   display: flex;
   flex: 1;
+
   .content-card {
     background-color: #353540;
     border-radius: 4px;
