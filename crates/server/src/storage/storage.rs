@@ -9,25 +9,21 @@ pub enum AdminStore {
 }
 
 impl Storage for AdminStore {
-    fn get(&self, key: &calimero_runtime::store::Key) -> Option<Vec<u8>> {
+    fn get(&self, key: &Key) -> Option<Vec<u8>> {
         match self {
             Self::Read(store) => store.get(key).ok().flatten(),
             Self::Write(store) => store.get(key).ok().flatten(),
         }
     }
 
-    fn set(
-        &mut self,
-        key: calimero_runtime::store::Key,
-        value: calimero_runtime::store::Value,
-    ) -> Option<calimero_runtime::store::Value> {
+    fn set(&mut self, key: Key, value: Value) -> Option<Value> {
         match self {
             Self::Read(_) => unimplemented!("Can not write to read-only store."),
             Self::Write(store) => store.put(key, value),
         }
     }
 
-    fn has(&self, key: &calimero_runtime::store::Key) -> bool {
+    fn has(&self, key: &Key) -> bool {
         // todo! optimize to avoid eager reads
         match self {
             Self::Read(store) => store.get(key).ok().is_some(),

@@ -1,13 +1,15 @@
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use calimero_primitives::application::ApplicationId;
+use calimero_store::config::StoreConfig;
+use calimero_store::Store;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
@@ -41,6 +43,12 @@ pub(crate) fn setup(
         }
     };
     let admin_path = "/admin-api";
+    //Fill from config
+    let store_config: StoreConfig = StoreConfig {
+        path: "data/node2".into(),
+    };
+
+    let store = calimero_store::Store::open(&store_config).unwrap();
 
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
@@ -50,7 +58,8 @@ pub(crate) fn setup(
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
         .route("/add-client-key", post(add_client_key_handler))
-        .layer(session_layer);
+        .layer(session_layer)
+        .with_state(store);
 
     Ok(Some((admin_path, admin_router)))
 }
@@ -169,6 +178,7 @@ async fn health_check_handler() -> impl IntoResponse {
 
 async fn create_root_key_handler(
     session: Session,
+    State(store): State<Store>,
     Json(req): Json<PubKeyRequest>,
 ) -> impl IntoResponse {
     let message = "helloworld";
@@ -184,9 +194,8 @@ async fn create_root_key_handler(
                 &req.signature,
                 &req.public_key,
             ) {
-                let application_id = ApplicationId("node".to_string());
                 let success = add_root_key(
-                    application_id,
+                    &store,
                     RootKey {
                         signing_key: req.public_key.clone(),
                     },

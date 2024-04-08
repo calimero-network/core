@@ -1,6 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::{http, Router};
+use calimero_store::config::StoreConfig;
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
