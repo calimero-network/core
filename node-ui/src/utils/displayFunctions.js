@@ -9,9 +9,9 @@ export const truncatePublicKey = (publicKey) => {
 };
 
 export const getStatus = (active, revoked) => {
-  if (active && !revoked) {
+  if (active) {
     return "active";
-  } else if (revoked && !active) {
+  } else if (revoked) {
     return "revoked";
   } else {
     return "";
