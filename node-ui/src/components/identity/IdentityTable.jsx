@@ -166,8 +166,12 @@ export function IdentityTable({ identityList, deleteIdentity, addIdentity }) {
                     }}
                   />
                   <MenuIconDropdown
-                    onClick={() => deleteIdentity(id)}
-                    buttonText={t.deleteButtonText}
+                    options={[
+                      {
+                        buttonText: t.deleteButtonText,
+                        onClick: () => deleteIdentity(id),
+                      },
+                    ]}
                   />
                 </div>
                 {expandDid === id && (

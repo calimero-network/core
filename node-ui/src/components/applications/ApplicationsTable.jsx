@@ -131,8 +131,12 @@ export function ApplicationsTable({ applications, install, uninstall }) {
                 </a>
                 <div className="menu">
                   <MenuIconDropdown
-                    onClick={() => uninstall(id)}
-                    buttonText={t.uninstallButtonText}
+                    options={[
+                      {
+                        buttonText: t.uninstallButtonText,
+                        onClick: () => uninstall(id),
+                      },
+                    ]}
                   />
                 </div>
               </div>
