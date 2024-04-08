@@ -3,10 +3,10 @@ import {
     JsonRpcRequestId,
     RpcResponseError,
     RpcClient,
-    RpcCallResponse,
-    RpcCallMutResponse,
-    RpcCallRequestParams,
-    RpcCallMutRequestParams,
+    RpcQueryResponse,
+    RpcMutateResponse,
+    RpcQueryParams,
+    RpcMutateParams,
     RequestConfig
 } from "../rpc";
 import axios, { AxiosInstance } from "axios";
@@ -37,12 +37,12 @@ export class JsonRpcClient implements RpcClient {
         });
     }
 
-    public async call<Args, Out>(params: RpcCallRequestParams<Args>, config?: RequestConfig): Promise<RpcCallResponse<Out>> {
-        return await this.request<RpcCallRequestParams<Args>, RpcCallResponse<Out>>('call', params, config);
+    public async query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcQueryResponse<Out>> {
+        return await this.request<RpcQueryParams<Args>, RpcQueryResponse<Out>>('query', params, config);
     }
 
-    public async callMut<Args, Out>(params: RpcCallMutRequestParams<Args>, config?: RequestConfig): Promise<RpcCallMutResponse<Out>> {
-        return await this.request<RpcCallMutRequestParams<Args>, RpcCallMutResponse<Out>>('call_mut', params, config);
+    public async mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcMutateResponse<Out>> {
+        return await this.request<RpcMutateParams<Args>, RpcMutateResponse<Out>>('mutate', params, config);
     }
 
     async request<Params, Result>(method: string, params: Params, config?: RequestConfig): Promise<Result> {

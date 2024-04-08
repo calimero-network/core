@@ -5,7 +5,7 @@ function App() {
 
   const executeRpcRequest = async () => {
     try {
-      const resp = await client.callMut(
+      const resp = await client.mutate(
         {
           applicationId: "/calimero/experimental/app/FyweziaTzQAahZmdZ3kjUwFr52RCKQYqcpiPDXCNMNzN",
           method: "create_post",

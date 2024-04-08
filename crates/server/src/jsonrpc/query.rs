@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-use calimero_server_primitives::jsonrpc::{CallMutError, CallMutRequest, CallMutResponse};
+use calimero_server_primitives::jsonrpc::{QueryError, QueryRequest, QueryResponse};
 
 use crate::jsonrpc;
 
-jsonrpc::mount_method!(CallMutRequest-> Result<CallMutResponse, CallMutError>, handle);
+jsonrpc::mount_method!(QueryRequest-> Result<QueryResponse, QueryError>, handle);
 
 async fn handle(
-    request: CallMutRequest,
+    request: QueryRequest,
     state: Arc<jsonrpc::ServiceState>,
-) -> eyre::Result<CallMutResponse> {
+) -> eyre::Result<QueryResponse> {
     let args = match serde_json::to_vec(&request.args_json) {
         Ok(args) => args,
         Err(err) => {
-            eyre::bail!(CallMutError::SerdeError {
+            eyre::bail!(QueryError::SerdeError {
                 message: err.to_string()
             })
         }
@@ -24,18 +24,18 @@ async fn handle(
         request.application_id,
         request.method,
         args,
-        true,
+        false,
     )
     .await
     {
         Ok(Some(output)) => match serde_json::from_str::<serde_json::Value>(&output) {
-            Ok(v) => Ok(CallMutResponse { output: Some(v) }),
-            Err(err) => eyre::bail!(CallMutError::SerdeError {
+            Ok(v) => Ok(QueryResponse { output: Some(v) }),
+            Err(err) => eyre::bail!(QueryError::SerdeError {
                 message: err.to_string()
             }),
         },
-        Ok(None) => Ok(CallMutResponse { output: None }),
-        Err(err) => eyre::bail!(CallMutError::ExecutionError {
+        Ok(None) => Ok(QueryResponse { output: None }),
+        Err(err) => eyre::bail!(QueryError::ExecutionError {
             message: err.to_string()
         }),
     }

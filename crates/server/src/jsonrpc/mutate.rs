@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-use calimero_server_primitives::jsonrpc::{CallError, CallRequest, CallResponse};
+use calimero_server_primitives::jsonrpc::{MutateError, MutateRequest, MutateResponse};
 
 use crate::jsonrpc;
 
-jsonrpc::mount_method!(CallRequest-> Result<CallResponse, CallError>, handle);
+jsonrpc::mount_method!(MutateRequest-> Result<MutateResponse, MutateError>, handle);
 
 async fn handle(
-    request: CallRequest,
+    request: MutateRequest,
     state: Arc<jsonrpc::ServiceState>,
-) -> eyre::Result<CallResponse> {
+) -> eyre::Result<MutateResponse> {
     let args = match serde_json::to_vec(&request.args_json) {
         Ok(args) => args,
         Err(err) => {
-            eyre::bail!(CallError::SerdeError {
+            eyre::bail!(MutateError::SerdeError {
                 message: err.to_string()
             })
         }
@@ -24,18 +24,18 @@ async fn handle(
         request.application_id,
         request.method,
         args,
-        false,
+        true,
     )
     .await
     {
         Ok(Some(output)) => match serde_json::from_str::<serde_json::Value>(&output) {
-            Ok(v) => Ok(CallResponse { output: Some(v) }),
-            Err(err) => eyre::bail!(CallError::SerdeError {
+            Ok(v) => Ok(MutateResponse { output: Some(v) }),
+            Err(err) => eyre::bail!(MutateError::SerdeError {
                 message: err.to_string()
             }),
         },
-        Ok(None) => Ok(CallResponse { output: None }),
-        Err(err) => eyre::bail!(CallError::ExecutionError {
+        Ok(None) => Ok(MutateResponse { output: None }),
+        Err(err) => eyre::bail!(MutateError::ExecutionError {
             message: err.to_string()
         }),
     }

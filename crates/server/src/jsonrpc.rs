@@ -9,8 +9,8 @@ use tracing::{error, info};
 
 use crate::ServerSender;
 
-mod call;
-mod call_mut;
+mod mutate;
+mod query;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcConfig {
@@ -51,10 +51,10 @@ async fn handle_request(
 ) -> Json<jsonrpc_primitives::Response> {
     let body = match serde_json::from_value::<jsonrpc_primitives::RequestPayload>(request.payload) {
         Ok(payload) => match payload {
-            jsonrpc_primitives::RequestPayload::Call(request) => {
+            jsonrpc_primitives::RequestPayload::Query(request) => {
                 request.handle(state).await.to_res_body()
             }
-            jsonrpc_primitives::RequestPayload::CallMut(request) => {
+            jsonrpc_primitives::RequestPayload::Mutate(request) => {
                 request.handle(state).await.to_res_body()
             }
         },
