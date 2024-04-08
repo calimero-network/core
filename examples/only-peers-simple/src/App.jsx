@@ -6,11 +6,13 @@ function App() {
   const executeRpcRequest = async () => {
     try {
       const resp = await client.callMut(
-        "/calimero/experimental/app/FyweziaTzQAahZmdZ3kjUwFr52RCKQYqcpiPDXCNMNzN",
-        "create_post",
         {
-          title: "Your Post Title",
-          content: "Your Post Content"
+          applicationId: "/calimero/experimental/app/FyweziaTzQAahZmdZ3kjUwFr52RCKQYqcpiPDXCNMNzN",
+          method: "create_post",
+          argsJson: {
+            title: "Your Post Title",
+            content: "Your Post Content"
+          }
         }
       );
       console.log(resp);

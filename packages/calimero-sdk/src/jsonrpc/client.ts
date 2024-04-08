@@ -1,4 +1,14 @@
-import { RpcClient, RpcRequest, RpcResponse, RpcCallRequest, RpcCallResponse, RpcCallMutRequest, RpcCallMutResponse } from "../rpc";
+import {
+    RpcClient,
+    RpcRequest,
+    RpcResponse,
+    RpcCallRequest,
+    RpcCallResponse,
+    RpcCallMutRequest,
+    RpcCallMutResponse,
+    RpcCallRequestParams,
+    RpcCallMutRequestParams
+} from "../rpc";
 import { JsonRpcRequest, JsonRpcResponse } from "./request";
 import axios, { AxiosInstance } from "axios";
 
@@ -14,35 +24,25 @@ export class JsonRpcClient implements RpcClient {
         });
     }
 
-    public async call(applicationId: string, method: string, argsJson: object): Promise<any[] | object> {
+    public async call(params: RpcCallRequestParams): Promise<RpcCallResponse> {
         const payload: RpcCallRequest = {
             method: 'call',
-            params: {
-                applicationId: applicationId,
-                method: method,
-                argsJson: argsJson
-            }
+            params
         };
 
-        const response = await this.request<RpcCallRequest, RpcCallResponse>(payload);
-        return JSON.parse(response.output);
+        return await this.request<RpcCallRequest, RpcCallResponse>(payload);
     }
 
-    public async callMut(applicationId: string, method: string, argsJson: object): Promise<any[] | object> {
+    public async callMut(params: RpcCallMutRequestParams): Promise<RpcCallMutResponse> {
         const payload: RpcCallMutRequest = {
             method: 'call_mut',
-            params: {
-                applicationId: applicationId,
-                method: method,
-                argsJson: argsJson
-            }
+            params
         };
 
-        const response = await this.request<RpcCallMutRequest, RpcCallMutResponse>(payload);
-        return JSON.parse(response.output);
+        return await this.request<RpcCallMutRequest, RpcCallMutResponse>(payload);
     }
 
-    public async request<
+    async request<
         Request extends RpcRequest,
         Response extends RpcResponse,
     >(rpcRequest: Request, timeout?: number): Promise<Response> {

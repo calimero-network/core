@@ -3,7 +3,8 @@ export type JsonRpcRequestId = string | number;
 export type ApplicationId = string;
 
 export interface RpcClient {
-    request<Request extends RpcRequest, Response extends RpcResponse>(payload: Request): Promise<Response>;
+    call(params: RpcCallRequestParams): Promise<RpcCallResponse>;
+    callMut(params: RpcCallRequestParams): Promise<RpcCallResponse>;
 }
 
 // **************************** request *******************************
