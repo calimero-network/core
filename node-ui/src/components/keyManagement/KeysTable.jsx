@@ -131,7 +131,7 @@ const getStatus = (active, revoked) => {
   }
 };
 
-export function KeysTable({ nodeKeys, setActive, revokeKey }) {
+export function KeysTable({ nodeKeys, setActive, revokeKey, optionsEnabled }) {
   const t = translations.keysTable;
   return (
     <Table>
@@ -162,18 +162,20 @@ export function KeysTable({ nodeKeys, setActive, revokeKey }) {
                         {getStatus(key.active, key.revoked)}
                       </div>
                     </div>
-                    <MenuIconDropdown
-                      options={[
-                        {
-                          buttonText: t.setActiveText,
-                          onClick: () => setActive(id),
-                        },
-                        {
-                          buttonText: t.revokeKeyText,
-                          onClick: () => revokeKey(id),
-                        },
-                      ]}
-                    />
+                    {optionsEnabled && (
+                      <MenuIconDropdown
+                        options={[
+                          {
+                            buttonText: t.setActiveText,
+                            onClick: () => setActive(id),
+                          },
+                          {
+                            buttonText: t.revokeKeyText,
+                            onClick: () => revokeKey(id),
+                          },
+                        ]}
+                      />
+                    )}
                   </div>
                 </div>
               );
@@ -197,4 +199,5 @@ KeysTable.propTypes = {
   nodeKeys: PropTypes.array.isRequired,
   setActive: PropTypes.func.isRequired,
   revokeKey: PropTypes.func.isRequired,
+  optionsEnabled: PropTypes.bool.isRequired,
 };
