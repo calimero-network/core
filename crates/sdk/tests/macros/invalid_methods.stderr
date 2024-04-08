@@ -1,0 +1,11 @@
+error: (calimero)> async methods are not supported
+ --> tests/macros/invalid_methods.rs:8:9
+  |
+8 |     pub async fn method_00(&self) {}
+  |         ^^^^^
+
+error: (calimero)> unsafe methods are not supported
+ --> tests/macros/invalid_methods.rs:9:9
+  |
+9 |     pub unsafe fn method_01(&self) {}
+  |         ^^^^^^

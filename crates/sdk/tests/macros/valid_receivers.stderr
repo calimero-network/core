@@ -1,0 +1,92 @@
+error: incompatible target architecture, no polyfill available, only wasm32 is supported.
+ --> tests/macros/valid_receivers.rs:6:1
+  |
+6 | #[app::logic]
+  | ^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `app::logic` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unnecessary parentheses around type
+  --> tests/macros/valid_receivers.rs:25:36
+   |
+25 |     pub fn method_10(mut self: &'a (Self)) {}
+   |                                    ^    ^
+   |
+   = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+   |
+25 -     pub fn method_10(mut self: &'a (Self)) {}
+25 +     pub fn method_10(mut self: &'a Self) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/valid_receivers.rs:27:36
+   |
+27 |     pub fn method_12(self: &'a mut (Self)) {}
+   |                                    ^    ^
+   |
+help: remove these parentheses
+   |
+27 -     pub fn method_12(self: &'a mut (Self)) {}
+27 +     pub fn method_12(self: &'a mut Self) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/valid_receivers.rs:29:40
+   |
+29 |     pub fn method_14(mut self: &'a mut (Self)) {}
+   |                                        ^    ^
+   |
+help: remove these parentheses
+   |
+29 -     pub fn method_14(mut self: &'a mut (Self)) {}
+29 +     pub fn method_14(mut self: &'a mut Self) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/valid_receivers.rs:39:32
+   |
+39 |     pub fn method_20(self: &'a (MyType<'a>)) {}
+   |                                ^          ^
+   |
+help: remove these parentheses
+   |
+39 -     pub fn method_20(self: &'a (MyType<'a>)) {}
+39 +     pub fn method_20(self: &'a MyType<'a>) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/valid_receivers.rs:41:36
+   |
+41 |     pub fn method_22(mut self: &'a (MyType<'a>)) {}
+   |                                    ^          ^
+   |
+help: remove these parentheses
+   |
+41 -     pub fn method_22(mut self: &'a (MyType<'a>)) {}
+41 +     pub fn method_22(mut self: &'a MyType<'a>) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/valid_receivers.rs:43:36
+   |
+43 |     pub fn method_24(self: &'a mut (MyType<'a>)) {}
+   |                                    ^          ^
+   |
+help: remove these parentheses
+   |
+43 -     pub fn method_24(self: &'a mut (MyType<'a>)) {}
+43 +     pub fn method_24(self: &'a mut MyType<'a>) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/valid_receivers.rs:45:40
+   |
+45 |     pub fn method_26(mut self: &'a mut (MyType<'a>)) {}
+   |                                        ^          ^
+   |
+help: remove these parentheses
+   |
+45 -     pub fn method_26(mut self: &'a mut (MyType<'a>)) {}
+45 +     pub fn method_26(mut self: &'a mut MyType<'a>) {}
+   |

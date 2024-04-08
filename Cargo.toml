@@ -13,6 +13,7 @@ members = [
   "./crates/primitives",
   "./crates/runtime",
   "./crates/sdk",
+  "./crates/sdk/macros",
   "./crates/server",
   "./crates/server-primitives",
   "./crates/store",
@@ -50,12 +51,16 @@ near-sdk = "5.0.0"
 near-workspaces = "0.10.0"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
+prettyplease = "0.2.17"
+proc-macro2 = "1.0"
+quote = "1.0"
 rand = "0.8.5"
 rocksdb = "0.22.0"
 sha2 = "0.10.8"
 semver = "1.0.22"
 serde = "1.0.196"
 serde_json = "1.0.113"
+syn = "2.0"
 thiserror = "1.0.56"
 tokio = "1.35.1"
 toml = "0.8.9"
@@ -64,6 +69,7 @@ tower-http = "0.5.2"
 tower-sessions = "0.12.0"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+trybuild = "1.0"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
 web3 = "0.19.0"

@@ -3,29 +3,31 @@ use serde::Deserialize;
 
 use super::KvStore;
 
-#[cfg(target_arch = "wasm32")]
+// #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn set() {
     env::setup_panic_hook();
 
     #[derive(Deserialize)]
-    struct Input {
-        key: String,
-        value: String,
+    struct Input<'a> {
+        key: &'a str,
+        value: &'a str,
     }
 
+    // ?dep: method(if has args)
     let Some(input) = env::input() else {
         env::panic_str("Expected input since method has arguments.")
     };
 
+    // ?dep: arg(vars)
     let Input { key, value } = match serde_json::from_slice(&input) {
         Ok(value) => value,
         Err(err) => env::panic_str(&format!("Failed to deserialize input from JSON: {:?}", err)),
     };
 
-    let mut app: KvStore = env::state_read().unwrap_or_default();
+    let mut app: KvStore = env::state_read().unwrap_or_default(); // ?dep: receiver
 
-    app.set(key, value);
+    app.set(key, value); // ?dep: receiver
 
     env::state_write(&app);
 }
