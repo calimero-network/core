@@ -21,6 +21,11 @@ export default function UploadApp() {
         const bytes = new Uint8Array(arrayBuffer);
         setWasmFile(bytes);
       };
+
+      reader.onerror = (e) => {
+        console.error("Error occurred while reading the file:", e.target.error);
+      };
+
       reader.readAsArrayBuffer(file);
     }
   };
