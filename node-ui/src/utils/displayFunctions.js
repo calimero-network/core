@@ -1,4 +1,4 @@
-export const getDisplayPublicKey = (publicKey) => {
+export const truncatePublicKey = (publicKey) => {
   return `
       ${publicKey.split(":")[1].substring(0, 4)}...${publicKey
     .split(":")[1]

@@ -4,7 +4,7 @@ import { AddNewItem } from "../common/AddNewItem";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
 import MenuIconDropdown from "../common/MenuIconDropdown";
-import { getDisplayPublicKey, getStatus } from "../../utils/displayFunctions";
+import { truncatePublicKey, getStatus } from "../../utils/displayFunctions";
 
 const Table = styled.div`
   height: 100%;
@@ -127,7 +127,7 @@ export function KeysTable({ nodeKeys, setActive, revokeKey, optionsEnabled }) {
               return (
                 <div className="item-wrapper" key={id}>
                   <div className="item-pk app-item">
-                    {getDisplayPublicKey(key.publicKey)}
+                    {truncatePublicKey(key.publicKey)}
                   </div>
                   <div className="item-type app-item app-item-type">
                     {key.publicKey.split(":")[0]}

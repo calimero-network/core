@@ -4,7 +4,7 @@ import CalimeroLogo from "../assets/calimero-logo.svg";
 import translations from "../constants/en.global.json";
 import { Link } from "react-router-dom";
 import { useLocation } from "react-router-dom";
-import { getDisplayPublicKey } from "../utils/displayFunctions";
+import { truncatePublicKey } from "../utils/displayFunctions";
 import { getPublicKey } from "../utils/rootkey";
 
 const NavigationWrapper = styled.div`
@@ -159,7 +159,7 @@ export function Navigation() {
           <div className="text-container">
             <div className="user-title">Public Key</div>
             {publicKey && (
-              <span className="user-pk">{getDisplayPublicKey(publicKey)}</span>
+              <span className="user-pk">{truncatePublicKey(publicKey)}</span>
             )}
           </div>
         </div>
