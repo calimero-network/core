@@ -5,7 +5,7 @@ use syn::parse::Parse;
 #[derive(Debug)]
 pub struct Sanitizer<'a> {
     self_: Option<&'a syn::Path>,
-    lifetime: Option<&'a syn::Ident>,
+    lifetime: Option<MaybeOwned<'a, String>>,
     entries: MaybeOwned<'a, Box<[SanitizerAtom<'a>]>>,
 }
 
@@ -52,7 +52,7 @@ impl<'a> Sanitizer<'a> {
     }
 
     pub fn with_lifetime(mut self, lifetime: &'a syn::Ident) -> Self {
-        self.lifetime = Some(lifetime);
+        self.lifetime = Some(MaybeOwned::Owned(format!("'{}", lifetime)));
         self
     }
 }
@@ -71,7 +71,7 @@ impl<'a> ToTokens for Sanitizer<'a> {
                 },
                 SanitizerAtom::Lifetime(lifetime) => match &self.lifetime {
                     Some(ident) => syn::Lifetime::new(
-                        &format!("'{}", ident),
+                        ident.as_ref(),
                         match lifetime {
                             LifetimeAtom::Elided(span) => *span,
                             LifetimeAtom::Named(lifetime) => lifetime.span(),
@@ -101,7 +101,10 @@ impl<'a> ToTokens for Sanitizer<'a> {
                 } => {
                     let entry = Sanitizer {
                         self_: self.self_,
-                        lifetime: self.lifetime,
+                        lifetime: self
+                            .lifetime
+                            .as_ref()
+                            .map(|lifetime| MaybeOwned::Borrowed(lifetime.as_ref())),
                         entries: MaybeOwned::Borrowed(entry.entries.as_ref()),
                     };
                     let mut group = proc_macro2::Group::new(*delimiter, entry.to_token_stream());
