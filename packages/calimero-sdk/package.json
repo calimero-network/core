@@ -9,6 +9,7 @@
         "axios": "^1.6.8"
     },
     "devDependencies": {
+        "@jest/globals": "^29.7.0",
         "@types/bn.js": "^5.1.1",
         "@types/node": "^18.7.14",
         "@types/uuid": "^8.3.4",
