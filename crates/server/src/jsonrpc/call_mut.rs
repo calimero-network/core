@@ -28,7 +28,13 @@ async fn handle(
     )
     .await
     {
-        Ok(output) => Ok(CallMutResponse { output }),
+        Ok(Some(output)) => match serde_json::from_str::<serde_json::Value>(&output) {
+            Ok(v) => Ok(CallMutResponse { output: Some(v) }),
+            Err(err) => eyre::bail!(CallMutError::SerdeError {
+                message: err.to_string()
+            }),
+        },
+        Ok(None) => Ok(CallMutResponse { output: None }),
         Err(err) => eyre::bail!(CallMutError::ExecutionError {
             message: err.to_string()
         }),

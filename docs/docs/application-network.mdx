@@ -4,4 +4,27 @@ title: Application Network
 slug: /application-network
 ---
 
-Your application network content goes here.
+An Application Network within the Calimero Network ecosystem consists of several key components or modules, each playing a crucial role in ensuring the network's functionality, privacy, and decentralization. Here's a list of the main components based on the provided information, along with a brief description of their roles and interactions:
+
+1. Client Nodes
+Role: Act as the local endpoints for users' devices, facilitating the execution of decentralized applications (DApps) and managing peer-to-peer communications.
+Interaction: Client nodes communicate with each other to form a decentralized network, ensuring data is shared securely and efficiently without relying on central servers.
+2. Protocol SDK
+Role: A Rust library that aids developers in defining the protocols or rules for their specific application networks, automating much of the code generation process to streamline development.
+Interaction: The Protocol SDK interacts with both client nodes and the application layer, enabling developers to implement custom communication and operational rules within their DApps.
+3. Client SDKs
+Role: Provide the necessary interfaces and tools for client applications (such as web apps, mobile apps, or command-line interfaces) to interact with client nodes, manage authentication, encryption keys, and session management.
+Interaction: These SDKs allow end-user applications to communicate securely with client nodes, facilitating user interactions with the decentralized network.
+4. Specialized Compute Market
+Role: A marketplace that allows nodes to offer or request specialized computational resources or services, such as data replication, encryption tasks, or complex algorithm computations.
+Interaction: Application networks can leverage this market to enhance their capabilities, requesting specific functions from specialized nodes, which can be operated by Calimero, third parties, or managed by Calimero on behalf of third parties.
+5. WASM Applications
+Role: WebAssembly (WASM) allows for the deployment of high-performance applications directly on client nodes, enabling complex operations and applications to run in a decentralized manner.
+Interaction: WASM applications run on client nodes, using the protocols defined by the Protocol SDK and interacting with user devices through Client SDKs, thereby forming the core functionality of the decentralized applications on the network.
+6. End-to-End Encryption Mechanism
+Role: Ensures that all communications between peers in the network are encrypted, maintaining privacy and security.
+Interaction: This mechanism is integral to client nodes and the client SDKs, encrypting data before it's sent over the network and decrypting it upon receipt, based on cryptographic keys managed at the client level.
+7. Decentralized Application Marketplace
+Role (Assumed based on common patterns in similar ecosystems): A platform or service within the Calimero Network where developers can publish their decentralized applications, and users can discover and interact with these applications.
+Interaction: This component would interact with client nodes and SDKs to facilitate the deployment and usage of DApps within the Calimero ecosystem, serving as a bridge between developers and end-users.
+These components work in concert to provide a robust infrastructure for building and running decentralized, privacy-focused applications. The Calimero Network's architecture emphasizes user privacy, data ownership, and decentralized computation, setting it apart from traditional blockchain and application development platforms.

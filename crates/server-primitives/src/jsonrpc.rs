@@ -41,11 +41,11 @@ impl<'de> Deserialize<'de> for Version {
 // **************************** request *******************************
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Request {
+pub struct Request<P> {
     pub jsonrpc: Version,
     pub id: Option<RequestId>,
     #[serde(flatten)]
-    pub payload: RequestPayload,
+    pub payload: P,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -106,7 +106,7 @@ pub struct CallRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallResponse {
-    pub output: Option<String>,
+    pub output: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Error)]
@@ -129,7 +129,7 @@ pub struct CallMutRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallMutResponse {
-    pub output: Option<String>,
+    pub output: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Error)]
