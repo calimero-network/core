@@ -4,6 +4,7 @@ import { AddNewItem } from "../common/AddNewItem";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
 import MenuIconDropdown from "../common/MenuIconDropdown";
+import { getDisplayPublicKey, getStatus } from "../../utils/displayFunctions";
 
 const Table = styled.div`
   height: 100%;
@@ -110,26 +111,6 @@ const Table = styled.div`
     padding-bottom: 24px;
   }
 `;
-
-const getDisplayPublicKey = (publicKey) => {
-  return `
-    ${publicKey.split(":")[1].substring(0, 4)}...${publicKey
-    .split(":")[1]
-    .substring(
-      publicKey.split(":")[1].length - 4,
-      publicKey.split(":")[1].length
-    )}`;
-};
-
-const getStatus = (active, revoked) => {
-  if (active && !revoked) {
-    return "active";
-  } else if (revoked && !active) {
-    return "revoked";
-  } else {
-    return "";
-  }
-};
 
 export function KeysTable({ nodeKeys, setActive, revokeKey, optionsEnabled }) {
   const t = translations.keysTable;
