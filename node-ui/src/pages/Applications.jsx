@@ -7,8 +7,10 @@ import { ApplicationsTable } from "../components/applications/ApplicationsTable"
 import { InstallApplication } from "../components/applications/InstallApplication";
 import { useRPC } from "../hooks/useNear";
 import { useAdminClient } from "../hooks/useAdminClient";
+import { useNavigate } from "react-router-dom";
 
 export default function Applications() {
+  const navigate = useNavigate();
   const { getPackages, getReleases } = useRPC();
   const { installApplication } = useAdminClient();
   const [swithInstall, setSwitchInstall] = useState(false);
@@ -28,8 +30,8 @@ export default function Applications() {
   return (
     <FlexLayout>
       <Navigation />
-      {swithInstall ? (
-        <ApplicationsContent>
+      <ApplicationsContent redirectAppUpload={() => navigate("/upload-app")}>
+        {swithInstall ? (
           <InstallApplication
             getReleases={getReleases}
             installApplication={installApplication}
@@ -42,16 +44,14 @@ export default function Applications() {
             setSelectedPackage={setSelectedPackage}
             setSwitchInstall={setSwitchInstall}
           />
-        </ApplicationsContent>
-      ) : (
-        <ApplicationsContent>
+        ) : (
           <ApplicationsTable
             applications={[]}
             install={() => setSwitchInstall(true)}
             uninstall={() => console.log("uninstall ?!?")}
           />
-        </ApplicationsContent>
-      )}
+        )}
+      </ApplicationsContent>
     </FlexLayout>
   );
 }
