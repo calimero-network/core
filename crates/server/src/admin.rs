@@ -1,4 +1,5 @@
-use std::io::Cursor;
+use std::fs::{self, File};
+use std::io::{Cursor, Read};
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -15,6 +16,7 @@ use near_primitives::views::QueryRequest;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice, json};
+use sha2::{Digest, Sha256};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
@@ -207,14 +209,37 @@ pub async fn get_release(application: &String, version: &String) -> eyre::Result
     }
 }
 
-pub async fn download_release(application: &String, release: &Release, dir: &camino::Utf8PathBuf) -> eyre::Result<()> {
-    let mut file = std::fs::File::create(dir.join("/".to_owned() + application + "/" + &release.version + "/binary.wasm"))?;
+pub async fn download_release(
+    application: &String,
+    release: &Release,
+    dir: &camino::Utf8PathBuf,
+) -> eyre::Result<()> {
     let mut content = Cursor::new(reqwest::get(&release.path).await?.bytes().await?);
+
+    let base_path = format!("./{}/{}/{}", dir, application, &release.version);
+    fs::create_dir_all(&base_path)?;
+
+    let file_path = format!("{}/binary.wasm", base_path);
+    let mut file = File::create(&file_path)?;
+
     std::io::copy(&mut content, &mut file)?;
     Ok(())
 }
 
-pub async fn verify_release(release: Release, blob: String) {}
+pub async fn verify_release(path: &String, hash: &String) -> eyre::Result<()> {
+    let mut content = Cursor::new(reqwest::get(path).await?.bytes().await?);
+    let mut buffer = Vec::new();
+    let _ = &content.read_to_end(&mut buffer)?;
+
+    let release_hash = Sha256::digest(&buffer);
+    let blob = format!("{:x}", release_hash);
+    if blob != *hash {
+        return Err(eyre!(
+            "Release hash does not match the hash of the downloaded file"
+        ));
+    }
+    Ok(())
+}
 
 pub async fn install_application(
     application: &String,
@@ -222,6 +247,7 @@ pub async fn install_application(
     dir: &camino::Utf8PathBuf,
 ) -> eyre::Result<()> {
     let release = get_release(application, version).await?;
+    verify_release(&release.path, &release.hash).await?;
     download_release(application, &release, dir).await
 }
 
@@ -230,7 +256,10 @@ async fn install_application_handler(
     session: Session,
     Json(req): Json<InstallApplicationRequest>,
 ) {
-    install_application(&req.application, &req.version, &state.application_dir).await;
+    match install_application(&req.application, &req.version, &state.application_dir).await {
+        Ok(()) => (StatusCode::OK, "Application Installed"),
+        Err(_) => (StatusCode::BAD_REQUEST, "Failed to install application"),
+    };
 }
 
 #[derive(Deserialize)]
