@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-mod guard;
 mod types;
 
 pub use types::*;
