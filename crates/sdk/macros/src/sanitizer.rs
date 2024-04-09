@@ -5,7 +5,7 @@ use syn::parse::Parse;
 #[derive(Debug)]
 pub struct Sanitizer<'a> {
     self_: Option<&'a syn::Path>,
-    lifetime: Option<MaybeOwned<'a, String>>,
+    lifetime: Option<&'a syn::Lifetime>,
     entries: MaybeOwned<'a, Box<[SanitizerAtom<'a>]>>,
     metrics: MaybeOwned<'a, Metrics>,
 }
@@ -65,8 +65,8 @@ impl<'a> Sanitizer<'a> {
         self
     }
 
-    pub fn with_lifetime(mut self, lifetime: &'a syn::Ident) -> Self {
-        self.lifetime = Some(MaybeOwned::Owned(format!("'{}", lifetime)));
+    pub fn with_lifetime(mut self, lifetime: &'a syn::Lifetime) -> Self {
+        self.lifetime = Some(lifetime);
         self
     }
 
@@ -88,14 +88,14 @@ impl<'a> ToTokens for Sanitizer<'a> {
                     None => self_.to_tokens(tokens),
                 },
                 SanitizerAtom::Lifetime(lifetime) => match &self.lifetime {
-                    Some(ident) => syn::Lifetime::new(
-                        ident.as_ref(),
-                        match lifetime {
-                            LifetimeAtom::Elided(span) => *span,
-                            LifetimeAtom::Named(lifetime) => lifetime.span(),
-                        },
-                    )
-                    .to_tokens(tokens),
+                    Some(replacement) => match lifetime {
+                        LifetimeAtom::Elided(span) => {
+                            quote_spanned!(*span=> #replacement).to_tokens(tokens)
+                        }
+                        LifetimeAtom::Named(lifetime) => {
+                            quote_spanned!(lifetime.span()=> #replacement).to_tokens(tokens)
+                        }
+                    },
                     None => match lifetime {
                         LifetimeAtom::Elided(_) => {}
                         LifetimeAtom::Named(lifetime) => lifetime.to_tokens(tokens),
@@ -119,10 +119,7 @@ impl<'a> ToTokens for Sanitizer<'a> {
                 } => {
                     let entry = Sanitizer {
                         self_: self.self_,
-                        lifetime: self
-                            .lifetime
-                            .as_ref()
-                            .map(|lifetime| MaybeOwned::Borrowed(lifetime.as_ref())),
+                        lifetime: self.lifetime,
                         entries: MaybeOwned::Borrowed(entry.entries.as_ref()),
                         metrics: MaybeOwned::Borrowed(entry.metrics.as_ref()),
                     };
@@ -250,7 +247,8 @@ mod tests {
     #[test]
     fn test_lifetime_sanitizer_simple() {
         let ty = quote! { &'a Some<'a, Complex<&&&Deep, &Type>> };
-        let replace_with: syn::Ident = syn::Ident::new("static", proc_macro2::Span::call_site());
+        let replace_with: syn::Lifetime =
+            syn::Lifetime::new("'static", proc_macro2::Span::call_site());
 
         let sanitized = syn::parse2::<Sanitizer>(ty)
             .unwrap()
@@ -272,7 +270,8 @@ mod tests {
     #[test]
     fn test_lifetime_sanitizer_complex() {
         let ty = quote! { &'a Some<'a, Complex<&&&Deep, &Type, Box<dyn MyTrait<'a, Output = &str> + 'a>>> };
-        let replace_with: syn::Ident = syn::Ident::new("static", proc_macro2::Span::call_site());
+        let replace_with: syn::Lifetime =
+            syn::Lifetime::new("'static", proc_macro2::Span::call_site());
 
         let sanitized = syn::parse2::<Sanitizer>(ty)
             .unwrap()

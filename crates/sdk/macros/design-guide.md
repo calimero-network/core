@@ -15,6 +15,8 @@
 
 ## Thoughts
 
+- Do we really need to allocate in the codegen?
+
 - Consider using traits to define app behavior to keep code generation simple
 
 - Should we support consumption of `self` as a pattern for eventual state destruction?
