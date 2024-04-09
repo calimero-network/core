@@ -14,7 +14,7 @@ mod sanitizer;
 
 // todo! permit #[app::logic(crate = "calimero_sdk")]
 #[proc_macro_attribute]
-pub fn logic(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn logic(_args: TokenStream, input: TokenStream) -> TokenStream {
     let block = syn::parse_macro_input!(input as syn::ItemImpl);
     let tokens = match logic::LogicImpl::try_from(logic::LogicImplInput { item: &block }) {
         Ok(data) => data.to_token_stream(),
@@ -24,7 +24,7 @@ pub fn logic(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn state(_args: TokenStream, input: TokenStream) -> TokenStream {
     // disallow lifetime annotations, perhaps you meant to put this on the logic block?
 
     // dbg!(attr);

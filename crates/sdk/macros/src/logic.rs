@@ -9,6 +9,7 @@ mod ty;
 mod utils;
 
 pub struct LogicImpl<'a> {
+    #[allow(dead_code)]
     type_: &'a syn::Path,
     methods: Vec<method::PublicLogicMethod<'a>>,
     orig: &'a syn::ItemImpl,
