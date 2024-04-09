@@ -1,44 +1,51 @@
-use quote::{quote, ToTokens};
+use quote::ToTokens;
 
-use super::utils;
 use crate::errors;
+use crate::sanitizer;
 
 pub struct LogicTy {
-    ty: syn::Type,
-    has_ref: bool,
+    pub ty: syn::Type,
+    pub ref_: bool,
 }
 
 impl ToTokens for LogicTy {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        // let ident =
-        quote! {
-            // #[cfg(target_arch = "wasm32")]
-            // #[no_mangle]
-            // pub extern "C" fn
-        }
-        .to_tokens(tokens)
+        self.ty.to_tokens(tokens)
     }
 }
 
-impl<'a> TryFrom<(&'a syn::Path, &'a syn::Type)> for LogicTy {
+pub struct LogicTyInput<'a> {
+    pub type_: &'a syn::Path,
+    pub lifetime: &'a syn::Lifetime,
+    pub ty: &'a syn::Type,
+}
+
+impl<'a> TryFrom<LogicTyInput<'a>> for LogicTy {
     type Error = errors::Errors<'a, syn::Type>;
 
-    fn try_from((type_, ty): (&'a syn::Path, &'a syn::Type)) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(ty);
+    fn try_from(input: LogicTyInput<'a>) -> Result<Self, Self::Error> {
+        let errors = errors::Errors::new(input.ty);
 
-        for tt in ty.to_token_stream().into_iter() {
-            dbg!(&tt);
-        }
+        'fatal: {
+            let Ok(sanitizer) = syn::parse2::<sanitizer::Sanitizer>(input.ty.to_token_stream())
+            else {
+                break 'fatal;
+            };
 
-        let Ok(ty) = syn::parse2(utils::sanitize_self(ty, &type_.to_token_stream()).collect())
-        else {
-            return Err(errors.finish(ty, errors::ParseError::SelfSanitizationFailed));
+            let sanitizer = sanitizer
+                .with_self(input.type_)
+                .with_lifetime(&input.lifetime);
+
+            let Ok(ty) = syn::parse2(sanitizer.to_token_stream()) else {
+                break 'fatal;
+            };
+
+            return errors.check(LogicTy {
+                ty,
+                ref_: sanitizer.metrics().lifetimes > 0,
+            });
         };
 
-        // dbg!(&ty); // todo! test for deep refs
-
-        // let mut has_ref = false;
-
-        errors.check(LogicTy { ty, has_ref: false })
+        return Err(errors.finish(input.ty, errors::ParseError::SanitizationFailed));
     }
 }

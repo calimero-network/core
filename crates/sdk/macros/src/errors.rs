@@ -46,8 +46,8 @@ pub enum ParseError<'a> {
     // todo! disable with `#[app::destroy]`
     #[error("`self` must be passed by reference")]
     NoSelfOwnership,
-    #[error("fatal error: self sanitization failed, please report this issue")]
-    SelfSanitizationFailed,
+    #[error("fatal error: type sanitization failed, please report this issue")]
+    SanitizationFailed,
     #[error("expected an identifier, found a pattern")]
     ExpectedIdent,
     #[error("generic types are not supported")]

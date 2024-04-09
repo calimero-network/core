@@ -40,31 +40,39 @@ impl<'a> ToTokens for LogicImpl<'a> {
     }
 }
 
-impl<'a> TryFrom<&'a syn::ItemImpl> for LogicImpl<'a> {
+pub struct LogicImplInput<'a> {
+    pub item: &'a syn::ItemImpl,
+}
+
+impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
     type Error = errors::Errors<'a, syn::ItemImpl>;
 
-    fn try_from(item: &'a syn::ItemImpl) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(item);
+    fn try_from(input: LogicImplInput<'a>) -> Result<Self, Self::Error> {
+        let mut errors = errors::Errors::new(input.item);
 
-        if let Some(_) = &item.trait_ {
-            return Err(errors.finish(item, errors::ParseError::NoTraitSupport));
+        if let Some(_) = &input.item.trait_ {
+            return Err(errors.finish(input.item, errors::ParseError::NoTraitSupport));
         }
 
-        let Some(type_) = utils::typed_path(item.self_ty.as_ref(), false) else {
-            return Err(errors.finish(&item.self_ty, errors::ParseError::UnsupportedImplType));
+        let Some(type_) = utils::typed_path(input.item.self_ty.as_ref(), false) else {
+            return Err(errors.finish(&input.item.self_ty, errors::ParseError::UnsupportedImplType));
         };
 
-        for generic in &item.generics.params {
+        for generic in &input.item.generics.params {
             if let syn::GenericParam::Lifetime(_) = generic {
+                // todo! ensure it's not <'calimero>
                 continue;
             }
             errors.push(generic, errors::ParseError::NoGenericSupport);
         }
 
         let mut methods = vec![];
-        for item in &item.items {
+        for item in &input.item.items {
             if let syn::ImplItem::Fn(method) = item {
-                match (type_, method).try_into() {
+                match method::LogicMethod::try_from(method::LogicMethodImplInput {
+                    type_,
+                    item: method,
+                }) {
                     Ok(method::LogicMethod::Private) => {}
                     Ok(method::LogicMethod::Public(method)) => methods.push(method),
                     Err(err) => errors = errors.subsume(err),
@@ -75,7 +83,7 @@ impl<'a> TryFrom<&'a syn::ItemImpl> for LogicImpl<'a> {
         errors.check(Self {
             type_,
             methods,
-            orig: item,
+            orig: input.item,
         })
     }
 }
