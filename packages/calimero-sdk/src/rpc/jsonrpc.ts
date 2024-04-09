@@ -1,6 +1,4 @@
 import {
-    JsonRpcVersion,
-    JsonRpcRequestId,
     RpcResponseError,
     RpcClient,
     RpcQueryResponse,
@@ -10,6 +8,9 @@ import {
     RequestConfig
 } from "../rpc";
 import axios, { AxiosInstance } from "axios";
+
+type JsonRpcVersion = '2.0'
+type JsonRpcRequestId = string | number;
 
 interface JsonRpcRequest<Params> {
     jsonrpc: JsonRpcVersion;
@@ -68,7 +69,7 @@ export class JsonRpcClient implements RpcClient {
                 throw new Error(`JSON RPC server returned error HTTP code: ${response.status}`);
             }
         } catch (error: any) {
-            throw new Error(`Error occurred during JSON RPC request: ${error.message}`);
+            throw new Error(`Error occurred during JSON RPC request: ${JSON.stringify(error.message)}`);
         }
     }
 
