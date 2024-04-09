@@ -23,10 +23,10 @@ impl<'a> ToTokens for LogicImpl<'a> {
         } = self;
 
         let guard = quote_spanned! {Span::call_site()=>
-            // #[cfg(not(any(test, target_arch = "wasm32")))]
-            // compile_error!(
-            //     "incompatible target architecture, no polyfill available, only wasm32 is supported."
-            // );
+            #[cfg(not(any(test, target_arch = "wasm32")))]
+            compile_error!(
+                "incompatible target architecture, no polyfill available, only wasm32 is supported."
+            );
         };
 
         quote! {
