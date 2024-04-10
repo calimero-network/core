@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -238,7 +238,6 @@ pub async fn download_release(
 
 pub async fn verify_release(hash: &String, release_hash: &String) -> eyre::Result<()> {
     if hash != release_hash {
-        println!("Hash does not match!");
         return Err(eyre!(
             "Release hash does not match the hash of the downloaded file"
         ));
