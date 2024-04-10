@@ -9,8 +9,6 @@ use tracing::warn;
 #[cfg(feature = "admin")]
 pub mod admin;
 pub mod config;
-#[cfg(feature = "graphql")]
-pub mod graphql;
 #[cfg(feature = "jsonrpc")]
 pub mod jsonrpc;
 mod middleware;
@@ -72,17 +70,6 @@ pub async fn start(
     let mut app = Router::new();
 
     let mut serviced = false;
-
-    #[cfg(feature = "graphql")]
-    {
-        if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
-            // let identity = config.identity.clone();
-            app = app.route(path, handler);
-            //.layer(middleware::auth::AuthSignatureLayer::new(identity)); //TODO will be replaced with json RPC
-
-            serviced = true;
-        }
-    }
 
     #[cfg(feature = "jsonrpc")]
     {

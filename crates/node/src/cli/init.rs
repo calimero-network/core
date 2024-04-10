@@ -15,7 +15,7 @@ use crate::cli;
 #[derive(Debug, Parser)]
 // todo! simplify this, by splitting the steps
 // todo! $ calimero node init
-// todo! $ calimero node config 'swarm.listen:=["", ""]' server.graphql:=true discovery.mdns:=false
+// todo! $ calimero node config 'swarm.listen:=["", ""]' discovery.mdns:=false
 // todo! $ calimero node config discovery.mdns
 pub struct InitCommand {
     /// List of bootstrap nodes
@@ -139,7 +139,6 @@ impl InitCommand {
                         })
                         .collect(),
                     admin: Some(calimero_server::admin::service::AdminConfig { enabled: true }),
-                    graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
                     jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
                     websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
                 },

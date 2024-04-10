@@ -7,9 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-axum.workspace = true
-async-graphql = { workspace = true, optional = true }
-async-graphql-axum = { workspace = true, optional = true }
+axum = { workspace=true, features = ["ws"] }
 base64.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 bs58.workspace = true
@@ -46,7 +44,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
-graphql = ["dep:async-graphql", "dep:async-graphql-axum"]
 jsonrpc = []
 websocket = ["dep:futures-util"]
 admin = ["dep:tower-sessions"]
