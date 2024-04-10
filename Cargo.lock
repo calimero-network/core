@@ -1244,6 +1244,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server-primitives",
+ "calimero-store",
  "chrono",
  "color-eyre",
  "ed25519-dalek",

@@ -1,7 +1,10 @@
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use calimero_identity::auth::verify_eth_signature;
+use calimero_primitives::application::ApplicationId;
+use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,6 +12,8 @@ use tower_sessions::Session;
 use tracing::info;
 
 use crate::admin::service::{ApiError, ApiResponse};
+use crate::admin::storage::root_key::{get_root_key, RootKey};
+use crate::graphql::model::APPLICATION_ID;
 use crate::verifysignature::verify_near_signature;
 
 #[derive(Debug, Deserialize)]
@@ -146,10 +151,11 @@ struct AddClientKeyResponse {
 //* Register client key to authenticate client requests  */
 pub async fn add_client_key_handler(
     _session: Session,
+    State(store): State<Store>,
     Json(intermediate_req): Json<IntermediateAddClientKeyRequest>,
 ) -> impl IntoResponse {
     let response = transform_request(intermediate_req)
-        .and_then(validate_root_key_exists)
+        .and_then(|req| validate_root_key_exists(req, store))
         .and_then(validate_challenge)
         .and_then(store_client_key)
         .map_or_else(
@@ -274,9 +280,34 @@ fn is_older_than_15_minutes(timestamp: i64) -> bool {
     duration_since_timestamp > Duration::minutes(15)
 }
 
-fn validate_root_key_exists(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, ApiError> {
+fn validate_root_key_exists(
+    req: AddClientKeyRequest,
+    store: Store,
+) -> Result<AddClientKeyRequest, ApiError> {
+    //TODO extract from request
+    let application_id = ApplicationId(APPLICATION_ID.to_string());
+
     //Check if root key exists
-    // ("Root key does not exist")
+    let root_key = RootKey {
+        signing_key: req.wallet_metadata.signing_key.clone(),
+    };
+
+    let existing_root_key = match get_root_key(application_id, &store, &root_key).map_err(|e| {
+        info!("Error getting root key: {}", e);
+        ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.to_string().into(),
+        }
+    })? {
+        Some(root_key) => root_key,
+        None => {
+            return Err(ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Root key does not exist".into(),
+            });
+        }
+    };
+
     Ok(req)
 }
 
