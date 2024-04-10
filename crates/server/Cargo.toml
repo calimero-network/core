@@ -7,7 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-axum = { workspace=true, features = ["ws"] }
+axum.workspace = true
 base64.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 bs58.workspace = true
@@ -45,5 +45,5 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 jsonrpc = []
-websocket = ["dep:futures-util"]
+websocket = ["axum/ws", "dep:futures-util"]
 admin = ["dep:tower-sessions"]
