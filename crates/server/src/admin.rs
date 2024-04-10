@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -214,7 +214,14 @@ pub async fn download_release(
     release: &Release,
     dir: &camino::Utf8PathBuf,
 ) -> eyre::Result<()> {
-    let mut content = Cursor::new(reqwest::get(&release.path).await?.bytes().await?);
+    let response = reqwest::get(&release.path).await?.bytes().await?;
+
+    let mut content = Cursor::new(response);
+
+    let mut buffer = Vec::new();
+    let _ = content.read_to_end(&mut buffer)?;
+
+    verify_release(buffer, &release.hash).await?;
 
     let base_path = format!("./{}/{}/{}", dir, application, &release.version);
     fs::create_dir_all(&base_path)?;
@@ -222,15 +229,12 @@ pub async fn download_release(
     let file_path = format!("{}/binary.wasm", base_path);
     let mut file = File::create(&file_path)?;
 
+    content.seek(SeekFrom::Start(0))?;
     std::io::copy(&mut content, &mut file)?;
     Ok(())
 }
 
-pub async fn verify_release(path: &String, hash: &String) -> eyre::Result<()> {
-    let mut content = Cursor::new(reqwest::get(path).await?.bytes().await?);
-    let mut buffer = Vec::new();
-    let _ = &content.read_to_end(&mut buffer)?;
-
+pub async fn verify_release(buffer: Vec<u8>, hash: &String) -> eyre::Result<()> {
     let release_hash = Sha256::digest(&buffer);
     let blob = format!("{:x}", release_hash);
     if blob != *hash {
@@ -247,7 +251,6 @@ pub async fn install_application(
     dir: &camino::Utf8PathBuf,
 ) -> eyre::Result<()> {
     let release = get_release(application, version).await?;
-    verify_release(&release.path, &release.hash).await?;
     download_release(application, &release, dir).await
 }
 
