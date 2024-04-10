@@ -1,2 +1,2 @@
 pub mod did;
-pub mod storage;
+pub mod root_key;

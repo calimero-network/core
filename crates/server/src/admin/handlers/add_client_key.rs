@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use calimero_identity::auth::verify_eth_signature;
+use calimero_primitives::application::ApplicationId;
 use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -11,7 +12,8 @@ use tower_sessions::Session;
 use tracing::info;
 
 use crate::admin::service::{ApiError, ApiResponse};
-use crate::storage::did::{get_root_key, RootKey};
+use crate::graphql::model::APPLICATION_ID;
+use crate::storage::root_key::{get_root_key, RootKey};
 use crate::verifysignature::verify_near_signature;
 
 #[derive(Debug, Deserialize)]
@@ -282,15 +284,29 @@ fn validate_root_key_exists(
     req: AddClientKeyRequest,
     store: Store,
 ) -> Result<AddClientKeyRequest, ApiError> {
+    //TODO extract from request
+    let application_id = ApplicationId(APPLICATION_ID.to_string());
+
     //Check if root key exists
     let root_key = RootKey {
         signing_key: req.wallet_metadata.signing_key.clone(),
     };
 
-    get_root_key(&store, &root_key).ok_or_else(|| ApiError {
-        status_code: StatusCode::BAD_REQUEST,
-        message: "Root key does not exist".into(),
-    })?;
+    let existing_root_key = match get_root_key(application_id, &store, &root_key).map_err(|e| {
+        info!("Error getting root key: {}", e);
+        ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.to_string().into(),
+        }
+    })? {
+        Some(root_key) => root_key,
+        None => {
+            return Err(ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Root key does not exist".into(),
+            });
+        }
+    };
 
     Ok(req)
 }

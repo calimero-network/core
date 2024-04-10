@@ -8,7 +8,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use calimero_store::config::StoreConfig;
+use calimero_primitives::application::ApplicationId;
 use calimero_store::Store;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
@@ -23,7 +23,8 @@ use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
 use super::handlers::add_client_key::add_client_key_handler;
-use crate::storage::did::{add_root_key, RootKey};
+use crate::graphql::model::APPLICATION_ID;
+use crate::storage::root_key::{add_root_key, RootKey};
 use crate::verifysignature;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,6 +35,7 @@ pub struct AdminConfig {
 
 pub(crate) fn setup(
     config: &crate::config::ServerConfig,
+    store: Store,
 ) -> eyre::Result<Option<(&'static str, Router)>> {
     let _config = match &config.admin {
         Some(config) if config.enabled => config,
@@ -43,12 +45,6 @@ pub(crate) fn setup(
         }
     };
     let admin_path = "/admin-api";
-    //Fill from config
-    let store_config: StoreConfig = StoreConfig {
-        path: "data/node2".into(),
-    };
-
-    let store = calimero_store::Store::open(&store_config).unwrap();
 
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
@@ -184,6 +180,9 @@ async fn create_root_key_handler(
     let message = "helloworld";
     let app = "me";
 
+    //TODO extract from request
+    let application_id = ApplicationId(APPLICATION_ID.to_string());
+
     match session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
         Some(challenge) => {
             if verifysignature::verify_near_signature(
@@ -194,20 +193,26 @@ async fn create_root_key_handler(
                 &req.signature,
                 &req.public_key,
             ) {
-                let success = add_root_key(
+                let result = add_root_key(
+                    application_id,
                     &store,
                     RootKey {
                         signing_key: req.public_key.clone(),
                     },
                 );
 
-                if success {
-                    (StatusCode::OK, "Root key created")
-                } else {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Failed to store root key",
-                    )
+                match result {
+                    Ok(_) => {
+                        info!("Root key added");
+                        (StatusCode::OK, "Root key added")
+                    }
+                    Err(e) => {
+                        error!("Failed to store root key: {}", e);
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to store root key",
+                        )
+                    }
                 }
             } else {
                 (StatusCode::BAD_REQUEST, "Invalid signature")
