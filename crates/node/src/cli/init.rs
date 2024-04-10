@@ -3,7 +3,6 @@ use std::net::IpAddr;
 
 use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
 use calimero_node::config::{self, ApplicationConfig, ConfigFile, NetworkConfig, StoreConfig};
-use calimero_server::admin::service::AdminConfig;
 
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
@@ -143,7 +142,7 @@ impl InitCommand {
                             Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
                         })
                         .collect(),
-                    admin: Some(AdminConfig {
+                    admin: Some(calimero_server::admin::service::AdminConfig {
                         enabled: true,
                         application_dir: root_args.home.join("apps"),
                     }),
