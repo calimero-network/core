@@ -3,7 +3,6 @@ use std::net::IpAddr;
 
 use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
 use calimero_node::config::{self, ApplicationConfig, ConfigFile, NetworkConfig, StoreConfig};
-
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
 use libp2p::identity;

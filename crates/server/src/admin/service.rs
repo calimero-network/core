@@ -10,21 +10,20 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use eyre::eyre;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
 use near_primitives::views::QueryRequest;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
-use serde_json::{from_slice, json};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
-use super::handlers::add_client_key::add_client_key_handler;
+use super::handlers::add_client_key::{add_client_key_handler, parse_api_error};
 use crate::verifysignature;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -213,7 +212,7 @@ pub struct Release {
     pub hash: String,
 }
 
-pub async fn get_release(application: &String, version: &String) -> eyre::Result<Release> {
+pub async fn get_release(application: &str, version: &str) -> eyre::Result<Release> {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let request = methods::query::RpcQueryRequest {
         block_reference: BlockReference::Finality(Finality::Final),
@@ -233,9 +232,9 @@ pub async fn get_release(application: &String, version: &String) -> eyre::Result
 
     let response = client.call(request).await?;
     if let QueryResponseKind::CallResult(result) = response.kind {
-        return Ok(from_slice::<Release>(&result.result)?);
+        return Ok(serde_json::from_slice::<Release>(&result.result)?);
     } else {
-        Err(eyre!("Failed to fetch data from the rpc endpoint"))
+        eyre::bail!("Failed to fetch data from the rpc endpoint")
     }
 }
 
@@ -245,7 +244,6 @@ pub async fn download_release(
     dir: &camino::Utf8PathBuf,
 ) -> eyre::Result<()> {
     let base_path = format!("./{}/{}/{}", dir, application, &release.version);
-    println!("base_path: {}", base_path);
     fs::create_dir_all(&base_path)?;
 
     let file_path = format!("{}/binary.wasm", base_path);
@@ -272,7 +270,7 @@ pub async fn download_release(
 
 pub async fn verify_release(hash: &String, release_hash: &String) -> eyre::Result<()> {
     if hash != release_hash {
-        return Err(eyre!(
+        return Err(eyre::eyre!(
             "Release hash does not match the hash of the downloaded file"
         ));
     }
@@ -295,11 +293,11 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     let result = install_application(&req.application, &req.version, &state.application_dir).await;
 
-    match result {
+    Ok(match result {
         Ok(()) => (StatusCode::OK, "Application Installed"),
-        Err(_) => (StatusCode::BAD_REQUEST, "Failed to install application"),
+        Err(err) => return Err(parse_api_error(err)),
     }
-    .into_response()
+    .into_response())
 }
 
 #[derive(Deserialize)]
