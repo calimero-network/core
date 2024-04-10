@@ -24,7 +24,7 @@ interface UnsubscribeRequest {
     applicationIds: string[];
 }
 
-export class WebSocketSubscriptionManager implements SubscriptionManager {
+export class WsSubscriptionManager implements SubscriptionManager {
     private readonly url: string;
     private connections: Map<string, WebSocket>;
     private callbacks: Map<string, Array<(data: NodeEvent) => void>>;
@@ -63,27 +63,24 @@ export class WebSocketSubscriptionManager implements SubscriptionManager {
     public subscribe(applicationIds: string[], connectionId: string = DEFAULT_CONNECTION_ID): void {
         const websocket = this.connections.get(connectionId);
         if (websocket && websocket.readyState === websocket.OPEN) {
-            console.log("subscribing to", applicationIds);
+            const requestId = this.getRandomRequestId(); // TODO: store request id and wait for confirmation
             const request: WsRequest<SubscribeRequest> = {
-                id: this.getRandomRequestId(),
+                id: requestId,
                 method: 'subscribe',
                 params: {
                     applicationIds: applicationIds
                 }
             };
-            try {
-                websocket.send(JSON.stringify(request));
-            } catch (error) {
-                console.error("Error while sending subscription request", error);
-            }
+            websocket.send(JSON.stringify(request));
         }
     }
 
     public unsubscribe(applicationIds: string[], connectionId: string = DEFAULT_CONNECTION_ID): void {
         const websocket = this.connections.get(connectionId);
         if (websocket && websocket.readyState === websocket.OPEN) {
+            const requestId = this.getRandomRequestId(); // TODO: store request id and wait for confirmation
             const request: WsRequest<UnsubscribeRequest> = {
-                id: this.getRandomRequestId(),
+                id: requestId,
                 method: 'unsubscribe',
                 params: {
                     applicationIds: applicationIds
@@ -94,9 +91,10 @@ export class WebSocketSubscriptionManager implements SubscriptionManager {
     }
 
     public addCallback(callback: (data: NodeEvent) => void, connectionId: string = DEFAULT_CONNECTION_ID): void {
-        const callbacks = this.callbacks.get(connectionId);
-        if (callbacks) {
-            callbacks.push(callback);
+        if (!this.callbacks.has(connectionId)) {
+            this.callbacks.set(connectionId, [callback])
+        } else {
+            this.callbacks.get(connectionId).push(callback);
         }
     }
 
@@ -111,16 +109,13 @@ export class WebSocketSubscriptionManager implements SubscriptionManager {
     }
 
     private handleMessage(connection_id: string, event: any): void {
-        if (event.type !== "text") {
-            return;
-        }
-
-        const message: WsResponse = JSON.parse(event.data.toString());
-        if (message.id !== null) {
+        const response: WsResponse = JSON.parse(event.data.toString());
+        if (response.id !== null) {
             // TODO: handle non event messages gracefully
             return;
         }
-        if (message.error !== null) {
+
+        if (response.error !== undefined) {
             // TODO: handle errors gracefully
             return;
         }
@@ -128,8 +123,7 @@ export class WebSocketSubscriptionManager implements SubscriptionManager {
         const callbacks = this.callbacks.get(connection_id);
         if (callbacks) {
             for (const callback of callbacks) {
-                const nodeEvent: NodeEvent = message.result;
-                console.log("received event", nodeEvent);
+                const nodeEvent: NodeEvent = response.result;
                 callback(nodeEvent);
             }
         }

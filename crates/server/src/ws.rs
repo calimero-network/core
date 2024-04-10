@@ -89,7 +89,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
         }
     };
 
-    info!(%connection_id, "Client connection established");
+    debug!(%connection_id, "Client connection established");
 
     tokio::spawn(handle_node_events(
         connection_id,
@@ -240,7 +240,6 @@ async fn handle_commands(
                         continue;
                     }
                 };
-                info!(?response, "Emitting resposne");
                 if let Err(err) = socket_sender.send(Message::Text(response)).await {
                     error!(%connection_id, %err, "Failed to send ws::Message::Text");
                 }
@@ -254,7 +253,7 @@ async fn handle_text_message(
     state: Arc<ServiceState>,
     message: String,
 ) {
-    info!(%connection_id, %message, "Received text message");
+    debug!(%connection_id, %message, "Received text message");
     let connections = state.connections.read().await;
     let connection_state = match connections.get(&connection_id) {
         Some(state) => state,

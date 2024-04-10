@@ -1,56 +1,47 @@
-# Simple-Login
+# OnlyPeers (simple)
 
-Simple-Login is a ReactJS project that demonstrates how to log in to a private shard with NEAR wallet using near-api-js. The project was created with vite, a blazing fast build tool that allows for lightning-fast development and deployment of web applications.
+OnlyPeers (simple) is a ReactJS project that demonstrates how to interact with the Calimero node using calimero-sdk. The project was created with vite, a blazing fast build tool that allows for lightning-fast development and deployment of web applications.
 Getting Started
 Prerequisites
 
-To run this project, you need to have Node.js and npm installed on your computer.
+To run this project, you need to have Node.js and pnmp installed on your computer.
 Installation
 
 Clone the repository to your local machine.
 
 ```
-git clone https://github.com/calimero-is-near/calimero-sdk
+git clone https://github.com/calimero-network/core
 ```
 Navigate to the project directory.
 
 ```
-cd examples/simple-login
+cd examples/only-peers-simple
 ```
 Install the project dependencies.
 
 ```
-yarn install
+pnmp install
 ```
 Usage
 
 To start the development server, run the following command:
 
 ```
-yarn dev
+pnmp dev
 ```
 This will start a development server at http://localhost:3000. Any changes you make to the code will be automatically hot-reloaded in the browser.
 
 To build the production-ready version of the application, run:
 
 ```
-yarn build
+pnmp build
 ```
 This will create a dist directory containing the compiled and optimized version of the application. To preview the production build, you can run:
 
-```
+pnmp
 yarn preview
 ```
 This will start a server that serves the production build at http://localhost:5000.
-Logging In with NEAR Wallet
-
-To log in to a private shard with NEAR wallet, you need to have a NEAR account and some testnet NEAR tokens and access to Calimero Dashboard. You can get testnet NEAR tokens from the NEAR TestNet Wallet.
-
-In the Simple-Login app, click on the "Log In" button in the top left corner of the screen.
-
-You will be redirected to the NEAR Wallet page. Follow the instructions to log in with your NEAR account.
-
-Once you have logged in with NEAR Wallet, you will be redirected back to the Simple-Login app. 
 
 Acknowledgements
 
