@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -23,6 +23,8 @@ use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
 use crate::verifysignature;
+use futures_util::StreamExt;
+use reqwest::Client;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
@@ -209,35 +211,61 @@ pub async fn get_release(application: &String, version: &String) -> eyre::Result
     }
 }
 
+async fn abcd() -> eyre::Result<()> {
+    let url = "http://example.com/bigfile.bin";
+    let expected_hash = "your_expected_sha256_hash_here";
+
+    let client = Client::new();
+    let mut response = client.get(url).send().await?;
+
+    let mut hasher = Sha256::new();
+    while let Some(chunk) = response.chunk().await? {
+        hasher.update(&chunk);
+        //chunk write to file
+        //if verify not valid then delete file
+    }
+
+    let result = hasher.finalize();
+    let result_str = format!("{:x}", result);
+
+    if result_str == expected_hash {
+        println!("Hash matches!");
+    } else {
+        println!("Hash does not match!");
+    }
+
+    Ok(())
+}
+
 pub async fn download_release(
     application: &String,
     release: &Release,
     dir: &camino::Utf8PathBuf,
 ) -> eyre::Result<()> {
-    let response = reqwest::get(&release.path).await?.bytes().await?;
-
-    let mut content = Cursor::new(response);
-
-    let mut buffer = Vec::new();
-    let _ = content.read_to_end(&mut buffer)?;
-
-    verify_release(buffer, &release.hash).await?;
-
     let base_path = format!("./{}/{}/{}", dir, application, &release.version);
     fs::create_dir_all(&base_path)?;
 
     let file_path = format!("{}/binary.wasm", base_path);
     let mut file = File::create(&file_path)?;
 
-    content.seek(SeekFrom::Start(0))?;
-    std::io::copy(&mut content, &mut file)?;
+    let client = Client::new();
+    let mut response = client.get(&release.path).send().await?;
+    let mut hasher = Sha256::new();
+    while let Some(chunk) = response.chunk().await? {
+        hasher.update(&chunk);
+        file.write_all(&chunk)?;
+    }
+    let result = hasher.finalize();
+    let hash = format!("{:x}", result);
+
+    verify_release(&hash, &release.hash).await?;
+
     Ok(())
 }
 
-pub async fn verify_release(buffer: Vec<u8>, hash: &String) -> eyre::Result<()> {
-    let release_hash = Sha256::digest(&buffer);
-    let blob = format!("{:x}", release_hash);
-    if blob != *hash {
+pub async fn verify_release(hash: &String, release_hash: &String) -> eyre::Result<()> {
+    if hash != release_hash {
+        println!("Hash does not match!");
         return Err(eyre!(
             "Release hash does not match the hash of the downloaded file"
         ));
