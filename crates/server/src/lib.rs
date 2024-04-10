@@ -15,7 +15,6 @@ pub mod graphql;
 #[cfg(feature = "jsonrpc")]
 pub mod jsonrpc;
 mod middleware;
-mod storage;
 mod verifysignature;
 #[cfg(feature = "websocket")]
 pub mod ws;

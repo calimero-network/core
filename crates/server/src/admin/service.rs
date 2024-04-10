@@ -23,8 +23,8 @@ use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
 use super::handlers::add_client_key::add_client_key_handler;
+use super::storage::root_key::{add_root_key, RootKey};
 use crate::graphql::model::APPLICATION_ID;
-use crate::storage::root_key::{add_root_key, RootKey};
 use crate::verifysignature;
 
 #[derive(Debug, Serialize, Deserialize)]

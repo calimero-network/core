@@ -14,21 +14,17 @@ pub fn add_root_key(
     store: &Store,
     root_key: RootKey,
 ) -> eyre::Result<bool> {
-    let mut storage = calimero_store::TemporalStore::new(application_id.clone(), &store);
-
     let mut did_document = get_or_create_did(application_id.clone(), store)?;
 
-    if did_document
+    if !did_document
         .root_keys
         .iter()
         .any(|k| k.signing_key == root_key.signing_key)
     {
-        Ok(true)
-    } else {
         did_document.root_keys.push(root_key);
         update_did(application_id, store, did_document)?;
-        Ok(true)
     }
+    Ok(true)
 }
 
 pub fn get_root_key(

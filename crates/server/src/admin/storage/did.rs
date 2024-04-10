@@ -14,7 +14,7 @@ pub struct Did {
 }
 
 pub fn create_did(application_id: ApplicationId, store: &Store) -> eyre::Result<Did> {
-    let mut storage = calimero_store::TemporalStore::new(application_id.clone(), &store);
+    let mut storage = calimero_store::TemporalStore::new(application_id, &store);
 
     let did_document = Did {
         id: DID_KEY.to_string(),
@@ -24,7 +24,7 @@ pub fn create_did(application_id: ApplicationId, store: &Store) -> eyre::Result<
     let did_document_vec = serde_json::to_vec(&did_document)
         .map_err(|e| eyre::Report::new(e).wrap_err("Serialization error"))?;
 
-    storage.put(DID_KEY.to_string().into_bytes(), did_document_vec);
+    storage.put(DID_KEY.as_bytes().to_owned(), did_document_vec);
     storage.commit()?;
 
     Ok(did_document)
@@ -46,7 +46,7 @@ pub fn update_did(application_id: ApplicationId, store: &Store, did: Did) -> eyr
         .map_err(|e| eyre::Report::new(e).wrap_err("Serialization error"))?;
 
     let mut storage = calimero_store::TemporalStore::new(application_id, store);
-    storage.put(DID_KEY.as_bytes().to_vec(), did_document_vec);
+    storage.put(DID_KEY.as_bytes().to_owned(), did_document_vec);
     storage.commit()?;
     Ok(())
 }
