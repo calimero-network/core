@@ -14,6 +14,7 @@ use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{AccountId, BlockReference, Finality, FunctionArgs};
 use near_primitives::views::QueryRequest;
 use rand::{thread_rng, RngCore};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice, json};
 use sha2::{Digest, Sha256};
@@ -23,8 +24,6 @@ use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
 use crate::verifysignature;
-use futures_util::StreamExt;
-use reqwest::Client;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
@@ -209,32 +208,6 @@ pub async fn get_release(application: &String, version: &String) -> eyre::Result
     } else {
         Err(eyre!("Failed to fetch data from the rpc endpoint"))
     }
-}
-
-async fn abcd() -> eyre::Result<()> {
-    let url = "http://example.com/bigfile.bin";
-    let expected_hash = "your_expected_sha256_hash_here";
-
-    let client = Client::new();
-    let mut response = client.get(url).send().await?;
-
-    let mut hasher = Sha256::new();
-    while let Some(chunk) = response.chunk().await? {
-        hasher.update(&chunk);
-        //chunk write to file
-        //if verify not valid then delete file
-    }
-
-    let result = hasher.finalize();
-    let result_str = format!("{:x}", result);
-
-    if result_str == expected_hash {
-        println!("Hash matches!");
-    } else {
-        println!("Hash does not match!");
-    }
-
-    Ok(())
 }
 
 pub async fn download_release(
