@@ -59,9 +59,9 @@ pub(crate) fn setup(
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
-        .layer(Extension(state))
         .route("/add-client-key", post(add_client_key_handler))
-        .layer(session_layer);
+        .layer(session_layer)
+        .with_state(state);
 
     Ok(Some((admin_path, admin_router)))
 }
