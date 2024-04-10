@@ -261,11 +261,14 @@ async fn install_application_handler(
     Extension(state): Extension<Arc<ServiceState>>,
     session: Session,
     Json(req): Json<InstallApplicationRequest>,
-) {
-    match install_application(&req.application, &req.version, &state.application_dir).await {
+) -> impl IntoResponse {
+    let result = install_application(&req.application, &req.version, &state.application_dir).await;
+
+    match result {
         Ok(()) => (StatusCode::OK, "Application Installed"),
         Err(_) => (StatusCode::BAD_REQUEST, "Failed to install application"),
-    };
+    }
+    .into_response()
 }
 
 #[derive(Deserialize)]
