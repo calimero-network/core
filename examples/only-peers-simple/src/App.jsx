@@ -1,81 +1,95 @@
-import { JsonRpcClient, WsSubscriptionManager } from 'calimero-p2p-sdk'
-import { useEffect, useState } from 'react';
-import { config } from './calimeroConfig.js'
+import React from 'react';
+import { JsonRpcClient, WsSubscriptionManager } from 'calimero-p2p-sdk';
+import { config } from './calimeroConfig.js';
 
-function App() {
-  const [client, setClient] = useState(null);
-  const [subscriptionManager, setSubscriptionManager] = useState(null);
-
-  const [response, setResponse] = useState(null);
-  const [events, setEvents] = useState([]);
-
-  const eventHandler = async (e) => {
-    setEvents(prevEvents => [...prevEvents, JSON.stringify(e)]);
+class App extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = {
+      client: null,
+      subscriptionManager: null,
+      response: null,
+      events: [],
+    };
   }
 
-  const subscribe = async () => {
+  eventHandler = async (e) => {
+    this.setState(prevState => ({ events: [...prevState.events, JSON.stringify(e)] }));
+  }
+
+  subscribe = async () => {
     try {
+      const { subscriptionManager } = this.state;
       await subscriptionManager.connect();
-      subscriptionManager.addCallback(eventHandler);
+      subscriptionManager.addCallback(this.eventHandler);
       subscriptionManager.subscribe([config.applicationId]);
     } catch (error) {
       console.log(error);
     }
   }
 
-  const executeRpcRequest = async () => {
+  executeRpcRequest = async () => {
     try {
-      const resp = await client.mutate(
-        {
-          applicationId: config.applicationId,
-          method: "create_post",
-          argsJson: {
-            title: "Your Post Title",
-            content: "Your Post Content"
-          }
+      const { client } = this.state;
+      const resp = await client.mutate({
+        applicationId: config.applicationId,
+        method: "create_post",
+        argsJson: {
+          title: "Your Post Title",
+          content: "Your Post Content"
         }
-      );
-      setResponse(JSON.stringify(resp));
+      });
+      this.setState({ response: JSON.stringify(resp) });
     } catch (error) {
       console.log(error);
     }
   }
 
-  useEffect(
-    () => {
-      async function bootstrap() {
-        const client = new JsonRpcClient(config.nodeServerUrl, config.jsonrpcPath);
-        setClient(client);
+  onLoad = async () => {
+    const client = new JsonRpcClient(config.nodeServerUrl, config.jsonrpcPath);
+    const subscriptionManager = new WsSubscriptionManager(config.nodeServerUrl, config.wsPath);
+    this.setState({ client, subscriptionManager });
+  }
 
-        const subscriptionManager = new WsSubscriptionManager(config.nodeServerUrl, config.wsPath);
-        setSubscriptionManager(subscriptionManager);
-      };
+  onDrop = async () => {
+    const { client } = this.state;
+    if (client) {
+      await client.disconnect();
+    }
+  }
 
-      if (!client && !subscriptionManager) {
-        bootstrap();
-      }
-    }, []
-  );
+  componentDidMount() {
+    this.onLoad();
+  }
 
-  return <div>
-    <button onClick={executeRpcRequest}>Execute RPC Request</button>
-    <p>{response}</p>
-    <button onClick={subscribe}>Subscribe</button>
-    <table>
-      <thead>
-        <tr>
-          <th>Event</th>
-        </tr>
-      </thead>
-      <tbody>
-        {events.map((event, index) => (
-          <tr key={index}>
-            <td>{event}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  </div>;
+  componentWillUnmount() {
+    this.onDrop();
+  }
+
+  render() {
+    const { response, events } = this.state;
+    return (
+      <div>
+        <button onClick={this.executeRpcRequest}>Execute RPC Request</button>
+        <p>{response}</p>
+        <button onClick={this.subscribe}>Subscribe</button>
+        <table>
+          <thead>
+            <tr>
+              <th>Event</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((event, index) => (
+              <tr key={index}>
+                <td>{event}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
 }
 
-export default App
+export default App;

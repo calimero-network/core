@@ -38,8 +38,7 @@ pnmp build
 ```
 This will create a dist directory containing the compiled and optimized version of the application. To preview the production build, you can run:
 
-pnmp
-yarn preview
+pnmp preview
 ```
 This will start a server that serves the production build at http://localhost:5000.
 
