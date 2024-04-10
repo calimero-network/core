@@ -5,7 +5,7 @@ use axum::{extract, Extension, Json};
 use calimero_server_primitives::jsonrpc as jsonrpc_primitives;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::ServerSender;
 
@@ -49,7 +49,7 @@ async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
     extract::Json(request): extract::Json<jsonrpc_primitives::Request<serde_json::Value>>,
 ) -> Json<jsonrpc_primitives::Response> {
-    info!(?request, "Received JSON RPC request");
+    debug!(?request, "Received request");
     let body = match serde_json::from_value::<jsonrpc_primitives::RequestPayload>(request.payload) {
         Ok(payload) => match payload {
             jsonrpc_primitives::RequestPayload::Query(request) => {
