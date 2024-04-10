@@ -1,12 +1,16 @@
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::fs::{self, File};
+use std::io::Write;
+use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use eyre::eyre;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
@@ -14,6 +18,7 @@ use near_primitives::views::QueryRequest;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice, json};
+use sha2::{Digest, Sha256};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
@@ -26,12 +31,17 @@ use crate::verifysignature;
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
+    pub application_dir: camino::Utf8PathBuf,
+}
+
+pub(crate) struct ServiceState {
+    application_dir: camino::Utf8PathBuf,
 }
 
 pub(crate) fn setup(
     config: &crate::config::ServerConfig,
 ) -> eyre::Result<Option<(&'static str, Router)>> {
-    let _config = match &config.admin {
+    let config = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
             info!("Admin api is disabled");
@@ -42,11 +52,15 @@ pub(crate) fn setup(
 
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
+    let state = Arc::new(ServiceState {
+        application_dir: config.application_dir.clone(),
+    });
     let admin_router = Router::new()
         .route("/health", get(health_check_handler))
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
+        .layer(Extension(state))
         .route("/add-client-key", post(add_client_key_handler))
         .layer(session_layer);
 
@@ -221,24 +235,71 @@ pub async fn get_release(application: &String, version: &String) -> eyre::Result
     if let QueryResponseKind::CallResult(result) = response.kind {
         return Ok(from_slice::<Release>(&result.result)?);
     } else {
-        eyre::bail!("Failed to fetch data from the rpc endpoint")
+        Err(eyre!("Failed to fetch data from the rpc endpoint"))
     }
 }
 
-pub async fn download_release(release: Release) -> eyre::Result<()> {
-    let app_path = "";
-    //verify_release(release, blob);
+pub async fn download_release(
+    application: &String,
+    release: &Release,
+    dir: &camino::Utf8PathBuf,
+) -> eyre::Result<()> {
+    let base_path = format!("./{}/{}/{}", dir, application, &release.version);
+    println!("base_path: {}", base_path);
+    fs::create_dir_all(&base_path)?;
+
+    let file_path = format!("{}/binary.wasm", base_path);
+    let mut file = File::create(&file_path)?;
+
+    let mut response = reqwest::Client::new().get(&release.path).send().await?;
+    let mut hasher = Sha256::new();
+    while let Some(chunk) = response.chunk().await? {
+        hasher.update(&chunk);
+        file.write_all(&chunk)?;
+    }
+    let result = hasher.finalize();
+    let hash = format!("{:x}", result);
+
+    if let Err(e) = verify_release(&hash, &release.hash).await {
+        if let Err(e) = std::fs::remove_file(&file_path) {
+            eprintln!("Failed to delete file: {}", e);
+        }
+        return Err(e.into());
+    }
+
     Ok(())
 }
 
-pub async fn verify_release(release: Release, blob: String) {}
-
-pub async fn install_application(application: &String, version: &String) -> eyre::Result<()> {
-    download_release(get_release(application, version).await?).await
+pub async fn verify_release(hash: &String, release_hash: &String) -> eyre::Result<()> {
+    if hash != release_hash {
+        return Err(eyre!(
+            "Release hash does not match the hash of the downloaded file"
+        ));
+    }
+    Ok(())
 }
 
-async fn install_application_handler(session: Session, Json(req): Json<InstallApplicationRequest>) {
-    install_application(&req.application, &req.version).await;
+pub async fn install_application(
+    application: &String,
+    version: &String,
+    dir: &camino::Utf8PathBuf,
+) -> eyre::Result<()> {
+    let release = get_release(application, version).await?;
+    download_release(application, &release, dir).await
+}
+
+async fn install_application_handler(
+    Extension(state): Extension<Arc<ServiceState>>,
+    session: Session,
+    Json(req): Json<InstallApplicationRequest>,
+) -> impl IntoResponse {
+    let result = install_application(&req.application, &req.version, &state.application_dir).await;
+
+    match result {
+        Ok(()) => (StatusCode::OK, "Application Installed"),
+        Err(_) => (StatusCode::BAD_REQUEST, "Failed to install application"),
+    }
+    .into_response()
 }
 
 #[derive(Deserialize)]
