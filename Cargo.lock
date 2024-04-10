@@ -1140,6 +1140,7 @@ name = "calimero-identity"
 version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
+ "eyre",
  "hex",
  "libp2p",
  "multibase",
@@ -1244,6 +1245,7 @@ dependencies = [
  "calimero-runtime",
  "calimero-server-primitives",
  "camino",
+ "chrono",
  "color-eyre",
  "ed25519-dalek",
  "eyre",

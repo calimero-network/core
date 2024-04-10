@@ -27,7 +27,7 @@ fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     hash_array
 }
 
-pub(crate) fn verify_signature(
+pub(crate) fn verify_near_signature(
     challenge: &str,
     message: &str,
     app: &str,
@@ -108,7 +108,7 @@ mod tests {
         let signature_base64 = "rkBQLYN7xxe1oetSfktrqL5jgVsZWKNvKZJmoZLNh756KIUBseYIzK3Dt17O60aPMl6S17lDnIlLVLOLdi5OCw==";
         let public_key = "ed25519:DxdDEdfg4sARk2YteEvp6KsqUGAgKyCZkYTqrboGWwiV";
 
-        assert!(verify_signature(
+        assert!(verify_near_signature(
             challenge,
             message,
             app,
@@ -127,7 +127,7 @@ mod tests {
         let signature_base64 = "rkBQLYN7xxe1oetSfktrqL5jgVsZWKNvKZJmoZLNh756KIUBseYIzK3Dt17O60aPMl6S17lDnIlLVsOLdi5OCw==";
         let public_key = "ed25519:DxdDEdfg4sARk2YteEvp6KsqUGAgKyCZkYTqrboGWwiV";
 
-        assert!(!verify_signature(
+        assert!(!verify_near_signature(
             challenge,
             message,
             app,

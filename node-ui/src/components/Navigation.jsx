@@ -4,6 +4,8 @@ import CalimeroLogo from "../assets/calimero-logo.svg";
 import translations from "../constants/en.global.json";
 import { Link } from "react-router-dom";
 import { useLocation } from "react-router-dom";
+import { truncatePublicKey } from "../utils/displayFunctions";
+import { getPublicKey } from "../utils/rootkey";
 
 const NavigationWrapper = styled.div`
   background-color: #121216;
@@ -137,6 +139,7 @@ const NavigationItems = [
 export function Navigation() {
   const t = translations.navigation;
   const location = useLocation();
+  const publicKey = getPublicKey();
   return (
     <NavigationWrapper>
       <div className="logo-wrapper">
@@ -155,7 +158,9 @@ export function Navigation() {
           <div className="separator" />
           <div className="text-container">
             <div className="user-title">Public Key</div>
-            <span className="user-pk">4rbm...Wxy3</span>
+            {publicKey && (
+              <span className="user-pk">{truncatePublicKey(publicKey)}</span>
+            )}
           </div>
         </div>
         <div className="navigation-items-wrapper">

@@ -24,6 +24,9 @@ use tracing::{error, info};
 
 use crate::verifysignature;
 
+mod handlers;
+pub mod service;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]

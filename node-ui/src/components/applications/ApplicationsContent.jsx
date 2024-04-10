@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
+import { ButtonLight } from "../common/ButtonLight";
 
 export const ContentLayout = styled.div`
   padding: 42px 26px 26px 26px;
@@ -18,13 +19,21 @@ export const ContentLayout = styled.div`
     font-size: 24px;
     font-weight: semi-bold;
   }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
 `;
 
-export function ApplicationsContent({ children }) {
+export function ApplicationsContent({ children, redirectAppUpload }) {
   return (
     <ContentLayout>
       <div className="content-card">
-        <div className="page-title">Applications</div>
+        <div className="card-header">
+          <div className="page-title">Applications</div>
+          <ButtonLight text="Upload Application" onClick={redirectAppUpload} />
+        </div>
         {children}
       </div>
     </ContentLayout>
@@ -33,4 +42,5 @@ export function ApplicationsContent({ children }) {
 
 ApplicationsContent.propTypes = {
   children: PropTypes.node.isRequired,
+  redirectAppUpload: PropTypes.func.isRequired,
 };

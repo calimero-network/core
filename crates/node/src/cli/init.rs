@@ -144,7 +144,7 @@ impl InitCommand {
                             Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
                         })
                         .collect(),
-                    admin: Some(calimero_server::admin::AdminConfig {
+                    admin: Some(calimero_server::admin:service::AdminConfig {
                         enabled: true,
                         application_dir: root_args.home.join("apps"),
                     }),
