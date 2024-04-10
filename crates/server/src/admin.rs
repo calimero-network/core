@@ -14,7 +14,6 @@ use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{AccountId, BlockReference, Finality, FunctionArgs};
 use near_primitives::views::QueryRequest;
 use rand::{thread_rng, RngCore};
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice, json};
 use sha2::{Digest, Sha256};
@@ -221,8 +220,7 @@ pub async fn download_release(
     let file_path = format!("{}/binary.wasm", base_path);
     let mut file = File::create(&file_path)?;
 
-    let client = Client::new();
-    let mut response = client.get(&release.path).send().await?;
+    let mut response = reqwest::Client::new().get(&release.path).send().await?;
     let mut hasher = Sha256::new();
     while let Some(chunk) = response.chunk().await? {
         hasher.update(&chunk);
@@ -231,7 +229,12 @@ pub async fn download_release(
     let result = hasher.finalize();
     let hash = format!("{:x}", result);
 
-    verify_release(&hash, &release.hash).await?;
+    if let Err(e) = verify_release(&hash, &release.hash).await {
+        if let Err(e) = std::fs::remove_file(&file_path) {
+            eprintln!("Failed to delete file: {}", e);
+        }
+        return Err(e.into());
+    }
 
     Ok(())
 }
