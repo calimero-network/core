@@ -1,4 +1,5 @@
-use std::io::Cursor;
+use std::fs::{self, File};
+use std::io::Write;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -15,6 +16,7 @@ use near_primitives::views::QueryRequest;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_slice, json};
+use sha2::{Digest, Sha256};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
@@ -207,14 +209,44 @@ pub async fn get_release(application: &String, version: &String) -> eyre::Result
     }
 }
 
-pub async fn download_release(application: &String, release: &Release, dir: &camino::Utf8PathBuf) -> eyre::Result<()> {
-    let mut file = std::fs::File::create(dir.join("/".to_owned() + application + "/" + &release.version + "/binary.wasm"))?;
-    let mut content = Cursor::new(reqwest::get(&release.path).await?.bytes().await?);
-    std::io::copy(&mut content, &mut file)?;
+pub async fn download_release(
+    application: &String,
+    release: &Release,
+    dir: &camino::Utf8PathBuf,
+) -> eyre::Result<()> {
+    let base_path = format!("./{}/{}/{}", dir, application, &release.version);
+    fs::create_dir_all(&base_path)?;
+
+    let file_path = format!("{}/binary.wasm", base_path);
+    let mut file = File::create(&file_path)?;
+
+    let mut response = reqwest::Client::new().get(&release.path).send().await?;
+    let mut hasher = Sha256::new();
+    while let Some(chunk) = response.chunk().await? {
+        hasher.update(&chunk);
+        file.write_all(&chunk)?;
+    }
+    let result = hasher.finalize();
+    let hash = format!("{:x}", result);
+
+    if let Err(e) = verify_release(&hash, &release.hash).await {
+        if let Err(e) = std::fs::remove_file(&file_path) {
+            eprintln!("Failed to delete file: {}", e);
+        }
+        return Err(e.into());
+    }
+
     Ok(())
 }
 
-pub async fn verify_release(release: Release, blob: String) {}
+pub async fn verify_release(hash: &String, release_hash: &String) -> eyre::Result<()> {
+    if hash != release_hash {
+        return Err(eyre!(
+            "Release hash does not match the hash of the downloaded file"
+        ));
+    }
+    Ok(())
+}
 
 pub async fn install_application(
     application: &String,
@@ -230,7 +262,10 @@ async fn install_application_handler(
     session: Session,
     Json(req): Json<InstallApplicationRequest>,
 ) {
-    install_application(&req.application, &req.version, &state.application_dir).await;
+    match install_application(&req.application, &req.version, &state.application_dir).await {
+        Ok(()) => (StatusCode::OK, "Application Installed"),
+        Err(_) => (StatusCode::BAD_REQUEST, "Failed to install application"),
+    };
 }
 
 #[derive(Deserialize)]
