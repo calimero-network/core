@@ -49,9 +49,6 @@ async fn main() -> eyre::Result<()> {
         #[cfg(feature = "admin")]
         admin: Some(calimero_server::admin::AdminConfig { enabled: true }),
 
-        #[cfg(feature = "graphql")]
-        graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
-
         #[cfg(feature = "jsonrpc")]
         jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
 

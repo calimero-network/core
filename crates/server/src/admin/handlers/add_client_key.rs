@@ -13,8 +13,8 @@ use tracing::info;
 
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::admin::storage::root_key::{get_root_key, RootKey};
-use crate::graphql::model::APPLICATION_ID;
 use crate::verifysignature::verify_near_signature;
+use crate::APPLICATION_ID;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
