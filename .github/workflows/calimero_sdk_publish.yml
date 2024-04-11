@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - master
-      - fix/typescript-sdk-npm-publish-automation
     paths:
       - "packages/calimero-sdk/**"
 
@@ -41,14 +40,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
-      # - name: Setup .npmrc file
-      #   run: echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > ~/.npmrc
-      #   env:
-      #     NPM_TOKEN: ${{secrets.NPM_TOKEN}}
-
       - name: Build Calimero SDK
         run: pnpm buildSdk
 
       - name: Publish Calimero SDK
-        run: pnpm publish --no-git-checks --access public
+        run: pnpm publish --access public
         working-directory: ./packages/calimero-sdk
