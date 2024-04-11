@@ -1,7 +1,7 @@
 [workspace.package]
 authors = ["Calimero Limited <info@calimero.network>"]
 edition = "2021"
-repository = "https://github.com/calimero-is-near/cali2.0-experimental"
+repository = "https://github.com/calimero-network/core"
 license = "MIT OR Apache-2.0"
 
 [workspace]
