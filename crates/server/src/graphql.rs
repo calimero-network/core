@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::info;
 
-mod model;
+pub mod model;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GraphQLConfig {

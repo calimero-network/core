@@ -4,12 +4,15 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::sync::Arc;
 
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use calimero_primitives::application::ApplicationId;
+use calimero_store::Store;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
@@ -24,7 +27,9 @@ use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
 use super::handlers::add_client_key::{add_client_key_handler, parse_api_error};
-use crate::verifysignature;
+use super::handlers::fetch_did::fetch_did_handler;
+use super::storage::root_key::{add_root_key, RootKey};
+use crate::{verifysignature, APPLICATION_ID};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
@@ -39,6 +44,7 @@ pub(crate) struct ServiceState {
 
 pub(crate) fn setup(
     config: &crate::config::ServerConfig,
+    store: Store,
 ) -> eyre::Result<Option<(&'static str, Router)>> {
     let config = match &config.admin {
         Some(config) if config.enabled => config,
@@ -61,7 +67,9 @@ pub(crate) fn setup(
         .route("/install-application", post(install_application_handler))
         .layer(Extension(state))
         .route("/add-client-key", post(add_client_key_handler))
-        .layer(session_layer);
+        .route("/did", get(fetch_did_handler))
+        .layer(session_layer)
+        .with_state(store);
 
     Ok(Some((admin_path, admin_router)))
 }
@@ -180,10 +188,14 @@ async fn health_check_handler() -> impl IntoResponse {
 
 async fn create_root_key_handler(
     session: Session,
+    State(store): State<Store>,
     Json(req): Json<PubKeyRequest>,
 ) -> impl IntoResponse {
     let message = "helloworld";
     let app = "me";
+
+    //TODO extract from request
+    let application_id = ApplicationId(APPLICATION_ID.to_string());
 
     match session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
         Some(challenge) => {
@@ -195,7 +207,27 @@ async fn create_root_key_handler(
                 &req.signature,
                 &req.public_key,
             ) {
-                (StatusCode::OK, "Root key created")
+                let result = add_root_key(
+                    application_id,
+                    &store,
+                    RootKey {
+                        signing_key: req.public_key.clone(),
+                    },
+                );
+
+                match result {
+                    Ok(_) => {
+                        info!("Root key added");
+                        (StatusCode::OK, "Root key added")
+                    }
+                    Err(e) => {
+                        error!("Failed to store root key: {}", e);
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to store root key",
+                        )
+                    }
+                }
             } else {
                 (StatusCode::BAD_REQUEST, "Invalid signature")
             }

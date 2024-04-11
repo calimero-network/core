@@ -45,9 +45,6 @@ pub struct ServerConfig {
     pub admin: Option<calimero_server::admin::service::AdminConfig>,
 
     #[serde(default)]
-    pub graphql: Option<calimero_server::graphql::GraphQLConfig>,
-
-    #[serde(default)]
     pub jsonrpc: Option<calimero_server::jsonrpc::JsonRpcConfig>,
 
     #[serde(default)]

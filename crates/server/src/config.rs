@@ -17,9 +17,6 @@ pub struct ServerConfig {
     #[cfg(feature = "admin")]
     pub admin: Option<crate::admin::service::AdminConfig>,
 
-    #[cfg(feature = "graphql")]
-    pub graphql: Option<crate::graphql::GraphQLConfig>,
-
     #[cfg(feature = "jsonrpc")]
     pub jsonrpc: Option<crate::jsonrpc::JsonRpcConfig>,
 

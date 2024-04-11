@@ -8,8 +8,6 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
-async-graphql = { workspace = true, optional = true }
-async-graphql-axum = { workspace = true, optional = true }
 base64.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 bs58.workspace = true
@@ -38,6 +36,7 @@ calimero-identity = { path = "../identity" }
 calimero-primitives = { path = "../primitives" }
 calimero-runtime = { path = "../runtime" }
 calimero-server-primitives = { path = "../server-primitives" }
+calimero-store = { path = "../store" }
 
 [[example]]
 name = "demo"
@@ -48,7 +47,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
-graphql = ["dep:async-graphql", "dep:async-graphql-axum"]
 jsonrpc = []
-websocket = ["dep:futures-util"]
+websocket = ["axum/ws", "dep:futures-util"]
 admin = ["dep:tower-sessions"]
