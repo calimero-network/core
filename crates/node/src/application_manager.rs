@@ -13,37 +13,15 @@ pub struct Application {
 
 pub(crate) struct ApplicationManager {
     pub network_client: NetworkClient,
-    pub applications: HashMap<calimero_primitives::application::ApplicationId, Application>,
+    pub application_dir: Utf8PathBuf,
 }
 
 impl ApplicationManager {
-    pub fn new(network_client: NetworkClient) -> Self {
+    pub fn new(network_client: NetworkClient, application_dir: Utf8PathBuf) -> Self {
         Self {
             network_client,
-            applications: HashMap::default(),
+            application_dir,
         }
-    }
-
-    pub async fn register_application(&mut self, application: Application) -> eyre::Result<()> {
-        let application_blob = fs::read(&application.path)?;
-        let application_topic = self
-            .network_client
-            .subscribe(calimero_network::types::IdentTopic::new(format!(
-                "/calimero/experimental/app/{}",
-                calimero_primitives::hash::Hash::hash(&application_blob),
-            )))
-            .await?
-            .hash();
-
-        info!(
-            "Registered application {} with hash: {}",
-            application.name, application_topic
-        );
-
-        self.applications
-            .insert(application_topic.as_str().to_owned().into(), application);
-
-        Ok(())
     }
 
     // unused ATM, uncomment when used
@@ -57,16 +35,52 @@ impl ApplicationManager {
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
     ) -> bool {
-        self.applications.contains_key(application_id)
+        self.get_latest_application_path(application_id).is_some()
     }
 
     pub fn load_application_blob(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
     ) -> eyre::Result<Vec<u8>> {
-        match self.applications.get(application_id) {
-            Some(application) => Ok(fs::read(&application.path)?),
-            None => eyre::bail!("failed to get application with id: {}", application_id),
+        if let Some(latest_version_path) = self.get_latest_application_path(application_id) {
+            Ok(fs::read(&latest_version_path)?)
+        } else {
+            eyre::bail!("failed to get application with id: {}", application_id)
+        }
+    }
+
+    fn get_latest_application_path(
+        &self,
+        application_id: &calimero_primitives::application::ApplicationId,
+    ) -> Option<String> {
+        let application_base_path = self.application_dir.join(application_id.to_string());
+
+        if let Ok(entries) = fs::read_dir(&application_base_path) {
+            // Collect version folders that contain binary.wasm into a vector
+            let mut versions_with_binary = entries
+                .filter_map(|entry| {
+                    let entry = entry.ok()?;
+                    let entry_path = entry.path();
+
+                    let version = {
+                        semver::Version::parse(entry_path.file_name()?.to_string_lossy().as_ref())
+                            .ok()?
+                    };
+
+                    let binary_path = entry_path.join("binary.wasm");
+                    binary_path.exists().then_some((version, entry_path))
+                })
+                .collect::<Vec<_>>();
+
+            versions_with_binary.sort_by(|a, b| b.0.cmp(&a.0));
+
+            if let Some((_, path)) = versions_with_binary.first() {
+                Some(path.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        } else {
+            None
         }
     }
 }
