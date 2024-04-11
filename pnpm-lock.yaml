@@ -8173,7 +8173,7 @@ packages:
 
   file:packages/calimero-sdk:
     resolution: {directory: packages/calimero-sdk, type: directory}
-    name: calimero-p2p-sdk
+    name: '@calimero-is-near/calimero-p2p-sdk'
     dependencies:
       axios: 1.6.8
       ws: 8.16.0
