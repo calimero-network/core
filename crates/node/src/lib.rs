@@ -1,5 +1,6 @@
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
+use calimero_store::Store;
 use camino::Utf8PathBuf;
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
@@ -48,7 +49,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let mut node = Node::new(&config, network_client, node_events.clone()).await?;
+    let store = calimero_store::Store::open(&config.store)?;
+
+    let mut node = Node::new(&config, network_client, node_events.clone(), store.clone()).await?;
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
@@ -56,6 +59,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         config.server,
         server_sender,
         node_events,
+        store,
     )) as BoxedFuture<eyre::Result<()>>;
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -273,8 +277,8 @@ impl Node {
         config: &NodeConfig,
         network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+        store: Store,
     ) -> eyre::Result<Self> {
-        let store = calimero_store::Store::open(&config.store)?;
         let tx_pool = transaction_pool::TransactionPool::default();
 
         let mut application_manager =

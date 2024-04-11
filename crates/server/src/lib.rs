@@ -1,6 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::{http, Router};
+use calimero_store::Store;
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
@@ -16,6 +17,9 @@ mod verifysignature;
 #[cfg(feature = "websocket")]
 pub mod ws;
 
+pub const APPLICATION_ID: &str =
+    "/calimero/experimental/app/9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP";
+
 // TODO: add comments or even better make it explicit types
 type ServerSender = mpsc::Sender<(
     // todo! move to calimero-node-primitives
@@ -30,6 +34,7 @@ pub async fn start(
     config: ServerConfig,
     server_sender: ServerSender,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+    store: Store,
 ) -> eyre::Result<()> {
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
@@ -91,7 +96,7 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = admin::service::setup(&config)? {
+        if let Some((api_path, router)) = admin::service::setup(&config, store)? {
             if let Some((site_path, serve_dir)) = admin::service::site(&config)? {
                 app = app.nest_service(site_path, serve_dir);
             }
