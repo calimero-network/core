@@ -239,9 +239,9 @@ pub async fn get_release(application: &str, version: &str) -> eyre::Result<Relea
 }
 
 pub async fn download_release(
-    application: &String,
+    application: &str,
     release: &Release,
-    dir: &camino::Utf8PathBuf,
+    dir: &camino::Utf8Path,
 ) -> eyre::Result<()> {
     let base_path = format!("./{}/{}/{}", dir, application, &release.version);
     fs::create_dir_all(&base_path)?;
@@ -268,7 +268,7 @@ pub async fn download_release(
     Ok(())
 }
 
-pub async fn verify_release(hash: &String, release_hash: &String) -> eyre::Result<()> {
+pub async fn verify_release(hash: &str, release_hash: &str) -> eyre::Result<()> {
     if hash != release_hash {
         return Err(eyre::eyre!(
             "Release hash does not match the hash of the downloaded file"
@@ -278,9 +278,9 @@ pub async fn verify_release(hash: &String, release_hash: &String) -> eyre::Resul
 }
 
 pub async fn install_application(
-    application: &String,
-    version: &String,
-    dir: &camino::Utf8PathBuf,
+    application: &str,
+    version: &str,
+    dir: &camino::Utf8Path,
 ) -> eyre::Result<()> {
     let release = get_release(application, version).await?;
     download_release(application, &release, dir).await
