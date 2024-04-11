@@ -39,16 +39,14 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
 
-      - name: Install dependencies
-        run: pnpm buildSdk
-
-      - name: Change to Calimero SDK Directory
-        run: cd packages/calimero-sdk
-
-      - name: Setup .npmrc file to publish to npm
+      - name: Setup .npmrc file
         run: echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > ~/.npmrc
         env:
           NPM_TOKEN: ${{secrets.NPM_TOKEN}}
 
-      - name: Publish
+      - name: Build Calimero SDK
+        run: pnpm buildSdk
+
+      - name: Publish Calimero SDK
         run: pnpm publish --access public
+        working-directory: ./packages/calimero-sdk
