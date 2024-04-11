@@ -7,10 +7,10 @@ const config: Config = {
   tagline: 'Dinosaurs are cool',
   favicon: 'img/favicon.ico',
 
-  url: 'https://calimero-is-near.github.io',
-  baseUrl: '/cali2.0-experimental/',
-  organizationName: 'calimero-is-near',
-  projectName: 'cali2.0-experimental',
+  url: 'https://calimero-network.github.io',
+  baseUrl: '/core/',
+  organizationName: 'calimero-network',
+  projectName: 'core',
 
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
@@ -66,7 +66,7 @@ const config: Config = {
         },
         {to: '/blog', label: 'Blog', position: 'left'},
         {
-          href: 'https://github.com/calimero-is-near/cali2.0-experimental',
+          href: 'https://github.com/calimero-network/core',
           label: 'GitHub',
           position: 'right',
         },
@@ -114,7 +114,7 @@ const config: Config = {
             },
             {
               label: 'GitHub',
-              href: 'https://github.com/calimero-is-near/cali2.0-experimental',
+              href: 'https://github.com/calimero-network/core',
             },
           ],
         },
