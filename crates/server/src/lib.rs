@@ -1,6 +1,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::{http, Router};
+use calimero_store::Store;
 use config::ServerConfig;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tower_http::cors;
@@ -9,14 +10,15 @@ use tracing::warn;
 #[cfg(feature = "admin")]
 pub mod admin;
 pub mod config;
-#[cfg(feature = "graphql")]
-pub mod graphql;
 #[cfg(feature = "jsonrpc")]
 pub mod jsonrpc;
 mod middleware;
 mod verifysignature;
 #[cfg(feature = "websocket")]
 pub mod ws;
+
+pub const APPLICATION_ID: &str =
+    "/calimero/experimental/app/9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP";
 
 // TODO: add comments or even better make it explicit types
 type ServerSender = mpsc::Sender<(
@@ -32,6 +34,7 @@ pub async fn start(
     config: ServerConfig,
     server_sender: ServerSender,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+    store: Store,
 ) -> eyre::Result<()> {
     let mut config = config;
     let mut addrs = Vec::with_capacity(config.listen.len());
@@ -73,18 +76,6 @@ pub async fn start(
 
     let mut serviced = false;
 
-    #[cfg(feature = "graphql")]
-    {
-        if let Some((path, handler)) = graphql::service(&config, server_sender.clone())? {
-            let identity = config.identity.clone();
-            app = app
-                .route(path, handler)
-                .layer(middleware::auth::AuthSignatureLayer::new(identity));
-
-            serviced = true;
-        }
-    }
-
     #[cfg(feature = "jsonrpc")]
     {
         if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone())? {
@@ -105,8 +96,8 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = admin::service(&config)? {
-            if let Some((site_path, serve_dir)) = admin::site(&config)? {
+        if let Some((api_path, router)) = admin::service::setup(&config, store)? {
+            if let Some((site_path, serve_dir)) = admin::service::site(&config)? {
                 app = app.nest_service(site_path, serve_dir);
             }
             app = app.nest(api_path, router);

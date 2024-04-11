@@ -35,7 +35,6 @@ const Button = styled.div`
   padding-left: 10px;
   padding-right: 10px;
   letter-spacing: 0px;
-  margin-top: 0.5rem;
 
   &:hover {
     background-color: #ac5221;

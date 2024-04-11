@@ -19,17 +19,8 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install pnpm
-        run: npm install -g pnpm
-
       - name: Change to docs Directory
-        run: cd docs
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Build docs
-        run: pnpm build
+        run: cd docs && yarn install && yarn build
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3

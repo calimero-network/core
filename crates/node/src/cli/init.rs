@@ -2,7 +2,7 @@ use std::fs;
 use std::net::IpAddr;
 
 use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
-use calimero_node::config::{self, ConfigFile, NetworkConfig, StoreConfig};
+use calimero_node::config::{self, ApplicationConfig, ConfigFile, NetworkConfig, StoreConfig};
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
 use libp2p::identity;
@@ -15,7 +15,7 @@ use crate::cli;
 #[derive(Debug, Parser)]
 // todo! simplify this, by splitting the steps
 // todo! $ calimero node init
-// todo! $ calimero node config 'swarm.listen:=["", ""]' server.graphql:=true discovery.mdns:=false
+// todo! $ calimero node config 'swarm.listen:=["", ""]' discovery.mdns:=false
 // todo! $ calimero node config discovery.mdns
 pub struct InitCommand {
     /// List of bootstrap nodes
@@ -124,6 +124,9 @@ impl InitCommand {
             store: StoreConfig {
                 path: "data".into(),
             },
+            application: ApplicationConfig {
+                path: "apps".into(),
+            },
             network: NetworkConfig {
                 swarm: SwarmConfig { listen },
                 bootstrap: BootstrapConfig {
@@ -138,8 +141,10 @@ impl InitCommand {
                             Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
                         })
                         .collect(),
-                    admin: Some(calimero_server::admin::AdminConfig { enabled: true }),
-                    graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
+                    admin: Some(calimero_server::admin::service::AdminConfig {
+                        enabled: true,
+                        application_dir: root_args.home.join("apps"),
+                    }),
                     jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
                     websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
                 },
