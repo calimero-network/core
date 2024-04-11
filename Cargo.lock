@@ -1141,6 +1141,7 @@ dependencies = [
  "calimero-runtime",
  "calimero-server-primitives",
  "calimero-store",
+ "camino",
  "chrono",
  "color-eyre",
  "ed25519-dalek",
@@ -1152,6 +1153,7 @@ dependencies = [
  "near-jsonrpc-primitives",
  "near-primitives",
  "rand 0.8.5",
+ "reqwest 0.12.2",
  "serde",
  "serde_json",
  "sha2 0.10.8",
@@ -2764,6 +2766,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "h2"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "816ec7294445779408f36fe57bc5b7fc1cf59664059096c65f905c1c61f58069"
+dependencies = [
+ "bytes",
+ "fnv",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "http 1.1.0",
+ "indexmap 2.2.6",
+ "slab",
+ "tokio",
+ "tokio-util 0.7.10",
+ "tracing",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3061,7 +3082,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
- "h2",
+ "h2 0.3.25",
  "http 0.2.12",
  "http-body 0.4.6",
  "httparse",
@@ -3084,6 +3105,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
+ "h2 0.4.4",
  "http 1.1.0",
  "http-body 1.0.0",
  "httparse",
@@ -3092,6 +3114,7 @@ dependencies = [
  "pin-project-lite",
  "smallvec",
  "tokio",
+ "want",
 ]
 
 [[package]]
@@ -3120,12 +3143,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-tls"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper 1.2.0",
+ "hyper-util",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tower-service",
+]
+
+[[package]]
 name = "hyper-util"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca38ef113da30126bbff9cd1705f9273e15d45498615d138b0c20279ac7a76aa"
 dependencies = [
  "bytes",
+ "futures-channel",
  "futures-util",
  "http 1.1.0",
  "http-body 1.0.0",
@@ -3133,6 +3173,9 @@ dependencies = [
  "pin-project-lite",
  "socket2 0.5.6",
  "tokio",
+ "tower",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -4722,7 +4765,7 @@ dependencies = [
  "near-crypto",
  "near-jsonrpc-primitives",
  "near-primitives",
- "reqwest",
+ "reqwest 0.11.27",
  "serde",
  "serde_json",
  "thiserror",
@@ -5009,7 +5052,7 @@ dependencies = [
  "near-sandbox-utils",
  "near-token",
  "rand 0.8.5",
- "reqwest",
+ "reqwest 0.11.27",
  "serde",
  "serde_json",
  "sha2 0.10.8",
@@ -6262,11 +6305,53 @@ dependencies = [
  "encoding_rs",
  "futures-core",
  "futures-util",
- "h2",
+ "h2 0.3.25",
  "http 0.2.12",
  "http-body 0.4.6",
  "hyper 0.14.28",
- "hyper-tls",
+ "hyper-tls 0.5.0",
+ "ipnet",
+ "js-sys",
+ "log",
+ "mime",
+ "native-tls",
+ "once_cell",
+ "percent-encoding",
+ "pin-project-lite",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sync_wrapper 0.1.2",
+ "system-configuration",
+ "tokio",
+ "tokio-native-tls",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "winreg",
+]
+
+[[package]]
+name = "reqwest"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d66674f2b6fb864665eea7a3c1ac4e3dfacd2fda83cf6f935a612e01b0e3338"
+dependencies = [
+ "base64 0.21.7",
+ "bytes",
+ "encoding_rs",
+ "futures-core",
+ "futures-util",
+ "h2 0.4.4",
+ "http 1.1.0",
+ "http-body 1.0.0",
+ "http-body-util",
+ "hyper 1.2.0",
+ "hyper-tls 0.6.0",
+ "hyper-util",
  "ipnet",
  "js-sys",
  "log",
@@ -7661,7 +7746,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "h2",
+ "h2 0.3.25",
  "http 0.2.12",
  "http-body 0.4.6",
  "hyper 0.14.28",
@@ -8466,7 +8551,7 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "pin-project",
- "reqwest",
+ "reqwest 0.11.27",
  "rlp",
  "secp256k1",
  "serde",
