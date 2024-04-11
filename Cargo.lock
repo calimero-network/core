@@ -1082,6 +1082,7 @@ dependencies = [
  "libp2p",
  "multiaddr",
  "owo-colors",
+ "semver",
  "serde",
  "serde_json",
  "tokio",

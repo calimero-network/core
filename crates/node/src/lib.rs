@@ -281,25 +281,14 @@ impl Node {
     ) -> eyre::Result<Self> {
         let tx_pool = transaction_pool::TransactionPool::default();
 
-        let mut application_manager =
-            application_manager::ApplicationManager::new(network_client.clone());
+        let application_manager = application_manager::ApplicationManager::new(
+            network_client.clone(),
+            config.home.join("apps").clone(),
+        );
 
         // register the chat application with currently have
         // TODO: register another application
         // TODO: implement registration via transaction
-        application_manager
-            .register_application(application_manager::Application {
-                name: "kv-store".to_string(),
-                path: Utf8PathBuf::from("apps/kv-store/res/kv_store.wasm"),
-            })
-            .await?;
-
-        application_manager
-            .register_application(application_manager::Application {
-                name: "only-peers".to_string(),
-                path: Utf8PathBuf::from("apps/only-peers/res/only_peers.wasm"),
-            })
-            .await?;
 
         Ok(Self {
             id: config.identity.public().to_peer_id(),
