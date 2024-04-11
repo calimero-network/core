@@ -1,12 +1,11 @@
 {
-    "name": "@calimero-p2p-sdk/monorepo",
+    "name": "@calimero-is-near/monorepo",
     "private": true,
     "engines": {
         "node": ">=18.19.0",
-        "pnpm": ">=7"
+        "pnpm": ">=8"
     },
     "scripts": {
-        "release": "changeset publish",
         "buildSdk": "pnpm install && cd packages/calimero-sdk && pnpm build"
     },
     "devDependencies": {
