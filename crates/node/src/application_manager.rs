@@ -35,11 +35,7 @@ impl ApplicationManager {
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
     ) -> bool {
-        if let Some(latest_version_path) = self.get_latest_application_path(application_id) {
-            true
-        } else {
-            false
-        }
+        self.get_latest_application_path(application_id).is_some()
     }
 
     pub fn load_application_blob(
@@ -63,30 +59,16 @@ impl ApplicationManager {
             // Collect version folders that contain binary.wasm into a vector
             let mut versions_with_binary = entries
                 .filter_map(|entry| {
-                    if let Ok(entry) = entry {
-                        let entry_path = entry.path();
-                        if entry_path.is_dir() {
-                            if let Some(folder_name) = entry_path.file_name() {
-                                let folder_name_str = folder_name.to_string_lossy().into_owned();
-                                if let Ok(version) = semver::Version::parse(&folder_name_str) {
-                                    let binary_path = entry_path.join("binary.wasm");
-                                    if binary_path.exists() {
-                                        Some((version, entry_path))
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
+                    let entry = entry.ok()?;
+                    let entry_path = entry.path();
+
+                    let version = {
+                        let folder_name = entry_path.file_name()?.to_string_lossy().into_owned();
+                        semver::Version::parse(&folder_name).ok()?
+                    };
+
+                    let binary_path = entry_path.join("binary.wasm");
+                    binary_path.exists().then_some((version, entry_path))
                 })
                 .collect::<Vec<_>>();
 
