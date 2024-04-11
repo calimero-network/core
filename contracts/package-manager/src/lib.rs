@@ -62,7 +62,6 @@ impl PackageManager {
         let author = env::signer_account_id();
         let id = format!("{}{}", name, author);
         let id_hash = format!("{:x}", Sha256::digest(id.as_bytes()));
-        println!("id_hash: {}", id_hash);
         if self.packages.contains_key(&id_hash) {
             env::panic_str("Package already exists.")
         }
@@ -84,7 +83,6 @@ impl PackageManager {
         let author = env::signer_account_id();
         let id = format!("{}{}", name, author);
         let id_hash = format!("{:x}", Sha256::digest(id.as_bytes()));
-        println!("id_hash: {}", id_hash);
         // Get the last release version for the package
         let last_release_version = self.releases.get(&id_hash).map(|version_map| {
             version_map
