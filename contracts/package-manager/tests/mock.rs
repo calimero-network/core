@@ -22,7 +22,9 @@ fn test_add_package() {
         "Demo Application".to_string(),
         "https://github.com/application".to_string(),
     );
-    let package = contract.get_package("application".to_string());
+    let package = contract.get_package(
+        "9c98afeab7fb3b290be51b6d33e6c768acb86b0e75a55a3eb69267970cb3826d".to_string(),
+    );
 
     assert_eq!(package.owner, "bobo".to_string());
     assert_eq!(package.name, "application".to_string());
@@ -137,8 +139,16 @@ fn test_get_releases() {
         "https://gateway/ipfs/CID".to_string(),
         "123456789".to_string(),
     );
-    let app_releases_versions = contract.get_releases("application".to_string(), 0, 10);
-    let pkg_releases_versions = contract.get_releases("package1".to_string(), 0, 10);
+    let app_releases_versions = contract.get_releases(
+        "64c2bf1525180586f5a8a4b68fce3d1ae4e6d3b433907e2c62e0fa1aefdc8868".to_string(),
+        0,
+        10,
+    );
+    let pkg_releases_versions = contract.get_releases(
+        "a69825e873cb4a855ec19117b3df01f078fc9ff4086f02cfcf985603e71f2ffb".to_string(),
+        0,
+        10,
+    );
     assert_eq!(app_releases_versions.len(), 3);
     assert_eq!(pkg_releases_versions.len(), 1);
 

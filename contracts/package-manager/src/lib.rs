@@ -2,6 +2,8 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::store::UnorderedMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
+use sha2::digest::generic_array::sequence::Concat;
+use sha2::{Digest, Sha256};
 
 #[derive(BorshStorageKey, BorshSerialize)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -25,6 +27,7 @@ pub struct PackageManager {
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct Package {
+    pub id: String,
     pub name: String,
     pub description: String,
     pub repository: String,
@@ -56,13 +59,17 @@ impl Default for PackageManager {
 #[near_bindgen]
 impl PackageManager {
     pub fn add_package(&mut self, name: String, description: String, repository: String) {
-        if self.packages.contains_key(&name) {
+        let author = env::signer_account_id();
+        let id = format!("{}{}", name, author);
+        let id_hash = format!("{:x}", Sha256::digest(id.as_bytes()));
+        println!("id_hash: {}", id_hash);
+        if self.packages.contains_key(&id_hash) {
             env::panic_str("Package already exists.")
         }
 
         self.packages.insert(
-            name.clone(),
-            Package::new(name, description, repository, env::signer_account_id()),
+            id_hash.clone(),
+            Package::new(id_hash, name, description, repository, author),
         );
     }
 
@@ -74,8 +81,12 @@ impl PackageManager {
         path: String,
         hash: String,
     ) {
+        let author = env::signer_account_id();
+        let id = format!("{}{}", name, author);
+        let id_hash = format!("{:x}", Sha256::digest(id.as_bytes()));
+        println!("id_hash: {}", id_hash);
         // Get the last release version for the package
-        let last_release_version = self.releases.get(&name).map(|version_map| {
+        let last_release_version = self.releases.get(&id_hash).map(|version_map| {
             version_map
                 .keys()
                 .max_by(|a, b| {
@@ -100,17 +111,17 @@ impl PackageManager {
         }
 
         // Check if the sender is the owner of the package
-        let package = self.packages.get(&name).expect("Package doesn't exist.");
+        let package = self.packages.get(&id_hash).expect("Package doesn't exist.");
         if package.owner != env::signer_account_id() {
             env::panic_str("Sender is not the owner of the package");
         }
 
         // Insert the new release
         self.releases
-            .entry(name.clone())
+            .entry(id_hash.clone())
             .or_insert_with(|| {
                 UnorderedMap::new(StorageKeys::Release {
-                    package: name.clone(),
+                    package: id_hash.clone(),
                 })
             })
             .insert(
@@ -144,13 +155,13 @@ impl PackageManager {
             .collect()
     }
 
-    pub fn get_package(&self, name: String) -> &Package {
-        self.packages.get(&name).expect("Package doesn't exist")
+    pub fn get_package(&self, id: String) -> &Package {
+        self.packages.get(&id).expect("Package doesn't exist")
     }
 
-    pub fn get_release(&self, name: String, version: String) -> &Release {
+    pub fn get_release(&self, id: String, version: String) -> &Release {
         self.releases
-            .get(&name)
+            .get(&id)
             .expect("Package doesn't exist")
             .get(&version)
             .expect("Version doesn't exist")
@@ -158,8 +169,15 @@ impl PackageManager {
 }
 
 impl Package {
-    fn new(name: String, description: String, repository: String, owner: AccountId) -> Self {
+    fn new(
+        id: String,
+        name: String,
+        description: String,
+        repository: String,
+        owner: AccountId,
+    ) -> Self {
         Self {
+            id: id,
             name: name,
             description: description,
             repository: repository,
