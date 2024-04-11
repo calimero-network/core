@@ -145,7 +145,6 @@ impl InitCommand {
                         enabled: true,
                         application_dir: root_args.home.join("apps"),
                     }),
-                    graphql: Some(calimero_server::graphql::GraphQLConfig { enabled: true }),
                     jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
                     websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
                 },
