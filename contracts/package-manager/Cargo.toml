@@ -10,10 +10,10 @@ license.workspace = true
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
+hex.workspace = true
 near-sdk.workspace = true
 semver.workspace = true
 sha2.workspace = true
-hex.workspace = true
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }

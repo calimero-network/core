@@ -1,6 +1,4 @@
-use hex;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::env::sha256;
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::store::UnorderedMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
@@ -79,7 +77,7 @@ impl PackageManager {
     fn calculate_id_hash(name: &str) -> String {
         let author = env::signer_account_id();
         let id = format!("{}:{}", name, author);
-        let hash_bytes = sha256(id.as_bytes());
+        let hash_bytes = env::sha256(id.as_bytes());
         let hash_string = hex::encode(hash_bytes);
         return hash_string;
     }
@@ -185,11 +183,11 @@ impl Package {
         owner: AccountId,
     ) -> Self {
         Self {
-            id: id,
-            name: name,
-            description: description,
-            repository: repository,
-            owner: owner,
+            id,
+            name,
+            description,
+            repository,
+            owner,
         }
     }
 }
