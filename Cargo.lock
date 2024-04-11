@@ -5463,10 +5463,12 @@ dependencies = [
 name = "package-manager"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "near-sdk",
  "near-workspaces",
  "semver",
  "serde_json",
+ "sha2 0.10.8",
  "tokio",
 ]
 
