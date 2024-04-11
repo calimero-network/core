@@ -318,7 +318,7 @@ fn store_client_key(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, Api
     Ok(req)
 }
 
-fn parse_api_error(err: eyre::Report) -> ApiError {
+pub fn parse_api_error(err: eyre::Report) -> ApiError {
     match err.downcast::<ApiError>() {
         Ok(api_error) => api_error,
         Err(original_error) => ApiError {

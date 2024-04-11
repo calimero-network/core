@@ -23,6 +23,7 @@ use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
 use super::handlers::add_client_key::add_client_key_handler;
+use super::handlers::fetch_did::fetch_did_handler;
 use super::storage::root_key::{add_root_key, RootKey};
 use crate::{verifysignature, APPLICATION_ID};
 
@@ -53,6 +54,7 @@ pub(crate) fn setup(
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
         .route("/add-client-key", post(add_client_key_handler))
+        .route("/did", get(fetch_did_handler))
         .layer(session_layer)
         .with_state(store);
 
