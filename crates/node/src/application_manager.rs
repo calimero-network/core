@@ -63,8 +63,8 @@ impl ApplicationManager {
                     let entry_path = entry.path();
 
                     let version = {
-                        let folder_name = entry_path.file_name()?.to_string_lossy().into_owned();
-                        semver::Version::parse(&folder_name).ok()?
+                        semver::Version::parse(entry_path.file_name()?.to_string_lossy().as_ref())
+                            .ok()?
                     };
 
                     let binary_path = entry_path.join("binary.wasm");
