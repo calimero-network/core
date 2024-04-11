@@ -1,9 +1,9 @@
+use hex;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+use near_sdk::env::sha256;
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::store::UnorderedMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
-use sha2::digest::generic_array::sequence::Concat;
-use sha2::{Digest, Sha256};
 
 #[derive(BorshStorageKey, BorshSerialize)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -59,17 +59,29 @@ impl Default for PackageManager {
 #[near_bindgen]
 impl PackageManager {
     pub fn add_package(&mut self, name: String, description: String, repository: String) {
-        let author = env::signer_account_id();
-        let id = format!("{}{}", name, author);
-        let id_hash = format!("{:x}", Sha256::digest(id.as_bytes()));
+        let id_hash = PackageManager::calculate_id_hash(&name);
         if self.packages.contains_key(&id_hash) {
             env::panic_str("Package already exists.")
         }
 
         self.packages.insert(
             id_hash.clone(),
-            Package::new(id_hash, name, description, repository, author),
+            Package::new(
+                id_hash,
+                name,
+                description,
+                repository,
+                env::signer_account_id(),
+            ),
         );
+    }
+
+    fn calculate_id_hash(name: &str) -> String {
+        let author = env::signer_account_id();
+        let id = format!("{}:{}", name, author);
+        let hash_bytes = sha256(id.as_bytes());
+        let hash_string = hex::encode(hash_bytes);
+        return hash_string;
     }
 
     pub fn add_release(
@@ -80,9 +92,7 @@ impl PackageManager {
         path: String,
         hash: String,
     ) {
-        let author = env::signer_account_id();
-        let id = format!("{}{}", name, author);
-        let id_hash = format!("{:x}", Sha256::digest(id.as_bytes()));
+        let id_hash = PackageManager::calculate_id_hash(&name);
         // Get the last release version for the package
         let last_release_version = self.releases.get(&id_hash).map(|version_map| {
             version_map
@@ -142,9 +152,9 @@ impl PackageManager {
             .collect()
     }
 
-    pub fn get_releases(&self, name: String, offset: usize, limit: usize) -> Vec<&Release> {
+    pub fn get_releases(&self, id: String, offset: usize, limit: usize) -> Vec<&Release> {
         self.releases
-            .get(&name)
+            .get(&id)
             .expect("Package doesn't exist.")
             .iter()
             .skip(offset)
