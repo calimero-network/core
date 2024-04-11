@@ -1,6 +1,4 @@
-export type JsonRpcVersion = '2.0'
-export type JsonRpcRequestId = string | number;
-export type ApplicationId = string;
+import { ApplicationId } from './application';
 
 export interface RpcClient {
     query<Args, Out>(params: RpcQueryParams<Args>, config: RequestConfig): Promise<RpcQueryResponse<Out>>;
@@ -37,8 +35,8 @@ export interface RpcQueryParams<Args> {
     argsJson: Args;
 }
 
-export interface RpcQueryResponse<T> {
-    output?: T;
+export interface RpcQueryResponse<Out> {
+    output?: Out;
 }
 
 export type RpcQueryError = RpcSerdeError | RpcExecutionError;

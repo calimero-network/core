@@ -253,6 +253,7 @@ async fn handle_text_message(
     state: Arc<ServiceState>,
     message: String,
 ) {
+    debug!(%connection_id, %message, "Received text message");
     let connections = state.connections.read().await;
     let connection_state = match connections.get(&connection_id) {
         Some(state) => state,

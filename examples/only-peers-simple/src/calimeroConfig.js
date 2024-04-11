@@ -1,4 +1,6 @@
 export const config = {
-  baseUrl: import.meta.env.VITE_BASE_URL,
-  path: import.meta.env.VITE_PATH,
+  nodeServerUrl: import.meta.env.VITE_NODE_SERVER_URL,
+  jsonrpcPath: import.meta.env.VITE_JSONRPC_PATH,
+  wsPath: import.meta.env.VITE_WEBSOCKET_PATH,
+  applicationId: import.meta.env.VITE_APPLICATION_ID,
 };
