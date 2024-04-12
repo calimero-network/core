@@ -27,7 +27,7 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
 
         let arg_idents = args.iter().map(|arg| &*arg.ident).collect::<Vec<_>>();
 
-        let input = if args.is_empty()  {
+        let input = if args.is_empty() {
             quote! {}
         } else {
             let lifetime = match &self.lifetime {
@@ -62,7 +62,7 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         let (def, call) = match &self.self_type {
             Some(type_) => {
                 let def = match type_ {
-                    arg::SelfType::Mutable =>quote! {
+                    arg::SelfType::Mutable => quote! {
                         let mut app: #self_ = ::calimero_sdk::env::state_read().unwrap_or_default();
                     },
                     arg::SelfType::Immutable | arg::SelfType::Owned => quote! {

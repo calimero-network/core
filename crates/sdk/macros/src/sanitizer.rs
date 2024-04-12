@@ -278,12 +278,14 @@ mod tests {
             .with_lifetime(&replace_with);
 
         let expected = quote! {
-        &'static Some<
-            'static,
-            Complex<
-                &'static &'static &'static Deep,
-                &'static Type,
-                Box<dyn MyTrait<'static, Output = &'static str> + 'static>>> };
+            &'static Some<
+                'static,
+                Complex<
+                    &'static &'static &'static Deep,
+                    &'static Type,
+                    Box<dyn MyTrait<'static, Output = &'static str> + 'static>>
+                >
+        };
 
         assert_eq!(
             sanitized.to_token_stream().to_string(),
