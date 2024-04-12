@@ -165,7 +165,7 @@ async fn handle_node_events(
         );
 
         let event = match event {
-            calimero_primitives::events::NodeEvent::ApplicationEvent(event)
+            calimero_primitives::events::NodeEvent::Application(event)
                 if {
                     connection_state
                         .inner
@@ -175,7 +175,7 @@ async fn handle_node_events(
                         .contains(&event.application_id)
                 } =>
             {
-                calimero_primitives::events::NodeEvent::ApplicationEvent(event)
+                calimero_primitives::events::NodeEvent::Application(event)
             }
             _ => continue,
         };

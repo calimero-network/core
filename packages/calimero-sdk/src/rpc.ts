@@ -1,8 +1,8 @@
 import { ApplicationId } from './application';
 
 export interface RpcClient {
-    query<Args, Out>(params: RpcQueryParams<Args>, config: RequestConfig): Promise<RpcQueryResponse<Out>>;
-    mutate<Args, Out>(params: RpcMutateParams<Args>, config: RequestConfig): Promise<RpcMutateResponse<Out>>;
+    query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcQueryResponse<Out>>;
+    mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcMutateResponse<Out>>;
 }
 
 export interface RequestConfig {
