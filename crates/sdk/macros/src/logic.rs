@@ -1,5 +1,4 @@
-use proc_macro2::Span;
-use quote::{quote, quote_spanned, ToTokens};
+use quote::{quote, ToTokens};
 
 use crate::errors;
 
@@ -23,15 +22,11 @@ impl<'a> ToTokens for LogicImpl<'a> {
             methods,
         } = self;
 
-        let guard = quote_spanned! {Span::call_site()=>
-            #[cfg(not(any(test, target_arch = "wasm32")))]
+        quote! {
+            #[cfg(target_arch = "wasm32")]
             compile_error!(
                 "incompatible target architecture, no polyfill available, only wasm32 is supported."
             );
-        };
-
-        quote! {
-            #guard
 
             #orig
 
