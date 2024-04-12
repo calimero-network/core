@@ -1,4 +1,4 @@
-import { SubscriptionManager, NodeEvent } from '../subscriptions';
+import { SubscriptionsClient, NodeEvent } from '../subscriptions';
 
 const DEFAULT_CONNECTION_ID = "DEFAULT";
 
@@ -24,7 +24,7 @@ interface UnsubscribeRequest {
     applicationIds: string[];
 }
 
-export class WsSubscriptionManager implements SubscriptionManager {
+export class WsSubscriptionsClient implements SubscriptionsClient {
     private readonly url: string;
     private connections: Map<string, WebSocket>;
     private callbacks: Map<string, Array<(data: NodeEvent) => void>>;

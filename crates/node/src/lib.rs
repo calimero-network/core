@@ -321,13 +321,13 @@ impl Node {
                     info!("{} joined the session.", their_peer_id.cyan());
                     let _ =
                         self.node_events
-                            .send(calimero_primitives::events::NodeEvent::ApplicationEvent(
-                            calimero_primitives::events::ApplicationEventPayload {
+                            .send(calimero_primitives::events::NodeEvent::Application(
+                            calimero_primitives::events::ApplicationEvent {
                                 application_id: calimero_primitives::application::ApplicationId(
                                     topic_hash.into_string().clone(),
                                 ),
-                                event:
-                                    calimero_primitives::events::ApplicationEventType::PeerJoined(
+                                payload:
+                                    calimero_primitives::events::ApplicationEventPayload::PeerJoined(
                                         calimero_primitives::events::PeerJoinedPayload {
                                             peer_id: their_peer_id,
                                         },
@@ -518,17 +518,17 @@ impl Node {
                 todo!("return an error to the caller that the method did not write to storage")
             } */
 
-            let _ =
-                self.node_events
-                    .send(calimero_primitives::events::NodeEvent::ApplicationEvent(
-                    calimero_primitives::events::ApplicationEventPayload {
-                        application_id,
-                        event:
-                            calimero_primitives::events::ApplicationEventType::TransactionExecuted(
-                                calimero_primitives::events::ExecutedTransactionPayload { hash },
-                            ),
-                    },
-                ));
+            let _ = self
+                .node_events
+                .send(calimero_primitives::events::NodeEvent::Application(
+                calimero_primitives::events::ApplicationEvent {
+                    application_id,
+                    payload:
+                        calimero_primitives::events::ApplicationEventPayload::TransactionExecuted(
+                            calimero_primitives::events::ExecutedTransactionPayload { hash },
+                        ),
+                },
+            ));
         }
 
         Ok(outcome)

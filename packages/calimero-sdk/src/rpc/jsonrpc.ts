@@ -38,12 +38,12 @@ export class JsonRpcClient implements RpcClient {
         });
     }
 
-    public async query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcQueryResponse<Out>> {
-        return await this.request<RpcQueryParams<Args>, RpcQueryResponse<Out>>('query', params, config);
+    public async query<Args, Output>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcQueryResponse<Output>> {
+        return await this.request<RpcQueryParams<Args>, RpcQueryResponse<Output>>('query', params, config);
     }
 
-    public async mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcMutateResponse<Out>> {
-        return await this.request<RpcMutateParams<Args>, RpcMutateResponse<Out>>('mutate', params, config);
+    public async mutate<Args, Output>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcMutateResponse<Output>> {
+        return await this.request<RpcMutateParams<Args>, RpcMutateResponse<Output>>('mutate', params, config);
     }
 
     async request<Params, Result>(method: string, params: Params, config?: RequestConfig): Promise<Result> {

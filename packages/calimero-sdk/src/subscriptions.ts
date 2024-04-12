@@ -1,14 +1,20 @@
 import { ApplicationId } from './application';
 
-export type NodeEvent = {
-    type: 'application_event';
-    payload: ApplicationEventPayload;
-};
+export interface SubscriptionsClient {
+    connect(connectionId: string): void;
+    disconnect(connectionId: string): void;
+    subscribe(applicationIds: string[], connectionId?: string): void;
+    unsubscribe(applicationIds: string[], connectionId?: string): void;
+    addCallback(callback: (data: NodeEvent) => void, connectionId?: string): void;
+    removeCallback(callback: (data: NodeEvent) => void, connectionId?: string): void;
+}
 
-export interface ApplicationEventPayload {
+export type NodeEvent = ApplicationEvent;
+
+export interface ApplicationEvent {
     application_id: ApplicationId;
-    type: 'transaction_executed' | 'peer_joined'
-    event: TransactionExecuted | PeerJoined;
+    type: 'TransactionExecuted' | 'PeerJoined'
+    data: TransactionExecuted | PeerJoined;
 }
 
 export interface TransactionExecuted {
@@ -16,14 +22,5 @@ export interface TransactionExecuted {
 }
 
 export interface PeerJoined {
-    peer_id: string;
-}
-
-export interface SubscriptionManager {
-    connect(connectionId: string): void;
-    disconnect(connectionId: string): void;
-    subscribe(applicationIds: string[], connectionId: string): void;
-    unsubscribe(applicationIds: string[], connectionId: string): void;
-    addCallback(callback: (data: NodeEvent) => void, connectionId: string): void;
-    removeCallback(callback: (data: NodeEvent) => void, connectionId: string): void;
+    peerId: string;
 }
