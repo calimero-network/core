@@ -1,5 +1,5 @@
 import React from 'react';
-import { JsonRpcClient, WsSubscriptionManager } from 'calimero-p2p-sdk';
+import { JsonRpcClient, WsSubscriptionManager } from '@calimero-is-near/calimero-p2p-sdk';
 import { config } from './calimeroConfig.js';
 
 class App extends React.Component {
