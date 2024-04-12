@@ -26,8 +26,8 @@ By designing our SDK in this way, we ensure that it remains flexible, scalable, 
 
 ```typescript
 export interface RpcClient {
-    query<Args, Out>(params: RpcQueryParams<Args>, config: RequestConfig): Promise<RpcQueryResponse<Out>>;
-    mutate<Args, Out>(params: RpcMutateParams<Args>, config: RequestConfig): Promise<RpcMutateResponse<Out>>;
+    query<Args, Output>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcQueryResponse<Output>>;
+    mutate<Args, Output>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcMutateResponse<Output>>;
 }
 
 export interface RequestConfig {
@@ -40,8 +40,8 @@ export interface RpcQueryParams<Args> {
     argsJson: Args;
 }
 
-export interface RpcQueryResponse<Out> {
-    output?: Out;
+export interface RpcQueryResponse<Output> {
+    output?: Output;
 }
 
 export interface RpcMutateParams<Args> {
@@ -50,8 +50,8 @@ export interface RpcMutateParams<Args> {
     argsJson: Args;
 }
 
-export interface RpcMutateResponse<Out> {
-    output?: Out;
+export interface RpcMutateResponse<Output> {
+    output?: Output;
 }
 ```
 
@@ -63,8 +63,8 @@ export interface SubscriptionsClient {
     disconnect(connectionId?: string): void;
     subscribe(applicationIds: string[], connectionId?: string): void;
     unsubscribe(applicationIds: string[], connectionId?: string): void;
-    addCallback(callback: (data: NodeEvent) => void, connectionId?: string): void;
-    removeCallback(callback: (data: NodeEvent) => void, connectionId?: string): void;
+    addCallback(callback: (event: NodeEvent) => void, connectionId?: string): void;
+    removeCallback(callback: (event: NodeEvent) => void, connectionId?: string): void;
 }
 
 export type NodeEvent = ApplicationEvent;
@@ -80,7 +80,7 @@ export interface TransactionExecuted {
 }
 
 export interface PeerJoined {
-    peer_id: string;
+    peerId: string;
 }
 ```
 
@@ -94,7 +94,7 @@ Here's an example of how to use it:
 // Import the necessary classes and interfaces from the SDK
 import { RpcClient, JsonRpcClient, RpcMutateParams, RpcMutateResponse } from '@calimero-is-near/calimero-p2p-sdk';
 
-// Define the Args and Out interfaces
+// Define the Args and Output interfaces
 interface CreatePost {
     title: string;
     text: string;
@@ -110,6 +110,7 @@ interface Post {
 const rpcClient: RpcClient = new JsonRpcClient("http://localhost:2529", "/jsonrpc");
 
 // Define the parameters for the mutate
+// applicationId argument can be obtained via admin server
 const params: RpcMutateParams<CreatePost> = {
     applicationId: "my-application-id",
     method: "create_post",

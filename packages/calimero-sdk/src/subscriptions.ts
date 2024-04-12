@@ -22,5 +22,5 @@ export interface TransactionExecuted {
 }
 
 export interface PeerJoined {
-    peer_id: string;
+    peerId: string;
 }
