@@ -15,7 +15,9 @@ pub struct PublicLogicMethod<'a> {
     self_type: Option<arg::SelfType>,
     args: Vec<arg::LogicArgTyped<'a>>,
     ret: Option<ty::LogicTy>,
-    lifetime: Option<syn::Lifetime>,
+
+    codegen_input_ident: syn::Ident,
+    codegen_lifetime: Option<syn::Lifetime>,
     // orig: &'a syn::ImplItemFn,
 }
 
@@ -30,7 +32,9 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         let input = if args.is_empty() {
             quote! {}
         } else {
-            let lifetime = match &self.lifetime {
+            let input_ident = &self.codegen_input_ident;
+
+            let input_lifetime = match &self.codegen_lifetime {
                 Some(lifetime) => quote! { <#lifetime> },
                 None => quote! {},
             };
@@ -38,7 +42,7 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
             quote! {
                 #[derive(::calimero_sdk::serde::Deserialize)]
                 #[serde(crate = "::calimero_sdk::serde")]
-                struct CalimeroInput #lifetime {
+                struct #input_ident #input_lifetime {
                     #(
                         #args
                     ),*
@@ -48,7 +52,7 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
                     ::calimero_sdk::env::panic_str("Expected input since method has arguments.")
                 };
 
-                let CalimeroInput {
+                let #input_ident {
                     #(#arg_idents),*
                 } = match ::calimero_sdk::serde_json::from_slice(&input) {
                     Ok(value) => value,
@@ -126,15 +130,18 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
     }
 }
 
-pub struct LogicMethodImplInput<'a> {
-    pub type_: &'a syn::Path,
+pub struct LogicMethodImplInput<'a, 'b> {
     pub item: &'a syn::ImplItemFn,
+
+    pub type_: &'a syn::Path,
+    pub reserved_ident: &'b syn::Ident,
+    pub reserved_lifetime: &'b syn::Lifetime,
 }
 
-impl<'a> TryFrom<LogicMethodImplInput<'a>> for LogicMethod<'a> {
+impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
     type Error = errors::Errors<'a, syn::ImplItemFn>;
 
-    fn try_from(input: LogicMethodImplInput<'a>) -> Result<Self, Self::Error> {
+    fn try_from(input: LogicMethodImplInput<'a, 'b>) -> Result<Self, Self::Error> {
         if !matches!(input.item.vis, syn::Visibility::Public(_)) {
             return Ok(Self::Private);
         }
@@ -142,22 +149,23 @@ impl<'a> TryFrom<LogicMethodImplInput<'a>> for LogicMethod<'a> {
         let mut errors = errors::Errors::new(input.item);
 
         if let Some(asyncness) = &input.item.sig.asyncness {
-            errors.push(asyncness, errors::ParseError::NoAsyncSupport);
+            errors.push_spanned(asyncness, errors::ParseError::NoAsyncSupport);
         }
 
         if let Some(unsafety) = &input.item.sig.unsafety {
-            errors.push(unsafety, errors::ParseError::NoUnsafeSupport);
+            errors.push_spanned(unsafety, errors::ParseError::NoUnsafeSupport);
         }
 
         for generic in &input.item.sig.generics.params {
-            if let syn::GenericParam::Lifetime(_) = generic {
-                // todo! ensure it's not <'calimero>
+            if let syn::GenericParam::Lifetime(params) = generic {
+                if &params.lifetime == input.reserved_lifetime {
+                    errors
+                        .push_spanned(&params.lifetime, errors::ParseError::UseOfReservedLifetime);
+                }
                 continue;
             }
-            errors.push(generic, errors::ParseError::NoGenericSupport);
+            errors.push_spanned(generic, errors::ParseError::NoGenericSupport);
         }
-
-        let lifetime = syn::Lifetime::new("'CALIMERO_INPUT", proc_macro2::Span::call_site());
 
         let mut has_refs = false;
         let mut self_type = None;
@@ -165,7 +173,8 @@ impl<'a> TryFrom<LogicMethodImplInput<'a>> for LogicMethod<'a> {
         for arg in &input.item.sig.inputs {
             match arg::LogicArg::try_from(arg::LogicArgInput {
                 type_: input.type_,
-                lifetime: &lifetime,
+                reserved_ident: input.reserved_ident,
+                reserved_lifetime: input.reserved_lifetime,
                 arg,
             }) {
                 Ok(arg) => match (arg, &self_type) {
@@ -184,7 +193,8 @@ impl<'a> TryFrom<LogicMethodImplInput<'a>> for LogicMethod<'a> {
         if let syn::ReturnType::Type(_, ret_type) = &input.item.sig.output {
             match ty::LogicTy::try_from(ty::LogicTyInput {
                 type_: input.type_,
-                lifetime: &lifetime,
+                reserved_ident: input.reserved_ident,
+                reserved_lifetime: input.reserved_lifetime,
                 ty: &*ret_type,
             }) {
                 Ok(ty) => ret = Some(ty),
@@ -197,8 +207,10 @@ impl<'a> TryFrom<LogicMethodImplInput<'a>> for LogicMethod<'a> {
             self_: input.type_,
             self_type,
             args,
-            lifetime: has_refs.then(|| lifetime),
             ret,
+
+            codegen_input_ident: input.reserved_ident.clone(),
+            codegen_lifetime: has_refs.then(|| input.reserved_lifetime.clone()),
             // orig: item,
         }))
     }

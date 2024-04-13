@@ -20,6 +20,7 @@ impl<'a> ToTokens for LogicImpl<'a> {
             type_: _,
             orig,
             methods,
+            ..
         } = self;
 
         quote! {
@@ -54,12 +55,19 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             return Err(errors.finish(&input.item.self_ty, errors::ParseError::UnsupportedImplType));
         };
 
+        let reserved_ident = syn::Ident::new("CalimeroInput", proc_macro2::Span::call_site());
+        let reserved_lifetime =
+            syn::Lifetime::new("'CALIMERO_INPUT", proc_macro2::Span::call_site());
+
         for generic in &input.item.generics.params {
-            if let syn::GenericParam::Lifetime(_) = generic {
-                // todo! ensure it's not <'calimero>
+            if let syn::GenericParam::Lifetime(params) = generic {
+                if params.lifetime == reserved_lifetime {
+                    errors
+                        .push_spanned(&params.lifetime, errors::ParseError::UseOfReservedLifetime);
+                }
                 continue;
             }
-            errors.push(generic, errors::ParseError::NoGenericSupport);
+            errors.push_spanned(generic, errors::ParseError::NoGenericSupport);
         }
 
         let mut methods = vec![];
@@ -67,6 +75,8 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             if let syn::ImplItem::Fn(method) = item {
                 match method::LogicMethod::try_from(method::LogicMethodImplInput {
                     type_,
+                    reserved_ident: &reserved_ident,
+                    reserved_lifetime: &reserved_lifetime,
                     item: method,
                 }) {
                     Ok(method::LogicMethod::Private) => {}

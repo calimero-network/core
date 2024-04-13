@@ -31,27 +31,39 @@ impl<'a> fmt::Display for Pretty<'a> {
     }
 }
 
+static TAG: &str = "(calimero)>";
+
 #[derive(Debug, Error)]
 pub enum ParseError<'a> {
-    #[error("trait impls are not supported")]
+    #[error("{TAG} trait impls are not supported")]
     NoTraitSupport,
-    #[error("cannot ascribe app logic to primitive types")]
+    #[error("{TAG} cannot ascribe app logic to primitive types")]
     UnsupportedImplType,
-    #[error("expected `Self` or `{0}`")]
+    #[error("{TAG} expected `Self` or `{0}`")]
     ExpectedSelf(Pretty<'a>),
-    #[error("async methods are not supported")]
+    #[error("{TAG} async methods are not supported")]
     NoAsyncSupport,
-    #[error("unsafe methods are not supported")]
+    #[error("{TAG} unsafe methods are not supported")]
     NoUnsafeSupport,
     // todo! disable with `#[app::destroy]`
-    #[error("`self` must be passed by reference")]
+    #[error("{TAG} `self` must be passed by reference")]
     NoSelfOwnership,
-    #[error("fatal error: type sanitization failed, please report this issue")]
+    #[error("{TAG} fatal error: type sanitization failed, please report this issue")]
     SanitizationFailed,
-    #[error("expected an identifier, found a pattern")]
+    #[error("{TAG} expected an identifier, found a pattern")]
     ExpectedIdent,
-    #[error("generic types are not supported")]
+    #[error("{TAG} generic types are not supported")]
     NoGenericSupport,
+    #[error("{TAG} how dare you? now, pick something else")]
+    UseOfReservedLifetime,
+    #[error("{TAG} how dare you? now, pick something else")]
+    UseOfReservedIdent,
+}
+
+impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {
+    fn as_ref(&self) -> &ParseError<'a> {
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -61,8 +73,14 @@ pub struct ErrorsInner<'a, T> {
 }
 
 #[derive(Debug)]
-pub struct Errors<'a, T> {
+pub struct Errors<'a, T = ()> {
     inner: RefCell<Option<ErrorsInner<'a, T>>>,
+}
+
+impl<'a> Default for Errors<'a> {
+    fn default() -> Self {
+        Self::new(&())
+    }
 }
 
 impl<'a, T> Errors<'a, T> {
@@ -96,30 +114,74 @@ impl<'a, T> Errors<'a, T> {
     }
 }
 
+pub enum MaybeError {
+    None,
+    Some(syn::Error),
+}
+
+impl From<MaybeError> for Option<syn::Error> {
+    fn from(error: MaybeError) -> Self {
+        match error {
+            MaybeError::None => None,
+            MaybeError::Some(error) => Some(error),
+        }
+    }
+}
+
+impl<T: Into<syn::Error>> From<T> for MaybeError {
+    fn from(error: T) -> Self {
+        MaybeError::Some(error.into())
+    }
+}
+
+impl<'a, T> From<Errors<'a, T>> for MaybeError {
+    fn from(errors: Errors<'a, T>) -> Self {
+        let inner = errors.inner();
+
+        inner.errors.map_or(MaybeError::None, MaybeError::Some)
+    }
+}
+
 impl<'a, T> Errors<'a, T> {
-    pub fn push<U: ToTokens>(&mut self, tokens: &U, error: ParseError) {
-        let error = syn::Error::new_spanned(tokens, format_args!("(calimero)> {}", error));
+    fn push_error(&mut self, error: syn::Error) {
         match &mut self.inner_mut().errors {
-            err @ None => {
-                err.replace(error);
+            err @ None => *err = Some(error),
+            Some(err) => {
+                err.combine(error);
             }
-            Some(err) => err.combine(error),
-        };
+        }
     }
 
-    pub fn finish<U: ToTokens>(mut self, tokens: &U, error: ParseError) -> Self {
-        self.push(tokens, error);
+    pub fn push<'e, E: AsRef<ParseError<'e>>>(&mut self, span: proc_macro2::Span, error: E) {
+        self.push_error(syn::Error::new(span, error.as_ref()));
+    }
+
+    pub fn push_spanned<'e, U: ToTokens, E: AsRef<ParseError<'e>>>(
+        &mut self,
+        tokens: &U,
+        error: E,
+    ) {
+        self.push_error(syn::Error::new_spanned(tokens, error.as_ref()));
+    }
+
+    pub fn finish<'e, U: ToTokens, E: AsRef<ParseError<'e>>>(
+        mut self,
+        tokens: &U,
+        error: E,
+    ) -> Self {
+        self.push_spanned(tokens, error);
 
         self
     }
 
-    pub fn subsume<U>(self, other: Errors<'_, U>) -> Self {
-        let other = other.inner();
-        match &mut self.inner_mut().errors {
-            err @ None => *err = other.errors,
-            Some(err) => {
-                if let Some(other) = other.errors {
-                    err.combine(other);
+    pub fn subsume<E: Into<MaybeError>>(self, other: E) -> Self {
+        match other.into() {
+            MaybeError::None => {}
+            MaybeError::Some(other) => {
+                let mut inner = self.inner_mut();
+                match &mut inner.errors {
+                    err @ None => *err = Some(other),
+                    Some(err) => err.combine(other),
                 }
             }
         }

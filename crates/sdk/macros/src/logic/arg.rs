@@ -30,9 +30,11 @@ impl<'a> ToTokens for LogicArgTyped<'a> {
 }
 
 pub struct LogicArgInput<'a, 'b> {
-    pub type_: &'b syn::Path,
-    pub lifetime: &'b syn::Lifetime,
     pub arg: &'a syn::FnArg,
+
+    pub type_: &'b syn::Path,
+    pub reserved_ident: &'b syn::Ident,
+    pub reserved_lifetime: &'b syn::Lifetime,
 }
 
 impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
@@ -58,7 +60,7 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                             .map_or(Some(SelfType::Immutable), |_| Some(SelfType::Mutable));
                     } else if is_self {
                         // todo! circumvent via `#[app::destroy]`
-                        errors.push(&receiver.ty, errors::ParseError::NoSelfOwnership);
+                        errors.push_spanned(&receiver.ty, errors::ParseError::NoSelfOwnership);
                     }
 
                     if is_self {
@@ -78,7 +80,8 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
 
                 let ty = match ty::LogicTy::try_from(ty::LogicTyInput {
                     type_: input.type_,
-                    lifetime: input.lifetime,
+                    reserved_ident: input.reserved_ident,
+                    reserved_lifetime: input.reserved_lifetime,
                     ty: &*typed.ty,
                 }) {
                     Ok(ty) => ty,
