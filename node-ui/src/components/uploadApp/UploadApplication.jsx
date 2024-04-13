@@ -3,6 +3,7 @@ import styled from "styled-components";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
 import { ArrowLeftIcon } from "@heroicons/react/24/solid";
+import Dropdown from "react-bootstrap/Dropdown";
 
 const Wrapper = styled.div`
   .upload-form {
@@ -28,6 +29,7 @@ const Wrapper = styled.div`
       display: flex;
       gap: 12px;
       width: fit-content;
+      border: none;
     }
 
     .upload-button,
@@ -113,6 +115,57 @@ const Wrapper = styled.div`
     font-size: 12px;
     color: rgb(255, 255, 255, 0.7);
   }
+
+  input {
+    background-color: transparent;
+    margin-bottom: 8px;
+    padding: 8px;
+    border: 1px solid rgb(255, 255, 255, 0.7);
+    border-radius: 4px;
+    font-size: 14px;
+    color: rgb(255, 255, 255, 0.7);
+    outline: none;
+  }
+
+  .input:focus {
+    border: 1px solid #ff842d;
+  }
+
+  .button {
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.06);
+    width: fit-content;
+    height: 30px;
+    padding-left: 14px;
+    padding-right: 14px;
+    margin-top: 8px;
+    cursor: pointer;
+    border: none;
+    outline: none;
+  }
+  .button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+  }
+
+  .app-dropdown {
+    background-color: #ff842d;
+    border: none;
+    outline: none;
+    color: #111;
+    font-size: 14px;
+    font-weight: normal;
+    width: 250px;
+  }
+  .dropdown-menu {
+    background-color: #17171d;
+    width: 250px;
+  }
+  .dropdown-item {
+    color: #fff;
+  }
+  .dropdown-item:hover {
+    background-color: rgb(255, 255, 255, 0.06);
+  }
 `;
 
 export function UploadApplication({
@@ -121,6 +174,8 @@ export function UploadApplication({
   wasmFile,
   setTabSwitch,
   cidString,
+  addRelease,
+  packages,
 }) {
   const t = translations.uploadApplication;
   const [releaseInfo, setReleaseInfo] = useState({
@@ -168,6 +223,30 @@ export function UploadApplication({
       </div>
       <div className="release-info-wrapper">
         <div className="release-text">Release Information</div>
+        <div className="flex-group-col">
+          <label className="label-info">Name</label>
+          <Dropdown>
+            <Dropdown.Toggle className="app-dropdown">
+              {releaseInfo.name ? releaseInfo.name : "Select package"}
+            </Dropdown.Toggle>
+            <Dropdown.Menu className="dropdown-menu">
+              {packages.map((pkg, id) => (
+                <Dropdown.Item
+                  onClick={async () => {
+                    setReleaseInfo((prevState) => ({
+                      ...prevState,
+                      name: pkg.name,
+                    }));
+                  }}
+                  key={id}
+                  className="dropdown-item"
+                >
+                  {pkg.name}
+                </Dropdown.Item>
+              ))}
+            </Dropdown.Menu>
+          </Dropdown>
+        </div>
         <div className="flex-group">
           <div className="flex-group-col">
             <label className="label-info">Path</label>
@@ -180,24 +259,71 @@ export function UploadApplication({
               readOnly
             />
           </div>
+          <div className="flex-group-col">
+            <label className="label-info">Version</label>
+            <input
+              type="text"
+              name="version"
+              className="input input-name"
+              value={releaseInfo.version}
+              placeholder="0.0.1"
+              onChange={(e) =>
+                setReleaseInfo((prevState) => ({
+                  ...prevState,
+                  version: e.target.value,
+                }))
+              }
+            />
+          </div>
         </div>
-
-        {/* <div className="flex-group-col">
-          <label className="label">Repository URL</label>
-          <input
-            type="text"
-            name="version"
-            className="input input-name"
-            value={releaseInfo.version}
-            placeholder="0.0.1"
-            onChange={(e) =>
-              setReleaseInfo((prevState) => ({
-                ...prevState,
-                version: e.target.value,
-              }))
-            }
-          />
-        </div> */}
+        <div className="flex-group">
+          <div className="flex-group-col">
+            <label className="label-info">Notes</label>
+            <input
+              type="text"
+              name="notes"
+              className="input input-name"
+              value={releaseInfo.notes}
+              placeholder="bug fix patch"
+              onChange={(e) =>
+                setReleaseInfo((prevState) => ({
+                  ...prevState,
+                  notes: e.target.value,
+                }))
+              }
+            />
+          </div>
+          <div className="flex-group-col">
+            <label className="label-info">Hash</label>
+            <input
+              type="text"
+              name="hash"
+              className="input input-name"
+              value={releaseInfo.hash}
+              placeholder="chat-application"
+              onChange={(e) =>
+                setReleaseInfo((prevState) => ({
+                  ...prevState,
+                  hash: e.target.value,
+                }))
+              }
+            />
+          </div>
+        </div>
+        <button
+          className="button"
+          onClick={() => addRelease(releaseInfo)}
+          disabled={
+            !(
+              releaseInfo.version &&
+              releaseInfo.notes &&
+              releaseInfo.path &&
+              releaseInfo.hash
+            )
+          }
+        >
+          Add Package
+        </button>
       </div>
     </Wrapper>
   );
@@ -210,4 +336,5 @@ UploadApplication.propTypes = {
   cidString: PropTypes.string.isRequired,
   setTabSwitch: PropTypes.func.isRequired,
   addRelease: PropTypes.func.isRequired,
+  packages: PropTypes.array,
 };

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
 import { useUploadFile } from "../hooks/useUploadFile";
@@ -7,12 +7,24 @@ import { UploadApplication } from "../components/uploadApp/UploadApplication";
 import { AddToContract } from "../components/uploadApp/AddToContract";
 import { setupWalletSelector } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
+import { useRPC } from "../hooks/useNear";
+
 import * as nearAPI from "near-api-js";
 
 export default function UploadApp() {
   const { cidString, commitWasm } = useUploadFile();
   const [wasmFile, setWasmFile] = useState();
   const [tabSwitch, setTabSwitch] = useState(false);
+  const [packages, setPackages] = useState([]);
+  const { getPackages } = useRPC();
+
+  useEffect(() => {
+    if (!packages.length) {
+      (async () => {
+        setPackages(await getPackages());
+      })();
+    }
+  }, [packages]);
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
@@ -119,6 +131,7 @@ export default function UploadApp() {
             setTabSwitch={setTabSwitch}
             addRelease={addRelease}
             cidString={cidString}
+            packages={packages}
           />
         ) : (
           <AddToContract
