@@ -1,7 +1,8 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
+import { ArrowLeftIcon } from "@heroicons/react/24/solid";
 
 const Wrapper = styled.div`
   .upload-form {
@@ -19,6 +20,7 @@ const Wrapper = styled.div`
       font-size: 12px;
       color: rgb(255, 255, 255, 0.7);
     }
+
     .file-selection {
       margin-top: 8px;
       margin-bottom: 12px;
@@ -28,7 +30,8 @@ const Wrapper = styled.div`
       width: fit-content;
     }
 
-    .upload-button, .download-button {
+    .upload-button,
+    .download-button {
       border-radius: 4px;
       background-color: rgba(255, 255, 255, 0.06);
       width: fit-content;
@@ -41,7 +44,8 @@ const Wrapper = styled.div`
       border: none;
       outline: none;
     }
-    .upload-button:hover, .download-button:hover {
+    .upload-button:hover,
+    .download-button:hover {
       background-color: rgba(255, 255, 255, 0.12);
     }
     .download-button {
@@ -70,22 +74,82 @@ const Wrapper = styled.div`
       color: #ff842d;
       font-size: 14px;
     }
+    .back-button {
+      width: fit-content;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      color: rgb(255, 255, 255, 0.7);
+      .arrow-icon {
+        height: 18px;
+        width: 18px;
+      }
+    }
+  }
+  .release-info-wrapper {
+    padding-left: 12px;
+  }
+  .flex-group {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .flex-group-col {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .release-text {
+    font-size: 14px;
+    color: #fff;
+    margin-bottom: 12px;
+  }
+
+  .label-info {
+    font-size: 12px;
+    color: rgb(255, 255, 255, 0.7);
+  }
 `;
 
 export function UploadApplication({
   handleFileChange,
   handleFileUpload,
-  createDownloadUrl,
-  cidString,
   wasmFile,
-  downloadUrl,
+  setTabSwitch,
+  cidString,
 }) {
   const t = translations.uploadApplication;
+  const [releaseInfo, setReleaseInfo] = useState({
+    name: "",
+    version: "",
+    notes: "",
+    path: "",
+    hash: "",
+  });
+
+  const getFileIPFSurl = () => {
+    return `https://ipfs.io/ipfs/${cidString}`;
+  };
+
+  useEffect(() => {
+    setReleaseInfo((prevState) => ({
+      ...prevState,
+      path: getFileIPFSurl(),
+    }));
+  }, [cidString]);
 
   return (
     <Wrapper>
       <div className="upload-form">
         <div className="title">{t.title}</div>
+        <div onClick={() => setTabSwitch(false)} className="back-button">
+          <ArrowLeftIcon className="arrow-icon" />
+          Back
+        </div>
         <label className="label">{t.inputLabelText}</label>
         <input
           className="file-selection"
@@ -101,20 +165,39 @@ export function UploadApplication({
         >
           {t.buttonUploadText}
         </button>
-        {cidString && (
-          <div className="file-details">
-            <label className="label">{t.cidLabelText}</label>
-            <div className="text">{cidString}</div>
-            <button className="download-button" onClick={createDownloadUrl}>
-              {t.downloadButtonText}
-            </button>
-            {downloadUrl && (
-              <a href={downloadUrl} target="_blank" className="download-url">
-                {`${t.downloadText} ${downloadUrl}`}
-              </a>
-            )}
+      </div>
+      <div className="release-info-wrapper">
+        <div className="release-text">Release Information</div>
+        <div className="flex-group">
+          <div className="flex-group-col">
+            <label className="label-info">Path</label>
+            <input
+              type="text"
+              name="path"
+              className="input input-name"
+              value={releaseInfo.path}
+              placeholder="chat-application"
+              readOnly
+            />
           </div>
-        )}
+        </div>
+
+        {/* <div className="flex-group-col">
+          <label className="label">Repository URL</label>
+          <input
+            type="text"
+            name="version"
+            className="input input-name"
+            value={releaseInfo.version}
+            placeholder="0.0.1"
+            onChange={(e) =>
+              setReleaseInfo((prevState) => ({
+                ...prevState,
+                version: e.target.value,
+              }))
+            }
+          />
+        </div> */}
       </div>
     </Wrapper>
   );
@@ -123,8 +206,8 @@ export function UploadApplication({
 UploadApplication.propTypes = {
   handleFileChange: PropTypes.func.isRequired,
   handleFileUpload: PropTypes.func.isRequired,
-  createDownloadUrl: PropTypes.func.isRequired,
-  cidString: PropTypes.string,
   wasmFile: PropTypes.any,
-  downloadUrl: PropTypes.string,
+  cidString: PropTypes.string.isRequired,
+  setTabSwitch: PropTypes.func.isRequired,
+  addRelease: PropTypes.func.isRequired,
 };

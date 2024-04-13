@@ -1,16 +1,27 @@
-import React from "react";
+import React, { useState } from "react";
 import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
 import { useUploadFile } from "../hooks/useUploadFile";
 import { UploadAppContent } from "../components/uploadApp/UploadAppContent";
 import { UploadApplication } from "../components/uploadApp/UploadApplication";
-import { useState } from "react";
+import { AddToContract } from "../components/uploadApp/AddToContract";
+import { setupWalletSelector } from "@near-wallet-selector/core";
+import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
+import * as nearAPI from "near-api-js";
 
 export default function UploadApp() {
-  const { cidString, commitWasm, fetchWasm } = useUploadFile();
+  const { cidString, commitWasm } = useUploadFile();
   const [wasmFile, setWasmFile] = useState();
-  const [isUploaded, setIsUploaded] = useState(false);
-  const [downloadUrl, setDownloadUrl] = useState();
+  const [tabSwitch, setTabSwitch] = useState(false);
+
+  const addWalletAccount = async () => {
+    const selector = await setupWalletSelector({
+      network: "testnet",
+      modules: [setupMyNearWallet()],
+    });
+    const wallet = await selector.wallet("my-near-wallet");
+    wallet.signIn({ contractId: "calimero-package-manager.testnet" });
+  };
 
   const handleFileChange = (event) => {
     const file = event.target.files[0];
@@ -31,33 +42,91 @@ export default function UploadApp() {
   };
 
   const handleFileUpload = async () => {
-    setIsUploaded(false);
     try {
       await commitWasm(wasmFile);
-      setIsUploaded(true);
     } catch (e) {
       console.log(e);
     }
   };
 
-  const createDownloadUrl = async () => {
-    let fileObject = await fetchWasm();
-    setDownloadUrl(fileObject);
+  const addPackage = async (packageInfo) => {
+    // add loader
+    const selector = await setupWalletSelector({
+      network: "testnet",
+      modules: [setupMyNearWallet()],
+    });
+    const wallet = await selector.wallet("my-near-wallet");
+    const account = (await wallet.getAccounts())[0];
+    const res = await wallet.signAndSendTransaction({
+      signerId: account,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "add_package",
+            args: {
+              name: packageInfo.name,
+              description: packageInfo.description,
+              repository: packageInfo.repository,
+            },
+            gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
+          },
+        },
+      ],
+    });
+    console.log(res);
+  };
+
+  const addRelease = async (releaseInfo) => {
+    // add loader
+    const selector = await setupWalletSelector({
+      network: "testnet",
+      modules: [setupMyNearWallet()],
+    });
+    const wallet = await selector.wallet("my-near-wallet");
+    const account = (await wallet.getAccounts())[0];
+    const res = await wallet.signAndSendTransaction({
+      signerId: account,
+      actions: [
+        {
+          type: "FunctionCall",
+          params: {
+            methodName: "add_release",
+            args: {
+              name: releaseInfo.name,
+              version: releaseInfo.version,
+              notes: releaseInfo.notes,
+              path: releaseInfo.path,
+              hash: releaseInfo.hash,
+            },
+            gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
+          },
+        },
+      ],
+    });
+    console.log(res);
   };
 
   return (
     <FlexLayout>
       <Navigation />
-      <UploadAppContent>
-        <UploadApplication
-          handleFileChange={handleFileChange}
-          handleFileUpload={handleFileUpload}
-          createDownloadUrl={createDownloadUrl}
-          wasmFile={wasmFile}
-          cidString={cidString}
-          isUploaded={isUploaded}
-          downloadUrl={downloadUrl}
-        />
+      <UploadAppContent addWalletAccount={addWalletAccount}>
+        {tabSwitch ? (
+          <UploadApplication
+            handleFileChange={handleFileChange}
+            handleFileUpload={handleFileUpload}
+            wasmFile={wasmFile}
+            setTabSwitch={setTabSwitch}
+            addRelease={addRelease}
+            cidString={cidString}
+          />
+        ) : (
+          <AddToContract
+            cid={cidString}
+            addPackage={addPackage}
+            setTabSwitch={setTabSwitch}
+          />
+        )}
       </UploadAppContent>
     </FlexLayout>
   );
