@@ -166,6 +166,53 @@ const Wrapper = styled.div`
   .dropdown-item:hover {
     background-color: rgb(255, 255, 255, 0.06);
   }
+
+  .loader-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding-top: 10px;
+  }
+
+  .lds-ring,
+  .lds-ring div {
+    box-sizing: border-box;
+  }
+  .lds-ring {
+    display: inline-block;
+    position: relative;
+    width: 80px;
+    height: 80px;
+  }
+  .lds-ring div {
+    box-sizing: border-box;
+    display: block;
+    position: absolute;
+    width: 64px;
+    height: 64px;
+    margin: 8px;
+    border: 8px solid #121216;
+    border-radius: 50%;
+    animation: lds-ring 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+    border-color: #121216 transparent transparent transparent;
+  }
+  .lds-ring div:nth-child(1) {
+    animation-delay: -0.45s;
+  }
+  .lds-ring div:nth-child(2) {
+    animation-delay: -0.3s;
+  }
+  .lds-ring div:nth-child(3) {
+    animation-delay: -0.15s;
+  }
+  @keyframes lds-ring {
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
+  }
 `;
 
 export function UploadApplication({
@@ -176,6 +223,7 @@ export function UploadApplication({
   cidString,
   addRelease,
   packages,
+  addReleaseLoader,
 }) {
   const t = translations.uploadApplication;
   const [releaseInfo, setReleaseInfo] = useState({
@@ -221,110 +269,123 @@ export function UploadApplication({
           {t.buttonUploadText}
         </button>
       </div>
-      <div className="release-info-wrapper">
-        <div className="release-text">Release Information</div>
-        <div className="flex-group-col">
-          <label className="label-info">Name</label>
-          <Dropdown>
-            <Dropdown.Toggle className="app-dropdown">
-              {releaseInfo.name ? releaseInfo.name : "Select package"}
-            </Dropdown.Toggle>
-            <Dropdown.Menu className="dropdown-menu">
-              {packages.map((pkg, id) => (
-                <Dropdown.Item
-                  onClick={async () => {
-                    setReleaseInfo((prevState) => ({
-                      ...prevState,
-                      name: pkg.name,
-                    }));
-                  }}
-                  key={id}
-                  className="dropdown-item"
-                >
-                  {pkg.name}
-                </Dropdown.Item>
-              ))}
-            </Dropdown.Menu>
-          </Dropdown>
+      {cidString && (
+        <div className="release-info-wrapper">
+          <div className="release-text">Release Information</div>
+          <div className="flex-group-col">
+            <label className="label-info">Name</label>
+            <Dropdown>
+              <Dropdown.Toggle className="app-dropdown">
+                {releaseInfo.name ? releaseInfo.name : "Select package"}
+              </Dropdown.Toggle>
+              <Dropdown.Menu className="dropdown-menu">
+                {packages.map((pkg, id) => (
+                  <Dropdown.Item
+                    onClick={async () => {
+                      setReleaseInfo((prevState) => ({
+                        ...prevState,
+                        name: pkg.name,
+                      }));
+                    }}
+                    key={id}
+                    className="dropdown-item"
+                  >
+                    {pkg.name}
+                  </Dropdown.Item>
+                ))}
+              </Dropdown.Menu>
+            </Dropdown>
+          </div>
+          <div className="flex-group">
+            <div className="flex-group-col">
+              <label className="label-info">Path</label>
+              <input
+                type="text"
+                name="path"
+                className="input input-name"
+                value={releaseInfo.path}
+                placeholder="chat-application"
+                readOnly
+              />
+            </div>
+            <div className="flex-group-col">
+              <label className="label-info">Version</label>
+              <input
+                type="text"
+                name="version"
+                className="input input-name"
+                value={releaseInfo.version}
+                placeholder="0.0.1"
+                onChange={(e) =>
+                  setReleaseInfo((prevState) => ({
+                    ...prevState,
+                    version: e.target.value,
+                  }))
+                }
+              />
+            </div>
+          </div>
+          <div className="flex-group">
+            <div className="flex-group-col">
+              <label className="label-info">Notes</label>
+              <input
+                type="text"
+                name="notes"
+                className="input input-name"
+                value={releaseInfo.notes}
+                placeholder="bug fix patch"
+                onChange={(e) =>
+                  setReleaseInfo((prevState) => ({
+                    ...prevState,
+                    notes: e.target.value,
+                  }))
+                }
+              />
+            </div>
+            <div className="flex-group-col">
+              <label className="label-info">Hash</label>
+              <input
+                type="text"
+                name="hash"
+                className="input input-name"
+                value={releaseInfo.hash}
+                placeholder="chat-application"
+                onChange={(e) =>
+                  setReleaseInfo((prevState) => ({
+                    ...prevState,
+                    hash: e.target.value,
+                  }))
+                }
+              />
+            </div>
+          </div>
+          <button
+            className="button"
+            onClick={() => addRelease(releaseInfo)}
+            disabled={
+              !(
+                releaseInfo.version &&
+                releaseInfo.notes &&
+                releaseInfo.path &&
+                releaseInfo.hash
+              )
+            }
+          >
+            Add Release
+          </button>
+
+          {addReleaseLoader && (
+            <div className="loader-wrapper">
+              <div className="lds-ring">
+                <div></div>
+                <div></div>
+                <div></div>
+                <div></div>
+              </div>
+            </div>
+          )}
         </div>
-        <div className="flex-group">
-          <div className="flex-group-col">
-            <label className="label-info">Path</label>
-            <input
-              type="text"
-              name="path"
-              className="input input-name"
-              value={releaseInfo.path}
-              placeholder="chat-application"
-              readOnly
-            />
-          </div>
-          <div className="flex-group-col">
-            <label className="label-info">Version</label>
-            <input
-              type="text"
-              name="version"
-              className="input input-name"
-              value={releaseInfo.version}
-              placeholder="0.0.1"
-              onChange={(e) =>
-                setReleaseInfo((prevState) => ({
-                  ...prevState,
-                  version: e.target.value,
-                }))
-              }
-            />
-          </div>
-        </div>
-        <div className="flex-group">
-          <div className="flex-group-col">
-            <label className="label-info">Notes</label>
-            <input
-              type="text"
-              name="notes"
-              className="input input-name"
-              value={releaseInfo.notes}
-              placeholder="bug fix patch"
-              onChange={(e) =>
-                setReleaseInfo((prevState) => ({
-                  ...prevState,
-                  notes: e.target.value,
-                }))
-              }
-            />
-          </div>
-          <div className="flex-group-col">
-            <label className="label-info">Hash</label>
-            <input
-              type="text"
-              name="hash"
-              className="input input-name"
-              value={releaseInfo.hash}
-              placeholder="chat-application"
-              onChange={(e) =>
-                setReleaseInfo((prevState) => ({
-                  ...prevState,
-                  hash: e.target.value,
-                }))
-              }
-            />
-          </div>
-        </div>
-        <button
-          className="button"
-          onClick={() => addRelease(releaseInfo)}
-          disabled={
-            !(
-              releaseInfo.version &&
-              releaseInfo.notes &&
-              releaseInfo.path &&
-              releaseInfo.hash
-            )
-          }
-        >
-          Add Package
-        </button>
-      </div>
+      )}
     </Wrapper>
   );
 }
@@ -337,4 +398,5 @@ UploadApplication.propTypes = {
   setTabSwitch: PropTypes.func.isRequired,
   addRelease: PropTypes.func.isRequired,
   packages: PropTypes.array,
+  addReleaseLoader: PropTypes.bool.isRequired,
 };

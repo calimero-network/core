@@ -16,6 +16,8 @@ export default function UploadApp() {
   const [wasmFile, setWasmFile] = useState();
   const [tabSwitch, setTabSwitch] = useState(false);
   const [packages, setPackages] = useState([]);
+  const [addPackageLoader, setAddPackageLoader] = useState(false);
+  const [addReleaseLoader, setAddReleaseLoader] = useState(false);
   const { getPackages } = useRPC();
 
   useEffect(() => {
@@ -62,7 +64,7 @@ export default function UploadApp() {
   };
 
   const addPackage = async (packageInfo) => {
-    // add loader
+    setAddPackageLoader(true);
     const selector = await setupWalletSelector({
       network: "testnet",
       modules: [setupMyNearWallet()],
@@ -86,11 +88,14 @@ export default function UploadApp() {
         },
       ],
     });
-    console.log(res);
+    if (res.status.SuccessValue === "") {
+      setAddPackageLoader(false);
+      window.alert("Package added successfully!");
+    }
   };
 
   const addRelease = async (releaseInfo) => {
-    // add loader
+    setAddReleaseLoader(true);
     const selector = await setupWalletSelector({
       network: "testnet",
       modules: [setupMyNearWallet()],
@@ -116,7 +121,10 @@ export default function UploadApp() {
         },
       ],
     });
-    console.log(res);
+    if (res.status.SuccessValue === "") {
+      setAddReleaseLoader(false);
+      window.alert("Release added successfully!");
+    }
   };
 
   return (
@@ -132,12 +140,14 @@ export default function UploadApp() {
             addRelease={addRelease}
             cidString={cidString}
             packages={packages}
+            addReleaseLoader={addReleaseLoader}
           />
         ) : (
           <AddToContract
             cid={cidString}
             addPackage={addPackage}
             setTabSwitch={setTabSwitch}
+            addPackageLoader={addPackageLoader}
           />
         )}
       </UploadAppContent>
