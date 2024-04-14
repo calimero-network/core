@@ -50,7 +50,7 @@ export function UploadAppContent({ addWalletAccount, children }) {
         <div className="card-header">
           <div className="page-title">{t.title}</div>
           <button className="button" onClick={addWalletAccount}>
-            Add wallet account
+            {t.walletButtonText}
           </button>
         </div>
         {children}

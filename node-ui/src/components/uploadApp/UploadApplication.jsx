@@ -251,7 +251,7 @@ export function UploadApplication({
         <div className="title">{t.title}</div>
         <div onClick={() => setTabSwitch(false)} className="back-button">
           <ArrowLeftIcon className="arrow-icon" />
-          Back
+          {t.backButtonText}
         </div>
         <label className="label">{t.inputLabelText}</label>
         <input
@@ -271,9 +271,9 @@ export function UploadApplication({
       </div>
       {cidString && (
         <div className="release-info-wrapper">
-          <div className="release-text">Release Information</div>
+          <div className="release-text">{t.releaseTitle}</div>
           <div className="flex-group-col">
-            <label className="label-info">Name</label>
+            <label className="label-info">{t.nameLabelText}</label>
             <Dropdown>
               <Dropdown.Toggle className="app-dropdown">
                 {releaseInfo.name ? releaseInfo.name : "Select package"}
@@ -298,24 +298,23 @@ export function UploadApplication({
           </div>
           <div className="flex-group">
             <div className="flex-group-col">
-              <label className="label-info">Path</label>
+              <label className="label-info">{t.pathLabelText}</label>
               <input
                 type="text"
                 name="path"
                 className="input input-name"
                 value={releaseInfo.path}
-                placeholder="chat-application"
                 readOnly
               />
             </div>
             <div className="flex-group-col">
-              <label className="label-info">Version</label>
+              <label className="label-info">{t.versionLabelText}</label>
               <input
                 type="text"
                 name="version"
                 className="input input-name"
                 value={releaseInfo.version}
-                placeholder="0.0.1"
+                placeholder={t.versionPlaceholder}
                 onChange={(e) =>
                   setReleaseInfo((prevState) => ({
                     ...prevState,
@@ -327,13 +326,13 @@ export function UploadApplication({
           </div>
           <div className="flex-group">
             <div className="flex-group-col">
-              <label className="label-info">Notes</label>
+              <label className="label-info">{t.notesLabelText}</label>
               <input
                 type="text"
                 name="notes"
                 className="input input-name"
                 value={releaseInfo.notes}
-                placeholder="bug fix patch"
+                placeholder={t.notesPlaceholder}
                 onChange={(e) =>
                   setReleaseInfo((prevState) => ({
                     ...prevState,
@@ -343,13 +342,13 @@ export function UploadApplication({
               />
             </div>
             <div className="flex-group-col">
-              <label className="label-info">Hash</label>
+              <label className="label-info">{t.hashLabelText}</label>
               <input
                 type="text"
                 name="hash"
                 className="input input-name"
                 value={releaseInfo.hash}
-                placeholder="chat-application"
+                placeholder={t.hashLabelText}
                 onChange={(e) =>
                   setReleaseInfo((prevState) => ({
                     ...prevState,
@@ -371,7 +370,7 @@ export function UploadApplication({
               )
             }
           >
-            Add Release
+            {t.addReleaseButtonText}
           </button>
 
           {addReleaseLoader && (

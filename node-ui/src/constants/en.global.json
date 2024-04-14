@@ -64,7 +64,8 @@
         "addNewText": "Add new Key"
     },
     "uploadPage": {
-        "title": "Upload Application"
+        "title": "Upload Application",
+        "walletButtonText": "Add wallet account"
     },
     "uploadApplication": {
         "title": "IPFS Application upload",
@@ -72,7 +73,28 @@
         "buttonUploadLabel": "Upload to IPFS",
         "buttonUploadText": "Upload",
         "cidLabelText": "File IPFS CID",
-        "downloadButtonText": "Create Download Url",
-        "downloadText": "Download:"
+        "backButtonText": "Back",
+        "releaseTitle": "Release Details",
+        "nameLabelText": "Name",
+        "pathLabelText": "Path",
+        "versionLabelText": "Version",
+        "notesLabelText": "Notes",
+        "hashLabelText": "Hash",
+        "buttonAddReleaseText": "Add Release",
+        "versionPlaceholder": "1.0.0",
+        "notesPlaceholder": "Initial release",
+        "hashPlaceholder": "QmZ3Z8Q7QmZ3Z8Q7QmZ3Z8Q7QmZ3Z8Q7",
+        "addReleaseButtonText": "Add Release"
+    },
+    "addPackageForm": {
+        "title": "Package Details",
+        "nameLabelText": "Package Name",
+        "repositoryLabelText": "Repository URL",
+        "descriptionLabelText": "Description",
+        "buttonAddPackageText": "Add Package",
+        "buttonNextText": "Next",
+        "namePlaceholder": "chat-application",
+        "repositoryPlaceholder": "github.com/username/chat-application",
+        "descriptionPlaceholder": "A chat application built for P2P system"
     }
 }

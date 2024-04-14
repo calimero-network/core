@@ -4,7 +4,7 @@ import { FlexLayout } from "../components/layout/FlexLayout";
 import { useUploadFile } from "../hooks/useUploadFile";
 import { UploadAppContent } from "../components/uploadApp/UploadAppContent";
 import { UploadApplication } from "../components/uploadApp/UploadApplication";
-import { AddToContract } from "../components/uploadApp/AddToContract";
+import { AddPackageForm } from "../components/uploadApp/AddPackageForm";
 import { setupWalletSelector } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { useRPC } from "../hooks/useNear";
@@ -143,7 +143,7 @@ export default function UploadApp() {
             addReleaseLoader={addReleaseLoader}
           />
         ) : (
-          <AddToContract
+          <AddPackageForm
             cid={cidString}
             addPackage={addPackage}
             setTabSwitch={setTabSwitch}

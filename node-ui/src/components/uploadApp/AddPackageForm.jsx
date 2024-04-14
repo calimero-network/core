@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
+import translations from "../../constants/en.global.json";
 
 const ContractFormLayout = styled.div`
   display: flex;
@@ -124,7 +125,8 @@ const ContractFormLayout = styled.div`
   }
 `;
 
-export function AddToContract({ addPackage, setTabSwitch, addPackageLoader }) {
+export function AddPackageForm({ addPackage, setTabSwitch, addPackageLoader }) {
+  const t = translations.addPackageForm;
   const [packageInfo, setPackageInfo] = useState({
     name: "",
     description: "",
@@ -133,16 +135,16 @@ export function AddToContract({ addPackage, setTabSwitch, addPackageLoader }) {
 
   return (
     <ContractFormLayout>
-      <div className="title">Package Information</div>
+      <div className="title">{t.title}</div>
       <div className="flex-group">
         <div className="flex-group-col">
-          <label className="label">Application Name</label>
+          <label className="label">{t.nameLabelText}</label>
           <input
             type="text"
             name="name"
             className="input input-name"
             value={packageInfo.name}
-            placeholder="chat-application"
+            placeholder={t.namePlaceholder}
             onChange={(e) =>
               setPackageInfo((prevState) => ({
                 ...prevState,
@@ -152,13 +154,13 @@ export function AddToContract({ addPackage, setTabSwitch, addPackageLoader }) {
           />
         </div>
         <div className="flex-group-col">
-          <label className="label">Repository URL</label>
+          <label className="label">{t.repositoryLabelText}</label>
           <input
             type="text"
             name="repository"
             className="input input-name"
             value={packageInfo.repository}
-            placeholder="github.com/username/chat-application"
+            placeholder={t.repositoryPlaceholder}
             onChange={(e) =>
               setPackageInfo((prevState) => ({
                 ...prevState,
@@ -168,13 +170,13 @@ export function AddToContract({ addPackage, setTabSwitch, addPackageLoader }) {
           />
         </div>
       </div>
-      <label className="label">Description</label>
+      <label className="label">{t.descriptionLabelText}</label>
       <input
         type="text"
         name="description"
         className="input"
         value={packageInfo.description}
-        placeholder="A chat application built for P2P system"
+        placeholder={t.descriptionPlaceholder}
         onChange={(e) =>
           setPackageInfo((prevState) => ({
             ...prevState,
@@ -194,14 +196,14 @@ export function AddToContract({ addPackage, setTabSwitch, addPackageLoader }) {
             ) && !addPackageLoader
           }
         >
-          Add Package
+          {t.buttonAddPackageText}
         </button>
         <button
           className="button"
           onClick={() => setTabSwitch(true)}
           disabled={addPackageLoader}
         >
-          Next
+          {t.buttonNextText}
         </button>
       </div>
       {addPackageLoader && (
@@ -218,7 +220,7 @@ export function AddToContract({ addPackage, setTabSwitch, addPackageLoader }) {
   );
 }
 
-AddToContract.propTypes = {
+AddPackageForm.propTypes = {
   addPackage: PropTypes.func.isRequired,
   setTabSwitch: PropTypes.func.isRequired,
   addPackageLoader: PropTypes.bool.isRequired,
