@@ -365,6 +365,11 @@ fn get_latest_application_path(dir: &camino::Utf8Path, application_id: &str) -> 
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct ApplicationListResult {
+    apps: HashMap<String, String>,
+}
+
 async fn fetch_application_handler(
     Extension(state): Extension<Arc<ServiceState>>,
     session: Session,
@@ -384,11 +389,8 @@ async fn fetch_application_handler(
                 }
             }
         });
-        let response_body = json!({
-            "apps": applications
-        });
         return ApiResponse {
-            payload: response_body.to_string(),
+            payload: ApplicationListResult { apps: applications },
         }
         .into_response();
     } else {
