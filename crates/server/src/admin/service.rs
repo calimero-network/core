@@ -12,6 +12,7 @@ use axum::{Extension, Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_store::Store;
+use libp2p::identity::Keypair;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
@@ -37,38 +38,52 @@ pub struct AdminConfig {
     pub application_dir: camino::Utf8PathBuf,
 }
 
+#[derive(Clone)]
 pub(crate) struct ServiceState {
     application_dir: camino::Utf8PathBuf,
+}
+
+#[derive(Clone)]
+pub struct AdminState {
+    pub service: Arc<ServiceState>,
+    pub store: Store,
+    pub keypair: Keypair,
 }
 
 pub(crate) fn setup(
     config: &crate::config::ServerConfig,
     store: Store,
 ) -> eyre::Result<Option<(&'static str, Router)>> {
-    let config = match &config.admin {
+    let admin_config = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
             info!("Admin api is disabled");
             return Ok(None);
         }
     };
+
     let admin_path = "/admin-api";
 
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
-    let state = Arc::new(ServiceState {
-        application_dir: config.application_dir.clone(),
-    });
+
+    let shared_state = AdminState {
+        service: Arc::new(ServiceState {
+            application_dir: admin_config.application_dir.clone(),
+        }),
+        store,
+        keypair: config.identity.clone(),
+    };
+
     let admin_router = Router::new()
         .route("/health", get(health_check_handler))
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
-        .layer(Extension(state))
         .route("/add-client-key", post(add_client_key_handler))
         .route("/did", get(fetch_did_handler))
-        .layer(session_layer)
-        .with_state(store);
+        .with_state(shared_state)
+        .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
 }
@@ -139,32 +154,60 @@ impl IntoResponse for ApiError {
     }
 }
 
-#[derive(Serialize)]
-struct RequestChallengeBody {
-    challenge: String,
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestChallenge {
+    application_id: Option<String>,
 }
 
-pub async fn request_challenge_handler(session: Session) -> impl IntoResponse {
-    if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
-        ApiResponse {
-            payload: RequestChallengeBody { challenge },
-        }
-        .into_response()
-    } else {
-        let challenge = generate_challenge();
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RequestChallengeResponse {
+    data: NodeChallenge,
+}
 
-        if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
-            error!("Failed to insert challenge into session: {}", err);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to insert challenge into session",
-            )
-                .into_response();
+pub async fn request_challenge_handler(
+    session: Session,
+    State(state): State<AdminState>,
+    Json(req): Json<RequestChallenge>,
+) -> impl IntoResponse {
+    if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
+        match serde_json::from_str::<NodeChallenge>(&challenge) {
+            Ok(challenge) => ApiResponse {
+                payload: RequestChallengeResponse { data: challenge },
+            }
+            .into_response(),
+            Err(_) => ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to deserialize challenge".to_string(),
+            }
+            .into_response(),
         }
-        ApiResponse {
-            payload: RequestChallengeBody { challenge },
+    } else {
+        match generate_challenge(req.application_id.clone(), &state.keypair) {
+            Ok(challenge) => {
+                if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
+                    error!("Failed to insert challenge into session: {}", err);
+                    return ApiError {
+                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: "Failed to insert challenge into session".to_string(),
+                    }
+                    .into_response();
+                }
+                ApiResponse {
+                    payload: RequestChallengeResponse { data: challenge },
+                }
+                .into_response()
+            }
+            Err(err) => {
+                error!("Failed to generate client challenge: {}", err);
+                ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "Failed to generate challenge".to_string(),
+                }
+                .into_response()
+            }
         }
-        .into_response()
     }
 }
 
@@ -175,10 +218,54 @@ fn generate_random_bytes() -> [u8; 32] {
     buf
 }
 
-fn generate_challenge() -> String {
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct NodeChallenge {
+    #[serde(flatten)]
+    message: NodeChallengeMessage,
+    node_signature: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeChallengeMessage {
+    pub(crate) nonce: String,
+    pub(crate) application_id: String, //optional if challenge is used on admin level
+    pub(crate) timestamp: i64,
+}
+
+fn generate_challenge(
+    application_id: Option<String>,
+    keypair: &Keypair,
+) -> Result<NodeChallenge, ApiError> {
     let random_bytes = generate_random_bytes();
     let encoded = STANDARD.encode(&random_bytes);
-    encoded
+
+    let node_challenge_message = NodeChallengeMessage {
+        nonce: encoded,
+        application_id: application_id.unwrap_or_else(|| "".to_string()),
+        timestamp: chrono::Utc::now().timestamp(),
+    };
+
+    let serialized_message =
+        serde_json::to_string(&node_challenge_message).map_err(|_| ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "Failed to serialize challenge data".into(),
+        })?;
+
+    match keypair.sign(serialized_message.as_bytes()) {
+        Ok(signature) => {
+            let node_signature = STANDARD.encode(&signature);
+            Ok(NodeChallenge {
+                message: node_challenge_message,
+                node_signature,
+            })
+        }
+        Err(e) => Err(ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("Failed to sign challenge: {}", e),
+        }),
+    }
 }
 
 async fn health_check_handler() -> impl IntoResponse {
@@ -187,7 +274,7 @@ async fn health_check_handler() -> impl IntoResponse {
 
 async fn create_root_key_handler(
     session: Session,
-    State(store): State<Store>,
+    State(state): State<AdminState>,
     Json(req): Json<PubKeyRequest>,
 ) -> impl IntoResponse {
     let message = "helloworld";
@@ -204,7 +291,7 @@ async fn create_root_key_handler(
                 &req.public_key,
             ) {
                 let result = add_root_key(
-                    &store,
+                    &state.store,
                     RootKey {
                         signing_key: req.public_key.clone(),
                     },
@@ -315,7 +402,7 @@ pub async fn install_application(
 
 async fn install_application_handler(
     Extension(state): Extension<Arc<ServiceState>>,
-    session: Session,
+    _session: Session,
     Json(req): Json<InstallApplicationRequest>,
 ) -> impl IntoResponse {
     let result = install_application(&req.application, &req.version, &state.application_dir).await;
