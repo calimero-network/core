@@ -129,11 +129,6 @@ const NavigationItems = [
     title: "Applications",
     path: "/applications",
   },
-  {
-    id: 2,
-    title: "Keys",
-    path: "/keys",
-  },
 ];
 
 export function Navigation() {

@@ -17,7 +17,6 @@ pub async fn fetch_did_handler(
     State(state): State<AdminState>,
 ) -> impl IntoResponse {
     let did = get_or_create_did(&state.store).map_err(|err| parse_api_error(err));
-
     return match did {
         Ok(did) => ApiResponse {
             payload: DidResponse { data: did },
