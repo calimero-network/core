@@ -11,7 +11,6 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use calimero_primitives::application::ApplicationId;
 use calimero_store::Store;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
@@ -29,7 +28,7 @@ use tracing::{error, info};
 use super::handlers::add_client_key::{add_client_key_handler, parse_api_error};
 use super::handlers::fetch_did::fetch_did_handler;
 use super::storage::root_key::{add_root_key, RootKey};
-use crate::{verifysignature, APPLICATION_ID};
+use crate::verifysignature;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
@@ -194,9 +193,6 @@ async fn create_root_key_handler(
     let message = "helloworld";
     let app = "me";
 
-    //TODO extract from request
-    let application_id = ApplicationId(APPLICATION_ID.to_string());
-
     match session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
         Some(challenge) => {
             if verifysignature::verify_near_signature(
@@ -208,7 +204,6 @@ async fn create_root_key_handler(
                 &req.public_key,
             ) {
                 let result = add_root_key(
-                    application_id,
                     &store,
                     RootKey {
                         signing_key: req.public_key.clone(),

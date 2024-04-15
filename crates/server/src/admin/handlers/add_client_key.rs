@@ -14,7 +14,6 @@ use tracing::info;
 use crate::admin::service::{ApiError, ApiResponse};
 use crate::admin::storage::root_key::{get_root_key, RootKey};
 use crate::verifysignature::verify_near_signature;
-use crate::APPLICATION_ID;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -284,15 +283,12 @@ fn validate_root_key_exists(
     req: AddClientKeyRequest,
     store: Store,
 ) -> Result<AddClientKeyRequest, ApiError> {
-    //TODO extract from request
-    let application_id = ApplicationId(APPLICATION_ID.to_string());
-
     //Check if root key exists
     let root_key = RootKey {
         signing_key: req.wallet_metadata.signing_key.clone(),
     };
 
-    let existing_root_key = match get_root_key(application_id, &store, &root_key).map_err(|e| {
+    let existing_root_key = match get_root_key(&store, &root_key).map_err(|e| {
         info!("Error getting root key: {}", e);
         ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
