@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File};
@@ -60,6 +61,10 @@ pub(crate) fn setup(
     let state = Arc::new(ServiceState {
         application_dir: config.application_dir.clone(),
     });
+    let state_apps = Arc::new(ServiceState {
+        application_dir: config.application_dir.clone(),
+    });
+
     let admin_router = Router::new()
         .route("/health", get(health_check_handler))
         .route("/root-key", post(create_root_key_handler))
@@ -68,6 +73,8 @@ pub(crate) fn setup(
         .layer(Extension(state))
         .route("/add-client-key", post(add_client_key_handler))
         .route("/did", get(fetch_did_handler))
+        .route("/applications", get(fetch_application_handler))
+        .layer(Extension(state_apps))
         .layer(session_layer)
         .with_state(store);
 
@@ -330,6 +337,72 @@ async fn install_application_handler(
         Err(err) => return Err(parse_api_error(err)),
     }
     .into_response())
+}
+
+fn get_latest_application_path(dir: &camino::Utf8Path, application_id: &str) -> Option<String> {
+    let application_base_path = dir.join(application_id.to_string());
+
+    if let Ok(entries) = fs::read_dir(&application_base_path) {
+        let mut versions_with_binary = entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let entry_path = entry.path();
+
+                let version = {
+                    semver::Version::parse(entry_path.file_name()?.to_string_lossy().as_ref())
+                        .ok()?
+                };
+
+                let binary_path = entry_path.join("binary.wasm");
+                binary_path.exists().then_some((version, entry_path))
+            })
+            .collect::<Vec<_>>();
+
+        versions_with_binary.sort_by(|a, b| b.0.cmp(&a.0));
+
+        if let Some((_, path)) = versions_with_binary.first() {
+            Some(path.to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+async fn fetch_application_handler(
+    Extension(state): Extension<Arc<ServiceState>>,
+    session: Session,
+) -> impl IntoResponse {
+    if let Ok(entries) = fs::read_dir(&state.application_dir) {
+        let mut applications: HashMap<String, String> = HashMap::new();
+
+        entries.filter_map(|entry| entry.ok()).for_each(|entry| {
+            if let Some(file_name) = entry.file_name().to_str() {
+                let latest_version =
+                    get_latest_application_path(&state.application_dir, &file_name);
+                if let Some(latest_version) = latest_version {
+                    let app_name = file_name.to_string();
+                    if let Some(version) = latest_version.rsplit('/').next() {
+                        applications.insert(app_name, version.to_string());
+                    }
+                }
+            }
+        });
+        let response_body = json!({
+            "apps": applications
+        });
+        return ApiResponse {
+            payload: response_body.to_string(),
+        }
+        .into_response();
+    } else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to read application directory",
+        )
+            .into_response();
+    }
 }
 
 #[derive(Deserialize)]

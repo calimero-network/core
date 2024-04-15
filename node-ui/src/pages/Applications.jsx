@@ -8,16 +8,18 @@ import { InstallApplication } from "../components/applications/InstallApplicatio
 import { useRPC } from "../hooks/useNear";
 import { useAdminClient } from "../hooks/useAdminClient";
 import { useNavigate } from "react-router-dom";
+import axios from "axios";
 
 export default function Applications() {
   const navigate = useNavigate();
-  const { getPackages, getReleases } = useRPC();
+  const { getPackages, getReleases, getPackage } = useRPC();
   const { installApplication } = useAdminClient();
   const [swithInstall, setSwitchInstall] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState();
   const [selectedRelease, setSelectedRelease] = useState();
   const [packages, setPackages] = useState([]);
   const [releases, setReleases] = useState([]);
+  const [applications, setApplications] = useState([]);
 
   useEffect(() => {
     if (!packages.length) {
@@ -26,6 +28,21 @@ export default function Applications() {
       })();
     }
   }, [packages]);
+
+  useEffect(() => {
+    const setDids = async () => {
+      const applicationIds = Object.keys(
+        JSON.parse((await axios.get("/admin-api/applications")).data).apps
+      );
+      const tempApplications = await Promise.all(
+        applicationIds.map(async (appId) => {
+          return await getPackage(appId);
+        })
+      );
+      setApplications(tempApplications);
+    };
+    setDids();
+  }, []);
 
   return (
     <FlexLayout>
@@ -46,7 +63,7 @@ export default function Applications() {
           />
         ) : (
           <ApplicationsTable
-            applications={[]}
+            applications={applications}
             install={() => setSwitchInstall(true)}
             uninstall={() => console.log("uninstall ?!?")}
           />

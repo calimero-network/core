@@ -1155,6 +1155,7 @@ dependencies = [
  "near-primitives",
  "rand 0.8.5",
  "reqwest 0.12.2",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.8",
