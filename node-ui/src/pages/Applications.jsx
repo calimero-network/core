@@ -8,7 +8,7 @@ import { InstallApplication } from "../components/applications/InstallApplicatio
 import { useRPC } from "../hooks/useNear";
 import { useAdminClient } from "../hooks/useAdminClient";
 import { useNavigate } from "react-router-dom";
-import getApplicationIds from "../utils/applications";
+import apiClient from "../api/index";
 
 export default function Applications() {
   const navigate = useNavigate();
@@ -31,9 +31,12 @@ export default function Applications() {
 
   useEffect(() => {
     const setApps = async () => {
-      const applicationIds = await getApplicationIds();
+      const installedApplicationIds = await apiClient
+        .admin()
+        .getInstalledAplications();
+
       const tempApplications = await Promise.all(
-        applicationIds.map(async (appId) => {
+        installedApplicationIds.map(async (appId) => {
           return await getPackage(appId);
         })
       );
