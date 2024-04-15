@@ -43,7 +43,7 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    curl -X POST \
    -H "Content-Type: application/json" \
    -d '{"accountId": "<ACCOUNT_ID>", "signature": "<SIGNATURE>", "publicKey": "<PUBLIC_KEY>", "callbackUrl": "<CALLBACK_URL>"}' \
-   https://<NODE-URL>/admin-api/root-key
+   http://<NODE-URL>/admin-api/root-key
    ```
 
    **Example response**
@@ -62,7 +62,7 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    **Example call with curl**
 
    ```
-   curl -X POST https://<NODE-URL>/admin-api/request-challenge
+   curl -X POST http://<NODE-URL>/admin-api/request-challenge
    ```
 
    **Example response**
@@ -89,7 +89,7 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    curl -X POST \
    -H "Content-Type: application/json" \
    -d '{"application": "<APPLICATION_NAME>", "version": "<VERSION>"}' \
-   https://<NODE-URL>/admin-api/install-application
+   http://<NODE-URL>/admin-api/install-application
    ```
 
    **Example response**
@@ -108,7 +108,7 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    **Example call with curl**
 
    ```
-   curl -X GET https://<NODE-URL>/admin-api/applications
+   curl -X GET http://<NODE-URL>/admin-api/applications
    ```
 
    **Example response**
@@ -142,7 +142,7 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    curl -X POST \
    -H "Content-Type: application/json" \
    -d '{"wallet_signature": "<WALLET_SIGNATURE>", "payload": { "message": <MESSAGE>, "metadata": <METADATA_VALUE>}. "wallet_metadata": {"wallet_type": <WALLET_TYPE>, "signing_key": <SIGNING_KEY>}}' \
-   https://<NODE-URL>/admin-api/add-client-key
+   http://<NODE-URL>/admin-api/add-client-key
    ```
 
    **Example response**
@@ -159,7 +159,7 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    **GET** `/did`
 
    ```
-   curl -X GET https://<NODE-URL>/admin-api/did
+   curl -X GET http://<NODE-URL>/admin-api/did
    ```
 
    **Example response**
