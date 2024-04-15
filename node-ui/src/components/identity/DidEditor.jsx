@@ -6,7 +6,7 @@ import PropTypes from "prop-types";
 const EditorContainer = styled.div`
   position: relative;
   background-color: #17171d;
-  grid-column: span 12;
+  grid-column: span 10;
   border-radius: 4px;
   padding-top: 10px;
   margin-left: 8px;

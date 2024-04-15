@@ -1,6 +1,5 @@
 import React, { useState } from "react";
 import styled from "styled-components";
-import { Tooltip } from "react-tooltip";
 import { AddNewItem } from "../common/AddNewItem";
 import { ChevronUpDownIcon } from "@heroicons/react/24/solid";
 import PropTypes from "prop-types";
@@ -26,7 +25,7 @@ const Table = styled.div`
     padding-bottom: 10px;
     padding-left: 14px;
     display: grid;
-    grid-template-columns: repeat(12, 1fr);
+    grid-template-columns: repeat(10, 1fr);
     grid-template-rows: auto;
     color: rbg(255, 255, 255, 0.7);
     gap: 24px;
@@ -54,18 +53,16 @@ const Table = styled.div`
   }
 
   .item-id,
-  .item-type,
-  .item-pk {
+  .item-type {
     color: rgb(255, 255, 255, 0.7);
     font-size: 14px;
   }
 
-  .item-id,
   .item-type {
     grid-column: span 2;
   }
 
-  .item-pk {
+  .item-id {
     grid-column: span 6;
   }
 
@@ -108,6 +105,8 @@ const Table = styled.div`
   }
 `;
 
+const enable_option = false;
+
 export function IdentityTable({ identityList, deleteIdentity, addIdentity }) {
   const [expandDid, setExpandDid] = useState(-1);
   const [didValue, setDidValue] = useState("");
@@ -117,64 +116,50 @@ export function IdentityTable({ identityList, deleteIdentity, addIdentity }) {
     <Table>
       {identityList && (
         <div className="header">
-          <div className="item-id">{t.headerIdText}</div>
           <div className="item-type">{t.headerTypeText}</div>
-          <div className="item-pk">{t.headerPkText}</div>
+          <div className="item-id">{t.headerPkText}</div>
         </div>
       )}
       {identityList && (
         <div className="scroll-list">
           {identityList?.map((identity, id) => {
             return (
-              <div className="application-item" key={identity.id}>
-                <div className="item-id app-item">{`${identity.id
-                  .split(":")[2]
-                  .substring(0, 4)}...${identity.id
-                  .split(":")[2]
-                  .substring(
-                    identity.id.split(":")[2].length - 4,
-                    identity.id.split(":")[2].length
-                  )}`}</div>
+              <div className="application-item" key={identity.signing_key}>
                 <div className="item-type app-item">
-                  {identity.verificationMethod[0].type}
+                  {identity.signing_key.split(":")[0]}
                 </div>
-                <div
-                  className="item-pk app-item app-item-desc"
-                  data-tooltip-id={`my-tooltip-${identity.id}`}
-                >
-                  {identity.verificationMethod[0].publicKeyMultibase}
-                  {identity.verificationMethod[0].publicKeyMultibase.length >
-                    52 && (
-                    <Tooltip
-                      id={`my-tooltip-${identity.id}`}
-                      content={
-                        identity.verificationMethod[0].publicKeyMultibase
-                      }
+                <div className="item-id app-item">{`${identity.signing_key
+                  .split(":")[1]
+                  .substring(0, 4)}...${identity.signing_key
+                  .split(":")[1]
+                  .substring(
+                    identity.signing_key.split(":")[1].length - 4,
+                    identity.signing_key.split(":")[1].length
+                  )}`}</div>
+                {enable_option && (
+                  <div className="menu">
+                    <ChevronUpDownIcon
+                      className="expand-icon"
+                      onClick={() => {
+                        if (expandDid === id) {
+                          setExpandDid(-1);
+                        } else {
+                          setExpandDid(id);
+                          setDidValue(JSON.stringify(identity, null, 2));
+                        }
+                      }}
                     />
-                  )}
-                </div>
-                <div className="menu">
-                  <ChevronUpDownIcon
-                    className="expand-icon"
-                    onClick={() => {
-                      if (expandDid === id) {
-                        setExpandDid(-1);
-                      } else {
-                        setExpandDid(id);
-                        setDidValue(JSON.stringify(identity, null, 2));
-                      }
-                    }}
-                  />
-                  <MenuIconDropdown
-                    options={[
-                      {
-                        buttonText: t.deleteButtonText,
-                        onClick: () => deleteIdentity(id),
-                      },
-                    ]}
-                  />
-                </div>
-                {expandDid === id && (
+                    <MenuIconDropdown
+                      options={[
+                        {
+                          buttonText: t.deleteButtonText,
+                          onClick: () => deleteIdentity(id),
+                        },
+                      ]}
+                    />
+                  </div>
+                )}
+                {enable_option && expandDid === id && (
                   <DidEditor
                     labelText={t.expandEditorTitle}
                     cancelText={t.cancelButtonText}
