@@ -2,17 +2,16 @@ use calimero_primitives::application::ApplicationId;
 use calimero_store::Store;
 use serde::{Deserialize, Serialize};
 
-use super::{client_keys::ClientKey, root_key::RootKey};
+use super::root_key::RootKey;
 
 const DID_KEY: &str = "did:cali";
-pub const NODE_STORE_KEY: &str = "node";
+const NODE_STORE_KEY: &str = "node";
 
 //TODO extract this to identity where suitable
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Did {
     pub(crate) id: String,
     pub(crate) root_keys: Vec<RootKey>,
-    pub(crate) client_keys: Vec<ClientKey>,
 }
 
 pub fn create_did(store: &Store) -> eyre::Result<Did> {
@@ -22,7 +21,6 @@ pub fn create_did(store: &Store) -> eyre::Result<Did> {
     let did_document = Did {
         id: DID_KEY.to_string(),
         root_keys: Vec::<RootKey>::new(),
-        client_keys: Vec::<ClientKey>::new(),
     };
 
     let did_document_vec = serde_json::to_vec(&did_document)
