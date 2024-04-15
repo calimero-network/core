@@ -5,11 +5,6 @@ pub fn verify_peer_auth(keypair: &Keypair, msg: &[u8], signature: &[u8]) -> bool
     keypair.public().verify(msg, signature)
 }
 
-pub fn verify_client_key(client_key: &str, msg: &[u8], signature: &[u8]) -> bool {
-    let keypair = Keypair::from_protobuf_encoding(&hex::decode(client_key).unwrap()).unwrap();
-    keypair.public().verify(msg, signature)
-}
-
 pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> eyre::Result<bool> {
     let signature_bytes = match hex::decode(signature.trim_start_matches("0x")) {
         Ok(bytes) => bytes,
