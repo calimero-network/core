@@ -61,20 +61,17 @@ pub(crate) fn setup(
     let state = Arc::new(ServiceState {
         application_dir: config.application_dir.clone(),
     });
-    let state_apps = Arc::new(ServiceState {
-        application_dir: config.application_dir.clone(),
-    });
 
     let admin_router = Router::new()
         .route("/health", get(health_check_handler))
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
-        .layer(Extension(state))
+        .layer(Extension(state.clone()))
         .route("/add-client-key", post(add_client_key_handler))
         .route("/did", get(fetch_did_handler))
         .route("/applications", get(fetch_application_handler))
-        .layer(Extension(state_apps))
+        .layer(Extension(state))
         .layer(session_layer)
         .with_state(store);
 
