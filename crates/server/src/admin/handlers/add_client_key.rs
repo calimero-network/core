@@ -3,7 +3,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use calimero_identity::auth::verify_eth_signature;
-use calimero_primitives::application::ApplicationId;
 use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,6 +11,7 @@ use tower_sessions::Session;
 use tracing::info;
 
 use crate::admin::service::{ApiError, ApiResponse};
+use crate::admin::storage::client_keys::{add_client_key, ClientKey};
 use crate::admin::storage::root_key::{get_root_key, RootKey};
 use crate::verifysignature::verify_near_signature;
 
@@ -49,8 +49,8 @@ struct WalletMetadata {
     signing_key: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
-enum WalletType {
+#[derive(Debug, Deserialize, PartialEq, Serialize, Clone)]
+pub enum WalletType {
     NEAR,
     ETH,
 }
@@ -154,9 +154,9 @@ pub async fn add_client_key_handler(
     Json(intermediate_req): Json<IntermediateAddClientKeyRequest>,
 ) -> impl IntoResponse {
     let response = transform_request(intermediate_req)
-        .and_then(|req| validate_root_key_exists(req, store))
+        .and_then(|req| validate_root_key_exists(req, store.clone()))
         .and_then(validate_challenge)
-        .and_then(store_client_key)
+        .and_then(|req| store_client_key(req, store.clone()))
         .map_or_else(
             |err| err.into_response(),
             |_| {
@@ -169,6 +169,19 @@ pub async fn add_client_key_handler(
         );
 
     response
+}
+
+fn store_client_key(
+    req: AddClientKeyRequest,
+    store: Store,
+) -> Result<AddClientKeyRequest, ApiError> {
+    let client_key = ClientKey {
+        wallet_type: WalletType::NEAR,
+        signing_key: req.payload.message.client_public_key,
+    };
+    add_client_key(&store, client_key);
+    info!("Client key stored successfully.");
+    Ok(req)
 }
 
 fn verify_node_signature(
@@ -303,13 +316,6 @@ fn validate_root_key_exists(
             });
         }
     };
-
-    Ok(req)
-}
-
-fn store_client_key(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, ApiError> {
-    //Store client public key in a list
-    info!("Client key stored successfully.");
 
     Ok(req)
 }
