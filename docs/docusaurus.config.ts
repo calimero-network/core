@@ -1,4 +1,3 @@
-import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
@@ -15,9 +14,6 @@ const config: Config = {
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
 
-  // Even if you don't use internationalization, you can use this field to set
-  // useful metadata like html lang. For example, if your site is Chinese, you
-  // may want to replace "en" with "zh-Hans".
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],
@@ -39,10 +35,11 @@ const config: Config = {
   ],
 
   themeConfig: {
-    // Replace with your project's social card
-    image: 'img/docusaurus-social-card.jpg',
+    colorMode: {
+      disableSwitch: true
+    },
     navbar: {
-      title: 'Calimero Network',
+      style: 'dark',
       logo: {
         alt: 'Calimero Network',
         src: 'img/logo.svg',
@@ -58,15 +55,6 @@ const config: Config = {
     footer: {
       style: 'dark',
       links: [
-        {
-          title: 'Docs',
-          items: [
-            {
-              label: 'Tutorial',
-              to: '/docs/intro',
-            },
-          ],
-        },
         {
           title: 'Community',
           items: [
@@ -93,7 +81,7 @@ const config: Config = {
           items: [
             {
               label: 'Blog',
-              to: '/blog',
+              to: 'https://www.calimero.network/blogs',
             },
             {
               label: 'GitHub',
@@ -103,10 +91,7 @@ const config: Config = {
         },
       ],
       copyright: `Copyright © ${new Date().getFullYear()} Calimero Limited LLC.`,
-    },
-    prism: {
-      darkTheme: prismThemes.dracula,
-    },
+    }
   } satisfies Preset.ThemeConfig,
 };
 
