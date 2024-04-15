@@ -357,11 +357,9 @@ fn get_latest_application_path(dir: &camino::Utf8Path, application_id: &str) -> 
 
         versions_with_binary.sort_by(|a, b| b.0.cmp(&a.0));
 
-        if let Some((_, path)) = versions_with_binary.first() {
-            Some(path.to_string_lossy().into_owned())
-        } else {
-            None
-        }
+        versions_with_binary
+            .first()
+            .map(|(_, path)| path.to_string_lossy().into_owned())
     } else {
         None
     }
