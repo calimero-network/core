@@ -32,7 +32,7 @@ export function useRPC() {
       method_name: "get_package",
       args_base64: btoa(
         JSON.stringify({
-          name: id,
+          id: id,
         })
       ),
       finality: "final",
