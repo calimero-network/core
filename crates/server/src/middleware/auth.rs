@@ -6,18 +6,21 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use calimero_identity::auth::verify_peer_auth;
+use calimero_store::Store;
 use libp2p::futures::future::BoxFuture;
 use libp2p::identity::Keypair;
 use tower::{Layer, Service};
 
+use crate::admin::storage::client_keys::get_client_key;
+
 #[derive(Clone)]
 pub struct AuthSignatureLayer {
-    keypair: Keypair,
+    store: Store,
 }
 
 impl AuthSignatureLayer {
-    pub fn new(keypair: Keypair) -> Self {
-        Self { keypair }
+    pub fn new(store: Store) -> Self {
+        Self { store }
     }
 }
 
@@ -71,6 +74,7 @@ where
 
 #[derive(Debug)]
 struct AuthHeaders {
+    client_key: String,
     signature: Vec<u8>,
     challenge: Vec<u8>,
 }
@@ -78,24 +82,52 @@ struct AuthHeaders {
 pub fn auth<'a>(
     // run the `HeaderMap` extractor
     headers: &'a HeaderMap,
-    keypair: &'a Keypair,
+    store: &'a Store,
 ) -> Result<(), UnauthorizedError<'a>> {
-    match get_auth_headers(&headers) {
-        Ok(auth_headers)
-            if verify_peer_auth(
-                keypair,
-                auth_headers.challenge.as_slice(),
-                auth_headers.signature.as_slice(),
-            ) =>
-        {
-            Ok(())
-        }
-        Ok(_) => Err(UnauthorizedError::new("Keypair not matching signature.")),
-        Err(error) => Err(error),
+    let auth_headers = get_auth_headers(headers)
+        .map_err(|e| UnauthorizedError::new("Failed to extract authentication headers."))?;
+
+    if !exists_client_key(store, &auth_headers.client_key) {
+        return Err(UnauthorizedError::new("Client key not found."));
     }
+
+    if verify_client_key(
+        auth_headers.client_key.as_str(),
+        auth_headers.challenge.as_slice(),
+        auth_headers.signature.as_slice(),
+    ) {
+        Ok(())
+    } else {
+        Err(UnauthorizedError::new(
+            "Invalid signature for provided key.",
+        ))
+    }
+
+    // match get_auth_headers(&headers) {
+    //     Ok(auth_headers) if exists_client_key(store, &auth_headers.client_key) => Ok({
+    //         if verify_client_key(
+    //             auth_headers.client_key.as_str(),
+    //             auth_headers.challenge.as_slice(),
+    //             auth_headers.signature.as_slice(),
+    //         ) {
+    //             Ok(())
+    //         } else {
+    //             return Err(UnauthorizedError::new("Keypair not matching signature."));
+    //         };
+    //     }),
+    //     Ok(_) => Err(UnauthorizedError::new("Keypair not matching signature.")),
+    //     Err(error) => Err(error),
+    // }
 }
 
 fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
+    let client_key = headers
+        .get("client_key")
+        .ok_or_else(|| UnauthorizedError::new("Missing client_key header"))?;
+    let client_key = bs58::decode(client_key)
+        .into_vec()
+        .map_err(|_| UnauthorizedError::new("Invalid base58 client_key"))?;
+
     let signature = headers
         .get("signature")
         .ok_or_else(|| UnauthorizedError::new("Missing signature header"))?;
@@ -111,6 +143,7 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .map_err(|_| UnauthorizedError::new("Invalid base58 challenge"))?;
 
     let auth = AuthHeaders {
+        client_key,
         signature,
         challenge,
     };
