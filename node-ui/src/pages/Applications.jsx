@@ -30,7 +30,7 @@ export default function Applications() {
   }, [packages]);
 
   useEffect(() => {
-    const setDids = async () => {
+    const setApps = async () => {
       const applicationIds = Object.keys(
         JSON.parse((await axios.get("/admin-api/applications")).data).apps
       );
@@ -41,7 +41,7 @@ export default function Applications() {
       );
       setApplications(tempApplications);
     };
-    setDids();
+    setApps();
   }, []);
 
   return (
