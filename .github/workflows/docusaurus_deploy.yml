@@ -20,7 +20,7 @@ jobs:
           node-version: '18'
 
       - name: Change to docs Directory
-        run: cd docs && pnpm install && pnpm build
+        run: cd docs && yarn install && yarn build
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
