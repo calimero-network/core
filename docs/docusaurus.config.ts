@@ -52,9 +52,9 @@ const config: Config = {
     // Replace with your project's social card
     image: 'img/docusaurus-social-card.jpg',
     navbar: {
-      title: 'My Site',
+      title: 'Calimero Network',
       logo: {
-        alt: 'My Site Logo',
+        alt: 'Calimero Network',
         src: 'img/logo.svg',
       },
       items: [
@@ -122,7 +122,6 @@ const config: Config = {
       copyright: `Copyright © ${new Date().getFullYear()} Calimero Limited LLC.`,
     },
     prism: {
-      theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
     },
   } satisfies Preset.ThemeConfig,
