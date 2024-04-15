@@ -43,7 +43,7 @@
         "title": "Identity",
         "headerIdText": "Id",
         "headerTypeText": "Type",
-        "headerPkText": "PublicKey Multibase",
+        "headerPkText": "PublicKey",
         "deleteButtonText": "Delete",
         "addButtonText": "Add new identity",
         "expandEditorTitle": "Edit DID",
