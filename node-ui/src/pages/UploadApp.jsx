@@ -52,10 +52,11 @@ export default function UploadApp() {
           "SHA-256",
           await blob.arrayBuffer()
         );
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const hashHex = hashArray
-          .map((byte) => ("00" + byte.toString(16)).slice(-2))
+
+        const hashHex = Array.from(new Uint8Array(hashBuffer))
+          .map((byte) => byte.toString(16).padStart(2, "0"))
           .join("");
+
         setFileHash(hashHex);
 
         await axios
