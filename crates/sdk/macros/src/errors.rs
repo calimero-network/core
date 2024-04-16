@@ -41,9 +41,9 @@ pub enum ParseError<'a> {
     UnsupportedImplType,
     #[error("{TAG} expected `Self` or `{0}`")]
     ExpectedSelf(Pretty<'a>),
-    #[error("{TAG} async methods are not supported")]
+    #[error("{TAG} exposing an async method is not supported")]
     NoAsyncSupport,
-    #[error("{TAG} unsafe methods are not supported")]
+    #[error("{TAG} exposing an unsafe method is not supported")]
     NoUnsafeSupport,
     // todo! disable with `#[app::destroy]`
     #[error("{TAG} `self` must be passed by reference")]
