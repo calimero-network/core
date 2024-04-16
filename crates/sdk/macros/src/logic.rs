@@ -24,7 +24,7 @@ impl<'a> ToTokens for LogicImpl<'a> {
         } = self;
 
         quote! {
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(target_arch = "wasm32"))]
             compile_error!(
                 "incompatible target architecture, no polyfill available, only wasm32 is supported."
             );
