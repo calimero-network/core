@@ -16,30 +16,10 @@ export type RpcResult<Result> = {
     error?: null;
 } | {
     result?: null;
-    error: ServerError; // TODO define error types
+    error: RpcError;
 };
 
-export interface RpcQueryParams<Args> {
-    applicationId: ApplicationId;
-    method: string;
-    argsJson: Args;
-}
-
-export interface RpcQueryResponse<Output> {
-    output?: Output;
-}
-
-export interface RpcMutateParams<Args> {
-    applicationId: ApplicationId;
-    method: string;
-    argsJson: Args;
-}
-
-export interface RpcMutateResponse<Output> {
-    output?: Output;
-}
-
-export type ServerError = UnknownServerError | InvalidRequestError | MissmatchedRequestIdError | RpcExecutionError;
+export type RpcError = UnknownServerError | InvalidRequestError | MissmatchedRequestIdError | RpcExecutionError;
 
 export interface UnknownServerError {
     type: 'UnknownServerError';
@@ -61,4 +41,24 @@ export interface MissmatchedRequestIdError {
 export interface RpcExecutionError {
     type: 'RpcExecutionError';
     inner: any;
+}
+
+export interface RpcQueryParams<Args> {
+    applicationId: ApplicationId;
+    method: string;
+    argsJson: Args;
+}
+
+export interface RpcQueryResponse<Output> {
+    output?: Output;
+}
+
+export interface RpcMutateParams<Args> {
+    applicationId: ApplicationId;
+    method: string;
+    argsJson: Args;
+}
+
+export interface RpcMutateResponse<Output> {
+    output?: Output;
 }
