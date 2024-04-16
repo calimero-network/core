@@ -34,7 +34,7 @@ export class JsonRpcClient implements RpcClient {
     baseUrl: string,
     path: string,
     defaultTimeout: number = 1000,
-    headers: AxiosHeaders
+    headers?: AxiosHeaders
   ) {
     this.path = path;
     this.axiosInstance = axios.create({

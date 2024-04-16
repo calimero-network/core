@@ -1,9 +1,8 @@
 use calimero_store::Store;
 use serde::{Deserialize, Serialize};
 
-use crate::admin::handlers::add_client_key::WalletType;
-
 use super::did::{get_or_create_did, update_did};
+use crate::admin::handlers::add_client_key::WalletType;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct ClientKey {

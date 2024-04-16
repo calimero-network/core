@@ -79,7 +79,7 @@ importers:
   examples/only-peers-simple:
     dependencies:
       '@calimero-is-near/calimero-p2p-sdk':
-        specifier: 0.0.9
+        specifier: 0.0.10
         version: link:../../packages/calimero-sdk
       '@testing-library/jest-dom':
         specifier: ^5.16.5

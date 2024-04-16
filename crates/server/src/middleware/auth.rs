@@ -81,11 +81,7 @@ struct AuthHeaders {
     challenge: Vec<u8>,
 }
 
-pub fn auth<'a>(
-    // run the `HeaderMap` extractor
-    headers: &'a HeaderMap,
-    store: &'a Store,
-) -> Result<(), UnauthorizedError<'a>> {
+pub fn auth<'a>(headers: &'a HeaderMap, store: &'a Store) -> Result<(), UnauthorizedError<'a>> {
     let auth_headers = get_auth_headers(headers).map_err(|e| {
         debug!("Failed to extract authentication headers: {}", e);
         UnauthorizedError::new("Failed to extract authentication headers")

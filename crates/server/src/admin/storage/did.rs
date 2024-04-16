@@ -2,7 +2,8 @@ use calimero_primitives::application::ApplicationId;
 use calimero_store::Store;
 use serde::{Deserialize, Serialize};
 
-use super::{client_keys::ClientKey, root_key::RootKey};
+use super::client_keys::ClientKey;
+use super::root_key::RootKey;
 
 const DID_KEY: &str = "did:cali";
 pub const NODE_STORE_KEY: &str = "node";
