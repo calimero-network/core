@@ -10,12 +10,14 @@ mod errors;
 mod logic;
 mod reserved;
 mod sanitizer;
+mod state;
 
 // todo! use referenced lifetimes everywhere
 
 // todo! permit #[app::logic(crate = "calimero_sdk")]
 #[proc_macro_attribute]
 pub fn logic(_args: TokenStream, input: TokenStream) -> TokenStream {
+    reserved::init();
     let block = syn::parse_macro_input!(input as syn::ItemImpl);
     let tokens = match logic::LogicImpl::try_from(logic::LogicImplInput { item: &block }) {
         Ok(data) => data.to_token_stream(),

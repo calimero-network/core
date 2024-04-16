@@ -1,31 +1,20 @@
 use std::rc::Rc;
 
 pub mod idents {
-    use super::*;
-
-    thread_local! {
-        static CALIMERO_INPUT_IDENT: Rc<syn::Ident> = Rc::new(syn::Ident::new("CALIMERO_INPUT", proc_macro2::Span::call_site()));
-    }
-
-    pub fn input() -> ReservedRef<syn::Ident> {
-        CALIMERO_INPUT_IDENT.with(|ident| ReservedRef {
-            inner: ident.clone(),
-        })
+    super::lazy! {
+        input: syn::Ident = syn::Ident::new("CALIMERO_INPUT", proc_macro2::Span::call_site()),
     }
 }
 
 pub mod lifetimes {
-    use super::*;
-
-    thread_local! {
-        static CALIMERO_INPUT_LIFETIME: Rc<syn::Lifetime> = Rc::new(syn::Lifetime::new("'CALIMERO_INPUT", proc_macro2::Span::call_site()));
+    super::lazy! {
+        input: syn::Lifetime = syn::Lifetime::new("'CALIMERO_INPUT", proc_macro2::Span::call_site()),
     }
+}
 
-    pub fn input() -> ReservedRef<syn::Lifetime> {
-        CALIMERO_INPUT_LIFETIME.with(|lifetime| ReservedRef {
-            inner: lifetime.clone(),
-        })
-    }
+pub fn init() {
+    idents::init();
+    lifetimes::init();
 }
 
 pub struct ReservedRef<T> {
@@ -51,3 +40,52 @@ impl<T: Clone> ReservedRef<T> {
         (*self.inner).clone()
     }
 }
+
+impl<T: quote::ToTokens> quote::ToTokens for ReservedRef<T> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        self.inner.to_tokens(tokens)
+    }
+}
+
+macro_rules! _lazy {
+    ($($name:ident: $ty:ty = $init:expr,)*) => {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        mod locals {
+            use super::*;
+
+            thread_local! {
+                $(
+                    #[allow(non_upper_case_globals)]
+                    pub static $name: RefCell<Rc<$ty>> = panic!("uninitialized lazy item");
+                )*
+            }
+        }
+
+        struct LazyInit;
+
+        impl LazyInit {
+            $(
+                fn $name() {
+                    locals::$name.set(Rc::new($init));
+                }
+            )*
+        }
+
+        pub fn init() {
+            $( LazyInit::$name(); )*
+        }
+
+        $(
+            #[track_caller]
+            pub fn $name() -> super::ReservedRef<$ty> {
+                super::ReservedRef {
+                    inner: locals::$name.with(|item| item.borrow().clone())
+                }
+            }
+        )*
+    };
+}
+
+use _lazy as lazy;
