@@ -9,21 +9,25 @@ import styled from "styled-components";
 import { getWalletCallbackUrl } from "../utils/wallet";
 
 const fetchChallenge = async () => {
-  const response = await axios.post("/admin-api/request-challenge");
-  const payload = response.data;
-  console.log("Challenge received:", payload.challenge);
-  return payload.challenge;
+  const body = {
+    applicationId: "admin-ui",
+  };
+  const response = await axios.post("/admin-api/request-challenge", body);
+  const payload = response.data.data;
+  console.log("Challenge received:", payload);
+  return payload;
 };
 
 const verifyOwner = async () => {
   let nonceBase64 = null;
+  let challengeObject = null;
   try {
-    nonceBase64 = await fetchChallenge();
+    challengeObject = await fetchChallenge();
   } catch (e) {
     console.error("Failed to fetch challenge:", e);
     return;
   }
-  const nonce = Buffer.from(nonceBase64, "base64");
+  const nonce = Buffer.from(challengeObject.nonce, "base64");
 
   const selector = await setupWalletSelector({
     network: "testnet",
@@ -39,7 +43,7 @@ const verifyOwner = async () => {
     nonceBase64,
     callbackUrl,
   });
-  await wallet.signMessage({ message, recipient, nonce, callbackUrl });
+  await wallet.signMessage({ message, nonce, recipient, callbackUrl });
 };
 
 const BootstrapWrapper = styled.div`

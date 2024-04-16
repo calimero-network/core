@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -81,6 +83,7 @@ pub(crate) fn setup(
         .route("/install-application", post(install_application_handler))
         .route("/add-client-key", post(add_client_key_handler))
         .route("/did", get(fetch_did_handler))
+        .route("/applications", get(fetch_application_handler))
         .layer(Extension(shared_state))
         .layer(session_layer);
 
@@ -324,7 +327,7 @@ pub struct Release {
     pub hash: String,
 }
 
-pub async fn get_release(application: &str, version: &str) -> eyre::Result<Release> {
+pub async fn get_release(application_id: &str, version: &str) -> eyre::Result<Release> {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let request = methods::query::RpcQueryRequest {
         block_reference: BlockReference::Finality(Finality::Final),
@@ -333,7 +336,7 @@ pub async fn get_release(application: &str, version: &str) -> eyre::Result<Relea
             method_name: "get_release".to_string(),
             args: FunctionArgs::from(
                 json!({
-                    "name": application,
+                    "id": application_id,
                     "version": version
                 })
                 .to_string()
@@ -351,11 +354,11 @@ pub async fn get_release(application: &str, version: &str) -> eyre::Result<Relea
 }
 
 pub async fn download_release(
-    application: &str,
+    application_id: &str,
     release: &Release,
     dir: &camino::Utf8Path,
 ) -> eyre::Result<()> {
-    let base_path = format!("./{}/{}/{}", dir, application, &release.version);
+    let base_path = format!("./{}/{}/{}", dir, application_id, &release.version);
     fs::create_dir_all(&base_path)?;
 
     let file_path = format!("{}/binary.wasm", base_path);
@@ -390,12 +393,12 @@ pub async fn verify_release(hash: &str, release_hash: &str) -> eyre::Result<()> 
 }
 
 pub async fn install_application(
-    application: &str,
+    application_id: &str,
     version: &str,
     dir: &camino::Utf8Path,
 ) -> eyre::Result<()> {
-    let release = get_release(application, version).await?;
-    download_release(application, &release, dir).await
+    let release = get_release(application_id, version).await?;
+    download_release(application_id, &release, dir).await
 }
 
 async fn install_application_handler(
@@ -409,6 +412,81 @@ async fn install_application_handler(
         Err(err) => return Err(parse_api_error(err)),
     }
     .into_response())
+}
+
+fn get_latest_application_version(
+    dir: &camino::Utf8Path,
+    application_id: &str,
+) -> Option<semver::Version> {
+    let application_base_path = dir.join(application_id.to_string());
+
+    if let Ok(entries) = fs::read_dir(&application_base_path) {
+        let mut versions_with_binary = entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let entry_path = entry.path();
+
+                let version =
+                    semver::Version::parse(entry_path.file_name()?.to_string_lossy().as_ref())
+                        .ok()?;
+
+                let binary_path = entry_path.join("binary.wasm");
+                if binary_path.exists() {
+                    Some((version, entry_path))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        versions_with_binary.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let version_with_binary = versions_with_binary.first();
+        let version = match version_with_binary {
+            Some((version, _)) => Some(version.clone()), // Cloning the version
+            None => None,
+        };
+        version
+    } else {
+        None
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct ApplicationListResult {
+    apps: HashMap<String, String>,
+}
+
+async fn fetch_application_handler(
+    Extension(state): Extension<Arc<ServiceState>>,
+    session: Session,
+) -> impl IntoResponse {
+    if let Ok(entries) = fs::read_dir(&state.application_dir) {
+        let mut applications: HashMap<String, String> = HashMap::new();
+
+        entries.filter_map(|entry| entry.ok()).for_each(|entry| {
+            if let Some(file_name) = entry.file_name().to_str() {
+                let latest_version =
+                    get_latest_application_version(&state.application_dir, &file_name);
+                if let Some(latest_version) = latest_version {
+                    let app_name = file_name.to_string();
+                    applications.insert(app_name, latest_version.to_string());
+                }
+            } else {
+                println!("Failed to read file application id");
+            }
+        });
+        return ApiResponse {
+            payload: ApplicationListResult { apps: applications },
+        }
+        .into_response();
+    } else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to read application directory",
+        )
+            .into_response();
+    }
 }
 
 #[derive(Deserialize)]

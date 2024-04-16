@@ -25,15 +25,33 @@ export const ContentLayout = styled.div`
     justify-content: space-between;
     align-items: center;
   }
+  .button {
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.06);
+    width: fit-content;
+    height: 30px;
+    padding-left: 14px;
+    padding-right: 14px;
+    margin-top: 8px;
+    cursor: pointer;
+    border: none;
+    outline: none;
+  }
+  .button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+  }
 `;
 
-export function UploadAppContent({ children }) {
+export function UploadAppContent({ addWalletAccount, children }) {
   const t = translations.uploadPage;
   return (
     <ContentLayout>
       <div className="content-card">
         <div className="card-header">
           <div className="page-title">{t.title}</div>
+          <button className="button" onClick={addWalletAccount}>
+            {t.walletButtonText}
+          </button>
         </div>
         {children}
       </div>
@@ -43,4 +61,5 @@ export function UploadAppContent({ children }) {
 
 UploadAppContent.propTypes = {
   children: PropTypes.node.isRequired,
+  addWalletAccount: PropTypes.func.isRequired,
 };
