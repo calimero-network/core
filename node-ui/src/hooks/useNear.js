@@ -14,7 +14,7 @@ export function useRPC() {
       args_base64: btoa(
         JSON.stringify({
           offset: 0,
-          limit: 10,
+          limit: 100,
         })
       ),
       finality: "final",
@@ -34,7 +34,7 @@ export function useRPC() {
         JSON.stringify({
           id: id,
           offset: 0,
-          limit: 10,
+          limit: 100,
         })
       ),
       finality: "final",
