@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -152,11 +154,11 @@ struct AddClientKeyResponse {
 //* Register client key to authenticate client requests  */
 pub async fn add_client_key_handler(
     _session: Session,
-    State(state): State<AdminState>,
+    State(state): State<Arc<AdminState>>,
     Json(intermediate_req): Json<IntermediateAddClientKeyRequest>,
 ) -> impl IntoResponse {
     let response = transform_request(intermediate_req)
-        .and_then(|req| validate_root_key_exists(req, state.store))
+        .and_then(|req| validate_root_key_exists(req, &state.store))
         .and_then(|req| validate_challenge(req, &state.keypair))
         .and_then(store_client_key)
         .map_or_else(
@@ -304,7 +306,7 @@ fn is_older_than_15_minutes(timestamp: i64) -> bool {
 
 fn validate_root_key_exists(
     req: AddClientKeyRequest,
-    store: Store,
+    store: &Store,
 ) -> Result<AddClientKeyRequest, ApiError> {
     //Check if root key exists
     let root_key = RootKey {

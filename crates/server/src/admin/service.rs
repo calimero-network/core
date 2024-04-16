@@ -43,9 +43,8 @@ pub(crate) struct ServiceState {
     application_dir: camino::Utf8PathBuf,
 }
 
-#[derive(Clone)]
 pub struct AdminState {
-    pub service: Arc<ServiceState>,
+    pub service: ServiceState,
     pub store: Store,
     pub keypair: Keypair,
 }
@@ -53,7 +52,7 @@ pub struct AdminState {
 pub(crate) fn setup(
     config: &crate::config::ServerConfig,
     store: Store,
-) -> eyre::Result<Option<(&'static str, Router)>> {
+) -> eyre::Result<Option<(&'static str, Router<Arc<AdminState>>)>> {
     let admin_config = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
@@ -67,13 +66,13 @@ pub(crate) fn setup(
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store);
 
-    let shared_state = AdminState {
-        service: Arc::new(ServiceState {
+    let shared_state = Arc::new(AdminState {
+        service: ServiceState {
             application_dir: admin_config.application_dir.clone(),
-        }),
+        },
         store,
         keypair: config.identity.clone(),
-    };
+    });
 
     let admin_router = Router::new()
         .route("/health", get(health_check_handler))
@@ -82,7 +81,7 @@ pub(crate) fn setup(
         .route("/install-application", post(install_application_handler))
         .route("/add-client-key", post(add_client_key_handler))
         .route("/did", get(fetch_did_handler))
-        .with_state(shared_state)
+        .layer(Extension(shared_state))
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
@@ -168,7 +167,7 @@ struct RequestChallengeResponse {
 
 pub async fn request_challenge_handler(
     session: Session,
-    State(state): State<AdminState>,
+    State(state): State<Arc<AdminState>>,
     Json(req): Json<RequestChallenge>,
 ) -> impl IntoResponse {
     if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
@@ -243,17 +242,16 @@ fn generate_challenge(
 
     let node_challenge_message = NodeChallengeMessage {
         nonce: encoded,
-        application_id: application_id.unwrap_or_else(|| "".to_string()),
+        application_id: application_id.unwrap_or_default(),
         timestamp: chrono::Utc::now().timestamp(),
     };
 
-    let serialized_message =
-        serde_json::to_string(&node_challenge_message).map_err(|_| ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "Failed to serialize challenge data".into(),
-        })?;
+    let message_vec = serde_json::to_vec(&node_challenge_message).map_err(|_| ApiError {
+        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+        message: "Failed to serialize challenge data".into(),
+    })?;
 
-    match keypair.sign(serialized_message.as_bytes()) {
+    match keypair.sign(&message_vec) {
         Ok(signature) => {
             let node_signature = STANDARD.encode(&signature);
             Ok(NodeChallenge {
@@ -274,7 +272,7 @@ async fn health_check_handler() -> impl IntoResponse {
 
 async fn create_root_key_handler(
     session: Session,
-    State(state): State<AdminState>,
+    State(state): State<Arc<AdminState>>,
     Json(req): Json<PubKeyRequest>,
 ) -> impl IntoResponse {
     let message = "helloworld";
@@ -402,7 +400,6 @@ pub async fn install_application(
 
 async fn install_application_handler(
     Extension(state): Extension<Arc<ServiceState>>,
-    _session: Session,
     Json(req): Json<InstallApplicationRequest>,
 ) -> impl IntoResponse {
     let result = install_application(&req.application, &req.version, &state.application_dir).await;
