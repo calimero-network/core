@@ -23,6 +23,24 @@ export function useRPC() {
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
+  const getPackage = async (id) => {
+    const provider = new nearAPI.providers.JsonRpcProvider(JSON_RPC_ENDPOINT);
+
+    const rawResult = await provider.query({
+      request_type: "call_function",
+      account_id: "calimero-package-manager.testnet",
+      method_name: "get_package",
+      args_base64: btoa(
+        JSON.stringify({
+          name: id,
+        })
+      ),
+      finality: "final",
+    });
+
+    return JSON.parse(Buffer.from(rawResult.result).toString());
+  };
+
   const getReleases = async (packageName) => {
     const provider = new nearAPI.providers.JsonRpcProvider(JSON_RPC_ENDPOINT);
 
@@ -43,5 +61,5 @@ export function useRPC() {
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
-  return { getPackages, getReleases };
+  return { getPackages, getReleases, getPackage };
 }

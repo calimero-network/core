@@ -112,12 +112,12 @@ export function ApplicationsTable({ applications, install, uninstall }) {
                 <div className="item-name app-item">{application.name}</div>
                 <div
                   className="item-desc app-item app-item-desc"
-                  data-tooltip-id={`my-tooltip-${application.id}`}
+                  data-tooltip-id={`my-tooltip-${id}`}
                 >
                   {application.description}
                   {application.description.length > 52 && (
                     <Tooltip
-                      id={`my-tooltip-${application.id}`}
+                      id={`my-tooltip-${id}`}
                       content={application.description}
                     />
                   )}
@@ -129,16 +129,18 @@ export function ApplicationsTable({ applications, install, uninstall }) {
                 >
                   {application.repository}
                 </a>
-                <div className="menu">
-                  <MenuIconDropdown
-                    options={[
-                      {
-                        buttonText: t.uninstallButtonText,
-                        onClick: () => uninstall(id),
-                      },
-                    ]}
-                  />
-                </div>
+                {false && (
+                  <div className="menu">
+                    <MenuIconDropdown
+                      options={[
+                        {
+                          buttonText: t.uninstallButtonText,
+                          onClick: () => uninstall(id),
+                        },
+                      ]}
+                    />
+                  </div>
+                )}
               </div>
             );
           })}
