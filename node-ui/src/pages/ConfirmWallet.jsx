@@ -21,7 +21,7 @@ export default function ConfirmWallet() {
   }, [rootkeyAdded, navigate]);
 
   const addRootKey = async () => {
-    let data = submitRootKeyRequest(params);
+    let data = await submitRootKeyRequest(params);
     if (data) {
       setRootKeyAdded(true);
     }
