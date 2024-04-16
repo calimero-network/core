@@ -1,64 +1,81 @@
-import { ApplicationId } from './application';
+import { ApplicationId } from "./application";
 
 export type RpcRequestId = string | number;
 
 export interface RpcClient {
-    query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcQueryResponse<Out>>>;
-    mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcMutateResponse<Out>>>;
+  query<Args, Out>(
+    params: RpcQueryParams<Args>,
+    config?: RequestConfig
+  ): Promise<RpcResult<RpcQueryResponse<Out>>>;
+  mutate<Args, Out>(
+    params: RpcMutateParams<Args>,
+    config?: RequestConfig
+  ): Promise<RpcResult<RpcMutateResponse<Out>>>;
+}
+
+export interface Header {
+  [key: string]: string;
 }
 
 export interface RequestConfig {
-    timeout?: number
+  timeout?: number;
+  headers: Header[];
 }
 
-export type RpcResult<Result> = {
-    result: Result;
-    error?: null;
-} | {
-    result?: null;
-    error: RpcError;
-};
+export type RpcResult<Result> =
+  | {
+      result: Result;
+      error?: null;
+    }
+  | {
+      result?: null;
+      error: RpcError;
+    };
 
-export type RpcError = UnknownServerError | InvalidRequestError | MissmatchedRequestIdError | RpcExecutionError;
+export type RpcError =
+  | UnknownServerError
+  | InvalidRequestError
+  | MissmatchedRequestIdError
+  | RpcExecutionError;
 
 export interface UnknownServerError {
-    type: 'UnknownServerError';
-    inner: any;
+  type: "UnknownServerError";
+  inner: any;
 }
 
 export interface InvalidRequestError {
-    type: 'InvalidRequestError';
-    data: any;
-    code: number;
+  type: "InvalidRequestError";
+  data: any;
+  code: number;
 }
 
 export interface MissmatchedRequestIdError {
-    type: 'MissmatchedRequestIdError';
-    expected: RpcRequestId;
-    got: RpcRequestId;
+  type: "MissmatchedRequestIdError";
+  expected: RpcRequestId;
+  got: RpcRequestId;
 }
 
 export interface RpcExecutionError {
-    type: 'RpcExecutionError';
-    inner: any;
+  type: "RpcExecutionError";
+  inner: any;
 }
 
 export interface RpcQueryParams<Args> {
-    applicationId: ApplicationId;
-    method: string;
-    argsJson: Args;
+  applicationId: ApplicationId;
+  method: string;
+  argsJson: Args;
 }
 
 export interface RpcQueryResponse<Output> {
-    output?: Output;
+  output?: Output;
 }
 
 export interface RpcMutateParams<Args> {
-    applicationId: ApplicationId;
-    method: string;
-    argsJson: Args;
+  applicationId: ApplicationId;
+  method: string;
+  argsJson: Args;
 }
 
 export interface RpcMutateResponse<Output> {
-    output?: Output;
+  output?: Output;
 }
