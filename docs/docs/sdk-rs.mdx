@@ -344,10 +344,10 @@ pub fn set(&mut self, key: String, value: String) {
     }
 }
 
-pub fn remove(&mut self, key: &str) -> Option<String> {
+pub fn remove(&mut self, key: &str) -> Result<String, Error> {
     app::emit!(Event::Removed { key });
 
-    self.entries.remove(key)
+    self.entries.remove(key).ok_or_else(|| Error::NotFound(key))
 }
 ```
 
