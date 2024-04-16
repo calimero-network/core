@@ -3,22 +3,23 @@ import { ApplicationId } from './application';
 export type RpcRequestId = string | number;
 
 export interface RpcClient {
-    query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcQueryResponse<Out>>>;
-    mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcMutateResponse<Out>>>;
+    query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcResponseResult<RpcQueryResponse<Out>>>;
+    mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcResponseResult<RpcMutateResponse<Out>>>;
 }
 
 export interface RequestConfig {
     timeout?: number
 }
 
-export type RpcResult<Result> = {
-    result: Result;
+export type RpcResponseResult<Args> = {
+    result: RpcResponse<Args>;
     error?: null;
 } | {
     result?: null;
     error: RpcError;
 };
 
+export type RpcResponse<Args> = RpcQueryResponse<Args> | RpcMutateResponse<Args>;
 export type RpcError = UnknownServerError | InvalidRequestError | MissmatchedRequestIdError | RpcExecutionError;
 
 export interface UnknownServerError {

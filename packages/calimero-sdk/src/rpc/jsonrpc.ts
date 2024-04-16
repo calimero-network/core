@@ -7,7 +7,7 @@ import {
     RpcQueryParams,
     RpcMutateParams,
     RequestConfig,
-    RpcResult,
+    RpcResponseResult,
 } from "../rpc";
 import axios, { AxiosInstance } from "axios";
 
@@ -39,15 +39,15 @@ export class JsonRpcClient implements RpcClient {
         });
     }
 
-    public async query<Args, Output>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcQueryResponse<Output>>> {
+    public async query<Args, Output>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcResponseResult<RpcQueryResponse<Output>>> {
         return await this.request<RpcQueryParams<Args>, RpcQueryResponse<Output>>('query', params, config);
     }
 
-    public async mutate<Args, Output>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcMutateResponse<Output>>> {
+    public async mutate<Args, Output>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcResponseResult<RpcMutateResponse<Output>>> {
         return await this.request<RpcMutateParams<Args>, RpcMutateResponse<Output>>('mutate', params, config);
     }
 
-    async request<Params, Result>(method: string, params: Params, config?: RequestConfig): Promise<RpcResult<Result>> {
+    async request<Params, Result>(method: string, params: Params, config?: RequestConfig): Promise<RpcResponseResult<Result>> {
         const requestId = this.getRandomRequestId()
         const data: JsonRpcRequest<Params> = {
             jsonrpc: '2.0',
