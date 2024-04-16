@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::response::IntoResponse;
+use axum::Extension;
 use serde::Serialize;
 use tower_sessions::Session;
 
@@ -16,7 +16,7 @@ struct DidResponse {
 
 pub async fn fetch_did_handler(
     _session: Session,
-    State(state): State<Arc<AdminState>>,
+    Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     let did = get_or_create_did(&state.store).map_err(|err| parse_api_error(err));
     return match did {

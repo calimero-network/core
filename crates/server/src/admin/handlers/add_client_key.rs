@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
+use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_identity::auth::verify_eth_signature;
@@ -12,7 +11,6 @@ use chrono::{Duration, TimeZone, Utc};
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tower_sessions::Session;
 use tracing::info;
 
 use crate::admin::service::{AdminState, ApiError, ApiResponse, NodeChallengeMessage};
@@ -153,8 +151,7 @@ struct AddClientKeyResponse {
 
 //* Register client key to authenticate client requests  */
 pub async fn add_client_key_handler(
-    _session: Session,
-    State(state): State<Arc<AdminState>>,
+    Extension(state): Extension<Arc<AdminState>>,
     Json(intermediate_req): Json<IntermediateAddClientKeyRequest>,
 ) -> impl IntoResponse {
     let response = transform_request(intermediate_req)

@@ -52,7 +52,7 @@ pub struct AdminState {
 pub(crate) fn setup(
     config: &crate::config::ServerConfig,
     store: Store,
-) -> eyre::Result<Option<(&'static str, Router<Arc<AdminState>>)>> {
+) -> eyre::Result<Option<(&'static str, Router)>> {
     let admin_config = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
@@ -167,7 +167,7 @@ struct RequestChallengeResponse {
 
 pub async fn request_challenge_handler(
     session: Session,
-    State(state): State<Arc<AdminState>>,
+    Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<RequestChallenge>,
 ) -> impl IntoResponse {
     if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
@@ -272,7 +272,7 @@ async fn health_check_handler() -> impl IntoResponse {
 
 async fn create_root_key_handler(
     session: Session,
-    State(state): State<Arc<AdminState>>,
+    Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<PubKeyRequest>,
 ) -> impl IntoResponse {
     let message = "helloworld";
