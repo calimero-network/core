@@ -1,33 +1,23 @@
 import { ApplicationId } from './application';
 
+export type RpcRequestId = string | number;
+
 export interface RpcClient {
-    query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcQueryResponse<Out>>;
-    mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcMutateResponse<Out>>;
+    query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcQueryResponse<Out>>>;
+    mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcMutateResponse<Out>>>;
 }
 
 export interface RequestConfig {
     timeout?: number
 }
 
-export type RpcResponseError = RpcServerResponseError | RpcHandlerError;
-
-export interface RpcHandlerError {
-    handlerError: any; // Replace with actual type
-}
-
-export type RpcServerResponseError = RpcParseError | RpcInternalError;
-
-export interface RpcParseError {
-    type: 'ParseError';
-    data: string;
-}
-
-export interface RpcInternalError {
-    type: 'InternalError';
-    data: {
-        err: any; // Replace with actual type
-    };
-}
+export type RpcResult<Result> = {
+    result: Result;
+    error?: null;
+} | {
+    result?: null;
+    error: ServerError; // TODO define error types
+};
 
 export interface RpcQueryParams<Args> {
     applicationId: ApplicationId;
@@ -39,8 +29,6 @@ export interface RpcQueryResponse<Output> {
     output?: Output;
 }
 
-export type RpcQueryError = RpcSerdeError | RpcExecutionError;
-
 export interface RpcMutateParams<Args> {
     applicationId: ApplicationId;
     method: string;
@@ -51,14 +39,26 @@ export interface RpcMutateResponse<Output> {
     output?: Output;
 }
 
-export type RpcMutateError = RpcSerdeError | RpcExecutionError;
+export type ServerError = UnknownServerError | InvalidRequestError | MissmatchedRequestIdError | RpcExecutionError;
 
-export interface RpcSerdeError {
-    type: 'SerdeError';
-    message: string;
+export interface UnknownServerError {
+    type: 'UnknownServerError';
+    inner: any;
+}
+
+export interface InvalidRequestError {
+    type: 'InvalidRequestError';
+    data: any;
+    code: number;
+}
+
+export interface MissmatchedRequestIdError {
+    type: 'MissmatchedRequestIdError';
+    expected: RpcRequestId;
+    got: RpcRequestId;
 }
 
 export interface RpcExecutionError {
-    type: 'ExecutionError';
-    message: string;
+    type: 'RpcExecutionError';
+    inner: any;
 }
