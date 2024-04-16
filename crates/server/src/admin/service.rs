@@ -336,7 +336,10 @@ async fn install_application_handler(
     .into_response())
 }
 
-fn get_latest_application_path(dir: &camino::Utf8Path, application_id: &str) -> Option<PathBuf> {
+fn get_latest_application_version(
+    dir: &camino::Utf8Path,
+    application_id: &str,
+) -> Option<semver::Version> {
     let application_base_path = dir.join(application_id.to_string());
 
     if let Ok(entries) = fs::read_dir(&application_base_path) {
@@ -360,9 +363,12 @@ fn get_latest_application_path(dir: &camino::Utf8Path, application_id: &str) -> 
 
         versions_with_binary.sort_by(|a, b| b.0.cmp(&a.0));
 
-        versions_with_binary
-            .first()
-            .map(|(_, path)| PathBuf::from(path))
+        let version_with_binary = versions_with_binary.first();
+        let version = match version_with_binary {
+            Some((version, _)) => Some(version.clone()), // Cloning the version
+            None => None,
+        };
+        version
     } else {
         None
     }
@@ -383,15 +389,10 @@ async fn fetch_application_handler(
         entries.filter_map(|entry| entry.ok()).for_each(|entry| {
             if let Some(file_name) = entry.file_name().to_str() {
                 let latest_version =
-                    get_latest_application_path(&state.application_dir, &file_name);
+                    get_latest_application_version(&state.application_dir, &file_name);
                 if let Some(latest_version) = latest_version {
                     let app_name = file_name.to_string();
-                    let version = latest_version
-                        .file_name()
-                        .unwrap()
-                        .to_str()
-                        .expect("version is not a valid utf8 string");
-                    applications.insert(app_name, version.to_string());
+                    applications.insert(app_name, latest_version.to_string());
                 }
             } else {
                 println!("Failed to read file application id");

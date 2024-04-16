@@ -1,6 +1,6 @@
 import axios from "axios";
 
-import { AppsDataSource } from "./dataSource/appsDataSource";
+import { AppsDataSource } from "./dataSource/AppsDataSource";
 import { AxiosHttpClient } from "./httpClient";
 
 class ApiClient {
