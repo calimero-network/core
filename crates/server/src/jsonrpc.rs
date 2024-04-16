@@ -5,12 +5,12 @@ use axum::{extract, Extension, Json};
 use calimero_server_primitives::jsonrpc as jsonrpc_primitives;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::ServerSender;
 
-mod call;
-mod call_mut;
+mod mutate;
+mod query;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcConfig {
@@ -47,14 +47,26 @@ pub(crate) fn service(
 
 async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
-    extract::Json(request): extract::Json<jsonrpc_primitives::Request>,
+    extract::Json(request): extract::Json<jsonrpc_primitives::Request<serde_json::Value>>,
 ) -> Json<jsonrpc_primitives::Response> {
-    let body = match request.payload {
-        jsonrpc_primitives::RequestPayload::Call(request) => {
-            request.handle(state).await.to_res_body()
-        }
-        jsonrpc_primitives::RequestPayload::CallMut(request) => {
-            request.handle(state).await.to_res_body()
+    debug!(?request, "Received request");
+    let body = match serde_json::from_value::<jsonrpc_primitives::RequestPayload>(request.payload) {
+        Ok(payload) => match payload {
+            jsonrpc_primitives::RequestPayload::Query(request) => {
+                request.handle(state).await.to_res_body()
+            }
+            jsonrpc_primitives::RequestPayload::Mutate(request) => {
+                request.handle(state).await.to_res_body()
+            }
+        },
+        Err(err) => {
+            error!(%err, "Failed to deserialize jsonrpc_primitives::RequestPayload");
+
+            jsonrpc_primitives::ResponseBody::Error(
+                jsonrpc_primitives::ResponseBodyError::ServerError(
+                    jsonrpc_primitives::ServerResponseError::ParseError(err.to_string()),
+                ),
+            )
         }
     };
 

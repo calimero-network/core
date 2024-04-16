@@ -165,7 +165,7 @@ async fn handle_node_events(
         );
 
         let event = match event {
-            calimero_primitives::events::NodeEvent::ApplicationEvent(event)
+            calimero_primitives::events::NodeEvent::Application(event)
                 if {
                     connection_state
                         .inner
@@ -175,7 +175,7 @@ async fn handle_node_events(
                         .contains(&event.application_id)
                 } =>
             {
-                calimero_primitives::events::NodeEvent::ApplicationEvent(event)
+                calimero_primitives::events::NodeEvent::Application(event)
             }
             _ => continue,
         };
@@ -253,6 +253,7 @@ async fn handle_text_message(
     state: Arc<ServiceState>,
     message: String,
 ) {
+    debug!(%connection_id, %message, "Received text message");
     let connections = state.connections.read().await;
     let connection_state = match connections.get(&connection_id) {
         Some(state) => state,

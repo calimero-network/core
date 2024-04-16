@@ -20,6 +20,8 @@ pub struct ConfigFile {
     pub network: NetworkConfig,
 
     pub store: StoreConfig,
+
+    pub application: ApplicationConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,10 +42,7 @@ pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
     #[serde(default)]
-    pub admin: Option<calimero_server::admin::AdminConfig>,
-
-    #[serde(default)]
-    pub graphql: Option<calimero_server::graphql::GraphQLConfig>,
+    pub admin: Option<calimero_server::admin::service::AdminConfig>,
 
     #[serde(default)]
     pub jsonrpc: Option<calimero_server::jsonrpc::JsonRpcConfig>,
@@ -54,6 +53,11 @@ pub struct ServerConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StoreConfig {
+    pub path: camino::Utf8PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApplicationConfig {
     pub path: camino::Utf8PathBuf,
 }
 

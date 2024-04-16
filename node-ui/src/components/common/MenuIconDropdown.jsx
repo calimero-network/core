@@ -38,7 +38,7 @@ const DropdownWrapper = styled.div`
       flex-direction: column;
       justify-content: start;
       padding: 4px 0 4px 14px;
-      gap: 14px;
+      gap: 4px;
       border-radius: 4px;
 
       .menu-item {
@@ -53,7 +53,7 @@ const DropdownWrapper = styled.div`
   }
 `;
 
-export default function MenuIconDropdown({ onClick, buttonText }) {
+export default function MenuIconDropdown({ options }) {
   return (
     <DropdownWrapper>
       <Dropdown>
@@ -66,9 +66,15 @@ export default function MenuIconDropdown({ onClick, buttonText }) {
         </Dropdown.Toggle>
         <Dropdown.Menu className="dropdown-container">
           <div className="menu-dropdown">
-            <Dropdown.Item className="menu-item" onClick={onClick}>
-              {buttonText}
-            </Dropdown.Item>
+            {options.map((option, id) => (
+              <Dropdown.Item
+                className="menu-item"
+                onClick={option.onClick}
+                key={id}
+              >
+                {option.buttonText}
+              </Dropdown.Item>
+            ))}
           </div>
         </Dropdown.Menu>
       </Dropdown>
@@ -77,6 +83,5 @@ export default function MenuIconDropdown({ onClick, buttonText }) {
 }
 
 MenuIconDropdown.propTypes = {
-  onClick: PropTypes.func.isRequired,
-  buttonText: PropTypes.string.isRequired,
+  options: PropTypes.array.isRequired,
 };

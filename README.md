@@ -1,9 +1,11 @@
 
-[![Discord](https://dcbadge.vercel.app/api/server/wmW28dps?style=flat&theme=default-inverted)](https://discord.gg/7HjWChbE)
+[![Discord](https://dcbadge.vercel.app/api/server/urJeMtRRMu?style=flat&theme=default-inverted)](https://discord.gg/urJeMtRRMu)
 [![Telegram Group](https://img.shields.io/badge/Join-Telegram%20Group-blue.svg?logo=telegram)](https://t.me/+_6h-gJlnXO83OGVk)
-[![Build Status](https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml/badge.svg)](https://github.com/calimero-is-near/cali2.0-experimental/actions/workflows/docusaurus_deploy.yml)
+[![Docs deploy gh action](https://github.com/calimero-network/core/actions/workflows/docusaurus_deploy.yml/badge.svg)](https://github.com/calimero-network/core/actions/workflows/docusaurus_deploy.yml)
+[![SDK publish gh action](https://github.com/calimero-network/core/actions/workflows/calimero_sdk_publish.yml/badge.svg)](https://github.com/calimero-network/core/actions/workflows/calimero_sdk_publish.yml)
+[![npm version](https://badge.fury.io/js/@calimero-is-near%2Fcalimero-p2p-sdk.svg)](https://badge.fury.io/js/@calimero-is-near%2Fcalimero-p2p-sdk)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue)](#license)
-[![Issues - calimero](https://img.shields.io/github/issues/calimero-is-near/cali2.0-experimental)](https://github.com/calimero-is-near/cali2.0-experimental/issues)
+[![Issues - calimero](https://img.shields.io/github/issues/calimero-network/core)](https://github.com/calimero-network/core/issues)
 
 <div align="center">
   <picture>

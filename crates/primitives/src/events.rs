@@ -4,21 +4,22 @@ use crate::application::ApplicationId;
 use crate::hash::Hash;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+#[serde(untagged)]
 pub enum NodeEvent {
-    ApplicationEvent(ApplicationEventPayload),
+    Application(ApplicationEvent),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct ApplicationEventPayload {
+pub struct ApplicationEvent {
     pub application_id: ApplicationId,
-    pub event: ApplicationEventType,
+    #[serde(flatten)]
+    pub payload: ApplicationEventPayload,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub enum ApplicationEventType {
+#[serde(tag = "type", content = "data", rename_all = "PascalCase")]
+pub enum ApplicationEventPayload {
     TransactionExecuted(ExecutedTransactionPayload),
     PeerJoined(PeerJoinedPayload),
 }

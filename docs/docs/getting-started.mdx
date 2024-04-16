@@ -3,7 +3,6 @@ id: getting-started
 title: Getting started
 slug: /getting-started/
 ---
-
 Using the main features of Calimero Network involves several components and processes tailored to developers looking to build decentralized, privacy-focused applications. Here’s an overview of how to engage with its core functionalities, along with examples of common use cases:
 
 # Run
@@ -23,7 +22,7 @@ export RUST_LOG=debug
 
 ```console
 $ ./apps/only-peers/build.sh
-$ ./apps/kv-store/build.sh                                                                                        
+$ ./apps/kv-store/build.sh
 ```
 
 #### Create a data folder for all configs
@@ -70,13 +69,6 @@ $ cargo run -p calimero-node -- --home data/node2 init --server-port 2429 --swar
 2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/node2"
 
 $ cargo run -p calimero-node -- --home data/node2 run
-```
-
-```
-Important!!
-If you receive error
-"message": "guest panicked: panicked at apps/only-peers/src/code_generated_from_calimero_sdk_macros.rs:41:44: Failed to read app state.",
-that means that storage is empty. Before fetching any data, create new post.
 ```
 
 All sessions will fall into interactive mode
@@ -150,7 +142,7 @@ Example - KV Store
  │     > Getting key: "name"
 ```
 
-Example - Only Peers 
+Example app - Only Peers
 ```
 call /calimero/experimental/app/8eVTNKLwmF28pdDR7RRpT5C1XwUXoJuDuPF6hhbMCu98 create_post {"title": "title", "content": "content"}
  │ Scheduled Transaction! Hash("FCBsYV5cch9kpkDuc3a1mYG7XNYapFTN3g4nAH7CWXPG")

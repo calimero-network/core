@@ -1,5 +1,6 @@
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
+use calimero_store::Store;
 use camino::Utf8PathBuf;
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
@@ -48,7 +49,9 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let mut node = Node::new(&config, network_client, node_events.clone()).await?;
+    let store = calimero_store::Store::open(&config.store)?;
+
+    let mut node = Node::new(&config, network_client, node_events.clone(), store.clone()).await?;
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
@@ -56,6 +59,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         config.server,
         server_sender,
         node_events,
+        store,
     )) as BoxedFuture<eyre::Result<()>>;
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
@@ -273,29 +277,18 @@ impl Node {
         config: &NodeConfig,
         network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+        store: Store,
     ) -> eyre::Result<Self> {
-        let store = calimero_store::Store::open(&config.store)?;
         let tx_pool = transaction_pool::TransactionPool::default();
 
-        let mut application_manager =
-            application_manager::ApplicationManager::new(network_client.clone());
+        let application_manager = application_manager::ApplicationManager::new(
+            network_client.clone(),
+            config.home.join("apps").clone(),
+        );
 
         // register the chat application with currently have
         // TODO: register another application
         // TODO: implement registration via transaction
-        application_manager
-            .register_application(application_manager::Application {
-                name: "kv-store".to_string(),
-                path: Utf8PathBuf::from("apps/kv-store/res/kv_store.wasm"),
-            })
-            .await?;
-
-        application_manager
-            .register_application(application_manager::Application {
-                name: "only-peers".to_string(),
-                path: Utf8PathBuf::from("apps/only-peers/res/only_peers.wasm"),
-            })
-            .await?;
 
         Ok(Self {
             id: config.identity.public().to_peer_id(),
@@ -328,13 +321,13 @@ impl Node {
                     info!("{} joined the session.", their_peer_id.cyan());
                     let _ =
                         self.node_events
-                            .send(calimero_primitives::events::NodeEvent::ApplicationEvent(
-                            calimero_primitives::events::ApplicationEventPayload {
+                            .send(calimero_primitives::events::NodeEvent::Application(
+                            calimero_primitives::events::ApplicationEvent {
                                 application_id: calimero_primitives::application::ApplicationId(
                                     topic_hash.into_string().clone(),
                                 ),
-                                event:
-                                    calimero_primitives::events::ApplicationEventType::PeerJoined(
+                                payload:
+                                    calimero_primitives::events::ApplicationEventPayload::PeerJoined(
                                         calimero_primitives::events::PeerJoinedPayload {
                                             peer_id: their_peer_id,
                                         },
@@ -525,17 +518,17 @@ impl Node {
                 todo!("return an error to the caller that the method did not write to storage")
             } */
 
-            let _ =
-                self.node_events
-                    .send(calimero_primitives::events::NodeEvent::ApplicationEvent(
-                    calimero_primitives::events::ApplicationEventPayload {
-                        application_id,
-                        event:
-                            calimero_primitives::events::ApplicationEventType::TransactionExecuted(
-                                calimero_primitives::events::ExecutedTransactionPayload { hash },
-                            ),
-                    },
-                ));
+            let _ = self
+                .node_events
+                .send(calimero_primitives::events::NodeEvent::Application(
+                calimero_primitives::events::ApplicationEvent {
+                    application_id,
+                    payload:
+                        calimero_primitives::events::ApplicationEventPayload::TransactionExecuted(
+                            calimero_primitives::events::ExecutedTransactionPayload { hash },
+                        ),
+                },
+            ));
         }
 
         Ok(outcome)

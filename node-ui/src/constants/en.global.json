@@ -43,11 +43,36 @@
         "title": "Identity",
         "headerIdText": "Id",
         "headerTypeText": "Type",
-        "headerPkText": "PublicKey Multibase",
+        "headerPkText": "PublicKey",
         "deleteButtonText": "Delete",
         "addButtonText": "Add new identity",
         "expandEditorTitle": "Edit DID",
         "cancelButtonText": "Cancel",
         "saveButtonText": "Save"
+    },
+    "keysPage": {
+        "title": "Keys"
+    },
+    "keysTable": {
+        "noKeysText": "No keys found in the node.",
+        "headerPkText": "Public Key",
+        "headerTypeText": "Type",
+        "badgeActiveText": "Active",
+        "badgeRevokedText": "Revoked",
+        "setActiveText": "Set Active",
+        "revokeKeyText": "Revoke Key",
+        "addNewText": "Add new Key"
+    },
+    "uploadPage": {
+        "title": "Upload Application"
+    },
+    "uploadApplication": {
+        "title": "IPFS Application upload",
+        "inputLabelText": "Select Application .wasm file to upload",
+        "buttonUploadLabel": "Upload to IPFS",
+        "buttonUploadText": "Upload",
+        "cidLabelText": "File IPFS CID",
+        "downloadButtonText": "Create Download Url",
+        "downloadText": "Download:"
     }
 }
