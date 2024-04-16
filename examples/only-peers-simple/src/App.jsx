@@ -1,5 +1,5 @@
 import React from 'react';
-import { JsonRpcClient, WsSubscriptionManager } from '@calimero-is-near/calimero-p2p-sdk';
+import { JsonRpcClient, WsSubscriptionsClient } from 'calimero-p2p-sdk';
 import { config } from './calimeroConfig.js';
 
 class App extends React.Component {
@@ -47,7 +47,7 @@ class App extends React.Component {
 
   onLoad = async () => {
     const client = new JsonRpcClient(config.nodeServerUrl, config.jsonrpcPath);
-    const subscriptionManager = new WsSubscriptionManager(config.nodeServerUrl, config.wsPath);
+    const subscriptionManager = new WsSubscriptionsClient(config.nodeServerUrl, config.wsPath);
     this.setState({ client, subscriptionManager });
   }
 

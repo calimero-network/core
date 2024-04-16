@@ -3,20 +3,16 @@ id: getting-started
 title: Getting started
 slug: /getting-started/
 ---
+
 Using the main features of Calimero Network involves several components and processes tailored to developers looking to build decentralized, privacy-focused applications. Here’s an overview of how to engage with its core functionalities, along with examples of common use cases:
 
-# Run
-## Setup number of peers (here 3)
-```
-./crates/node/gen_localnet_configs.sh 3
-```
+Example using predefined Only Peers application
 
-## Turn on debug mode (optional)
-```
-export RUST_LOG=debug
-```
+1. Setup coordinator and 2 nodes
+2. Build and register only-peers application
+3. Interact with the application
 
-### Testing
+### Setup coordinator and 2 nodes
 
 #### First, compile the only-peers and kv-store applications
 
@@ -31,47 +27,32 @@ $ ./apps/kv-store/build.sh
 $ mkdir data
 ```
 
-#### Spin up a coordinator node
+#### Spin up coordinator node
 
-```console
+```
 $ cargo run -p calimero-node -- --home data/coordinator init --server-port 2427
-    Finished dev [unoptimized + debuginfo] target(s) in 0.20s
-     Running `target/debug/calimero-node --home data/coordinator init`
-2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWCiyHe2yeu53qSyRs4g9sTGwgEPjR8iGdi4XG5iv11TgH")
-2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/coordinator"
-
 $ cargo run -p calimero-node -- --home data/coordinator run --node-type coordinator
 ```
 
-#### Spin up node 1
+#### Spin up node 1 (separate terminal)
 
-```console
+```
 $ cargo run -p calimero-node -- --home data/node1 init --server-port 2428 --swarm-port 2528
-    Finished dev [unoptimized + debuginfo] target(s) in 0.20s
-     Running `target/debug/calimero-node --home data/node1 init`
-2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHJMh2hv9wai6UqPoHf5jED2gNaUbTTx6ZThAUqroCgtF")
-2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/node1"
-
 $ cargo run -p calimero-node -- --home data/node1 run
 ```
 
-```
-Check if config file has set correct port in all places. If not, update it per given port value.
-```
-
-#### Spin up node 2
+#### Spin up node 2 (separate terminal)
 
 ```console
 $ cargo run -p calimero-node -- --home data/node2 init --server-port 2429 --swarm-port 2529
-    Finished dev [unoptimized + debuginfo] target(s) in 0.20s
-     Running `target/debug/calimero-node --home data/node2 init`
-2024-02-28T20:02:57.715257Z  INFO calimero_node::cli::init: Generated identity: PeerId("12D3KooWHDWr9mCgZiXQXKDsMjWgDioAt9mVHAKEuYUuSKtYdv75")
-2024-02-28T20:02:57.725088Z  INFO calimero_node::cli::init: Initialized a chat node in "data/node2"
-
 $ cargo run -p calimero-node -- --home data/node2 run
 ```
 
-All sessions will fall into interactive mode
+All nodes are now initialized and ready for use.
+
+### Interaction with local storage
+
+All configured node sessions will fall into interactive mode.
 
 ```console
 Usage: [call|peers|pool|gc|store] [args]
@@ -97,89 +78,41 @@ Evict all transactions in the transaction pool that are awaiting confirmation
 Print the DB state
 ```
 
-Example - KV Store
+2. Build and register application
 
-#### From Peer 1
+To complete the process of building and registering the application for the Calimero Node, follow these steps:
 
-```console
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc set { "key": "name", "value": "Adam Smith" }
- │ Sent Transaction! Hash("DWSBHcnDnNVkQTf5xha891kfQvXyQt6WMhyReghcLW5A")
- │ Hash("DWSBHcnDnNVkQTf5xha891kfQvXyQt6WMhyReghcLW5A")
- │   (No return value)
- │   Logs:
- │     > Setting key: "name" to value: "Adam Smith"
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc get { "key": "name" }
- │ Sent Transaction! Hash("9Y5jZVsmEs1P74qhi2uJ82jr7WFFUCg1X6TvHtoLo45W")
- │ Hash("9Y5jZVsmEs1P74qhi2uJ82jr7WFFUCg1X6TvHtoLo45W")
- │   Return Value:
- │     > "Adam Smith"
- │   Logs:
- │     > Getting key: "name"
-```
+- Write Smart Contract:
 
-#### From Peer 2
+  Refer to the [NEAR documentation](https://docs.near.org/build/smart-contracts/what-is) to write your smart contract. Ensure that your smart contract is functional and meets the requirements of your application.
 
-```console
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc get { "key": "name" }
- │ Sent Transaction! Hash("EFthDcmVbpevfYw1T7WfQ75tY7PHV7DVKieRNFa2uanh")
- │ Hash("EFthDcmVbpevfYw1T7WfQ75tY7PHV7DVKieRNFa2uanh")
- │   Return Value:
- │     > "Adam Smith"
- │   Logs:
- │     > Getting key: "name"
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc set { "key": "name", "value": "Adam Smitten" }
- │ Sent Transaction! Hash("7eU6aJHgB4rpZn8oV7VbWMxERDDKMCP2Ao2yj5G96WZD")
- │ Hash("7eU6aJHgB4rpZn8oV7VbWMxERDDKMCP2Ao2yj5G96WZD")
- │   (No return value)
- │   Logs:
- │     > Setting key: "name" to value: "Adam Smitten"
-> call /calimero/experimental/app/8LMYQSzACqpX6XsuaBj7ure1VnJ1GHvZQBV8qqP2b2Cc get { "key": "name" }
- │ Sent Transaction! Hash("86Rfq6zEpjDSMjXFfxwmLLscHob9ZBtJEwvhwEDptjhM")
- │ Hash("86Rfq6zEpjDSMjXFfxwmLLscHob9ZBtJEwvhwEDptjhM")
- │   Return Value:
- │     > "Adam Smitten"
- │   Logs:
- │     > Getting key: "name"
-```
+- Compile Smart Contract:
 
-Example app - Only Peers
-```
-call /calimero/experimental/app/8eVTNKLwmF28pdDR7RRpT5C1XwUXoJuDuPF6hhbMCu98 create_post {"title": "title", "content": "content"}
- │ Scheduled Transaction! Hash("FCBsYV5cch9kpkDuc3a1mYG7XNYapFTN3g4nAH7CWXPG")
- │ Hash("FCBsYV5cch9kpkDuc3a1mYG7XNYapFTN3g4nAH7CWXPG")
- │   Return Value:
- │     > (json): {
- │     >   "comments": [],
- │     >   "content": "content",
- │     >   "id": 0,
- │     >   "title": "title"
- │     > }
- │   Logs:
- │     > Creating post with title: "title" and content: "content"
+  Once you've written your smart contract, compile it to a WebAssembly (wasm) file.
 
- call /calimero/experimental/app/8eVTNKLwmF28pdDR7RRpT5C1XwUXoJuDuPF6hhbMCu98 post {"id": 0}
- │ Scheduled Transaction! Hash("EWTmQg71zhj5SDs91uWqrBsK7NRa3zBU5vALFPuhgFd3")
- │ Hash("EWTmQg71zhj5SDs91uWqrBsK7NRa3zBU5vALFPuhgFd3")
- │   Return Value:
- │     > (json): {
- │     >   "comments": [],
- │     >   "content": "content",
- │     >   "id": 0,
- │     >   "title": "title"
- │     > }
- │   Logs:
- │     > Getting post with id: 0
- ```
+- Access Admin UI:
 
-JSON RPC
-- success example
+  Open your web browser and navigate to http://127.0.0.1:NODE_PORT/admin/. Replace NODE_PORT with the port number where your NEAR node is running.
+
+- Follow Instructions on **[Admin UI web application](/admin-ui)**:
+
+  Once on the admin UI page, follow the provided instructions to add, upload, register and install your application. This process will involve uploading your compiled wasm file, configuring application settings, and completing any necessary steps.
+
+- Finalize the proccess:
+
+  After following the steps on the admin UI, ensure that your application is successfully installed and registered. Test its functionality to verify that it behaves as expected.
+
+3. Interact with the application
+
+Create new post
+
 ```
 curl -X POST -H "Content-Type: application/json" -d '
 {
   "jsonrpc": "2.0",
-  "method": "call_mut",
+  "method": "mutate",
   "params": {
-    "applicationId": "/calimero/experimental/app/6P8KrqtyD4YgcSrDZovZ5dGDFJjvx8jXLrCohpj2VtZh",
+    "applicationId": "{APPLICATION_ID}",
     "method": "create_post",
     "argsJson": {
       "title": "Your Post Title",
@@ -187,22 +120,5 @@ curl -X POST -H "Content-Type: application/json" -d '
     }
   },
   "id": "dontcare"
-}' 'http://localhost:2529/jsonrpc'
-```
-- failure example
-```
-curl -X POST -H "Content-Type: application/json" -d '
-{
-  "jsonrpc": "2.0",
-  "method": "call_mut",
-  "params": {
-    "applicationId": "/calimero/experimental/app/6P8KrqtyD4YgcSrDZovZ5dGDFJjvx8jXLrCohpj2VtZh",
-    "method": "create_post",
-    "argsJson": {
-      "title_FiBo": "Your Post Title",
-      "content": "Your Post Content"
-    }
-  },
-  "id": 123
-}' 'http://localhost:2529/jsonrpc'
+}' 'http://localhost:2428/jsonrpc'
 ```
