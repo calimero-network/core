@@ -32,7 +32,7 @@ export function useRPC() {
       method_name: "get_releases",
       args_base64: btoa(
         JSON.stringify({
-          id: id,
+          id,
           offset: 0,
           limit: 100,
         })
