@@ -15,9 +15,7 @@ pub struct PublicLogicMethod<'a> {
     args: Vec<arg::LogicArgTyped<'a>>,
     ret: Option<ty::LogicTy>,
 
-    codegen_input_ident: syn::Ident,
-    codegen_lifetime: Option<syn::Lifetime>,
-    // orig: &'a syn::ImplItemFn,
+    has_refs: bool,
 }
 
 impl<'a> ToTokens for PublicLogicMethod<'a> {
@@ -31,11 +29,13 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         let input = if args.is_empty() {
             quote! {}
         } else {
-            let input_ident = &self.codegen_input_ident;
+            let input_ident = reserved::idents::input();
 
-            let input_lifetime = match &self.codegen_lifetime {
-                Some(lifetime) => quote! { <#lifetime> },
-                None => quote! {},
+            let input_lifetime = if self.has_refs {
+                let lifetime = reserved::lifetimes::input();
+                quote! { <#lifetime> }
+            } else {
+                quote! {}
             };
 
             quote! {
@@ -204,10 +204,7 @@ where
             self_type,
             args,
             ret,
-
-            codegen_input_ident: reserved::idents::input().to_owned(),
-            codegen_lifetime: has_refs.then(|| reserved::lifetimes::input().to_owned()),
-            // orig: item,
+            has_refs,
         }))
     }
 }
