@@ -1,6 +1,9 @@
-import React from 'react';
-import { JsonRpcClient, WsSubscriptionsClient } from 'calimero-p2p-sdk';
-import { config } from './calimeroConfig.js';
+import React from "react";
+import {
+  JsonRpcClient,
+  WsSubscriptionsClient,
+} from "@calimero-is-near/calimero-p2p-sdk/lib";
+import { config } from "./calimeroConfig.js";
 
 class App extends React.Component {
   constructor(props) {
@@ -14,8 +17,10 @@ class App extends React.Component {
   }
 
   eventHandler = async (e) => {
-    this.setState(prevState => ({ events: [...prevState.events, JSON.stringify(e)] }));
-  }
+    this.setState((prevState) => ({
+      events: [...prevState.events, JSON.stringify(e)],
+    }));
+  };
 
   subscribe = async () => {
     try {
@@ -26,7 +31,7 @@ class App extends React.Component {
     } catch (error) {
       console.log(error);
     }
-  }
+  };
 
   executeRpcRequest = async () => {
     try {
@@ -36,27 +41,30 @@ class App extends React.Component {
         method: "create_post",
         argsJson: {
           title: "Your Post Title",
-          content: "Your Post Content"
-        }
+          content: "Your Post Content",
+        },
       });
       this.setState({ response: JSON.stringify(resp) });
     } catch (error) {
       console.log(error);
     }
-  }
+  };
 
   onLoad = async () => {
     const client = new JsonRpcClient(config.nodeServerUrl, config.jsonrpcPath);
-    const subscriptionManager = new WsSubscriptionsClient(config.nodeServerUrl, config.wsPath);
+    const subscriptionManager = new WsSubscriptionsClient(
+      config.nodeServerUrl,
+      config.wsPath
+    );
     this.setState({ client, subscriptionManager });
-  }
+  };
 
   onDrop = async () => {
     const { client } = this.state;
     if (client) {
       await client.disconnect();
     }
-  }
+  };
 
   componentDidMount() {
     this.onLoad();

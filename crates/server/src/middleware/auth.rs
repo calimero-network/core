@@ -9,6 +9,7 @@ use calimero_identity::auth::verify_client_key;
 use calimero_store::Store;
 use libp2p::futures::future::BoxFuture;
 use tower::{Layer, Service};
+use tracing::debug;
 
 use crate::admin::handlers::add_client_key::WalletType;
 use crate::admin::storage::client_keys::{exists_client_key, ClientKey};
@@ -85,8 +86,10 @@ pub fn auth<'a>(
     headers: &'a HeaderMap,
     store: &'a Store,
 ) -> Result<(), UnauthorizedError<'a>> {
-    let auth_headers = get_auth_headers(headers)
-        .map_err(|_| UnauthorizedError::new("Failed to extract authentication headers."))?;
+    let auth_headers = get_auth_headers(headers).map_err(|e| {
+        debug!("Failed to extract authentication headers: {}", e);
+        UnauthorizedError::new("Failed to extract authentication headers")
+    })?;
 
     let client_key = ClientKey {
         wallet_type: auth_headers.wallet_type.clone(),
@@ -113,8 +116,6 @@ pub fn auth<'a>(
 }
 
 fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
-    println!("{:?}", headers);
-
     let signing_key = headers
         .get("signing_key")
         .ok_or_else(|| UnauthorizedError::new("Missing signing_key header"))?;
