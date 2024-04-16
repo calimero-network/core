@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -67,7 +68,6 @@ pub(crate) fn setup(
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
-        .layer(Extension(state.clone()))
         .route("/add-client-key", post(add_client_key_handler))
         .route("/did", get(fetch_did_handler))
         .route("/applications", get(fetch_application_handler))
@@ -336,7 +336,7 @@ async fn install_application_handler(
     .into_response())
 }
 
-fn get_latest_application_path(dir: &camino::Utf8Path, application_id: &str) -> Option<String> {
+fn get_latest_application_path(dir: &camino::Utf8Path, application_id: &str) -> Option<PathBuf> {
     let application_base_path = dir.join(application_id.to_string());
 
     if let Ok(entries) = fs::read_dir(&application_base_path) {
@@ -345,13 +345,16 @@ fn get_latest_application_path(dir: &camino::Utf8Path, application_id: &str) -> 
                 let entry = entry.ok()?;
                 let entry_path = entry.path();
 
-                let version = {
+                let version =
                     semver::Version::parse(entry_path.file_name()?.to_string_lossy().as_ref())
-                        .ok()?
-                };
+                        .ok()?;
 
                 let binary_path = entry_path.join("binary.wasm");
-                binary_path.exists().then_some((version, entry_path))
+                if binary_path.exists() {
+                    Some((version, entry_path))
+                } else {
+                    None
+                }
             })
             .collect::<Vec<_>>();
 
@@ -359,7 +362,7 @@ fn get_latest_application_path(dir: &camino::Utf8Path, application_id: &str) -> 
 
         versions_with_binary
             .first()
-            .map(|(_, path)| path.to_string_lossy().into_owned())
+            .map(|(_, path)| PathBuf::from(path))
     } else {
         None
     }
@@ -383,10 +386,15 @@ async fn fetch_application_handler(
                     get_latest_application_path(&state.application_dir, &file_name);
                 if let Some(latest_version) = latest_version {
                     let app_name = file_name.to_string();
-                    if let Some(version) = latest_version.rsplit('/').next() {
-                        applications.insert(app_name, version.to_string());
-                    }
+                    let version = latest_version
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .expect("version is not a valid utf8 string");
+                    applications.insert(app_name, version.to_string());
                 }
+            } else {
+                println!("Failed to read file application id");
             }
         });
         return ApiResponse {
