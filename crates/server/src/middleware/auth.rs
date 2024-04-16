@@ -92,8 +92,12 @@ pub fn auth<'a>(
         wallet_type: auth_headers.wallet_type.clone(),
         signing_key: auth_headers.signing_key.clone(),
     };
-    exists_client_key(store, &client_key)
+    let key_exists = exists_client_key(store, &client_key)
         .map_err(|_| UnauthorizedError::new("Issue during extracting client key"))?;
+
+    if !key_exists {
+        return Err(UnauthorizedError::new("Client key does not exist."));
+    }
 
     if verify_client_key(
         auth_headers.signing_key.as_str(),
@@ -106,25 +110,11 @@ pub fn auth<'a>(
             "Invalid signature for provided key.",
         ))
     }
-
-    // match get_auth_headers(&headers) {
-    //     Ok(auth_headers) if exists_client_key(store, &auth_headers.client_key) => Ok({
-    //         if verify_client_key(
-    //             auth_headers.client_key.as_str(),
-    //             auth_headers.challenge.as_slice(),
-    //             auth_headers.signature.as_slice(),
-    //         ) {
-    //             Ok(())
-    //         } else {
-    //             return Err(UnauthorizedError::new("Keypair not matching signature."));
-    //         };
-    //     }),
-    //     Ok(_) => Err(UnauthorizedError::new("Keypair not matching signature.")),
-    //     Err(error) => Err(error),
-    // }
 }
 
 fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
+    println!("{:?}", headers);
+
     let signing_key = headers
         .get("signing_key")
         .ok_or_else(|| UnauthorizedError::new("Missing signing_key header"))?;

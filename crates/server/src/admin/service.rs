@@ -278,15 +278,19 @@ async fn create_root_key_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<PubKeyRequest>,
 ) -> impl IntoResponse {
-    let message = "helloworld";
-    let app = "me";
+    let recipient = "me";
 
-    match session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
+    match session
+        .get::<NodeChallenge>(CHALLENGE_KEY)
+        .await
+        .ok()
+        .flatten()
+    {
         Some(challenge) => {
             if verifysignature::verify_near_signature(
-                &challenge,
-                message,
-                app,
+                &challenge.message.nonce,
+                &challenge.node_signature,
+                recipient,
                 &req.callback_url,
                 &req.signature,
                 &req.public_key,
@@ -459,7 +463,6 @@ struct ApplicationListResult {
 
 async fn fetch_application_handler(
     Extension(state): Extension<Arc<ServiceState>>,
-    session: Session,
 ) -> impl IntoResponse {
     if let Ok(entries) = fs::read_dir(&state.application_dir) {
         let mut applications: HashMap<String, String> = HashMap::new();
