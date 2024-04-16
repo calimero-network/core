@@ -239,7 +239,7 @@ pub struct Release {
     pub hash: String,
 }
 
-pub async fn get_release(application: &str, version: &str) -> eyre::Result<Release> {
+pub async fn get_release(application_id: &str, version: &str) -> eyre::Result<Release> {
     let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
     let request = methods::query::RpcQueryRequest {
         block_reference: BlockReference::Finality(Finality::Final),
@@ -248,7 +248,7 @@ pub async fn get_release(application: &str, version: &str) -> eyre::Result<Relea
             method_name: "get_release".to_string(),
             args: FunctionArgs::from(
                 json!({
-                    "id": application,
+                    "id": application_id,
                     "version": version
                 })
                 .to_string()
@@ -266,11 +266,11 @@ pub async fn get_release(application: &str, version: &str) -> eyre::Result<Relea
 }
 
 pub async fn download_release(
-    application: &str,
+    application_id: &str,
     release: &Release,
     dir: &camino::Utf8Path,
 ) -> eyre::Result<()> {
-    let base_path = format!("./{}/{}/{}", dir, application, &release.version);
+    let base_path = format!("./{}/{}/{}", dir, application_id, &release.version);
     fs::create_dir_all(&base_path)?;
 
     let file_path = format!("{}/binary.wasm", base_path);
@@ -305,12 +305,12 @@ pub async fn verify_release(hash: &str, release_hash: &str) -> eyre::Result<()> 
 }
 
 pub async fn install_application(
-    application: &str,
+    application_id: &str,
     version: &str,
     dir: &camino::Utf8Path,
 ) -> eyre::Result<()> {
-    let release = get_release(application, version).await?;
-    download_release(application, &release, dir).await
+    let release = get_release(application_id, version).await?;
+    download_release(application_id, &release, dir).await
 }
 
 async fn install_application_handler(
