@@ -1,29 +1,30 @@
+
 import {
-    RpcResponseError,
+    RpcRequestId,
     RpcClient,
     RpcQueryResponse,
     RpcMutateResponse,
     RpcQueryParams,
     RpcMutateParams,
-    RequestConfig
+    RequestConfig,
+    RpcResult,
 } from "../rpc";
 import axios, { AxiosInstance } from "axios";
 
 type JsonRpcVersion = '2.0'
-type JsonRpcRequestId = string | number;
 
 interface JsonRpcRequest<Params> {
     jsonrpc: JsonRpcVersion;
-    id: JsonRpcRequestId | null;
+    id: RpcRequestId | null;
     method: string;
     params: Params;
 }
 
 interface JsonRpcResponse<Result> {
     jsonrpc: JsonRpcVersion;
-    id: JsonRpcRequestId | null;
+    id: RpcRequestId | null;
     result?: Result;
-    error?: RpcResponseError;
+    error?: any; // TODO define error types
 }
 
 export class JsonRpcClient implements RpcClient {
@@ -38,15 +39,15 @@ export class JsonRpcClient implements RpcClient {
         });
     }
 
-    public async query<Args, Output>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcQueryResponse<Output>> {
+    public async query<Args, Output>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcQueryResponse<Output>>> {
         return await this.request<RpcQueryParams<Args>, RpcQueryResponse<Output>>('query', params, config);
     }
 
-    public async mutate<Args, Output>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcMutateResponse<Output>> {
+    public async mutate<Args, Output>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcMutateResponse<Output>>> {
         return await this.request<RpcMutateParams<Args>, RpcMutateResponse<Output>>('mutate', params, config);
     }
 
-    async request<Params, Result>(method: string, params: Params, config?: RequestConfig): Promise<Result> {
+    async request<Params, Result>(method: string, params: Params, config?: RequestConfig): Promise<RpcResult<Result>> {
         const requestId = this.getRandomRequestId()
         const data: JsonRpcRequest<Params> = {
             jsonrpc: '2.0',
@@ -58,18 +59,50 @@ export class JsonRpcClient implements RpcClient {
         try {
             const response = await this.axiosInstance.post<JsonRpcResponse<Result>>(this.path, data, config);
             if (response.status === 200) {
-                if (response.data.error) {
-                    throw new Error("JSON RPC server returned error: " + response.data.error);
-                }
                 if (response.data.id !== requestId) {
-                    throw new Error(`JSON RPC server returned response with invalid ID, expected: ${requestId} got: ${response.data.id}`);
+                    return {
+                        result: null,
+                        error: {
+                            type: 'MissmatchedRequestIdError',
+                            expected: requestId,
+                            got: response.data.id,
+                        },
+                    };
                 }
-                return response.data.result;
+
+                if (response.data.error) {
+                    return {
+                        result: null,
+                        error: {
+                            type: 'RpcExecutionError',
+                            inner: response.data.error,
+                        },
+                    };
+                }
+
+                return {
+                    result: response.data.result,
+                    error: null,
+                };
             } else {
-                throw new Error(`JSON RPC server returned error HTTP code: ${response.status}`);
+
+                return {
+                    result: null,
+                    error: {
+                        type: 'InvalidRequestError',
+                        data: response.data,
+                        code: response.status,
+                    },
+                };
             }
         } catch (error: any) {
-            throw new Error(`Error occurred during JSON RPC request: ${JSON.stringify(error.message)}`);
+            return {
+                result: null,
+                error: {
+                    type: 'UnknownServerError',
+                    inner: error,
+                },
+            };
         }
     }
 

@@ -1,32 +1,46 @@
 import { ApplicationId } from './application';
 
+export type RpcRequestId = string | number;
+
 export interface RpcClient {
-    query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcQueryResponse<Out>>;
-    mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcMutateResponse<Out>>;
+    query<Args, Out>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcQueryResponse<Out>>>;
+    mutate<Args, Out>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcResult<RpcMutateResponse<Out>>>;
 }
 
 export interface RequestConfig {
     timeout?: number
 }
 
-export type RpcResponseError = RpcServerResponseError | RpcHandlerError;
+export type RpcResult<Result> = {
+    result: Result;
+    error?: null;
+} | {
+    result?: null;
+    error: RpcError;
+};
 
-export interface RpcHandlerError {
-    handlerError: any; // Replace with actual type
+export type RpcError = UnknownServerError | InvalidRequestError | MissmatchedRequestIdError | RpcExecutionError;
+
+export interface UnknownServerError {
+    type: 'UnknownServerError';
+    inner: any;
 }
 
-export type RpcServerResponseError = RpcParseError | RpcInternalError;
-
-export interface RpcParseError {
-    type: 'ParseError';
-    data: string;
+export interface InvalidRequestError {
+    type: 'InvalidRequestError';
+    data: any;
+    code: number;
 }
 
-export interface RpcInternalError {
-    type: 'InternalError';
-    data: {
-        err: any; // Replace with actual type
-    };
+export interface MissmatchedRequestIdError {
+    type: 'MissmatchedRequestIdError';
+    expected: RpcRequestId;
+    got: RpcRequestId;
+}
+
+export interface RpcExecutionError {
+    type: 'RpcExecutionError';
+    inner: any;
 }
 
 export interface RpcQueryParams<Args> {
@@ -39,8 +53,6 @@ export interface RpcQueryResponse<Output> {
     output?: Output;
 }
 
-export type RpcQueryError = RpcSerdeError | RpcExecutionError;
-
 export interface RpcMutateParams<Args> {
     applicationId: ApplicationId;
     method: string;
@@ -49,16 +61,4 @@ export interface RpcMutateParams<Args> {
 
 export interface RpcMutateResponse<Output> {
     output?: Output;
-}
-
-export type RpcMutateError = RpcSerdeError | RpcExecutionError;
-
-export interface RpcSerdeError {
-    type: 'SerdeError';
-    message: string;
-}
-
-export interface RpcExecutionError {
-    type: 'ExecutionError';
-    message: string;
 }
