@@ -1,16 +1,19 @@
-use axum::extract::State;
+use std::sync::Arc;
+
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
+use axum::{Extension, Json};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use calimero_identity::auth::verify_eth_signature;
 use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
+use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tower_sessions::Session;
 use tracing::info;
 
-use crate::admin::service::{ApiError, ApiResponse};
+use crate::admin::service::{AdminState, ApiError, ApiResponse, NodeChallengeMessage};
 use crate::admin::storage::client_keys::{add_client_key, ClientKey};
 use crate::admin::storage::root_key::{get_root_key, RootKey};
 use crate::verifysignature::verify_near_signature;
@@ -53,6 +56,16 @@ struct WalletMetadata {
 pub enum WalletType {
     NEAR,
     ETH,
+}
+
+impl WalletType {
+    pub fn from_str(input: &str) -> Result<Self, eyre::Report> {
+        match input {
+            "ETH" => Ok(WalletType::ETH),
+            "NEAR" => Ok(WalletType::NEAR),
+            _ => eyre::bail!("Invalid wallet_type value"),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,14 +162,13 @@ struct AddClientKeyResponse {
 
 //* Register client key to authenticate client requests  */
 pub async fn add_client_key_handler(
-    _session: Session,
-    State(store): State<Store>,
+    Extension(state): Extension<Arc<AdminState>>,
     Json(intermediate_req): Json<IntermediateAddClientKeyRequest>,
 ) -> impl IntoResponse {
     let response = transform_request(intermediate_req)
-        .and_then(|req| validate_root_key_exists(req, store.clone()))
-        .and_then(validate_challenge)
-        .and_then(|req| store_client_key(req, store.clone()))
+        .and_then(|req| validate_root_key_exists(req, &state.store))
+        .and_then(|req| validate_challenge(req, &state.keypair))
+        .and_then(|req| store_client_key(req, &state.store))
         .map_or_else(
             |err| err.into_response(),
             |_| {
@@ -173,13 +185,13 @@ pub async fn add_client_key_handler(
 
 fn store_client_key(
     req: AddClientKeyRequest,
-    store: Store,
+    store: &Store,
 ) -> Result<AddClientKeyRequest, ApiError> {
     let client_key = ClientKey {
         wallet_type: WalletType::NEAR,
-        signing_key: req.payload.message.client_public_key,
+        signing_key: req.payload.message.client_public_key.clone(),
     };
-    add_client_key(&store, client_key);
+    add_client_key(&store, client_key).map_err(|e| parse_api_error(e))?;
     info!("Client key stored successfully.");
     Ok(req)
 }
@@ -243,8 +255,11 @@ fn verify_node_signature(
 }
 
 //Check if challenge is valid
-fn validate_challenge(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, ApiError> {
-    validate_challenge_content(&req.payload)?;
+fn validate_challenge(
+    req: AddClientKeyRequest,
+    keypair: &Keypair,
+) -> Result<AddClientKeyRequest, ApiError> {
+    validate_challenge_content(&req.payload, keypair)?;
 
     // Check if node has created signature
     verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload)?;
@@ -261,27 +276,45 @@ fn validate_challenge(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, A
 }
 
 //check if signature data are not tempered with
-fn validate_challenge_content(payload: &Payload) -> Result<bool, ApiError> {
-    if payload.message.node_signature
-        != create_node_signature(
-            &payload.message.nonce,
-            &payload.message.application_id,
-            &payload.message.timestamp,
-        )
-    {
-        return Err(ApiError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: " Node signature is invalid.".into(),
-        });
-    }
-    Ok(true)
+fn validate_challenge_content(payload: &Payload, keypair: &Keypair) -> Result<(), ApiError> {
+    let node_challenge = construct_node_challenge(&payload.message)?;
+    let signature = decode_signature(&payload.message.node_signature)?;
+    let message = serialize_node_challenge(&node_challenge)?;
+
+    verify_signature(&message, &signature, keypair)
 }
 
-fn create_node_signature(_nonce: &String, _application_id: &String, _timestamp: &i64) -> String {
-    //TODO implement node signature
-    // get first root key and sign the challenge
+fn construct_node_challenge(message: &SignatureMessage) -> Result<NodeChallengeMessage, ApiError> {
+    Ok(NodeChallengeMessage {
+        nonce: message.nonce.clone(),
+        application_id: message.application_id.clone(),
+        timestamp: message.timestamp,
+    })
+}
 
-    return "abcdefhgjsdajbadk".to_string();
+fn decode_signature(encoded_sig: &String) -> Result<Vec<u8>, ApiError> {
+    STANDARD.decode(encoded_sig).map_err(|_| ApiError {
+        status_code: StatusCode::BAD_REQUEST,
+        message: "Failed to decode signature".into(),
+    })
+}
+
+fn serialize_node_challenge(challenge: &NodeChallengeMessage) -> Result<String, ApiError> {
+    serde_json::to_string(challenge).map_err(|_| ApiError {
+        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+        message: "Failed to deserialize challenge data".into(),
+    })
+}
+
+fn verify_signature(message: &String, signature: &[u8], keypair: &Keypair) -> Result<(), ApiError> {
+    if keypair.public().verify(message.as_bytes(), signature) {
+        Ok(())
+    } else {
+        Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Node signature is invalid.".into(),
+        })
+    }
 }
 
 fn is_older_than_15_minutes(timestamp: i64) -> bool {
@@ -294,14 +327,14 @@ fn is_older_than_15_minutes(timestamp: i64) -> bool {
 
 fn validate_root_key_exists(
     req: AddClientKeyRequest,
-    store: Store,
+    store: &Store,
 ) -> Result<AddClientKeyRequest, ApiError> {
     //Check if root key exists
     let root_key = RootKey {
         signing_key: req.wallet_metadata.signing_key.clone(),
     };
 
-    let existing_root_key = match get_root_key(&store, &root_key).map_err(|e| {
+    match get_root_key(&store, &root_key).map_err(|e| {
         info!("Error getting root key: {}", e);
         ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,

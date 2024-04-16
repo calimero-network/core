@@ -35,7 +35,7 @@ pub fn create_did(store: &Store) -> eyre::Result<Did> {
 }
 
 pub fn get_or_create_did(store: &Store) -> eyre::Result<Did> {
-    let mut storage =
+    let storage =
         calimero_store::ReadOnlyStore::new(ApplicationId(NODE_STORE_KEY.to_string()), &store);
 
     let did_vec = storage.get(&DID_KEY.as_bytes().to_vec())?;

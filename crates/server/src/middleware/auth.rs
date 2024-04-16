@@ -5,13 +5,13 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use calimero_identity::auth::verify_peer_auth;
+use calimero_identity::auth::verify_client_key;
 use calimero_store::Store;
 use libp2p::futures::future::BoxFuture;
-use libp2p::identity::Keypair;
 use tower::{Layer, Service};
 
-use crate::admin::storage::client_keys::get_client_key;
+use crate::admin::handlers::add_client_key::WalletType;
+use crate::admin::storage::client_keys::{exists_client_key, ClientKey};
 
 #[derive(Clone)]
 pub struct AuthSignatureLayer {
@@ -30,7 +30,7 @@ impl<S> Layer<S> for AuthSignatureLayer {
     fn layer(&self, inner: S) -> Self::Service {
         AuthSignatureMiddleware {
             inner,
-            keypair: self.keypair.clone(),
+            store: self.store.clone(),
         }
     }
 }
@@ -38,7 +38,7 @@ impl<S> Layer<S> for AuthSignatureLayer {
 #[derive(Clone)]
 pub struct AuthSignatureMiddleware<S> {
     inner: S,
-    keypair: Keypair,
+    store: Store,
 }
 
 impl<S> Service<Request<Body>> for AuthSignatureMiddleware<S>
@@ -56,7 +56,7 @@ where
     }
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
-        let result = auth(request.headers(), &self.keypair);
+        let result = auth(request.headers(), &self.store);
 
         if let Err(err) = result {
             let error_response = err.into_response();
@@ -74,7 +74,8 @@ where
 
 #[derive(Debug)]
 struct AuthHeaders {
-    client_key: String,
+    wallet_type: WalletType,
+    signing_key: String,
     signature: Vec<u8>,
     challenge: Vec<u8>,
 }
@@ -85,14 +86,17 @@ pub fn auth<'a>(
     store: &'a Store,
 ) -> Result<(), UnauthorizedError<'a>> {
     let auth_headers = get_auth_headers(headers)
-        .map_err(|e| UnauthorizedError::new("Failed to extract authentication headers."))?;
+        .map_err(|_| UnauthorizedError::new("Failed to extract authentication headers."))?;
 
-    if !exists_client_key(store, &auth_headers.client_key) {
-        return Err(UnauthorizedError::new("Client key not found."));
-    }
+    let client_key = ClientKey {
+        wallet_type: auth_headers.wallet_type.clone(),
+        signing_key: auth_headers.signing_key.clone(),
+    };
+    exists_client_key(store, &client_key)
+        .map_err(|_| UnauthorizedError::new("Issue during extracting client key"))?;
 
     if verify_client_key(
-        auth_headers.client_key.as_str(),
+        auth_headers.signing_key.as_str(),
         auth_headers.challenge.as_slice(),
         auth_headers.signature.as_slice(),
     ) {
@@ -121,12 +125,19 @@ pub fn auth<'a>(
 }
 
 fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
-    let client_key = headers
-        .get("client_key")
-        .ok_or_else(|| UnauthorizedError::new("Missing client_key header"))?;
-    let client_key = bs58::decode(client_key)
-        .into_vec()
-        .map_err(|_| UnauthorizedError::new("Invalid base58 client_key"))?;
+    let signing_key = headers
+        .get("signing_key")
+        .ok_or_else(|| UnauthorizedError::new("Missing signing_key header"))?;
+    let signing_key = String::from_utf8(signing_key.as_bytes().to_vec())
+        .map_err(|_| UnauthorizedError::new("Invalid signing_key string"))?;
+
+    let wallet_type = headers
+        .get("wallet_type")
+        .ok_or_else(|| UnauthorizedError::new("Missing wallet_type header"))?;
+    let wallet_type = String::from_utf8(wallet_type.as_bytes().to_vec())
+        .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
+    let wallet_type = WalletType::from_str(&wallet_type)
+        .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
 
     let signature = headers
         .get("signature")
@@ -143,7 +154,8 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .map_err(|_| UnauthorizedError::new("Invalid base58 challenge"))?;
 
     let auth = AuthHeaders {
-        client_key,
+        wallet_type,
+        signing_key,
         signature,
         challenge,
     };

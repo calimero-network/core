@@ -42,13 +42,13 @@ pub fn exists_client_key(store: &Store, client_key: &ClientKey) -> eyre::Result<
         .is_some())
 }
 
-pub fn remove_client_key(store: &Store, client_key: ClientKey) -> eyre::Result<()> {
+pub fn remove_client_key(store: &Store, client_key: &ClientKey) -> eyre::Result<()> {
     let mut did_document = get_or_create_did(store)?;
 
     if let Some(pos) = did_document
         .client_keys
         .iter()
-        .position(|&x| x.signing_key == client_key.signing_key)
+        .position(|x| x.signing_key == client_key.signing_key)
     {
         did_document.client_keys.remove(pos);
     }
