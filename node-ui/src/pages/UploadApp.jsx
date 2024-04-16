@@ -32,7 +32,7 @@ export default function UploadApp() {
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
-      network: "testnet",
+      network: import.meta.env.VITE_NEAR_ENVIRONMENT ?? "testnet",
       modules: [setupMyNearWallet()],
     });
     const wallet = await selector.wallet("my-near-wallet");
