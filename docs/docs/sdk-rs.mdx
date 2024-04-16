@@ -1,0 +1,386 @@
+---
+id: calimero-sdk-rs
+title: Calimero SDK (Rust)
+slug: /calimero-sdk-rs/
+---
+
+## Getting Started with Calimero SDK for Rust
+
+The Calimero SDK for Rust empowers developers to build applications that compile to WebAssembly (Wasm) and run securely within the Calimero virtual machine (VM). This guide will walk you through setting up a Rust project using the Calimero SDK, writing an application, and preparing it for deployment.
+
+### Prerequisites
+
+Before you begin, ensure you have Rust installed on your system. If not, follow the official Rust installation guide for your platform: [Rust Installation Guide](https://www.rust-lang.org/tools/install).
+
+You should ensure you have the `wasm32-unknown-unknown` target installed. Run the following command in your terminal to install the target:
+
+```bash
+rustup target add wasm32-unknown-unknown
+```
+
+### Setting Up Your Project
+
+To create a new project, initialize a Rust library project using Cargo. Run the following command in your terminal:
+
+```bash
+cargo new --lib kv-store
+```
+
+You should have a tree that looks like this:
+
+```bash
+$ tree kv-store
+kv-store
+├── Cargo.toml
+└── src
+    └── lib.rs
+
+2 directories, 2 files
+```
+
+At this point, we can `cd` into the `kv-store` directory:
+
+```bash
+cd kv-store
+```
+
+Next, you need to specify the crate-type as `cdylib` in your `Cargo.toml` file to generate a dynamic library that can be compiled to Wasm:
+
+```toml
+# Cargo.toml
+
+[lib]
+crate-type = ["cdylib"]
+```
+
+You can now configure your project to use the Calimero SDK by adding it as a dependency in your `Cargo.toml` file:
+
+```toml
+# Cargo.toml
+
+[dependencies]
+calimero-sdk = { git = "https://github.com/calimero-network/core" }
+```
+
+Then, we need to specify a custom build profile for the most compact Wasm output:
+
+```toml
+# Cargo.toml
+
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+```
+
+Your `Cargo.toml` file should now look like this:
+
+<details>
+<summary> `Cargo.toml` </summary>
+
+```toml
+[package]
+name = "kv-store"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk = { git = "https://github.com/calimero-network/core" }
+
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
+```
+
+</details>
+
+And finally, create a `build.sh` script to compile your application into Wasm format, for example:
+
+```bash
+#!/bin/bash
+set -e
+
+cd "$(dirname $0)"
+
+TARGET="${CARGO_TARGET_DIR:-../../target}"
+
+cargo build --target wasm32-unknown-unknown --profile app-release
+
+mkdir -p res
+
+cp $TARGET/wasm32-unknown-unknown/app-release/kv_store.wasm ./res/
+```
+
+You can optionally choose to install and use [`wasm-opt`](https://github.com/WebAssembly/binaryen), for an additional optimization step in the build script. This step is not required but can help reduce the size of the generated Wasm file:
+
+```bash
+# build.sh
+
+if command -v wasm-opt > /dev/null; then
+  wasm-opt -Oz ./res/kv_store.wasm -o ./res/kv_store.wasm
+fi
+```
+
+Don't forget to make the `build.sh` script executable:
+
+```bash
+chmod +x build.sh
+```
+
+At this point, your project structure should look like this:
+
+```bash
+# in the kv-store directory
+$ tree
+tree
+.
+├── Cargo.toml
+├── build.sh
+└── src
+    └── lib.rs
+
+2 directories, 3 files
+```
+
+### Writing Your Application
+
+Now, let's create a simple key-value store application using the Calimero SDK. Start by defining your application logic in `lib.rs`:
+
+```rust
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::app;
+
+#[app::state]
+#[derive(Default, BorshSerialize, BorshDeserialize)]
+struct KvStore {}
+
+#[app::logic]
+impl KvStore {}
+```
+
+The `KvStore` struct represents the state of your application, which will be borsh-encoded in the app-scoped state partition on the node's storage. The `#[app::state]` attribute macro marks the struct as the application state, permitting its use by Calimero SDK.
+
+The `#[app::logic]` attribute macro marks the implementation block as the application logic, allowing you to define the methods that interact with the application state.
+
+Consider a method like `get` that retrieves a value from the key-value store:
+
+```rust
+pub fn get(&self, key: &str) -> Option<&str> {
+    // Snip...
+}
+```
+
+The inputs must be deserializable from the transaction data, and the output must be serializable to the response data. The `Option` type is used to represent the possibility of the key not being present in the store.
+
+And now, here's a complete example of a key-value store application:
+
+```rust
+use std::collections::HashMap;
+
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::{app, env};
+
+#[app::state]
+#[derive(Default, BorshSerialize, BorshDeserialize)]
+struct KvStore {
+    entries: HashMap<String, String>,
+}
+
+#[app::logic]
+impl KvStore {
+    pub fn set(&mut self, key: String, value: String) {
+        env::log(&format!("Setting key: {:?} to value: {:?}", key, value));
+
+        self.entries.insert(key, value);
+    }
+
+    pub fn entries(&self) -> &HashMap<String, String> {
+        env::log("Getting all entries");
+
+        &self.entries
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        env::log(&format!("Getting key: {:?}", key));
+
+        self.entries.get(key).map(|v| v.as_str())
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<String> {
+        env::log(&format!("Removing key: {:?}", key));
+
+        self.entries.remove(key)
+    }
+}
+```
+
+### Building Your Application
+
+Once your application logic is defined, run the `./build.sh` script to compile your application into Wasm format. This script will generate `kv_store.wasm` in the `res` folder of your application.
+
+```bash
+$ ./build.sh
+$ tree
+.
+├── Cargo.toml
+├── build.sh
+├── res
+│   └── kv_store.wasm
+└── src
+    └── lib.rs
+
+3 directories, 4 files
+```
+
+### Deploying Your Application
+
+After successfully building your application, you can upload the compiled `kv_store.wasm` to the registry for use by a live Calimero node.
+
+### Writing Efficient Code with Calimero SDK
+
+In the following code snippet:
+
+```rust
+pub fn get(&self, key: &str) -> Option<&str> {
+    // Snip...
+}
+```
+
+you'll notice that we prioritize using references instead of owned values. This approach optimizes performance and memory usage by minimizing unnecessary data copying.
+
+For input parameters, such as `&str` and `&[u8]`, utilizing references allows you to avoid unnecessary copying of data. Similarly, for output values, you can return references to data that live as long as `&self` or any of the input parameters. By doing so, you reduce memory overhead and improve the overall efficiency of your application.
+
+By returning a reference to the value associated with the provided key instead of cloning the entire value, you ensure efficient memory usage and enhance the performance of your application.
+
+### Handling Errors with Calimero SDK
+
+When designing methods that may potentially fail, it's recommended to return a `Result` type with an error variant representing the possible failure cases. This enables you to handle errors more effectively and communicate error conditions to users of your application. As opposed to panicking which would only return a string message, using `Result` allows you to provide a structured error type with additional context.
+
+First, let's define an error type `Error<'a>` with a lifetime tied to the key `&'a str`:
+
+```rust
+use calimero_sdk::serde::Serialize;
+
+#[derive(Debug, Serialize)]
+pub enum Error<'a> {
+    NotFound(&'a str),
+    // Add more error variants as needed
+}
+```
+
+In the above definition, `Error` represents the possible error variants that may occur during the execution of your method. Each variant can carry additional data to provide context about the error condition.
+
+Next, let's modify the `get` method to return a `Result` with `Error` as the error type:
+
+```rust
+pub fn get<'a>(&self, key: &'a str) -> Result<&'a str, Error<'a>> {
+    match self.entries.get(key) {
+        Some(value) => Ok(value),
+        None => Err(Error::NotFound(key)),
+    }
+}
+```
+
+In the `get` method, we return `Ok(value)` if the key exists in the key-value store, and `Err(Error::NotFound(key))` if the key is not found. This allows callers of the method to handle the possibility of the key not being present in the store.
+
+Additionally, ensure that the `Error` type is serializable by implementing (or deriving) the `Serialize` trait, as shown in the definition above. This enables errors to be encoded in a structured format when returned as part of a call error.
+
+By following this approach, you can handle errors more gracefully and provide meaningful feedback to users of your Calimero application.
+
+### Emitting Events with Calimero SDK
+
+To facilitate real-time monitoring of state transitions within your Calimero application, you can emit events using the `app::emit!` macro provided by the Calimero SDK. Event emission is particularly useful for handling live state transitions triggered by other actors, allowing subscribed clients to receive immediate updates about relevant actions.
+
+Let's focus on emitting events for mutating calls, specifically `set` and `remove` methods:
+
+First, define your custom events using the `#[app::event]` proc macro. In this example, we'll define events for setting a new key-value pair (`Inserted`), updating an existing value (`Updated`), and removing a key-value pair (`Removed`):
+
+```rust
+use calimero_sdk::app;
+
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+    Updated { key: &'a str, value: &'a str },
+    Removed { key: &'a str },
+}
+```
+
+Each event variant can carry additional data to provide context about the event.
+
+Next, within your application logic methods, emit events using the `app::emit!` macro:
+
+```rust
+use std::collections::hash_map::Entry;
+
+pub fn set(&mut self, key: String, value: String) {
+    match self.items.entry(key) {
+        Entry::Occupied(mut entry) => {
+            app::emit!(Events::Updated {
+                key: entry.key(),
+                value: entry.get()
+            });
+            entry.insert(value);
+        }
+        Entry::Vacant(entry) => {
+            app::emit!(Events::Inserted {
+                key: entry.key(),
+                value: &value,
+            });
+            entry.insert(value);
+        }
+    }
+}
+
+pub fn remove(&mut self, key: &str) -> Result<String, Error> {
+    app::emit!(Event::Removed { key });
+
+    self.entries.remove(key).ok_or_else(|| Error::NotFound(key))
+}
+```
+
+In each method, we emit the corresponding event with relevant data. This allows external observers to react to these events and take appropriate actions.
+
+By emitting events, you can ensure connected clients receive real-time updates about state transitions within your Calimero application, enabling them to respond to changes as they occur.
+
+### Ensuring Atomicity and Event Reliability in Calimero Applications
+
+In Calimero applications, ensuring atomicity of state changes and reliability of event emission is crucial for maintaining data consistency and facilitating reliable communication between actors. Here's how atomicity and event reliability are enforced:
+
+#### Atomic State Changes
+
+When a method call fails, whether due to panics or returning an `Err`, all state changes made up to that point are discarded. This ensures that if an operation cannot be completed successfully, the application's state remains consistent and unaffected by partial updates. By enforcing atomicity, Calimero promotes data integrity and prevents inconsistencies that may arise from incomplete transactions.
+
+#### Reliable Event Emission
+
+Similarly, event emission in Calimero applications is tied to the successful execution of transactions. Events are only relayed when a transaction has been successfully executed, ensuring that external observers receive updates about state changes reliably. By linking event emission to transaction execution, Calimero guarantees that event notifications accurately reflect the application's current state, enhancing the reliability and consistency of communication between actors.
+
+This also means it doesn't matter if the event emission is done before or after the state change, as the event will only be emitted if the state change is successful.
+
+By adhering to these principles of atomicity and event reliability, Calimero applications maintain data integrity and enable robust interaction between different components, facilitating the development of secure and dependable decentralized systems.
+
+### Local-First Efficiency: No Network Overhead for Read-Only Calls
+
+In Calimero, adherence to the local-first principle eliminates the need for network communication in read-only calls. Since read-only operations don't modify the state, there's no associated network overhead. This local-first approach streamlines data access, promoting efficient and responsive application performance without unnecessary network activity.
+
+### Conclusion
+
+You've now learned how to set up a Rust project using the Calimero SDK, write a simple application, build it into Wasm, and prepare it for deployment. Experiment with different features and functionalities to create powerful and secure applications with Calimero.
+
+<!-- todo! unavailable for now 
+  For more detailed information and advanced usage, refer to the official documentation of the Calimero SDK.
+-->
+
+Happy coding! 🚀
