@@ -217,10 +217,9 @@ const Wrapper = styled.div`
 
 export function UploadApplication({
   handleFileChange,
-  handleFileUpload,
-  wasmFile,
   setTabSwitch,
-  cidString,
+  ipfsPath,
+  fileHash,
   addRelease,
   packages,
   addReleaseLoader,
@@ -234,16 +233,13 @@ export function UploadApplication({
     hash: "",
   });
 
-  const getFileIPFSurl = () => {
-    return `https://ipfs.io/ipfs/${cidString}`;
-  };
-
   useEffect(() => {
     setReleaseInfo((prevState) => ({
       ...prevState,
-      path: getFileIPFSurl(),
+      path: ipfsPath,
+      hash: fileHash,
     }));
-  }, [cidString]);
+  }, [ipfsPath, fileHash]);
 
   return (
     <Wrapper>
@@ -260,16 +256,8 @@ export function UploadApplication({
           accept=".wasm"
           onChange={handleFileChange}
         />
-        <label className="label">{t.buttonUploadLabel}</label>
-        <button
-          className="upload-button"
-          onClick={handleFileUpload}
-          disabled={!wasmFile}
-        >
-          {t.buttonUploadText}
-        </button>
       </div>
-      {cidString && (
+      {ipfsPath && fileHash && (
         <div className="release-info-wrapper">
           <div className="release-text">{t.releaseTitle}</div>
           <div className="flex-group-col">
@@ -347,14 +335,8 @@ export function UploadApplication({
                 type="text"
                 name="hash"
                 className="input input-name"
-                value={releaseInfo.hash}
-                placeholder={t.hashLabelText}
-                onChange={(e) =>
-                  setReleaseInfo((prevState) => ({
-                    ...prevState,
-                    hash: e.target.value,
-                  }))
-                }
+                value={fileHash}
+                readOnly
               />
             </div>
           </div>
@@ -391,9 +373,8 @@ export function UploadApplication({
 
 UploadApplication.propTypes = {
   handleFileChange: PropTypes.func.isRequired,
-  handleFileUpload: PropTypes.func.isRequired,
-  wasmFile: PropTypes.any,
-  cidString: PropTypes.string.isRequired,
+  ipfsPath: PropTypes.string.isRequired,
+  fileHash: PropTypes.string.isRequired,
   setTabSwitch: PropTypes.func.isRequired,
   addRelease: PropTypes.func.isRequired,
   packages: PropTypes.array,

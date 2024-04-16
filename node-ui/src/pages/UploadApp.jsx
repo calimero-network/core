@@ -1,19 +1,21 @@
 import React, { useState, useEffect } from "react";
 import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
-import { useUploadFile } from "../hooks/useUploadFile";
 import { UploadAppContent } from "../components/uploadApp/UploadAppContent";
 import { UploadApplication } from "../components/uploadApp/UploadApplication";
 import { AddPackageForm } from "../components/uploadApp/AddPackageForm";
 import { setupWalletSelector } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { useRPC } from "../hooks/useNear";
+import axios from "axios";
 
 import * as nearAPI from "near-api-js";
 
+const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
+
 export default function UploadApp() {
-  const { cidString, commitWasm } = useUploadFile();
-  const [wasmFile, setWasmFile] = useState();
+  const [ipfsPath, setIpfsPath] = useState("");
+  const [fileHash, setFileHash] = useState("");
   const [tabSwitch, setTabSwitch] = useState(false);
   const [packages, setPackages] = useState([]);
   const [addPackageLoader, setAddPackageLoader] = useState(false);
@@ -41,10 +43,32 @@ export default function UploadApp() {
     const file = event.target.files[0];
     if (file && file.name.endsWith(".wasm")) {
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         const arrayBuffer = e.target.result;
         const bytes = new Uint8Array(arrayBuffer);
-        setWasmFile(bytes);
+
+        const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray
+          .map((byte) => ("00" + byte.toString(16)).slice(-2))
+          .join("");
+        setFileHash(hashHex);
+
+        const formData = new FormData();
+        formData.append(
+          "file",
+          new Blob([bytes], { type: "application/wasm" }),
+          file.name
+        );
+
+        axios
+          .post(BLOBBY_IPFS, formData)
+          .then((response) => {
+            setIpfsPath(`${BLOBBY_IPFS}/${response.data.cid}`);
+          })
+          .catch((error) => {
+            console.error("Error occurred while uploading the file:", error);
+          });
       };
 
       reader.onerror = (e) => {
@@ -52,14 +76,6 @@ export default function UploadApp() {
       };
 
       reader.readAsArrayBuffer(file);
-    }
-  };
-
-  const handleFileUpload = async () => {
-    try {
-      await commitWasm(wasmFile);
-    } catch (e) {
-      console.log(e);
     }
   };
 
@@ -134,17 +150,16 @@ export default function UploadApp() {
         {tabSwitch ? (
           <UploadApplication
             handleFileChange={handleFileChange}
-            handleFileUpload={handleFileUpload}
-            wasmFile={wasmFile}
             setTabSwitch={setTabSwitch}
             addRelease={addRelease}
-            cidString={cidString}
+            ipfsPath={ipfsPath}
+            fileHash={fileHash}
             packages={packages}
             addReleaseLoader={addReleaseLoader}
           />
         ) : (
           <AddPackageForm
-            cid={cidString}
+            cid={ipfsPath}
             addPackage={addPackage}
             setTabSwitch={setTabSwitch}
             addPackageLoader={addPackageLoader}
