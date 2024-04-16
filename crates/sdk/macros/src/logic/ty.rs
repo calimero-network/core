@@ -13,16 +13,16 @@ impl ToTokens for LogicTy {
     }
 }
 
-pub struct LogicTyInput<'a> {
+pub struct LogicTyInput<'a, 'b> {
     pub ty: &'a syn::Type,
 
-    pub type_: &'a syn::Path,
+    pub type_: &'b syn::Path,
 }
 
-impl<'a> TryFrom<LogicTyInput<'a>> for LogicTy {
+impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
     type Error = errors::Errors<'a, syn::Type>;
 
-    fn try_from(input: LogicTyInput<'a>) -> Result<Self, Self::Error> {
+    fn try_from(input: LogicTyInput<'a, 'b>) -> Result<Self, Self::Error> {
         let mut errors = errors::Errors::new(input.ty);
 
         'fatal: {
