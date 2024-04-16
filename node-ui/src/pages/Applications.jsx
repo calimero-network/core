@@ -25,7 +25,7 @@ export default function Applications() {
         setPackages(await getPackages());
       })();
     }
-  }, [packages]);
+  }, []);
 
   return (
     <FlexLayout>

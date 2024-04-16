@@ -248,7 +248,7 @@ pub async fn get_release(application: &str, version: &str) -> eyre::Result<Relea
             method_name: "get_release".to_string(),
             args: FunctionArgs::from(
                 json!({
-                    "name": application,
+                    "id": application,
                     "version": version
                 })
                 .to_string()

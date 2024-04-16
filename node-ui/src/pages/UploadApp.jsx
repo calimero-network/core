@@ -44,25 +44,22 @@ export default function UploadApp() {
     if (file && file.name.endsWith(".wasm")) {
       const reader = new FileReader();
       reader.onload = async (e) => {
-        const arrayBuffer = e.target.result;
+        const arrayBuffer = new Uint8Array(e.target.result);
         const bytes = new Uint8Array(arrayBuffer);
+        const blob = new Blob([bytes], { type: "application/wasm" });
 
-        const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
+        const hashBuffer = await crypto.subtle.digest(
+          "SHA-256",
+          await blob.arrayBuffer()
+        );
         const hashArray = Array.from(new Uint8Array(hashBuffer));
         const hashHex = hashArray
           .map((byte) => ("00" + byte.toString(16)).slice(-2))
           .join("");
         setFileHash(hashHex);
 
-        const formData = new FormData();
-        formData.append(
-          "file",
-          new Blob([bytes], { type: "application/wasm" }),
-          file.name
-        );
-
-        axios
-          .post(BLOBBY_IPFS, formData)
+        await axios
+          .post(BLOBBY_IPFS, blob)
           .then((response) => {
             setIpfsPath(`${BLOBBY_IPFS}/${response.data.cid}`);
           })
@@ -104,9 +101,10 @@ export default function UploadApp() {
         },
       ],
     });
-    if (res.status.SuccessValue === "") {
+    if (res.status.SuccessValue) {
       setAddPackageLoader(false);
       window.alert("Package added successfully!");
+      setTabSwitch(true);
     }
   };
 

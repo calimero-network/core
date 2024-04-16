@@ -144,7 +144,7 @@ export function InstallApplication({
                 onClick={async () => {
                   setSelectedPackage(pkg);
                   setSelectedRelease(null);
-                  setReleases(await getReleases(pkg.name));
+                  setReleases(await getReleases(pkg.id));
                 }}
                 key={id}
                 className="dropdown-item"
@@ -192,7 +192,7 @@ export function InstallApplication({
         <button
           className="install-button"
           onClick={() =>
-            installApplication(selectedPackage.name, selectedRelease.version)
+            installApplication(selectedPackage.id, selectedRelease.version)
           }
           disabled={!selectedPackage && !selectedRelease}
         >
