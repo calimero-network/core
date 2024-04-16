@@ -16,7 +16,7 @@ export interface RpcClient {
 
 export interface RequestConfig {
   timeout?: number;
-  headers: AxiosHeaders;
+  headers?: AxiosHeaders;
 }
 
 export type RpcResult<Result> =
