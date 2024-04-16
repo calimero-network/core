@@ -1,6 +1,6 @@
 use quote::{quote, ToTokens};
 
-use crate::errors;
+use crate::{errors, reserved};
 
 mod arg;
 mod method;
@@ -55,13 +55,9 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             return Err(errors.finish(&input.item.self_ty, errors::ParseError::UnsupportedImplType));
         };
 
-        let reserved_ident = syn::Ident::new("CalimeroInput", proc_macro2::Span::call_site());
-        let reserved_lifetime =
-            syn::Lifetime::new("'CALIMERO_INPUT", proc_macro2::Span::call_site());
-
         for generic in &input.item.generics.params {
             if let syn::GenericParam::Lifetime(params) = generic {
-                if params.lifetime == reserved_lifetime {
+                if params.lifetime == *reserved::lifetimes::input() {
                     errors
                         .push_spanned(&params.lifetime, errors::ParseError::UseOfReservedLifetime);
                 }
@@ -75,8 +71,6 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             if let syn::ImplItem::Fn(method) = item {
                 match method::LogicMethod::try_from(method::LogicMethodImplInput {
                     type_,
-                    reserved_ident: &reserved_ident,
-                    reserved_lifetime: &reserved_lifetime,
                     item: method,
                 }) {
                     Ok(method::LogicMethod::Private) => {}

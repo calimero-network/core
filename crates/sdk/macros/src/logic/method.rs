@@ -1,8 +1,7 @@
 use quote::{quote, ToTokens};
 
-use super::arg;
-use super::ty;
-use crate::errors;
+use super::{arg, ty};
+use crate::{errors, reserved};
 
 pub enum LogicMethod<'a> {
     Public(PublicLogicMethod<'a>),
@@ -133,12 +132,13 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
 pub struct LogicMethodImplInput<'a, 'b> {
     pub item: &'a syn::ImplItemFn,
 
-    pub type_: &'a syn::Path,
-    pub reserved_ident: &'b syn::Ident,
-    pub reserved_lifetime: &'b syn::Lifetime,
+    pub type_: &'b syn::Path,
 }
 
-impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
+impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a>
+where
+    'b: 'a,
+{
     type Error = errors::Errors<'a, syn::ImplItemFn>;
 
     fn try_from(input: LogicMethodImplInput<'a, 'b>) -> Result<Self, Self::Error> {
@@ -158,7 +158,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
 
         for generic in &input.item.sig.generics.params {
             if let syn::GenericParam::Lifetime(params) = generic {
-                if &params.lifetime == input.reserved_lifetime {
+                if params.lifetime == *reserved::lifetimes::input() {
                     errors
                         .push_spanned(&params.lifetime, errors::ParseError::UseOfReservedLifetime);
                 }
@@ -173,8 +173,6 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         for arg in &input.item.sig.inputs {
             match arg::LogicArg::try_from(arg::LogicArgInput {
                 type_: input.type_,
-                reserved_ident: input.reserved_ident,
-                reserved_lifetime: input.reserved_lifetime,
                 arg,
             }) {
                 Ok(arg) => match (arg, &self_type) {
@@ -193,8 +191,6 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         if let syn::ReturnType::Type(_, ret_type) = &input.item.sig.output {
             match ty::LogicTy::try_from(ty::LogicTyInput {
                 type_: input.type_,
-                reserved_ident: input.reserved_ident,
-                reserved_lifetime: input.reserved_lifetime,
                 ty: &*ret_type,
             }) {
                 Ok(ty) => ret = Some(ty),
@@ -209,8 +205,8 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             args,
             ret,
 
-            codegen_input_ident: input.reserved_ident.clone(),
-            codegen_lifetime: has_refs.then(|| input.reserved_lifetime.clone()),
+            codegen_input_ident: reserved::idents::input().to_owned(),
+            codegen_lifetime: has_refs.then(|| reserved::lifetimes::input().to_owned()),
             // orig: item,
         }))
     }

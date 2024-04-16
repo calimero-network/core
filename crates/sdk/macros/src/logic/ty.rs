@@ -1,7 +1,6 @@
 use quote::ToTokens;
 
-use crate::errors;
-use crate::sanitizer;
+use crate::{errors, reserved, sanitizer};
 
 pub struct LogicTy {
     pub ty: syn::Type,
@@ -18,8 +17,6 @@ pub struct LogicTyInput<'a> {
     pub ty: &'a syn::Type,
 
     pub type_: &'a syn::Path,
-    pub reserved_ident: &'a syn::Ident,
-    pub reserved_lifetime: &'a syn::Lifetime,
 }
 
 impl<'a> TryFrom<LogicTyInput<'a>> for LogicTy {
@@ -34,17 +31,20 @@ impl<'a> TryFrom<LogicTyInput<'a>> for LogicTy {
                 break 'fatal;
             };
 
+            let reserved_ident = reserved::idents::input();
+            let reserved_lifetime = reserved::lifetimes::input();
+
             let cases = [
                 (
                     sanitizer::Case::Self_,
                     sanitizer::Action::ReplaceWith(&input.type_),
                 ),
                 (
-                    sanitizer::Case::Ident(Some(&input.reserved_ident)),
+                    sanitizer::Case::Ident(Some(&reserved_ident)),
                     sanitizer::Action::Forbid(errors::ParseError::UseOfReservedIdent),
                 ),
                 (
-                    sanitizer::Case::Lifetime(Some(&input.reserved_lifetime)),
+                    sanitizer::Case::Lifetime(Some(&reserved_lifetime)),
                     sanitizer::Action::Forbid(errors::ParseError::UseOfReservedLifetime),
                 ),
                 (sanitizer::Case::Lifetime(None), sanitizer::Action::Ignore),
@@ -59,7 +59,7 @@ impl<'a> TryFrom<LogicTyInput<'a>> for LogicTy {
             let has_ref = matches!(
                 (
                     outcome.get(&sanitizer::Case::Lifetime(None)),
-                    outcome.get(&sanitizer::Case::Lifetime(Some(&input.reserved_lifetime)))
+                    outcome.get(&sanitizer::Case::Lifetime(Some(&reserved_lifetime)))
                 ),
                 (Some(_), _) | (_, Some(_))
             );

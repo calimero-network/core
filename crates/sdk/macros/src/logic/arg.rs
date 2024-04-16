@@ -1,7 +1,6 @@
 use quote::{quote, ToTokens};
 
-use super::ty;
-use super::utils;
+use super::{ty, utils};
 use crate::errors;
 
 pub enum SelfType {
@@ -33,8 +32,6 @@ pub struct LogicArgInput<'a, 'b> {
     pub arg: &'a syn::FnArg,
 
     pub type_: &'b syn::Path,
-    pub reserved_ident: &'b syn::Ident,
-    pub reserved_lifetime: &'b syn::Lifetime,
 }
 
 impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
@@ -80,8 +77,6 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
 
                 let ty = match ty::LogicTy::try_from(ty::LogicTyInput {
                     type_: input.type_,
-                    reserved_ident: input.reserved_ident,
-                    reserved_lifetime: input.reserved_lifetime,
                     ty: &*typed.ty,
                 }) {
                     Ok(ty) => ty,

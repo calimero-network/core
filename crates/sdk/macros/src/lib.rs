@@ -8,6 +8,7 @@ use quote::ToTokens;
 
 mod errors;
 mod logic;
+mod reserved;
 mod sanitizer;
 
 // todo! use referenced lifetimes everywhere
