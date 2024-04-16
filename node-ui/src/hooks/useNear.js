@@ -14,7 +14,7 @@ export function useRPC() {
       args_base64: btoa(
         JSON.stringify({
           offset: 0,
-          limit: 10,
+          limit: 100,
         })
       ),
       finality: "final",
@@ -50,9 +50,9 @@ export function useRPC() {
       method_name: "get_releases",
       args_base64: btoa(
         JSON.stringify({
-          name: packageName,
+          id,
           offset: 0,
-          limit: 10,
+          limit: 100,
         })
       ),
       finality: "final",

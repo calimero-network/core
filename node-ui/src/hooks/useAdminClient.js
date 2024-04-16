@@ -6,8 +6,7 @@ export function useAdminClient() {
       application: selectedPackage,
       version: selectedVersion,
     });
-    const data = response.data;
-    console.log("Response received:", data);
+    return response.data;
   };
 
   return { installApplication };

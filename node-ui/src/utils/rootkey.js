@@ -12,12 +12,17 @@ export const getParams = (location) => {
 };
 
 export const submitRootKeyRequest = async (params) => {
-  const response = await axios.post("/admin-api/root-key", params);
-  const data = response.data;
-  console.log("Response received:", data);
-  localStorage.setItem(ROOT_KEY, true);
-  localStorage.setItem(PUBLIC_KEY, params.publicKey);
-  return data;
+  try {
+    const response = await axios.post("/admin-api/root-key", params);
+    const data = response.data;
+    console.log("Response received:", data);
+    localStorage.setItem(ROOT_KEY, true);
+    localStorage.setItem(PUBLIC_KEY, params.publicKey);
+    return data;
+  } catch (e) {
+    console.error("Failed to submit root key request:", e);
+    return false;
+  }
 };
 
 export const isRootKeyAdded = () => {

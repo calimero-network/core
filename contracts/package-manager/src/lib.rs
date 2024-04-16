@@ -56,7 +56,7 @@ impl Default for PackageManager {
 
 #[near_bindgen]
 impl PackageManager {
-    pub fn add_package(&mut self, name: String, description: String, repository: String) {
+    pub fn add_package(&mut self, name: String, description: String, repository: String) -> String {
         let id_hash = PackageManager::calculate_id_hash(&name);
         if self.packages.contains_key(&id_hash) {
             env::panic_str("Package already exists.")
@@ -65,13 +65,14 @@ impl PackageManager {
         self.packages.insert(
             id_hash.clone(),
             Package::new(
-                id_hash,
+                id_hash.clone(),
                 name,
                 description,
                 repository,
                 env::signer_account_id(),
             ),
         );
+        id_hash
     }
 
     fn calculate_id_hash(name: &str) -> String {

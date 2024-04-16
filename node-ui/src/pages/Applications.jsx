@@ -27,7 +27,7 @@ export default function Applications() {
         setPackages(await getPackages());
       })();
     }
-  }, [packages]);
+  }, []);
 
   useEffect(() => {
     const setApps = async () => {
