@@ -53,11 +53,15 @@ pub enum ParseError<'a> {
     #[error("{TAG} expected an identifier, found a pattern")]
     ExpectedIdent,
     #[error("{TAG} generic types are not supported")]
-    NoGenericSupport,
+    NoGenericTypeSupport,
+    #[error("{TAG} state lifetimes are not supported")]
+    NoGenericLifetimeSupport,
     #[error("{TAG} how dare you? now, pick something else")]
     UseOfReservedLifetime,
     #[error("{TAG} how dare you? now, pick something else")]
     UseOfReservedIdent,
+    #[error("{TAG} {0}")]
+    Custom(&'a str),
 }
 
 impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {

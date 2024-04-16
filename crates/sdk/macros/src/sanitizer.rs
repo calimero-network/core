@@ -121,6 +121,7 @@ impl<'a> SanitizerAtom<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct SanitizationResult<'a> {
     counts: BTreeMap<&'a Case<'a>, usize>,
     errors: errors::Errors<'static>,

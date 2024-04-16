@@ -28,11 +28,13 @@ pub fn logic(_args: TokenStream, input: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn state(_args: TokenStream, input: TokenStream) -> TokenStream {
-    // disallow lifetime annotations, perhaps you meant to put this on the logic block?
-
-    // dbg!(attr);
-    // dbg!(input)
-    input
+    reserved::init();
+    let item = syn::parse_macro_input!(input as state::StateItem);
+    let tokens = match state::StateImpl::try_from(state::StateImplInput { item: &item }) {
+        Ok(data) => data.to_token_stream(),
+        Err(err) => err.to_compile_error(),
+    };
+    tokens.into()
 }
 
 #[proc_macro_attribute]

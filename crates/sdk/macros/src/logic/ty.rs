@@ -47,7 +47,10 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
                     sanitizer::Case::Lifetime(Some(&reserved_lifetime)),
                     sanitizer::Action::Forbid(errors::ParseError::UseOfReservedLifetime),
                 ),
-                (sanitizer::Case::Lifetime(None), sanitizer::Action::Ignore),
+                (
+                    sanitizer::Case::Lifetime(None),
+                    sanitizer::Action::ReplaceWith(&reserved_lifetime),
+                ),
             ];
 
             let outcome = sanitizer.sanitize(&cases);

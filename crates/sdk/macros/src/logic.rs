@@ -65,7 +65,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                 }
                 continue;
             }
-            errors.push_spanned(generic, errors::ParseError::NoGenericSupport);
+            errors.push_spanned(generic, errors::ParseError::NoGenericTypeSupport);
         }
 
         let mut methods = vec![];
