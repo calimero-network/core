@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
-import { LoaderSpinner } from "../common/LoaderSpinner";
+import LoaderSpinner from "../common/LoaderSpinner";
 
 const ContractFormLayout = styled.div`
   display: flex;
