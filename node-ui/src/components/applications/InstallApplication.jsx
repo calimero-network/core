@@ -191,9 +191,13 @@ export function InstallApplication({
         )}
         <button
           className="install-button"
-          onClick={() =>
-            installApplication(selectedPackage.id, selectedRelease.version)
-          }
+          onClick={async () => {
+            const response = await installApplication(
+              selectedPackage.id,
+              selectedRelease.version
+            );
+            window.alert("Installation status: " + response);
+          }}
           disabled={!selectedPackage && !selectedRelease}
         >
           Install
