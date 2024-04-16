@@ -58,8 +58,10 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         for generic in &input.item.generics.params {
             if let syn::GenericParam::Lifetime(params) = generic {
                 if params.lifetime == *reserved::lifetimes::input() {
-                    errors
-                        .push_spanned(&params.lifetime, errors::ParseError::UseOfReservedLifetime);
+                    errors.push(
+                        params.lifetime.span(),
+                        errors::ParseError::UseOfReservedLifetime,
+                    );
                 }
                 continue;
             }

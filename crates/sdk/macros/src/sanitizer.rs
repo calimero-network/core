@@ -110,7 +110,7 @@ impl<'a> SanitizerAtom<'a> {
             Action::Forbid(error) => match self {
                 SanitizerAtom::Ident(ident) => errors.push_spanned(ident, error),
                 SanitizerAtom::Lifetime(LifetimeAtom::Named(lifetime)) => {
-                    errors.push_spanned(lifetime, error)
+                    errors.push(lifetime.span(), error)
                 }
                 SanitizerAtom::Lifetime(LifetimeAtom::Elided(span)) => errors.push(*span, error),
                 _ => unreachable!("non-ident/lifetime atoms should never satisfy a case"),
