@@ -97,7 +97,7 @@ Create new post
 curl -X POST -H "Content-Type: application/json" -d '
 {
   "jsonrpc": "2.0",
-  "method": "call_mut",
+  "method": "mutate",
   "params": {
     "applicationId": "{APPLICATION_ID}",
     "method": "create_post",
@@ -107,5 +107,5 @@ curl -X POST -H "Content-Type: application/json" -d '
     }
   },
   "id": "dontcare"
-}' 'http://localhost:2529/jsonrpc'
+}' 'http://localhost:2428/jsonrpc'
 ```
