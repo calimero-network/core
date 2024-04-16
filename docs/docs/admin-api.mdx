@@ -8,12 +8,12 @@ slug: /admin-client-api/
 
 Our Admin Client API offers a comprehensive set of endpoints designed to facilitate the management and administration of the node states.
 With intuitive routes and robust handlers, administrators can seamlessly navigate various node operations with ease and efficiency.
-The Admin Client API, paired with the Admin UI—a web application, is your go-to tool for managing node states,
+The Admin Client API, paired with the **[Admin UI](/admin-ui)** — a web application, is your go-to tool for managing node states,
 simplifying interactions with the server.
 
 The Admin API empowers you to:
 
-- Generate root keys
+- Revoke root keys
 - Request validation challenge
 - Install and list node applications
 - Fetch decentralized identifiers (DID)
@@ -21,10 +21,18 @@ The Admin API empowers you to:
 
 In essence, the Admin API simplifies node management, while the Admin UI offers an intuitive interface for seamless control.
 
+### How to Use
+
+To utilize the Admin API endpoints effectively, the recommended approach is to leverage the **[Admin UI web application](/admin-ui)**. The Admin UI automates various steps involved in interacting with the Admin API, ensuring seamless integration and providing the best user experience.
+
+By using the Admin UI, administrators can streamline their workflow, access essential functionalities with ease, and benefit from intuitive visualizations and controls. This approach not only simplifies the management of decentralized networks but also ensures that administrators have access to the best options and features available.
+
 ### API Endpoints
 
-1. **Root Key Request** - This endpoint allows administrators to request root keys for secure authentication and access control within the decentralized network environment.
+1. **Root Key Request** - This endpoint allows administrators to add root keys for secure authentication and access control within the decentralized network environment.
    Validation Challenge Generation
+
+   **Pre requirements** - Before calling "Root Key Request" endpoint, it is essential to first call the "/request-challenge" endpoint. This step is necessary as the "Root Key Request" endpoint requires a challenge to be passed and verified during the process of adding the root key
 
    **POST** `/root-key`
 
@@ -43,16 +51,16 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    curl -X POST \
    -H "Content-Type: application/json" \
    -d '{"accountId": "<ACCOUNT_ID>", "signature": "<SIGNATURE>", "publicKey": "<PUBLIC_KEY>", "callbackUrl": "<CALLBACK_URL>"}' \
-   https://<NODE-URL>/admin-api/root-key
+   http://<NODE-URL>/admin-api/root-key
    ```
 
    **Example response**
 
    ```
    > Success response
-       Root key added
+       { data: "Root key added" }
    > Error response
-       Failed to add root key: <error_message>
+       { error: "Failed to add root key: <error_message>" }
    ```
 
 2. **Request authentication challenge** - Administrators can utilize this endpoint to generate validation challenges, enabling users to authenticate their identity via wallet signatures for enhanced security measures.
@@ -62,16 +70,16 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    **Example call with curl**
 
    ```
-   curl -X POST https://<NODE-URL>/admin-api/request-challenge
+   curl -X POST http://<NODE-URL>/admin-api/request-challenge
    ```
 
    **Example response**
 
    ```
    > Success response
-      { "challenge": <challenge> }
+      { data: { challenge: <challenge> } }
    > Error response
-      Failed to fetch challenge: <error_message>
+      { error: "Failed to fetch challenge: <error_message>" }
    ```
 
 3. **Install Application** - This endpoint facilitates the installation of new applications on the node, expanding the functionality and capabilities of the decentralized network ecosystem.
@@ -89,16 +97,16 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    curl -X POST \
    -H "Content-Type: application/json" \
    -d '{"application": "<APPLICATION_NAME>", "version": "<VERSION>"}' \
-   https://<NODE-URL>/admin-api/install-application
+   http://<NODE-URL>/admin-api/install-application
    ```
 
    **Example response**
 
    ```
    > Success response
-       Application Installed
+       { data: "Application Installed" }
    > Error response
-       Failed to install application: <error_message>
+       { error: "Failed to install application: <error_message>" }
    ```
 
 4. **List installed Application** - This endpoint returns a list of installed applications, providing valuable insights into the current state of the decentralized network ecosystem
@@ -108,22 +116,22 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    **Example call with curl**
 
    ```
-   curl -X GET https://<NODE-URL>/admin-api/applications
+   curl -X GET http://<NODE-URL>/admin-api/applications
    ```
 
    **Example response**
 
    ```
    > Success response
-       {
+       { data: {
         applications:
         [{
-            "application_name": <application_name>,
-            "version": <application_version>
+            application_name: <application_name>,
+            version: <application_version>
         }]
-       }
+       }}
    > Error response
-       Failed to fetch installed applications: <error_message>
+       { error: "Failed to fetch installed applications: <error_message>" }
    ```
 
 5. **Add Client Key** - Administrators can add new client keys via this endpoint, enabling seamless access and authentication for authorized users within the network.
@@ -142,16 +150,16 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    curl -X POST \
    -H "Content-Type: application/json" \
    -d '{"wallet_signature": "<WALLET_SIGNATURE>", "payload": { "message": <MESSAGE>, "metadata": <METADATA_VALUE>}. "wallet_metadata": {"wallet_type": <WALLET_TYPE>, "signing_key": <SIGNING_KEY>}}' \
-   https://<NODE-URL>/admin-api/add-client-key
+   http://<NODE-URL>/admin-api/add-client-key
    ```
 
    **Example response**
 
    ```
    > Success response
-       Client key stored
+       { data: "Client key stored" }
    > Error response
-       Failed to add client key: <error_message>
+       { error: "Failed to add client key: <error_message>" }
    ```
 
 6. **Get the DID** - Fetches the Decentralized Identifier (DID) associated with the node, providing a unique identifier for network entities and enabling interoperability across decentralized applications.
@@ -159,29 +167,22 @@ In essence, the Admin API simplifies node management, while the Admin UI offers 
    **GET** `/did`
 
    ```
-   curl -X GET https://<NODE-URL>/admin-api/did
+   curl -X GET http://<NODE-URL>/admin-api/did
    ```
 
    **Example response**
 
    ```
    > Success response
-       {
-        "data":
+       { data:
         {
-            "id": <id>,
-            "root_keys":
+            id: <id>,
+            root_keys:
             [{
-                "signing_key": <signing_key>
+                signing_key: <signing_key>
             }]
         }
        }
    > Error response
-       Failed to fetch DID: <error_message>
+      { error: "Failed to fetch DID: <error_message>" }
    ```
-
-### How to Use
-
-To utilize the Admin API endpoints effectively, the recommended approach is to leverage the Admin UI web application. The Admin UI automates various steps involved in interacting with the Admin API, ensuring seamless integration and providing the best user experience.
-
-By using the Admin UI, administrators can streamline their workflow, access essential functionalities with ease, and benefit from intuitive visualizations and controls. This approach not only simplifies the management of decentralized networks but also ensures that administrators have access to the best options and features available.

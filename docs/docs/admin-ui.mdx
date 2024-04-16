@@ -1,0 +1,53 @@
+---
+id: admin-ui
+title: Admin UI
+slug: /admin-ui
+---
+
+### About Admin UI
+
+The Admin UI is a web application designed to streamline the management of node states within your system. Seamlessly connected with the API provided by the **[Admin Client API](/admin-client-api)**, this user interface offers a user-friendly platform for overseeing and controlling various aspects of your node infrastructure.
+
+### How to Use
+
+To access the Admin UI, simply navigate to `http://<node_url>/admin` in your web browser. Once logged in, you'll gain access to a comprehensive set of tools and features for managing your node infrastructure
+
+### Usage
+
+1. **Login page**
+
+   The Login Page initiates the authentication process by calling the /request-challenge endpoint. This endpoint generates a challenge that is then signed along with the user's message using their wallet.
+
+   ![Login Page](/admin-ui/login-page.png)
+
+2. **Add root key**
+
+   The "Add Root Key" feature facilitates the addition of a root key to the node. This process involves sending parameters such as signature, public key, account ID, and callback URL to the /root-key API endpoint, which is hosted by the Admin API.
+
+   ![Add root key](/admin-ui/request-root-key.png)
+
+3. **List installed applications**
+
+   The "List Installed Applications" feature provides overview of all installed applications on a node
+
+   ![List installed application](/admin-ui/list-application.png)
+
+4. **Install new application**
+
+   The "Install New Application" process involves the user filling out a form to add a new package, uploading the application release WebAssembly (Wasm) file, and then submitting another form to add the new application for installation on the node.
+
+   ![Add new application package](/admin-ui/add-application-package.png)
+
+   ![Add new application package release](/admin-ui/add-application-package-release.png)
+
+5. **List the DID**
+
+   The "List DID" feature provides overview of all DID's saved on a node
+
+   ![List DID](/admin-ui/list-DID.png)
+
+6. **List saved node keys**
+
+   The "List saved node keys" feature provides overview of all keys saved on a node
+
+   ![List saved node keys](/admin-ui/list-keys.png)
