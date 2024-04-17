@@ -1,15 +1,15 @@
 use std::rc::Rc;
 
 pub mod idents {
-    super::lazy! {
-        input: syn::Ident = syn::Ident::new("CALIMERO_INPUT", proc_macro2::Span::call_site()),
-    }
+    super::lazy! {syn::Ident => {
+        input = syn::Ident::new("CalimeroInput", proc_macro2::Span::call_site()),
+    }}
 }
 
 pub mod lifetimes {
-    super::lazy! {
-        input: syn::Lifetime = syn::Lifetime::new("'CALIMERO_INPUT", proc_macro2::Span::call_site()),
-    }
+    super::lazy! {syn::Lifetime => {
+        input = syn::Lifetime::new("'CALIMERO_INPUT", proc_macro2::Span::call_site()),
+    }}
 }
 
 pub fn init() {
@@ -41,6 +41,14 @@ impl<T: Clone> ReservedRef<T> {
     }
 }
 
+impl<T> Clone for ReservedRef<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<T: quote::ToTokens> quote::ToTokens for ReservedRef<T> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         self.inner.to_tokens(tokens)
@@ -48,7 +56,7 @@ impl<T: quote::ToTokens> quote::ToTokens for ReservedRef<T> {
 }
 
 macro_rules! _lazy {
-    ($($name:ident: $ty:ty = $init:expr,)*) => {
+    ($ty:ty => {$($name:ident = $init:expr,)*}) => {
         use std::cell::RefCell;
         use std::rc::Rc;
 
