@@ -61,10 +61,17 @@ impl<'a> ToTokens for StateImpl<'a> {
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
+        let traits = [
+            quote! { ::calimero_sdk::__private::NotQuiteSealedButStillPrivate },
+            quote! { ::calimero_sdk::marker::AppState },
+        ];
+
         quote! {
             #orig
 
-            impl #impl_generics ::calimero_sdk::__private::marker::AppState for #ident #ty_generics #where_clause {}
+            #(
+                impl #impl_generics #traits for #ident #ty_generics #where_clause {}
+            )*
         }
         .to_tokens(tokens)
     }

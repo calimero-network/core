@@ -100,7 +100,7 @@ pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-pub fn state_read<T: borsh::BorshDeserialize>() -> Option<T> {
+pub fn state_read<T: crate::marker::AppState>() -> Option<T> {
     let data = storage_read(STATE_KEY)?;
     match borsh::from_slice(&data) {
         Ok(state) => Some(state),
@@ -120,7 +120,7 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
     .unwrap_or_else(|val| panic_str(&format!("Expected bool as 0|1, got: {}.", val)))
 }
 
-pub fn state_write<T: borsh::BorshSerialize>(state: &T) {
+pub fn state_write<T: crate::marker::AppState>(state: &T) {
     let data = match borsh::to_vec(state) {
         Ok(data) => data,
         Err(err) => panic_str(&format!("Cannot serialize app state: {:?}", err)),
