@@ -9,8 +9,9 @@ pub enum LogicMethod<'a> {
 }
 
 pub struct PublicLogicMethod<'a> {
+    self_: syn::Path,
+
     name: &'a syn::Ident,
-    self_: &'a syn::Path,
     self_type: Option<arg::SelfType>,
     args: Vec<arg::LogicArgTyped<'a>>,
     ret: Option<ty::LogicTy>,
