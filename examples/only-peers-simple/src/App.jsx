@@ -38,23 +38,17 @@ class App extends React.Component {
     try {
       const { client } = this.state;
 
-      const headers = new AxiosHeaders();
-      headers.set("wallet_type", "NEAR");
-      headers.set(
-        "signing_key",
-        "4XTTMDeZuuUeMrpHtuM1HWCeKJvy8hVXTyChXH65SNrGb14MD"
-      );
-      headers.set(
-        "signature",
-        "3iuv5WDUFxNNr6iuzTNaHgJxaZt3eH6UhfWQ1KXdpZLoHNdg1Xm8GNytwVYwedzACBaRcgkS8mpGvcNZMzGuhCZc"
-      );
-      headers.set("challenge", "HwSzpf3ieReW9ecy4D3HFJMZK8sYjrdnmXjZYCFVCJpT");
+      //TODO define how to pass this values in demo
+      // const headers = {
+      //   wallet_type: WalletType.NEAR,
+      //   signing_key: "signing_key",
+      //   signature: "signatureBase58",
+      //   challenge: "contentBase58",
+      // };
 
-      console.log("headers", headers);
-
-      const configR = {
-        headers,
-      };
+      // const configR = {
+      //   headers,
+      // };
 
       const resp = await client.mutate(
         {
@@ -64,8 +58,8 @@ class App extends React.Component {
             title: "Your Post Title",
             content: "Your Post Content",
           },
-        },
-        configR
+        }
+        // config
       );
       console.log("resp", resp);
       this.setState({ response: JSON.stringify(resp) });
