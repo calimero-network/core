@@ -8,7 +8,7 @@ import {
   RequestConfig,
   RpcResult,
 } from "../rpc";
-import axios, { AxiosHeaders, AxiosInstance } from "axios";
+import axios, { AxiosInstance } from "axios";
 
 type JsonRpcVersion = "2.0";
 
@@ -33,14 +33,12 @@ export class JsonRpcClient implements RpcClient {
   public constructor(
     baseUrl: string,
     path: string,
-    defaultTimeout: number = 1000,
-    headers?: AxiosHeaders
+    defaultTimeout: number = 1000
   ) {
     this.path = path;
     this.axiosInstance = axios.create({
       baseURL: baseUrl,
       timeout: defaultTimeout,
-      headers: headers,
     });
   }
 
