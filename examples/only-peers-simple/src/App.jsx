@@ -4,7 +4,6 @@ import {
   WsSubscriptionsClient,
 } from "@calimero-is-near/calimero-p2p-sdk/lib";
 import { config } from "./calimeroConfig.js";
-import { AxiosHeaders } from "axios";
 
 class App extends React.Component {
   constructor(props) {

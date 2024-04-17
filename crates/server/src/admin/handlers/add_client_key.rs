@@ -52,14 +52,14 @@ struct WalletMetadata {
     signing_key: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Serialize, Clone)]
+#[derive(Debug, Deserialize, PartialEq, Serialize, Clone, Copy)]
 pub enum WalletType {
     NEAR,
     ETH,
 }
 
 impl WalletType {
-    pub fn from_str(input: &str) -> Result<Self, eyre::Report> {
+    pub fn from_str(input: &str) -> eyre::Result<Self> {
         match input {
             "ETH" => Ok(WalletType::ETH),
             "NEAR" => Ok(WalletType::NEAR),

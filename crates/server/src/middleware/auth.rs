@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use calimero_identity::auth::verify_client_key;
+use calimero_identity::auth::verify_near_public_key;
 use calimero_store::Store;
 use libp2p::futures::future::BoxFuture;
 use tower::{Layer, Service};
@@ -81,10 +81,10 @@ struct AuthHeaders {
     challenge: Vec<u8>,
 }
 
-pub fn auth<'a>(headers: &'a HeaderMap, store: &'a Store) -> Result<(), UnauthorizedError<'a>> {
+pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<'static>> {
     let auth_headers = get_auth_headers(headers).map_err(|e| {
-        debug!("Failed to extract authentication headers: {}", e);
-        UnauthorizedError::new("Failed to extract authentication headers")
+        debug!("Failed to extract authentication headers {}", e);
+        UnauthorizedError::new("Failed to extract authentication headers.")
     })?;
 
     let client_key = ClientKey {
@@ -98,11 +98,14 @@ pub fn auth<'a>(headers: &'a HeaderMap, store: &'a Store) -> Result<(), Unauthor
         return Err(UnauthorizedError::new("Client key does not exist."));
     }
 
-    if verify_client_key(
+    let is_signature_valid = verify_near_public_key(
         auth_headers.signing_key.as_str(),
         auth_headers.challenge.as_slice(),
         auth_headers.signature.as_slice(),
-    ) {
+    )
+    .map_err(|_| UnauthorizedError::new("Invalid client key."))?;
+
+    if is_signature_valid {
         Ok(())
     } else {
         Err(UnauthorizedError::new(
@@ -112,7 +115,6 @@ pub fn auth<'a>(headers: &'a HeaderMap, store: &'a Store) -> Result<(), Unauthor
 }
 
 fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
-    print!("Headers: {:?}", headers);
     let signing_key = headers
         .get("signing_key")
         .ok_or_else(|| UnauthorizedError::new("Missing signing_key header"))?;

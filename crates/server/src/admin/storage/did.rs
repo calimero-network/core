@@ -22,8 +22,8 @@ pub fn create_did(store: &Store) -> eyre::Result<Did> {
 
     let did_document = Did {
         id: DID_KEY.to_string(),
-        root_keys: Vec::<RootKey>::new(),
-        client_keys: Vec::<ClientKey>::new(),
+        root_keys: Vec::new(),
+        client_keys: Vec::new(),
     };
 
     let did_document_vec = serde_json::to_vec(&did_document)
