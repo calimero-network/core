@@ -134,10 +134,7 @@ pub struct LogicMethodImplInput<'a, 'b> {
     pub type_: &'b syn::Path,
 }
 
-impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a>
-where
-    'b: 'a,
-{
+impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
     type Error = errors::Errors<'a, syn::ImplItemFn>;
 
     fn try_from(input: LogicMethodImplInput<'a, 'b>) -> Result<Self, Self::Error> {
@@ -201,7 +198,7 @@ where
 
         errors.check(LogicMethod::Public(PublicLogicMethod {
             name: &input.item.sig.ident,
-            self_: input.type_,
+            self_: input.type_.clone(),
             self_type,
             args,
             ret,
