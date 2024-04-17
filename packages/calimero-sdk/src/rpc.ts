@@ -1,4 +1,3 @@
-import { AxiosHeaders } from "axios";
 import { ApplicationId } from "./application";
 
 export type RpcRequestId = string | number;
@@ -14,9 +13,13 @@ export interface RpcClient {
   ): Promise<RpcResult<RpcMutateResponse<Out>>>;
 }
 
+interface Headers {
+  [key: string]: string;
+}
+
 export interface RequestConfig {
   timeout?: number;
-  headers?: AxiosHeaders;
+  headers?: Headers;
 }
 
 export type RpcResult<Result> =
