@@ -4,6 +4,7 @@ import {
   WsSubscriptionsClient,
 } from "@calimero-is-near/calimero-p2p-sdk/lib";
 import { config } from "./calimeroConfig.js";
+import { AxiosHeaders } from "axios";
 
 class App extends React.Component {
   constructor(props) {
@@ -36,14 +37,37 @@ class App extends React.Component {
   executeRpcRequest = async () => {
     try {
       const { client } = this.state;
-      const resp = await client.mutate({
-        applicationId: config.applicationId,
-        method: "create_post",
-        argsJson: {
-          title: "Your Post Title",
-          content: "Your Post Content",
+
+      const headers = new AxiosHeaders();
+      headers.set("wallet_type", "NEAR");
+      headers.set(
+        "signing_key",
+        "4XTTMDeZuuUeMrpHtuM1HWCeKJvy8hVXTyChXH65SNrGb14MD"
+      );
+      headers.set(
+        "signature",
+        "3iuv5WDUFxNNr6iuzTNaHgJxaZt3eH6UhfWQ1KXdpZLoHNdg1Xm8GNytwVYwedzACBaRcgkS8mpGvcNZMzGuhCZc"
+      );
+      headers.set("challenge", "HwSzpf3ieReW9ecy4D3HFJMZK8sYjrdnmXjZYCFVCJpT");
+
+      console.log("headers", headers);
+
+      const configR = {
+        headers,
+      };
+
+      const resp = await client.mutate(
+        {
+          applicationId: config.applicationId,
+          method: "create_post",
+          argsJson: {
+            title: "Your Post Title",
+            content: "Your Post Content",
+          },
         },
-      });
+        configR
+      );
+      console.log("resp", resp);
       this.setState({ response: JSON.stringify(resp) });
     } catch (error) {
       console.log(error);

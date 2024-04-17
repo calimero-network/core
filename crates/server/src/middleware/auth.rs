@@ -112,6 +112,7 @@ pub fn auth<'a>(headers: &'a HeaderMap, store: &'a Store) -> Result<(), Unauthor
 }
 
 fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
+    print!("Headers: {:?}", headers);
     let signing_key = headers
         .get("signing_key")
         .ok_or_else(|| UnauthorizedError::new("Missing signing_key header"))?;
