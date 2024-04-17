@@ -56,9 +56,9 @@ pub enum ParseError<'a> {
     NoGenericTypeSupport,
     #[error("{TAG} state lifetimes are not supported")]
     NoGenericLifetimeSupport,
-    #[error("{TAG} how dare you? now, pick something else")]
+    #[error("{TAG} this lifetime is reserved")]
     UseOfReservedLifetime,
-    #[error("{TAG} how dare you? now, pick something else")]
+    #[error("{TAG} this identifier is reserved")]
     UseOfReservedIdent,
     #[error("{TAG} {0}")]
     Custom(&'a str),
