@@ -87,12 +87,20 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
         }
 
         for generic in &generics.params {
-            if let syn::GenericParam::Lifetime(params) = generic {
-                errors.push(
-                    params.lifetime.span(),
-                    errors::ParseError::NoGenericLifetimeSupport,
-                );
-                continue;
+            match generic {
+                syn::GenericParam::Lifetime(params) => {
+                    errors.push(
+                        params.lifetime.span(),
+                        errors::ParseError::NoGenericLifetimeSupport,
+                    );
+                    continue;
+                }
+                syn::GenericParam::Type(params) => {
+                    if params.ident == *reserved::idents::input() {
+                        errors.push_spanned(&params.ident, errors::ParseError::UseOfReservedIdent);
+                    }
+                }
+                syn::GenericParam::Const(_) => {}
             }
         }
 
