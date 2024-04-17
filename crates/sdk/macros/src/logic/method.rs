@@ -62,7 +62,7 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
             }
         };
 
-        let (def, call) = match &self.self_type {
+        let (def, mut call) = match &self.self_type {
             Some(type_) => {
                 let def = match type_ {
                     arg::SelfType::Mutable => quote! {
@@ -77,12 +77,11 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
 
                 (def, quote! { app.#name(#(#arg_idents),*); })
             }
-            None => (quote! {}, quote! { #self_::#name(#(#arg_idents),*); }),
+            None => (quote! {}, quote! { <#self_>::#name(#(#arg_idents),*); }),
         };
 
-        let call = match &self.ret {
-            None => call,
-            Some(_) => quote! {
+        if let Some(_) = &self.ret {
+            call = quote! {
                 let output = #call;
 
                 let output = {
@@ -100,8 +99,8 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
                 };
 
                 ::calimero_sdk::env::value_return(output);
-            },
-        };
+            };
+        }
 
         let state_finalizer = match &self.self_type {
             Some(arg::SelfType::Mutable) => quote! {
