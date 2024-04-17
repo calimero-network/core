@@ -44,6 +44,7 @@ impl ToTokens for StateItem {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct StateImpl<'a> {
     ident: &'a syn::Ident,
     generics: &'a syn::Generics,
@@ -56,12 +57,14 @@ impl<'a> ToTokens for StateImpl<'a> {
             ident,
             generics,
             orig,
-        } = self;
+        } = *self;
+
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         quote! {
             #orig
 
-            impl #generics ::calimero_sdk::__private::marker::AppState for #ident #generics {}
+            impl #impl_generics ::calimero_sdk::__private::marker::AppState for #ident #ty_generics #where_clause {}
         }
         .to_tokens(tokens)
     }
