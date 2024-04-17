@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, env};
 
 #[app::state]
@@ -11,10 +11,10 @@ struct KvStore {
 
 #[app::logic]
 impl KvStore {
-    pub fn set(&mut self, key: &str, value: &str) {
+    pub fn set(&mut self, key: String, value: String) {
         env::log(&format!("Setting key: {:?} to value: {:?}", key, value));
 
-        self.items.insert(key.to_owned(), value.to_owned());
+        self.items.insert(key, value);
     }
 
     pub fn entries(&self) -> &HashMap<String, String> {

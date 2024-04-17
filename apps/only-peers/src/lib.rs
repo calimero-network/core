@@ -1,9 +1,8 @@
-use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::env;
-use serde::Serialize;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::serde::Serialize;
+use calimero_sdk::{app, env};
 
-mod code_generated_from_calimero_sdk_macros;
-
+#[app::state]
 #[derive(Default, BorshSerialize, BorshDeserialize)]
 struct OnlyPeers {
     posts: Vec<Post>,
@@ -23,6 +22,7 @@ struct Comment {
     user: String,
 }
 
+#[app::logic]
 impl OnlyPeers {
     pub fn post(&self, id: usize) -> Option<&Post> {
         env::log(&format!("Getting post with id: {:?}", id));
@@ -30,7 +30,7 @@ impl OnlyPeers {
         self.posts.get(id)
     }
 
-    pub fn posts(&self) -> &Vec<Post> {
+    pub fn posts(&self) -> &[Post] {
         env::log("Getting all posts");
 
         &self.posts
