@@ -13,4 +13,10 @@ pub mod app {
 #[doc(hidden)]
 pub mod __private {
     pub use crate::returns::{IntoResult, WrappedReturn};
+
+    pub mod marker {
+        use crate::borsh::{BorshDeserialize, BorshSerialize};
+
+        pub trait AppState: Default + BorshSerialize + BorshDeserialize {}
+    }
 }
