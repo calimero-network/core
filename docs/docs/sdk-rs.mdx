@@ -330,7 +330,7 @@ pub fn set(&mut self, key: String, value: String) {
         Entry::Occupied(mut entry) => {
             app::emit!(Events::Updated {
                 key: entry.key(),
-                value: entry.get()
+                value: &value,
             });
             entry.insert(value);
         }
