@@ -5,19 +5,23 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use calimero_identity::auth::verify_peer_auth;
+use calimero_identity::auth::verify_near_public_key;
+use calimero_store::Store;
 use libp2p::futures::future::BoxFuture;
-use libp2p::identity::Keypair;
 use tower::{Layer, Service};
+use tracing::debug;
+
+use crate::admin::handlers::add_client_key::WalletType;
+use crate::admin::storage::client_keys::{exists_client_key, ClientKey};
 
 #[derive(Clone)]
 pub struct AuthSignatureLayer {
-    keypair: Keypair,
+    store: Store,
 }
 
 impl AuthSignatureLayer {
-    pub fn new(keypair: Keypair) -> Self {
-        Self { keypair }
+    pub fn new(store: Store) -> Self {
+        Self { store }
     }
 }
 
@@ -27,7 +31,7 @@ impl<S> Layer<S> for AuthSignatureLayer {
     fn layer(&self, inner: S) -> Self::Service {
         AuthSignatureMiddleware {
             inner,
-            keypair: self.keypair.clone(),
+            store: self.store.clone(),
         }
     }
 }
@@ -35,7 +39,7 @@ impl<S> Layer<S> for AuthSignatureLayer {
 #[derive(Clone)]
 pub struct AuthSignatureMiddleware<S> {
     inner: S,
-    keypair: Keypair,
+    store: Store,
 }
 
 impl<S> Service<Request<Body>> for AuthSignatureMiddleware<S>
@@ -53,7 +57,7 @@ where
     }
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
-        let result = auth(request.headers(), &self.keypair);
+        let result = auth(request.headers(), &self.store);
 
         if let Err(err) = result {
             let error_response = err.into_response();
@@ -71,31 +75,60 @@ where
 
 #[derive(Debug)]
 struct AuthHeaders {
+    wallet_type: WalletType,
+    signing_key: String,
     signature: Vec<u8>,
     challenge: Vec<u8>,
 }
 
-pub fn auth<'a>(
-    // run the `HeaderMap` extractor
-    headers: &'a HeaderMap,
-    keypair: &'a Keypair,
-) -> Result<(), UnauthorizedError<'a>> {
-    match get_auth_headers(&headers) {
-        Ok(auth_headers)
-            if verify_peer_auth(
-                keypair,
-                auth_headers.challenge.as_slice(),
-                auth_headers.signature.as_slice(),
-            ) =>
-        {
-            Ok(())
-        }
-        Ok(_) => Err(UnauthorizedError::new("Keypair not matching signature.")),
-        Err(error) => Err(error),
+pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<'static>> {
+    let auth_headers = get_auth_headers(headers).map_err(|e| {
+        debug!("Failed to extract authentication headers {}", e);
+        UnauthorizedError::new("Failed to extract authentication headers.")
+    })?;
+
+    let client_key = ClientKey {
+        wallet_type: auth_headers.wallet_type,
+        signing_key: auth_headers.signing_key.clone(),
+    };
+    let key_exists = exists_client_key(store, &client_key)
+        .map_err(|_| UnauthorizedError::new("Issue during extracting client key"))?;
+
+    if !key_exists {
+        return Err(UnauthorizedError::new("Client key does not exist."));
+    }
+
+    let is_signature_valid = verify_near_public_key(
+        auth_headers.signing_key.as_str(),
+        auth_headers.challenge.as_slice(),
+        auth_headers.signature.as_slice(),
+    )
+    .map_err(|_| UnauthorizedError::new("Invalid client key."))?;
+
+    if is_signature_valid {
+        Ok(())
+    } else {
+        Err(UnauthorizedError::new(
+            "Invalid signature for provided key.",
+        ))
     }
 }
 
 fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
+    let signing_key = headers
+        .get("signing_key")
+        .ok_or_else(|| UnauthorizedError::new("Missing signing_key header"))?;
+    let signing_key = String::from_utf8(signing_key.as_bytes().to_vec())
+        .map_err(|_| UnauthorizedError::new("Invalid signing_key string"))?;
+
+    let wallet_type = headers
+        .get("wallet_type")
+        .ok_or_else(|| UnauthorizedError::new("Missing wallet_type header"))?;
+    let wallet_type = String::from_utf8(wallet_type.as_bytes().to_vec())
+        .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
+    let wallet_type = WalletType::from_str(&wallet_type)
+        .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
+
     let signature = headers
         .get("signature")
         .ok_or_else(|| UnauthorizedError::new("Missing signature header"))?;
@@ -111,6 +144,8 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .map_err(|_| UnauthorizedError::new("Invalid base58 challenge"))?;
 
     let auth = AuthHeaders {
+        wallet_type,
+        signing_key,
         signature,
         challenge,
     };

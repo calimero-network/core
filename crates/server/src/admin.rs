@@ -1,3 +1,3 @@
-mod handlers;
+pub mod handlers;
 pub mod service;
 pub mod storage;

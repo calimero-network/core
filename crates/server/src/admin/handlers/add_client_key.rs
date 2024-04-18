@@ -14,6 +14,7 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::admin::service::{AdminState, ApiError, ApiResponse, NodeChallengeMessage};
+use crate::admin::storage::client_keys::{add_client_key, ClientKey};
 use crate::admin::storage::root_key::{get_root_key, RootKey};
 use crate::verifysignature::verify_near_signature;
 
@@ -51,10 +52,20 @@ struct WalletMetadata {
     signing_key: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
-enum WalletType {
+#[derive(Debug, Deserialize, PartialEq, Serialize, Clone, Copy)]
+pub enum WalletType {
     NEAR,
     ETH,
+}
+
+impl WalletType {
+    pub fn from_str(input: &str) -> eyre::Result<Self> {
+        match input {
+            "ETH" => Ok(WalletType::ETH),
+            "NEAR" => Ok(WalletType::NEAR),
+            _ => eyre::bail!("Invalid wallet_type value"),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,7 +168,7 @@ pub async fn add_client_key_handler(
     let response = transform_request(intermediate_req)
         .and_then(|req| validate_root_key_exists(req, &state.store))
         .and_then(|req| validate_challenge(req, &state.keypair))
-        .and_then(store_client_key)
+        .and_then(|req| store_client_key(req, &state.store))
         .map_or_else(
             |err| err.into_response(),
             |_| {
@@ -170,6 +181,19 @@ pub async fn add_client_key_handler(
         );
 
     response
+}
+
+fn store_client_key(
+    req: AddClientKeyRequest,
+    store: &Store,
+) -> Result<AddClientKeyRequest, ApiError> {
+    let client_key = ClientKey {
+        wallet_type: WalletType::NEAR,
+        signing_key: req.payload.message.client_public_key.clone(),
+    };
+    add_client_key(&store, client_key).map_err(|e| parse_api_error(e))?;
+    info!("Client key stored successfully.");
+    Ok(req)
 }
 
 fn verify_node_signature(
@@ -325,13 +349,6 @@ fn validate_root_key_exists(
             });
         }
     };
-
-    Ok(req)
-}
-
-fn store_client_key(req: AddClientKeyRequest) -> Result<AddClientKeyRequest, ApiError> {
-    //Store client public key in a list
-    info!("Client key stored successfully.");
 
     Ok(req)
 }

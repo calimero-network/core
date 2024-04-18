@@ -28,14 +28,13 @@ const verifyOwner = async () => {
     return;
   }
   const nonce = Buffer.from(challengeObject.nonce, "base64");
-
   const selector = await setupWalletSelector({
     network: "testnet",
     modules: [setupMyNearWallet()],
   });
   const wallet = await selector.wallet("my-near-wallet");
   const callbackUrl = getWalletCallbackUrl();
-  const message = "helloworld";
+  const message = challengeObject.nodeSignature;
   const recipient = "me";
   console.log("Signing message:", {
     message,

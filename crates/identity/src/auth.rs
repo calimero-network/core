@@ -1,8 +1,23 @@
-use libp2p::identity::Keypair;
+use libp2p::identity::{Keypair, PublicKey};
 use web3::signing::{keccak256, recover};
 
 pub fn verify_peer_auth(keypair: &Keypair, msg: &[u8], signature: &[u8]) -> bool {
     keypair.public().verify(msg, signature)
+}
+
+pub fn verify_near_public_key(
+    public_key: &str,
+    msg: &[u8],
+    signature: &[u8],
+) -> eyre::Result<bool> {
+    let public_key = bs58::decode(public_key)
+        .into_vec()
+        .map_err(|_| eyre::eyre!("Invalid public key: Base58 encoding error"))?;
+
+    let public_key = PublicKey::try_decode_protobuf(&public_key)
+        .map_err(|_| eyre::eyre!("Invalid public key: Protobuf encoding error"))?;
+
+    Ok(public_key.verify(msg, signature))
 }
 
 pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> eyre::Result<bool> {
