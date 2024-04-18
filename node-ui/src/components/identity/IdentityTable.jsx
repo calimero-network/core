@@ -19,6 +19,12 @@ const Table = styled.div`
     margin-top: 12px;
   }
 
+  .item-no-apps {
+    grid-column: span 11;
+    font-size: 16px;
+    color: #fff;
+  }
+
   .header,
   .application-item {
     padding-top: 10px;
@@ -28,8 +34,8 @@ const Table = styled.div`
     grid-template-columns: repeat(10, 1fr);
     grid-template-rows: auto;
     color: rbg(255, 255, 255, 0.7);
-    gap: 24px;
     font-size: 12px;
+    gap: 24px;
   }
 
   .scroll-list {
@@ -114,7 +120,11 @@ export function IdentityTable({ identityList, deleteIdentity, addIdentity }) {
 
   return (
     <Table>
-      {identityList && (
+      {identityList.length === 0 ? (
+        <div className="header">
+          <p className="item-no-apps">{t.noIdentityText}</p>
+        </div>
+      ) : (
         <div className="header">
           <div className="item-type">{t.headerTypeText}</div>
           <div className="item-id">{t.headerPkText}</div>

@@ -10,10 +10,17 @@ const ContractFormLayout = styled.div`
   padding-left: 16px;
   margin-top: 10px;
   position: relative;
+  width: 100%;
 
   .title {
     font-size: 14px;
     color: #fff;
+    margin-bottom: 12px;
+  }
+
+  .subtitle {
+    font-size: 12px;
+    color: rgb(255, 255, 255, 0.7);
     margin-bottom: 12px;
   }
 
@@ -55,7 +62,7 @@ const ContractFormLayout = styled.div`
   .button {
     border-radius: 4px;
     background-color: rgba(255, 255, 255, 0.06);
-    width: fit-content;
+    width: 140px;
     height: 30px;
     padding-left: 14px;
     padding-right: 14px;
@@ -63,14 +70,12 @@ const ContractFormLayout = styled.div`
     cursor: pointer;
     border: none;
     outline: none;
+    diplay: flex;
+    justify-content: center;
+    align-items: center;
   }
   .button:hover {
     background-color: rgba(255, 255, 255, 0.12);
-  }
-  .button-next {
-    position: absolute;
-    bottom: 0;
-    right: 0;
   }
 
   .buttons-wrapper {
@@ -79,7 +84,7 @@ const ContractFormLayout = styled.div`
   }
 `;
 
-export function AddPackageForm({ addPackage, setTabSwitch, addPackageLoader }) {
+export function AddPackageForm({ addPackage, addPackageLoader }) {
   const t = translations.addPackageForm;
   const [packageInfo, setPackageInfo] = useState({
     name: "",
@@ -90,6 +95,7 @@ export function AddPackageForm({ addPackage, setTabSwitch, addPackageLoader }) {
   return (
     <ContractFormLayout>
       <div className="title">{t.title}</div>
+      <div className="subtitle">{t.subtitle}</div>
       <div className="flex-group">
         <div className="flex-group-col">
           <label className="label">{t.nameLabelText}</label>
@@ -150,23 +156,18 @@ export function AddPackageForm({ addPackage, setTabSwitch, addPackageLoader }) {
             ) && !addPackageLoader
           }
         >
-          {t.buttonAddPackageText}
-        </button>
-        <button
-          className="button"
-          onClick={() => setTabSwitch(true)}
-          disabled={addPackageLoader}
-        >
-          {t.buttonNextText}
+          {addPackageLoader ? (
+            <LoaderSpinner />
+          ) : (
+            <span>{t.buttonAddPackageText}</span>
+          )}
         </button>
       </div>
-      {addPackageLoader && <LoaderSpinner />}
     </ContractFormLayout>
   );
 }
 
 AddPackageForm.propTypes = {
   addPackage: PropTypes.func.isRequired,
-  setTabSwitch: PropTypes.func.isRequired,
   addPackageLoader: PropTypes.bool.isRequired,
 };

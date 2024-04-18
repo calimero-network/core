@@ -41,6 +41,12 @@ const Table = styled.div`
     margin-bottom: 16px;
   }
 
+  .item-no-apps {
+    grid-column: span 11;
+    text-font: 16px;
+    color: #fff;
+  }
+
   .item-name {
     grid-column: span 2;
   }
@@ -92,7 +98,11 @@ export function ApplicationsTable({ applications, install, uninstall }) {
 
   return (
     <Table>
-      {applications && (
+      {applications.length === 0 ? (
+        <div className="header">
+          <p className="item-no-apps">{t.noApplicationsText}</p>
+        </div>
+      ) : (
         <div className="header">
           <div className="item-name item-header">{t.headerNameText}</div>
           <div className="item-desc item-header">{t.headerDescText}</div>

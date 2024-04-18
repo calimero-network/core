@@ -2,18 +2,26 @@ import React, { useEffect, useState } from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
-import { ArrowLeftIcon } from "@heroicons/react/24/solid";
 import Dropdown from "react-bootstrap/Dropdown";
+import LoaderSpinner from "../common/LoaderSpinner";
 
 const Wrapper = styled.div`
+  width: 100%;
+  padding-left: 16px;
+  margin-top: 10px;
   .upload-form {
-    padding: 12px;
     display: flex;
     flex-direction: column;
 
     .title {
       font-size: 14px;
       color: #fff;
+      margin-bottom: 12px;
+    }
+
+    .subtitle {
+      font-size: 12px;
+      color: rgb(255, 255, 255, 0.7);
       margin-bottom: 12px;
     }
 
@@ -24,16 +32,15 @@ const Wrapper = styled.div`
 
     .file-selection {
       margin-top: 8px;
-      margin-bottom: 12px;
       color: #fff;
       display: flex;
       gap: 12px;
       width: fit-content;
       border: none;
+      padding: 0px;
     }
 
-    .upload-button,
-    .download-button {
+    .upload-button {
       border-radius: 4px;
       background-color: rgba(255, 255, 255, 0.06);
       width: fit-content;
@@ -46,14 +53,11 @@ const Wrapper = styled.div`
       border: none;
       outline: none;
     }
-    .upload-button:hover,
-    .download-button:hover {
+
+    .upload-button:hover {
       background-color: rgba(255, 255, 255, 0.12);
     }
-    .download-button {
-      margin-top: 8px;
-      width: fit-content;
-    }
+
     .file-details {
       margin-top: 24px;
       background-color: #17171d;
@@ -76,24 +80,12 @@ const Wrapper = styled.div`
       color: #ff842d;
       font-size: 14px;
     }
-    .back-button {
-      width: fit-content;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      gap: 4px;
-      font-size: 14px;
-      cursor: pointer;
-      color: rgb(255, 255, 255, 0.7);
-      .arrow-icon {
-        height: 18px;
-        width: 18px;
-      }
-    }
   }
+
   .release-info-wrapper {
-    padding-left: 12px;
+    padding-right: 12px;
   }
+
   .flex-group {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -131,22 +123,6 @@ const Wrapper = styled.div`
     border: 1px solid #ff842d;
   }
 
-  .button {
-    border-radius: 4px;
-    background-color: rgba(255, 255, 255, 0.06);
-    width: fit-content;
-    height: 30px;
-    padding-left: 14px;
-    padding-right: 14px;
-    margin-top: 8px;
-    cursor: pointer;
-    border: none;
-    outline: none;
-  }
-  .button:hover {
-    background-color: rgba(255, 255, 255, 0.12);
-  }
-
   .app-dropdown {
     background-color: #ff842d;
     border: none;
@@ -167,57 +143,32 @@ const Wrapper = styled.div`
     background-color: rgb(255, 255, 255, 0.06);
   }
 
-  .loader-wrapper {
-    display: flex;
+  .button {
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.06);
+    width: 140px;
+    height: 30px;
+    padding-left: 14px;
+    padding-right: 14px;
+    margin-top: 8px;
+    cursor: pointer;
+    border: none;
+    outline: none;
+    diplay: flex;
     justify-content: center;
     align-items: center;
-    padding-top: 10px;
   }
-
-  .lds-ring,
-  .lds-ring div {
-    box-sizing: border-box;
+  .button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
   }
-  .lds-ring {
-    display: inline-block;
-    position: relative;
-    width: 80px;
-    height: 80px;
-  }
-  .lds-ring div {
-    box-sizing: border-box;
-    display: block;
-    position: absolute;
-    width: 64px;
-    height: 64px;
-    margin: 8px;
-    border: 8px solid #121216;
-    border-radius: 50%;
-    animation: lds-ring 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
-    border-color: #121216 transparent transparent transparent;
-  }
-  .lds-ring div:nth-child(1) {
-    animation-delay: -0.45s;
-  }
-  .lds-ring div:nth-child(2) {
-    animation-delay: -0.3s;
-  }
-  .lds-ring div:nth-child(3) {
-    animation-delay: -0.15s;
-  }
-  @keyframes lds-ring {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
+  .buttons-wrapper {
+    display: flex;
+    justify-content: space-between;
   }
 `;
 
 export function UploadApplication({
   handleFileChange,
-  setTabSwitch,
   ipfsPath,
   fileHash,
   addRelease,
@@ -245,10 +196,8 @@ export function UploadApplication({
     <Wrapper>
       <div className="upload-form">
         <div className="title">{t.title}</div>
-        <div onClick={() => setTabSwitch(false)} className="back-button">
-          <ArrowLeftIcon className="arrow-icon" />
-          {t.backButtonText}
-        </div>
+        <label className="subtitle">{t.subtitle}</label>
+        <div className="title">{t.uploadIpfsTitle}</div>
         <label className="label">{t.inputLabelText}</label>
         <input
           className="file-selection"
@@ -340,31 +289,27 @@ export function UploadApplication({
               />
             </div>
           </div>
-          <button
-            className="button"
-            onClick={() => addRelease(releaseInfo)}
-            disabled={
-              !(
-                releaseInfo.version &&
-                releaseInfo.notes &&
-                releaseInfo.path &&
-                releaseInfo.hash
-              )
-            }
-          >
-            {t.addReleaseButtonText}
-          </button>
-
-          {addReleaseLoader && (
-            <div className="loader-wrapper">
-              <div className="lds-ring">
-                <div></div>
-                <div></div>
-                <div></div>
-                <div></div>
-              </div>
-            </div>
-          )}
+          <div className="buttons-wrapper">
+            <button
+              className="button"
+              onClick={() => addRelease(releaseInfo)}
+              disabled={
+                !(
+                  releaseInfo.version &&
+                  releaseInfo.notes &&
+                  releaseInfo.path &&
+                  releaseInfo.hash &&
+                  releaseInfo.name
+                )
+              }
+            >
+              {addReleaseLoader ? (
+                <LoaderSpinner />
+              ) : (
+                <span>{t.addReleaseButtonText}</span>
+              )}
+            </button>
+          </div>
         </div>
       )}
     </Wrapper>
@@ -375,7 +320,6 @@ UploadApplication.propTypes = {
   handleFileChange: PropTypes.func.isRequired,
   ipfsPath: PropTypes.string.isRequired,
   fileHash: PropTypes.string.isRequired,
-  setTabSwitch: PropTypes.func.isRequired,
   addRelease: PropTypes.func.isRequired,
   packages: PropTypes.array,
   addReleaseLoader: PropTypes.bool.isRequired,

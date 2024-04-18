@@ -5,7 +5,6 @@ const Wrapper = styled.div`
   display: flex;
   justify-content: center;
   align-items: center;
-  padding-top: 10px;
 
   .lds-ring,
   .lds-ring div {
@@ -14,20 +13,19 @@ const Wrapper = styled.div`
   .lds-ring {
     display: inline-block;
     position: relative;
-    width: 80px;
-    height: 80px;
+    width: 20px;
+    height: 20px;
   }
   .lds-ring div {
     box-sizing: border-box;
     display: block;
     position: absolute;
-    width: 64px;
-    height: 64px;
-    margin: 8px;
-    border: 8px solid #121216;
+    width: 20px;
+    height: 20px;
+    border: 8px solid rgb(255, 255, 255, 0.7);
     border-radius: 50%;
     animation: lds-ring 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
-    border-color: #121216 transparent transparent transparent;
+    border-color: rgb(255, 255, 255, 0.7) transparent transparent transparent;
   }
   .lds-ring div:nth-child(1) {
     animation-delay: -0.45s;
