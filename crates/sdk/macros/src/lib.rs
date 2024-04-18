@@ -7,6 +7,7 @@ use proc_macro::TokenStream;
 use quote::ToTokens;
 
 mod errors;
+mod items;
 mod logic;
 mod reserved;
 mod sanitizer;
@@ -29,7 +30,7 @@ pub fn logic(_args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn state(_args: TokenStream, input: TokenStream) -> TokenStream {
     reserved::init();
-    let item = syn::parse_macro_input!(input as state::StateItem);
+    let item = syn::parse_macro_input!(input as items::StructOrEnumItem);
     let tokens = match state::StateImpl::try_from(state::StateImplInput { item: &item }) {
         Ok(data) => data.to_token_stream(),
         Err(err) => err.to_compile_error(),

@@ -1,54 +1,12 @@
 use quote::{quote, ToTokens};
-use syn::parse::Parse;
 
-use crate::{errors, reserved};
-
-pub enum StateItem {
-    Struct(syn::ItemStruct),
-    Enum(syn::ItemEnum),
-}
-
-impl Parse for StateItem {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut attrs = Vec::new();
-        'parsed: loop {
-            let lookahead = input.lookahead1();
-            if lookahead.peek(syn::Token![struct]) {
-                break 'parsed input
-                    .parse()
-                    .map(|s| StateItem::Struct(syn::ItemStruct { attrs, ..s }));
-            } else if lookahead.peek(syn::Token![enum]) {
-                break 'parsed input
-                    .parse()
-                    .map(|s| StateItem::Enum(syn::ItemEnum { attrs, ..s }));
-            } else if lookahead.peek(syn::Token![#]) {
-                attrs.extend(input.call(syn::Attribute::parse_outer)?);
-            } else {
-                let err = lookahead.error();
-
-                return Err(syn::Error::new(
-                    err.span(),
-                    errors::ParseError::Custom(&err.to_string()).to_string(),
-                ));
-            }
-        }
-    }
-}
-
-impl ToTokens for StateItem {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        match self {
-            StateItem::Struct(item) => item.to_tokens(tokens),
-            StateItem::Enum(item) => item.to_tokens(tokens),
-        }
-    }
-}
+use crate::{errors, items, reserved};
 
 #[derive(Copy, Clone)]
 pub struct StateImpl<'a> {
     ident: &'a syn::Ident,
     generics: &'a syn::Generics,
-    orig: &'a StateItem,
+    orig: &'a items::StructOrEnumItem,
 }
 
 impl<'a> ToTokens for StateImpl<'a> {
@@ -78,18 +36,18 @@ impl<'a> ToTokens for StateImpl<'a> {
 }
 
 pub struct StateImplInput<'a> {
-    pub item: &'a StateItem,
+    pub item: &'a items::StructOrEnumItem,
 }
 
 impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
-    type Error = errors::Errors<'a, StateItem>;
+    type Error = errors::Errors<'a, items::StructOrEnumItem>;
 
     fn try_from(input: StateImplInput<'a>) -> Result<Self, Self::Error> {
         let mut errors = errors::Errors::new(input.item);
 
         let (ident, generics) = match input.item {
-            StateItem::Struct(item) => (&item.ident, &item.generics),
-            StateItem::Enum(item) => (&item.ident, &item.generics),
+            items::StructOrEnumItem::Struct(item) => (&item.ident, &item.generics),
+            items::StructOrEnumItem::Enum(item) => (&item.ident, &item.generics),
         };
 
         if ident == &*reserved::idents::input() {
@@ -103,7 +61,6 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
                         params.lifetime.span(),
                         errors::ParseError::NoGenericLifetimeSupport,
                     );
-                    continue;
                 }
                 syn::GenericParam::Type(params) => {
                     if params.ident == *reserved::idents::input() {
