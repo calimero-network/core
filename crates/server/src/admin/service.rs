@@ -3,10 +3,8 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
