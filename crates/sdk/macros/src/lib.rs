@@ -7,6 +7,7 @@ use proc_macro::TokenStream;
 use quote::ToTokens;
 
 mod errors;
+mod event;
 mod items;
 mod logic;
 mod reserved;
@@ -45,7 +46,18 @@ pub fn destroy(_args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn event(args: TokenStream, input: TokenStream) -> TokenStream {
-    dbg!(args, input);
+pub fn event(_args: TokenStream, input: TokenStream) -> TokenStream {
+    reserved::init();
+    let item = syn::parse_macro_input!(input as items::StructOrEnumItem);
+    let tokens = match event::EventImpl::try_from(event::EventImplInput { item: &item }) {
+        Ok(data) => data.to_token_stream(),
+        Err(err) => err.to_compile_error(),
+    };
+    tokens.into()
+}
+
+#[proc_macro]
+pub fn emit(input: TokenStream) -> TokenStream {
+    // dbg!(input);
     TokenStream::new()
 }

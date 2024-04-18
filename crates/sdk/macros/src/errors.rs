@@ -60,6 +60,10 @@ pub enum ParseError<'a> {
     UseOfReservedLifetime,
     #[error("{TAG} this identifier is reserved")]
     UseOfReservedIdent,
+    #[error("{TAG} this event must be public")]
+    NoPrivateEvent,
+    #[error("{TAG} please use a simple `pub` directive")]
+    NoComplexVisibility,
     #[error("{TAG} {0}")]
     Custom(&'a str),
 }
