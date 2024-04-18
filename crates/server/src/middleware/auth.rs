@@ -88,7 +88,7 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
     })?;
 
     let client_key = ClientKey {
-        wallet_type: auth_headers.wallet_type.clone(),
+        wallet_type: auth_headers.wallet_type,
         signing_key: auth_headers.signing_key.clone(),
     };
     let key_exists = exists_client_key(store, &client_key)
