@@ -8,7 +8,7 @@ export class AppsDataSource {
   async getInstalledAplications() {
     try {
       const response = await this.client.get("/admin-api/applications");
-      if (response && response.apps) {
+      if (response && response?.apps) {
         return Object.keys(response.apps);
       } else {
         return [];
