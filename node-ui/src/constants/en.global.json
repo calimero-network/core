@@ -19,8 +19,8 @@
             "headerDescText": "Description",
             "headerRepoText": "Repository",
             "uninstallButtonText": "Uninstall",
-            "installButtonText": "Install new application",
-            "noApplicationsText": "No applicatons found in the node."
+            "installButtonText": "Install new applications",
+            "noApplicationsText": "No applications found in the node."
         },
         "installApplication": {
             "backbuttonText": "Back to Applications",
