@@ -98,7 +98,7 @@ export function ApplicationsTable({ applications, install, uninstall }) {
 
   return (
     <Table>
-      {applications && applications.length === 0 ? (
+      {!applications || applications.length === 0 ? (
         <div className="header">
           <p className="item-no-apps">{t.noApplicationsText}</p>
         </div>
