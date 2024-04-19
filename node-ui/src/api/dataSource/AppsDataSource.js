@@ -6,6 +6,15 @@ export class AppsDataSource {
   }
 
   async getInstalledAplications() {
-    return Object.keys((await this.client.get("/admin-api/applications")).apps);
+    try {
+      const response = await this.client.get("/admin-api/applications");
+      if (response?.apps?.length) {
+        return Object.keys(response.apps);
+      } else {
+        return [];
+      }
+    } catch (error) {
+      console.error("Error fetching installed applications:", error);
+    }
   }
 }

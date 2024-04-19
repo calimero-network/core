@@ -35,12 +35,14 @@ export default function Applications() {
         .admin()
         .getInstalledAplications();
 
-      const tempApplications = await Promise.all(
-        installedApplicationIds.map(async (appId) => {
-          return await getPackage(appId);
-        })
-      );
-      setApplications(tempApplications);
+      if (installedApplicationIds.length !== 0) {
+        const tempApplications = await Promise.all(
+          installedApplicationIds.map(async (appId) => {
+            return await getPackage(appId);
+          })
+        );
+        setApplications(tempApplications);
+      }
     };
     setApps();
   }, []);
