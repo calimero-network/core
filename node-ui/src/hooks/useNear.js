@@ -41,7 +41,7 @@ export function useRPC() {
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
-  const getReleases = async (packageName) => {
+  const getReleases = async (id) => {
     const provider = new nearAPI.providers.JsonRpcProvider(JSON_RPC_ENDPOINT);
 
     const rawResult = await provider.query({

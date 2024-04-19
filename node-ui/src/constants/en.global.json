@@ -19,7 +19,8 @@
             "headerDescText": "Description",
             "headerRepoText": "Repository",
             "uninstallButtonText": "Uninstall",
-            "installButtonText": "Install new application"
+            "installButtonText": "Install new applications",
+            "noApplicationsText": "No applications found in the node."
         },
         "installApplication": {
             "backbuttonText": "Back to Applications",
@@ -48,7 +49,8 @@
         "addButtonText": "Add new identity",
         "expandEditorTitle": "Edit DID",
         "cancelButtonText": "Cancel",
-        "saveButtonText": "Save"
+        "saveButtonText": "Save",
+        "noIdentityText": "No identity found in the node."
     },
     "keysPage": {
         "title": "Keys"
@@ -65,10 +67,14 @@
     },
     "uploadPage": {
         "title": "Upload Application",
-        "walletButtonText": "Add wallet account"
+        "walletButtonText": "Add wallet account",
+        "switchPackageText": "Add Package",
+        "switchReleaseText": "Add Release"
     },
     "uploadApplication": {
-        "title": "IPFS Application upload",
+        "title": "Add Release",
+        "subtitle": "To install the application first upload the application wasm to the IPFS, select the package you want to add the release for and fill the release details.",
+        "uploadIpfsTitle": "IPFS Application upload",
         "inputLabelText": "Select Application .wasm file to upload",
         "buttonUploadLabel": "Upload to IPFS",
         "buttonUploadText": "Upload",
@@ -88,6 +94,7 @@
     },
     "addPackageForm": {
         "title": "Package Details",
+        "subtitle": "To successfully install the application, first you need to add the package details and procceed to add relase.",
         "nameLabelText": "Package Name",
         "repositoryLabelText": "Repository URL",
         "descriptionLabelText": "Description",

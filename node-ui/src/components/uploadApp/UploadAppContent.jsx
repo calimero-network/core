@@ -13,6 +13,7 @@ export const ContentLayout = styled.div`
     border-radius: 4px;
     padding: 30px 26px 26px 30px;
     width: 100%;
+    height: 100%;
   }
 
   .page-title {

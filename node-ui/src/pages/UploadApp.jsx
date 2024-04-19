@@ -4,6 +4,7 @@ import { FlexLayout } from "../components/layout/FlexLayout";
 import { UploadAppContent } from "../components/uploadApp/UploadAppContent";
 import { UploadApplication } from "../components/uploadApp/UploadApplication";
 import { AddPackageForm } from "../components/uploadApp/AddPackageForm";
+import { UploadSwitch } from "../components/uploadApp/UploadSwitch";
 import { setupWalletSelector } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { useRPC } from "../hooks/useNear";
@@ -16,7 +17,7 @@ const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
 export default function UploadApp() {
   const [ipfsPath, setIpfsPath] = useState("");
   const [fileHash, setFileHash] = useState("");
-  const [tabSwitch, setTabSwitch] = useState(false);
+  const [tabSwitch, setTabSwitch] = useState(true);
   const [packages, setPackages] = useState([]);
   const [addPackageLoader, setAddPackageLoader] = useState(false);
   const [addReleaseLoader, setAddReleaseLoader] = useState(false);
@@ -146,24 +147,26 @@ export default function UploadApp() {
     <FlexLayout>
       <Navigation />
       <UploadAppContent addWalletAccount={addWalletAccount}>
-        {tabSwitch ? (
-          <UploadApplication
-            handleFileChange={handleFileChange}
-            setTabSwitch={setTabSwitch}
-            addRelease={addRelease}
-            ipfsPath={ipfsPath}
-            fileHash={fileHash}
-            packages={packages}
-            addReleaseLoader={addReleaseLoader}
-          />
-        ) : (
-          <AddPackageForm
-            cid={ipfsPath}
-            addPackage={addPackage}
-            setTabSwitch={setTabSwitch}
-            addPackageLoader={addPackageLoader}
-          />
-        )}
+        <UploadSwitch setTabSwitch={setTabSwitch} tabSwitch={tabSwitch}>
+          {tabSwitch ? (
+            <AddPackageForm
+              cid={ipfsPath}
+              addPackage={addPackage}
+              setTabSwitch={setTabSwitch}
+              addPackageLoader={addPackageLoader}
+            />
+          ) : (
+            <UploadApplication
+              handleFileChange={handleFileChange}
+              setTabSwitch={setTabSwitch}
+              addRelease={addRelease}
+              ipfsPath={ipfsPath}
+              fileHash={fileHash}
+              packages={packages}
+              addReleaseLoader={addReleaseLoader}
+            />
+          )}
+        </UploadSwitch>
       </UploadAppContent>
     </FlexLayout>
   );
