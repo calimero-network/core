@@ -58,6 +58,9 @@ mod reflect {
 use reflect::Reflect;
 
 pub trait AppEventExt: Reflect {
+    // todo! experiment with &dyn AppEventExt downcast_ref to &Self
+    // yes, this will mean delegated downcasting would have to be referential
+    // but that's not bad, not one bit
     fn downcast(event: Box<dyn AppEventExt>) -> Result<Self, Box<dyn AppEventExt>>
     where
         Self: Sized,
