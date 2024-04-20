@@ -64,6 +64,8 @@ pub enum ParseError<'a> {
     NoPrivateEvent,
     #[error("{TAG} please use a simple `pub` directive")]
     NoComplexVisibility,
+    #[error("{TAG} explicit ABIs are not supported")]
+    NoExplicitAbi,
     #[error("{TAG} {0}")]
     Custom(&'a str),
 }

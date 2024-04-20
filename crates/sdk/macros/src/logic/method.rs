@@ -145,6 +145,10 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
 
         let mut errors = errors::Errors::new(input.item);
 
+        if let Some(abi) = &input.item.sig.abi {
+            errors.push_spanned(abi, errors::ParseError::NoExplicitAbi);
+        }
+
         if let Some(asyncness) = &input.item.sig.asyncness {
             errors.push_spanned(asyncness, errors::ParseError::NoAsyncSupport);
         }
