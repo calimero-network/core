@@ -27,20 +27,15 @@ impl<'a> ToTokens for EventImpl<'a> {
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
-        let traits = [
-            quote! { ::calimero_sdk::__private::NotQuiteSealedButStillPrivate },
-            quote! { ::calimero_sdk::marker::AppEvent },
-        ];
-
         quote! {
             #[derive(::calimero_sdk::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::serde")]
             #[serde(tag = "type", content = "data")]
             #orig
 
-            #(
-                impl #impl_generics #traits for #ident #ty_generics #where_clause {}
-            )*
+            impl #impl_generics ::calimero_sdk::marker::AppEvent for #ident #ty_generics #where_clause {}
+            
+            impl #impl_generics ::calimero_sdk::event::AppEventExt for #ident #ty_generics #where_clause {}
         }
         .to_tokens(tokens)
     }
