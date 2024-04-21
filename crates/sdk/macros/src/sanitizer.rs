@@ -143,13 +143,13 @@ impl<'a> SanitizationResult<'a> {
         self.counts.len()
     }
 
-    pub fn get(&self, case: &'a Case<'a>) -> Option<usize> {
-        self.counts.get(case).copied()
+    pub fn count(&self, case: &'a Case<'a>) -> usize {
+        self.counts.get(case).copied().unwrap_or_default()
     }
 }
 
-impl<'a> Sanitizer<'a> {
-    pub fn sanitize<'b>(&mut self, cases: &'b [(Case<'b>, Action<'b>)]) -> SanitizationResult<'b> {
+impl Sanitizer<'_> {
+    pub fn sanitize<'a>(&mut self, cases: &'a [(Case<'a>, Action<'a>)]) -> SanitizationResult<'a> {
         let mut errors = errors::Errors::default();
 
         let mut counts = BTreeMap::new();
@@ -282,7 +282,7 @@ mod tests {
         outcome.check().unwrap();
 
         assert_eq!(outcome.len(), 1);
-        assert_eq!(outcome.get(&Case::Self_), Some(1));
+        assert_eq!(outcome.count(&Case::Self_), 1);
 
         let expected = quote! { crate::MyCustomType<'a> };
 
@@ -331,10 +331,10 @@ mod tests {
         }
 
         assert_eq!(outcome.len(), 4);
-        assert_eq!(outcome.get(&Case::Self_), Some(2));
-        assert_eq!(outcome.get(&Case::Ident(Some(&complex_type))), Some(1));
-        assert_eq!(outcome.get(&Case::Ident(None)), Some(4));
-        assert_eq!(outcome.get(&Case::Ident(Some(&really_type))), Some(1));
+        assert_eq!(outcome.count(&Case::Self_), 2);
+        assert_eq!(outcome.count(&Case::Ident(Some(&complex_type))), 1);
+        assert_eq!(outcome.count(&Case::Ident(None)), 4);
+        assert_eq!(outcome.count(&Case::Ident(Some(&really_type))), 1);
 
         let expected = quote! {
             &Really<
@@ -387,7 +387,7 @@ mod tests {
         outcome.check().unwrap();
 
         assert_eq!(outcome.len(), 1);
-        assert_eq!(outcome.get(&Case::Lifetime(None)), Some(6));
+        assert_eq!(outcome.count(&Case::Lifetime(None)), 6);
 
         let expected = quote! { &'static Some<'static, Complex<&'static &'static &'static Deep, &'static Type>> };
 
@@ -423,9 +423,9 @@ mod tests {
         outcome.check().unwrap();
 
         assert_eq!(outcome.len(), 2);
-        assert_eq!(outcome.get(&Case::Lifetime(None)), Some(4));
-        assert_eq!(outcome.get(&Case::Lifetime(Some(&a_lifetime))), Some(2));
-        assert_eq!(outcome.get(&Case::Lifetime(Some(&b_lifetime))), None);
+        assert_eq!(outcome.count(&Case::Lifetime(None)), 4);
+        assert_eq!(outcome.count(&Case::Lifetime(Some(&a_lifetime))), 2);
+        assert_eq!(outcome.count(&Case::Lifetime(Some(&b_lifetime))), 0);
 
         let expected =
             quote! { &'b Some<'b, Complex<&'static &'static &'static Deep, &'static Type>> };
@@ -468,9 +468,9 @@ mod tests {
         }
 
         assert_eq!(outcome.len(), 3);
-        assert_eq!(outcome.get(&Case::Lifetime(Some(&a_lifetime))), Some(2));
-        assert_eq!(outcome.get(&Case::Lifetime(Some(&b_lifetime))), Some(3));
-        assert_eq!(outcome.get(&Case::Lifetime(None)), Some(5));
+        assert_eq!(outcome.count(&Case::Lifetime(Some(&a_lifetime))), 2);
+        assert_eq!(outcome.count(&Case::Lifetime(Some(&b_lifetime))), 3);
+        assert_eq!(outcome.count(&Case::Lifetime(None)), 5);
 
         let expected = quote! {
             &'b Some<

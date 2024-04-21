@@ -61,10 +61,10 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
 
             let has_ref = matches!(
                 (
-                    outcome.get(&sanitizer::Case::Lifetime(None)),
-                    outcome.get(&sanitizer::Case::Lifetime(Some(&reserved_lifetime)))
+                    outcome.count(&sanitizer::Case::Lifetime(None)),
+                    outcome.count(&sanitizer::Case::Lifetime(Some(&reserved_lifetime)))
                 ),
-                (Some(_), _) | (_, Some(_))
+                (1.., _) | (_, 1..)
             );
 
             let Ok(ty) = syn::parse2(sanitizer.to_token_stream()) else {

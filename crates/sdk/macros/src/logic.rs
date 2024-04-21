@@ -102,10 +102,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                     errors = errors.subsume(err);
                 }
 
-                if outcome
-                    .get(&sanitizer::Case::Ident(Some(&reserved_ident)))
-                    .is_some()
-                {
+                if outcome.count(&sanitizer::Case::Ident(Some(&reserved_ident))) > 0 {
                     // fail-fast due to reuse of the self ident for code generation
                     return Err(errors);
                 }
