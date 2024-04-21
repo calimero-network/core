@@ -12,16 +12,18 @@ impl Parse for StructOrEnumItem {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut attrs = Vec::new();
         let mut vis = syn::Visibility::Inherited;
-        'parsed: loop {
+        let item = loop {
             let lookahead = input.lookahead1();
             if lookahead.peek(syn::Token![struct]) {
-                break 'parsed input
-                    .parse()
-                    .map(|s| StructOrEnumItem::Struct(syn::ItemStruct { attrs, vis, ..s }));
+                let mut struct_: syn::ItemStruct = input.parse()?;
+                struct_.attrs = attrs;
+                struct_.vis = vis;
+                break StructOrEnumItem::Struct(struct_);
             } else if lookahead.peek(syn::Token![enum]) {
-                break 'parsed input
-                    .parse()
-                    .map(|s| StructOrEnumItem::Enum(syn::ItemEnum { attrs, vis, ..s }));
+                let mut enum_: syn::ItemEnum = input.parse()?;
+                enum_.attrs = attrs;
+                enum_.vis = vis;
+                break StructOrEnumItem::Enum(enum_);
             } else if lookahead.peek(syn::Token![#]) {
                 attrs.extend(input.call(syn::Attribute::parse_outer)?);
             } else if lookahead.peek(syn::Token![pub]) {
@@ -31,10 +33,15 @@ impl Parse for StructOrEnumItem {
 
                 return Err(syn::Error::new(
                     err.span(),
-                    errors::ParseError::Custom(&err.to_string()).to_string(),
+                    errors::ParseError::Custom(&err.to_string()),
                 ));
             }
-        }
+        };
+
+        input
+            .is_empty()
+            .then(|| item)
+            .ok_or_else(|| input.error("unexpected token"))
     }
 }
 
