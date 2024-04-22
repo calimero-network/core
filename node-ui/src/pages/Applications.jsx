@@ -9,8 +9,10 @@ import { useRPC } from "../hooks/useNear";
 import { useAdminClient } from "../hooks/useAdminClient";
 import { useNavigate } from "react-router-dom";
 import apiClient from "../api/index";
+import translations from "../constants/en.global.json";
 
 export default function Applications() {
+  const t = translations.applicationsPage.installApplication;
   const navigate = useNavigate();
   const { getPackages, getReleases, getPackage } = useRPC();
   const { installApplication } = useAdminClient();
@@ -57,7 +59,7 @@ export default function Applications() {
     const response = await installApplication(selectedPackage.id, selectedRelease.version);
     if (response.error) {
       setInstallationStatus({
-        title: "Failed to install application",
+        title: t.installErrorTitle,
         message: response.error.message,
         error: true,
       });
