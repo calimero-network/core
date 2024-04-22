@@ -404,10 +404,15 @@ pub async fn install_application(
 }
 
 async fn install_application_handler(
-    Extension(state): Extension<Arc<ServiceState>>,
+    Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<InstallApplicationRequest>,
 ) -> impl IntoResponse {
-    let result = install_application(&req.application, &req.version, &state.application_dir).await;
+    let result = install_application(
+        &req.application,
+        &req.version,
+        &state.service.application_dir,
+    )
+    .await;
 
     Ok(match result {
         Ok(()) => (StatusCode::OK, "Application Installed"),
@@ -460,15 +465,15 @@ struct ApplicationListResult {
 }
 
 async fn fetch_application_handler(
-    Extension(state): Extension<Arc<ServiceState>>,
+    Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    if let Ok(entries) = fs::read_dir(&state.application_dir) {
+    if let Ok(entries) = fs::read_dir(&state.service.application_dir) {
         let mut applications: HashMap<String, String> = HashMap::new();
 
         entries.filter_map(|entry| entry.ok()).for_each(|entry| {
             if let Some(file_name) = entry.file_name().to_str() {
                 let latest_version =
-                    get_latest_application_version(&state.application_dir, &file_name);
+                    get_latest_application_version(&state.service.application_dir, &file_name);
                 if let Some(latest_version) = latest_version {
                     let app_name = file_name.to_string();
                     applications.insert(app_name, latest_version.to_string());
