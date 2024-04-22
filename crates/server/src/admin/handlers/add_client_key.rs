@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::info;
 
-use crate::admin::service::{AdminState, ApiError, ApiResponse, NodeChallengeMessage};
+use super::challenge::NodeChallengeMessage;
+use crate::admin::service::{AdminState, ApiError, ApiResponse};
 use crate::admin::storage::client_keys::{add_client_key, ClientKey};
 use crate::admin::storage::root_key::{get_root_key, RootKey};
 use crate::verifysignature::verify_near_signature;
