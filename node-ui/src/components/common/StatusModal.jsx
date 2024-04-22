@@ -67,6 +67,7 @@ const ModalWrapper = styled.div`
         justify-content: center;
         align-items: center;
       }
+
       .button:hover {
         background-color: #ac5221;
       }
