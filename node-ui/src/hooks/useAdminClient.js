@@ -7,13 +7,7 @@ export function useAdminClient() {
         application: selectedPackage,
         version: selectedVersion,
       });
-      if (response.status === 200) {
-        return { data: response.data };
-      } else {
-        return {
-          error: { code: 500, message: "Failed to install application" },
-        };
-      }
+      return { data: response?.data };
     } catch (error) {
       if (error.response) {
         return {
