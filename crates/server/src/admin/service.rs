@@ -350,6 +350,14 @@ struct ApplicationListResult {
 async fn fetch_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
+
+    if(!&state.service.application_dir.exists()){
+        return ApiResponse {
+            payload: ApplicationListResult { apps: HashMap::new() },
+        }
+        .into_response();
+    }
+
     if let Ok(entries) = fs::read_dir(&state.service.application_dir) {
         let mut applications: HashMap<String, String> = HashMap::new();
 

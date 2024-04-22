@@ -45,7 +45,7 @@ export default function Applications() {
       }
     };
     setApps();
-  }, []);
+  }, [swithInstall]);
 
   return (
     <FlexLayout>
