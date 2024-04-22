@@ -17,6 +17,8 @@
             "title": "Applications",
             "headerNameText": "Name",
             "headerDescText": "Description",
+            "headerVersionText": "Version",
+            "headerIdText": "Id",
             "headerRepoText": "Repository",
             "uninstallButtonText": "Uninstall",
             "installButtonText": "Install new applications",

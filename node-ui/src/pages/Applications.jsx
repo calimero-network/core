@@ -39,24 +39,30 @@ export default function Applications() {
 
   useEffect(() => {
     const setApps = async () => {
-      const installedApplicationIds = await apiClient
+      const installedApplications = await apiClient
         .admin()
         .getInstalledAplications();
 
-      if (installedApplicationIds.length !== 0) {
+      if (Object.keys(installedApplications).length !== 0) {
         const tempApplications = await Promise.all(
-          installedApplicationIds.map(async (appId) => {
-            return await getPackage(appId);
+          Object.keys(installedApplications).map(async (appId) => {
+            const version = installedApplications[appId];
+            const packageData = await getPackage(appId);
+            return { ...packageData, id: appId, version: version };
           })
         );
         setApplications(tempApplications);
       }
     };
+
     setApps();
   }, [setShowInstallApplications]);
 
   const installApplicationHandler = async () => {
-    const response = await installApplication(selectedPackage.id, selectedRelease.version);
+    const response = await installApplication(
+      selectedPackage.id,
+      selectedRelease.version
+    );
     if (response.error) {
       setInstallationStatus({
         title: t.installErrorTitle,

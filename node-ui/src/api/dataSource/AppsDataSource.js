@@ -9,12 +9,13 @@ export class AppsDataSource {
     try {
       const response = await this.client.get("/admin-api/applications");
       if (response?.apps) {
-        return Object.keys(response.apps);
+        return response.apps;
       } else {
-        return [];
+        return {};
       }
     } catch (error) {
       console.error("Error fetching installed applications:", error);
+      return {};
     }
   }
 }
