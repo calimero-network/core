@@ -8,6 +8,7 @@ import { Form } from "react-bootstrap";
 import { ReleaseItem } from "./ReleaseItem";
 import StatusModal from "../common/StatusModal";
 import translations from "../../constants/en.global.json";
+import { Tabs } from "../../pages/Applications";
 
 const InstallApplicationForm = styled.div`
   color: #fff;
@@ -117,7 +118,7 @@ export function InstallApplication({
   selectedPackage,
   selectedRelease,
   setSelectedRelease,
-  setShowInstallApplications,
+  setSelectedTab,
   showStatusModal,
   closeModal,
   installationStatus,
@@ -133,7 +134,7 @@ export function InstallApplication({
       />
       <div
         onClick={() => {
-          setShowInstallApplications(false);
+          setSelectedTab(Tabs.APPLICATION_LIST);
           setSelectedPackage(null);
           setSelectedRelease(null);
         }}
@@ -221,7 +222,7 @@ InstallApplication.propTypes = {
   selectedPackage: PropTypes.object,
   selectedRelease: PropTypes.object,
   setSelectedRelease: PropTypes.func.isRequired,
-  setShowInstallApplications: PropTypes.func.isRequired,
+  setSelectedTab: PropTypes.func.isRequired,
   showStatusModal: PropTypes.bool.isRequired,
   closeModal: PropTypes.func.isRequired,
   installationStatus: PropTypes.object.isRequired,

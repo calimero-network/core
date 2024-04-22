@@ -93,7 +93,7 @@ const Table = styled.div`
   }
 `;
 
-export function ApplicationsTable({ applications, install, uninstall }) {
+export function ApplicationsTable({ applications, changeTab, uninstall }) {
   const t = translations.applicationsPage.applicationsTable;
 
   return (
@@ -157,7 +157,7 @@ export function ApplicationsTable({ applications, install, uninstall }) {
         </div>
       )}
       <div className="add-new-wrapper">
-        <AddNewItem text={t.installButtonText} onClick={install} />
+        <AddNewItem text={t.installButtonText} onClick={changeTab} />
       </div>
     </Table>
   );
@@ -165,6 +165,6 @@ export function ApplicationsTable({ applications, install, uninstall }) {
 
 ApplicationsTable.propTypes = {
   applications: PropTypes.array.isRequired,
-  install: PropTypes.func.isRequired,
+  changeTab: PropTypes.func.isRequired,
   uninstall: PropTypes.func.isRequired,
 };

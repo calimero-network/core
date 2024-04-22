@@ -11,12 +11,17 @@ import { useNavigate } from "react-router-dom";
 import apiClient from "../api/index";
 import translations from "../constants/en.global.json";
 
+export const Tabs = {
+  INSTALL_APPLICATION: 0,
+  APPLICATION_LIST: 1,
+};
+
 export default function Applications() {
   const t = translations.applicationsPage.installApplication;
   const navigate = useNavigate();
   const { getPackages, getReleases, getPackage } = useRPC();
   const { installApplication } = useAdminClient();
-  const [showInstallApplications, setShowInstallApplications] = useState(false);
+  const [selectedTab, setSelectedTab] = useState(Tabs.APPLICATION_LIST);
   const [selectedPackage, setSelectedPackage] = useState();
   const [selectedRelease, setSelectedRelease] = useState();
   const [packages, setPackages] = useState([]);
@@ -53,7 +58,7 @@ export default function Applications() {
       }
     };
     setApps();
-  }, [setShowInstallApplications]);
+  }, [selectedTab]);
 
   const installApplicationHandler = async () => {
     const response = await installApplication(selectedPackage.id, selectedRelease.version);
@@ -78,7 +83,7 @@ export default function Applications() {
     if (!installationStatus.error) {
       setSelectedPackage(null);
       setSelectedPackage(null);
-      setShowInstallApplications(false);
+      setSelectedTab(Tabs.APPLICATION_LIST);
     }
     setInstallationStatus({
       title: "",
@@ -91,7 +96,7 @@ export default function Applications() {
     <FlexLayout>
       <Navigation />
       <ApplicationsContent redirectAppUpload={() => navigate("/upload-app")}>
-        {showInstallApplications ? (
+        {selectedTab === Tabs.INSTALL_APPLICATION ? (
           <InstallApplication
             getReleases={getReleases}
             installApplication={installApplicationHandler}
@@ -102,7 +107,7 @@ export default function Applications() {
             selectedRelease={selectedRelease}
             setSelectedRelease={setSelectedRelease}
             setSelectedPackage={setSelectedPackage}
-            setShowInstallApplications={setShowInstallApplications}
+            setSelectedTab={setSelectedTab}
             showStatusModal={showStatusModal}
             closeModal={closeStatusModal}
             installationStatus={installationStatus}
@@ -110,7 +115,7 @@ export default function Applications() {
         ) : (
           <ApplicationsTable
             applications={applications}
-            install={() => setShowInstallApplications(true)}
+            changeTab={() => setSelectedTab(Tabs.INSTALL_APPLICATION)}
             uninstall={() => console.log("uninstall ?!?")}
           />
         )}
