@@ -6,6 +6,7 @@ import {
   ExclamationTriangleIcon,
   ShieldCheckIcon,
 } from "@heroicons/react/24/solid";
+import translations from "../../constants/en.global.json";
 
 const ModalWrapper = styled.div`
   display: flex;
@@ -81,6 +82,7 @@ const ModalWrapper = styled.div`
 `;
 
 export default function StatusModal({ show, closeModal, modalContent }) {
+  const t = translations.statusModal;
   return (
     <Modal
       show={show}
@@ -102,7 +104,7 @@ export default function StatusModal({ show, closeModal, modalContent }) {
           <div className="modal-subtitle">{modalContent.message}</div>
           <div className="button-wrapper">
             <button className="button" onClick={closeModal}>
-              Continue
+              {t.buttonContinueText}
             </button>
           </div>
         </div>
