@@ -14,12 +14,18 @@ export default function Applications() {
   const navigate = useNavigate();
   const { getPackages, getReleases, getPackage } = useRPC();
   const { installApplication } = useAdminClient();
-  const [swithInstall, setSwitchInstall] = useState(false);
+  const [showInstallApplications, setShowInstallApplications] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState();
   const [selectedRelease, setSelectedRelease] = useState();
   const [packages, setPackages] = useState([]);
   const [releases, setReleases] = useState([]);
   const [applications, setApplications] = useState([]);
+  const [showStatusModal, setShowStatusModal] = useState(false);
+  const [installationStatus, setInstallationStatus] = useState({
+    title: "",
+    message: "",
+    error: false,
+  });
 
   useEffect(() => {
     if (!packages.length) {
@@ -45,16 +51,48 @@ export default function Applications() {
       }
     };
     setApps();
-  }, [swithInstall]);
+  }, [setShowInstallApplications]);
+
+  const installApplicationHandler = async () => {
+    const response = await installApplication(selectedPackage.id, selectedRelease.version);
+    if (response.error) {
+      setInstallationStatus({
+        title: "Failed to install application",
+        message: response.error.message,
+        error: true,
+      });
+    } else {
+      setInstallationStatus({
+        title: response.data,
+        message: `Installed application ${selectedPackage.name}, version ${selectedRelease.version}.`,
+        error: false,
+      });
+    }
+    setShowStatusModal(true);
+  };
+
+  const closeStatusModal = () => {
+    setShowStatusModal(false);
+    if (!installationStatus.error) {
+      setSelectedPackage(null);
+      setSelectedPackage(null);
+      setShowInstallApplications(false);
+    }
+    setInstallationStatus({
+      title: "",
+      message: "",
+      error: false,
+    });
+  };
 
   return (
     <FlexLayout>
       <Navigation />
       <ApplicationsContent redirectAppUpload={() => navigate("/upload-app")}>
-        {swithInstall ? (
+        {showInstallApplications ? (
           <InstallApplication
             getReleases={getReleases}
-            installApplication={installApplication}
+            installApplication={installApplicationHandler}
             packages={packages}
             releases={releases}
             selectedPackage={selectedPackage}
@@ -62,12 +100,15 @@ export default function Applications() {
             selectedRelease={selectedRelease}
             setSelectedRelease={setSelectedRelease}
             setSelectedPackage={setSelectedPackage}
-            setSwitchInstall={setSwitchInstall}
+            setShowInstallApplications={setShowInstallApplications}
+            showStatusModal={showStatusModal}
+            closeModal={closeStatusModal}
+            installationStatus={installationStatus}
           />
         ) : (
           <ApplicationsTable
             applications={applications}
-            install={() => setSwitchInstall(true)}
+            install={() => setShowInstallApplications(true)}
             uninstall={() => console.log("uninstall ?!?")}
           />
         )}
