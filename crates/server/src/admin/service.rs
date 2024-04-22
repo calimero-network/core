@@ -9,15 +9,12 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use calimero_store::Store;
 use libp2p::identity::Keypair;
 use near_jsonrpc_client::{methods, JsonRpcClient};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
 use near_primitives::views::QueryRequest;
-use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -27,6 +24,7 @@ use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
 use super::handlers::add_client_key::{add_client_key_handler, parse_api_error};
+use super::handlers::challenge::{request_challenge_handler, NodeChallenge, CHALLENGE_KEY};
 use super::handlers::fetch_did::fetch_did_handler;
 use super::storage::root_key::{add_root_key, RootKey};
 use crate::verifysignature;
@@ -108,8 +106,6 @@ pub(crate) fn site(
     Ok(Some((path, react_app_serve_dir)))
 }
 
-pub const CHALLENGE_KEY: &str = "challenge";
-
 pub struct ApiResponse<T: Serialize> {
     pub(crate) payload: T,
 }
@@ -151,119 +147,6 @@ impl IntoResponse for ApiError {
             .header("Content-Type", "application/json")
             .body(axum::body::Body::from(body))
             .unwrap()
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RequestChallenge {
-    application_id: Option<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RequestChallengeResponse {
-    data: NodeChallenge,
-}
-
-pub async fn request_challenge_handler(
-    session: Session,
-    Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<RequestChallenge>,
-) -> impl IntoResponse {
-    if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
-        match serde_json::from_str::<NodeChallenge>(&challenge) {
-            Ok(challenge) => ApiResponse {
-                payload: RequestChallengeResponse { data: challenge },
-            }
-            .into_response(),
-            Err(_) => ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to deserialize challenge".to_string(),
-            }
-            .into_response(),
-        }
-    } else {
-        match generate_challenge(req.application_id.clone(), &state.keypair) {
-            Ok(challenge) => {
-                if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
-                    error!("Failed to insert challenge into session: {}", err);
-                    return ApiError {
-                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                        message: "Failed to insert challenge into session".to_string(),
-                    }
-                    .into_response();
-                }
-                ApiResponse {
-                    payload: RequestChallengeResponse { data: challenge },
-                }
-                .into_response()
-            }
-            Err(err) => {
-                error!("Failed to generate client challenge: {}", err);
-                ApiError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "Failed to generate challenge".to_string(),
-                }
-                .into_response()
-            }
-        }
-    }
-}
-
-fn generate_random_bytes() -> [u8; 32] {
-    let mut rng = thread_rng();
-    let mut buf = [0u8; 32];
-    rng.fill_bytes(&mut buf);
-    buf
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct NodeChallenge {
-    #[serde(flatten)]
-    message: NodeChallengeMessage,
-    node_signature: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeChallengeMessage {
-    pub(crate) nonce: String,
-    pub(crate) application_id: String, //optional if challenge is used on admin level
-    pub(crate) timestamp: i64,
-}
-
-fn generate_challenge(
-    application_id: Option<String>,
-    keypair: &Keypair,
-) -> Result<NodeChallenge, ApiError> {
-    let random_bytes = generate_random_bytes();
-    let encoded = STANDARD.encode(&random_bytes);
-
-    let node_challenge_message = NodeChallengeMessage {
-        nonce: encoded,
-        application_id: application_id.unwrap_or_default(),
-        timestamp: chrono::Utc::now().timestamp(),
-    };
-
-    let message_vec = serde_json::to_vec(&node_challenge_message).map_err(|_| ApiError {
-        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-        message: "Failed to serialize challenge data".into(),
-    })?;
-
-    match keypair.sign(&message_vec) {
-        Ok(signature) => {
-            let node_signature = STANDARD.encode(&signature);
-            Ok(NodeChallenge {
-                message: node_challenge_message,
-                node_signature,
-            })
-        }
-        Err(e) => Err(ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to sign challenge: {}", e),
-        }),
     }
 }
 
