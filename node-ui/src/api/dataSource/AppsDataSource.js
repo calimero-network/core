@@ -11,11 +11,11 @@ export class AppsDataSource {
       if (response?.apps) {
         return response.apps;
       } else {
-        return {};
+        return [];
       }
     } catch (error) {
       console.error("Error fetching installed applications:", error);
-      return {};
+      return [];
     }
   }
 }

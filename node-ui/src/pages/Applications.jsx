@@ -43,12 +43,11 @@ export default function Applications() {
         .admin()
         .getInstalledAplications();
 
-      if (Object.keys(installedApplications).length !== 0) {
+      if (installedApplications.length !== 0) {
         const tempApplications = await Promise.all(
-          Object.keys(installedApplications).map(async (appId) => {
-            const version = installedApplications[appId];
-            const packageData = await getPackage(appId);
-            return { ...packageData, id: appId, version: version };
+          installedApplications.map(async (app) => {
+            const packageData = await getPackage(app.id);
+            return { ...packageData, id: app.id, version: app.version };
           })
         );
         setApplications(tempApplications);
