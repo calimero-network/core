@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
 import { UploadAppContent } from "../components/uploadApp/UploadAppContent";
@@ -15,21 +15,61 @@ import * as nearAPI from "near-api-js";
 const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
 
 export default function UploadApp() {
+  const fileInputRef = useRef(null);
+  const { getPackages } = useRPC();
   const [ipfsPath, setIpfsPath] = useState("");
   const [fileHash, setFileHash] = useState("");
   const [tabSwitch, setTabSwitch] = useState(true);
   const [packages, setPackages] = useState([]);
   const [addPackageLoader, setAddPackageLoader] = useState(false);
   const [addReleaseLoader, setAddReleaseLoader] = useState(false);
-  const { getPackages } = useRPC();
+  const [walletAccounts, setWalletAccounts] = useState([]);
+  const [deployerAccount, setDeployerAccount] = useState(null);
+  const [showStatusModal, setShowStatusModal] = useState(false);
+  const [packageInfo, setPackageInfo] = useState({
+    name: "",
+    description: "",
+    repository: "",
+  });
+  const [deployStatus, setDeployStatus] = useState({
+    title: "",
+    message: "",
+    error: false,
+  });
+  const [releaseInfo, setReleaseInfo] = useState({
+    name: "",
+    version: "",
+    notes: "",
+    path: "",
+    hash: "",
+  });
 
   useEffect(() => {
-    if (!packages.length) {
       (async () => {
         setPackages(await getPackages());
       })();
-    }
-  }, [packages]);
+  }, [ipfsPath]);
+
+  useEffect(() => {
+    setReleaseInfo((prevState) => ({
+      ...prevState,
+      path: ipfsPath,
+      hash: fileHash,
+    }));
+  }, [ipfsPath, fileHash]);
+
+  useEffect(() => {
+    const fetchWalletAccounts = async () => {
+      const selector = await setupWalletSelector({
+        network: "testnet",
+        modules: [setupMyNearWallet()],
+      });
+      const wallet = await selector.wallet("my-near-wallet");
+      const accounts = await wallet.getAccounts();
+      setWalletAccounts(accounts);
+    };
+    fetchWalletAccounts();
+  }, []);
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
@@ -37,6 +77,7 @@ export default function UploadApp() {
       modules: [setupMyNearWallet()],
     });
     const wallet = await selector.wallet("my-near-wallet");
+    await wallet.signOut();
     wallet.signIn({ contractId: "calimero-package-manager.testnet" });
   };
 
@@ -85,29 +126,44 @@ export default function UploadApp() {
       modules: [setupMyNearWallet()],
     });
     const wallet = await selector.wallet("my-near-wallet");
-    const account = (await wallet.getAccounts())[0];
-    const res = await wallet.signAndSendTransaction({
-      signerId: account,
-      actions: [
-        {
-          type: "FunctionCall",
-          params: {
-            methodName: "add_package",
-            args: {
-              name: packageInfo.name,
-              description: packageInfo.description,
-              repository: packageInfo.repository,
+    try {
+      const res = await wallet.signAndSendTransaction({
+        signerId: deployerAccount,
+        actions: [
+          {
+            type: "FunctionCall",
+            params: {
+              methodName: "add_package",
+              args: {
+                name: packageInfo.name,
+                description: packageInfo.description,
+                repository: packageInfo.repository,
+              },
+              gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
             },
-            gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
           },
-        },
-      ],
-    });
-    if (res.status.SuccessValue) {
-      setAddPackageLoader(false);
-      window.alert("Package added successfully!");
-      setTabSwitch(true);
+        ],
+      });
+      if (res.status.SuccessValue) {
+        setDeployStatus({
+          title: "Package added successfully",
+          message: `Package ${packageInfo.name} added successfully`,
+          error: false,
+        });
+      }
+    } catch (error) {
+      const errorMessage =
+        JSON.parse(error.message).kind?.kind?.FunctionCallError
+          ?.ExecutionError ?? "An error occurred while adding the package";
+
+      setDeployStatus({
+        title: "Failed to add Package",
+        message: errorMessage,
+        error: true,
+      });
     }
+    setShowStatusModal(true);
+    setAddPackageLoader(false);
   };
 
   const addRelease = async (releaseInfo) => {
@@ -117,31 +173,79 @@ export default function UploadApp() {
       modules: [setupMyNearWallet()],
     });
     const wallet = await selector.wallet("my-near-wallet");
-    const account = (await wallet.getAccounts())[0];
-    const res = await wallet.signAndSendTransaction({
-      signerId: account,
-      actions: [
-        {
-          type: "FunctionCall",
-          params: {
-            methodName: "add_release",
-            args: {
-              name: releaseInfo.name,
-              version: releaseInfo.version,
-              notes: releaseInfo.notes,
-              path: releaseInfo.path,
-              hash: releaseInfo.hash,
+    try {
+      const res = await wallet.signAndSendTransaction({
+        signerId: deployerAccount,
+        actions: [
+          {
+            type: "FunctionCall",
+            params: {
+              methodName: "add_release",
+              args: {
+                name: releaseInfo.name,
+                version: releaseInfo.version,
+                notes: releaseInfo.notes,
+                path: releaseInfo.path,
+                hash: releaseInfo.hash,
+              },
+              gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
             },
-            gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
           },
-        },
-      ],
-    });
-    if (res.status.SuccessValue === "") {
-      setAddReleaseLoader(false);
-      window.alert("Release added successfully!");
+        ],
+      });
+
+      if (res.status.SuccessValue === '') {
+        setDeployStatus({
+          title: "Release added successfully",
+          message: `Release version ${releaseInfo.version} for ${releaseInfo.name} added successfully`,
+          error: false,
+        });
+      }
+    } catch (error) {
+      const errorMessage =
+        JSON.parse(error.message).kind?.kind?.FunctionCallError
+          ?.ExecutionError ?? "An error occurred while adding the release";
+
+      setDeployStatus({
+        title: "Failed to add Release",
+        message: errorMessage,
+        error: true,
+      });
     }
+    setShowStatusModal(true);
+    setAddReleaseLoader(false);
   };
+
+  const closeStatusModal = () => {
+    setShowStatusModal(false);
+    if (!deployStatus.error) {
+      setDeployerAccount(null);
+      setPackageInfo({
+        name: "",
+        description: "",
+        repository: "",
+      });
+      setReleaseInfo({
+        name: "",
+        version: "",
+        notes: "",
+        path: "",
+        hash: "",
+      });
+      setFileHash("");
+      setIpfsPath("");
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+
+    setDeployStatus({
+      title: "",
+      message: "",
+      error: false,
+    });
+  };
+
 
   return (
     <FlexLayout>
@@ -150,20 +254,34 @@ export default function UploadApp() {
         <UploadSwitch setTabSwitch={setTabSwitch} tabSwitch={tabSwitch}>
           {tabSwitch ? (
             <AddPackageForm
-              cid={ipfsPath}
               addPackage={addPackage}
-              setTabSwitch={setTabSwitch}
               addPackageLoader={addPackageLoader}
+              walletAccounts={walletAccounts}
+              deployerAccount={deployerAccount}
+              setDeployerAccount={setDeployerAccount}
+              showStatusModal={showStatusModal}
+              closeModal={closeStatusModal}
+              deployStatus={deployStatus}
+              packageInfo={packageInfo}
+              setPackageInfo={setPackageInfo}
             />
           ) : (
             <UploadApplication
               handleFileChange={handleFileChange}
-              setTabSwitch={setTabSwitch}
               addRelease={addRelease}
               ipfsPath={ipfsPath}
               fileHash={fileHash}
               packages={packages}
+              walletAccounts={walletAccounts}
+              deployerAccount={deployerAccount}
+              setDeployerAccount={setDeployerAccount}
+              showStatusModal={showStatusModal}
               addReleaseLoader={addReleaseLoader}
+              closeModal={closeStatusModal}
+              deployStatus={deployStatus}
+              releaseInfo={releaseInfo}
+              setReleaseInfo={setReleaseInfo}
+              fileInputRef={fileInputRef}
             />
           )}
         </UploadSwitch>
