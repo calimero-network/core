@@ -157,7 +157,7 @@ export default function UploadApp() {
           ?.ExecutionError ?? "An error occurred while adding the package";
 
       setDeployStatus({
-        title: "Failed to add Package",
+        title: "Failed to add package",
         message: errorMessage,
         error: true,
       });
@@ -207,7 +207,7 @@ export default function UploadApp() {
           ?.ExecutionError ?? "An error occurred while adding the release";
 
       setDeployStatus({
-        title: "Failed to add Release",
+        title: "Failed to add release",
         message: errorMessage,
         error: true,
       });
