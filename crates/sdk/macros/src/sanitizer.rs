@@ -1,3 +1,4 @@
+use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
 
 use proc_macro2::TokenTree;
@@ -54,9 +55,25 @@ pub enum Case<'a> {
     Lifetime(Option<&'a syn::Lifetime>),
 }
 
+pub struct Func<'a> {
+    inner: UnsafeCell<&'a mut dyn FnMut(proc_macro2::Span) -> Action<'a>>,
+}
+
+impl<'a> Func<'a> {
+    pub fn new<F>(f: &'a mut F) -> Self
+    where
+        F: FnMut(proc_macro2::Span) -> Action<'a> + 'a,
+    {
+        Self {
+            inner: UnsafeCell::new(f as _),
+        }
+    }
+}
+
 pub enum Action<'a> {
     ReplaceWith(&'a dyn ToTokens),
     Forbid(errors::ParseError<'static>),
+    Custom(Func<'a>),
     Ignore,
 }
 
@@ -106,6 +123,10 @@ impl<'a> SanitizerAtom<'a> {
         match action {
             Action::ReplaceWith(replacement) => return self.replace_with(span, replacement),
             Action::Forbid(error) => errors.push(span, error),
+            Action::Custom(func) => {
+                let func = unsafe { &mut *func.inner.get() };
+                return self.apply_action(span, &func(span), errors);
+            }
             Action::Ignore => {}
         }
         true
@@ -127,6 +148,10 @@ impl<'a> SanitizationResult<'a> {
         }
 
         Ok(())
+    }
+
+    pub fn errors(&mut self) -> &mut errors::Errors<'static> {
+        &mut self.errors
     }
 
     #[allow(dead_code)]

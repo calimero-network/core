@@ -29,13 +29,32 @@ pub fn logic(_args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn state(_args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     reserved::init();
-    let item = syn::parse_macro_input!(input as items::StructOrEnumItem);
-    let tokens = match state::StateImpl::try_from(state::StateImplInput { item: &item }) {
+
+    let input = input.into();
+
+    let args = match syn::parse2(args.into()) {
+        Ok(args) => args,
+        Err(err) => {
+            let err = err.to_compile_error();
+            return quote!(#input #err).into();
+        }
+    };
+
+    let item = match syn::parse2(input) {
+        Ok(item) => item,
+        Err(err) => return err.to_compile_error().into(),
+    };
+
+    let tokens = match state::StateImpl::try_from(state::StateImplInput {
+        item: &item,
+        args: &args,
+    }) {
         Ok(data) => data.to_token_stream(),
         Err(err) => err.to_compile_error(),
     };
+
     tokens.into()
 }
 
