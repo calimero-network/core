@@ -54,7 +54,6 @@ impl ApplicationManager {
         application_id: &calimero_primitives::application::ApplicationId,
     ) -> Option<String> {
         let application_base_path = self.application_dir.join(application_id.to_string());
-
         if let Ok(entries) = fs::read_dir(&application_base_path) {
             // Collect version folders that contain binary.wasm into a vector
             let mut versions_with_binary = entries
@@ -68,7 +67,7 @@ impl ApplicationManager {
                     };
 
                     let binary_path = entry_path.join("binary.wasm");
-                    binary_path.exists().then_some((version, entry_path))
+                    binary_path.exists().then_some((version, binary_path))
                 })
                 .collect::<Vec<_>>();
 
