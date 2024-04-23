@@ -6,7 +6,9 @@ import { ArrowLeftIcon } from "@heroicons/react/24/solid";
 import { PackageItem } from "./Item";
 import { Form } from "react-bootstrap";
 import { ReleaseItem } from "./ReleaseItem";
+import StatusModal from "../common/StatusModal";
 import translations from "../../constants/en.global.json";
+import { Tabs } from "../../pages/Applications";
 
 const InstallApplicationForm = styled.div`
   color: #fff;
@@ -116,14 +118,23 @@ export function InstallApplication({
   selectedPackage,
   selectedRelease,
   setSelectedRelease,
-  setSwitchInstall,
+  setSelectedTab,
+  showStatusModal,
+  closeModal,
+  installationStatus,
 }) {
   const t = translations.applicationsPage.installApplication;
+
   return (
     <InstallApplicationForm>
+      <StatusModal
+        show={showStatusModal}
+        closeModal={closeModal}
+        modalContent={installationStatus}
+      />
       <div
         onClick={() => {
-          setSwitchInstall(false);
+          setSelectedTab(Tabs.APPLICATION_LIST);
           setSelectedPackage(null);
           setSelectedRelease(null);
         }}
@@ -191,14 +202,8 @@ export function InstallApplication({
         )}
         <button
           className="install-button"
-          onClick={async () => {
-            const response = await installApplication(
-              selectedPackage.id,
-              selectedRelease.version
-            );
-            window.alert("Installation status: " + response);
-          }}
-          disabled={!selectedPackage && !selectedRelease}
+          onClick={installApplication}
+          disabled={!selectedPackage || !selectedRelease}
         >
           Install
         </button>
@@ -217,5 +222,8 @@ InstallApplication.propTypes = {
   selectedPackage: PropTypes.object,
   selectedRelease: PropTypes.object,
   setSelectedRelease: PropTypes.func.isRequired,
-  setSwitchInstall: PropTypes.func.isRequired,
+  setSelectedTab: PropTypes.func.isRequired,
+  showStatusModal: PropTypes.bool.isRequired,
+  closeModal: PropTypes.func.isRequired,
+  installationStatus: PropTypes.object.isRequired,
 };

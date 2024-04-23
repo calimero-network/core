@@ -5,6 +5,9 @@ import { AddNewItem } from "../common/AddNewItem";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
 import MenuIconDropdown from "../common/MenuIconDropdown";
+import { truncateHash } from "../../utils/displayFunctions";
+import { DocumentDuplicateIcon } from "@heroicons/react/24/solid";
+import { CopyToClipboard } from "react-copy-to-clipboard";
 
 const Table = styled.div`
   height: 100%;
@@ -25,7 +28,7 @@ const Table = styled.div`
     padding-left: 14px;
     display: grid;
     gap: 24px;
-    grid-template-columns: repeat(11, 1fr);
+    grid-template-columns: repeat(13, 1fr);
     grid-template-rows: auto;
     color: rbg(255, 255, 255, 0.7);
   }
@@ -47,13 +50,18 @@ const Table = styled.div`
     color: #fff;
   }
 
-  .item-name {
+  .item-name,
+  .item-id {
     grid-column: span 2;
+  }
+
+  .item-version {
+    grid-column: span 1;
   }
 
   .item-desc,
   .item-repo {
-    grid-column: span 4;
+    grid-column: span 3;
   }
 
   .item-header {
@@ -78,6 +86,24 @@ const Table = styled.div`
     color: #ff842d;
   }
 
+  .item-id {
+    display: flex;
+    justify-content: start;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .copy-icon {
+    color: rgb(255, 255, 255, 0.7);
+    height: 20px;
+    width: 20px;
+    cursor: pointer;
+  }
+
+  .copy-icon:hover {
+    color: #fff;
+  }
+
   .add-new-wrapper {
     width: 100%;
     display: flex;
@@ -93,7 +119,7 @@ const Table = styled.div`
   }
 `;
 
-export function ApplicationsTable({ applications, install, uninstall }) {
+export function ApplicationsTable({ applications, changeTab, uninstall }) {
   const t = translations.applicationsPage.applicationsTable;
 
   return (
@@ -105,8 +131,10 @@ export function ApplicationsTable({ applications, install, uninstall }) {
       ) : (
         <div className="header">
           <div className="item-name item-header">{t.headerNameText}</div>
+          <div className="item-version item-header">{t.headerVersionText}</div>
           <div className="item-desc item-header">{t.headerDescText}</div>
           <div className="item-repo item-header">{t.headerRepoText}</div>
+          <div className="item-id item-header">{t.headerIdText}</div>
         </div>
       )}
       {applications && (
@@ -120,8 +148,11 @@ export function ApplicationsTable({ applications, install, uninstall }) {
                 key={application.id}
               >
                 <div className="item-name app-item">{application.name}</div>
+                <div className="item-version app-item">
+                  {application.version}
+                </div>
                 <div
-                  className="item-desc app-item app-item-desc"
+                  className="item-desc app-item-desc app-item"
                   data-tooltip-id={`my-tooltip-${id}`}
                 >
                   {application.description}
@@ -139,6 +170,12 @@ export function ApplicationsTable({ applications, install, uninstall }) {
                 >
                   {application.repository}
                 </a>
+                <div className="item-id app-item">
+                  {truncateHash(application.id)}
+                  <CopyToClipboard text={application.id}>
+                    <DocumentDuplicateIcon className="copy-icon" />
+                  </CopyToClipboard>
+                </div>
                 {false && (
                   <div className="menu">
                     <MenuIconDropdown
@@ -157,7 +194,7 @@ export function ApplicationsTable({ applications, install, uninstall }) {
         </div>
       )}
       <div className="add-new-wrapper">
-        <AddNewItem text={t.installButtonText} onClick={install} />
+        <AddNewItem text={t.installButtonText} onClick={changeTab} />
       </div>
     </Table>
   );
@@ -165,6 +202,6 @@ export function ApplicationsTable({ applications, install, uninstall }) {
 
 ApplicationsTable.propTypes = {
   applications: PropTypes.array.isRequired,
-  install: PropTypes.func.isRequired,
+  changeTab: PropTypes.func.isRequired,
   uninstall: PropTypes.func.isRequired,
 };

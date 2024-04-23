@@ -17,6 +17,8 @@
             "title": "Applications",
             "headerNameText": "Name",
             "headerDescText": "Description",
+            "headerVersionText": "Version",
+            "headerIdText": "Id",
             "headerRepoText": "Repository",
             "uninstallButtonText": "Uninstall",
             "installButtonText": "Install new applications",
@@ -28,7 +30,8 @@
             "dropdownPlaceholder": "Applications",
             "packageDetailsLabel": "Package Details",
             "releaseSelectionLabel": "Select Application Release",
-            "releaseDetailsLabel": "Release Details"
+            "releaseDetailsLabel": "Release Details",
+            "installErrorTitle": "Failed to install application"
         }
     },
     "confirmWallet": {
@@ -103,5 +106,8 @@
         "namePlaceholder": "chat-application",
         "repositoryPlaceholder": "github.com/username/chat-application",
         "descriptionPlaceholder": "A chat application built for P2P system"
+    },
+    "statusModal": {
+        "buttonContinueText": "Continue"
     }
 }
