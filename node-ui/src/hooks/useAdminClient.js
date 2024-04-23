@@ -16,6 +16,13 @@ export function useAdminClient() {
             message: error.response.data?.error,
           },
         };
+      } else {
+        return {
+          error: {
+            code: 500,
+            message: "Try again later.",
+          }
+        }
       }
     }
   };
