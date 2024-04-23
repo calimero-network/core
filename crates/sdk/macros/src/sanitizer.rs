@@ -104,17 +104,8 @@ impl<'a> SanitizerAtom<'a> {
         errors: &mut errors::Errors<'static>,
     ) -> bool {
         match action {
-            Action::ReplaceWith(replacement) => {
-                return self.replace_with(span, replacement);
-            }
-            Action::Forbid(error) => match self {
-                SanitizerAtom::Ident(ident) => errors.push_spanned(ident, error),
-                SanitizerAtom::Lifetime(LifetimeAtom::Named(lifetime)) => {
-                    errors.push(lifetime.span(), error)
-                }
-                SanitizerAtom::Lifetime(LifetimeAtom::Elided(span)) => errors.push(*span, error),
-                _ => unreachable!("non-ident/lifetime atoms should never satisfy a case"),
-            },
+            Action::ReplaceWith(replacement) => return self.replace_with(span, replacement),
+            Action::Forbid(error) => errors.push(span, error),
             Action::Ignore => {}
         }
         true
@@ -130,7 +121,7 @@ pub struct SanitizationResult<'a> {
 impl<'a> SanitizationResult<'a> {
     pub fn check(&self) -> Result<(), syn::Error> {
         if let Err(errors) = self.errors.check(()) {
-            if let errors::MaybeError::Some(error) = errors::MaybeError::from(errors) {
+            if let errors::MaybeError::Some(error) = errors.into() {
                 return Err(error);
             }
         }
