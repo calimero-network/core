@@ -356,7 +356,7 @@ async fn fetch_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
 
-    if !&state.service.application_dir.exists() {
+    if !state.service.application_dir.exists() {
         return ApiResponse {
             payload: ApplicationListResult { apps: Vec::new() },
         }
