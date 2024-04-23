@@ -4,7 +4,7 @@ import Modal from "react-bootstrap/Modal";
 import styled from "styled-components";
 import {
   ExclamationTriangleIcon,
-  ShieldCheckIcon,
+  ShieldCheckIcon
 } from "@heroicons/react/24/solid";
 import translations from "../../constants/en.global.json";
 

@@ -8,6 +8,15 @@ export const truncatePublicKey = (publicKey) => {
     )}`;
 };
 
+export const truncateHash = (hash) => {
+  return `
+      ${hash.substring(0, 4)}...${hash
+    .substring(
+      hash.length - 4,
+      hash.length
+    )}`;
+};
+
 export const getStatus = (active, revoked) => {
   if (active) {
     return "active";

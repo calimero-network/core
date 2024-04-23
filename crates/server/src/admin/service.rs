@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::fs::{self, File};
@@ -342,24 +341,30 @@ fn get_latest_application_version(
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
+struct Application {
+    id: String,
+    version: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct ApplicationListResult {
-    apps: HashMap<String, String>,
+    apps: Vec<Application>,
 }
 
 async fn fetch_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
 
-    if(!&state.service.application_dir.exists()){
+    if !&state.service.application_dir.exists() {
         return ApiResponse {
-            payload: ApplicationListResult { apps: HashMap::new() },
+            payload: ApplicationListResult { apps: Vec::new() },
         }
         .into_response();
     }
 
     if let Ok(entries) = fs::read_dir(&state.service.application_dir) {
-        let mut applications: HashMap<String, String> = HashMap::new();
+        let mut applications: Vec<Application> = Vec::new();
 
         entries.filter_map(|entry| entry.ok()).for_each(|entry| {
             if let Some(file_name) = entry.file_name().to_str() {
@@ -367,7 +372,7 @@ async fn fetch_application_handler(
                     get_latest_application_version(&state.service.application_dir, &file_name);
                 if let Some(latest_version) = latest_version {
                     let app_name = file_name.to_string();
-                    applications.insert(app_name, latest_version.to_string());
+                    applications.push(Application { id: app_name, version: latest_version.to_string() });
                 }
             } else {
                 println!("Failed to read file application id");
