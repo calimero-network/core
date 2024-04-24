@@ -242,7 +242,7 @@ pub async fn download_release(
     release: &Release,
     dir: &camino::Utf8Path,
 ) -> eyre::Result<()> {
-    let base_path = format!("./{}/{}/{}", dir, application_id, &release.version);
+    let base_path = format!("{}/{}/{}", dir, application_id, &release.version);
     fs::create_dir_all(&base_path)?;
 
     let file_path = format!("{}/binary.wasm", base_path);
@@ -355,7 +355,6 @@ struct ApplicationListResult {
 async fn fetch_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-
     if !state.service.application_dir.exists() {
         return ApiResponse {
             payload: ApplicationListResult { apps: Vec::new() },
@@ -372,7 +371,10 @@ async fn fetch_application_handler(
                     get_latest_application_version(&state.service.application_dir, &file_name);
                 if let Some(latest_version) = latest_version {
                     let app_name = file_name.to_string();
-                    applications.push(Application { id: app_name, version: latest_version.to_string() });
+                    applications.push(Application {
+                        id: app_name,
+                        version: latest_version.to_string(),
+                    });
                 }
             } else {
                 println!("Failed to read file application id");
