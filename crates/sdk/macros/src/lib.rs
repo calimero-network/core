@@ -4,7 +4,7 @@
 )]
 
 use proc_macro::TokenStream;
-use quote::ToTokens;
+use quote::{quote, ToTokens};
 
 mod errors;
 mod event;

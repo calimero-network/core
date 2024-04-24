@@ -62,6 +62,8 @@ pub enum ParseError<'a> {
     UseOfReservedIdent,
     #[error("{TAG} this lifetime has not been declared{append}")]
     UseOfUndeclaredLifetime { append: String },
+    #[error("{TAG} this lifetime must be specified")]
+    MustSpecifyLifetime,
     #[error("{TAG} this event must be public")]
     NoPrivateEvent,
     #[error("{TAG} please use a simple `pub` directive")]

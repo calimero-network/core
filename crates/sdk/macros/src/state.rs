@@ -51,14 +51,30 @@ struct MaybeBoundEvent {
     path: syn::Path,
 }
 
+// todo! move all errors to ParseError
+
 impl syn::parse::Parse for MaybeBoundEvent {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut lifetime = None;
 
         if input.peek(syn::Token![for]) {
-            let syn::BoundLifetimes { lifetimes, .. } = input.parse()?;
+            let bounds = input.parse::<syn::BoundLifetimes>()?; // todo! consider syn::Error -> ParseError translation
 
-            for param in lifetimes {
+            if bounds.lifetimes.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    bounds.gt_token,
+                    errors::ParseError::Custom("non-empty lifetime bounds expected"),
+                ));
+            }
+
+            if input.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    bounds,
+                    errors::ParseError::Custom("expected an event type to immediately follow"),
+                ));
+            }
+
+            for param in bounds.lifetimes {
                 if let syn::GenericParam::Lifetime(syn::LifetimeParam { lifetime: lt, .. }) = param
                 {
                     if lifetime.is_some() {
@@ -66,9 +82,8 @@ impl syn::parse::Parse for MaybeBoundEvent {
                             lt.span(),
                             errors::ParseError::Custom("only one lifetime can be specified"),
                         ));
-                    } else {
-                        lifetime = Some(lt);
                     }
+                    lifetime = Some(lt);
                 }
             }
         };
@@ -86,18 +101,28 @@ impl syn::parse::Parse for MaybeBoundEvent {
             ));
         }
 
-        let static_lifetime = syn::Lifetime::new("'static", proc_macro2::Span::call_site());
-
         let mut unexpected_lifetime = |span: proc_macro2::Span| {
-            sanitizer::Action::Forbid(errors::ParseError::UseOfUndeclaredLifetime {
-                append: format!(
-                    "\n\nuse the `for<{}> {}` directive to declare it",
-                    span.source_text()
-                        .unwrap_or_else(|| "'{lifetime}".to_owned()),
-                    errors::Pretty::Path(&path)
-                ),
-            })
+            let lifetime = span
+                .source_text()
+                .unwrap_or_else(|| "'{lifetime}".to_owned());
+
+            // todo! source text is unreliable
+            let error = if matches!(lifetime.as_str(), "&" | "'_") {
+                errors::ParseError::MustSpecifyLifetime
+            } else {
+                errors::ParseError::UseOfUndeclaredLifetime {
+                    append: format!(
+                        "\n\nuse the `for<{}> {}` directive to declare it",
+                        lifetime,
+                        errors::Pretty::Path(&path)
+                    ),
+                }
+            };
+
+            sanitizer::Action::Forbid(error)
         };
+
+        let static_lifetime = syn::Lifetime::new("'static", proc_macro2::Span::call_site());
 
         cases.extend([
             (
@@ -113,7 +138,10 @@ impl syn::parse::Parse for MaybeBoundEvent {
         let mut outcome = sanitizer.sanitize(&cases);
 
         if let Some(lifetime) = &lifetime {
-            if 0 == outcome.count(&sanitizer::Case::Lifetime(Some(lifetime))) {
+            if 0 == outcome.count(&sanitizer::Case::Lifetime(Some(lifetime)))
+                && !(lifetime == &static_lifetime
+                    || matches!(lifetime.ident.to_string().as_str(), "_"))
+            {
                 outcome.errors().push(
                     lifetime.span(),
                     errors::ParseError::Custom("unused lifetime specified"),
@@ -141,16 +169,46 @@ impl Parse for StateArgs {
         let mut emits = None;
 
         if !input.is_empty() {
+            if !input.peek(syn::Ident) {
+                return Err(input.error(errors::ParseError::Custom("expected an identifier")));
+            }
+
             let ident = input.parse::<syn::Ident>()?;
 
-            input.parse::<syn::Token![=]>()?;
+            if !input.peek(syn::Token![=]) {
+                let span = if let Some((tt, _)) = input.cursor().token_tree() {
+                    tt.span()
+                } else {
+                    ident.span()
+                };
+                return Err(syn::Error::new(
+                    span,
+                    errors::ParseError::Custom(&format!("expected `=` after `{}`", ident)),
+                ));
+            }
 
-            if ident == "emits" {
-                emits = Some(input.parse::<MaybeBoundEvent>()?);
+            let eq = input.parse::<syn::Token![=]>()?;
+
+            match ident.to_string().as_str() {
+                "emits" => {
+                    if input.is_empty() {
+                        return Err(syn::Error::new_spanned(
+                            &eq,
+                            errors::ParseError::Custom("expected an event type after `=`"),
+                        ));
+                    }
+                    emits = Some(input.parse::<MaybeBoundEvent>()?)
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &ident,
+                        errors::ParseError::Custom(&format!("unexpected `{}`", ident)),
+                    ));
+                }
             }
 
             if !input.is_empty() {
-                return Err(input.error("unexpected token"));
+                return Err(input.error(errors::ParseError::Custom("unexpected token")));
             }
         }
 

@@ -1,12 +1,21 @@
-use std::collections::HashMap;
+use std::collections::hash_map::{Entry as HashMapEntry, HashMap};
 
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, env};
 
-#[app::state]
+#[app::state(emits = for<'a> Event<'a>)]
 #[derive(Default, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
 struct KvStore {
     items: HashMap<String, String>,
+}
+
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+    Updated { key: &'a str, value: &'a str },
+    Removed { key: &'a str },
+    Cleared,
 }
 
 #[app::logic]
@@ -14,7 +23,22 @@ impl KvStore {
     pub fn set(&mut self, key: String, value: String) {
         env::log(&format!("Setting key: {:?} to value: {:?}", key, value));
 
-        self.items.insert(key, value);
+        match self.items.entry(key) {
+            HashMapEntry::Occupied(mut entry) => {
+                app::emit!(Event::Updated {
+                    key: entry.key(),
+                    value: &value,
+                });
+                entry.insert(value);
+            }
+            HashMapEntry::Vacant(entry) => {
+                app::emit!(Event::Inserted {
+                    key: entry.key(),
+                    value: &value,
+                });
+                entry.insert(value);
+            }
+        }
     }
 
     pub fn entries(&self) -> &HashMap<String, String> {
@@ -47,11 +71,15 @@ impl KvStore {
     pub fn remove(&mut self, key: &str) {
         env::log(&format!("Removing key: {:?}", key));
 
+        app::emit!(Events::Removed { key });
+
         self.items.remove(key);
     }
 
     pub fn clear(&mut self) {
         env::log("Clearing all entries");
+
+        app::emit!(Events::Cleared);
 
         self.items.clear();
     }
