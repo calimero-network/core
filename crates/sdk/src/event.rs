@@ -83,5 +83,8 @@ pub fn downcast<T: AppEventExt>(event: Box<dyn AppEventExt>) -> Result<T, Box<dy
     }
 }
 
-impl AppEvent for () {}
-impl AppEventExt for () {}
+#[derive(serde::Serialize)]
+pub enum NoEvent {}
+
+impl AppEvent for NoEvent {}
+impl AppEventExt for NoEvent {}

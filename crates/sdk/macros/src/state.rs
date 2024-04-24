@@ -23,7 +23,7 @@ impl<'a> ToTokens for StateImpl<'a> {
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
         let mut lifetime = quote! { 'a };
-        let mut event = quote! { () };
+        let mut event = quote! { ::calimero_sdk::event::NoEvent };
 
         if let Some(emits) = emits {
             if let Some(lt) = &emits.lifetime {
