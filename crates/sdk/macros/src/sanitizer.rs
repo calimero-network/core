@@ -122,7 +122,7 @@ impl<'a> SanitizerAtom<'a> {
     ) -> bool {
         match action {
             Action::ReplaceWith(replacement) => return self.replace_with(span, replacement),
-            Action::Forbid(error) => errors.push(span, error),
+            Action::Forbid(error) => errors.subsume(syn::Error::new(span, error)),
             Action::Custom(func) => {
                 let func = unsafe { &mut *func.inner.get() };
                 return self.apply_action(span, &func(span), errors);
@@ -140,11 +140,10 @@ pub struct SanitizationResult<'a> {
 }
 
 impl<'a> SanitizationResult<'a> {
+    /// panics: if this has been called before
     pub fn check(&self) -> Result<(), syn::Error> {
-        if let Err(errors) = self.errors.check(()) {
-            if let errors::MaybeError::Some(error) = errors.into() {
-                return Err(error);
-            }
+        if let Some(errors) = self.errors.take() {
+            return Err(errors);
         }
 
         Ok(())
@@ -186,7 +185,7 @@ impl Sanitizer<'_> {
                         *counts.entry(case).or_insert(0) += count;
                     }
 
-                    errors = errors.subsume(err);
+                    errors.combine(err);
                 }
                 entry => {
                     for (case, action) in cases.iter() {

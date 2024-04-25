@@ -146,28 +146,40 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         let mut errors = errors::Errors::new(input.item);
 
         if let Some(abi) = &input.item.sig.abi {
-            errors.push_spanned(abi, errors::ParseError::NoExplicitAbi);
+            errors.subsume(syn::Error::new_spanned(
+                abi,
+                errors::ParseError::NoExplicitAbi,
+            ));
         }
 
         if let Some(asyncness) = &input.item.sig.asyncness {
-            errors.push_spanned(asyncness, errors::ParseError::NoAsyncSupport);
+            errors.subsume(syn::Error::new_spanned(
+                asyncness,
+                errors::ParseError::NoAsyncSupport,
+            ));
         }
 
         if let Some(unsafety) = &input.item.sig.unsafety {
-            errors.push_spanned(unsafety, errors::ParseError::NoUnsafeSupport);
+            errors.subsume(syn::Error::new_spanned(
+                unsafety,
+                errors::ParseError::NoUnsafeSupport,
+            ));
         }
 
         for generic in &input.item.sig.generics.params {
             if let syn::GenericParam::Lifetime(params) = generic {
                 if params.lifetime == *reserved::lifetimes::input() {
-                    errors.push(
+                    errors.subsume(syn::Error::new(
                         params.lifetime.span(),
                         errors::ParseError::UseOfReservedLifetime,
-                    );
+                    ));
                 }
                 continue;
             }
-            errors.push_spanned(generic, errors::ParseError::NoGenericTypeSupport);
+            errors.subsume(syn::Error::new_spanned(
+                generic,
+                errors::ParseError::NoGenericTypeSupport,
+            ));
         }
 
         let mut has_refs = false;
@@ -186,7 +198,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                         args.push(arg)
                     }
                 },
-                Err(err) => errors = errors.subsume(err),
+                Err(err) => errors.combine(err),
             }
         }
 
@@ -197,11 +209,13 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 ty: &*ret_type,
             }) {
                 Ok(ty) => ret = Some(ty),
-                Err(err) => errors = errors.subsume(err),
+                Err(err) => errors.combine(err),
             }
         }
 
-        errors.check(LogicMethod::Public(PublicLogicMethod {
+        errors.check()?;
+
+        Ok(LogicMethod::Public(PublicLogicMethod {
             name: &input.item.sig.ident,
             self_: input.type_.clone(),
             self_type,

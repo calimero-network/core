@@ -142,10 +142,10 @@ impl syn::parse::Parse for MaybeBoundEvent {
                 && !(lifetime == &static_lifetime
                     || matches!(lifetime.ident.to_string().as_str(), "_"))
             {
-                outcome.errors().push(
+                outcome.errors().subsume(syn::Error::new(
                     lifetime.span(),
-                    errors::ParseError::Custom("unused lifetime specified"),
-                );
+                    "unused lifetime specified",
+                ));
             }
         }
 
@@ -233,27 +233,35 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
         };
 
         if ident == &*reserved::idents::input() {
-            errors.push_spanned(&ident, errors::ParseError::UseOfReservedIdent);
+            errors.subsume(syn::Error::new_spanned(
+                &ident,
+                errors::ParseError::UseOfReservedIdent,
+            ));
         }
 
         for generic in &generics.params {
             match generic {
                 syn::GenericParam::Lifetime(params) => {
-                    errors.push(
+                    errors.subsume(syn::Error::new(
                         params.lifetime.span(),
                         errors::ParseError::NoGenericLifetimeSupport,
-                    );
+                    ));
                 }
                 syn::GenericParam::Type(params) => {
                     if params.ident == *reserved::idents::input() {
-                        errors.push_spanned(&params.ident, errors::ParseError::UseOfReservedIdent);
+                        errors.subsume(syn::Error::new_spanned(
+                            &params.ident,
+                            errors::ParseError::UseOfReservedIdent,
+                        ));
                     }
                 }
                 syn::GenericParam::Const(_) => {}
             }
         }
 
-        errors.check(StateImpl {
+        errors.check()?;
+
+        Ok(StateImpl {
             ident,
             generics,
             emits: &input.args.emits,

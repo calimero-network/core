@@ -4,15 +4,18 @@
 )]
 
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
+use quote::ToTokens;
 
 mod errors;
 mod event;
 mod items;
 mod logic;
+mod macros;
 mod reserved;
 mod sanitizer;
 mod state;
+
+use macros::parse_macro_input;
 
 // todo! use referenced lifetimes everywhere
 
@@ -20,7 +23,7 @@ mod state;
 #[proc_macro_attribute]
 pub fn logic(_args: TokenStream, input: TokenStream) -> TokenStream {
     reserved::init();
-    let block = syn::parse_macro_input!(input as syn::ItemImpl);
+    let block = parse_macro_input!(input as syn::ItemImpl);
     let tokens = match logic::LogicImpl::try_from(logic::LogicImplInput { item: &block }) {
         Ok(data) => data.to_token_stream(),
         Err(err) => err.to_compile_error(),
@@ -32,20 +35,8 @@ pub fn logic(_args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     reserved::init();
 
-    let input = input.into();
-
-    let args = match syn::parse2(args.into()) {
-        Ok(args) => args,
-        Err(err) => {
-            let err = err.to_compile_error();
-            return quote!(#input #err).into();
-        }
-    };
-
-    let item = match syn::parse2(input) {
-        Ok(item) => item,
-        Err(err) => return err.to_compile_error().into(),
-    };
+    let args = parse_macro_input!({ input } => args as state::StateArgs);
+    let item = parse_macro_input!(input as items::StructOrEnumItem);
 
     let tokens = match state::StateImpl::try_from(state::StateImplInput {
         item: &item,
@@ -67,7 +58,7 @@ pub fn destroy(_args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn event(_args: TokenStream, input: TokenStream) -> TokenStream {
     reserved::init();
-    let item = syn::parse_macro_input!(input as items::StructOrEnumItem);
+    let item = parse_macro_input!(input as items::StructOrEnumItem);
     let tokens = match event::EventImpl::try_from(event::EventImplInput { item: &item }) {
         Ok(data) => data.to_token_stream(),
         Err(err) => err.to_compile_error(),

@@ -57,22 +57,30 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                             .map_or(Some(SelfType::Immutable), |_| Some(SelfType::Mutable));
                     } else if is_self {
                         // todo! circumvent via `#[app::destroy]`
-                        errors.push_spanned(&receiver.ty, errors::ParseError::NoSelfOwnership);
+                        errors.subsume(syn::Error::new_spanned(
+                            &receiver.ty,
+                            errors::ParseError::NoSelfOwnership,
+                        ));
                     }
 
                     if is_self {
-                        return errors.check(Self::Receiver(reference.unwrap_or(SelfType::Owned)));
+                        errors.check()?;
+
+                        return Ok(Self::Receiver(reference.unwrap_or(SelfType::Owned)));
                     }
                 };
 
-                Err(errors.finish(
+                Err(errors.finish(syn::Error::new_spanned(
                     &receiver.ty,
                     errors::ParseError::ExpectedSelf(errors::Pretty::Path(input.type_)),
-                ))
+                )))
             }
             syn::FnArg::Typed(typed) => {
                 let syn::Pat::Ident(ident) = &*typed.pat else {
-                    return Err(errors.finish(&typed.pat, errors::ParseError::ExpectedIdent));
+                    return Err(errors.finish(syn::Error::new_spanned(
+                        &typed.pat,
+                        errors::ParseError::ExpectedIdent,
+                    )));
                 };
 
                 let ty = match ty::LogicTy::try_from(ty::LogicTyInput {
@@ -80,10 +88,15 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                     ty: &*typed.ty,
                 }) {
                     Ok(ty) => ty,
-                    Err(err) => return Err(errors.subsume(err)),
+                    Err(err) => {
+                        errors.combine(err);
+                        return Err(errors);
+                    }
                 };
 
-                errors.check(LogicArg::Typed(LogicArgTyped {
+                errors.check()?;
+
+                Ok(LogicArg::Typed(LogicArgTyped {
                     ident: &ident.ident,
                     ty,
                 }))

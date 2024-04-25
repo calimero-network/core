@@ -59,37 +59,41 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
         match vis {
             syn::Visibility::Public(_) => {}
             syn::Visibility::Inherited => {
-                return Err(errors.finish(ident, errors::ParseError::NoPrivateEvent));
+                return Err(errors.finish(syn::Error::new_spanned(ident, errors::ParseError::NoPrivateEvent)));
             }
             syn::Visibility::Restricted(spec) => {
-                return Err(errors.finish(spec, errors::ParseError::NoComplexVisibility));
+                return Err(errors.finish(syn::Error::new_spanned(spec, errors::ParseError::NoComplexVisibility)));
             }
         }
 
         if ident == &*reserved::idents::input() {
-            errors.push_spanned(&ident, errors::ParseError::UseOfReservedIdent);
+            errors.subsume(syn::Error::new_spanned(&ident, errors::ParseError::UseOfReservedIdent));
         }
 
         for generic in &generics.params {
             match generic {
                 syn::GenericParam::Lifetime(params) => {
                     if params.lifetime == *reserved::lifetimes::input() {
-                        errors.push(
-                            params.lifetime.span(),
-                            errors::ParseError::UseOfReservedLifetime,
+                        errors.subsume(
+                            syn::Error::new(
+                                params.lifetime.span(),
+                                errors::ParseError::UseOfReservedLifetime
+                            )
                         );
                     }
                 }
                 syn::GenericParam::Type(params) => {
                     if params.ident == *reserved::idents::input() {
-                        errors.push_spanned(&params.ident, errors::ParseError::UseOfReservedIdent);
+                        errors.subsume(syn::Error::new_spanned(&params.ident, errors::ParseError::UseOfReservedIdent));
                     }
                 }
                 syn::GenericParam::Const(_) => {}
             }
         }
 
-        errors.check(EventImpl {
+        errors.check()?;
+        
+        Ok(EventImpl {
             ident,
             generics,
             orig: input.item,

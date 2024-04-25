@@ -50,26 +50,33 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         for generic in &input.item.generics.params {
             if let syn::GenericParam::Lifetime(params) = generic {
                 if params.lifetime == *reserved::lifetimes::input() {
-                    errors.push(
+                    errors.subsume(syn::Error::new(
                         params.lifetime.span(),
                         errors::ParseError::UseOfReservedLifetime,
-                    );
+                    ));
                 }
                 continue;
             }
-            errors.push_spanned(generic, errors::ParseError::NoGenericTypeSupport);
+            errors.subsume(syn::Error::new_spanned(
+                generic,
+                errors::ParseError::NoGenericTypeSupport,
+            ));
         }
 
         if let Some(_) = &input.item.trait_ {
-            return Err(errors.finish(input.item, errors::ParseError::NoTraitSupport));
+            return Err(errors.finish(syn::Error::new_spanned(
+                input.item,
+                errors::ParseError::NoTraitSupport,
+            )));
         }
 
         let type_ = 'sanitizer: {
             'sanitizer_failed: {
                 let Some(type_) = utils::typed_path(input.item.self_ty.as_ref(), false) else {
-                    return Err(
-                        errors.finish(&input.item.self_ty, errors::ParseError::UnsupportedImplType)
-                    );
+                    return Err(errors.finish(syn::Error::new_spanned(
+                        &input.item.self_ty,
+                        errors::ParseError::UnsupportedImplType,
+                    )));
                 };
 
                 let Ok(mut sanitizer) =
@@ -99,7 +106,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                 let outcome = sanitizer.sanitize(&cases);
 
                 if let Err(err) = outcome.check() {
-                    errors = errors.subsume(err);
+                    errors.subsume(err);
                 }
 
                 if outcome.count(&sanitizer::Case::Ident(Some(&reserved_ident))) > 0 {
@@ -112,7 +119,10 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                 };
             };
 
-            return Err(errors.finish(input.item, errors::ParseError::SanitizationFailed));
+            return Err(errors.finish(syn::Error::new_spanned(
+                input.item,
+                errors::ParseError::SanitizationFailed,
+            )));
         };
 
         let mut methods = vec![];
@@ -124,12 +134,14 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                 }) {
                     Ok(method::LogicMethod::Private) => {}
                     Ok(method::LogicMethod::Public(method)) => methods.push(method),
-                    Err(err) => errors = errors.subsume(err),
+                    Err(err) => errors.combine(err),
                 }
             }
         }
 
-        errors.check(Self {
+        errors.check()?;
+
+        Ok(Self {
             type_,
             methods,
             orig: input.item,

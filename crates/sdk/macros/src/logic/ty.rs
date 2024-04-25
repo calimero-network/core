@@ -56,7 +56,7 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
             let outcome = sanitizer.sanitize(&cases);
 
             if let Err(err) = outcome.check() {
-                errors = errors.subsume(err);
+                errors.subsume(err);
             }
 
             let has_ref = matches!(
@@ -71,9 +71,14 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
                 break 'fatal;
             };
 
-            return errors.check(LogicTy { ty, ref_: has_ref });
+            errors.check()?;
+
+            return Ok(LogicTy { ty, ref_: has_ref });
         };
 
-        return Err(errors.finish(input.ty, errors::ParseError::SanitizationFailed));
+        Err(errors.finish(syn::Error::new_spanned(
+            input.ty,
+            errors::ParseError::SanitizationFailed,
+        )))
     }
 }

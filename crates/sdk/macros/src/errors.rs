@@ -1,7 +1,7 @@
 use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
 
-use quote::{quote, ToTokens};
+use quote::{quote, quote_spanned, ToTokens};
 use thiserror::Error;
 
 #[derive(Debug)]
@@ -35,42 +35,42 @@ static TAG: &str = "(calimero)>";
 
 #[derive(Debug, Error)]
 pub enum ParseError<'a> {
-    #[error("{TAG} trait impls are not supported")]
+    #[error("trait impls are not supported")]
     NoTraitSupport,
-    #[error("{TAG} cannot ascribe app logic to primitive types")]
+    #[error("cannot ascribe app logic to primitive types")]
     UnsupportedImplType,
-    #[error("{TAG} expected `Self` or `{0}`")]
+    #[error("expected `Self` or `{0}`")]
     ExpectedSelf(Pretty<'a>),
-    #[error("{TAG} exposing an async method is not supported")]
+    #[error("exposing an async method is not supported")]
     NoAsyncSupport,
-    #[error("{TAG} exposing an unsafe method is not supported")]
+    #[error("exposing an unsafe method is not supported")]
     NoUnsafeSupport,
     // todo! disable with `#[app::destroy]`
-    #[error("{TAG} `self` must be passed by reference")]
+    #[error("`self` must be passed by reference")]
     NoSelfOwnership,
-    #[error("{TAG} fatal error: type sanitization failed, please report this issue")]
+    #[error("fatal error: type sanitization failed, please report this issue")]
     SanitizationFailed,
-    #[error("{TAG} expected an identifier, found a pattern")]
+    #[error("expected an identifier, found a pattern")]
     ExpectedIdent,
-    #[error("{TAG} generic types are not supported")]
+    #[error("generic types are not supported")]
     NoGenericTypeSupport,
-    #[error("{TAG} state lifetimes are not supported")]
+    #[error("state lifetimes are not supported")]
     NoGenericLifetimeSupport,
-    #[error("{TAG} this lifetime is reserved")]
+    #[error("this lifetime is reserved")]
     UseOfReservedLifetime,
-    #[error("{TAG} this identifier is reserved")]
+    #[error("this identifier is reserved")]
     UseOfReservedIdent,
-    #[error("{TAG} this lifetime has not been declared{append}")]
+    #[error("this lifetime has not been declared{append}")]
     UseOfUndeclaredLifetime { append: String },
-    #[error("{TAG} this lifetime must be specified")]
+    #[error("this lifetime must be specified")]
     MustSpecifyLifetime,
-    #[error("{TAG} this event must be public")]
+    #[error("this event must be public")]
     NoPrivateEvent,
-    #[error("{TAG} please use a simple `pub` directive")]
+    #[error("please use a simple `pub` directive")]
     NoComplexVisibility,
-    #[error("{TAG} explicit ABIs are not supported")]
+    #[error("explicit ABIs are not supported")]
     NoExplicitAbi,
-    #[error("{TAG} {0}")]
+    #[error("{0}")]
     Custom(&'a str),
 }
 
@@ -87,13 +87,13 @@ pub struct ErrorsInner<'a, T> {
 }
 
 #[derive(Debug)]
-pub struct Errors<'a, T = ()> {
+pub struct Errors<'a, T = Void> {
     inner: RefCell<Option<ErrorsInner<'a, T>>>,
 }
 
 impl<'a> Default for Errors<'a> {
     fn default() -> Self {
-        Self::new(&())
+        Self::new(&Void { _priv: () })
     }
 }
 
@@ -128,87 +128,42 @@ impl<'a, T> Errors<'a, T> {
     }
 }
 
-pub enum MaybeError {
-    None,
-    Some(syn::Error),
-}
-
-impl From<MaybeError> for Option<syn::Error> {
-    fn from(error: MaybeError) -> Self {
-        match error {
-            MaybeError::None => None,
-            MaybeError::Some(error) => Some(error),
-        }
-    }
-}
-
-impl<T: Into<syn::Error>> From<T> for MaybeError {
-    fn from(error: T) -> Self {
-        MaybeError::Some(error.into())
-    }
-}
-
-impl<'a, T> From<Errors<'a, T>> for MaybeError {
-    fn from(errors: Errors<'a, T>) -> Self {
-        let inner = errors.inner();
-
-        inner.errors.map_or(MaybeError::None, MaybeError::Some)
-    }
-}
-
 impl<'a, T> Errors<'a, T> {
-    fn push_error(&mut self, error: syn::Error) {
+    pub fn subsume(&mut self, error: syn::Error) {
         match &mut self.inner_mut().errors {
             err @ None => *err = Some(error),
-            Some(err) => {
-                err.combine(error);
-            }
+            Some(err) => err.combine(error),
         }
     }
 
-    pub fn push<'e, E: AsRef<ParseError<'e>>>(&mut self, span: proc_macro2::Span, error: E) {
-        self.push_error(syn::Error::new(span, error.as_ref()));
+    pub fn subsumed(mut self, other: syn::Error) -> syn::Error {
+        self.subsume(other);
+        let Some(errors) = self.inner().errors else {
+            // safety: we know we have at least one error
+            unsafe { std::hint::unreachable_unchecked() }
+        };
+        errors
     }
 
-    pub fn push_spanned<'e, U: ToTokens, E: AsRef<ParseError<'e>>>(
-        &mut self,
-        tokens: &U,
-        error: E,
-    ) {
-        self.push_error(syn::Error::new_spanned(tokens, error.as_ref()));
-    }
-
-    pub fn finish<'e, U: ToTokens, E: AsRef<ParseError<'e>>>(
-        mut self,
-        tokens: &U,
-        error: E,
-    ) -> Self {
-        self.push_spanned(tokens, error);
-
+    pub fn finish(mut self, error: syn::Error) -> Self {
+        self.subsume(error);
         self
     }
 
-    pub fn subsume<E: Into<MaybeError>>(self, other: E) -> Self {
-        match other.into() {
-            MaybeError::None => {}
-            MaybeError::Some(other) => {
-                let mut inner = self.inner_mut();
-                match &mut inner.errors {
-                    err @ None => *err = Some(other),
-                    Some(err) => err.combine(other),
-                }
-            }
+    pub fn combine<U>(&mut self, other: Errors<'a, U>) {
+        if let Some(errors) = other.inner().errors {
+            self.subsume(errors);
         }
-        self
     }
 
-    pub fn check<U>(&self, val: U) -> Result<U, Self> {
+    pub fn check(self) -> Result<(), Self> {
         let inner = self.inner_ref().errors.is_some();
-        inner.then(|| ()).map_or(Ok(val), |_| {
-            Err(Errors {
-                inner: RefCell::new(Some(self.inner())),
-            })
-        })
+        inner.then(|| ()).map_or(Ok(()), |_| Err(self))
+    }
+
+    // panics if this instance has already been consumed or "taken"
+    pub fn take(&self) -> Option<syn::Error> {
+        self.inner().errors
     }
 
     pub fn to_compile_error(self) -> proc_macro2::TokenStream
@@ -219,8 +174,12 @@ impl<'a, T> Errors<'a, T> {
 
         let mut tokens = proc_macro2::TokenStream::new();
 
-        if let Some(err) = inner.errors {
-            err.to_compile_error().to_tokens(&mut tokens);
+        for err in inner.errors.into_iter().flat_map(|err| err.into_iter()) {
+            let msg = err.to_string();
+            quote_spanned! {err.span()=>
+                ::core::compile_error!(::core::concat!(#TAG, " ", #msg));
+            }
+            .to_tokens(&mut tokens);
         }
 
         inner.item.to_tokens(&mut tokens);
@@ -239,4 +198,13 @@ impl<'a, T> Drop for Errors<'a, T> {
             }
         }
     }
+}
+
+#[derive(Debug)]
+pub struct Void {
+    _priv: (),
+}
+
+impl ToTokens for Void {
+    fn to_tokens(&self, _: &mut proc_macro2::TokenStream) {}
 }

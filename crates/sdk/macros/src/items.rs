@@ -1,8 +1,6 @@
 use quote::ToTokens;
 use syn::parse::{Parse, ParseStream};
 
-use crate::errors;
-
 pub enum StructOrEnumItem {
     Struct(syn::ItemStruct),
     Enum(syn::ItemEnum),
@@ -29,12 +27,7 @@ impl Parse for StructOrEnumItem {
             } else if lookahead.peek(syn::Token![pub]) {
                 vis = input.parse::<syn::Visibility>()?;
             } else {
-                let err = lookahead.error();
-
-                return Err(syn::Error::new(
-                    err.span(),
-                    errors::ParseError::Custom(&err.to_string()),
-                ));
+                return Err(lookahead.error());
             }
         };
 
