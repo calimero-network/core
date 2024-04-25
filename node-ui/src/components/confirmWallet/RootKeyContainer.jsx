@@ -1,7 +1,9 @@
 import React from "react";
+import { Link } from "react-router-dom";
 import PropTypes from "prop-types";
 import CalimeroLogo from "../../assets/calimero-logo.svg";
 import styled from "styled-components";
+import StatusModal from "../common/StatusModal";
 import translations from "../../constants/en.global.json";
 
 const Container = styled.div`
@@ -119,14 +121,35 @@ const Container = styled.div`
         padding-top: 12px;
         width: 100%;
       }
+
+      .back-button {
+        color: rgb(255, 255, 255, 0.7);
+        font-size: 16px;
+        text-decoration: none;
+      }
+
+      .back-button:hover {
+        color: #fff;
+      }
     }
   }
 `;
 
-export function RootKeyContainer({ params, submitRootKeyRequest }) {
+export function RootKeyContainer({
+  params,
+  submitRootKeyRequest,
+  showStatusModal,
+  closeStatusModal,
+  addRootKeyStatus,
+}) {
   const t = translations.confirmWallet;
   return (
     <Container>
+      <StatusModal
+        show={showStatusModal}
+        closeModal={closeStatusModal}
+        modalContent={addRootKeyStatus}
+      />
       <div className="navbar">
         <div className="logo-container">
           <img
@@ -151,6 +174,11 @@ export function RootKeyContainer({ params, submitRootKeyRequest }) {
               {t.submitButtonText}
             </button>
           </div>
+          <div className="flex-container">
+          <Link to="/" className="back-button">
+              {t.backButtonText}
+            </Link>
+          </div>
         </div>
       </div>
     </Container>
@@ -167,4 +195,7 @@ const renderParam = (label, value) => (
 RootKeyContainer.propTypes = {
   params: PropTypes.object.isRequired,
   submitRootKeyRequest: PropTypes.func.isRequired,
+  showStatusModal: PropTypes.bool.isRequired,
+  closeStatusModal: PropTypes.func.isRequired,
+  addRootKeyStatus: PropTypes.object.isRequired,
 };

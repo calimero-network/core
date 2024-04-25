@@ -41,7 +41,8 @@
         "signatureText": "Signature",
         "publicKeyText": "PublicKey",
         "callbackUrlText": "Callback Url",
-        "submitButtonText": "Submit Request"
+        "submitButtonText": "Submit Request",
+        "backButtonText": "Back to login"
     },
     "identityTable": {
         "title": "Identity",
