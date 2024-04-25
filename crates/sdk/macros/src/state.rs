@@ -70,11 +70,15 @@ impl syn::parse::Parse for MaybeBoundEvent {
                     }
                 };
 
+                let mut fine = true;
+
                 if input.is_empty() {
                     errors.subsume(syn::Error::new_spanned(
                         &bounds,
                         "expected an event type to immediately follow",
                     ));
+
+                    fine = false;
                 }
 
                 if bounds.lifetimes.is_empty() {
@@ -83,7 +87,11 @@ impl syn::parse::Parse for MaybeBoundEvent {
                         "non-empty lifetime bounds expected",
                     ));
 
-                    break 'bounds;
+                    fine = false;
+                }
+
+                if !fine {
+                    return Err(errors.take().expect("not fine, so we must have errors"));
                 }
 
                 for param in bounds.lifetimes {
