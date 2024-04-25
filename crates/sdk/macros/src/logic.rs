@@ -70,55 +70,45 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             )));
         }
 
-        let type_ = 'sanitizer: {
-            'sanitizer_failed: {
-                let Some(type_) = utils::typed_path(input.item.self_ty.as_ref(), false) else {
-                    return Err(errors.finish(syn::Error::new_spanned(
-                        &input.item.self_ty,
-                        errors::ParseError::UnsupportedImplType,
-                    )));
-                };
+        let Some(type_) = utils::typed_path(input.item.self_ty.as_ref(), false) else {
+            return Err(errors.finish(syn::Error::new_spanned(
+                &input.item.self_ty,
+                errors::ParseError::UnsupportedImplType,
+            )));
+        };
 
-                let Ok(mut sanitizer) =
-                    syn::parse2::<sanitizer::Sanitizer>(type_.to_token_stream())
-                else {
-                    break 'sanitizer_failed;
-                };
+        let mut sanitizer = syn::parse2::<sanitizer::Sanitizer>(type_.to_token_stream()).unwrap();
 
-                let reserved_ident = reserved::idents::input();
-                let reserved_lifetime = reserved::lifetimes::input();
+        let reserved_ident = reserved::idents::input();
+        let reserved_lifetime = reserved::lifetimes::input();
 
-                let cases = [
-                    (
-                        sanitizer::Case::Ident(Some(&reserved_ident)),
-                        sanitizer::Action::Forbid(errors::ParseError::UseOfReservedIdent),
-                    ),
-                    (
-                        sanitizer::Case::Lifetime(Some(&reserved_lifetime)),
-                        sanitizer::Action::Forbid(errors::ParseError::UseOfReservedLifetime),
-                    ),
-                    (
-                        sanitizer::Case::Lifetime(None),
-                        sanitizer::Action::Forbid(errors::ParseError::NoGenericLifetimeSupport),
-                    ),
-                ];
+        let cases = [
+            (
+                sanitizer::Case::Ident(Some(&reserved_ident)),
+                sanitizer::Action::Forbid(errors::ParseError::UseOfReservedIdent),
+            ),
+            (
+                sanitizer::Case::Lifetime(Some(&reserved_lifetime)),
+                sanitizer::Action::Forbid(errors::ParseError::UseOfReservedLifetime),
+            ),
+            (
+                sanitizer::Case::Lifetime(None),
+                sanitizer::Action::Forbid(errors::ParseError::NoGenericLifetimeSupport),
+            ),
+        ];
 
-                let outcome = sanitizer.sanitize(&cases);
+        let outcome = sanitizer.sanitize(&cases);
 
-                if let Err(err) = outcome.check() {
-                    errors.subsume(err);
-                }
+        if let Err(err) = outcome.check() {
+            errors.subsume(err);
+        }
 
-                if outcome.count(&sanitizer::Case::Ident(Some(&reserved_ident))) > 0 {
-                    // fail-fast due to reuse of the self ident for code generation
-                    return Err(errors);
-                }
+        if outcome.count(&sanitizer::Case::Ident(Some(&reserved_ident))) > 0 {
+            // fail-fast due to reuse of the self ident for code generation
+            return Err(errors);
+        }
 
-                if let Ok(self_ty) = syn::parse2(sanitizer.to_token_stream()) {
-                    break 'sanitizer self_ty;
-                };
-            };
-
+        let Ok(type_) = syn::parse2(sanitizer.to_token_stream()) else {
             return Err(errors.finish(syn::Error::new_spanned(
                 input.item,
                 errors::ParseError::SanitizationFailed,

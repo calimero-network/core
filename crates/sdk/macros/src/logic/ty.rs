@@ -25,60 +25,54 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
     fn try_from(input: LogicTyInput<'a, 'b>) -> Result<Self, Self::Error> {
         let mut errors = errors::Errors::new(input.ty);
 
-        'fatal: {
-            let Ok(mut sanitizer) = syn::parse2::<sanitizer::Sanitizer>(input.ty.to_token_stream())
-            else {
-                break 'fatal;
-            };
+        let mut sanitizer =
+            syn::parse2::<sanitizer::Sanitizer>(input.ty.to_token_stream()).unwrap();
 
-            let reserved_ident = reserved::idents::input();
-            let reserved_lifetime = reserved::lifetimes::input();
+        let reserved_ident = reserved::idents::input();
+        let reserved_lifetime = reserved::lifetimes::input();
 
-            let cases = [
-                (
-                    sanitizer::Case::Self_,
-                    sanitizer::Action::ReplaceWith(&input.type_),
-                ),
-                (
-                    sanitizer::Case::Ident(Some(&reserved_ident)),
-                    sanitizer::Action::Forbid(errors::ParseError::UseOfReservedIdent),
-                ),
-                (
-                    sanitizer::Case::Lifetime(Some(&reserved_lifetime)),
-                    sanitizer::Action::Forbid(errors::ParseError::UseOfReservedLifetime),
-                ),
-                (
-                    sanitizer::Case::Lifetime(None),
-                    sanitizer::Action::ReplaceWith(&reserved_lifetime),
-                ),
-            ];
+        let cases = [
+            (
+                sanitizer::Case::Self_,
+                sanitizer::Action::ReplaceWith(&input.type_),
+            ),
+            (
+                sanitizer::Case::Ident(Some(&reserved_ident)),
+                sanitizer::Action::Forbid(errors::ParseError::UseOfReservedIdent),
+            ),
+            (
+                sanitizer::Case::Lifetime(Some(&reserved_lifetime)),
+                sanitizer::Action::Forbid(errors::ParseError::UseOfReservedLifetime),
+            ),
+            (
+                sanitizer::Case::Lifetime(None),
+                sanitizer::Action::ReplaceWith(&reserved_lifetime),
+            ),
+        ];
 
-            let outcome = sanitizer.sanitize(&cases);
+        let outcome = sanitizer.sanitize(&cases);
 
-            if let Err(err) = outcome.check() {
-                errors.subsume(err);
-            }
+        if let Err(err) = outcome.check() {
+            errors.subsume(err);
+        }
 
-            let has_ref = matches!(
-                (
-                    outcome.count(&sanitizer::Case::Lifetime(None)),
-                    outcome.count(&sanitizer::Case::Lifetime(Some(&reserved_lifetime)))
-                ),
-                (1.., _) | (_, 1..)
-            );
+        let has_ref = matches!(
+            (
+                outcome.count(&sanitizer::Case::Lifetime(None)),
+                outcome.count(&sanitizer::Case::Lifetime(Some(&reserved_lifetime)))
+            ),
+            (1.., _) | (_, 1..)
+        );
 
-            let Ok(ty) = syn::parse2(sanitizer.to_token_stream()) else {
-                break 'fatal;
-            };
-
-            errors.check()?;
-
-            return Ok(LogicTy { ty, ref_: has_ref });
+        let Ok(ty) = syn::parse2(sanitizer.to_token_stream()) else {
+            return Err(errors.finish(syn::Error::new_spanned(
+                input.ty,
+                errors::ParseError::SanitizationFailed,
+            )));
         };
 
-        Err(errors.finish(syn::Error::new_spanned(
-            input.ty,
-            errors::ParseError::SanitizationFailed,
-        )))
+        errors.check()?;
+
+        Ok(LogicTy { ty, ref_: has_ref })
     }
 }

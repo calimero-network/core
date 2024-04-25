@@ -109,7 +109,7 @@ impl syn::parse::Parse for MaybeBoundEvent {
             Err(err) => return Err(errors.subsumed(err)),
         };
 
-        let mut sanitizer = syn::parse2::<sanitizer::Sanitizer>(path.to_token_stream())?;
+        let mut sanitizer = syn::parse2::<sanitizer::Sanitizer>(path.to_token_stream()).unwrap();
 
         let mut cases = vec![];
 

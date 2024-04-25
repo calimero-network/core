@@ -1,5 +1,6 @@
 use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
+use std::fmt;
 
 use proc_macro2::TokenTree;
 use quote::{quote_spanned, ToTokens};
@@ -239,7 +240,10 @@ macro_rules! infallible {
     ($body:block) => {{
         #[inline(always)]
         fn infallible<T, E: fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> Result<T, E> {
-            Ok(f().expect("infallible function returned an error"))
+            match f() {
+                Ok(value) => Ok(value),
+                Err(err) => unreachable!("infallible block failed: {:?}", err),
+            }
         }
 
         infallible(
