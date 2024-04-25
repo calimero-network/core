@@ -7,11 +7,13 @@ use thiserror::Error;
 #[derive(Debug)]
 pub enum Pretty<'a> {
     Path(&'a syn::Path),
+    Type(&'a syn::Type),
 }
 
 impl<'a> fmt::Display for Pretty<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (tokens, (pre, post)) = match self {
+            Self::Type(ty) => (quote! { impl #ty {} }, (5, 3)),
             Self::Path(path) => (quote! { impl #path {} }, (5, 3)),
         };
 

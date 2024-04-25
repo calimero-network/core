@@ -30,7 +30,7 @@ impl<'a> ToTokens for StateImpl<'a> {
                 lifetime = quote! { #lt };
             }
             event = {
-                let event = &emits.path;
+                let event = &emits.ty;
                 quote! { #event }
             };
         }
@@ -48,7 +48,7 @@ impl<'a> ToTokens for StateImpl<'a> {
 
 struct MaybeBoundEvent {
     lifetime: Option<syn::Lifetime>,
-    path: syn::Path,
+    ty: syn::Type,
 }
 
 // todo! move all errors to ParseError
@@ -104,12 +104,12 @@ impl syn::parse::Parse for MaybeBoundEvent {
             }
         }
 
-        let path = match input.parse::<syn::Path>() {
-            Ok(path) => path,
+        let ty = match input.parse::<syn::Type>() {
+            Ok(ty) => ty,
             Err(err) => return Err(errors.subsumed(err)),
         };
 
-        let mut sanitizer = syn::parse2::<sanitizer::Sanitizer>(path.to_token_stream()).unwrap();
+        let mut sanitizer = syn::parse2::<sanitizer::Sanitizer>(ty.to_token_stream()).unwrap();
 
         let mut cases = vec![];
 
@@ -133,7 +133,7 @@ impl syn::parse::Parse for MaybeBoundEvent {
                     append: format!(
                         "\n\nuse the `for<{}> {}` directive to declare it",
                         lifetime,
-                        errors::Pretty::Path(&path)
+                        errors::Pretty::Type(&ty)
                     ),
                 }
             };
@@ -170,11 +170,11 @@ impl syn::parse::Parse for MaybeBoundEvent {
 
         outcome.check()?;
 
-        let path = syn::parse2(sanitizer.into_token_stream())?;
+        let ty = syn::parse2(sanitizer.into_token_stream())?;
 
         input
             .is_empty()
-            .then(|| MaybeBoundEvent { lifetime, path })
+            .then(|| MaybeBoundEvent { lifetime, ty })
             .ok_or_else(|| input.error("unexpected token"))
     }
 }
