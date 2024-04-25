@@ -28,3 +28,22 @@ impl AsRef<str> for ApplicationId {
         &self.0
     }
 }
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct Application {
+    pub id: ApplicationId,
+    pub version: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ApplicationListResult {
+    pub apps: Vec<Application>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct Release {
+    pub version: String,
+    pub notes: String,
+    pub path: String,
+    pub hash: String,
+}

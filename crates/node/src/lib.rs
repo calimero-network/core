@@ -1,15 +1,14 @@
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
-use camino::Utf8PathBuf;
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-pub mod application_manager;
+// pub mod application_manager;
 pub mod config;
 pub mod temporal_runtime_store;
 pub mod transaction_pool;
@@ -22,6 +21,7 @@ pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
     pub identity: identity::Keypair,
     pub node_type: calimero_primitives::types::NodeType,
+    pub application: calimero_application::config::ApplicationConfig,
     pub network: calimero_network::config::NetworkConfig,
     pub server: calimero_server::config::ServerConfig,
     pub store: calimero_store::config::StoreConfig,
@@ -32,7 +32,7 @@ pub struct Node {
     typ: calimero_primitives::types::NodeType,
     store: calimero_store::Store,
     tx_pool: transaction_pool::TransactionPool,
-    application_manager: application_manager::ApplicationManager,
+    application_manager: calimero_application::ApplicationManager,
     network_client: calimero_network::client::NetworkClient,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
@@ -49,15 +49,25 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
+    let application_manager =
+        calimero_application::start_manager(&config.application, network_client.clone()).await?;
+
     let store = calimero_store::Store::open(&config.store)?;
 
-    let mut node = Node::new(&config, network_client, node_events.clone(), store.clone()).await?;
+    let mut node = Node::new(
+        &config,
+        network_client.clone(),
+        node_events.clone(),
+        application_manager.clone(),
+        store.clone(),
+    );
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,
+        application_manager,
         node_events,
         store,
     )) as BoxedFuture<eyre::Result<()>>;
@@ -246,7 +256,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             if let Some(args) = args {
                 // TODO: implement print all and/or specific topic
                 let topic = TopicHash::from_raw(args);
-                if node.application_manager.is_application_registered(
+                if node.application_manager.is_application_installed(
                     &calimero_primitives::application::ApplicationId(topic.clone().into_string()),
                 ) {
                     println!(
@@ -273,35 +283,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 }
 
 impl Node {
-    pub async fn new(
+    pub fn new(
         config: &NodeConfig,
         network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+        application_manager: calimero_application::ApplicationManager,
         store: Store,
-    ) -> eyre::Result<Self> {
-        let tx_pool = transaction_pool::TransactionPool::default();
-
-        let application_manager = application_manager::ApplicationManager::new(
-            network_client.clone(),
-            config.home.join("apps").clone(),
-        );
-
-        // register the chat application with currently have
-        // TODO: register another application
-        // TODO: implement registration via transaction
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             id: config.identity.public().to_peer_id(),
             typ: config.node_type,
             store,
-            tx_pool,
+            tx_pool: transaction_pool::TransactionPool::default(),
             application_manager,
             network_client,
             node_events,
             // --
             nonce: 0,
             last_tx: calimero_primitives::hash::Hash::default(),
-        })
+        }
     }
 
     pub async fn handle_event(
@@ -313,7 +313,7 @@ impl Node {
                 peer_id: their_peer_id,
                 topic: topic_hash,
             } => {
-                if self.application_manager.is_application_registered(
+                if self.application_manager.is_application_installed(
                     &calimero_primitives::application::ApplicationId(
                         topic_hash.clone().into_string(),
                     ),
@@ -377,7 +377,7 @@ impl Node {
                 }
             }
             calimero_network::types::NetworkEvent::ListeningOn { address, .. } => {
-                warn!("listening on not expected here: {}", address);
+                info!("Listening on: {}", address);
             }
         }
 
@@ -406,6 +406,13 @@ impl Node {
         method: String,
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
+        if !self
+            .application_manager
+            .is_application_installed(&application_id)
+        {
+            eyre::bail!("Application is not installed.");
+        }
+
         self.execute(application_id, None, method, payload).await
     }
 
@@ -418,6 +425,13 @@ impl Node {
     ) -> eyre::Result<calimero_primitives::hash::Hash> {
         if self.typ.is_coordinator() {
             eyre::bail!("Coordinator can not create transactions!");
+        }
+
+        if !self
+            .application_manager
+            .is_application_installed(&application_id)
+        {
+            eyre::bail!("Application is not installed.");
         }
 
         if self
@@ -498,10 +512,14 @@ impl Node {
             ),
         };
 
+        info!(%application_id, %method, "Executing method");
+        let short_application_id = application_id.as_ref().split('/').last().unwrap();
+        info!(%short_application_id, "Executing method");
+
         let outcome = calimero_runtime::run(
             &self
                 .application_manager
-                .load_application_blob(&application_id)?,
+                .load_application_blob(&(short_application_id.to_string().into()))?,
             &method,
             calimero_runtime::logic::VMContext { input: payload },
             &mut storage,

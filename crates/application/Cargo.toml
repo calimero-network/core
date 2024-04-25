@@ -1,0 +1,24 @@
+[package]
+name = "calimero-application"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+camino.workspace = true
+eyre.workspace = true
+futures-util.workspace = true
+near-jsonrpc-client.workspace = true
+near-jsonrpc-primitives.workspace = true
+near-primitives.workspace = true
+reqwest.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+
+calimero-primitives = { path = "../primitives" }
+calimero-network = { path = "../network" }

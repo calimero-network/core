@@ -33,6 +33,7 @@ type ServerSender = mpsc::Sender<(
 pub async fn start(
     config: ServerConfig,
     server_sender: ServerSender,
+    application_manager: calimero_application::ApplicationManager,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     store: Store,
 ) -> eyre::Result<()> {
@@ -80,7 +81,7 @@ pub async fn start(
     {
         if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone())? {
             app = app.route(path, handler);
-            app = app.layer(middleware::auth::AuthSignatureLayer::new(store.clone()));
+            // app = app.layer(middleware::auth::AuthSignatureLayer::new(store.clone()));
 
             serviced = true;
         }
@@ -97,7 +98,9 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = admin::service::setup(&config, store)? {
+        if let Some((api_path, router)) =
+            admin::service::setup(&config, store, application_manager)?
+        {
             if let Some((site_path, serve_dir)) = admin::service::site(&config)? {
                 app = app.nest_service(site_path, serve_dir);
             }

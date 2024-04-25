@@ -42,6 +42,9 @@ impl RunCommand {
             store: calimero_store::config::StoreConfig {
                 path: root_args.home.join(config.store.path),
             },
+            application: calimero_application::config::ApplicationConfig {
+                dir: root_args.home.join(config.application.path),
+            },
             network: calimero_network::config::NetworkConfig {
                 identity: config.identity.clone(),
                 node_type: self.node_type.into(),
