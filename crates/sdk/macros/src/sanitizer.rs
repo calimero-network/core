@@ -235,43 +235,59 @@ impl<'a> ToTokens for Sanitizer<'a> {
     }
 }
 
-impl<'a> Parse for Sanitizer<'a> {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut entries = Vec::new();
-
-        while !input.is_empty() {
-            if input.peek(syn::Token![Self]) {
-                entries.push(SanitizerAtom::Self_(input.parse()?));
-            } else if input.peek(syn::Ident) {
-                entries.push(SanitizerAtom::Ident(input.parse()?));
-            } else if input.peek(syn::Lifetime) {
-                entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Named(input.parse()?)));
-            } else if input.peek(syn::Token![&]) {
-                let and = input.parse::<proc_macro2::TokenTree>()?;
-                let and_span = and.span();
-                entries.push(SanitizerAtom::Tree(and));
-                if input.peek(syn::Lifetime) {
-                    entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Named(input.parse()?)));
-                } else {
-                    entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Elided(and_span)));
-                }
-            } else {
-                match input.parse::<TokenTree>()? {
-                    TokenTree::Group(group) => {
-                        let entry = syn::parse2(group.stream())?;
-                        entries.push(SanitizerAtom::Group {
-                            entry,
-                            delimiter: group.delimiter(),
-                            span: group.span(),
-                        });
-                    }
-                    tt => entries.push(SanitizerAtom::Tree(tt)),
-                };
-            }
+macro_rules! infallible {
+    ($body:block) => {{
+        #[inline(always)]
+        fn infallible<T, E: fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> Result<T, E> {
+            Ok(f().expect("infallible function returned an error"))
         }
 
-        Ok(Sanitizer {
-            entries: MaybeOwned::Owned(entries.into_boxed_slice()),
+        infallible(
+            #[inline(always)]
+            || $body,
+        )
+    }};
+}
+
+impl<'a> Parse for Sanitizer<'a> {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        infallible!({
+            let mut entries = Vec::new();
+
+            while !input.is_empty() {
+                if input.peek(syn::Token![Self]) {
+                    entries.push(SanitizerAtom::Self_(input.parse()?));
+                } else if input.peek(syn::Ident) {
+                    entries.push(SanitizerAtom::Ident(input.parse()?));
+                } else if input.peek(syn::Lifetime) {
+                    entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Named(input.parse()?)));
+                } else if input.peek(syn::Token![&]) {
+                    let and = input.parse::<proc_macro2::TokenTree>()?;
+                    let and_span = and.span();
+                    entries.push(SanitizerAtom::Tree(and));
+                    if input.peek(syn::Lifetime) {
+                        entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Named(input.parse()?)));
+                    } else {
+                        entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Elided(and_span)));
+                    }
+                } else {
+                    match input.parse::<TokenTree>()? {
+                        TokenTree::Group(group) => {
+                            let entry = syn::parse2(group.stream())?;
+                            entries.push(SanitizerAtom::Group {
+                                entry,
+                                delimiter: group.delimiter(),
+                                span: group.span(),
+                            });
+                        }
+                        tt => entries.push(SanitizerAtom::Tree(tt)),
+                    };
+                }
+            }
+
+            Ok(Sanitizer {
+                entries: MaybeOwned::Owned(entries.into_boxed_slice()),
+            })
         })
     }
 }
