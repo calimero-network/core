@@ -1,5 +1,6 @@
 use quote::ToTokens;
 
+use crate::macros::infallible;
 use crate::{errors, reserved, sanitizer};
 
 pub struct LogicTy {
@@ -64,12 +65,7 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
             (1.., _) | (_, 1..)
         );
 
-        let Ok(ty) = syn::parse2(sanitizer.to_token_stream()) else {
-            return Err(errors.finish(syn::Error::new_spanned(
-                input.ty,
-                errors::ParseError::SanitizationFailed,
-            )));
-        };
+        let ty = infallible!({ syn::parse2(sanitizer.into_token_stream()) });
 
         errors.check()?;
 

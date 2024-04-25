@@ -1,5 +1,6 @@
 use quote::{quote, ToTokens};
 
+use crate::macros::infallible;
 use crate::{errors, reserved, sanitizer};
 
 mod arg;
@@ -108,12 +109,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             return Err(errors);
         }
 
-        let Ok(type_) = syn::parse2(sanitizer.to_token_stream()) else {
-            return Err(errors.finish(syn::Error::new_spanned(
-                input.item,
-                errors::ParseError::SanitizationFailed,
-            )));
-        };
+        let type_ = infallible!({ syn::parse2(sanitizer.to_token_stream()) });
 
         let mut methods = vec![];
         for item in &input.item.items {

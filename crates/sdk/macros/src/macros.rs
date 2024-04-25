@@ -19,3 +19,22 @@ macro_rules! _parse_macro_input {
 }
 
 pub(crate) use _parse_macro_input as parse_macro_input;
+
+macro_rules! _infallible {
+    ($body:block) => {{
+        #[inline(always)]
+        fn infallible<T, E: std::fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> T {
+            match f() {
+                Ok(value) => value,
+                Err(err) => unreachable!("infallible block failed: {:?}", err),
+            }
+        }
+
+        infallible(
+            #[inline(always)]
+            || $body,
+        )
+    }};
+}
+
+pub(crate) use _infallible as infallible;

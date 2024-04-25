@@ -1,6 +1,7 @@
 use quote::{quote, ToTokens};
 use syn::parse::Parse;
 
+use crate::macros::infallible;
 use crate::{errors, items, reserved, sanitizer};
 
 #[derive(Copy, Clone)]
@@ -170,7 +171,7 @@ impl syn::parse::Parse for MaybeBoundEvent {
 
         outcome.check()?;
 
-        let ty = syn::parse2(sanitizer.into_token_stream())?;
+        let ty = infallible!({ syn::parse2(sanitizer.into_token_stream()) });
 
         input
             .is_empty()

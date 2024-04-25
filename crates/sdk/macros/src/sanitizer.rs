@@ -1,12 +1,12 @@
 use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
-use std::fmt;
 
 use proc_macro2::TokenTree;
 use quote::{quote_spanned, ToTokens};
 use syn::parse::Parse;
 
 use crate::errors;
+use crate::macros::infallible;
 
 #[derive(Debug)]
 pub struct Sanitizer<'a> {
@@ -236,26 +236,9 @@ impl<'a> ToTokens for Sanitizer<'a> {
     }
 }
 
-macro_rules! infallible {
-    ($body:block) => {{
-        #[inline(always)]
-        fn infallible<T, E: fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> Result<T, E> {
-            match f() {
-                Ok(value) => Ok(value),
-                Err(err) => unreachable!("infallible block failed: {:?}", err),
-            }
-        }
-
-        infallible(
-            #[inline(always)]
-            || $body,
-        )
-    }};
-}
-
 impl<'a> Parse for Sanitizer<'a> {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        infallible!({
+        let sanitizer = infallible!({
             let mut entries = Vec::new();
 
             while !input.is_empty() {
@@ -289,10 +272,12 @@ impl<'a> Parse for Sanitizer<'a> {
                 }
             }
 
-            Ok(Sanitizer {
+            syn::Result::Ok(Sanitizer {
                 entries: MaybeOwned::Owned(entries.into_boxed_slice()),
             })
-        })
+        });
+
+        Ok(sanitizer)
     }
 }
 
