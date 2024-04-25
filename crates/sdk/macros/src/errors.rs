@@ -70,8 +70,6 @@ pub enum ParseError<'a> {
     NoComplexVisibility,
     #[error("explicit ABIs are not supported")]
     NoExplicitAbi,
-    #[error("{0}")]
-    Custom(&'a str),
 }
 
 impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {

@@ -57,38 +57,57 @@ impl syn::parse::Parse for MaybeBoundEvent {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut lifetime = None;
 
-        if input.peek(syn::Token![for]) {
-            let bounds = input.parse::<syn::BoundLifetimes>()?; // todo! consider syn::Error -> ParseError translation
+        let mut errors = errors::Errors::default();
 
-            if bounds.lifetimes.is_empty() {
-                return Err(syn::Error::new_spanned(
-                    bounds.gt_token,
-                    errors::ParseError::Custom("non-empty lifetime bounds expected"),
-                ));
-            }
-
-            if input.is_empty() {
-                return Err(syn::Error::new_spanned(
-                    bounds,
-                    errors::ParseError::Custom("expected an event type to immediately follow"),
-                ));
-            }
-
-            for param in bounds.lifetimes {
-                if let syn::GenericParam::Lifetime(syn::LifetimeParam { lifetime: lt, .. }) = param
-                {
-                    if lifetime.is_some() {
-                        return Err(syn::Error::new(
-                            lt.span(),
-                            errors::ParseError::Custom("only one lifetime can be specified"),
-                        ));
+        'bounds: {
+            if input.peek(syn::Token![for]) {
+                let bounds = match input.parse::<syn::BoundLifetimes>() {
+                    Ok(bounds) => bounds,
+                    Err(err) => {
+                        errors.subsume(err);
+                        break 'bounds;
                     }
-                    lifetime = Some(lt);
+                };
+
+                if input.is_empty() {
+                    errors.subsume(syn::Error::new_spanned(
+                        &bounds,
+                        "expected an event type to immediately follow",
+                    ));
+                }
+
+                if bounds.lifetimes.is_empty() {
+                    errors.subsume(syn::Error::new_spanned(
+                        &bounds.gt_token,
+                        "non-empty lifetime bounds expected",
+                    ));
+
+                    break 'bounds;
+                }
+
+                for param in bounds.lifetimes {
+                    if let syn::GenericParam::Lifetime(syn::LifetimeParam {
+                        lifetime: lt, ..
+                    }) = param
+                    {
+                        if lifetime.is_some() {
+                            errors.subsume(syn::Error::new(
+                                lt.span(),
+                                "only one lifetime can be specified",
+                            ));
+
+                            continue;
+                        }
+                        lifetime = Some(lt);
+                    }
                 }
             }
-        };
+        }
 
-        let path = input.parse::<syn::Path>()?;
+        let path = match input.parse::<syn::Path>() {
+            Ok(path) => path,
+            Err(err) => return Err(errors.subsumed(err)),
+        };
 
         let mut sanitizer = syn::parse2::<sanitizer::Sanitizer>(path.to_token_stream())?;
 
@@ -170,7 +189,7 @@ impl Parse for StateArgs {
 
         if !input.is_empty() {
             if !input.peek(syn::Ident) {
-                return Err(input.error(errors::ParseError::Custom("expected an identifier")));
+                return Err(input.error("expected an identifier"));
             }
 
             let ident = input.parse::<syn::Ident>()?;
@@ -183,7 +202,7 @@ impl Parse for StateArgs {
                 };
                 return Err(syn::Error::new(
                     span,
-                    errors::ParseError::Custom(&format!("expected `=` after `{}`", ident)),
+                    format_args!("expected `=` after `{}`", ident),
                 ));
             }
 
@@ -194,7 +213,7 @@ impl Parse for StateArgs {
                     if input.is_empty() {
                         return Err(syn::Error::new_spanned(
                             &eq,
-                            errors::ParseError::Custom("expected an event type after `=`"),
+                            "expected an event type after `=`",
                         ));
                     }
                     emits = Some(input.parse::<MaybeBoundEvent>()?)
@@ -202,13 +221,13 @@ impl Parse for StateArgs {
                 _ => {
                     return Err(syn::Error::new_spanned(
                         &ident,
-                        errors::ParseError::Custom(&format!("unexpected `{}`", ident)),
+                        format_args!("unexpected `{}`", ident),
                     ));
                 }
             }
 
             if !input.is_empty() {
-                return Err(input.error(errors::ParseError::Custom("unexpected token")));
+                return Err(input.error("unexpected token"));
             }
         }
 
