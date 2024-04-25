@@ -35,20 +35,6 @@ impl<T> AsRef<T> for ReservedRef<T> {
     }
 }
 
-impl<T: Clone> ReservedRef<T> {
-    pub fn to_owned(&self) -> T {
-        (*self.inner).clone()
-    }
-}
-
-impl<T> Clone for ReservedRef<T> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
 impl<T: quote::ToTokens> quote::ToTokens for ReservedRef<T> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         self.inner.to_tokens(tokens)
