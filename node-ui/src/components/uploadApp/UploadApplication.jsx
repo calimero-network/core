@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
 import Dropdown from "react-bootstrap/Dropdown";
 import LoaderSpinner from "../common/LoaderSpinner";
+import StatusModal from "../common/StatusModal";
 
 const Wrapper = styled.div`
   width: 100%;
@@ -136,6 +137,10 @@ const Wrapper = styled.div`
     background-color: #17171d;
     width: 250px;
   }
+  .dropdown-menu-scroll {
+    height: 200px;
+    overflow-y: scroll;
+  }
   .dropdown-item {
     color: #fff;
   }
@@ -165,6 +170,14 @@ const Wrapper = styled.div`
     display: flex;
     justify-content: space-between;
   }
+  .wallet-select {
+    margin-bottom: 12px;
+  }
+  .login-label {
+    margin-bottom: 12px;
+    margin-top: 12px;
+    color: #da493f;
+  }
 `;
 
 export function UploadApplication({
@@ -174,26 +187,25 @@ export function UploadApplication({
   addRelease,
   packages,
   addReleaseLoader,
+  walletAccounts,
+  deployerAccount,
+  setDeployerAccount,
+  showStatusModal,
+  closeModal,
+  deployStatus,
+  releaseInfo,
+  setReleaseInfo,
+  fileInputRef,
 }) {
   const t = translations.uploadApplication;
-  const [releaseInfo, setReleaseInfo] = useState({
-    name: "",
-    version: "",
-    notes: "",
-    path: "",
-    hash: "",
-  });
-
-  useEffect(() => {
-    setReleaseInfo((prevState) => ({
-      ...prevState,
-      path: ipfsPath,
-      hash: fileHash,
-    }));
-  }, [ipfsPath, fileHash]);
 
   return (
     <Wrapper>
+      <StatusModal
+        show={showStatusModal}
+        closeModal={closeModal}
+        modalContent={deployStatus}
+      />
       <div className="upload-form">
         <div className="title">{t.title}</div>
         <label className="subtitle">{t.subtitle}</label>
@@ -204,18 +216,52 @@ export function UploadApplication({
           type="file"
           accept=".wasm"
           onChange={handleFileChange}
+          ref={fileInputRef}
         />
       </div>
       {ipfsPath && fileHash && (
         <div className="release-info-wrapper">
+          <div className="flex-group">
+            <div className="flex-group-col wallet-select">
+              {walletAccounts.length === 0 ? (
+                <label className="label-info login-label">
+                  {t.loginLableText}
+                </label>
+              ) : (
+                <>
+                  <label className="label-info">
+                    {t.deployerDropdownlabel}
+                  </label>
+                  <Dropdown>
+                    <Dropdown.Toggle className="app-dropdown">
+                      {deployerAccount
+                        ? deployerAccount.accountId
+                        : t.deployerDropdownText}
+                    </Dropdown.Toggle>
+                    <Dropdown.Menu className="dropdown-menu">
+                      {walletAccounts?.map((account, id) => (
+                        <Dropdown.Item
+                          key={id}
+                          className="dropdown-item"
+                          onClick={() => setDeployerAccount(account)}
+                        >
+                          {account.accountId}
+                        </Dropdown.Item>
+                      ))}
+                    </Dropdown.Menu>
+                  </Dropdown>
+                </>
+              )}
+            </div>
+          </div>
           <div className="release-text">{t.releaseTitle}</div>
           <div className="flex-group-col">
             <label className="label-info">{t.nameLabelText}</label>
             <Dropdown>
               <Dropdown.Toggle className="app-dropdown">
-                {releaseInfo.name ? releaseInfo.name : "Select package"}
+                {releaseInfo.name ? releaseInfo.name : t.selectPackageLabel}
               </Dropdown.Toggle>
-              <Dropdown.Menu className="dropdown-menu">
+              <Dropdown.Menu className="dropdown-menu dropdown-menu-scroll">
                 {packages.map((pkg, id) => (
                   <Dropdown.Item
                     onClick={async () => {
@@ -299,7 +345,8 @@ export function UploadApplication({
                   releaseInfo.notes &&
                   releaseInfo.path &&
                   releaseInfo.hash &&
-                  releaseInfo.name
+                  releaseInfo.name &&
+                  deployerAccount
                 )
               }
             >
@@ -323,4 +370,13 @@ UploadApplication.propTypes = {
   addRelease: PropTypes.func.isRequired,
   packages: PropTypes.array,
   addReleaseLoader: PropTypes.bool.isRequired,
+  walletAccounts: PropTypes.array.isRequired,
+  deployerAccount: PropTypes.object,
+  setDeployerAccount: PropTypes.func.isRequired,
+  showStatusModal: PropTypes.bool.isRequired,
+  closeModal: PropTypes.func.isRequired,
+  deployStatus: PropTypes.object.isRequired,
+  releaseInfo: PropTypes.object.isRequired,
+  setReleaseInfo: PropTypes.func.isRequired,
+  fileInputRef: PropTypes.object,
 };
