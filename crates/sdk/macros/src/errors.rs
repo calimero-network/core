@@ -82,6 +82,7 @@ impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {
 pub struct ErrorsInner<'a, T> {
     item: &'a T,
     errors: Option<syn::Error>,
+    defined_at: &'static std::panic::Location<'static>,
 }
 
 #[derive(Debug)]
@@ -90,15 +91,21 @@ pub struct Errors<'a, T = Void> {
 }
 
 impl<'a> Default for Errors<'a> {
+    #[track_caller]
     fn default() -> Self {
         Self::new(&Void { _priv: () })
     }
 }
 
 impl<'a, T> Errors<'a, T> {
+    #[track_caller]
     pub fn new(item: &'a T) -> Self {
         Self {
-            inner: RefCell::new(Some(ErrorsInner { item, errors: None })),
+            inner: RefCell::new(Some(ErrorsInner {
+                item,
+                errors: None,
+                defined_at: std::panic::Location::caller(),
+            })),
         }
     }
 
@@ -191,7 +198,12 @@ impl<'a, T> Drop for Errors<'a, T> {
         if !std::thread::panicking() {
             if let Some(inner) = &*self.inner.borrow() {
                 if inner.errors.is_some() {
-                    panic!("forgot to check for errors");
+                    panic!(
+                        "dropped non-empty error accumulator defined at: {}:{}:{}",
+                        inner.defined_at.file(),
+                        inner.defined_at.line(),
+                        inner.defined_at.column()
+                    );
                 }
             }
         }

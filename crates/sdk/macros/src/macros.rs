@@ -22,11 +22,21 @@ pub(crate) use _parse_macro_input as parse_macro_input;
 
 macro_rules! _infallible {
     ($body:block) => {{
+        #[track_caller]
         #[inline(always)]
         fn infallible<T, E: std::fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> T {
             match f() {
                 Ok(value) => value,
-                Err(err) => unreachable!("infallible block failed: {:?}", err),
+                Err(err) => {
+                    let location = std::panic::Location::caller();
+                    unreachable!(
+                        "infallible block failed: {:?} at {}:{}:{}",
+                        err,
+                        location.file(),
+                        location.line(),
+                        location.column()
+                    );
+                }
             }
         }
 
