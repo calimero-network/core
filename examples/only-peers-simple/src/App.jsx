@@ -4,6 +4,8 @@ import {
   WsSubscriptionsClient,
 } from "@calimero-is-near/calimero-p2p-sdk/lib";
 import { config } from "./calimeroConfig.js";
+import NearLogin from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin";
+import { WalletSelectorContextProvider } from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/WalletSelectorContext";
 
 class App extends React.Component {
   constructor(props) {
@@ -112,6 +114,9 @@ class App extends React.Component {
             ))}
           </tbody>
         </table>
+        <WalletSelectorContextProvider network="testnet">
+          <NearLogin appId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP" rpcBaseUrl="http://localhost:2428"/>
+        </WalletSelectorContextProvider>
       </div>
     );
   }
