@@ -68,6 +68,7 @@ pub fn event(_args: TokenStream, input: TokenStream) -> TokenStream {
 
 #[proc_macro]
 pub fn emit(input: TokenStream) -> TokenStream {
-    // dbg!(input);
-    TokenStream::new()
+    let input = parse_macro_input!(input as syn::Expr);
+
+    quote! (::calimero_sdk::event::emit(#input)).into()
 }
