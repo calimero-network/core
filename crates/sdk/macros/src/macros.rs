@@ -1,4 +1,4 @@
-macro_rules! _parse_macro_input {
+macro_rules! parse_macro_input {
     (@let $er:ident =) => { let mut $er = errors::Errors::default(); };
     (@let $er:ident = $item:expr) => {
         let item = proc_macro2::TokenStream::from($item);
@@ -18,9 +18,9 @@ macro_rules! _parse_macro_input {
     };
 }
 
-pub(crate) use _parse_macro_input as parse_macro_input;
+pub(crate) use parse_macro_input;
 
-macro_rules! _infallible {
+macro_rules! infallible {
     ($body:block) => {{
         #[track_caller]
         #[inline(always)]
@@ -47,4 +47,4 @@ macro_rules! _infallible {
     }};
 }
 
-pub(crate) use _infallible as infallible;
+pub(crate) use infallible;
