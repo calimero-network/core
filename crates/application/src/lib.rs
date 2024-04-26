@@ -39,18 +39,16 @@ impl ApplicationManager {
 
     pub async fn install_application(
         &self,
-        application_id: &calimero_primitives::application::ApplicationId,
+        application_id: calimero_primitives::application::ApplicationId,
         version: &str,
     ) -> eyre::Result<()> {
-        let release = self.get_release(application_id, version).await?;
-        self.download_release(application_id, &release, &self.application_dir)
+        let release = self.get_release(&application_id, version).await?;
+        self.download_release(&application_id, &release, &self.application_dir)
             .await?;
 
         let topic_hash = self
             .network_client
-            .subscribe(calimero_network::types::IdentTopic::new(
-                application_id.as_ref(),
-            ))
+            .subscribe(calimero_network::types::IdentTopic::new(application_id))
             .await?;
 
         info!(%topic_hash, "Subscribed to application topic");

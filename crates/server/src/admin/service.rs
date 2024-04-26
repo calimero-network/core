@@ -195,7 +195,7 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     let result = state
         .application_maneger
-        .install_application(&(req.application.into()), &req.version)
+        .install_application(req.application.into(), &req.version)
         .await;
 
     Ok(match result {
