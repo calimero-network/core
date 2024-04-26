@@ -1,1 +1,1 @@
-rm -rf dist lib && pnpm build
+rm -rf node_modules dist lib && pnpm install && pnpm build

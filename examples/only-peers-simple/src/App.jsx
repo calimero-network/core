@@ -6,6 +6,7 @@ import {
 import { config } from "./calimeroConfig.js";
 import NearLogin from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin";
 import { WalletSelectorContextProvider } from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/WalletSelectorContext";
+import MetamaskContext from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/MetamaskLogin/MetamaskWrapper";
 
 class App extends React.Component {
   constructor(props) {
@@ -117,6 +118,7 @@ class App extends React.Component {
         <WalletSelectorContextProvider network="testnet">
           <NearLogin appId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP" rpcBaseUrl="http://localhost:2428"/>
         </WalletSelectorContextProvider>
+        <MetamaskContext applicationId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP" rpcBaseUrl="http://localhost:2428" />
       </div>
     );
   }
