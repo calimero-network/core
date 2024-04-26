@@ -22,7 +22,8 @@
         "noUnusedLocals": true,
         "experimentalDecorators": true,
         "resolveJsonModule": true,
-        "skipLibCheck": true
+        "skipLibCheck": true,
+        "jsx": "react"
     },
     "files": [
         "src/index.ts"
