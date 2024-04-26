@@ -6,14 +6,21 @@ thread_local! {
 }
 
 fn emit_event_stub<T: AppEvent>(event: T) {
-    println!("{:#}", serde_json::to_string_pretty(&event).unwrap());
+    match serde_json::to_string(&event) {
+        // change this to a concrete syscall
+        Ok(event_log) => env::log(&format!("EVENT:{}", event_log)),
+        Err(err) => env::panic_str(&format!("failed to serialize event: {:?}", err)),
+    }
 }
 
 #[track_caller]
 fn handler<E: AppEvent + AppEventExt>(event: Box<dyn AppEventExt>) {
     match E::downcast(event) {
         Ok(event) => emit_event_stub(event),
-        Err(event) => env::panic_str(&format!("unexpected event: {:?}", (*event).name())),
+        Err(_event) => {
+            // todo! conditionally panic on unexpected events
+            // env::panic_str(&format!("unexpected event: {:?}", (*event).name()))
+        }
     }
 }
 
@@ -25,8 +32,10 @@ where
 }
 
 #[track_caller]
-pub fn emit<E: AppEventExt + 'static>(event: E) {
-    HANDLER.with_borrow(|handler| *handler)(Box::new(event))
+pub fn emit<'a, E: AppEventExt + 'a>(event: E) {
+    let f = HANDLER.with_borrow(|handler| *handler);
+    let f: fn(Box<dyn AppEventExt + 'a>) = unsafe { std::mem::transmute::<_, _>(f) };
+    f(Box::new(event))
 }
 
 mod reflect {

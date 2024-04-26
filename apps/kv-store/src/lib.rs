@@ -71,7 +71,7 @@ impl KvStore {
     pub fn remove(&mut self, key: &str) {
         env::log(&format!("Removing key: {:?}", key));
 
-        app::emit!(Events::Removed { key });
+        app::emit!(Event::Removed { key });
 
         self.items.remove(key);
     }
@@ -79,7 +79,7 @@ impl KvStore {
     pub fn clear(&mut self) {
         env::log("Clearing all entries");
 
-        app::emit!(Events::Cleared);
+        app::emit!(Event::Cleared);
 
         self.items.clear();
     }
