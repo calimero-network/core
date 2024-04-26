@@ -8,7 +8,6 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info};
 
-// pub mod application_manager;
 pub mod config;
 pub mod temporal_runtime_store;
 pub mod transaction_pool;
