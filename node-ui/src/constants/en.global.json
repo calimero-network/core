@@ -41,7 +41,8 @@
         "signatureText": "Signature",
         "publicKeyText": "PublicKey",
         "callbackUrlText": "Callback Url",
-        "submitButtonText": "Submit Request"
+        "submitButtonText": "Submit Request",
+        "backButtonText": "Back to login"
     },
     "identityTable": {
         "title": "Identity",
@@ -93,7 +94,11 @@
         "versionPlaceholder": "1.0.0",
         "notesPlaceholder": "Initial release",
         "hashPlaceholder": "QmZ3Z8Q7QmZ3Z8Q7QmZ3Z8Q7QmZ3Z8Q7",
-        "addReleaseButtonText": "Add Release"
+        "addReleaseButtonText": "Add Release",
+        "loginLableText": "To Deploy new release, you need to sign in using wallet account button!",
+        "deployerDropdownlabel": "Select deployer account",
+        "deployerDropdownText": "Deployer Account",
+        "selectPackageLabel": "Select Package"
     },
     "addPackageForm": {
         "title": "Package Details",
@@ -105,7 +110,10 @@
         "buttonNextText": "Next",
         "namePlaceholder": "chat-application",
         "repositoryPlaceholder": "github.com/username/chat-application",
-        "descriptionPlaceholder": "A chat application built for P2P system"
+        "descriptionPlaceholder": "A chat application built for P2P system",
+        "loginLableText": "To Deploy new package, you need to sign in using wallet account button!",
+        "deployerDropdownlabel": "Select deployer account",
+        "deployerDropdownText": "Deployer Account"
     },
     "statusModal": {
         "buttonContinueText": "Continue"

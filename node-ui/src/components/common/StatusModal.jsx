@@ -45,7 +45,6 @@ const ModalWrapper = styled.div`
       width: 100%;
       font-size: 14px;
       color: rgb(255, 255, 255, 0.7);
-      white-space: nowrap;
     }
 
     .button-wrapper {

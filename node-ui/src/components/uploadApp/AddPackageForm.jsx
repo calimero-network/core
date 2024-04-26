@@ -1,8 +1,10 @@
-import React, { useState } from "react";
+import React from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
+import Dropdown from "react-bootstrap/Dropdown";
 import LoaderSpinner from "../common/LoaderSpinner";
+import StatusModal from "../common/StatusModal";
 
 const ContractFormLayout = styled.div`
   display: flex;
@@ -82,20 +84,91 @@ const ContractFormLayout = styled.div`
     display: flex;
     justify-content: space-between;
   }
+
+  .app-dropdown {
+    background-color: #ff842d;
+    border: none;
+    outline: none;
+    color: #111;
+    font-size: 14px;
+    font-weight: normal;
+    width: 250px;
+  }
+
+  .dropdown-menu {
+    background-color: #17171d;
+    width: 250px;
+  }
+
+  .dropdown-item {
+    color: #fff;
+  }
+
+  .dropdown-item:hover {
+    background-color: rgb(255, 255, 255, 0.06);
+  }
+
+  .login-label {
+    margin-bottom: 12px;
+    margin-top: 12px;
+    color: #da493f;
+  }
 `;
 
-export function AddPackageForm({ addPackage, addPackageLoader }) {
+export function AddPackageForm({
+  walletAccounts,
+  addPackage,
+  addPackageLoader,
+  deployerAccount,
+  setDeployerAccount,
+  showStatusModal,
+  closeModal,
+  deployStatus,
+  packageInfo,
+  setPackageInfo
+}) {
   const t = translations.addPackageForm;
-  const [packageInfo, setPackageInfo] = useState({
-    name: "",
-    description: "",
-    repository: "",
-  });
 
   return (
     <ContractFormLayout>
+       <StatusModal
+        show={showStatusModal}
+        closeModal={closeModal}
+        modalContent={deployStatus}
+      />
       <div className="title">{t.title}</div>
       <div className="subtitle">{t.subtitle}</div>
+      <div className="flex-group">
+        <div className="flex-group-col">
+          {walletAccounts.length === 0 ? (
+            <label className="label login-label">
+             {t.loginLableText}
+            </label>
+          ) : (
+            <>
+              <label className="label">{t.deployerDropdownlabel}</label>
+              <Dropdown>
+                <Dropdown.Toggle className="app-dropdown">
+                  {deployerAccount
+                    ? deployerAccount.accountId
+                    : t.deployerDropdownText}
+                </Dropdown.Toggle>
+                <Dropdown.Menu className="dropdown-menu">
+                  {walletAccounts?.map((account, id) => (
+                    <Dropdown.Item
+                      key={id}
+                      className="dropdown-item"
+                      onClick={() => setDeployerAccount(account)}
+                    >
+                      {account.accountId}
+                    </Dropdown.Item>
+                  ))}
+                </Dropdown.Menu>
+              </Dropdown>
+            </>
+          )}
+        </div>
+      </div>
       <div className="flex-group">
         <div className="flex-group-col">
           <label className="label">{t.nameLabelText}</label>
@@ -152,7 +225,8 @@ export function AddPackageForm({ addPackage, addPackageLoader }) {
             !(
               packageInfo.description &&
               packageInfo.name &&
-              packageInfo.repository
+              packageInfo.repository &&
+              deployerAccount
             ) && !addPackageLoader
           }
         >
@@ -168,6 +242,14 @@ export function AddPackageForm({ addPackage, addPackageLoader }) {
 }
 
 AddPackageForm.propTypes = {
+  walletAccounts: PropTypes.array.isRequired,
   addPackage: PropTypes.func.isRequired,
   addPackageLoader: PropTypes.bool.isRequired,
+  deployerAccount: PropTypes.object,
+  setDeployerAccount: PropTypes.func.isRequired,
+  showStatusModal: PropTypes.bool.isRequired,
+  closeModal: PropTypes.func.isRequired,
+  deployStatus: PropTypes.object.isRequired,
+  packageInfo: PropTypes.object.isRequired,
+  setPackageInfo: PropTypes.func.isRequired,
 };
