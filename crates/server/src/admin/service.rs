@@ -30,7 +30,7 @@ pub struct AdminConfig {
 pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
-    pub application_maneger: calimero_application::ApplicationManager,
+    pub application_manager: calimero_application::ApplicationManager,
 }
 
 pub(crate) fn setup(
@@ -54,7 +54,7 @@ pub(crate) fn setup(
     let shared_state = Arc::new(AdminState {
         store,
         keypair: config.identity.clone(),
-        application_maneger: application_manager,
+        application_manager,
     });
 
     let admin_router = Router::new()
@@ -194,7 +194,7 @@ async fn install_application_handler(
     Json(req): Json<InstallApplicationRequest>,
 ) -> impl IntoResponse {
     let result = state
-        .application_maneger
+        .application_manager
         .install_application(req.application.into(), &req.version)
         .await;
 
@@ -209,7 +209,7 @@ async fn list_applications_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     match state
-        .application_maneger
+        .application_manager
         .list_installed_applications()
         .await
     {

@@ -22,7 +22,7 @@ pub async fn start_manager(
     config: &config::ApplicationConfig,
     network_client: NetworkClient,
 ) -> eyre::Result<ApplicationManager> {
-    let application_manager = ApplicationManager::new(network_client.clone(), config.dir.clone());
+    let application_manager = ApplicationManager::new(network_client, config.dir.clone());
 
     application_manager.boot_installed_apps().await?;
 
@@ -63,7 +63,7 @@ impl ApplicationManager {
         }
 
         if let Ok(entries) = fs::read_dir(&self.application_dir) {
-            let mut applications: Vec<calimero_primitives::application::Application> = Vec::new();
+            let mut applications = Vec::new();
 
             entries.filter_map(|entry| entry.ok()).for_each(|entry| {
                 if let Some(file_name) = entry.file_name().to_str() {

@@ -511,14 +511,10 @@ impl Node {
             ),
         };
 
-        info!(%application_id, %method, "Executing method");
-        let short_application_id = application_id.as_ref().split('/').last().unwrap();
-        info!(%short_application_id, "Executing method");
-
         let outcome = calimero_runtime::run(
             &self
                 .application_manager
-                .load_application_blob(&(short_application_id.to_string().into()))?,
+                .load_application_blob(&application_id)?,
             &method,
             calimero_runtime::logic::VMContext { input: payload },
             &mut storage,
