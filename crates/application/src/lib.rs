@@ -39,7 +39,7 @@ impl ApplicationManager {
 
     pub async fn install_application(
         &self,
-        application_id: &str,
+        application_id: &calimero_primitives::application::ApplicationId,
         version: &str,
     ) -> eyre::Result<()> {
         let release = self.get_release(application_id, version).await?;
@@ -48,7 +48,9 @@ impl ApplicationManager {
 
         let topic_hash = self
             .network_client
-            .subscribe(calimero_network::types::IdentTopic::new(application_id))
+            .subscribe(calimero_network::types::IdentTopic::new(
+                application_id.as_ref(),
+            ))
             .await?;
 
         info!(%topic_hash, "Subscribed to application topic");
@@ -126,7 +128,7 @@ impl ApplicationManager {
 
     async fn get_release(
         &self,
-        application_id: &str,
+        application_id: &calimero_primitives::application::ApplicationId,
         version: &str,
     ) -> eyre::Result<calimero_primitives::application::Release> {
         let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
@@ -158,7 +160,7 @@ impl ApplicationManager {
 
     async fn download_release(
         &self,
-        application_id: &str,
+        application_id: &calimero_primitives::application::ApplicationId,
         release: &calimero_primitives::application::Release,
         dir: &camino::Utf8Path,
     ) -> eyre::Result<()> {

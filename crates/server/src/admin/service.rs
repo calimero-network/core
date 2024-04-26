@@ -195,7 +195,7 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     let result = state
         .application_maneger
-        .install_application(&req.application, &req.version)
+        .install_application(&(req.application.into()), &req.version)
         .await;
 
     Ok(match result {
@@ -239,6 +239,6 @@ struct PubKeyRequest {
 
 #[derive(Deserialize)]
 struct InstallApplicationRequest {
-    application: String,
+    application: String, // TODO: rename to application_id and use primitives::ApplicationId
     version: String,
 }
