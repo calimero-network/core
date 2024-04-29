@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 eyre.workspace = true
+semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

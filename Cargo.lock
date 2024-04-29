@@ -1034,6 +1034,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-application"
+version = "0.1.0"
+dependencies = [
+ "calimero-network",
+ "calimero-primitives",
+ "camino",
+ "eyre",
+ "futures-util",
+ "near-jsonrpc-client",
+ "near-jsonrpc-primitives",
+ "near-primitives",
+ "reqwest 0.12.2",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
+ "tracing",
+]
+
+[[package]]
 name = "calimero-identity"
 version = "0.1.0"
 dependencies = [
@@ -1068,6 +1088,7 @@ name = "calimero-node"
 version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
+ "calimero-application",
  "calimero-identity",
  "calimero-network",
  "calimero-primitives",
@@ -1098,6 +1119,7 @@ dependencies = [
  "bs58 0.5.1",
  "hex",
  "libp2p",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.8",
@@ -1137,12 +1159,12 @@ dependencies = [
  "base64 0.22.0",
  "borsh 1.4.0",
  "bs58 0.5.1",
+ "calimero-application",
  "calimero-identity",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server-primitives",
  "calimero-store",
- "camino",
  "chrono",
  "color-eyre",
  "ed25519-dalek",
@@ -1150,9 +1172,6 @@ dependencies = [
  "futures-util",
  "libp2p",
  "multiaddr",
- "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-primitives",
  "rand 0.8.5",
  "reqwest 0.12.2",
  "semver",
@@ -1173,6 +1192,7 @@ version = "0.1.0"
 dependencies = [
  "calimero-primitives",
  "eyre",
+ "semver",
  "serde",
  "serde_json",
  "thiserror",

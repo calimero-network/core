@@ -28,3 +28,17 @@ impl AsRef<str> for ApplicationId {
         &self.0
     }
 }
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct Application {
+    pub id: ApplicationId,
+    pub version: semver::Version,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct Release {
+    pub version: semver::Version,
+    pub notes: String,
+    pub path: String,
+    pub hash: String,
+}

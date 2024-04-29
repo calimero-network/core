@@ -141,10 +141,7 @@ impl InitCommand {
                             Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
                         })
                         .collect(),
-                    admin: Some(calimero_server::admin::service::AdminConfig {
-                        enabled: true,
-                        application_dir: root_args.home.join("apps"),
-                    }),
+                    admin: Some(calimero_server::admin::service::AdminConfig { enabled: true }),
                     jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
                     websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
                 },
