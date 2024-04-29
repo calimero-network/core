@@ -22,21 +22,25 @@ import {
 } from "../../nodeApi";
 import { ResponseData } from "../../api-response";
 import { setStorageNodeAuthorized } from "../../storage/storage";
-import { Loading } from "../Loading";
+import { Loading } from "../loading/Loading";
 
 interface LoginWithMetamaskProps {
   applicationId: string;
   rpcBaseUrl: string;
+  metamaskLoginSuccessRedirect: () => void;
+  metamaskTitleColor: string | undefined;
 }
 
 export default function LoginWithMetamask({
   applicationId,
   rpcBaseUrl,
+  metamaskLoginSuccessRedirect,
+  metamaskTitleColor,
 }: LoginWithMetamaskProps) {
   const { isConnected, address } = useAccount();
   const [walletSignatureData, setWalletSignatureData] =
     useState<WalletSignatureData | null>(null);
-
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const { ready } = useSDK();
 
   const signatureMessage = useCallback((): string | undefined => {
@@ -94,6 +98,7 @@ export default function LoginWithMetamask({
   }, []);
 
   const login = useCallback(async () => {
+    setErrorMessage(null);
     if (!signData) {
       console.error("signature is empty");
       //TODO handle error
@@ -116,15 +121,16 @@ export default function LoginWithMetamask({
         .login(loginRequest, rpcBaseUrl)
         .then((result) => {
           if (result.error) {
-            console.error("login error", result.error);
-            //TODO handle error
+            console.error("Login error: ", result.error);
+            setErrorMessage(result.error.message);
           } else {
             setStorageNodeAuthorized();
+            metamaskLoginSuccessRedirect();
           }
         })
         .catch(() => {
-          console.error("error while login");
-          //TODO handle error
+          console.error("error while login!");
+          setErrorMessage("Error while login!");
         });
     }
   }, [address, signData, walletSignatureData?.payload]);
@@ -168,7 +174,14 @@ export default function LoginWithMetamask({
           textAlign: "center",
         }}
       >
-        <span style={{ marginBottom: "0.5rem" }}>Metamask</span>
+        <span
+          style={{
+            marginBottom: "0.5rem",
+            color: metamaskTitleColor ?? "#fff",
+          }}
+        >
+          Metamask
+        </span>
         <header
           style={{
             marginTop: "1.5rem",
@@ -188,8 +201,12 @@ export default function LoginWithMetamask({
                     backgroundColor: "#25282D",
                     height: "73px",
                     borderRadius: "6px",
+                    border: "none",
+                    outline: "none",
                   }
-                : {}
+                : {
+                    cursor: "pointer",
+                  }
             }
           ></MetaMaskButton>
           {isConnected && walletSignatureData && (
@@ -208,13 +225,38 @@ export default function LoginWithMetamask({
                   fontSize: "1rem",
                   fontWeight: "500",
                   borderRadius: "0.375rem",
+                  border: "none",
+                  outline: "none",
+                  paddingLeft: "0.5rem",
+                  paddingRight: "0.5rem",
                 }}
                 disabled={isSignLoading}
                 onClick={() => signMessage()}
               >
                 Sign authentication transaction
               </button>
-              {isSignError && <div>Error signing message</div>}
+              {isSignError && (
+                <div
+                  style={{
+                    color: "red",
+                    fontSize: "14px",
+                    fontWeight: "500",
+                    marginTop: "0.5rem",
+                  }}
+                >
+                  Error signing message
+                </div>
+              )}
+              <div
+                style={{
+                  color: "red",
+                  fontSize: "14px",
+                  fontWeight: "500",
+                  marginTop: "0.5rem",
+                }}
+              >
+                {errorMessage}
+              </div>
             </div>
           )}
         </header>

@@ -116,9 +116,15 @@ class App extends React.Component {
           </tbody>
         </table>
         <WalletSelectorContextProvider network="testnet">
-          <NearLogin appId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP" rpcBaseUrl="http://localhost:2428"/>
+          <NearLogin
+            appId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP"
+            rpcBaseUrl="http://localhost:2428"
+          />
         </WalletSelectorContextProvider>
-        <MetamaskContext applicationId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP" rpcBaseUrl="http://localhost:2428" />
+        <MetamaskContext
+          applicationId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP"
+          rpcBaseUrl="http://localhost:2428"
+        />
       </div>
     );
   }

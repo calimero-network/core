@@ -14,7 +14,7 @@ import { getOrCreateKeypair } from "../crypto/ed25519";
 import apiClient from "../api";
 import { ResponseData } from "../api-response";
 import { setStorageNodeAuthorized } from "../storage/storage";
-import { Loading } from "./Loading";
+import { Loading } from "./loading/Loading";
 import {
   LoginRequest,
   NearSignatureMessageMetadata,
