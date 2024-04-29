@@ -40,7 +40,7 @@ impl ApplicationManager {
     pub async fn install_application(
         &self,
         application_id: calimero_primitives::application::ApplicationId,
-        version: &str,
+        version: &semver::Version,
     ) -> eyre::Result<()> {
         let release = self.get_release(&application_id, version).await?;
         self.download_release(&application_id, &release, &self.application_dir)
@@ -51,7 +51,7 @@ impl ApplicationManager {
             .subscribe(calimero_network::types::IdentTopic::new(application_id))
             .await?;
 
-        info!(%topic_hash, "Subscribed to application topic");
+        info!(%topic_hash, "Subscribed to network topic");
         return Ok(());
     }
 
@@ -71,7 +71,7 @@ impl ApplicationManager {
                     if let Some((version, _)) = self.get_latest_application_info(&application_id) {
                         applications.push(calimero_primitives::application::Application {
                             id: application_id,
-                            version: version.to_string(),
+                            version,
                         });
                     }
                 }
@@ -127,7 +127,7 @@ impl ApplicationManager {
     async fn get_release(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
-        version: &str,
+        version: &semver::Version,
     ) -> eyre::Result<calimero_primitives::application::Release> {
         let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
         let request = methods::query::RpcQueryRequest {
@@ -138,7 +138,7 @@ impl ApplicationManager {
                 args: FunctionArgs::from(
                     serde_json::json!({
                         "id": application_id,
-                        "version": version
+                        "version": version.to_string()
                     })
                     .to_string()
                     .into_bytes(),

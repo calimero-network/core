@@ -32,17 +32,12 @@ impl AsRef<str> for ApplicationId {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Application {
     pub id: ApplicationId,
-    pub version: String,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct ApplicationListResult {
-    pub apps: Vec<Application>,
+    pub version: semver::Version,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Release {
-    pub version: String,
+    pub version: semver::Version,
     pub notes: String,
     pub path: String,
     pub hash: String,

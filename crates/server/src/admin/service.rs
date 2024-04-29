@@ -15,7 +15,7 @@ use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
-use super::handlers::add_client_key::{add_client_key_handler, parse_api_error};
+use super::handlers::add_client_key::add_client_key_handler;
 use super::handlers::challenge::{request_challenge_handler, NodeChallenge, CHALLENGE_KEY};
 use super::handlers::fetch_did::fetch_did_handler;
 use super::storage::root_key::{add_root_key, RootKey};
@@ -191,18 +191,16 @@ async fn create_root_key_handler(
 
 async fn install_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<InstallApplicationRequest>,
+    Json(req): Json<calimero_server_primitives::admin::InstallApplicationRequest>,
 ) -> impl IntoResponse {
-    let result = state
+    match state
         .application_manager
-        .install_application(req.application.into(), &req.version)
-        .await;
-
-    Ok(match result {
-        Ok(()) => (StatusCode::OK, "Application Installed"),
-        Err(err) => return Err(parse_api_error(err)),
+        .install_application(req.application, &req.version)
+        .await
+    {
+        Ok(()) => ApiResponse { payload: () }.into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
-    .into_response())
 }
 
 async fn list_applications_handler(
@@ -213,17 +211,13 @@ async fn list_applications_handler(
         .list_installed_applications()
         .await
     {
-        Ok(applications) => {
-            return ApiResponse {
-                payload: calimero_primitives::application::ApplicationListResult {
-                    apps: applications,
-                },
-            }
-            .into_response();
+        Ok(applications) => ApiResponse {
+            payload: calimero_server_primitives::admin::ApplicationListResult {
+                apps: applications,
+            },
         }
-        Err(err) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-        }
+        .into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
 
@@ -235,10 +229,4 @@ struct PubKeyRequest {
     public_key: String,
     signature: String,
     callback_url: String,
-}
-
-#[derive(Deserialize)]
-struct InstallApplicationRequest {
-    application: String, // TODO: rename to application_id and use primitives::ApplicationId
-    version: String,
 }
