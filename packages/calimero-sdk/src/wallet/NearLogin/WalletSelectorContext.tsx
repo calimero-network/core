@@ -16,8 +16,8 @@ import { setupWalletSelector } from "@near-wallet-selector/core";
 import type { WalletSelectorModal } from "@near-wallet-selector/modal-ui";
 import { setupModal } from "@near-wallet-selector/modal-ui";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
-import { Loading } from "./loading/Loading";
-import { WalletSelectorContextValue } from "../login";
+import { Loading } from "../loading/Loading";
+import { WalletSelectorContextValue } from "../../login";
 
 declare global {
   export interface Window {

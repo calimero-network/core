@@ -5,17 +5,19 @@ import { MetaMaskUIProvider } from "@metamask/sdk-react-ui";
 interface MetamaskContextProps {
   applicationId: string;
   rpcBaseUrl: string;
+  successRedirect: () => void;
   cardBackgroundColor: string | undefined;
   metamaskTitleColor: string | undefined;
-  metamaskLoginSuccessRedirect: () => void;
+  navigateBack: () => void | undefined;
 }
 
 const MetamaskContext: React.FC<MetamaskContextProps> = ({
   applicationId,
   rpcBaseUrl,
-  metamaskLoginSuccessRedirect,
+  successRedirect,
   cardBackgroundColor,
   metamaskTitleColor,
+  navigateBack
 }) => {
   return (
     <MetaMaskUIProvider
@@ -42,8 +44,9 @@ const MetamaskContext: React.FC<MetamaskContextProps> = ({
           <LoginWithMetamask
             applicationId={applicationId}
             rpcBaseUrl={rpcBaseUrl}
-            metamaskLoginSuccessRedirect={metamaskLoginSuccessRedirect}
+            successRedirect={successRedirect}
             metamaskTitleColor={metamaskTitleColor}
+            navigateBack={navigateBack}
           />
         </div>
       </div>

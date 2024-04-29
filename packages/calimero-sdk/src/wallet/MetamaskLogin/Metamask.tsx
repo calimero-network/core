@@ -27,15 +27,17 @@ import { Loading } from "../loading/Loading";
 interface LoginWithMetamaskProps {
   applicationId: string;
   rpcBaseUrl: string;
-  metamaskLoginSuccessRedirect: () => void;
+  successRedirect: () => void;
   metamaskTitleColor: string | undefined;
+  navigateBack: () => void | undefined;
 }
 
 export default function LoginWithMetamask({
   applicationId,
   rpcBaseUrl,
-  metamaskLoginSuccessRedirect,
+  successRedirect,
   metamaskTitleColor,
+  navigateBack,
 }: LoginWithMetamaskProps) {
   const { isConnected, address } = useAccount();
   const [walletSignatureData, setWalletSignatureData] =
@@ -125,7 +127,7 @@ export default function LoginWithMetamask({
             setErrorMessage(result.error.message);
           } else {
             setStorageNodeAuthorized();
-            metamaskLoginSuccessRedirect();
+            successRedirect();
           }
         })
         .catch(() => {
@@ -260,6 +262,18 @@ export default function LoginWithMetamask({
             </div>
           )}
         </header>
+      </div>
+      <div
+        style={{
+          paddingTop: "1rem",
+          fontSize: "14px",
+          color: "#fff",
+          textAlign: "center",
+          cursor: "pointer",
+        }}
+        onClick={navigateBack}
+      >
+        Back to wallet selector
       </div>
     </div>
   );

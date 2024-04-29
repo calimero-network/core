@@ -4,9 +4,7 @@ import {
   WsSubscriptionsClient,
 } from "@calimero-is-near/calimero-p2p-sdk/lib";
 import { config } from "./calimeroConfig.js";
-import NearLogin from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin";
-import { WalletSelectorContextProvider } from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/WalletSelectorContext";
-import MetamaskContext from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/MetamaskLogin/MetamaskWrapper";
+import LoginSelector from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/LoginSelector";
 
 class App extends React.Component {
   constructor(props) {
@@ -115,16 +113,19 @@ class App extends React.Component {
             ))}
           </tbody>
         </table>
-        <WalletSelectorContextProvider network="testnet">
-          <NearLogin
-            appId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP"
+        <div style={{
+          display: "flex",
+          width: "100%",
+          justifyContent: "center",
+          alignItems: "center",
+        }}>
+          <LoginSelector
+            applicationId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP"
             rpcBaseUrl="http://localhost:2428"
-          />
-        </WalletSelectorContextProvider>
-        <MetamaskContext
-          applicationId="9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP"
-          rpcBaseUrl="http://localhost:2428"
-        />
+            successRedirect={() => console.log("success")}
+            network="testnet"
+            />
+        </div>
       </div>
     );
   }

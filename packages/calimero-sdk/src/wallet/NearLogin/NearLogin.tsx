@@ -10,11 +10,11 @@ import {
 } from "@near-wallet-selector/core";
 
 import { useWalletSelector } from "./WalletSelectorContext";
-import { getOrCreateKeypair } from "../crypto/ed25519";
-import apiClient from "../api";
-import { ResponseData } from "../api-response";
-import { setStorageNodeAuthorized } from "../storage/storage";
-import { Loading } from "./loading/Loading";
+import { getOrCreateKeypair } from "../../crypto/ed25519";
+import apiClient from "../../api";
+import { ResponseData } from "../../api-response";
+import { setStorageNodeAuthorized } from "../../storage/storage";
+import { Loading } from "../loading/Loading";
 import {
   LoginRequest,
   NearSignatureMessageMetadata,
@@ -25,7 +25,7 @@ import {
   WalletMetadata,
   WalletSignatureData,
   WalletType,
-} from "../nodeApi";
+} from "../../nodeApi";
 
 import "@near-wallet-selector/modal-ui/styles.css";
 
@@ -42,11 +42,22 @@ export type Account = AccountView & {
 interface NearLoginProps {
   rpcBaseUrl: string;
   appId: string;
+  successRedirect: () => void;
+  cardBackgroundColor: string | undefined;
+  nearTitleColor: string | undefined;
+  navigateBack: () => void | undefined;
 }
 
-const NearLogin: React.FC<NearLoginProps> = ({ rpcBaseUrl, appId }) => {
+const NearLogin: React.FC<NearLoginProps> = ({
+  rpcBaseUrl,
+  appId,
+  successRedirect,
+  cardBackgroundColor,
+  nearTitleColor,
+  navigateBack
+}) => {
   const { selector, accounts, modal, accountId } = useWalletSelector();
-  const [_account, setAccount] = useState<Account | null>(null);
+  const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const appName = "me";
 
@@ -97,10 +108,15 @@ const NearLogin: React.FC<NearLoginProps> = ({ rpcBaseUrl, appId }) => {
   async function handleSignOut() {
     const wallet = await selector.wallet();
 
-    wallet.signOut().catch((err: any) => {
-      console.log("Failed to sign out");
-      console.error(err);
-    });
+    wallet
+      .signOut()
+      .then(() => {
+        setAccount(null);
+      })
+      .catch((err: any) => {
+        console.log("Failed to sign out");
+        console.error(err);
+      });
   }
 
   function handleSwitchWallet() {
@@ -228,6 +244,7 @@ const NearLogin: React.FC<NearLoginProps> = ({ rpcBaseUrl, appId }) => {
             //TODO handle error
           } else {
             setStorageNodeAuthorized();
+            successRedirect();
             console.log("login success");
           }
         })
@@ -304,33 +321,255 @@ const NearLogin: React.FC<NearLoginProps> = ({ rpcBaseUrl, appId }) => {
 
   return (
     <Fragment>
-      <div style={{ display: "flex", flexDirection: "column" }}>
-        {accountId && <div style={{ textAlign: "center" }}>
-          Account Id: <span style={{ color: "#FF7A00" }}>{accountId}</span>
-        </div>}
-        <div style={{ display: "flex", marginTop: "1.5rem" }}>
-          <button
-            style={{ marginRight: "0.5rem" }}
-            onClick={() => {
-              if (accountId) {
-                handleSignOut();
-              }
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          backgroundColor: cardBackgroundColor ?? "#1C1C1C",
+          width: "fit-content",
+          padding: "2.5rem",
+          gap: "1rem",
+          borderRadius: "0.5rem",
+        }}
+      >
+        <span
+          style={{
+            marginTop: "1.5rem",
+            display: "grid",
+            fontSize: "1.25rem",
+            fontWeight: "500",
+            textAlign: "center",
+            marginBottom: "0.5rem",
+            color: nearTitleColor ?? "#fff",
+          }}
+        >
+          NEAR
+        </span>
+        {account && (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              backgroundColor: "#25282D",
+              height: "73px",
+              borderRadius: "6px",
+              border: "none",
+              outline: "none",
+              paddingLeft: "12px",
+              paddingRight: "12px",
+              paddingTop: "4px",
+              paddingBottom: "4px",
+              width: "100%",
             }}
           >
-            Sign Out
-          </button>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+              }}
+            >
+              <div
+                style={{
+                  borderRadius: "50px",
+                  display: "inline-block",
+                  margin: "0px",
+                  overflow: "hidden",
+                  padding: "0px",
+                  backgroundColor: "rgb(241, 153, 2)",
+                  height: "30px",
+                  width: "30px",
+                }}
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  x="0"
+                  y="0"
+                  height="30"
+                  width="30"
+                >
+                  <rect
+                    x="0"
+                    y="0"
+                    rx="0"
+                    ry="0"
+                    height="30"
+                    width="30"
+                    transform="translate(-7.426761426750906 -1.7430703750826357) rotate(207.0 15 15)"
+                    fill="#f3be00"
+                  ></rect>
+                  <rect
+                    x="0"
+                    y="0"
+                    rx="0"
+                    ry="0"
+                    height="30"
+                    width="30"
+                    transform="translate(-3.5186766166074457 16.760741981511913) rotate(268.5 15 15)"
+                    fill="#159ef2"
+                  ></rect>
+                  <rect
+                    x="0"
+                    y="0"
+                    rx="0"
+                    ry="0"
+                    height="30"
+                    width="30"
+                    transform="translate(1.9965853361857855 -24.64656453889279) rotate(423.5 15 15)"
+                    fill="#f73a01"
+                  ></rect>
+                  <rect
+                    x="0"
+                    y="0"
+                    rx="0"
+                    ry="0"
+                    height="30"
+                    width="30"
+                    transform="translate(-13.721802107758117 35.84394280404586) rotate(187.7 15 15)"
+                    fill="#c71450"
+                  ></rect>
+                </svg>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  paddingLeft: "1rem",
+                }}
+              >
+                <span
+                  style={{
+                    color: "#fff",
+                    fontSize: "13px",
+                    lineHeight: "18px",
+                    height: "19.5px",
+                    fontWeight: "bold",
+                  }}
+                >
+                  Account Id
+                </span>
+                <span
+                  style={{
+                    color: "#fff",
+                    fontSize: "11px",
+                    height: "16.5px",
+                    fontWeight: "500",
+                  }}
+                >
+                  {accountId}
+                </span>
+              </div>
+            </div>
+            <div
+              style={{
+                backgroundColor: "hsla(0, 0%, 100%, .05)",
+                color: "#fff",
+                cursor: "pointer",
+                padding: "8px",
+                borderRadius: "4px",
+              }}
+              onClick={() => {
+                if (account) {
+                  handleSignOut();
+                }
+              }}
+            >
+              Logout
+            </div>
+          </div>
+        )}
+        <div
+          style={{
+            display: "flex",
+            marginTop: account ? "155px" : "12px",
+            gap: "1rem",
+          }}
+        >
           <button
-            style={{ marginRight: "0.5rem" }}
+            style={{
+              backgroundColor: "#FF7A00",
+              color: "white",
+              width: "fit-content",
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              gap: "0.5rem",
+              height: "46px",
+              cursor: "pointer",
+              fontSize: "1rem",
+              fontWeight: "500",
+              borderRadius: "0.375rem",
+              border: "none",
+              outline: "none",
+              paddingLeft: "0.5rem",
+              paddingRight: "0.5rem",
+            }}
             onClick={handleSwitchWallet}
           >
             Switch Wallet
           </button>
-          <button style={{ marginRight: "0.5rem" }} onClick={handleSignMessage}>
+          <button
+            style={{
+              backgroundColor: "#FF7A00",
+              color: "white",
+              width: "fit-content",
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              gap: "0.5rem",
+              height: "46px",
+              cursor: "pointer",
+              fontSize: "1rem",
+              fontWeight: "500",
+              borderRadius: "0.375rem",
+              border: "none",
+              outline: "none",
+              paddingLeft: "0.5rem",
+              paddingRight: "0.5rem",
+            }}
+            onClick={handleSignMessage}
+          >
             Authenticate
           </button>
           {accounts.length > 1 && (
-            <button onClick={handleSwitchAccount}>Switch Account</button>
+            <button
+              style={{
+                backgroundColor: "#FF7A00",
+                color: "white",
+                width: "fit-content",
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+                gap: "0.5rem",
+                height: "46px",
+                cursor: "pointer",
+                fontSize: "1rem",
+                fontWeight: "500",
+                borderRadius: "0.375rem",
+                border: "none",
+                outline: "none",
+                paddingLeft: "0.5rem",
+                paddingRight: "0.5rem",
+              }}
+              onClick={handleSwitchAccount}
+            >
+              Switch Account
+            </button>
           )}
+        </div>
+        <div
+          style={{
+            paddingTop: "1rem",
+            fontSize: "14px",
+            color: "#fff",
+            textAlign: "center",
+            cursor: "pointer",
+          }}
+          onClick={navigateBack}
+        >
+          Back to wallet selector
         </div>
       </div>
     </Fragment>
