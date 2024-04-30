@@ -1,26 +1,23 @@
 use crate::env;
-use crate::marker::{AppEvent, AppState};
+use crate::state::AppState;
+
+pub trait AppEvent {
+    fn encode(&self) -> crate::event::EncodedAppEvent;
+}
+
+pub struct EncodedAppEvent {
+    pub kind: String,
+    pub data: Vec<u8>,
+}
 
 thread_local! {
     static HANDLER: std::cell::RefCell<fn(Box<dyn AppEventExt>)> = panic!("uninitialized handler");
 }
 
-fn emit_event_stub<T: AppEvent>(event: T) {
-    match serde_json::to_string(&event) {
-        // change this to a concrete syscall
-        Ok(event_log) => env::log(&format!("EVENT:{}", event_log)),
-        Err(err) => env::panic_str(&format!("failed to serialize event: {:?}", err)),
-    }
-}
-
 #[track_caller]
 fn handler<E: AppEvent + AppEventExt>(event: Box<dyn AppEventExt>) {
-    match E::downcast(event) {
-        Ok(event) => emit_event_stub(event),
-        Err(_event) => {
-            // todo! conditionally panic on unexpected events
-            // env::panic_str(&format!("unexpected event: {:?}", (*event).name()))
-        }
+    if let Ok(event) = E::downcast(event) {
+        env::emit(event);
     }
 }
 
@@ -92,8 +89,10 @@ pub fn downcast<T: AppEventExt>(event: Box<dyn AppEventExt>) -> Result<T, Box<dy
     }
 }
 
-#[derive(serde::Serialize)]
 pub enum NoEvent {}
-
-impl AppEvent for NoEvent {}
+impl AppEvent for NoEvent {
+    fn encode(&self) -> EncodedAppEvent {
+        match *self {}
+    }
+}
 impl AppEventExt for NoEvent {}

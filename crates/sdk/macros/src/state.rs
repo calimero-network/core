@@ -39,7 +39,7 @@ impl<'a> ToTokens for StateImpl<'a> {
         quote! {
             #orig
 
-            impl #impl_generics ::calimero_sdk::marker::AppState for #ident #ty_generics #where_clause {
+            impl #impl_generics ::calimero_sdk::state::AppState for #ident #ty_generics #where_clause {
                 type Event<#lifetime> = #event;
             }
         }

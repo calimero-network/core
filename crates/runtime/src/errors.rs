@@ -80,6 +80,12 @@ pub enum HostError {
     ValueLengthOverflow,
     #[error("logs overflow")]
     LogsOverflow,
+    #[error("events overflow")]
+    EventsOverflow,
+    #[error("event kind size overflow")]
+    EventKindSizeOverflow,
+    #[error("event data size overflow")]
+    EventDataSizeOverflow,
 }
 
 #[derive(Debug, Serialize)]

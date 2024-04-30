@@ -34,6 +34,7 @@ impl<'a> VMLogic<'a> {
             fn input(register_id: u64);
             fn value_return(tag: u64, value_ptr: u64, value_len: u64);
             fn log_utf8(ptr: u64, len: u64);
+            fn emit_utf8(kind_ptr: u64, kind_len: u64, data_ptr: u64, data_len: u64);
 
             fn storage_write(
                 key_ptr: u64,

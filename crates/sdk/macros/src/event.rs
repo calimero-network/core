@@ -30,10 +30,23 @@ impl<'a> ToTokens for EventImpl<'a> {
         quote! {
             #[derive(::calimero_sdk::serde::Serialize)]
             #[serde(crate = "::calimero_sdk::serde")]
-            #[serde(tag = "type", content = "data")]
+            #[serde(tag = "kind", content = "data")]
             #orig
 
-            impl #impl_generics ::calimero_sdk::marker::AppEvent for #ident #ty_generics #where_clause {}
+            impl #impl_generics ::calimero_sdk::event::AppEvent for #ident #ty_generics #where_clause {
+                fn encode(&self) -> ::calimero_sdk::event::EncodedAppEvent {
+                    // todo! revisit quick
+                    match ::calimero_sdk::serde_json::to_value(self) {
+                        Ok(data) => ::calimero_sdk::event::EncodedAppEvent {
+                            kind: data["kind"].as_str().expect("Failed to get event kind").to_string(),
+                            data: ::calimero_sdk::serde_json::to_vec(&data["data"]).expect("Failed to serialize event data"),
+                        },
+                        Err(err) => ::calimero_sdk::env::panic_str(
+                            &format!("Failed to serialize event: {:?}", err)
+                        ),
+                    }
+                }
+            }
             
             impl #impl_generics ::calimero_sdk::event::AppEventExt for #ident #ty_generics #where_clause {}
         }
