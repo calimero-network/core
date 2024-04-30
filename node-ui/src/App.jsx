@@ -7,6 +7,7 @@ import Applications from "./pages/Applications";
 
 import "bootstrap/dist/css/bootstrap.min.css";
 import UploadApp from "./pages/UploadApp";
+import Contexts from "./pages/Contexts";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/identity" element={<Identity />} />
           <Route path="/applications" element={<Applications />} />
           <Route path="/upload-app" element={<UploadApp />} />
+          <Route path="/contexts" element={<Contexts />} />
         </Routes>
       </BrowserRouter>
     </>
