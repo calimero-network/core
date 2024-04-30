@@ -46,3 +46,17 @@ impl ToTokens for StructOrEnumItem {
         }
     }
 }
+
+pub struct Empty {
+    _priv: (),
+}
+
+impl Parse for Empty {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(Empty { _priv: () });
+        }
+
+        Err(input.error("unexpected token"))
+    }
+}
