@@ -98,7 +98,7 @@ pub fn emit<T: crate::event::AppEvent>(event: T) {
     unsafe {
         sys::emit_utf8(
             sys::Buffer::from(encoded.kind.as_bytes()),
-            sys::Buffer::from(encoded.data.as_slice()),
+            sys::Buffer::from(encoded.data.as_ref()),
         )
     }
 }

@@ -1,13 +1,15 @@
+use std::borrow::Cow;
+
 use crate::env;
 use crate::state::AppState;
 
 pub trait AppEvent {
-    fn encode(&self) -> crate::event::EncodedAppEvent;
+    fn encode<'a>(&'a self) -> crate::event::EncodedAppEvent<'a>;
 }
 
-pub struct EncodedAppEvent {
-    pub kind: String,
-    pub data: Vec<u8>,
+pub struct EncodedAppEvent<'a> {
+    pub kind: Cow<'a, str>,
+    pub data: Cow<'a, [u8]>,
 }
 
 thread_local! {

@@ -38,8 +38,8 @@ impl<'a> ToTokens for EventImpl<'a> {
                     // todo! revisit quick
                     match ::calimero_sdk::serde_json::to_value(self) {
                         Ok(data) => ::calimero_sdk::event::EncodedAppEvent {
-                            kind: data["kind"].as_str().expect("Failed to get event kind").to_string(),
-                            data: ::calimero_sdk::serde_json::to_vec(&data["data"]).expect("Failed to serialize event data"),
+                            kind: ::std::borrow::Cow::Owned(data["kind"].as_str().expect("Failed to get event kind").to_string()),
+                            data: ::std::borrow::Cow::Owned(::calimero_sdk::serde_json::to_vec(&data["data"]).expect("Failed to serialize event data")),
                         },
                         Err(err) => ::calimero_sdk::env::panic_str(
                             &format!("Failed to serialize event: {:?}", err)
