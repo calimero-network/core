@@ -227,7 +227,7 @@ impl<'a> VMHostFunctions<'a> {
         Ok(())
     }
 
-    pub fn emit_utf8(
+    pub fn emit(
         &mut self,
         kind_ptr: u64,
         kind_len: u64,
