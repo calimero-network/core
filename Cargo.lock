@@ -3604,10 +3604,7 @@ dependencies = [
 name = "kv-store"
 version = "0.1.0"
 dependencies = [
- "borsh 1.4.0",
  "calimero-sdk",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -5405,10 +5402,7 @@ checksum = "3fdb12b2476b595f9358c5161aa467c2438859caa136dec86c26fdd2efe17b92"
 name = "only-peers"
 version = "0.1.0"
 dependencies = [
- "borsh 1.4.0",
  "calimero-sdk",
- "serde",
- "serde_json",
 ]
 
 [[package]]
