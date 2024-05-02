@@ -320,7 +320,17 @@ pub enum Event<'a> {
 
 Each event variant can carry additional data to provide context about the event.
 
-Next, within your application logic methods, emit events using the `app::emit!` macro:
+Now, you need to associate the event with the application logic by annotating the application state.
+
+```rust
+#[app::state(emits = for<'a> Event<'a>)]
+#[derive(Default, BorshSerialize, BorshDeserialize)]
+struct KvStore {
+    // Snip...
+}
+```
+
+And finally, within your application logic methods, emit events using the `app::emit!` macro:
 
 ```rust
 use std::collections::hash_map::Entry;
@@ -328,14 +338,14 @@ use std::collections::hash_map::Entry;
 pub fn set(&mut self, key: String, value: String) {
     match self.items.entry(key) {
         Entry::Occupied(mut entry) => {
-            app::emit!(Events::Updated {
+            app::emit!(Event::Updated {
                 key: entry.key(),
                 value: &value,
             });
             entry.insert(value);
         }
         Entry::Vacant(entry) => {
-            app::emit!(Events::Inserted {
+            app::emit!(Event::Inserted {
                 key: entry.key(),
                 value: &value,
             });
