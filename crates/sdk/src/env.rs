@@ -93,9 +93,10 @@ pub fn log(message: &str) {
 }
 
 pub fn emit<T: crate::event::AppEvent>(event: T) {
-    let encoded = event.encode();
+    let kind = event.kind();
+    let data = event.data();
 
-    unsafe { sys::emit(sys::Event::new(&encoded.kind, &encoded.data)) }
+    unsafe { sys::emit(sys::Event::new(&kind, &data)) }
 }
 
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {

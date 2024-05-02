@@ -34,13 +34,19 @@ impl<'a> ToTokens for EventImpl<'a> {
             #orig
 
             impl #impl_generics ::calimero_sdk::event::AppEvent for #ident #ty_generics #where_clause {
-                fn encode(&self) -> ::calimero_sdk::event::EncodedAppEvent {
+                fn kind(&self) -> ::std::borrow::Cow<str> {
                     // todo! revisit quick
                     match ::calimero_sdk::serde_json::to_value(self) {
-                        Ok(data) => ::calimero_sdk::event::EncodedAppEvent {
-                            kind: ::std::borrow::Cow::Owned(data["kind"].as_str().expect("Failed to get event kind").to_string()),
-                            data: ::std::borrow::Cow::Owned(::calimero_sdk::serde_json::to_vec(&data["data"]).expect("Failed to serialize event data")),
-                        },
+                        Ok(data) => ::std::borrow::Cow::Owned(data["kind"].as_str().expect("Failed to get event kind").to_string()),
+                        Err(err) => ::calimero_sdk::env::panic_str(
+                            &format!("Failed to serialize event: {:?}", err)
+                        ),
+                    }
+                }
+                fn data(&self) -> ::std::borrow::Cow<[u8]> {
+                    // todo! revisit quick
+                    match ::calimero_sdk::serde_json::to_value(self) {
+                        Ok(data) => ::std::borrow::Cow::Owned(::calimero_sdk::serde_json::to_vec(&data["data"]).expect("Failed to serialize event data")),
                         Err(err) => ::calimero_sdk::env::panic_str(
                             &format!("Failed to serialize event: {:?}", err)
                         ),

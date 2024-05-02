@@ -4,7 +4,8 @@ use crate::env;
 use crate::state::AppState;
 
 pub trait AppEvent {
-    fn encode<'a>(&'a self) -> crate::event::EncodedAppEvent<'a>;
+    fn kind<'a>(&'a self) -> Cow<'a, str>;
+    fn data<'a>(&'a self) -> Cow<'a, [u8]>;
 }
 
 pub struct EncodedAppEvent<'a> {
@@ -93,7 +94,11 @@ pub fn downcast<T: AppEventExt>(event: Box<dyn AppEventExt>) -> Result<T, Box<dy
 
 pub enum NoEvent {}
 impl AppEvent for NoEvent {
-    fn encode(&self) -> EncodedAppEvent {
+    fn kind<'a>(&'a self) -> Cow<'a, str> {
+        match *self {}
+    }
+
+    fn data<'a>(&'a self) -> Cow<'a, [u8]> {
         match *self {}
     }
 }
