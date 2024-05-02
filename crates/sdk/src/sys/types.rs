@@ -24,6 +24,7 @@ where
     T: AsRef<[u8]>,
     E: AsRef<[u8]>,
 {
+    #[inline]
     fn from(result: Result<&'a T, &'a E>) -> Self {
         match result {
             Ok(value) => ValueReturn::Ok(Buffer::new(value)),

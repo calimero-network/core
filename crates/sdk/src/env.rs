@@ -5,18 +5,21 @@ const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(sys::PtrSizedInt::MA
 const STATE_KEY: &[u8] = b"STATE";
 
 #[track_caller]
-fn expected_register<T>() -> T {
-    panic_str("Expected a register to be set, but it was not.");
-}
-
-#[track_caller]
+#[inline]
 pub fn panic() -> ! {
     unsafe { sys::panic(sys::Location::caller()) }
 }
 
 #[track_caller]
+#[inline]
 pub fn panic_str(message: &str) -> ! {
     unsafe { sys::panic_utf8(sys::Buffer::from(message), sys::Location::caller()) }
+}
+
+#[track_caller]
+#[inline]
+fn expected_register<T>() -> T {
+    panic_str("Expected a register to be set, but it was not.");
 }
 
 pub fn setup_panic_hook() {
@@ -47,6 +50,7 @@ pub fn unreachable() -> ! {
     unreachable!()
 }
 
+#[inline(always)]
 pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
     let len = unsafe { sys::register_len(register_id) };
 
@@ -57,6 +61,7 @@ pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
     Some(len.as_usize())
 }
 
+#[inline]
 pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
     let len = register_len(register_id)?;
 
@@ -75,11 +80,13 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
     Some(buffer)
 }
 
+#[inline]
 pub fn input() -> Option<Vec<u8>> {
     unsafe { sys::input(DATA_REGISTER) };
     read_register(DATA_REGISTER)
 }
 
+#[inline]
 pub fn value_return<T, E>(result: Result<T, E>)
 where
     T: AsRef<[u8]>,
@@ -88,10 +95,12 @@ where
     unsafe { sys::value_return(sys::ValueReturn::from(result.as_ref())) }
 }
 
+#[inline]
 pub fn log(message: &str) {
     unsafe { sys::log_utf8(sys::Buffer::from(message)) }
 }
 
+#[inline]
 pub fn emit<T: crate::event::AppEvent>(event: T) {
     let kind = event.kind();
     let data = event.data();
@@ -99,6 +108,7 @@ pub fn emit<T: crate::event::AppEvent>(event: T) {
     unsafe { sys::emit(sys::Event::new(&kind, &data)) }
 }
 
+#[inline]
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
     match unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }.try_into() {
         Ok(false) => None,
@@ -115,6 +125,7 @@ pub fn state_read<T: crate::state::AppState>() -> Option<T> {
     }
 }
 
+#[inline]
 pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
     unsafe {
         sys::storage_write(
