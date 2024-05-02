@@ -10,8 +10,4 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-borsh = { workspace = true, features = ["derive"] }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-
 calimero-sdk = { path = "../../crates/sdk" }

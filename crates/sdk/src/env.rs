@@ -92,6 +92,13 @@ pub fn log(message: &str) {
     unsafe { sys::log_utf8(sys::Buffer::from(message)) }
 }
 
+pub fn emit<T: crate::event::AppEvent>(event: T) {
+    let kind = event.kind();
+    let data = event.data();
+
+    unsafe { sys::emit(sys::Event::new(&kind, &data)) }
+}
+
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
     match unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }.try_into() {
         Ok(false) => None,
@@ -100,7 +107,7 @@ pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-pub fn state_read<T: borsh::BorshDeserialize>() -> Option<T> {
+pub fn state_read<T: crate::state::AppState>() -> Option<T> {
     let data = storage_read(STATE_KEY)?;
     match borsh::from_slice(&data) {
         Ok(state) => Some(state),
@@ -120,7 +127,7 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
     .unwrap_or_else(|val| panic_str(&format!("Expected bool as 0|1, got: {}.", val)))
 }
 
-pub fn state_write<T: borsh::BorshSerialize>(state: &T) {
+pub fn state_write<T: crate::state::AppState>(state: &T) {
     let data = match borsh::to_vec(state) {
         Ok(data) => data,
         Err(err) => panic_str(&format!("Cannot serialize app state: {:?}", err)),

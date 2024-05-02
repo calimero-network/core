@@ -1147,8 +1147,21 @@ name = "calimero-sdk"
 version = "0.1.0"
 dependencies = [
  "borsh 1.4.0",
+ "calimero-sdk-macros",
  "serde",
  "serde_json",
+ "trybuild",
+]
+
+[[package]]
+name = "calimero-sdk-macros"
+version = "0.1.0"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.57",
+ "thiserror",
 ]
 
 [[package]]
@@ -3532,10 +3545,7 @@ dependencies = [
 name = "kv-store"
 version = "0.1.0"
 dependencies = [
- "borsh 1.4.0",
  "calimero-sdk",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -5315,10 +5325,7 @@ checksum = "3fdb12b2476b595f9358c5161aa467c2438859caa136dec86c26fdd2efe17b92"
 name = "only-peers"
 version = "0.1.0"
 dependencies = [
- "borsh 1.4.0",
  "calimero-sdk",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -5780,6 +5787,16 @@ name = "prefix-sum-vec"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa06bd51638b6e76ac9ba9b6afb4164fa647bd2916d722f2623fbb6d1ed8bdba"
+
+[[package]]
+name = "prettyplease"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d3928fb5db768cb86f891ff014f0144589297e3c6a1aba6ed7cecfdace270c7"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.57",
+]
 
 [[package]]
 name = "primeorder"
@@ -8059,6 +8076,21 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "trybuild"
+version = "1.0.91"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ad7eb6319ebadebca3dacf1f85a93bc54b73dd81b9036795f73de7ddfe27d5a"
+dependencies = [
+ "glob",
+ "once_cell",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "termcolor",
+ "toml 0.8.12",
+]
 
 [[package]]
 name = "tungstenite"

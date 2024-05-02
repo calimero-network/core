@@ -163,7 +163,7 @@ pub(crate) async fn call(
     Ok(Some(String::from_utf8(returns)?))
 }
 
-macro_rules! _mount_method {
+macro_rules! mount_method {
     ($request:ident -> Result<$response:ident, $error:ident>, $handle:path) => {
         impl crate::jsonrpc::Request for $request {
             type Response = $response;
@@ -185,4 +185,4 @@ macro_rules! _mount_method {
     };
 }
 
-pub(crate) use _mount_method as mount_method;
+pub(crate) use mount_method;

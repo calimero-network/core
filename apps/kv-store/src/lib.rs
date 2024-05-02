@@ -1,35 +1,59 @@
-use std::collections::HashMap;
+use std::collections::hash_map::{Entry as HashMapEntry, HashMap};
 
-use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::env;
+use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::{app, env};
 
-mod code_generated_from_calimero_sdk_macros;
-
+#[app::state(emits = for<'a> Event<'a>)]
 #[derive(Default, BorshSerialize, BorshDeserialize)]
+#[borsh(crate = "calimero_sdk::borsh")]
 struct KvStore {
     items: HashMap<String, String>,
 }
 
+#[app::event]
+pub enum Event<'a> {
+    Inserted { key: &'a str, value: &'a str },
+    Updated { key: &'a str, value: &'a str },
+    Removed { key: &'a str },
+    Cleared,
+}
+
+#[app::logic]
 impl KvStore {
-    fn set(&mut self, key: String, value: String) {
+    pub fn set(&mut self, key: String, value: String) {
         env::log(&format!("Setting key: {:?} to value: {:?}", key, value));
 
-        self.items.insert(key, value);
+        match self.items.entry(key) {
+            HashMapEntry::Occupied(mut entry) => {
+                app::emit!(Event::Updated {
+                    key: entry.key(),
+                    value: &value,
+                });
+                entry.insert(value);
+            }
+            HashMapEntry::Vacant(entry) => {
+                app::emit!(Event::Inserted {
+                    key: entry.key(),
+                    value: &value,
+                });
+                entry.insert(value);
+            }
+        }
     }
 
-    fn entries(&self) -> &HashMap<String, String> {
+    pub fn entries(&self) -> &HashMap<String, String> {
         env::log(&format!("Getting all entries"));
 
         &self.items
     }
 
-    fn get(&self, key: &str) -> Option<&str> {
+    pub fn get(&self, key: &str) -> Option<&str> {
         env::log(&format!("Getting key: {:?}", key));
 
         self.items.get(key).map(|v| v.as_str())
     }
 
-    fn get_unchecked(&self, key: &str) -> &str {
+    pub fn get_unchecked(&self, key: &str) -> &str {
         env::log(&format!("Getting key without checking: {:?}", key));
 
         match self.items.get(key) {
@@ -38,20 +62,24 @@ impl KvStore {
         }
     }
 
-    fn get_result(&self, key: &str) -> Result<&str, &str> {
+    pub fn get_result(&self, key: &str) -> Result<&str, &str> {
         env::log(&format!("Getting key, possibly failing: {:?}", key));
 
         self.get(key).ok_or("Key not found.")
     }
 
-    fn remove(&mut self, key: &str) {
+    pub fn remove(&mut self, key: &str) {
         env::log(&format!("Removing key: {:?}", key));
+
+        app::emit!(Event::Removed { key });
 
         self.items.remove(key);
     }
 
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         env::log("Clearing all entries");
+
+        app::emit!(Event::Cleared);
 
         self.items.clear();
     }

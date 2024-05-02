@@ -1,0 +1,23 @@
+error: (calimero)> generic types are not supported
+ --> tests/macros/generics.rs:9:10
+  |
+9 | impl<'t, T> MyType<'t, T> {
+  |          ^
+
+error: (calimero)> generic types are not supported
+  --> tests/macros/generics.rs:12:24
+   |
+12 |     pub fn method1<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+   |                        ^
+
+error: (calimero)> generic types are not supported
+  --> tests/macros/generics.rs:12:31
+   |
+12 |     pub fn method1<'k, K, 'v, V>(&self, tag: &'t T, key: &'k K, value: &'v V) {}
+   |                               ^
+
+error: (calimero)> generic types are not supported
+  --> tests/macros/generics.rs:13:20
+   |
+13 |     pub fn method2<const N: usize>(&self, arr: [u8; N]) {}
+   |                    ^^^^^^^^^^^^^^

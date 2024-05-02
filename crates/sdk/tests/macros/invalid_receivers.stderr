@@ -1,0 +1,240 @@
+error: (calimero)> `self` must be passed by reference
+ --> tests/macros/invalid_receivers.rs:8:22
+  |
+8 |     pub fn method_00(self) {}
+  |                      ^^^^
+
+error: (calimero)> `self` must be passed by reference
+ --> tests/macros/invalid_receivers.rs:9:28
+  |
+9 |     pub fn method_01(self: Self) {}
+  |                            ^^^^
+
+error: (calimero)> `self` must be passed by reference
+  --> tests/macros/invalid_receivers.rs:10:29
+   |
+10 |     pub fn method_02(self: (Self)) {}
+   |                             ^^^^
+
+error: (calimero)> `self` must be passed by reference
+  --> tests/macros/invalid_receivers.rs:12:32
+   |
+12 |     pub fn method_04(mut self: Self) {}
+   |                                ^^^^
+
+error: (calimero)> `self` must be passed by reference
+  --> tests/macros/invalid_receivers.rs:13:33
+   |
+13 |     pub fn method_05(mut self: (Self)) {}
+   |                                 ^^^^
+
+error: (calimero)> `self` must be passed by reference
+  --> tests/macros/invalid_receivers.rs:15:28
+   |
+15 |     pub fn method_07(self: MyType<'a>) {}
+   |                            ^^^^^^^^^^
+
+error: (calimero)> `self` must be passed by reference
+  --> tests/macros/invalid_receivers.rs:16:29
+   |
+16 |     pub fn method_08(self: (MyType<'a>)) {}
+   |                             ^^^^^^^^^^
+
+error: (calimero)> `self` must be passed by reference
+  --> tests/macros/invalid_receivers.rs:18:32
+   |
+18 |     pub fn method_10(mut self: MyType<'a>) {}
+   |                                ^^^^^^^^^^
+
+error: (calimero)> `self` must be passed by reference
+  --> tests/macros/invalid_receivers.rs:19:33
+   |
+19 |     pub fn method_11(mut self: (MyType<'a>)) {}
+   |                                 ^^^^^^^^^^
+
+error: (calimero)> expected `Self` or `MyType<'a>`
+  --> tests/macros/invalid_receivers.rs:21:28
+   |
+21 |     pub fn method_13(self: OtherType) {}
+   |                            ^^^^^^^^^
+
+error: (calimero)> expected `Self` or `MyType<'a>`
+  --> tests/macros/invalid_receivers.rs:22:29
+   |
+22 |     pub fn method_14(self: (OtherType)) {}
+   |                             ^^^^^^^^^
+
+error: (calimero)> expected `Self` or `MyType<'a>`
+  --> tests/macros/invalid_receivers.rs:24:29
+   |
+24 |     pub fn method_16(self: &OtherType) {}
+   |                             ^^^^^^^^^
+
+error: (calimero)> expected `Self` or `MyType<'a>`
+  --> tests/macros/invalid_receivers.rs:25:30
+   |
+25 |     pub fn method_17(self: &(OtherType)) {}
+   |                              ^^^^^^^^^
+
+warning: unnecessary parentheses around type
+  --> tests/macros/invalid_receivers.rs:10:28
+   |
+10 |     pub fn method_02(self: (Self)) {}
+   |                            ^    ^
+   |
+   = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+   |
+10 -     pub fn method_02(self: (Self)) {}
+10 +     pub fn method_02(self: Self) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/invalid_receivers.rs:13:32
+   |
+13 |     pub fn method_05(mut self: (Self)) {}
+   |                                ^    ^
+   |
+help: remove these parentheses
+   |
+13 -     pub fn method_05(mut self: (Self)) {}
+13 +     pub fn method_05(mut self: Self) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/invalid_receivers.rs:16:28
+   |
+16 |     pub fn method_08(self: (MyType<'a>)) {}
+   |                            ^          ^
+   |
+help: remove these parentheses
+   |
+16 -     pub fn method_08(self: (MyType<'a>)) {}
+16 +     pub fn method_08(self: MyType<'a>) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/invalid_receivers.rs:19:32
+   |
+19 |     pub fn method_11(mut self: (MyType<'a>)) {}
+   |                                ^          ^
+   |
+help: remove these parentheses
+   |
+19 -     pub fn method_11(mut self: (MyType<'a>)) {}
+19 +     pub fn method_11(mut self: MyType<'a>) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/invalid_receivers.rs:22:28
+   |
+22 |     pub fn method_14(self: (OtherType)) {}
+   |                            ^         ^
+   |
+help: remove these parentheses
+   |
+22 -     pub fn method_14(self: (OtherType)) {}
+22 +     pub fn method_14(self: OtherType) {}
+   |
+
+warning: unnecessary parentheses around type
+  --> tests/macros/invalid_receivers.rs:25:29
+   |
+25 |     pub fn method_17(self: &(OtherType)) {}
+   |                             ^         ^
+   |
+help: remove these parentheses
+   |
+25 -     pub fn method_17(self: &(OtherType)) {}
+25 +     pub fn method_17(self: &OtherType) {}
+   |
+
+error[E0307]: invalid `self` parameter type: (MyType<'a>,)
+  --> tests/macros/invalid_receivers.rs:11:28
+   |
+11 |     pub fn method_03(self: (Self,)) {}
+   |                            ^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)
+
+error[E0307]: invalid `self` parameter type: &'a (MyType<'a>,)
+  --> tests/macros/invalid_receivers.rs:14:28
+   |
+14 |     pub fn method_06(self: &'a (Self,)) {}
+   |                            ^^^^^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)
+
+error[E0307]: invalid `self` parameter type: (MyType<'a>,)
+  --> tests/macros/invalid_receivers.rs:17:28
+   |
+17 |     pub fn method_09(self: (MyType<'a>,)) {}
+   |                            ^^^^^^^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)
+
+error[E0307]: invalid `self` parameter type: (MyType<'a>,)
+  --> tests/macros/invalid_receivers.rs:20:32
+   |
+20 |     pub fn method_12(mut self: (MyType<'a>,)) {}
+   |                                ^^^^^^^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)
+
+error[E0307]: invalid `self` parameter type: OtherType
+  --> tests/macros/invalid_receivers.rs:21:28
+   |
+21 |     pub fn method_13(self: OtherType) {}
+   |                            ^^^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)
+
+error[E0307]: invalid `self` parameter type: OtherType
+  --> tests/macros/invalid_receivers.rs:22:29
+   |
+22 |     pub fn method_14(self: (OtherType)) {}
+   |                             ^^^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)
+
+error[E0307]: invalid `self` parameter type: (OtherType,)
+  --> tests/macros/invalid_receivers.rs:23:28
+   |
+23 |     pub fn method_15(self: (OtherType,)) {}
+   |                            ^^^^^^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)
+
+error[E0307]: invalid `self` parameter type: &OtherType
+  --> tests/macros/invalid_receivers.rs:24:28
+   |
+24 |     pub fn method_16(self: &OtherType) {}
+   |                            ^^^^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)
+
+error[E0307]: invalid `self` parameter type: &OtherType
+  --> tests/macros/invalid_receivers.rs:25:28
+   |
+25 |     pub fn method_17(self: &(OtherType)) {}
+   |                            ^^^^^^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)
+
+error[E0307]: invalid `self` parameter type: &(OtherType,)
+  --> tests/macros/invalid_receivers.rs:26:28
+   |
+26 |     pub fn method_18(self: &(OtherType,)) {}
+   |                            ^^^^^^^^^^^^^
+   |
+   = note: type of `self` must be `Self` or a type that dereferences to it
+   = help: consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one of the previous types except `Self`)

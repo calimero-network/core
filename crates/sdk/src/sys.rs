@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-mod guard;
 mod types;
 
 pub use types::*;
@@ -15,6 +14,7 @@ extern "C" {
     pub fn input(register_id: RegisterId);
     pub fn value_return(value: ValueReturn);
     pub fn log_utf8(msg: Buffer);
+    pub fn emit(event: Event);
     // --
     pub fn storage_read(key: Buffer, register_id: RegisterId) -> Bool;
     pub fn storage_write(key: Buffer, value: Buffer, register_id: RegisterId) -> Bool;

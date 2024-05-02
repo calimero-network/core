@@ -30,6 +30,9 @@ pub struct VMLimits {
     pub max_registers_capacity: u64, // todo! must not be less than max_register_size
     pub max_logs: u64,
     pub max_log_size: u64,
+    pub max_events: u64,
+    pub max_event_kind_size: u64,
+    pub max_event_data_size: u64,
     pub max_storage_key_size: NonZeroU64,
     pub max_storage_value_size: NonZeroU64,
     // pub max_execution_time: u64,
@@ -44,6 +47,7 @@ pub struct VMLogic<'a> {
     registers: Registers,
     returns: Option<Result<Vec<u8>, Vec<u8>>>,
     logs: Vec<String>,
+    events: Vec<Event>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -56,6 +60,7 @@ impl<'a> VMLogic<'a> {
             registers: Registers::default(),
             returns: None,
             logs: vec![],
+            events: vec![],
         }
     }
 
@@ -81,8 +86,15 @@ impl<'a> VMLogic<'a> {
 pub struct Outcome {
     pub returns: Result<Option<Vec<u8>>, FunctionCallError>,
     pub logs: Vec<String>,
+    pub events: Vec<Event>,
     // execution runtime
     // current storage usage of the app
+}
+
+#[derive(Debug, Serialize)]
+pub struct Event {
+    kind: String,
+    data: Vec<u8>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -98,6 +110,7 @@ impl<'a> VMLogic<'a> {
         Outcome {
             returns,
             logs: self.logs,
+            events: self.events,
         }
     }
 }
@@ -210,6 +223,35 @@ impl<'a> VMHostFunctions<'a> {
         let message = self.get_string(ptr, len)?;
 
         self.with_logic_mut(|logic| logic.logs.push(message));
+
+        Ok(())
+    }
+
+    pub fn emit(
+        &mut self,
+        kind_ptr: u64,
+        kind_len: u64,
+        data_ptr: u64,
+        data_len: u64,
+    ) -> Result<()> {
+        let logic = self.borrow_logic();
+
+        if kind_len > logic.limits.max_event_kind_size {
+            return Err(HostError::EventKindSizeOverflow.into());
+        }
+
+        if data_len > logic.limits.max_event_data_size {
+            return Err(HostError::EventDataSizeOverflow.into());
+        }
+
+        if logic.events.len() >= logic.limits.max_events as usize {
+            return Err(HostError::EventsOverflow.into());
+        }
+
+        let kind = self.get_string(kind_ptr, kind_len)?;
+        let data = self.read_guest_memory(data_ptr, data_len)?;
+
+        self.with_logic_mut(|logic| logic.events.push(Event { kind, data }));
 
         Ok(())
     }

@@ -1,11 +1,13 @@
 mod bool;
 mod buffer;
+mod event;
 mod location;
 mod pointer;
 mod register;
 
 pub use bool::*;
 pub use buffer::*;
+pub use event::*;
 pub use location::*;
 pub use pointer::*;
 pub use register::*;
