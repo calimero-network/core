@@ -43,12 +43,9 @@ impl EventHandler<kad::Event> for EventLoop {
                 if let Some(sender) = self.pending_get_providers.remove(&id) {
                     sender.send(providers).expect("Receiver not to be dropped");
 
-                    self.swarm
-                        .behaviour_mut()
-                        .kad
-                        .query_mut(&id)
-                        .unwrap()
-                        .finish();
+                    if let Some(mut query) = self.swarm.behaviour_mut().kad.query_mut(&id) {
+                        query.finish();
+                    }
                 }
             }
             kad::Event::OutboundQueryProgressed {
@@ -64,12 +61,9 @@ impl EventHandler<kad::Event> for EventLoop {
                         .send(HashSet::new())
                         .expect("Receiver not to be dropped");
 
-                    self.swarm
-                        .behaviour_mut()
-                        .kad
-                        .query_mut(&id)
-                        .unwrap()
-                        .finish();
+                    if let Some(mut query) = self.swarm.behaviour_mut().kad.query_mut(&id) {
+                        query.finish();
+                    }
                 }
             }
             _ => {}

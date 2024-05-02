@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 bs58.workspace = true
-libp2p.workspace = true
+libp2p = { workspace = true, features = ["serde"] }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
