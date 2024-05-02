@@ -18,6 +18,7 @@ thread_local! {
 }
 
 #[track_caller]
+#[inline(never)]
 fn handler<E: AppEvent + AppEventExt>(event: Box<dyn AppEventExt>) {
     if let Ok(event) = E::downcast(event) {
         env::emit(event);

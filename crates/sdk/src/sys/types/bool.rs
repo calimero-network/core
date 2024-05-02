@@ -5,6 +5,7 @@ pub struct Bool(u32);
 impl TryFrom<Bool> for bool {
     type Error = u32;
 
+    #[inline(always)]
     fn try_from(value: Bool) -> Result<Self, Self::Error> {
         match value {
             Bool(0) => Ok(false),

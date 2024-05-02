@@ -18,6 +18,7 @@ where
     T: Serialize,
     E: Serialize,
 {
+    #[inline]
     pub fn to_json(self) -> serde_json::Result<Result<Vec<u8>, Vec<u8>>> {
         Ok(match self {
             ReturnsResult(Ok(ok)) => Ok(serde_json::to_vec(&ok)?),
@@ -29,12 +30,14 @@ where
 pub struct WrappedReturn<T>(T);
 
 impl<T> WrappedReturn<T> {
+    #[inline(always)]
     pub fn new(value: T) -> Self {
         WrappedReturn(value)
     }
 }
 
 impl<T, E> WrappedReturn<Result<T, E>> {
+    #[inline(always)]
     pub fn into_result(self) -> ReturnsResult<T, E> {
         let WrappedReturn(value) = self;
         ReturnsResult(value)
@@ -52,6 +55,7 @@ where
     type Ok = T;
     type Err = Infallible;
 
+    #[inline(always)]
     fn into_result(self) -> ReturnsResult<Self::Ok, Self::Err> {
         let WrappedReturn(value) = self;
         ReturnsResult(Ok(value))
