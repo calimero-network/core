@@ -1,6 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import MetamaskContext from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/MetamaskLogin/MetamaskWrapper";
+import { config } from "../calimeroConfig";
 
 export default function Metamask() {
   const navigate = useNavigate();
@@ -13,8 +14,8 @@ export default function Metamask() {
       }}
     >
       <MetamaskContext
-        applicationId={"9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP"}
-        rpcBaseUrl={"http://localhost:2428"}
+        applicationId={config.applicationId}
+        rpcBaseUrl={config.nodeServerUrl}
         successRedirect={() => navigate("/")}
         navigateBack={() => navigate("/login")}
       />

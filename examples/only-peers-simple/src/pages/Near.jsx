@@ -2,6 +2,7 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import { WalletSelectorContextProvider } from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin/WalletSelectorContext";
 import NearLogin from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin/NearLogin";
+import { config } from "../calimeroConfig";
 
 export default function Near() {
   const navigate = useNavigate();
@@ -15,8 +16,8 @@ export default function Near() {
     >
       <WalletSelectorContextProvider network={"testnet"}>
         <NearLogin
-          appId={"9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP"}
-          rpcBaseUrl={"http://localhost:2428"}
+          appId={config.applicationId}
+          rpcBaseUrl={config.nodeServerUrl}
           successRedirect={() => navigate("/")}
           navigateBack={() => navigate("/login")}
         />
