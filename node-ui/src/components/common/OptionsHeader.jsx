@@ -38,7 +38,7 @@ export default function OptionsHeader({
         return (
           <div
             className={`header-option ${
-              currentOption === option.name ? "active" : ""
+              currentOption === option.id ? "active" : ""
             }`}
             key={index}
             onClick={() => setCurrentOption(option.id)}
