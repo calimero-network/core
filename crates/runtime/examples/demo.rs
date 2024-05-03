@@ -17,7 +17,7 @@ fn main() -> eyre::Result<()> {
         max_log_size: 16 << 10, // 16 KiB
         max_events: 100,
         max_event_kind_size: 100,
-        max_event_data_size: 16 << 10,                  // 100 KiB
+        max_event_data_size: 16 << 10,                  // 16 KiB
         max_storage_key_size: (1 << 20).try_into()?,    // 1 MiB
         max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
     };
