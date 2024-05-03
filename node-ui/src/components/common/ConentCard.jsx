@@ -38,7 +38,6 @@ const Container = styled.div`
   .main-wrapper {
     display: flex;
     flex: 1;
-    padding: 1rem;
     background-color: #17191b;
     border-radius: 0.5rem;
   }
