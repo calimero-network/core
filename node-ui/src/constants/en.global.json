@@ -117,5 +117,11 @@
     },
     "statusModal": {
         "buttonContinueText": "Continue"
+    },
+    "contextPage": {
+        "contextPageTitle": "Contexts",
+        "startNewContextText": "Start new context",
+        "noContextsText": "No contexts found in the node.",
+        "contextPageDescription": "Contexts are application networks running in the node."
     }
 }
