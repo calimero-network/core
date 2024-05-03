@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+rustup target add wasm32-unknown-unknown
+
 cd "$(dirname $0)"
 
 TARGET="${CARGO_TARGET_DIR:-../../target}"
