@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 const PageWrapper = styled.div`
   padding: 2rem;
   display: flex;
+  flex: 1;
   justify-content: center;
   align-items: center;
 `;
