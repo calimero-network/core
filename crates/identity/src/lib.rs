@@ -1,5 +1,4 @@
 pub mod auth;
-pub mod config;
 pub mod dht;
 pub mod identity_provider;
 pub mod types;

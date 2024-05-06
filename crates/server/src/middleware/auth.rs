@@ -6,13 +6,13 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use calimero_identity::auth::verify_near_public_key;
+use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_store::Store;
 use libp2p::futures::future::BoxFuture;
 use tower::{Layer, Service};
 use tracing::debug;
 
-use crate::admin::handlers::add_client_key::WalletType;
-use crate::admin::storage::client_keys::{exists_client_key, ClientKey};
+use crate::admin::storage::client_keys::exists_client_key;
 
 #[derive(Clone)]
 pub struct AuthSignatureLayer {
