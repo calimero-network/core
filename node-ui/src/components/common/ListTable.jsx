@@ -44,6 +44,14 @@ const ListWrapper = styled.div`
       cursor: pointer;
     }
   }
+  .no-items-text {
+    padding: 1rem;
+    font-size: 0.75rem;
+    font-weight: 400;
+    line-height: 1rem;
+    text-align: center;
+    color: #9c9da3;
+  }
 `;
 
 const TableHeader = ({ tableHeaderItems }) => {
@@ -71,6 +79,7 @@ export default function ListTable({
   rowItem,
   columnItems,
   roundedTopList,
+  noItemsText
 }) {
   return (
     <ListWrapper columnItems={columnItems ?? 0} roundedTopList={roundedTopList}>
@@ -83,7 +92,10 @@ export default function ListTable({
         />
       )}
       <div className="list-items">
-        {ListItems.map((item, id) => rowItem(item, id, ListItems.length - 1))}
+        {ListItems?.map((item, id) => rowItem(item, id, ListItems.length - 1))}
+        {ListItems?.length === 0 && (
+          <div className="no-items-text">{noItemsText}</div>
+        )}
       </div>
     </ListWrapper>
   );
@@ -92,8 +104,9 @@ export default function ListTable({
 ListTable.propTypes = {
   ListDescription: PropTypes.string,
   ListHeaderItems: PropTypes.array,
-  ListItems: PropTypes.array,
-  rowItem: PropTypes.func,
-  columnItems: PropTypes.number,
-  roundedTopList: PropTypes.bool,
+  ListItems: PropTypes.array.isRequired,
+  rowItem: PropTypes.func.isRequired,
+  columnItems: PropTypes.number.isRequired,
+  roundedTopList: PropTypes.bool.isRequired,
+  noItemsText: PropTypes.string.isRequired,
 };

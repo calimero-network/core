@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
 import translations from "../../constants/en.global.json";
@@ -7,35 +7,21 @@ import { Content } from "../../constants/ContextConstants";
 import OptionsHeader from "../../components/common/OptionsHeader";
 import ListTable from "../common/ListTable";
 import rowItem from "./RowItem";
+import { Options } from "../../constants/ContextConstants";
 
 const FlexWrapper = styled.div`
   flex: 1;
 `;
 
-const Options = {
-  JOINED: "JOINED",
-  INVITED: "INVITED"
-}
-
 export default function ContextTable({
   pageContent,
   nodeContextList,
   switchContent,
+  currentOption,
+  setCurrentOption,
+  tableOptions,
 }) {
   const t = translations.contextPage;
-  const [tableOptions, _setTableOptions] = useState([
-    {
-      name: "Joined",
-      id: Options.JOINED,
-      count: 0,
-    },
-    {
-      name: "Invited",
-      id: Options.INVITED,
-      count: 0,
-    },
-  ]);
-  const [currentOption, setCurrentOption] = useState(Options.JOINED);
 
   return (
     <>
@@ -53,14 +39,26 @@ export default function ContextTable({
               currentOption={currentOption}
               setCurrentOption={setCurrentOption}
             />
-            {currentOption == Options.JOINED ? <ListTable
-              ListDescription={"Contexts the node is running"}
-              ListHeaderItems={["ID", "Installed Applications"]}
-              columnItems={2}
-              ListItems={[]}
-              rowItem={rowItem}
-              roundedTopList={true}
-            /> : <div>Invited</div>}
+            {currentOption == Options.JOINED ? (
+              <ListTable
+                ListDescription={t.joinedListDescription}
+                ListHeaderItems={["ID", "Installed Applications"]}
+                columnItems={2}
+                ListItems={nodeContextList.joined}
+                rowItem={rowItem}
+                roundedTopList={true}
+                noItemsText={t.noJoinedAppsListText}
+              />
+            ) : (
+              <ListTable
+                ListDescription={t.invitedListDescription}
+                columnItems={2}
+                ListItems={nodeContextList.joined}
+                rowItem={rowItem}
+                roundedTopList={true}
+                noItemsText={t.noInviedAppsListText}
+              />
+            )}
           </FlexWrapper>
         </ContentCard>
       ) : (
@@ -74,7 +72,10 @@ export default function ContextTable({
 }
 
 ContextTable.propTypes = {
-  nodeContextList: PropTypes.array.isRequired,
+  nodeContextList: PropTypes.object.isRequired,
   pageContent: PropTypes.string.isRequired,
   switchContent: PropTypes.func.isRequired,
+  currentOption: PropTypes.string.isRequired,
+  setCurrentOption: PropTypes.func.isRequired,
+  tableOptions: PropTypes.array.isRequired,
 };

@@ -11,11 +11,11 @@ export class ContextDataSource {
       if (response?.contexts) {
         return response.contexts;
       } else {
-        return [];
+        return { joined: [], invited: [] };
       }
     } catch (error) {
       console.error("Error fetching contexts:", error);
-      return [];
+      return { joined: [], invited: [] };
     }
   }
 
