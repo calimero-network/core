@@ -79,7 +79,8 @@ export default function ListTable({
   rowItem,
   columnItems,
   roundedTopList,
-  noItemsText
+  noItemsText,
+  onRowItemClick
 }) {
   return (
     <ListWrapper columnItems={columnItems ?? 0} roundedTopList={roundedTopList}>
@@ -92,7 +93,7 @@ export default function ListTable({
         />
       )}
       <div className="list-items">
-        {ListItems?.map((item, id) => rowItem(item, id, ListItems.length - 1))}
+        {ListItems?.map((item, id) => rowItem(item, id, ListItems.length - 1, onRowItemClick))}
         {ListItems?.length === 0 && (
           <div className="no-items-text">{noItemsText}</div>
         )}
@@ -109,4 +110,5 @@ ListTable.propTypes = {
   columnItems: PropTypes.number.isRequired,
   roundedTopList: PropTypes.bool.isRequired,
   noItemsText: PropTypes.string.isRequired,
+  onRowItemClick: PropTypes.func,
 };

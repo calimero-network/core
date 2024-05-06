@@ -127,5 +127,20 @@
         "invitedListDescription": "Contexts you have been invited to",
         "noJoinedAppsListText": "You have not joined any contexts.",
         "noInviedAppsListText": "You have not been invited to any contexts."
+    },
+    "startContextPage": {
+        "backButtonText": "Back to Contexts",
+        "selectApplicationTitle": "Select app from the marketplace or publish new application",
+        "selectedApplicationTitle": "Selected Application",
+        "initSectionTitle": "Initialize state",
+        "argsTitleText": "Arguments",
+        "methodLabelText": "method name",
+        "argsLabelText": "arguments json",
+        "buttonFormatText": "format",
+        "applicationList": {
+            "listTitle": "Select Available Application",
+            "noAvailableAppsText": "No applications available",
+            "noOwnedAppsText": "No owned applications installed"
+        }
     }
 }

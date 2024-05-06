@@ -5,7 +5,7 @@ import PropTypes from "prop-types";
 const ButtonStyled = styled.div`
   background-color: #4cfafc;
   height: 2.375rem;
-  width: fit-content;
+  width: ${(props) => (props.btnWidth ? props.btnWidth : "fit-content")};
   padding: 9px 12px;
   border-radius: 0.5rem;
   color: #000;
@@ -21,11 +21,16 @@ const ButtonStyled = styled.div`
   }
 `;
 
-export default function Button({ onClick, text }) {
-  return <ButtonStyled onClick={onClick}>{text}</ButtonStyled>;
+export default function Button({ onClick, text, width }) {
+  return (
+    <ButtonStyled onClick={onClick} btnWidth={width}>
+      {text}
+    </ButtonStyled>
+  );
 }
 
 Button.propTypes = {
   onClick: PropTypes.func.isRequired,
   text: PropTypes.string.isRequired,
+  width: PropTypes.string,
 };

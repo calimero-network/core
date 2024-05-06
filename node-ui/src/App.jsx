@@ -8,6 +8,7 @@ import Applications from "./pages/Applications";
 import "bootstrap/dist/css/bootstrap.min.css";
 import UploadApp from "./pages/UploadApp";
 import Contexts from "./pages/Contexts";
+import StartContext from "./pages/StartContext";
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
           <Route path="/applications" element={<Applications />} />
           <Route path="/upload-app" element={<UploadApp />} />
           <Route path="/contexts" element={<Contexts />} />
+          <Route path="/start-context" element={<StartContext />} />
         </Routes>
       </BrowserRouter>
     </>

@@ -4,40 +4,43 @@ import { FlexLayout } from "../components/layout/FlexLayout";
 import PageContentWrapper from "../components/common/PageContentWrapper";
 import ContextTable from "../components/context/ContextTable";
 import apiClient from "../api/index";
-import { Content, Options } from "../constants/ContextConstants";
+import { Options } from "../constants/ContextConstants";
+import { useNavigate } from "react-router-dom";
+
+const initialOptions = [
+  {
+    name: "Joined",
+    id: Options.JOINED,
+    count: 0,
+  },
+  {
+    name: "Invited",
+    id: Options.INVITED,
+    count: 0,
+  },
+]
 
 export default function Contexts() {
+  const navigate = useNavigate();
   const [nodeContextList, setNodeContextList] = useState({ joined: [], invited: [] });
-  const [pageContent, setPageContent] = useState(Content.CONTEXT_LIST);
   const [currentOption, setCurrentOption] = useState(Options.JOINED);
-  const [tableOptions, setTableOptions] = useState([
-    {
-      name: "Joined",
-      id: Options.JOINED,
-      count: 0,
-    },
-    {
-      name: "Invited",
-      id: Options.INVITED,
-      count: 0,
-    },
-  ]);
+  const [tableOptions, setTableOptions] = useState(initialOptions);
 
   useEffect(() => {
     const fetchNodeContexts = async () => {
       const nodeContexts = await apiClient.context().getContexts();
-      if (nodeContexts.length !== 0) {
+      if (nodeContexts) {
         setNodeContextList(nodeContexts);
         setTableOptions([
           {
             name: "Joined",
             id: Options.JOINED,
-            count: nodeContexts.joined.length,
+            count: nodeContexts.joined?.length ?? 0,
           },
           {
             name: "Invited",
             id: Options.INVITED,
-            count: nodeContexts.invited.length,
+            count: nodeContexts.invited?.length ?? 0,
           },
         ]);
       }
@@ -51,8 +54,7 @@ export default function Contexts() {
       <PageContentWrapper>
         <ContextTable
           nodeContextList={nodeContextList}
-          pageContent={pageContent}
-          switchContent={(content) => setPageContent(content)}
+          naviageToStartContext={() => navigate("/start-context")}
           currentOption={currentOption}
           setCurrentOption={setCurrentOption}
           tableOptions={tableOptions}

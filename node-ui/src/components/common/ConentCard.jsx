@@ -24,9 +24,9 @@ const Container = styled.div`
     margin-top: 0.125rem;
     gap: 1rem;
     color: #fff;
-    font-size: 1.5rem;
-    font-weight: 400;
-    line-height: 1.75rem;
+    font-size: 1rem;
+    font-weight: 500;
+    line-height: 1.25rem;
 
     .arrow-icon-left {
       height: 1.5rem;
