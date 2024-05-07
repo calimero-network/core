@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -34,12 +36,17 @@ pub enum WalletType {
     ETH,
 }
 
-impl WalletType {
-    pub fn from_str(input: &str) -> eyre::Result<Self> {
-        match input {
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvalidWalletTypeError;
+
+impl FromStr for WalletType {
+    type Err = InvalidWalletTypeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
             "ETH" => Ok(WalletType::ETH),
             "NEAR" => Ok(WalletType::NEAR),
-            _ => eyre::bail!("Invalid wallet_type value"),
+            _ => Err(InvalidWalletTypeError),
         }
     }
 }
