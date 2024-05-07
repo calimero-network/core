@@ -4,6 +4,9 @@ import Bootstrap from "./pages/Bootstrap";
 import ConfirmWallet from "./pages/ConfirmWallet";
 import Identity from "./pages/Identity";
 import Applications from "./pages/Applications";
+import Login from "./pages/Login";
+import NearLogin from "./pages/NearLogin";
+import MetamaskLogin from "./pages/MetamaskLogin";
 
 import "bootstrap/dist/css/bootstrap.min.css";
 import UploadApp from "./pages/UploadApp";
@@ -18,6 +21,9 @@ export default function App() {
           <Route path="/identity" element={<Identity />} />
           <Route path="/applications" element={<Applications />} />
           <Route path="/upload-app" element={<UploadApp />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/near" element={<NearLogin />} />
+          <Route path="/metamask" element={<MetamaskLogin />} />
         </Routes>
       </BrowserRouter>
     </>
