@@ -48,7 +48,7 @@ export default function rowItem(item, id, count, onRowItemClick) {
       <div className="row-item name" onClick={() => onRowItemClick(item)}>{item.name}</div>
       <div className="row-item read">{truncateHash(item.id)}</div>
       <div className="row-item read">{item.version}</div>
-      <div className="row-item read">{item.published}</div>
+      <div className="row-item read">{item.published ?? "-"}</div>
     </RowItem>
   );
 }

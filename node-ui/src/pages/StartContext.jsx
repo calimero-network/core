@@ -6,6 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { ContentCard } from "../components/common/ConentCard";
 import StartContextCard from "../components/context/startContext/StartContextCard";
 import translations from "../constants/en.global.json";
+import apiClient from "../api/index";
 
 export default function StartContext() {
   const navigate = useNavigate();
@@ -17,12 +18,13 @@ export default function StartContext() {
   const t = translations.startContextPage;
 
   const startContext = async () => {
-    if (isArgsChecked) {
-      //TODO add proper api call for starting context
-      console.log(methodName);
-      console.log(argumentsJson);
-    } else {
-      console.log(application);
+    try {
+      const startContextResponse = await apiClient
+        .context()
+        .startContexts(application.id, methodName, argumentsJson);
+      console.log(startContextResponse);
+    } catch (error) {
+      console.error(error);
     }
   };
 

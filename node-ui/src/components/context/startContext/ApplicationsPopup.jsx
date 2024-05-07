@@ -5,6 +5,7 @@ import styled from "styled-components";
 import { Options } from "../../../constants/ApplicationsConstants";
 import apiClient from "../../../api/index";
 import ApplicationsTable from "./ApplicationsTable";
+import { useRPC } from "../../../hooks/useNear";
 
 const ModalWrapper = styled.div`
   background-color: #212325;
@@ -28,6 +29,7 @@ export default function ApplicationsPopup({
   closeModal,
   setApplication,
 }) {
+  const { getPackage } = useRPC();
   const [currentOption, setCurrentOption] = useState(Options.AVAILABLE);
   const [tableOptions, setTableOptions] = useState(initialOptions);
   const [applicationsList, setApplicationsList] = useState({
@@ -36,26 +38,38 @@ export default function ApplicationsPopup({
   });
 
   useEffect(() => {
-    const fetchApplications = async () => {
-      //TODO add proper api call for fetching applications
-      const applications = await apiClient.context().getContexts();
-      if (applications) {
-        setApplicationsList(applications);
+    const setApps = async () => {
+      const installedApplications = await apiClient
+        .admin()
+        .getInstalledAplications();
+
+      if (installedApplications.length !== 0) {
+        const tempApplications = await Promise.all(
+          installedApplications.map(async (app) => {
+            const packageData = await getPackage(app.id);
+            return { ...packageData, id: app.id, version: app.version };
+          })
+        );
+        setApplicationsList(prevState => ({
+          ...prevState,
+          available: tempApplications
+        }));
         setTableOptions([
           {
             name: "Available",
             id: Options.JOINED,
-            count: applications.available?.length,
+            count: tempApplications.length,
           },
           {
             name: "Owned",
             id: Options.INVITED,
-            count: applications.owned?.length,
+            count: 0,
           },
         ]);
       }
     };
-    fetchApplications();
+
+    setApps();
   }, []);
 
   const selectApplication = (application) => {
