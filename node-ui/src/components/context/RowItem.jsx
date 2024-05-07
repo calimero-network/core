@@ -6,7 +6,7 @@ const RowItem = styled.div`
   align-items: center;
 
   ${(props) =>
-    props.borders
+    props.$borders
       ? `
     border-top: 1px solid #23262D;
     border-bottom: 1px solid #23262D;
@@ -45,7 +45,7 @@ const RowItem = styled.div`
 
 export default function rowItem(item, id, count) {
   return (
-    <RowItem key={item.id} borders={id === count}>
+    <RowItem key={item.id} $borders={id === count}>
       <a href={`/admin/context/${item.hash}`} className="row-item id">
         {item.hash}
       </a>

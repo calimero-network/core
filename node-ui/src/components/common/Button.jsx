@@ -6,7 +6,7 @@ import LoaderSpinner from "./LoaderSpinner";
 const ButtonStyled = styled.div`
   background-color: #4cfafc;
   height: 2.375rem;
-  width: ${(props) => (props.btnWidth ? props.btnWidth : "fit-content")};
+  width: ${(props) => (props.$btnWidth ? props.$btnWidth : "fit-content")};
   padding: 9px 12px;
   border-radius: 0.5rem;
   color: #000;
@@ -24,7 +24,7 @@ const ButtonStyled = styled.div`
 
 export default function Button({ onClick, text, width, isLoading }) {
   return (
-    <ButtonStyled onClick={onClick} btnWidth={width}>
+    <ButtonStyled onClick={onClick} $btnWidth={width}>
       {isLoading ? <LoaderSpinner/> : text}
     </ButtonStyled>
   );

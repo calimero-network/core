@@ -22,12 +22,12 @@ const ListWrapper = styled.div`
 
   .header-items-grid {
     display: grid;
-    grid-template-columns: repeat(${(props) => props.columnItems}, 1fr);
+    grid-template-columns: repeat(${(props) => props.$columnItems}, 1fr);
     grid-template-rows: auto;
     padding: 0.75rem 1.5rem;
     background-color: #15181f;
     ${(props) =>
-      props.roundedTopList &&
+      props.$roundedTopList &&
       `
         border-top-left-radius: 0.5rem;
         border-top-right-radius: 0.5rem;
@@ -83,7 +83,7 @@ export default function ListTable({
   onRowItemClick
 }) {
   return (
-    <ListWrapper columnItems={columnItems ?? 0} roundedTopList={roundedTopList}>
+    <ListWrapper $columnItems={columnItems ?? 0} $roundedTopList={roundedTopList}>
       {ListDescription && (
         <div className="table-description">{ListDescription}</div>
       )}

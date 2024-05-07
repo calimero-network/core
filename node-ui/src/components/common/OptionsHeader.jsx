@@ -6,7 +6,7 @@ const HeaderGrid = styled.div`
   font-family: Inter;
   width: fit-content;
   display: grid;
-  grid-template-columns: repeat(${(props) => props.optionsCount}, 1fr);
+  grid-template-columns: repeat(${(props) => props.$optionsCount}, 1fr);
   grid-template-rows: auto;
   gap: 1rem;
   padding: 0.75rem 1.5rem;
@@ -33,7 +33,7 @@ export default function OptionsHeader({
   showOptionsCount,
 }) {
   return (
-    <HeaderGrid optionsCount={tableOptions?.length ?? 0}>
+    <HeaderGrid $optionsCount={tableOptions?.length ?? 0}>
       {tableOptions.map((option, index) => {
         return (
           <div
