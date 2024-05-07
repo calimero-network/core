@@ -1117,6 +1117,7 @@ name = "calimero-primitives"
 version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
+ "ed25519-dalek",
  "eyre",
  "hex",
  "libp2p",
@@ -1198,7 +1199,6 @@ dependencies = [
  "tower-sessions",
  "tracing",
  "tracing-subscriber",
- "uuid 1.8.0",
 ]
 
 [[package]]
@@ -8275,22 +8275,6 @@ name = "uuid"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a183cf7feeba97b4dd1c0d46788634f6221d87fa961b305bed08c851829efcc0"
-dependencies = [
- "getrandom 0.2.12",
- "rand 0.8.5",
- "uuid-macro-internal",
-]
-
-[[package]]
-name = "uuid-macro-internal"
-version = "1.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9881bea7cbe687e36c9ab3b778c36cd0487402e270304e8b1296d5085303c1a2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.57",
-]
 
 [[package]]
 name = "valuable"

@@ -4,10 +4,10 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::identity::Context;
+use rand::RngCore;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
-use uuid::Uuid;
 
 use super::add_client_key::parse_api_error;
 use crate::admin::service::{AdminState, ApiError, ApiResponse};
@@ -93,9 +93,15 @@ pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<CreateContextRequest>,
 ) -> impl IntoResponse {
+    
+    let mut seed = [0; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&mut seed);
+    let context_id = signing_key.verifying_key();
+
     let context = Context {
-        id: Uuid::new_v4().to_string(),
-        identity: libp2p::identity::Keypair::generate_ed25519(),
+        id: bs58::encode(&context_id).into_string(),
+        signing_key,
         application_id: req.application_id,
     };
 

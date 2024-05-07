@@ -23,11 +23,8 @@ pub struct ClientKey {
 #[serde(rename_all = "camelCase")]
 pub struct Context {
     pub id: String,
-    #[serde(
-        with = "serde_identity",
-        default = "libp2p::identity::Keypair::generate_ed25519"
-    )]
-    pub identity: libp2p::identity::Keypair,
+    #[serde(with = "serde_signing_key")]
+    pub signing_key: ed25519_dalek::SigningKey,
     pub application_id: String,
 }
 
@@ -47,6 +44,73 @@ impl WalletType {
     }
 }
 
+pub mod serde_signing_key {
+    use ed25519_dalek::SigningKey;
+    use serde::de::{self, MapAccess, Visitor};
+    use serde::ser::{SerializeMap, Serializer};
+    use serde::Deserializer;
+    use std::fmt;
+
+    pub fn serialize<S>(key: &SigningKey, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(1))?;
+        let key_bytes = key.to_bytes();
+        let encoded_key = bs58::encode(key_bytes).into_string();
+        map.serialize_entry("signingKey", &encoded_key)?;
+        map.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<SigningKey, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct SigningKeyVisitor;
+
+        impl<'de> Visitor<'de> for SigningKeyVisitor {
+            type Value = SigningKey;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a signing key")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut signing_key = None::<String>;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "signingKey" => signing_key = Some(map.next_value()?),
+                        _ => {
+                            let _ = map.next_value::<de::IgnoredAny>();
+                        }
+                    }
+                }
+
+                let signing_key =
+                    signing_key.ok_or_else(|| de::Error::missing_field("signingKey"))?;
+                let decoded_key = bs58::decode(signing_key)
+                    .into_vec()
+                    .map_err(|_| de::Error::custom("invalid base58"))?;
+
+                let array: [u8; 32] = decoded_key
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| de::Error::custom("invalid signing key"))?;
+
+                let signing_key = SigningKey::from_bytes(&array);
+
+                Ok(signing_key)
+            }
+        }
+
+        deserializer.deserialize_struct("SigningKey", &["signingKey"], SigningKeyVisitor)
+    }
+}
+
 pub mod serde_identity {
     use std::fmt;
 
@@ -60,9 +124,9 @@ pub mod serde_identity {
         S: Serializer,
     {
         let mut keypair = serializer.serialize_map(Some(2))?;
-        keypair.serialize_entry("peerId", &key.public().to_peer_id().to_base58())?;
+        keypair.serialize_entry("peer_id", &key.public().to_peer_id().to_base58())?;
         keypair.serialize_entry(
-            "privateKey",
+            "private_key",
             &bs58::encode(&key.to_protobuf_encoding().map_err(ser::Error::custom)?).into_string(),
         )?;
         keypair.end()
@@ -90,16 +154,16 @@ pub mod serde_identity {
 
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
-                        "peerId" => peer_id = Some(map.next_value()?),
-                        "privateKey" => priv_key = Some(map.next_value()?),
+                        "peer_id" => peer_id = Some(map.next_value()?),
+                        "private_key" => priv_key = Some(map.next_value()?),
                         _ => {
                             let _ = map.next_value::<de::IgnoredAny>();
                         }
                     }
                 }
 
-                let peer_id = peer_id.ok_or_else(|| de::Error::missing_field("peerId"))?;
-                let priv_key = priv_key.ok_or_else(|| de::Error::missing_field("privateKey"))?;
+                let peer_id = peer_id.ok_or_else(|| de::Error::missing_field("peer_id"))?;
+                let priv_key = priv_key.ok_or_else(|| de::Error::missing_field("private_key"))?;
 
                 let priv_key = bs58::decode(priv_key)
                     .into_vec()
@@ -109,13 +173,13 @@ pub mod serde_identity {
                     .map_err(|_| de::Error::custom("invalid protobuf"))?;
 
                 if peer_id != keypair.public().to_peer_id().to_base58() {
-                    return Err(de::Error::custom("PeerID does not match public key"));
+                    return Err(de::Error::custom("Peer id does not match public key"));
                 }
 
                 Ok(keypair)
             }
         }
 
-        deserializer.deserialize_struct("Keypair", &["peerId", "privateKey"], IdentityVisitor)
+        deserializer.deserialize_struct("Keypair", &["peer_id", "private_key"], IdentityVisitor)
     }
 }
