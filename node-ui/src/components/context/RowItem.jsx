@@ -4,7 +4,6 @@ import styled from "styled-components";
 const RowItem = styled.div`
   display: flex;
   align-items: center;
-
   ${(props) =>
     props.$borders
       ? `
@@ -16,8 +15,8 @@ const RowItem = styled.div`
 
   .row-item {
     width: 50%;
-    padding: 12px 0px;
-    height: 40px;
+    padding: 0.75rem 0rem;
+    height: 2.5rem;
 
   }
   .id {

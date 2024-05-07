@@ -17,8 +17,8 @@ const FlexWrapper = styled.div`
     top: 0.875rem;
     cursor: pointer;
     color: #fff;
-    height: 24px;
-    width: 24px;
+    height: 1.5rem;
+    width: 1.5rem;
 
     &:hover {
       color: #4cfafc;

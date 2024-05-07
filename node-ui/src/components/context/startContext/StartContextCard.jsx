@@ -89,7 +89,7 @@ const Wrapper = styled.div`
 
       .args-input {
         position: relative;
-        height: 200px;
+        height: 12.5rem;
         font-size: 0.875rem;
         font-weight: 500;
         line-height: 0.875rem;

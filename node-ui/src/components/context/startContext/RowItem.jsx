@@ -24,8 +24,8 @@ const RowItem = styled.div`
   `}
 
   .row-item {
-    padding: 12px 0px;
-    height: 40px;
+    padding: 0.75rem 0rem;
+    height: 2.5rem;
     width: 25%;
   }
 

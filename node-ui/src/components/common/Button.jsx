@@ -7,7 +7,7 @@ const ButtonStyled = styled.div`
   background-color: #4cfafc;
   height: 2.375rem;
   width: ${(props) => (props.$btnWidth ? props.$btnWidth : "fit-content")};
-  padding: 9px 12px;
+  padding: 0.625rem 0.75rem;
   border-radius: 0.5rem;
   color: #000;
   font-family: Inter;
