@@ -9,7 +9,12 @@ export class ContextDataSource {
     try {
       const response = await this.client.get("/admin-api/contexts");
       if (response?.data) {
-        return response.data?.contexts;
+        // invited is empty for now as we don't have this endpoint available
+        // will be left as "no invites" until this becomes available
+        return {
+          joined: response.data,
+          invited: [],
+        };
       } else {
         return { joined: [], invited: [] };
       }
@@ -21,7 +26,9 @@ export class ContextDataSource {
 
   async getContext(contextId) {
     try {
-      const response = await this.client.get(`/admin-api/contexts/${contextId}`);
+      const response = await this.client.get(
+        `/admin-api/contexts/${contextId}`
+      );
       if (response?.data) {
         return response.data.context;
       } else {
@@ -35,7 +42,9 @@ export class ContextDataSource {
 
   async deleteContext(contextId) {
     try {
-      const response = await this.client.delete(`/admin-api/contexts/${contextId}`);
+      const response = await this.client.delete(
+        `/admin-api/contexts/${contextId}`
+      );
       if (response?.data) {
         return response.data;
       } else {
@@ -50,7 +59,7 @@ export class ContextDataSource {
   async startContexts(applicationId, initFunction, initArguments) {
     try {
       const response = await this.client.post("/admin-api/contexts", {
-        application_id: applicationId,
+        applicationId: applicationId,
         ...(initFunction && { initFunction }),
         ...(initArguments && { initArgs: JSON.stringify(initArguments) }),
       });

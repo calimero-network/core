@@ -49,7 +49,7 @@ export default function ContextTable({
           <ListTable
             ListDescription={t.invitedListDescription}
             columnItems={2}
-            ListItems={nodeContextList.joined}
+            ListItems={nodeContextList.invited}
             rowItem={rowItem}
             roundedTopList={true}
             noItemsText={t.noInviedAppsListText}
