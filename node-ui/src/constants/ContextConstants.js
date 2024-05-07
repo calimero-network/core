@@ -5,5 +5,5 @@ export const Content = {
 
 export const Options = {
   JOINED: "JOINED",
-  INVITED: "INVITED"
-}
+  INVITED: "INVITED",
+};

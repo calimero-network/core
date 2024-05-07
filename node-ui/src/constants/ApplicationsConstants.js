@@ -1,4 +1,4 @@
 export const Options = {
-    AVAILABLE: "AVAILABLE",
-    OWNED: "OWNED"
-  }
+  AVAILABLE: "AVAILABLE",
+  OWNED: "OWNED",
+};
