@@ -130,15 +130,16 @@ export default function StartContextCard({
   showBrowseApplication,
   setShowBrowseApplication,
   onUploadClick,
+  isLoading,
 }) {
   const t = translations.startContextPage;
-  const onStartContextClick = () => {
+  const onStartContextClick = async () => {
     if (!application) {
       return;
     } else if (isArgsChecked && (!methodName || !argumentsJson)) {
       return;
     } else {
-      startContext();
+      await startContext();
     }
   };
 
@@ -217,7 +218,7 @@ export default function StartContextCard({
             </div>
           </div>
         )}
-        <Button text="Start" width={"144px"} onClick={onStartContextClick} />
+        <Button text="Start" width={"144px"} onClick={onStartContextClick} isLoading={isLoading}/>
       </div>
     </Wrapper>
   );
@@ -236,4 +237,5 @@ StartContextCard.propTypes = {
   showBrowseApplication: PropTypes.bool.isRequired,
   setShowBrowseApplication: PropTypes.func.isRequired,
   onUploadClick: PropTypes.func.isRequired,
+  isLoading: PropTypes.bool.isRequired,
 };

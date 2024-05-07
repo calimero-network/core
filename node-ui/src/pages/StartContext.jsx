@@ -15,9 +15,11 @@ export default function StartContext() {
   const [methodName, setMethodName] = useState("");
   const [argumentsJson, setArgumentsJson] = useState("");
   const [showBrowseApplication, setShowBrowseApplication] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const t = translations.startContextPage;
 
   const startContext = async () => {
+    setIsLoading(true);
     try {
       const startContextResponse = await apiClient
         .context()
@@ -26,6 +28,7 @@ export default function StartContext() {
     } catch (error) {
       console.error(error);
     }
+    setIsLoading(false);
   };
 
   return (
@@ -49,6 +52,7 @@ export default function StartContext() {
             showBrowseApplication={showBrowseApplication}
             setShowBrowseApplication={setShowBrowseApplication}
             onUploadClick={() => navigate("/upload-app")}
+            isLoading={isLoading}
           />
         </ContentCard>
       </PageContentWrapper>

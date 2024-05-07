@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import PropTypes from "prop-types";
+import LoaderSpinner from "./LoaderSpinner";
 
 const ButtonStyled = styled.div`
   background-color: #4cfafc;
@@ -21,10 +22,10 @@ const ButtonStyled = styled.div`
   }
 `;
 
-export default function Button({ onClick, text, width }) {
+export default function Button({ onClick, text, width, isLoading }) {
   return (
     <ButtonStyled onClick={onClick} btnWidth={width}>
-      {text}
+      {isLoading ? <LoaderSpinner/> : text}
     </ButtonStyled>
   );
 }
@@ -33,4 +34,5 @@ Button.propTypes = {
   onClick: PropTypes.func.isRequired,
   text: PropTypes.string.isRequired,
   width: PropTypes.string,
+  isLoading: PropTypes.bool,
 };
