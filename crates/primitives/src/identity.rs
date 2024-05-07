@@ -52,11 +52,12 @@ impl FromStr for WalletType {
 }
 
 pub mod serde_signing_key {
+    use std::fmt;
+
     use ed25519_dalek::SigningKey;
     use serde::de::{self, MapAccess, Visitor};
     use serde::ser::{SerializeMap, Serializer};
     use serde::Deserializer;
-    use std::fmt;
 
     pub fn serialize<S>(key: &SigningKey, serializer: S) -> Result<S::Ok, S::Error>
     where

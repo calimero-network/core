@@ -93,7 +93,6 @@ pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<CreateContextRequest>,
 ) -> impl IntoResponse {
-    
     let mut seed = [0; 32];
     rand::thread_rng().fill_bytes(&mut seed);
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&mut seed);
