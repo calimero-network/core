@@ -9,6 +9,8 @@ license.workspace = true
 [dependencies]
 camino.workspace = true
 eyre.workspace = true
+generic-array.workspace = true
 rocksdb.workspace = true
+strum = { workspace = true, features = ["derive"] }
 
 calimero-primitives = { path = "../primitives" }

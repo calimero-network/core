@@ -1,49 +1,93 @@
+use strum::IntoEnumIterator;
+
 use crate::config::StoreConfig;
-use crate::db::{Database, Key, Value};
+use crate::db::{Column, Database};
+use crate::slice::Slice;
+use crate::tx::{Operation, Transaction};
 
 pub struct RocksDB {
-    inner: rocksdb::DB,
-    /* options: rocksdb::Options, */
+    db: rocksdb::DB,
 }
 
 impl RocksDB {
     pub fn open(config: &StoreConfig) -> eyre::Result<Self> {
         let mut options = rocksdb::Options::default();
-        options.create_if_missing(true);
 
-        let inner = rocksdb::DB::open(&options, &config.path)?;
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
 
         Ok(Self {
-            inner, /* , options */
+            db: rocksdb::DB::open_cf(&options, &config.path, Column::iter())?,
         })
+    }
+
+    fn cf_handle(&self, column: &Column) -> Option<&rocksdb::ColumnFamily> {
+        self.db.cf_handle(column.as_ref())
+    }
+
+    fn try_cf_handle(&self, column: &Column) -> eyre::Result<&rocksdb::ColumnFamily> {
+        let Some(cf_handle) = self.cf_handle(column) else {
+            eyre::bail!("unknown column family: {:?}", column);
+        };
+
+        Ok(cf_handle)
     }
 }
 
 impl Database for RocksDB {
-    fn get(&self, key: &Key) -> eyre::Result<Option<Vec<u8>>> {
-        let Some(value) = self.inner.get(key)? else {
-            return Ok(None);
-        };
-        Ok(Some(value.to_vec()))
+    fn has(&self, col: Column, key: Slice) -> eyre::Result<bool> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        let exists = self.db.key_may_exist_cf(cf_handle, key.as_ref());
+
+        Ok(exists)
     }
 
-    fn put(&self, key: &Key, value: Value) -> eyre::Result<()> {
-        self.inner.put(key, value)?;
+    fn get(&self, col: Column, key: Slice) -> eyre::Result<Option<Slice>> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        let value = self.db.get_pinned_cf(cf_handle, key.as_ref())?;
+
+        Ok(value.map(From::from))
+    }
+
+    fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        self.db.put_cf(cf_handle, key.as_ref(), value.as_ref())?;
 
         Ok(())
     }
 
-    fn apply(&self, tx: super::Transaction) -> eyre::Result<()> {
+    fn delete(&self, col: Column, key: Slice) -> eyre::Result<()> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        self.db.delete_cf(cf_handle, key.as_ref())?;
+
+        Ok(())
+    }
+
+    fn apply(&self, tx: Transaction) -> eyre::Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
 
-        for op in tx.ops {
+        let mut unknown_cfs = vec![];
+
+        for (entry, op) in tx {
+            let Some(cf) = self.cf_handle(&entry.column) else {
+                unknown_cfs.push(entry.column);
+                continue;
+            };
             match op {
-                super::Operation::Put { key, value } => batch.put(key, value),
-                super::Operation::Delete { key } => batch.delete(key),
+                Operation::Put { value } => batch.put_cf(cf, entry.key, value),
+                Operation::Delete => batch.delete_cf(cf, entry.key),
             }
         }
 
-        self.inner.write(batch)?;
+        if !unknown_cfs.is_empty() {
+            eyre::bail!("unknown column families: {:?}", unknown_cfs);
+        }
+
+        self.db.write(batch)?;
 
         Ok(())
     }
