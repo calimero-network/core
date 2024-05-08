@@ -35,8 +35,9 @@ async fn handle(
             }),
         },
         Ok(None) => Ok(MutateResponse { output: None }),
-        Err(err) => eyre::bail!(MutateError::ExecutionError {
-            message: err.to_string()
-        }),
+        Err(err) => match err.downcast::<calimero_node_primitives::CallError>() {
+            Ok(err) => eyre::bail!(MutateError::CallError(err)),
+            Err(err) => eyre::bail!(err),
+        },
     }
 }

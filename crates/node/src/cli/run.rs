@@ -18,11 +18,11 @@ pub enum NodeType {
     Coordinator,
 }
 
-impl From<NodeType> for calimero_primitives::types::NodeType {
+impl From<NodeType> for calimero_node_primitives::NodeType {
     fn from(value: NodeType) -> Self {
         match value {
-            NodeType::Peer => calimero_primitives::types::NodeType::Peer,
-            NodeType::Coordinator => calimero_primitives::types::NodeType::Coordinator,
+            NodeType::Peer => calimero_node_primitives::NodeType::Peer,
+            NodeType::Coordinator => calimero_node_primitives::NodeType::Coordinator,
         }
     }
 }

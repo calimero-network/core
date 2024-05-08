@@ -19,7 +19,7 @@ type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
 pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
     pub identity: identity::Keypair,
-    pub node_type: calimero_primitives::types::NodeType,
+    pub node_type: calimero_node_primitives::NodeType,
     pub application: calimero_application::config::ApplicationConfig,
     pub network: calimero_network::config::NetworkConfig,
     pub server: calimero_server::config::ServerConfig,
@@ -28,7 +28,7 @@ pub struct NodeConfig {
 
 pub struct Node {
     id: calimero_network::types::PeerId,
-    typ: calimero_primitives::types::NodeType,
+    typ: calimero_node_primitives::NodeType,
     store: calimero_store::Store,
     tx_pool: transaction_pool::TransactionPool,
     application_manager: calimero_application::ApplicationManager,
@@ -91,17 +91,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((application_id, method, payload, write, tx)) = server_receiver.recv() => {
+            Some((application_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
                 if write {
-                    if let Err(err) = node.call_mut(application_id, method, payload, tx).await {
+                    if let Err(err) = node.call_mut(application_id, method, payload, outcome_sender).await {
                         error!("Failed to send transaction: {}", err);
                     }
                 } else {
-                    match node.call(application_id, method, payload).await {
-                        Ok(outcome) => {
-                            let _ = tx.send(outcome);
-                        },
-                        Err(err) => error!("Failed to execute transaction: {}", err)
+                    if let Err(err) = node.call(application_id, method, payload, outcome_sender).await {
+                        error!("Failed to execute transaction: {}", err)
                     };
                 }
             }
@@ -128,14 +125,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
-                        let (tx, rx) = oneshot::channel();
+                        let (outcome_sender, outcome_receiver) = oneshot::channel();
 
                         let tx_hash = match node
                             .call_mut(
                                 application_id.to_owned().into(),
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
-                                tx,
+                                outcome_sender,
                             )
                             .await
                         {
@@ -149,50 +146,56 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Scheduled Transaction! {:?}", tx_hash);
 
                         tokio::spawn(async move {
-                            if let Ok(outcome) = rx.await {
+                            if let Ok(outcome_result) = outcome_receiver.await {
                                 println!("{IND} {:?}", tx_hash);
 
-                                match outcome.returns {
-                                    Ok(result) => match result {
-                                        Some(result) => {
-                                            println!("{IND}   Return Value:");
-                                            let result = if let Ok(value) =
-                                                serde_json::from_slice::<serde_json::Value>(&result)
-                                            {
-                                                format!(
-                                                    "(json): {}",
-                                                    format!("{:#}", value)
-                                                        .lines()
-                                                        .map(|line| line.cyan().to_string())
-                                                        .collect::<Vec<_>>()
-                                                        .join("\n")
-                                                )
-                                            } else {
-                                                format!("(raw): {:?}", result.cyan())
-                                            };
+                                match outcome_result {
+                                    Ok(outcome) => {
+                                        match outcome.returns {
+                                            Ok(result) => match result {
+                                                Some(result) => {
+                                                    println!("{IND}   Return Value:");
+                                                    let result = if let Ok(value) =
+                                                        serde_json::from_slice::<serde_json::Value>(
+                                                            &result,
+                                                        ) {
+                                                        format!(
+                                                            "(json): {}",
+                                                            format!("{:#}", value)
+                                                                .lines()
+                                                                .map(|line| line.cyan().to_string())
+                                                                .collect::<Vec<_>>()
+                                                                .join("\n")
+                                                        )
+                                                    } else {
+                                                        format!("(raw): {:?}", result.cyan())
+                                                    };
 
-                                            for line in result.lines() {
-                                                println!("{IND}     > {}", line);
+                                                    for line in result.lines() {
+                                                        println!("{IND}     > {}", line);
+                                                    }
+                                                }
+                                                None => println!("{IND}   (No return value)"),
+                                            },
+                                            Err(err) => {
+                                                let err = format!("{:#?}", err);
+
+                                                println!("{IND}   Error:");
+                                                for line in err.lines() {
+                                                    println!("{IND}     > {}", line.yellow());
+                                                }
                                             }
                                         }
-                                        None => println!("{IND}   (No return value)"),
-                                    },
-                                    Err(err) => {
-                                        let err = format!("{:#?}", err);
 
-                                        println!("{IND}   Error:");
-                                        for line in err.lines() {
-                                            println!("{IND}     > {}", line.yellow());
+                                        if !outcome.logs.is_empty() {
+                                            println!("{IND}   Logs:");
+
+                                            for log in outcome.logs {
+                                                println!("{IND}     > {}", log.cyan());
+                                            }
                                         }
                                     }
-                                }
-
-                                if !outcome.logs.is_empty() {
-                                    println!("{IND}   Logs:");
-
-                                    for log in outcome.logs {
-                                        println!("{IND}     > {}", log.cyan());
-                                    }
+                                    Err(_) => todo!(),
                                 }
                             }
                         });
@@ -404,15 +407,33 @@ impl Node {
         application_id: calimero_primitives::application::ApplicationId,
         method: String,
         payload: Vec<u8>,
-    ) -> eyre::Result<calimero_runtime::logic::Outcome> {
+        outcome_sender: oneshot::Sender<
+            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
+        >,
+    ) -> eyre::Result<()> {
         if !self
             .application_manager
             .is_application_installed(&application_id)
         {
+            let _ = outcome_sender.send(Err(
+                calimero_node_primitives::CallError::ApplicationNotInstalled { application_id },
+            ));
             eyre::bail!("Application is not installed.");
         }
 
-        self.execute(application_id, None, method, payload).await
+        let outcome_result = match self.execute(application_id, None, method, payload).await {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => {
+                let _ =
+                    outcome_sender.send(Err(calimero_node_primitives::CallError::ExecutionError {
+                        message: error.to_string(),
+                    }));
+                eyre::bail!("Failed to execute transaction.")
+            }
+        };
+
+        let _ = outcome_sender.send(outcome_result);
+        Ok(())
     }
 
     pub async fn call_mut(
@@ -420,9 +441,15 @@ impl Node {
         application_id: calimero_primitives::application::ApplicationId,
         method: String,
         payload: Vec<u8>,
-        tx: oneshot::Sender<calimero_runtime::logic::Outcome>,
+        outcome_sender: oneshot::Sender<
+            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
+        >,
     ) -> eyre::Result<calimero_primitives::hash::Hash> {
         if self.typ.is_coordinator() {
+            let _ =
+                outcome_sender.send(Err(calimero_node_primitives::CallError::InvalidNodeType {
+                    node_type: self.typ,
+                }));
             eyre::bail!("Coordinator can not create transactions!");
         }
 
@@ -430,6 +457,9 @@ impl Node {
             .application_manager
             .is_application_installed(&application_id)
         {
+            let _ = outcome_sender.send(Err(
+                calimero_node_primitives::CallError::ApplicationNotInstalled { application_id },
+            ));
             eyre::bail!("Application is not installed.");
         }
 
@@ -439,6 +469,7 @@ impl Node {
             .await
             == 0
         {
+            let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::NoConnectedPeers));
             eyre::bail!("No connected peers to send message to.");
         }
 
@@ -451,14 +482,32 @@ impl Node {
 
         let tx_hash = self
             .tx_pool
-            .insert(self.id, transaction.clone(), Some(tx))?;
+            .insert(self.id, transaction.clone(), Some(outcome_sender))?;
 
         // todo! consider including the outcome hash in the transaction
-        self.push_action(
-            application_id.clone(),
-            types::PeerAction::Transaction(transaction),
-        )
-        .await?;
+        if let Err(err) = self
+            .push_action(
+                application_id.clone(),
+                types::PeerAction::Transaction(transaction),
+            )
+            .await
+        {
+            let transaction_pool::TransactionPoolEntry {
+                outcome_sender,
+                ..
+            } = self.tx_pool.remove(&tx_hash).expect(
+                "Failed to remove just inserted transaction from the pool. This is a bug and should be reported.",
+            );
+
+            if let Some(sender) = outcome_sender {
+                let _ = sender.send(Err(
+                    calimero_node_primitives::CallError::FailedToPushTransaction {
+                        message: err.to_string(),
+                    },
+                ));
+                eyre::bail!("No connected peers to send message to.");
+            }
+        }
 
         self.last_tx = tx_hash;
 
@@ -479,17 +528,23 @@ impl Node {
             return Ok(None);
         };
 
-        let outcome = self
+        let outcome_result = match self
             .execute(
                 application_id,
                 Some(hash),
                 transaction.method,
                 transaction.payload,
             )
-            .await?;
+            .await
+        {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => Err(calimero_node_primitives::CallError::ExecutionError {
+                message: error.to_string(),
+            }),
+        };
 
         if let Some(sender) = outcome_sender {
-            let _ = sender.send(outcome);
+            let _ = sender.send(outcome_result);
         }
 
         Ok(Some(()))

@@ -1,5 +1,5 @@
 [package]
-name = "calimero-server-primitives"
+name = "calimero-node-primitives"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -7,11 +7,10 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-eyre.workspace = true
-semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
 
-calimero-node-primitives = { path = "../node-primitives" }
 calimero-primitives = { path = "../primitives" }
+calimero-runtime = { path = "../runtime" }

@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::{debug, error, info};
 
-use crate::ServerSender;
-
 mod mutate;
 mod query;
 
@@ -19,12 +17,12 @@ pub struct JsonRpcConfig {
 }
 
 pub(crate) struct ServiceState {
-    server_sender: ServerSender,
+    server_sender: calimero_node_primitives::ServerSender,
 }
 
 pub(crate) fn service(
     config: &crate::config::ServerConfig,
-    server_sender: ServerSender,
+    server_sender: calimero_node_primitives::ServerSender,
 ) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
     let _config = match &config.jsonrpc {
         Some(config) if config.enabled => config,
@@ -138,29 +136,32 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
 }
 
 pub(crate) async fn call(
-    sender: crate::ServerSender,
+    sender: calimero_node_primitives::ServerSender,
     application_id: calimero_primitives::application::ApplicationId,
     method: String,
     args: Vec<u8>,
     writes: bool,
 ) -> eyre::Result<Option<String>> {
-    let (result_sender, result_receiver) = oneshot::channel();
+    let (outcome_sender, result_receiver) = oneshot::channel();
 
     sender
-        .send((application_id, method, args, writes, result_sender))
+        .send((application_id, method, args, writes, outcome_sender))
         .await?;
 
-    let outcome = result_receiver.await?;
+    match result_receiver.await? {
+        Ok(outcome) => {
+            for log in outcome.logs {
+                info!("RPC log: {}", log);
+            }
 
-    for log in outcome.logs {
-        info!("RPC log: {}", log);
+            let Some(returns) = outcome.returns? else {
+                return Ok(None);
+            };
+
+            Ok(Some(String::from_utf8(returns)?))
+        }
+        Err(err) => eyre::bail!(err),
     }
-
-    let Some(returns) = outcome.returns? else {
-        return Ok(None);
-    };
-
-    Ok(Some(String::from_utf8(returns)?))
 }
 
 macro_rules! mount_method {

@@ -30,14 +30,12 @@ tower-sessions = { workspace = true, optional = true }
 tracing.workspace = true
 
 calimero-application = { path = "../application" }
+calimero-node-primitives = { path = "../node-primitives" }
 calimero-identity = { path = "../identity" }
 calimero-primitives = { path = "../primitives" }
 calimero-runtime = { path = "../runtime" }
 calimero-server-primitives = { path = "../server-primitives" }
 calimero-store = { path = "../store" }
-
-[[example]]
-name = "demo"
 
 [dev-dependencies]
 color-eyre.workspace = true

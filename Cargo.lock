@@ -1072,6 +1072,7 @@ dependencies = [
 name = "calimero-network"
 version = "0.1.0"
 dependencies = [
+ "calimero-node-primitives",
  "calimero-primitives",
  "eyre",
  "libp2p",
@@ -1091,6 +1092,7 @@ dependencies = [
  "calimero-application",
  "calimero-identity",
  "calimero-network",
+ "calimero-node-primitives",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",
@@ -1110,6 +1112,18 @@ dependencies = [
  "toml 0.8.12",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "calimero-node-primitives"
+version = "0.1.0"
+dependencies = [
+ "calimero-primitives",
+ "calimero-runtime",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -1174,6 +1188,7 @@ dependencies = [
  "bs58 0.5.1",
  "calimero-application",
  "calimero-identity",
+ "calimero-node-primitives",
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server-primitives",
@@ -1203,6 +1218,7 @@ dependencies = [
 name = "calimero-server-primitives"
 version = "0.1.0"
 dependencies = [
+ "calimero-node-primitives",
  "calimero-primitives",
  "eyre",
  "semver",

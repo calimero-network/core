@@ -11,6 +11,7 @@ members = [
   "./crates/identity",
   "./crates/network",
   "./crates/node",
+  "./crates/node-primitives",
   "./crates/primitives",
   "./crates/runtime",
   "./crates/sdk",

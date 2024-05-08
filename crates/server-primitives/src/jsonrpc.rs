@@ -111,9 +111,10 @@ pub struct QueryResponse {
 
 #[derive(Debug, Serialize, Deserialize, Error)]
 #[error("QueryError")]
+#[serde(tag = "name", content = "cause")]
 pub enum QueryError {
     SerdeError { message: String },
-    ExecutionError { message: String },
+    CallError(calimero_node_primitives::CallError),
 }
 // *************************************************************************
 
@@ -134,8 +135,9 @@ pub struct MutateResponse {
 
 #[derive(Debug, Serialize, Deserialize, Error)]
 #[error("MutateError")]
+#[serde(tag = "name", content = "cause")]
 pub enum MutateError {
     SerdeError { message: String },
-    ExecutionError { message: String },
+    CallError(calimero_node_primitives::CallError),
 }
 // *************************************************************************
