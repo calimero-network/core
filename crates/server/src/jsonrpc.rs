@@ -142,13 +142,13 @@ pub(crate) async fn call(
     args: Vec<u8>,
     writes: bool,
 ) -> eyre::Result<Option<String>> {
-    let (outcome_sender, result_receiver) = oneshot::channel();
+    let (outcome_sender, outcome_receiver) = oneshot::channel();
 
     sender
         .send((application_id, method, args, writes, outcome_sender))
         .await?;
 
-    match result_receiver.await? {
+    match outcome_receiver.await? {
         Ok(outcome) => {
             for log in outcome.logs {
                 info!("RPC log: {}", log);
