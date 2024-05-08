@@ -31,6 +31,7 @@ const RowItem = styled.div`
 
   .name {
     text-align: left;
+
     &:hover {
         color: #4cfafc;
         cursor: pointer;

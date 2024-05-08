@@ -44,6 +44,7 @@ const ListWrapper = styled.div`
       cursor: pointer;
     }
   }
+
   .no-items-text {
     padding: 1rem;
     font-size: 0.75rem;

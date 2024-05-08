@@ -11,6 +11,7 @@ import { XMarkIcon } from "@heroicons/react/24/solid";
 
 const FlexWrapper = styled.div`
   flex: 1;
+
   .close-button {
     position: absolute;
     right: 0.875rem;
