@@ -1,6 +1,4 @@
-pub use borsh;
-pub use serde;
-pub use serde_json;
+pub use {borsh, serde, serde_json};
 
 pub mod env;
 pub mod event;
