@@ -1,6 +1,7 @@
 import axios from "axios";
 
 import { AppsDataSource } from "./dataSource/AppsDataSource";
+import { ContextDataSource } from "./dataSource/ContextDataSource";
 import { AxiosHttpClient } from "./httpClient";
 
 class ApiClient {
@@ -8,10 +9,15 @@ class ApiClient {
 
   constructor(httpClient) {
     this.adminApi = new AppsDataSource(httpClient);
+    this.contextApi = new ContextDataSource(httpClient);
   }
 
   admin() {
     return this.adminApi;
+  }
+
+  context() {
+    return this.contextApi;
   }
 }
 
