@@ -141,6 +141,10 @@
             "listTitle": "Select Available Application",
             "noAvailableAppsText": "No applications available",
             "noOwnedAppsText": "No owned applications installed"
-        }
+        },
+        "startContextSuccessTitle": "Context started",
+        "startedContextMessage": "Application context has been started successfully.",
+        "startContextErrorTitle": "Failed to start context",
+        "startContextErrorMessage": "Failed to start the application context."
     }
 }

@@ -4,6 +4,7 @@ import PropTypes from "prop-types";
 import Button from "../../common/Button";
 import ApplicationsPopup from "./ApplicationsPopup";
 import translations from "../../../constants/en.global.json";
+import StatusModal from "../../common/StatusModal";
 
 const Wrapper = styled.div`
   display: flex;
@@ -131,6 +132,9 @@ export default function StartContextCard({
   setShowBrowseApplication,
   onUploadClick,
   isLoading,
+  showStatusModal,
+  closeModal,
+  startContextStatus
 }) {
   const t = translations.startContextPage;
   const onStartContextClick = async () => {
@@ -154,6 +158,11 @@ export default function StartContextCard({
 
   return (
     <Wrapper>
+      <StatusModal
+        show={showStatusModal}
+        closeModal={closeModal}
+        modalContent={startContextStatus}
+      />
       {showBrowseApplication && (
         <ApplicationsPopup
           show={showBrowseApplication}
@@ -238,4 +247,7 @@ StartContextCard.propTypes = {
   setShowBrowseApplication: PropTypes.func.isRequired,
   onUploadClick: PropTypes.func.isRequired,
   isLoading: PropTypes.bool.isRequired,
+  showStatusModal: PropTypes.bool.isRequired,
+  closeModal: PropTypes.func.isRequired,
+  startContextStatus: PropTypes.object.isRequired
 };
