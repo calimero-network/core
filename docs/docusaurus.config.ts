@@ -1,24 +1,31 @@
-import type {Config} from '@docusaurus/types';
+import type { Config } from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'My Site',
   tagline: 'Dinosaurs are cool',
   favicon: 'img/favicon.ico',
-
   url: 'https://calimero-network.github.io',
   baseUrl: '/core/',
   organizationName: 'calimero-network',
   projectName: 'core',
-
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
-
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],
   },
-
+  headTags: [
+    {
+      tagName: 'script',
+      attributes: {
+        'data-collect-dnt': 'true',
+        src: 'https://scripts.simpleanalyticscdn.com/latest.js',
+        async: 'async',
+        defer: 'defer',
+      },
+    }
+  ],
   presets: [
     [
       'classic',
@@ -33,7 +40,6 @@ const config: Config = {
       } satisfies Preset.Options,
     ],
   ],
-
   themeConfig: {
     colorMode: {
       disableSwitch: true

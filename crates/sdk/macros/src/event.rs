@@ -53,7 +53,7 @@ impl<'a> ToTokens for EventImpl<'a> {
                     }
                 }
             }
-            
+
             impl #impl_generics ::calimero_sdk::event::AppEventExt for #ident #ty_generics #where_clause {}
         }
         .to_tokens(tokens)

@@ -19,7 +19,7 @@ thread_local! {
 
 #[track_caller]
 #[inline(never)]
-fn handler<E: AppEvent + AppEventExt>(event: Box<dyn AppEventExt>) {
+fn handler<E: AppEventExt + 'static>(event: Box<dyn AppEventExt>) {
     if let Ok(event) = E::downcast(event) {
         env::emit(event);
     }
@@ -40,21 +40,14 @@ pub fn emit<'a, E: AppEventExt + 'a>(event: E) {
 }
 
 mod reflect {
-    #[derive(PartialEq)]
-    pub struct TypeId {
-        id: usize,
-    }
-
-    #[inline(never)]
-    pub fn type_id_of<T: ?Sized>() -> TypeId {
-        TypeId {
-            id: type_id_of::<T> as usize,
-        }
-    }
+    pub use std::any::TypeId;
 
     pub trait Reflect {
-        fn id(&self) -> TypeId {
-            type_id_of::<Self>()
+        fn id(&self) -> TypeId
+        where
+            Self: 'static,
+        {
+            TypeId::of::<Self>()
         }
 
         fn name(&self) -> &'static str {
@@ -67,25 +60,27 @@ mod reflect {
 
 use reflect::Reflect;
 
-pub trait AppEventExt: Reflect {
+pub trait AppEventExt: AppEvent + Reflect {
     // todo! experiment with &dyn AppEventExt downcast_ref to &Self
     // yes, this will mean delegated downcasting would have to be referential
     // but that's not bad, not one bit
     fn downcast(event: Box<dyn AppEventExt>) -> Result<Self, Box<dyn AppEventExt>>
     where
-        Self: Sized,
+        Self: Sized + 'static,
     {
         downcast(event)
     }
 }
 
 impl dyn AppEventExt {
-    pub fn is<T: AppEventExt>(&self) -> bool {
-        self.id() == reflect::type_id_of::<T>()
+    pub fn is<T: AppEventExt + 'static>(&self) -> bool {
+        self.id() == reflect::TypeId::of::<T>()
     }
 }
 
-pub fn downcast<T: AppEventExt>(event: Box<dyn AppEventExt>) -> Result<T, Box<dyn AppEventExt>> {
+pub fn downcast<T: AppEventExt + 'static>(
+    event: Box<dyn AppEventExt>,
+) -> Result<T, Box<dyn AppEventExt>> {
     if event.is::<T>() {
         Ok(*unsafe { Box::from_raw(Box::into_raw(event) as *mut T) })
     } else {

@@ -1131,6 +1131,7 @@ name = "calimero-primitives"
 version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
+ "ed25519-dalek",
  "hex",
  "libp2p",
  "semver",

@@ -6,6 +6,7 @@ use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_identity::auth::verify_eth_signature;
+use calimero_primitives::identity::{ClientKey, RootKey, WalletType};
 use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
 use libp2p::identity::Keypair;
@@ -15,8 +16,8 @@ use tracing::info;
 
 use super::challenge::NodeChallengeMessage;
 use crate::admin::service::{AdminState, ApiError, ApiResponse};
-use crate::admin::storage::client_keys::{add_client_key, ClientKey};
-use crate::admin::storage::root_key::{get_root_key, RootKey};
+use crate::admin::storage::client_keys::add_client_key;
+use crate::admin::storage::root_key::get_root_key;
 use crate::verifysignature::verify_near_signature;
 
 #[derive(Debug, Deserialize)]
@@ -51,22 +52,6 @@ struct WalletMetadata {
     #[serde(rename = "type")]
     wallet_type: WalletType,
     signing_key: String,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Serialize, Clone, Copy)]
-pub enum WalletType {
-    NEAR,
-    ETH,
-}
-
-impl WalletType {
-    pub fn from_str(input: &str) -> eyre::Result<Self> {
-        match input {
-            "ETH" => Ok(WalletType::ETH),
-            "NEAR" => Ok(WalletType::NEAR),
-            _ => eyre::bail!("Invalid wallet_type value"),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
