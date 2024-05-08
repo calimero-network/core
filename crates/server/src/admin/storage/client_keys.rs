@@ -1,14 +1,7 @@
+use calimero_primitives::identity::ClientKey;
 use calimero_store::Store;
-use serde::{Deserialize, Serialize};
 
 use super::did::{get_or_create_did, update_did};
-use crate::admin::handlers::add_client_key::WalletType;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct ClientKey {
-    pub(crate) wallet_type: WalletType,
-    pub(crate) signing_key: String,
-}
 
 pub fn add_client_key(store: &Store, client_key: ClientKey) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;

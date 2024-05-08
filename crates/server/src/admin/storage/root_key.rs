@@ -1,12 +1,7 @@
+use calimero_primitives::identity::RootKey;
 use calimero_store::Store;
-use serde::{Deserialize, Serialize};
 
 use super::did::{get_or_create_did, update_did};
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct RootKey {
-    pub(crate) signing_key: String,
-}
 
 pub fn add_root_key(store: &Store, root_key: RootKey) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;

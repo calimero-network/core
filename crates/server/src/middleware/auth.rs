@@ -6,13 +6,13 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use calimero_identity::auth::verify_near_public_key;
+use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_store::Store;
 use libp2p::futures::future::BoxFuture;
 use tower::{Layer, Service};
 use tracing::debug;
 
-use crate::admin::handlers::add_client_key::WalletType;
-use crate::admin::storage::client_keys::{exists_client_key, ClientKey};
+use crate::admin::storage::client_keys::exists_client_key;
 
 #[derive(Clone)]
 pub struct AuthSignatureLayer {
@@ -126,7 +126,9 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .ok_or_else(|| UnauthorizedError::new("Missing wallet_type header"))?;
     let wallet_type = String::from_utf8(wallet_type.as_bytes().to_vec())
         .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
-    let wallet_type = WalletType::from_str(&wallet_type)
+
+    let wallet_type = wallet_type
+        .parse::<WalletType>()
         .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
 
     let signature = headers
