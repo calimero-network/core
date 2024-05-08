@@ -1190,7 +1190,6 @@ dependencies = [
  "calimero-identity",
  "calimero-node-primitives",
  "calimero-primitives",
- "calimero-runtime",
  "calimero-server-primitives",
  "calimero-store",
  "chrono",

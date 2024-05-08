@@ -8,9 +8,10 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
-thiserror.workspace = true
-tokio.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 calimero-primitives = { path = "../primitives" }
+# TODO: extract runtime primitives to a separate crate
 calimero-runtime = { path = "../runtime" }
