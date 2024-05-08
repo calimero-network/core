@@ -19,7 +19,7 @@ const config: Config = {
     {
       tagName: 'script',
       attributes: {
-        'data-collect-dnt': true,
+        'data-collect-dnt': 'true',
         src: 'https://scripts.simpleanalyticscdn.com/latest.js',
         async: 'async',
         defer: 'defer',
