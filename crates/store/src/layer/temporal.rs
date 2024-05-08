@@ -1,14 +1,14 @@
 use crate::key::KeyParts;
-use crate::layer::{ReadLayer, WriteLayer};
+use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
 use crate::tx::{Operation, Transaction};
 
-pub struct TemporalStore<L> {
+pub struct Temporal<L: WriteLayer> {
     inner: L,
     shadow: Transaction,
 }
 
-impl<L: WriteLayer> TemporalStore<L> {
+impl<L: WriteLayer> Temporal<L> {
     pub fn new(layer: L) -> Self {
         Self {
             inner: layer,
@@ -17,7 +17,16 @@ impl<L: WriteLayer> TemporalStore<L> {
     }
 }
 
-impl<L: WriteLayer> ReadLayer for TemporalStore<L> {
+impl<L: WriteLayer> Layer for Temporal<L> {
+    type Base = L;
+
+    /// Unwraps the layer, discarding any changes.
+    fn unwrap(self) -> Self::Base {
+        self.inner
+    }
+}
+
+impl<L: WriteLayer> ReadLayer for Temporal<L> {
     fn has(&self, key: impl KeyParts) -> eyre::Result<bool> {
         if self.shadow.get(key).is_some() {
             return Ok(true);
@@ -35,16 +44,9 @@ impl<L: WriteLayer> ReadLayer for TemporalStore<L> {
     }
 }
 
-impl<L: WriteLayer> WriteLayer for TemporalStore<L> {
-    type Base = L;
-
+impl<L: WriteLayer> WriteLayer for Temporal<L> {
     fn put(&mut self, key: impl KeyParts, value: Slice) -> eyre::Result<()> {
-        self.shadow.put(
-            key,
-            value
-                .try_into()
-                .unwrap_or_else(|value: Slice| value.as_ref().into()),
-        );
+        self.shadow.put(key, value.into());
 
         Ok(())
     }

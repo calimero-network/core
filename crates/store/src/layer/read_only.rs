@@ -1,5 +1,5 @@
 use crate::key::KeyParts;
-use crate::layer::ReadLayer;
+use crate::layer::{Layer, ReadLayer};
 use crate::slice::Slice;
 
 pub struct ReadOnly<L> {
@@ -9,6 +9,14 @@ pub struct ReadOnly<L> {
 impl<L: ReadLayer> ReadOnly<L> {
     pub fn new(layer: L) -> Self {
         Self { inner: layer }
+    }
+}
+
+impl<L: Layer> Layer for ReadOnly<L> {
+    type Base = L;
+
+    fn unwrap(self) -> Self::Base {
+        self.inner
     }
 }
 
