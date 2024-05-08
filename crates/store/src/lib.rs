@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 pub mod config;
-mod db;
+pub mod db;
 mod key;
 pub mod layer;
 pub mod slice;
@@ -13,8 +13,8 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn open(config: &config::StoreConfig) -> eyre::Result<Self> {
-        let db = db::rocksdb::RocksDB::open(&config)?;
+    pub fn open<T: db::Database>(config: &config::StoreConfig) -> eyre::Result<Self> {
+        let db = T::open(&config)?;
 
         Ok(Self { db: Arc::new(db) })
     }

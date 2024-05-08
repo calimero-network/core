@@ -1,5 +1,6 @@
 use strum::{AsRefStr, EnumIter};
 
+use crate::config::StoreConfig;
 use crate::slice::Slice;
 use crate::tx::Transaction;
 
@@ -13,7 +14,11 @@ pub enum Column {
     Membership,
 }
 
-pub trait Database {
+pub trait Database: 'static {
+    fn open(config: &StoreConfig) -> eyre::Result<Self>
+    where
+        Self: Sized;
+
     fn has(&self, col: Column, key: Slice) -> eyre::Result<bool>;
     fn get(&self, col: Column, key: Slice) -> eyre::Result<Option<Slice>>;
     fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()>;

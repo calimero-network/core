@@ -10,17 +10,6 @@ pub struct RocksDB {
 }
 
 impl RocksDB {
-    pub fn open(config: &StoreConfig) -> eyre::Result<Self> {
-        let mut options = rocksdb::Options::default();
-
-        options.create_if_missing(true);
-        options.create_missing_column_families(true);
-
-        Ok(Self {
-            db: rocksdb::DB::open_cf(&options, &config.path, Column::iter())?,
-        })
-    }
-
     fn cf_handle(&self, column: &Column) -> Option<&rocksdb::ColumnFamily> {
         self.db.cf_handle(column.as_ref())
     }
@@ -35,6 +24,17 @@ impl RocksDB {
 }
 
 impl Database for RocksDB {
+    fn open(config: &StoreConfig) -> eyre::Result<Self> {
+        let mut options = rocksdb::Options::default();
+
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+
+        Ok(Self {
+            db: rocksdb::DB::open_cf(&options, &config.path, Column::iter())?,
+        })
+    }
+
     fn has(&self, col: Column, key: Slice) -> eyre::Result<bool> {
         let cf_handle = self.try_cf_handle(&col)?;
 
