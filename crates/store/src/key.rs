@@ -4,7 +4,7 @@ use crate::db::Column;
 use crate::slice::Slice;
 
 mod component;
-pub mod context;
+mod context;
 
 use component::KeyComponents;
 pub use context::{ContextIdentity, ContextMembers, ContextState, ContextTransaction};
