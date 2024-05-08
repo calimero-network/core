@@ -21,6 +21,7 @@
     "@near-wallet-selector/nightly-connect": "^8.7.0",
     "@near-wallet-selector/sender": "^8.9.5",
     "@near-wallet-selector/wallet-connect": "^8.9.5",
+    "@types/prop-types": "^15.7.12",
     "axios": "^1.6.8",
     "bootstrap": "^5.3.3",
     "buffer": "^6.0.3",

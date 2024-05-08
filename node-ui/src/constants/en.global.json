@@ -117,5 +117,34 @@
     },
     "statusModal": {
         "buttonContinueText": "Continue"
+    },
+    "contextPage": {
+        "contextPageTitle": "Contexts",
+        "startNewContextText": "Start new context",
+        "noContextsText": "No contexts found in the node.",
+        "contextPageDescription": "Contexts are application networks running in the node.",
+        "joinedListDescription": "Contexts you have joined",
+        "invitedListDescription": "Contexts you have been invited to",
+        "noJoinedAppsListText": "You have not joined any contexts.",
+        "noInviedAppsListText": "You have not been invited to any contexts."
+    },
+    "startContextPage": {
+        "backButtonText": "Back to Contexts",
+        "selectApplicationTitle": "Select app from the marketplace or publish new application",
+        "selectedApplicationTitle": "Selected Application",
+        "initSectionTitle": "Initialize state",
+        "argsTitleText": "Arguments",
+        "methodLabelText": "method name",
+        "argsLabelText": "arguments json",
+        "buttonFormatText": "format",
+        "applicationList": {
+            "listTitle": "Select Available Application",
+            "noAvailableAppsText": "No applications available",
+            "noOwnedAppsText": "No owned applications installed"
+        },
+        "startContextSuccessTitle": "Context started",
+        "startedContextMessage": "Application context has been started successfully.",
+        "startContextErrorTitle": "Failed to start context",
+        "startContextErrorMessage": "Failed to start the application context."
     }
 }

@@ -23,6 +23,12 @@ export class AxiosHttpClient {
     );
   }
 
+  async delete(url, headers) {
+    return this.request(this.axios.delete(url, {
+        headers: headers?.reduce((acc, curr) => ({...acc, ...curr}), {})
+    }));
+}
+
   async request(promise) {
     try {
       const response = await promise;

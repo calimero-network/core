@@ -126,6 +126,11 @@ const NavigationItems = [
   },
   {
     id: 1,
+    title: "Contexts",
+    path: "/contexts",
+  },
+  {
+    id: 2,
     title: "Applications",
     path: "/applications",
   },
