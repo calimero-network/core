@@ -48,7 +48,7 @@ impl Database for RocksDB {
 
         let value = self.db.get_pinned_cf(cf_handle, key.as_ref())?;
 
-        Ok(value.map(From::from))
+        Ok(value.map(Slice::from_owned))
     }
 
     fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()> {
