@@ -134,7 +134,7 @@ pub mod serde_identity {
         let mut keypair = serializer.serialize_map(Some(2))?;
         keypair.serialize_entry("peer_id", &key.public().to_peer_id().to_base58())?;
         keypair.serialize_entry(
-            "private_key",
+            "keypair",
             &bs58::encode(&key.to_protobuf_encoding().map_err(ser::Error::custom)?).into_string(),
         )?;
         keypair.end()
@@ -163,7 +163,7 @@ pub mod serde_identity {
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "peer_id" => peer_id = Some(map.next_value()?),
-                        "private_key" => priv_key = Some(map.next_value()?),
+                        "keypair" => priv_key = Some(map.next_value()?),
                         _ => {
                             let _ = map.next_value::<de::IgnoredAny>();
                         }
@@ -171,7 +171,7 @@ pub mod serde_identity {
                 }
 
                 let peer_id = peer_id.ok_or_else(|| de::Error::missing_field("peer_id"))?;
-                let priv_key = priv_key.ok_or_else(|| de::Error::missing_field("private_key"))?;
+                let priv_key = priv_key.ok_or_else(|| de::Error::missing_field("keypair"))?;
 
                 let priv_key = bs58::decode(priv_key)
                     .into_vec()
@@ -188,6 +188,6 @@ pub mod serde_identity {
             }
         }
 
-        deserializer.deserialize_struct("Keypair", &["peer_id", "private_key"], IdentityVisitor)
+        deserializer.deserialize_struct("Keypair", &["peer_id", "keypair"], IdentityVisitor)
     }
 }
