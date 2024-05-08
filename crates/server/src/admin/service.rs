@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
+use calimero_primitives::identity::RootKey;
 use calimero_store::Store;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
@@ -17,8 +18,11 @@ use tracing::{error, info};
 
 use super::handlers::add_client_key::add_client_key_handler;
 use super::handlers::challenge::{request_challenge_handler, NodeChallenge, CHALLENGE_KEY};
+use super::handlers::context::{
+    create_context_handler, delete_context_handler, get_context_handler, get_contexts_handler,
+};
 use super::handlers::fetch_did::fetch_did_handler;
-use super::storage::root_key::{add_root_key, RootKey};
+use super::storage::root_key::add_root_key;
 use crate::verifysignature;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,6 +69,10 @@ pub(crate) fn setup(
         .route("/applications", get(list_applications_handler))
         .route("/add-client-key", post(add_client_key_handler))
         .route("/did", get(fetch_did_handler))
+        .route("/contexts", post(create_context_handler))
+        .route("/contexts/:context_id", delete(delete_context_handler))
+        .route("/contexts/:context_id", get(get_context_handler))
+        .route("/contexts", get(get_contexts_handler))
         .layer(Extension(shared_state))
         .layer(session_layer);
 

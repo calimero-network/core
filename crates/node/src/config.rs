@@ -11,7 +11,7 @@ pub const DEFAULT_CALIMERO_CHAT_HOME: &str = ".calimero/experiments/chat-p0c";
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConfigFile {
     #[serde(
-        with = "calimero_identity::config::serde_identity",
+        with = "calimero_primitives::identity::serde_identity",
         default = "identity::Keypair::generate_ed25519"
     )]
     pub identity: identity::Keypair,
