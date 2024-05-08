@@ -195,7 +195,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                             }
                                         }
                                     }
-                                    Err(_) => todo!(),
+                                    Err(err) => {
+                                        let err = format!("{:#?}", err);
+
+                                        println!("{IND}   Error:");
+                                        for line in err.lines() {
+                                            println!("{IND}     > {}", line.yellow());
+                                        }
+                                    }
                                 }
                             }
                         });
