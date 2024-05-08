@@ -1,5 +1,4 @@
 use std::convert::Infallible;
-use std::str::FromStr;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -127,7 +126,9 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .ok_or_else(|| UnauthorizedError::new("Missing wallet_type header"))?;
     let wallet_type = String::from_utf8(wallet_type.as_bytes().to_vec())
         .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
-    let wallet_type = WalletType::from_str(&wallet_type)
+
+    let wallet_type = wallet_type
+        .parse::<WalletType>()
         .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
 
     let signature = headers
