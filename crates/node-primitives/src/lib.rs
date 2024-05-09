@@ -28,6 +28,7 @@ pub type ServerSender = mpsc::Sender<(
 #[derive(Clone, Debug, Serialize, Deserialize, Error)]
 #[error("CallError")]
 pub enum CallError {
+    InternalError {},
     InvalidNodeType {
         node_type: NodeType,
     },
@@ -38,7 +39,5 @@ pub enum CallError {
     ExecutionError {
         message: String,
     },
-    FailedToPushTransaction {
-        message: String,
-    },
+    FailedToPushTransaction,
 }

@@ -1,6 +1,7 @@
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
+use eyre::eyre;
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
 use owo_colors::OwoColorize;
@@ -93,12 +94,47 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             }
             Some((application_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
                 if write {
-                    if let Err(err) = node.call_mut(application_id, method, payload, outcome_sender).await {
-                        error!("Failed to send transaction: {}", err);
-                    }
+                    let transaction = match node.prepare_transaction(application_id.clone(), method, payload).await{
+                        Ok(transaction) => transaction,
+                        Err(err) => match err.downcast::<calimero_node_primitives::CallError>()
+                        {
+                            Ok(err) => {
+                                error!(%err, "Failed to prepare transaction");
+                                let _ = outcome_sender.send(Err(err));
+                                continue
+                            }
+                            Err(err) => {
+                                error!(%err, "Failed to prepare transaction");
+                                let _ = outcome_sender.send(Err(
+                                    calimero_node_primitives::CallError::InternalError {},
+                                ));
+                                continue
+                            }
+                        },
+                    };
+                    if let Err(err) = node.commit_transaction(application_id, transaction, outcome_sender).await {
+                        error!("Failed to commit transaction: {}", err);
+                    };
                 } else {
-                    if let Err(err) = node.call(application_id, method, payload, outcome_sender).await {
-                        error!("Failed to execute transaction: {}", err)
+                    match node.call(application_id, method, payload).await {
+                        Ok(outcome) => {
+                            let _ = outcome_sender.send(Ok(outcome));
+                        },
+                        Err(err) => match err.downcast::<calimero_node_primitives::CallError>()
+                        {
+                            Ok(err) => {
+                                error!(%err, "Failed to execute transaction");
+                                let _ = outcome_sender.send(Err(err));
+                                continue
+                            }
+                            Err(err) => {
+                                error!(%err, "Failed to execute transaction");
+                                let _ = outcome_sender.send(Err(
+                                    calimero_node_primitives::CallError::InternalError {},
+                                ));
+                                continue
+                            }
+                        },
                     };
                 }
             }
@@ -126,19 +162,42 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
                         let (outcome_sender, outcome_receiver) = oneshot::channel();
-
-                        let tx_hash = match node
-                            .call_mut(
+                        let transaction = match node
+                            .prepare_transaction(
                                 application_id.to_owned().into(),
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
+                            )
+                            .await
+                        {
+                            Ok(transaction) => transaction,
+                            Err(err) => match err.downcast::<calimero_node_primitives::CallError>()
+                            {
+                                Ok(err) => {
+                                    error!(%err, "Failed to prepare transaction");
+                                    let _ = outcome_sender.send(Err(err));
+                                    return Ok(());
+                                }
+                                Err(err) => {
+                                    error!(%err, "Failed to prepare transaction");
+                                    let _ = outcome_sender.send(Err(
+                                        calimero_node_primitives::CallError::InternalError {},
+                                    ));
+                                    return Ok(());
+                                }
+                            },
+                        };
+                        let tx_hash = match node
+                            .commit_transaction(
+                                application_id.to_owned().into(),
+                                transaction,
                                 outcome_sender,
                             )
                             .await
                         {
                             Ok(tx_hash) => tx_hash,
                             Err(e) => {
-                                println!("{IND} Failed to send transaction: {}", e);
+                                println!("{IND} Failed to commit transaction: {}", e);
                                 return Ok(());
                             }
                         };
@@ -414,60 +473,44 @@ impl Node {
         application_id: calimero_primitives::application::ApplicationId,
         method: String,
         payload: Vec<u8>,
-        outcome_sender: oneshot::Sender<
-            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
-        >,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         if !self
             .application_manager
             .is_application_installed(&application_id)
         {
-            let _ = outcome_sender.send(Err(
-                calimero_node_primitives::CallError::ApplicationNotInstalled { application_id },
-            ));
-            eyre::bail!("Application is not installed.");
+            eyre::bail!(
+                calimero_node_primitives::CallError::ApplicationNotInstalled { application_id }
+            );
         }
 
-        let outcome_result = match self.execute(application_id, None, method, payload).await {
-            Ok(outcome) => Ok(outcome),
-            Err(error) => {
-                let _ =
-                    outcome_sender.send(Err(calimero_node_primitives::CallError::ExecutionError {
-                        message: error.to_string(),
-                    }));
-                eyre::bail!("Failed to execute transaction.")
-            }
-        };
-
-        let _ = outcome_sender.send(outcome_result);
-        Ok(())
+        self.execute(application_id, None, method, payload)
+            .await
+            .map_err(|e| {
+                eyre!(calimero_node_primitives::CallError::ExecutionError {
+                    message: e.to_string(),
+                })
+            })
     }
 
-    pub async fn call_mut(
+    async fn prepare_transaction(
         &mut self,
         application_id: calimero_primitives::application::ApplicationId,
         method: String,
         payload: Vec<u8>,
-        outcome_sender: oneshot::Sender<
-            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
-        >,
-    ) -> eyre::Result<calimero_primitives::hash::Hash> {
+    ) -> eyre::Result<calimero_primitives::transaction::Transaction> {
         if self.typ.is_coordinator() {
-            let _ =
-                outcome_sender.send(Err(calimero_node_primitives::CallError::InvalidNodeType {
-                    node_type: self.typ,
-                }));
-            eyre::bail!("Coordinator can not create transactions!");
+            eyre::bail!(calimero_node_primitives::CallError::InvalidNodeType {
+                node_type: self.typ
+            });
         }
 
         if !self
             .application_manager
             .is_application_installed(&application_id)
         {
-            let _ = outcome_sender.send(Err(
+            eyre::bail!(
                 calimero_node_primitives::CallError::ApplicationNotInstalled { application_id },
-            ));
-            eyre::bail!("Application is not installed.");
+            );
         }
 
         if self
@@ -476,17 +519,25 @@ impl Node {
             .await
             == 0
         {
-            let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::NoConnectedPeers));
-            eyre::bail!("No connected peers to send message to.");
+            eyre::bail!(calimero_node_primitives::CallError::NoConnectedPeers);
         }
 
-        let transaction = calimero_primitives::transaction::Transaction {
+        Ok(calimero_primitives::transaction::Transaction {
             application_id: application_id.clone(),
             method,
             payload,
             prior_hash: self.last_tx,
-        };
+        })
+    }
 
+    async fn commit_transaction(
+        &mut self,
+        application_id: calimero_primitives::application::ApplicationId,
+        transaction: calimero_primitives::transaction::Transaction,
+        outcome_sender: oneshot::Sender<
+            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
+        >,
+    ) -> eyre::Result<calimero_primitives::hash::Hash> {
         let tx_hash = self
             .tx_pool
             .insert(self.id, transaction.clone(), Some(outcome_sender))?;
@@ -508,11 +559,9 @@ impl Node {
 
             if let Some(sender) = outcome_sender {
                 let _ = sender.send(Err(
-                    calimero_node_primitives::CallError::FailedToPushTransaction {
-                        message: err.to_string(),
-                    },
+                    calimero_node_primitives::CallError::FailedToPushTransaction {},
                 ));
-                eyre::bail!("No connected peers to send message to.");
+                eyre::bail!(err);
             }
         }
 
