@@ -1,7 +1,6 @@
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
-use eyre::eyre;
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
 use owo_colors::OwoColorize;
@@ -486,7 +485,7 @@ impl Node {
         self.execute(application_id, None, method, payload)
             .await
             .map_err(|e| {
-                eyre!(calimero_node_primitives::CallError::ExecutionError {
+                eyre::eyre!(calimero_node_primitives::CallError::ExecutionError {
                     message: e.to_string(),
                 })
             })
