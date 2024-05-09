@@ -27,6 +27,7 @@ pub type ServerSender = mpsc::Sender<(
 
 #[derive(Clone, Debug, Serialize, Deserialize, Error)]
 #[error("CallError")]
+#[serde(tag = "type", content = "data")]
 pub enum CallError {
     InternalError {},
     InvalidNodeType {
