@@ -126,7 +126,18 @@
         "joinedListDescription": "Contexts you have joined",
         "invitedListDescription": "Contexts you have been invited to",
         "noJoinedAppsListText": "You have not joined any contexts.",
-        "noInviedAppsListText": "You have not been invited to any contexts."
+        "noInviedAppsListText": "You have not been invited to any contexts.",
+        "contextDetails": {
+            "labelIdText": "Id: ",
+            "labelNameText": "Next: ",
+            "labelOwnerText": "Owner: ",
+            "labelDescriptionText": "Description: ",
+            "labelRepositoryText": "Repository: ",
+            "lableVersionText": "Version: ",
+            "titleApps": "Installed Applications",
+            "titleStorage": "Storage",
+            "labelStorageText": "Used: "
+        }
     },
     "startContextPage": {
         "backButtonText": "Back to Contexts",
