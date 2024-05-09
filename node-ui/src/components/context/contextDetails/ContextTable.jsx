@@ -7,6 +7,7 @@ import OptionsHeader from "../../../components/common/OptionsHeader";
 import ListTable from "../../common/ListTable";
 import rowItem from "../RowItem";
 import { DetailsOptions } from "../../../constants/ContextConstants";
+import DetailsCard from "./DetailsCard";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -20,7 +21,7 @@ export default function ContextTable({
   tableOptions,
 }) {
   const t = translations.contextPage;
-
+  
   return (
     <ContentCard
     headerBackText="Context Details"
@@ -33,7 +34,7 @@ export default function ContextTable({
           currentOption={currentOption}
           setCurrentOption={setCurrentOption}
         />
-        {currentOption == DetailsOptions.DETAILS && <div>DETAILS</div>}
+        {currentOption == DetailsOptions.DETAILS && <DetailsCard details={nodeContextDetails}/>}
         {currentOption == DetailsOptions.CLIENT_KEYS && (
           <ListTable
             ListDescription={t.invitedListDescription}

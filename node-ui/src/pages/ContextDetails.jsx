@@ -30,10 +30,7 @@ const initialOptions = [
 export default function ContextDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [nodeContextDetails, setNodeContextDetails] = useState({
-    joined: [],
-    invited: [],
-  });
+  const [nodeContextDetails, setNodeContextDetails] = useState();
   const [currentOption, setCurrentOption] = useState(DetailsOptions.DETAILS);
   const [tableOptions, setTableOptions] = useState(initialOptions);
   const { getPackage, getLatestRelease } = useRPC();
@@ -76,7 +73,7 @@ export default function ContextDetails() {
       }
     };
     fetchNodeContexts();
-  }, [id]);
+  }, []);
 
   return (
     <FlexLayout>
