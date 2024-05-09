@@ -18,7 +18,6 @@
   --ifm-font-color-base: #fff;
   --ifm-menu-color: #43F9FC;
   --ifm-code-background: #323234;
-
 }
 
 /* For readability concerns, you should choose a lighter palette in dark mode. */
@@ -34,7 +33,7 @@
   --ifm-code-background: #e90cd6;
 }
 
-.footer--dark{background-color: #111111;}
+.footer--dark{background-color: #247e80;}
 .p{color: #fff;}
 .menu__link{color: #fff;}
 .menu__link--active{color: #5ed0d2;}
