@@ -7,3 +7,9 @@ export const Options = {
   JOINED: "JOINED",
   INVITED: "INVITED",
 };
+
+export const DetailsOptions = {
+  DETAILS: "DETAILS",
+  CLIENT_KEYS: "CLIENT_KEYS",
+  USERS: "USERS",
+};
