@@ -53,6 +53,7 @@ export default function ContextDetails() {
       if (nodeContext) {
         const contextObject = await generateContextObjects(nodeContext);
         setNodeContextDetails(contextObject);
+        //TBD - after client keys and users are implemented
         setTableOptions([
           {
             name: "Details",
