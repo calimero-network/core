@@ -7,6 +7,7 @@ import OptionsHeader from "../../components/common/OptionsHeader";
 import ListTable from "../common/ListTable";
 import rowItem from "./RowItem";
 import { Options } from "../../constants/ContextConstants";
+import StatusModal from "../common/StatusModal";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -18,6 +19,10 @@ export default function ContextTable({
   currentOption,
   setCurrentOption,
   tableOptions,
+  deleteNodeContexts,
+  showStatusModal,
+  closeModal,
+  deleteStatus
 }) {
   const t = translations.contextPage;
 
@@ -28,6 +33,11 @@ export default function ContextTable({
       headerOnOptionClick={naviageToStartContext}
       headerDescription={t.contextPageDescription}
     >
+      <StatusModal
+        show={showStatusModal}
+        closeModal={closeModal}
+        modalContent={deleteStatus}
+      />
       <FlexWrapper>
         <OptionsHeader
           tableOptions={tableOptions}
@@ -44,6 +54,7 @@ export default function ContextTable({
             rowItem={rowItem}
             roundedTopList={true}
             noItemsText={t.noJoinedAppsListText}
+            onRowItemClick={deleteNodeContexts}
           />
         ) : (
           <ListTable
@@ -66,4 +77,8 @@ ContextTable.propTypes = {
   currentOption: PropTypes.string.isRequired,
   setCurrentOption: PropTypes.func.isRequired,
   tableOptions: PropTypes.array.isRequired,
+  deleteNodeContexts: PropTypes.func.isRequired,
+  showStatusModal: PropTypes.bool.isRequired,
+  closeModal: PropTypes.func.isRequired,
+  deleteStatus: PropTypes.object.isRequired
 };
