@@ -19,7 +19,7 @@ async fn handle(
         }
     };
 
-    match jsonrpc::call(
+    match jsonrpc::call2(
         state.server_sender.clone(),
         request.application_id,
         request.method,
@@ -35,9 +35,12 @@ async fn handle(
             }),
         },
         Ok(None) => Ok(MutateResponse { output: None }),
-        Err(err) => match err.downcast::<calimero_node_primitives::CallError>() {
-            Ok(err) => eyre::bail!(MutateError::CallError(err)),
-            Err(err) => eyre::bail!(err),
+        Err(err) => match err {
+            jsonrpc::CallError::UpstreamCallError(err) => eyre::bail!(MutateError::CallError(err)),
+            jsonrpc::CallError::UpstreamFunctionCallError(message) => {
+                eyre::bail!(MutateError::FunctionCallError(message.to_string()))
+            }
+            jsonrpc::CallError::InternalError(err) => eyre::bail!(err),
         },
     }
 }

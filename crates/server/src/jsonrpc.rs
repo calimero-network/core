@@ -4,6 +4,7 @@ use axum::routing::{post, MethodRouter};
 use axum::{extract, Extension, Json};
 use calimero_server_primitives::jsonrpc as jsonrpc_primitives;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info};
 
@@ -135,32 +136,51 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
     }
 }
 
-pub(crate) async fn call(
+#[derive(Debug, Error)]
+#[error("CallError")]
+pub(crate) enum CallError {
+    UpstreamCallError(calimero_node_primitives::CallError),
+    UpstreamFunctionCallError(String), // TODO use FunctionCallError from runtime-primitives once they are migrated
+    InternalError(eyre::Error),
+}
+
+pub(crate) async fn call2(
     sender: calimero_node_primitives::ServerSender,
     application_id: calimero_primitives::application::ApplicationId,
     method: String,
     args: Vec<u8>,
     writes: bool,
-) -> eyre::Result<Option<String>> {
+) -> Result<Option<String>, CallError> {
     let (outcome_sender, outcome_receiver) = oneshot::channel();
 
     sender
         .send((application_id, method, args, writes, outcome_sender))
-        .await?;
+        .await
+        .map_err(|e| CallError::InternalError(eyre::eyre!("Failed to send call message: {}", e)))?;
 
-    match outcome_receiver.await? {
+    match outcome_receiver.await.map_err(|e| {
+        CallError::InternalError(eyre::eyre!("Failed to receive call outcome result: {}", e))
+    })? {
         Ok(outcome) => {
             for log in outcome.logs {
                 info!("RPC log: {}", log);
             }
 
-            let Some(returns) = outcome.returns? else {
+            let Some(returns) = outcome
+                .returns
+                .map_err(|e| CallError::UpstreamFunctionCallError(e.to_string()))?
+            else {
                 return Ok(None);
             };
 
-            Ok(Some(String::from_utf8(returns)?))
+            Ok(Some(String::from_utf8(returns).map_err(|e| {
+                CallError::InternalError(eyre::eyre!(
+                    "Failed to convert call result to string: {}",
+                    e
+                ))
+            })?))
         }
-        Err(err) => eyre::bail!(err),
+        Err(err) => Err(CallError::UpstreamCallError(err)),
     }
 }
 

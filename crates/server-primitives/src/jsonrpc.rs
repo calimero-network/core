@@ -115,6 +115,7 @@ pub struct QueryResponse {
 pub enum QueryError {
     SerdeError { message: String },
     CallError(calimero_node_primitives::CallError),
+    FunctionCallError(String),
 }
 // *************************************************************************
 
@@ -139,5 +140,6 @@ pub struct MutateResponse {
 pub enum MutateError {
     SerdeError { message: String },
     CallError(calimero_node_primitives::CallError),
+    FunctionCallError(String),
 }
 // *************************************************************************
