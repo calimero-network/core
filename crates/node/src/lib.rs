@@ -120,7 +120,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         let (outcome_sender, outcome_receiver) = oneshot::channel();
 
                         let tx_hash = match node
-                            .call_mututate(
+                            .call_mutate(
                                 application_id.to_owned().into(),
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
@@ -401,7 +401,7 @@ impl Node {
             let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
 
             if let Err(err) = self
-                .call_mututate(
+                .call_mutate(
                     application_id.clone(),
                     method,
                     payload,
@@ -413,17 +413,20 @@ impl Node {
                 return;
             }
 
-            match inner_outcome_receiver.await {
-                Ok(outcome) => {
-                    let _ = outcome_sender.send(Ok(outcome));
+            tokio::spawn(async move {
+                match inner_outcome_receiver.await {
+                    Ok(outcome) => {
+                        let _ = outcome_sender.send(Ok(outcome));
+                    }
+                    Err(err) => {
+                        error!("Failed to receive inner outcome of a transaction: {}", err);
+                        let _ =
+                            outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(
+                                calimero_node_primitives::MutateCallError::InternalError,
+                            )));
+                    }
                 }
-                Err(err) => {
-                    error!("Failed to receive inner outcome of a transaction: {}", err);
-                    let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(
-                        calimero_node_primitives::MutateCallError::InternalError,
-                    )));
-                }
-            }
+            });
         } else {
             match self.call_query(application_id, method, payload).await {
                 Ok(outcome) => {
@@ -463,7 +466,7 @@ impl Node {
             )
     }
 
-    async fn call_mututate(
+    async fn call_mutate(
         &mut self,
         application_id: calimero_primitives::application::ApplicationId,
         method: String,
