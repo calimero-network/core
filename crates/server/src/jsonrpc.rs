@@ -144,7 +144,7 @@ pub(crate) enum CallError {
     InternalError(eyre::Error),
 }
 
-pub(crate) async fn call2(
+pub(crate) async fn call(
     sender: calimero_node_primitives::ServerSender,
     application_id: calimero_primitives::application::ApplicationId,
     method: String,

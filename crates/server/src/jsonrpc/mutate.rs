@@ -19,7 +19,7 @@ async fn handle(
         }
     };
 
-    match jsonrpc::call2(
+    match jsonrpc::call(
         state.server_sender.clone(),
         request.application_id,
         request.method,
@@ -38,7 +38,7 @@ async fn handle(
         Err(err) => match err {
             jsonrpc::CallError::UpstreamCallError(err) => eyre::bail!(MutateError::CallError(err)),
             jsonrpc::CallError::UpstreamFunctionCallError(message) => {
-                eyre::bail!(MutateError::FunctionCallError(message.to_string()))
+                eyre::bail!(MutateError::FunctionCallError(message))
             }
             jsonrpc::CallError::InternalError(err) => eyre::bail!(err),
         },
