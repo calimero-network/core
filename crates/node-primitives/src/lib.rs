@@ -29,7 +29,26 @@ pub type ServerSender = mpsc::Sender<(
 #[error("CallError")]
 #[serde(tag = "type", content = "data")]
 pub enum CallError {
-    InternalError {},
+    Query(QueryCallError),
+    Mutate(MutateCallError),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Error)]
+#[error("QueryCallError")]
+#[serde(tag = "type", content = "data")]
+pub enum QueryCallError {
+    ApplicationNotInstalled {
+        application_id: calimero_primitives::application::ApplicationId,
+    },
+    ExecutionError {
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Error)]
+#[error("MutateCallError")]
+#[serde(tag = "type", content = "data")]
+pub enum MutateCallError {
     InvalidNodeType {
         node_type: NodeType,
     },
@@ -40,5 +59,11 @@ pub enum CallError {
     ExecutionError {
         message: String,
     },
-    FailedToPushTransaction,
+    FailedToInsertTransaction {
+        message: String,
+    },
+    FailedToPushTransaction {
+        message: String,
+    },
+    InternalError {},
 }
