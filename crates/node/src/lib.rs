@@ -512,11 +512,8 @@ impl Node {
         {
             Ok(tx_hash) => tx_hash,
             Err(err) => {
-                return Err(
-                    calimero_node_primitives::MutateCallError::FailedToInsertTransaction {
-                        message: err.to_string(),
-                    },
-                );
+                error!(%e, "Failed to insert transaction into the pool");
+                return Err(calimero_node_primitives::MutateCallError::InternalError);
             }
         };
 

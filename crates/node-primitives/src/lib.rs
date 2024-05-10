@@ -59,9 +59,6 @@ pub enum MutateCallError {
     ExecutionError {
         message: String,
     },
-    FailedToInsertTransaction {
-        message: String,
-    },
     FailedToPushTransaction {
         message: String,
     },
