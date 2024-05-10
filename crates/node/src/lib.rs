@@ -92,7 +92,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 continue;
             }
             Some((application_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
-                node.handle_transaction(application_id, method, payload, write, outcome_sender).await;
+                node.handle_call(application_id, method, payload, write, outcome_sender).await;
             }
         }
     }
@@ -387,7 +387,7 @@ impl Node {
         Ok(())
     }
 
-    pub async fn handle_transaction(
+    pub async fn handle_call(
         &mut self,
         application_id: calimero_primitives::application::ApplicationId,
         method: String,
@@ -420,7 +420,7 @@ impl Node {
                 Err(err) => {
                     error!("Failed to receive inner outcome of a transaction: {}", err);
                     let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(
-                        calimero_node_primitives::MutateCallError::InternalError {},
+                        calimero_node_primitives::MutateCallError::InternalError,
                     )));
                 }
             }
@@ -527,7 +527,6 @@ impl Node {
             let _ = self.tx_pool.remove(&tx_hash).expect(
             "Failed to remove just inserted transaction from the pool. This is a bug and should be reported.",
         );
-
             return Err(
                 calimero_node_primitives::MutateCallError::FailedToPushTransaction {
                     message: err.to_string(),

@@ -65,5 +65,5 @@ pub enum MutateCallError {
     FailedToPushTransaction {
         message: String,
     },
-    InternalError {},
+    InternalError,
 }
