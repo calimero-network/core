@@ -116,7 +116,9 @@
         "deployerDropdownText": "Deployer Account"
     },
     "statusModal": {
-        "buttonContinueText": "Continue"
+        "buttonContinueText": "Continue",
+        "buttonCopyText": "Copy",
+        "buttonCloseText": "Close"
     },
     "contextPage": {
         "contextPageTitle": "Contexts",
@@ -146,5 +148,12 @@
         "startedContextMessage": "Application context has been started successfully.",
         "startContextErrorTitle": "Failed to start context",
         "startContextErrorMessage": "Failed to start the application context."
+    },
+    "exportIdentityPage": {
+        "title": "Export",
+        "description": "An export identity description encapsulates the essential details of a decentralized identifier (DID) associated with a node.",
+        "buttonExportText": "Export Identity",
+        "exportErrorTitle": "Failed to export node identity",
+        "exportSuccessTitle": "Identity exported"
     }
 }
