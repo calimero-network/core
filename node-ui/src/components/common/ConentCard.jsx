@@ -14,14 +14,6 @@ const Container = styled.div`
   border-radius: 0.5rem;
   background-color: #212325;
   color: #fff;
-  font-family: "Inter", sans-serif;
-  font-optical-sizing: auto;
-  font-weight: 500;
-  font-style: normal;
-  font-variation-settings: "slnt" 0;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-smooth: never;
 
   .header-back {
     display: flex;

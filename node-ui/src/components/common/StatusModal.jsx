@@ -17,14 +17,6 @@ const ModalWrapper = styled.div`
   items-align: center;
   background-color: #353540;
   text-align: center;
-  font-family: "Inter", sans-serif;
-  font-optical-sizing: auto;
-  font-weight: 500;
-  font-style: normal;
-  font-variation-settings: "slnt" 0;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-smooth: never;
 
   .error-icon,
   .success-icon {

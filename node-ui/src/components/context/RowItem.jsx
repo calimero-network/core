@@ -14,14 +14,6 @@ const RowItem = styled.div`
       : `
     border-top: 1px solid #23262D;
   `}
-  font-family: "Inter", sans-serif;
-  font-optical-sizing: auto;
-  font-weight: 500;
-  font-style: normal;
-  font-variation-settings: "slnt" 0;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-smooth: never;
 
   .row-item {
     width: 50%;

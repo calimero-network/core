@@ -12,14 +12,6 @@ const NavigationWrapper = styled.div`
   padding-right: 2rem;
   padding-top: 2rem;
   height: 100vh;
-  font-family: "Inter", sans-serif;
-  font-optical-sizing: auto;
-  font-weight: 500;
-  font-style: normal;
-  font-variation-settings: "slnt" 0;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-smooth: never;
 
   .logo-wrapper {
     display: flex;

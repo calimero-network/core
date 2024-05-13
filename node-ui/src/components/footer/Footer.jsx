@@ -13,9 +13,6 @@ const FooterWrapper = styled.div`
 
   .footer-text {
     margin: 0px 0px 0.35em;
-    font-family: Inter, Poppins, "Roboto Mono", -apple-system,
-      BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif,
-      "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
     font-weight: 400;
     font-size: 14px;
     line-height: 21px;

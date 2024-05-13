@@ -94,9 +94,6 @@ const Container = styled.div`
         border-radius: 8px;
         white-space: nowrap;
         color: rgb(23, 23, 29);
-        font-family: Inter, Poppins, "Roboto Mono", -apple-system,
-          BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif,
-          "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
         font-weight: 600;
         font-size: 16px;
         line-height: 24px;
