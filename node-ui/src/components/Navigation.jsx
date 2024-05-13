@@ -4,16 +4,15 @@ import CalimeroLogo from "../assets/calimero-logo.svg";
 import translations from "../constants/en.global.json";
 import { Link } from "react-router-dom";
 import { useLocation } from "react-router-dom";
-import { truncatePublicKey } from "../utils/displayFunctions";
-import { getPublicKey } from "../utils/rootkey";
 
 const NavigationWrapper = styled.div`
   background-color: #121216;
-  width: 224px;
-  padding-left: 24px;
-  padding-right: 24px;
-  padding-top: 12px;
+  width: fit-content;
+  padding-left: 2rem;
+  padding-right: 2rem;
+  padding-top: 2rem;
   height: 100vh;
+
   .logo-wrapper {
     display: flex;
     -webkit-box-pack: justify;
@@ -27,94 +26,59 @@ const NavigationWrapper = styled.div`
   }
 
   .calimero-logo {
-    width: 140px;
-    height: 43.3px;
+    width: 8.75rem;
+    height: 2.706rem;
   }
+
   .dashboard-text {
     position: absolute;
     left: 2.8rem;
     top: 2rem;
     width: max-content;
-    font-size: 10px;
+    font-size: 0.625rem;
     color: #fff;
   }
+
   .items-wrapper {
-    margin-top: 24px;
+    margin-top: 4.5rem;
     display: flex;
     flex-direction: column;
   }
-  .user-container {
-    background-color: #353540;
-    border-radius: 8px;
-    display: flex;
-    justify-content: start;
-    align-items: center;
-    gap: 8px;
-    padding-top: 8px;
-    padding-bottom: 8px;
-    cursor: pointer;
-  }
-  .user-container:hover {
-    background-color: #44444f;
-  }
-  .user-icon {
-    margin-left: 12px;
-    background-color: #d48558;
-    border-radius: 100%;
-    height: 24px;
-    width: 24px;
-  }
-  .separator {
-    border-left: 1px solid rgba(255, 255, 255, 0.1);
-    height: 44px;
-  }
-  .user-title {
-    color: #fff;
-    opacity: 0.7;
-    font-size: 12px;
-    font-weight: normal;
-  }
-  .user-pk {
-    color: #fff;
-    font-size: 14px;
-    font-weight: medium;
-    position: relative;
-    top: 0px;
-  }
-  .text-container {
-    display: flex;
-    flex-direction: column;
-    gap: 0px;
-  }
+
   .navigation-items-wrapper {
     display: flex;
     flex-direction: column;
     justify-content: center;
     width: 100%;
-    padding-left: 20px;
-    padding-top: 24px;
-    gap: 24px;
+    gap: 0.25rem;
   }
+
   .nav-item-active {
-    color: #ff842d !important;
+    color: #fff !important;
+    background-color: #212325;
   }
+
   .nav-item,
   .nav-item-active {
-    color: #fff;
-    font-size: 14px;
-    font-weight: medium;
+    color: #9ca3af;
     cursor: pointer;
     text-decoration: none;
-    display: flex;
-    justify-content: start;
-    align-items: center;
-    gap: 4px;
+    font-family: Inter;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.25rem;
+    text-align: left;
+    padding: 0.5rem;
+    border-radius: 0.5rem;
+    width: 14.5rem;
   }
-  .active-dot {
-    width: 2px;
-    height: 2px;
-    border-radius: 100%;
-    background-color: #ff842d;
+
+  .nav-item:hover {
+    color: #fff;
+  }
+
+  .logout:hover {
+    color: #4cfafc;
   }
 `;
 
@@ -134,12 +98,26 @@ const NavigationItems = [
     title: "Applications",
     path: "/applications",
   },
+  {
+    id: 4,
+    title: "Export",
+    path: "/export",
+  },
+  {
+    id: 5,
+    title: "Logout",
+    path: "",
+  },
 ];
 
 export function Navigation() {
   const t = translations.navigation;
   const location = useLocation();
-  const publicKey = getPublicKey();
+
+  const logout = () => {
+    localStorage.clear();
+    window.location.href = "/";
+  }
   return (
     <NavigationWrapper>
       <div className="logo-wrapper">
@@ -153,31 +131,26 @@ export function Navigation() {
         </div>
       </div>
       <div className="items-wrapper">
-        <div className="user-container">
-          <div className="user-icon" />
-          <div className="separator" />
-          <div className="text-container">
-            <div className="user-title">Public Key</div>
-            {publicKey && (
-              <span className="user-pk">{truncatePublicKey(publicKey)}</span>
-            )}
-          </div>
-        </div>
         <div className="navigation-items-wrapper">
-          {NavigationItems.map((item) => (
-            <Link
-              to={item.path}
-              key={item.id}
-              className={
-                location.pathname === item.path ? "nav-item-active" : "nav-item"
-              }
-            >
-              <span>{item.title}</span>
-              {location.pathname === item.path && (
-                <div className="active-dot"></div>
-              )}
-            </Link>
-          ))}
+          {NavigationItems.map((item) =>
+            item.id === 5 ? (
+              <div key={item.id} className="nav-item logout" onClick={logout}>
+                {item.title}
+              </div>
+            ) : (
+              <Link
+                to={item.path}
+                key={item.id}
+                className={
+                  location.pathname === item.path
+                    ? "nav-item-active"
+                    : "nav-item"
+                }
+              >
+                {item.title}
+              </Link>
+            )
+          )}
         </div>
       </div>
     </NavigationWrapper>

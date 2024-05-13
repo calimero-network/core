@@ -116,7 +116,10 @@
         "deployerDropdownText": "Deployer Account"
     },
     "statusModal": {
-        "buttonContinueText": "Continue"
+        "buttonContinueText": "Continue",
+        "buttonCopyText": "Copy",
+        "buttonCloseText": "Close",
+        "buttonCancelText": "Cancel"
     },
     "contextPage": {
         "contextPageTitle": "Contexts",
@@ -140,6 +143,10 @@
             "titleApps": "Installed Application",
             "titleStorage": "Storage",
             "labelStorageText": "Used: "
+        },
+        "actionDialog": {
+            "title": "Delete Context",
+            "subtitle": "Are you sure you want to delete this context? This action cannot be undone."
         }
     },
     "startContextPage": {
@@ -160,5 +167,12 @@
         "startedContextMessage": "Application context has been started successfully.",
         "startContextErrorTitle": "Failed to start context",
         "startContextErrorMessage": "Failed to start the application context."
+    },
+    "exportIdentityPage": {
+        "title": "Export",
+        "description": "Export decentralized identifiers (DIDs) associated with the node.",
+        "buttonExportText": "Export Identity",
+        "exportErrorTitle": "Failed to export node identity",
+        "exportSuccessTitle": "Identity exported"
     }
 }

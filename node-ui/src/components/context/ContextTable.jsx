@@ -7,6 +7,8 @@ import OptionsHeader from "../../components/common/OptionsHeader";
 import ListTable from "../common/ListTable";
 import rowItem from "./RowItem";
 import { Options } from "../../constants/ContextConstants";
+import StatusModal from "../common/StatusModal";
+import ActionDialog from "../common/ActionDialog";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -18,6 +20,13 @@ export default function ContextTable({
   currentOption,
   setCurrentOption,
   tableOptions,
+  deleteNodeContext,
+  showStatusModal,
+  closeModal,
+  deleteStatus,
+  showActionDialog,
+  setShowActionDialog,
+  showModal
 }) {
   const t = translations.contextPage;
 
@@ -28,6 +37,18 @@ export default function ContextTable({
       headerOnOptionClick={naviageToStartContext}
       headerDescription={t.contextPageDescription}
     >
+      <StatusModal
+        show={showStatusModal}
+        closeModal={closeModal}
+        modalContent={deleteStatus}
+      />
+      <ActionDialog
+        show={showActionDialog}
+        closeDialog={() => setShowActionDialog(false)}
+        onConfirm={deleteNodeContext}
+        title={t.actionDialog.title}
+        subtitle={t.actionDialog.subtitle}
+      />
       <FlexWrapper>
         <OptionsHeader
           tableOptions={tableOptions}
@@ -43,6 +64,7 @@ export default function ContextTable({
             rowItem={rowItem}
             roundedTopList={true}
             noItemsText={t.noJoinedAppsListText}
+            onRowItemClick={showModal}
           />
         ) : (
           <ListTable
@@ -65,4 +87,11 @@ ContextTable.propTypes = {
   currentOption: PropTypes.string.isRequired,
   setCurrentOption: PropTypes.func.isRequired,
   tableOptions: PropTypes.array.isRequired,
+  deleteNodeContext: PropTypes.func.isRequired,
+  showStatusModal: PropTypes.bool.isRequired,
+  closeModal: PropTypes.func.isRequired,
+  deleteStatus: PropTypes.object.isRequired,
+  showActionDialog: PropTypes.bool.isRequired,
+  setShowActionDialog: PropTypes.func.isRequired,
+  showModal: PropTypes.func.isRequired
 };

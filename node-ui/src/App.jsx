@@ -8,6 +8,7 @@ import UploadApp from "./pages/UploadApp";
 import Contexts from "./pages/Contexts";
 import StartContext from "./pages/StartContext";
 import ContextDetails from "./pages/ContextDetails";
+import Export from "./pages/Export";
 
 import "bootstrap/dist/css/bootstrap.min.css";
 
@@ -24,6 +25,7 @@ export default function App() {
           <Route path="/contexts" element={<Contexts />} />
           <Route path="/start-context" element={<StartContext />} />
           <Route path="/context/:id" element={<ContextDetails />} />
+          <Route path="/export" element={<Export />} />
         </Routes>
       </BrowserRouter>
     </>

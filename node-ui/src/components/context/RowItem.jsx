@@ -1,5 +1,6 @@
 import React from "react";
 import styled from "styled-components";
+import MenuIconDropdown from "../common/MenuIconDropdown";
 
 const RowItem = styled.div`
   display: flex;
@@ -9,7 +10,8 @@ const RowItem = styled.div`
       ? `
     border-top: 1px solid #23262D;
     border-bottom: 1px solid #23262D;
-  ` : `
+  `
+      : `
     border-top: 1px solid #23262D;
   `}
   -webkit-font-smoothing: antialiased;
@@ -46,15 +48,29 @@ const RowItem = styled.div`
     jusitify-content: center;
     align-items: center;
   }
+
+  .menu-dropdown {
+    margin-right: 1rem;
+  }
 `;
 
-export default function rowItem(item, id, count) {
+export default function rowItem(item, id, count, onitemClicked) {
   return (
     <RowItem key={item.id} $borders={id === count}>
       <a href={`/admin/context/${item.id}`} className="row-item id">
         {item.id}
       </a>
       <div className="row-item name">{item.name}</div>
+      <div className="menu-dropdown">
+        <MenuIconDropdown
+          options={[
+            {
+              buttonText: "Delete Context",
+              onClick: () => onitemClicked(item.id),
+            },
+          ]}
+        />
+      </div>
     </RowItem>
   );
 }
