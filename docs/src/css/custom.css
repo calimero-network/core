@@ -13,11 +13,13 @@
   --ifm-color-primary-light: #39c5c8;
   --ifm-color-primary-lighter: #43c7ca;
   --ifm-color-primary-lightest: #5ed0d2;
-  --ifm-background-color: #111111;
+  --ifm-code-font-size: 95%;
   --docusaurus-highlighted-code-line-bg: #fff;
+
+  /* --ifm-background-color: #111111;
   --ifm-font-color-base: #fff;
   --ifm-menu-color: #43F9FC;
-  --ifm-code-background: #323234;
+  --ifm-code-background: #323234; */
 }
 
 /* For readability concerns, you should choose a lighter palette in dark mode. */
@@ -29,12 +31,13 @@
   --ifm-color-primary-light: #39c5c8;
   --ifm-color-primary-lighter: #43c7ca;
   --ifm-color-primary-lightest: #5ed0d2;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
   --ifm-background-color: #111111;
   --ifm-code-background: #e90cd6;
 }
 
 .footer--dark{background-color: #247e80;}
-.p{color: #fff;}
-.menu__link{color: #fff;}
-.menu__link--active{color: #5ed0d2;}
-.menu__link--hover{color: #5ed0d2;}
+/* .p{color: #fff;} */
+/* .menu__link{color: #fff;} */
+/* .menu__link--active{color: #5ed0d2;} */
+/* .menu__link--hover{color: #5ed0d2;} */

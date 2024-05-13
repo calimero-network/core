@@ -1,5 +1,6 @@
 import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
+import { themes as prismThemes } from "prism-react-renderer";
 
 const config: Config = {
   title: "Calimero 2.0",
@@ -32,6 +33,7 @@ const config: Config = {
       "classic",
       {
         docs: {
+          sidebarPath: "./sidebars.ts",
           routeBasePath: "/", // Serve the docs at the site's root
           breadcrumbs: true,
         },
@@ -44,7 +46,9 @@ const config: Config = {
   ],
   themeConfig: {
     colorMode: {
-      disableSwitch: true,
+      disableSwitch: false,
+      defaultMode: "dark",
+      respectPrefersColorScheme: true,
     },
     docs: {
       sidebar: {
@@ -59,6 +63,31 @@ const config: Config = {
       },
       items: [
         {
+          to: "/category/explore",
+          position: "left",
+          label: "Explore",
+        },
+        {
+          to: "/category/learn",
+          position: "left",
+          label: "Learn",
+        },
+        {
+          to: "/category/build",
+          position: "left",
+          label: "Build",
+        },
+        {
+          to: "/category/contribute",
+          position: "left",
+          label: "Contribute",
+        },
+        {
+          to: "/category/resources",
+          position: "left",
+          label: "Resources",
+        },
+        {
           href: "https://github.com/calimero-network/core",
           label: "GitHub",
           position: "right",
@@ -68,6 +97,10 @@ const config: Config = {
     footer: {
       style: "dark",
       copyright: `Copyright © ${new Date().getFullYear()} Calimero Limited LLC.`,
+    },
+    prism: {
+      theme: prismThemes.github,
+      darkTheme: prismThemes.dracula,
     },
   } satisfies Preset.ThemeConfig,
 };
