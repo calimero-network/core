@@ -55,7 +55,7 @@ const RowItem = styled.div`
 export default function rowItem(item, id, count, onitemClicked) {
   return (
     <RowItem key={item.id} $borders={id === count}>
-      <a href={`/admin/context/${item.id}`} className="row-item id">
+      <a href={`/admin/contexts/${item.id}`} className="row-item id">
         {item.id}
       </a>
       <div className="row-item name">{item.name}</div>

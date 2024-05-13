@@ -23,8 +23,8 @@ export default function App() {
           <Route path="/applications" element={<Applications />} />
           <Route path="/upload-app" element={<UploadApp />} />
           <Route path="/contexts" element={<Contexts />} />
-          <Route path="/start-context" element={<StartContext />} />
-          <Route path="/context/:id" element={<ContextDetails />} />
+          <Route path="/contexts/start-context" element={<StartContext />} />
+          <Route path="/contexts/:id" element={<ContextDetails />} />
           <Route path="/export" element={<Export />} />
         </Routes>
       </BrowserRouter>

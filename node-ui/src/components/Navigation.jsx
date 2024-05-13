@@ -141,7 +141,7 @@ export function Navigation() {
                 to={item.path}
                 key={item.id}
                 className={
-                  location.pathname === item.path
+                  location.pathname === item.path || location.pathname.includes(item.path)
                     ? "nav-item-active"
                     : "nav-item"
                 }
