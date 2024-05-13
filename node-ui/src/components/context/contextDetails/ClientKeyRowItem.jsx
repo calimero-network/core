@@ -34,7 +34,7 @@ const RowItem = styled.div`
   }
 `;
 
-export default function rowItem(item, id, count) {
+export default function clientKeyRowItem(item, id, count) {
   return (
     <RowItem key={item.publickey} $borders={id === count}>
       <div className="row-item type">{item.type}</div>
