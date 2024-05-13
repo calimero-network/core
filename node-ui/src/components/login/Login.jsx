@@ -7,7 +7,7 @@ import styled from "styled-components";
 import translations from "../../constants/en.global.json";
 
 const LoginWrapper = styled.div`
-  background-color: #121216;
+  background-color: #111111;
   height: 100vh;
   width: 100%;
 

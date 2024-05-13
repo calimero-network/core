@@ -7,7 +7,7 @@ import StatusModal from "../common/StatusModal";
 import translations from "../../constants/en.global.json";
 
 const Container = styled.div`
-  background-color: #121216;
+  background-color: #111111;
   height: 100vh;
   width: 100%;
 

@@ -6,7 +6,6 @@ import Button from "../common/Button";
 import StatusModalItem from "../common/StatusModalItem";
 
 const CardWrapper = styled.div`
-  margin: 2rem;
   padding: 2rem 2rem 3.75rem;
   height: fit-content;
   flex: 1;

@@ -21,7 +21,7 @@ const RowItem = styled.div`
   .row-item {
     width: 50%;
     padding: 0.75rem 0rem;
-    height: 3.5rem;
+    min-height: 3.5rem;
   }
 
   .id {
@@ -36,6 +36,7 @@ const RowItem = styled.div`
     text-align: left;
     color: #fff;
     text-decoration: none;
+    word-break: break-word;
 
     &:hover {
       color: #76f5f9;
@@ -47,6 +48,7 @@ const RowItem = styled.div`
     display: flex;
     jusitify-content: center;
     align-items: center;
+    padding-left: 1rem;
   }
 
   .menu-dropdown {
