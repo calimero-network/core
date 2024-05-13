@@ -43,20 +43,30 @@ const DropdownWrapper = styled.div`
     .menu-dropdown {
       width: 100%;
       height: 100%;
-      background-color: #17171d;
+      background-color: #2D2D2D;
       display: flex;
       flex-direction: column;
       justify-content: start;
-      padding: 4px 0 4px 14px;
+      padding: 8px 0 8px 0px;
       gap: 4px;
       border-radius: 4px;
 
       .menu-item {
         cursor: pointer;
-        color: #fff;
+        color: #9C9DA3;
         font-size: 14px;
+        font-family: "Inter", sans-serif;
+        font-optical-sizing: auto;
+        font-weight: 400;
+        font-style: normal;
+        font-variation-settings: "slnt" 0;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        font-smooth: never;
+
         &:hover {
           background-color: transparent;
+          color: #fff;
         }
       }
     }

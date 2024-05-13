@@ -11,6 +11,13 @@ const ExportWrapper = styled.div`
   width: 100%;
   padding: 2rem;
   gap: 1rem;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+  font-variation-settings: "slnt" 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
 `;
 export default function Export() {
   const t = translations.exportIdentityPage;

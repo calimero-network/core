@@ -140,7 +140,7 @@
             "labelDescriptionText": "Description: ",
             "labelRepositoryText": "Repository URL: ",
             "lableVersionText": "Version: ",
-            "titleApps": "Installed Application",
+            "titleApps": "Installed application",
             "titleStorage": "Storage",
             "labelStorageText": "Used: "
         },

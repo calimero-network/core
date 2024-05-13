@@ -6,7 +6,14 @@ import translations from "../../../constants/en.global.json";
 
 const DetailsCardWrapper = styled.div`
   padding-left: 1rem;
-  font-family: Inter;
+  font-family: "Inter", sans-serif;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+  font-variation-settings: "slnt" 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
 
   .container {
     padding: 1rem;
@@ -58,7 +65,7 @@ export default function DetailsCard({ details }) {
           {t.labelIdText}
           {details.applicationId}
         </div>
-        <div className="highlight title">{t.titleApps}</div>
+        <div className="highlight title inter-mid">{t.titleApps}</div>
         <div className="item">
           {t.labelNameText}
           <span className="highlight">{details.name}</span>

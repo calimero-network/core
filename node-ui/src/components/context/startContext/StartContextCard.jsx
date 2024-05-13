@@ -11,9 +11,15 @@ const Wrapper = styled.div`
   flex: 1;
   flex-direction: column;
   padding: 1rem;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+  font-variation-settings: "slnt" 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
 
   .section-title {
-    font-family: Inter;
     font-size: 0.875rem;
     font-weight: 500;
     line-height: 1.25rem;
@@ -31,7 +37,6 @@ const Wrapper = styled.div`
     .selected-app {
       padding-top: 0.25rem;
       padding-left: 0.5rem;
-      font-family: Inter;
       font-size: 0.875rem;
       font-weight: 500;
       line-height: 1.25rem;
@@ -72,7 +77,6 @@ const Wrapper = styled.div`
       gap: 0.5rem;
 
       .label {
-        font-family: Inter;
         font-size: 0.75rem;
         font-weight: 500;
         line-height: 0.875rem;

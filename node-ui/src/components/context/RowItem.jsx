@@ -14,6 +14,11 @@ const RowItem = styled.div`
       : `
     border-top: 1px solid #23262D;
   `}
+  font-family: "Inter", sans-serif;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+  font-variation-settings: "slnt" 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-smooth: never;
@@ -29,7 +34,6 @@ const RowItem = styled.div`
     jusitify-content: center;
     align-items: center;
     padding-left: 1.5rem;
-    font-family: Inter;
     font-size: 0.875rem
     font-weight: 500;
     line-height: 1.25rem;

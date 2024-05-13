@@ -13,8 +13,12 @@ const Container = styled.div`
   padding: 2rem;
   border-radius: 0.5rem;
   background-color: #212325;
-  font-family: Inter;
   color: #fff;
+  font-family: "Inter", sans-serif;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+  font-variation-settings: "slnt" 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-smooth: never;

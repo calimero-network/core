@@ -16,7 +16,6 @@ const CardWrapper = styled.div`
   gap: 1rem;
 
   .title {
-    font-family: Inter;
     font-size: 1rem;
     font-weight: 500;
     line-height: 1.25rem;
@@ -25,7 +24,6 @@ const CardWrapper = styled.div`
   }
 
   .description {
-    font-family: Inter;
     font-size: 0.875rem;
     font-weight: 500;
     line-height: 1.25rem;

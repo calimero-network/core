@@ -3,19 +3,22 @@ import styled from "styled-components";
 import PropTypes from "prop-types";
 
 const HeaderGrid = styled.div`
-  font-family: Inter;
   width: 210px;
   display: grid;
   grid-template-columns: repeat(${(props) => props.$optionsCount}, 1fr);
   gap: 1rem;
   padding: 0.75rem 1.5rem;
+  font-family: "Inter", sans-serif;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+  font-variation-settings: "slnt" 0;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-smooth: never;
 
   .header-option {
     font-size: 0.75rem;
-    font-weight: 500;
     line-height: 1rem;
     text-align: center;
     color: #fff;

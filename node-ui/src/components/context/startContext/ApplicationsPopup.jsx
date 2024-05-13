@@ -57,12 +57,12 @@ export default function ApplicationsPopup({
         setTableOptions([
           {
             name: "Available",
-            id: Options.JOINED,
+            id: Options.AVAILABLE,
             count: tempApplications.length,
           },
           {
             name: "Owned",
-            id: Options.INVITED,
+            id: Options.OWNED,
             count: 0,
           },
         ]);
