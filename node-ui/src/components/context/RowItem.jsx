@@ -18,11 +18,14 @@ const RowItem = styled.div`
 
   .row-item {
     width: 50%;
-    padding: 0.75rem 0rem;
-    height: 2.5rem;
-
+    padding: 0.75rem 0.5rem;
+    height: 3.5rem;
   }
+
   .id {
+    display: flex;
+    jusitify-content: center;
+    align-items: center;
     padding-left: 1.5rem;
     font-family: Inter;
     font-size: 0.875rem
@@ -39,7 +42,7 @@ const RowItem = styled.div`
 
   .name {
     color: #6B7280;
-    display: flex; 
+    display: flex;
     jusitify-content: center;
     align-items: center;
   }
