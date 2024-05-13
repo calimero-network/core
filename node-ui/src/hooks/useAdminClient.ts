@@ -1,7 +1,7 @@
 import axios from "axios";
 
 export function useAdminClient() {
-  const installApplication = async (selectedPackage, selectedVersion) => {
+  const installApplication = async (selectedPackage: string, selectedVersion: string) => {
     try {
       const response = await axios.post("/admin-api/install-application", {
         application: selectedPackage,

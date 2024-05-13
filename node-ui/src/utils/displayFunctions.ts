@@ -1,4 +1,4 @@
-export const truncatePublicKey = (publicKey) => {
+export const truncatePublicKey = (publicKey: string): string => {
   return `
       ${publicKey.split(":")[1].substring(0, 4)}...${publicKey
     .split(":")[1]
@@ -8,7 +8,7 @@ export const truncatePublicKey = (publicKey) => {
     )}`;
 };
 
-export const truncateHash = (hash) => {
+export const truncateHash = (hash: string): string => {
   return `
       ${hash.substring(0, 4)}...${hash
     .substring(
@@ -17,7 +17,7 @@ export const truncateHash = (hash) => {
     )}`;
 };
 
-export const getStatus = (active, revoked) => {
+export const getStatus = (active: boolean, revoked: boolean): string => {
   if (active) {
     return "active";
   } else if (revoked) {
