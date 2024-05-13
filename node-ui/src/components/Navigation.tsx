@@ -121,9 +121,7 @@ export function Navigation() {
     <NavigationWrapper>
       <div className="logo-wrapper">
         <div className="logo-container">
-          <img
-            src={CalimeroLogo}
-            alt="Calimero Admin Dashboard Logo"
+          <CalimeroLogo
             className="calimero-logo"
           />
           <h4 className="dashboard-text">{t.logoDashboardText}</h4>

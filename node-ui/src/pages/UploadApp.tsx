@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, ChangeEvent } from "react";
 import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
 import { UploadAppContent } from "../components/uploadApp/UploadAppContent";
 import { UploadApplication } from "../components/uploadApp/UploadApplication";
 import { AddPackageForm } from "../components/uploadApp/AddPackageForm";
 import { UploadSwitch } from "../components/uploadApp/UploadSwitch";
-import { setupWalletSelector } from "@near-wallet-selector/core";
+import { BrowserWallet, setupWalletSelector } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { useRPC } from "../hooks/useNear";
 import axios from "axios";
@@ -26,6 +26,7 @@ export default function UploadApp() {
   const [walletAccounts, setWalletAccounts] = useState([]);
   const [deployerAccount, setDeployerAccount] = useState(null);
   const [showStatusModal, setShowStatusModal] = useState(false);
+  // add types here
   const [packageInfo, setPackageInfo] = useState({
     name: "",
     description: "",
@@ -73,20 +74,22 @@ export default function UploadApp() {
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
+      // @ts-expect-error: The 'import.meta' meta-property is only allowed when the '--module' option is 'es2020'
       network: import.meta.env.VITE_NEAR_ENVIRONMENT ?? "testnet",
       modules: [setupMyNearWallet()],
     });
-    const wallet = await selector.wallet("my-near-wallet");
+    const wallet: BrowserWallet = await selector.wallet("my-near-wallet");
     await wallet.signOut();
     wallet.signIn({ contractId: "calimero-package-manager.testnet" });
   };
 
-  const handleFileChange = (event) => {
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files[0];
     if (file && file.name.endsWith(".wasm")) {
       const reader = new FileReader();
       reader.onload = async (e) => {
-        const arrayBuffer = new Uint8Array(e.target.result);
+        // TEST
+        const arrayBuffer = new Uint8Array(e.target.result as ArrayBufferLike);
         const bytes = new Uint8Array(arrayBuffer);
         const blob = new Blob([bytes], { type: "application/wasm" });
 
@@ -140,10 +143,12 @@ export default function UploadApp() {
                 repository: packageInfo.repository,
               },
               gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
+              deposit: ""
             },
           },
         ],
       });
+      // @ts-expect-error: Property 'status' does not exist on type 'void | FinalExecutionOutcome'.
       if (res.status.SuccessValue) {
         setDeployStatus({
           title: "Package added successfully",
@@ -189,11 +194,12 @@ export default function UploadApp() {
                 hash: releaseInfo.hash,
               },
               gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
+              deposit: ""
             },
           },
         ],
       });
-
+      // @ts-expect-error: Property 'status' does not exist on type 'void | FinalExecutionOutcome'.
       if (res.status.SuccessValue === '') {
         setDeployStatus({
           title: "Release added successfully",

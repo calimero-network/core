@@ -5,7 +5,7 @@ const JSON_RPC_ENDPOINT = "https://rpc.testnet.near.org";
 
 export function useRPC() {
   const getPackages = async () => {
-    const provider = new nearAPI.providers.JsonRpcProvider(JSON_RPC_ENDPOINT);
+    const provider = new nearAPI.providers.JsonRpcProvider({ url: JSON_RPC_ENDPOINT });
 
     const rawResult = await provider.query({
       request_type: "call_function",
@@ -19,12 +19,12 @@ export function useRPC() {
       ),
       finality: "final",
     });
-
+    // @ts-expect-error: Property 'result' does not exist on type 'QueryResponseKind'
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
-  const getPackage = async (id) => {
-    const provider = new nearAPI.providers.JsonRpcProvider(JSON_RPC_ENDPOINT);
+  const getPackage = async (id: string) => {
+    const provider = new nearAPI.providers.JsonRpcProvider({ url: JSON_RPC_ENDPOINT });
 
     const rawResult = await provider.query({
       request_type: "call_function",
@@ -37,12 +37,12 @@ export function useRPC() {
       ),
       finality: "final",
     });
-
+    // @ts-expect-error: Property 'result' does not exist on type 'QueryResponseKind'
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
-  const getReleases = async (id) => {
-    const provider = new nearAPI.providers.JsonRpcProvider(JSON_RPC_ENDPOINT);
+  const getReleases = async (id: string) => {
+    const provider = new nearAPI.providers.JsonRpcProvider({ url: JSON_RPC_ENDPOINT });
 
     const rawResult = await provider.query({
       request_type: "call_function",
@@ -57,7 +57,7 @@ export function useRPC() {
       ),
       finality: "final",
     });
-
+    // @ts-expect-error: Property 'result' does not exist on type 'QueryResponseKind'
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 

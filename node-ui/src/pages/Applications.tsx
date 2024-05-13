@@ -16,14 +16,29 @@ export const Tabs = {
   APPLICATION_LIST: 1,
 };
 
+interface Package {
+  id: string;
+  name: string;
+  description: string;
+  repository: string;
+  owner: string;
+}
+
+interface Relese {
+  version: string;
+  notes: string;
+  path: string;
+  hash: string;
+}
+
 export default function Applications() {
   const t = translations.applicationsPage.installApplication;
   const navigate = useNavigate();
   const { getPackages, getReleases, getPackage } = useRPC();
   const { installApplication } = useAdminClient();
   const [selectedTab, setSelectedTab] = useState(Tabs.APPLICATION_LIST);
-  const [selectedPackage, setSelectedPackage] = useState();
-  const [selectedRelease, setSelectedRelease] = useState();
+  const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
+  const [selectedRelease, setSelectedRelease] = useState<Relese | null>(null);
   const [packages, setPackages] = useState([]);
   const [releases, setReleases] = useState([]);
   const [applications, setApplications] = useState([]);
@@ -63,6 +78,9 @@ export default function Applications() {
   }, [selectedTab]);
 
   const installApplicationHandler = async () => {
+    if (!selectedPackage || !selectedRelease) {
+      return;
+    }
     const response = await installApplication(
       selectedPackage.id,
       selectedRelease.version
