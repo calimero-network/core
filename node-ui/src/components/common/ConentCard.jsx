@@ -15,6 +15,9 @@ const Container = styled.div`
   background-color: #212325;
   font-family: Inter;
   color: #fff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
 
   .header-back {
     display: flex;

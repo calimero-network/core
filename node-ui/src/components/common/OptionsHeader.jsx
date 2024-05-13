@@ -9,6 +9,9 @@ const HeaderGrid = styled.div`
   grid-template-columns: repeat(${(props) => props.$optionsCount}, 1fr);
   gap: 1rem;
   padding: 0.75rem 1.5rem;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
 
   .header-option {
     font-size: 0.75rem;

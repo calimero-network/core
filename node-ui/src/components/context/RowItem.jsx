@@ -12,6 +12,9 @@ const RowItem = styled.div`
   ` : `
     border-top: 1px solid #23262D;
   `}
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
 
   .row-item {
     width: 50%;

@@ -8,6 +8,9 @@ const ListWrapper = styled.div`
   flex: 1;
   font-family: Inter;
   width: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
 
   .table-description {
     padding-left: 1rem;
