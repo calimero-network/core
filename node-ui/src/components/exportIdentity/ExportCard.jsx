@@ -7,9 +7,7 @@ import StatusModalItem from "../common/StatusModalItem";
 
 const CardWrapper = styled.div`
   margin: 2rem;
-  padding-top: 2rem;
-  padding-left: 2rem;
-  padding-bottom: 3.75rem;
+  padding: 2rem 2rem 3.75rem;
   height: fit-content;
   flex: 1;
   background-color: #212325;
