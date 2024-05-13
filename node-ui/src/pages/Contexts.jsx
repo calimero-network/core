@@ -23,13 +23,21 @@ const initialOptions = [
 
 export default function Contexts() {
   const navigate = useNavigate();
+  const { getPackage } = useRPC();
+  const [currentOption, setCurrentOption] = useState(Options.JOINED);
+  const [tableOptions, setTableOptions] = useState(initialOptions);
+  const [showStatusModal, setShowStatusModal] = useState(false);
+  const [showActionDialog, setShowActionDialog] = useState(false);
+  const [selectedContextId, setSelectedContextId] = useState(null);
+  const [deleteStatus, setDeleteStatus] = useState({
+    title: "",
+    message: "",
+    error: false,
+  });
   const [nodeContextList, setNodeContextList] = useState({
     joined: [],
     invited: [],
   });
-  const [currentOption, setCurrentOption] = useState(Options.JOINED);
-  const [tableOptions, setTableOptions] = useState(initialOptions);
-  const { getPackage } = useRPC();
 
   const generateContextObjects = async (contexts) => {
     const tempContextObjects = await Promise.all(
@@ -41,33 +49,71 @@ export default function Contexts() {
     return tempContextObjects;
   };
 
+  const fetchNodeContexts = async () => {
+    const nodeContexts = await apiClient.context().getContexts();
+    if (nodeContexts) {
+      const joinedContexts = await generateContextObjects(
+        nodeContexts.joined
+      );
+      setNodeContextList(prevState => ({
+        ...prevState,
+        joined: joinedContexts
+      }));
+      setTableOptions([
+        {
+          name: "Joined",
+          id: Options.JOINED,
+          count: nodeContexts.joined?.length ?? 0,
+        },
+        {
+          name: "Invited",
+          id: Options.INVITED,
+          count: nodeContexts.invited?.length ?? 0,
+        },
+      ]);
+    }
+  };
+
   useEffect(() => {
-    const fetchNodeContexts = async () => {
-      const nodeContexts = await apiClient.context().getContexts();
-      if (nodeContexts) {
-        const joinedContexts = await generateContextObjects(
-          nodeContexts.joined
-        );
-        setNodeContextList(prevState => ({
-          ...prevState,
-          joined: joinedContexts
-        }));
-        setTableOptions([
-          {
-            name: "Joined",
-            id: Options.JOINED,
-            count: nodeContexts.joined?.length ?? 0,
-          },
-          {
-            name: "Invited",
-            id: Options.INVITED,
-            count: nodeContexts.invited?.length ?? 0,
-          },
-        ]);
-      }
-    };
     fetchNodeContexts();
   }, []);
+
+  const deleteNodeContext = async () => {
+    const nodeContexts = await apiClient.context().deleteContext(selectedContextId);
+    if (nodeContexts) {
+      setDeleteStatus({
+        title: "Success",
+        message: `Context with id: ${selectedContextId} deleted.`,
+        error: false,
+      });
+    } else {
+      setDeleteStatus({
+        title: "Error",
+        message: `Could not delete context with id: ${selectedContextId}!`,
+        error: true,
+      });
+    }
+    setSelectedContextId(null);
+    setShowActionDialog(false);
+    setShowStatusModal(true);
+  };
+
+  const closeStatusModal = async() => {
+    setShowStatusModal(false);
+    if(!deleteStatus.error) {
+      await fetchNodeContexts();
+    }
+    setDeleteStatus({
+      title: "",
+      message: "",
+      error: false,
+    });
+  };
+
+  const showModal = (id) => {
+    setSelectedContextId(id);
+    setShowActionDialog(true);
+  }
 
   return (
     <FlexLayout>
@@ -79,6 +125,13 @@ export default function Contexts() {
           currentOption={currentOption}
           setCurrentOption={setCurrentOption}
           tableOptions={tableOptions}
+          deleteNodeContext={deleteNodeContext}
+          showStatusModal={showStatusModal}
+          closeModal={closeStatusModal}
+          deleteStatus={deleteStatus}
+          showActionDialog={showActionDialog}
+          setShowActionDialog={setShowActionDialog}
+          showModal={showModal}
         />
       </PageContentWrapper>
     </FlexLayout>
