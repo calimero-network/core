@@ -23,19 +23,21 @@ const initialOptions = [
 
 export default function Contexts() {
   const navigate = useNavigate();
-  const [nodeContextList, setNodeContextList] = useState({
-    joined: [],
-    invited: [],
-  });
+  const { getPackage } = useRPC();
   const [currentOption, setCurrentOption] = useState(Options.JOINED);
   const [tableOptions, setTableOptions] = useState(initialOptions);
   const [showStatusModal, setShowStatusModal] = useState(false);
+  const [showActionDialog, setShowActionDialog] = useState(false);
+  const [selectedContextId, setSelectedContextId] = useState(null);
   const [deleteStatus, setDeleteStatus] = useState({
     title: "",
     message: "",
     error: false,
   });
-  const { getPackage } = useRPC();
+  const [nodeContextList, setNodeContextList] = useState({
+    joined: [],
+    invited: [],
+  });
 
   const generateContextObjects = async (contexts) => {
     const tempContextObjects = await Promise.all(
@@ -76,21 +78,23 @@ export default function Contexts() {
     fetchNodeContexts();
   }, []);
 
-  const deleteNodeContexts = async (id) => {
-    const nodeContexts = await apiClient.context().deleteContext(id);
+  const deleteNodeContext = async () => {
+    const nodeContexts = await apiClient.context().deleteContext(selectedContextId);
     if (nodeContexts) {
       setDeleteStatus({
         title: "Success",
-        message: `Context with id: ${id} deleted.`,
+        message: `Context with id: ${selectedContextId} deleted.`,
         error: false,
       });
     } else {
       setDeleteStatus({
         title: "Error",
-        message: `Could not delete context with id: ${id}!`,
+        message: `Could not delete context with id: ${selectedContextId}!`,
         error: true,
       });
     }
+    setSelectedContextId(null);
+    setShowActionDialog(false);
     setShowStatusModal(true);
   };
 
@@ -106,6 +110,11 @@ export default function Contexts() {
     });
   };
 
+  const showModal = (id) => {
+    setSelectedContextId(id);
+    setShowActionDialog(true);
+  }
+
   return (
     <FlexLayout>
       <Navigation />
@@ -116,10 +125,13 @@ export default function Contexts() {
           currentOption={currentOption}
           setCurrentOption={setCurrentOption}
           tableOptions={tableOptions}
-          deleteNodeContexts={deleteNodeContexts}
+          deleteNodeContext={deleteNodeContext}
           showStatusModal={showStatusModal}
           closeModal={closeStatusModal}
           deleteStatus={deleteStatus}
+          showActionDialog={showActionDialog}
+          setShowActionDialog={setShowActionDialog}
+          showModal={showModal}
         />
       </PageContentWrapper>
     </FlexLayout>
