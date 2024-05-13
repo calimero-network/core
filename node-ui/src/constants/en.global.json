@@ -151,7 +151,7 @@
     },
     "exportIdentityPage": {
         "title": "Export",
-        "description": "An export identity description encapsulates the essential details of a decentralized identifier (DID) associated with a node.",
+        "description": "Export decentralized identifiers (DIDs) associated with the node.",
         "buttonExportText": "Export Identity",
         "exportErrorTitle": "Failed to export node identity",
         "exportSuccessTitle": "Identity exported"
