@@ -17,6 +17,16 @@ const DropdownWrapper = styled.div`
       width: 20px;
       cursor: pointer;
       color: #fff;
+      border-radius: 0.5rem;
+    }
+
+    .menu-icon:after {
+      display: block;
+    }
+
+    .menu-icon:active,
+    .menu-icon:focus {
+      background: #76f5f9;
     }
   }
   .app-dropdown.dropdown-toggle::after {
