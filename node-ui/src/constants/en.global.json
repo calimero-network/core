@@ -117,6 +117,8 @@
     },
     "statusModal": {
         "buttonContinueText": "Continue",
+        "buttonCopyText": "Copy",
+        "buttonCloseText": "Close",
         "buttonCancelText": "Cancel"
     },
     "contextPage": {
@@ -151,5 +153,12 @@
         "startedContextMessage": "Application context has been started successfully.",
         "startContextErrorTitle": "Failed to start context",
         "startContextErrorMessage": "Failed to start the application context."
+    },
+    "exportIdentityPage": {
+        "title": "Export",
+        "description": "Export decentralized identifiers (DIDs) associated with the node.",
+        "buttonExportText": "Export Identity",
+        "exportErrorTitle": "Failed to export node identity",
+        "exportSuccessTitle": "Identity exported"
     }
 }
