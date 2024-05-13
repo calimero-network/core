@@ -18,7 +18,7 @@ const RowItem = styled.div`
 
   .row-item {
     width: 50%;
-    padding: 0.75rem 0.5rem;
+    padding: 0.75rem 0rem;
     height: 3.5rem;
   }
 
