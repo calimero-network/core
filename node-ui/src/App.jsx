@@ -4,12 +4,13 @@ import Bootstrap from "./pages/Bootstrap";
 import ConfirmWallet from "./pages/ConfirmWallet";
 import Identity from "./pages/Identity";
 import Applications from "./pages/Applications";
-
-import "bootstrap/dist/css/bootstrap.min.css";
 import UploadApp from "./pages/UploadApp";
 import Contexts from "./pages/Contexts";
 import StartContext from "./pages/StartContext";
+import ContextDetails from "./pages/ContextDetails";
 import Export from "./pages/Export";
+
+import "bootstrap/dist/css/bootstrap.min.css";
 
 export default function App() {
   return (
@@ -22,7 +23,8 @@ export default function App() {
           <Route path="/applications" element={<Applications />} />
           <Route path="/upload-app" element={<UploadApp />} />
           <Route path="/contexts" element={<Contexts />} />
-          <Route path="/start-context" element={<StartContext />} />
+          <Route path="/contexts/start-context" element={<StartContext />} />
+          <Route path="/contexts/:id" element={<ContextDetails />} />
           <Route path="/export" element={<Export />} />
         </Routes>
       </BrowserRouter>

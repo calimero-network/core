@@ -10,7 +10,6 @@ const ButtonStyled = styled.div`
   padding: 0.625rem 0.75rem;
   border-radius: 0.5rem;
   color: #000;
-  font-family: Inter;
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.25rem;

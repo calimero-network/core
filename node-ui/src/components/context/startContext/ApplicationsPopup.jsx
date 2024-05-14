@@ -9,6 +9,7 @@ import { useRPC } from "../../../hooks/useNear";
 
 const ModalWrapper = styled.div`
   background-color: #212325;
+  border-radius: 0.5rem;
 `;
 
 const initialOptions = [
@@ -57,12 +58,12 @@ export default function ApplicationsPopup({
         setTableOptions([
           {
             name: "Available",
-            id: Options.JOINED,
+            id: Options.AVAILABLE,
             count: tempApplications.length,
           },
           {
             name: "Owned",
-            id: Options.INVITED,
+            id: Options.OWNED,
             count: 0,
           },
         ]);

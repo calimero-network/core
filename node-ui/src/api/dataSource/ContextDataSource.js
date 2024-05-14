@@ -30,13 +30,13 @@ export class ContextDataSource {
         `/admin-api/contexts/${contextId}`
       );
       if (response?.data) {
-        return response.data.context;
+        return response.data;
       } else {
-        return false;
+        return null;
       }
     } catch (error) {
       console.error("Error fetching context:", error);
-      return false;
+      return null;
     }
   }
 

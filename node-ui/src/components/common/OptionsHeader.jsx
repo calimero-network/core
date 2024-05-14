@@ -3,22 +3,20 @@ import styled from "styled-components";
 import PropTypes from "prop-types";
 
 const HeaderGrid = styled.div`
-  font-family: Inter;
-  width: fit-content;
+  width: 210px;
   display: grid;
   grid-template-columns: repeat(${(props) => props.$optionsCount}, 1fr);
-  grid-template-rows: auto;
   gap: 1rem;
   padding: 0.75rem 1.5rem;
 
   .header-option {
     font-size: 0.75rem;
-    font-weight: 500;
     line-height: 1rem;
-    text-align: left;
+    text-align: center;
     color: #fff;
-    grid-column: span 1;
     cursor: pointer;
+    width: fit-content;
+    white-space: nowrap;
   }
 
   .active {
@@ -43,7 +41,7 @@ export default function OptionsHeader({
             key={index}
             onClick={() => setCurrentOption(option.id)}
           >
-            {`${option.name} ${showOptionsCount ? `(${option.count})` : ""}`}
+            {`${option.name} ${option.count !== -1 && showOptionsCount ? `(${option.count})` : ""}`}
           </div>
         );
       })}

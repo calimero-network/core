@@ -3,7 +3,7 @@ import styled from "styled-components";
 import PropTypes from "prop-types";
 
 const PageWrapper = styled.div`
-  padding: 2rem;
+  padding: 4.705rem 2rem 2rem;
   display: flex;
   flex: 1;
   justify-content: center;

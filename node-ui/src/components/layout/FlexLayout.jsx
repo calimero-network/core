@@ -5,7 +5,7 @@ import PropTypes from "prop-types";
 const FlexWrapper = styled.div`
   display: flex;
   height: 100vh;
-  background-color: #121216;
+  background-color: #111111;
 `;
 
 export function FlexLayout({ children }) {

@@ -58,8 +58,7 @@ export default function ContextTable({
         />
         {currentOption == Options.JOINED ? (
           <ListTable
-            ListDescription={t.joinedListDescription}
-            ListHeaderItems={["ID", "Installed Applications"]}
+            ListHeaderItems={["ID", "INSTALLED APPLICATION"]}
             columnItems={2}
             ListItems={nodeContextList.joined}
             rowItem={rowItem}

@@ -6,7 +6,6 @@ const ListWrapper = styled.div`
   display: flex;
   flex-direction: column;
   flex: 1;
-  font-family: Inter;
   width: 100%;
 
   .table-description {

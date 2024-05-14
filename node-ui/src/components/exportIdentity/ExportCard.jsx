@@ -6,7 +6,6 @@ import Button from "../common/Button";
 import StatusModalItem from "../common/StatusModalItem";
 
 const CardWrapper = styled.div`
-  margin: 2rem;
   padding: 2rem 2rem 3.75rem;
   height: fit-content;
   flex: 1;
@@ -17,7 +16,6 @@ const CardWrapper = styled.div`
   gap: 1rem;
 
   .title {
-    font-family: Inter;
     font-size: 1rem;
     font-weight: 500;
     line-height: 1.25rem;
@@ -26,7 +24,6 @@ const CardWrapper = styled.div`
   }
 
   .description {
-    font-family: Inter;
     font-size: 0.875rem;
     font-weight: 500;
     line-height: 1.25rem;

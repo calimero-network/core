@@ -18,18 +18,21 @@ const RowItem = styled.div`
   .row-item {
     width: 50%;
     padding: 0.75rem 0rem;
-    height: 2.5rem;
-
+    min-height: 3.5rem;
   }
+
   .id {
+    display: flex;
+    jusitify-content: center;
+    align-items: center;
     padding-left: 1.5rem;
-    font-family: Inter;
     font-size: 0.875rem
     font-weight: 500;
     line-height: 1.25rem;
     text-align: left;
     color: #fff;
     text-decoration: none;
+    word-break: break-word;
 
     &:hover {
       color: #76f5f9;
@@ -38,9 +41,10 @@ const RowItem = styled.div`
 
   .name {
     color: #6B7280;
-    display: flex; 
+    display: flex;
     jusitify-content: center;
     align-items: center;
+    padding-left: 1rem;
   }
 
   .menu-dropdown {
@@ -51,7 +55,7 @@ const RowItem = styled.div`
 export default function rowItem(item, id, count, onitemClicked) {
   return (
     <RowItem key={item.id} $borders={id === count}>
-      <a href={`/admin/context/${item.id}`} className="row-item id">
+      <a href={`/admin/contexts/${item.id}`} className="row-item id">
         {item.id}
       </a>
       <div className="row-item name">{item.name}</div>

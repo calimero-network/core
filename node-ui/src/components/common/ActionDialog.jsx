@@ -29,6 +29,8 @@ const ModalWrapper = styled.div`
   }
 
   .modal-title {
+    padding-left: 12px;
+    text-align: start;
     color: #fff;
     font-size: 20px;
     font-weight: semi-bold;
@@ -38,20 +40,28 @@ const ModalWrapper = styled.div`
     margin-top: 20px;
 
     .modal-subtitle {
+      text-align: start;
       width: 100%;
       font-size: 14px;
       color: rgb(255, 255, 255, 0.7);
     }
 
     .button-wrapper {
+      display: flex;
+      justify-content: end;
+      gap: 1rem;
       width: 100%;
       margin-top: 12px;
 
-      .button {
-        border-radius: 4px;
-        background-color: #4cfafc;
+      .button-cancel {
         color: #111;
-        width: 100%;
+        background-color: #6CECAC;
+      }
+
+      .button,
+      .button-cancel {
+        border-radius: 4px;
+        width: fit-content;
         height: 30px;
         padding-left: 14px;
         padding-right: 14px;
@@ -64,8 +74,9 @@ const ModalWrapper = styled.div`
         align-items: center;
       }
 
-      .button:hover {
-        background-color: #76f5f9;
+      .button {
+        background-color: #ef4444;
+        color: #fff;
       }
 
       .buttons-wrapper {
@@ -97,11 +108,11 @@ export default function ActionDialog({
         <div className="container">
           <div className="modal-subtitle">{subtitle}</div>
           <div className="button-wrapper">
-            <button className="button" onClick={closeDialog}>
+          <button className="button-cancel" onClick={closeDialog}>
               {t.buttonCancelText}
             </button>
             <button className="button" onClick={onConfirm}>
-              {t.buttonContinueText}
+              {t.buttonDeleteText}
             </button>
           </div>
         </div>

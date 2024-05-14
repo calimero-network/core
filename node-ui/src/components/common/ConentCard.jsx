@@ -13,7 +13,6 @@ const Container = styled.div`
   padding: 2rem;
   border-radius: 0.5rem;
   background-color: #212325;
-  font-family: Inter;
   color: #fff;
 
   .header-back {

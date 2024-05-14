@@ -6,7 +6,7 @@ import { Link } from "react-router-dom";
 import { useLocation } from "react-router-dom";
 
 const NavigationWrapper = styled.div`
-  background-color: #121216;
+  background-color: #111111;
   width: fit-content;
   padding-left: 2rem;
   padding-right: 2rem;
@@ -55,7 +55,7 @@ const NavigationWrapper = styled.div`
 
   .nav-item-active {
     color: #fff !important;
-    background-color: #212325;
+    background-color: rgb(255,255,255,0.05);
   }
 
   .nav-item,
@@ -63,7 +63,6 @@ const NavigationWrapper = styled.div`
     color: #9ca3af;
     cursor: pointer;
     text-decoration: none;
-    font-family: Inter;
     font-size: 0.875rem;
     font-weight: 500;
     line-height: 1.25rem;
@@ -142,7 +141,7 @@ export function Navigation() {
                 to={item.path}
                 key={item.id}
                 className={
-                  location.pathname === item.path
+                  location.pathname === item.path || location.pathname.includes(item.path)
                     ? "nav-item-active"
                     : "nav-item"
                 }
