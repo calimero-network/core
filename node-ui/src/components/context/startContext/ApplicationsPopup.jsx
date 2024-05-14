@@ -9,6 +9,7 @@ import { useRPC } from "../../../hooks/useNear";
 
 const ModalWrapper = styled.div`
   background-color: #212325;
+  border-radius: 0.5rem;
 `;
 
 const initialOptions = [

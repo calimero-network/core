@@ -47,10 +47,14 @@ const ModalWrapper = styled.div`
       width: 100%;
       margin-top: 12px;
 
-      .button {
+      .button-cancel {
+        color: #ef4444;
+        background-color: transparent;
+      }
+
+      .button,
+      .button-cancel {
         border-radius: 4px;
-        background-color: #4cfafc;
-        color: #111;
         width: 100%;
         height: 30px;
         padding-left: 14px;
@@ -64,8 +68,9 @@ const ModalWrapper = styled.div`
         align-items: center;
       }
 
-      .button:hover {
-        background-color: #76f5f9;
+      .button {
+        background-color: #6cecac;
+        color: #111;
       }
 
       .buttons-wrapper {
@@ -97,11 +102,11 @@ export default function ActionDialog({
         <div className="container">
           <div className="modal-subtitle">{subtitle}</div>
           <div className="button-wrapper">
-            <button className="button" onClick={closeDialog}>
-              {t.buttonCancelText}
-            </button>
             <button className="button" onClick={onConfirm}>
-              {t.buttonContinueText}
+              {t.buttonDeleteText}
+            </button>
+            <button className="button-cancel" onClick={closeDialog}>
+              {t.buttonCancelText}
             </button>
           </div>
         </div>

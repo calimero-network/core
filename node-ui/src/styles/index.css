@@ -30,3 +30,7 @@ body {
 * {
   box-sizing: border-box;
 }
+
+.modal-content {
+  background-color: transparent !important;
+}
