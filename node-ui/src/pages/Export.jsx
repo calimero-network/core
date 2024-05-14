@@ -9,8 +9,7 @@ import translations from "../constants/en.global.json";
 const ExportWrapper = styled.div`
   display: flex;
   width: 100%;
-  padding: 2rem;
-  gap: 1rem;
+  padding: 4.705rem 2rem 2rem;
   font-optical-sizing: auto;
   font-weight: 500;
   font-style: normal;
