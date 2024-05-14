@@ -1,8 +1,14 @@
+use std::fmt;
+use std::ops::Deref;
+use std::rc::Rc;
+
+use calimero_primitives::reflect::{DynReflect, Reflect, ReflectExt};
+
 #[derive(Debug)]
 enum SliceInner<'a> {
     Ref(&'a [u8]),
-    Box(Box<[u8]>),
-    Any(Box<dyn buf::BufRef + 'a>),
+    Box(Rc<Box<[u8]>>),
+    Any(Rc<dyn BufRef + 'a>),
 }
 
 #[derive(Debug)]
@@ -10,38 +16,19 @@ pub struct Slice<'a> {
     inner: SliceInner<'a>,
 }
 
-mod buf {
-    use std::fmt;
+trait BufRef: Reflect {
+    fn buf(&self) -> &[u8];
+}
 
-    pub struct Buf<T>(pub T);
-
-    pub trait BufRef {
-        fn id(&self) -> usize;
-        fn name(&self) -> &'static str {
-            std::any::type_name::<Self>()
-        }
-        fn buf(&self) -> &[u8];
+impl<'a, T: AsRef<[u8]> + 'a> BufRef for T {
+    fn buf(&self) -> &[u8] {
+        self.as_ref()
     }
+}
 
-    #[inline(never)]
-    pub fn type_id_of<T: ?Sized>() -> usize {
-        type_id_of::<T> as usize
-    }
-
-    impl<'a, T: AsRef<[u8]> + 'a> BufRef for Buf<T> {
-        fn id(&self) -> usize {
-            type_id_of::<T>()
-        }
-
-        fn buf(&self) -> &[u8] {
-            self.0.as_ref()
-        }
-    }
-
-    impl<'a> fmt::Debug for dyn BufRef + 'a {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{}", self.name())
-        }
+impl<'a> fmt::Debug for dyn BufRef + 'a {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.type_name())
     }
 }
 
@@ -49,29 +36,52 @@ impl<'a> Slice<'a> {
     /// Create a new `Slice` from an owned value.
     pub fn from_owned<T: AsRef<[u8]> + 'a>(inner: T) -> Self {
         Self {
-            inner: SliceInner::Any(Box::new(buf::Buf(inner)) as _),
+            inner: SliceInner::Any(Rc::new(inner) as _),
         }
+    }
+
+    pub fn into_boxed(self) -> Box<[u8]> {
+        let ref_boxed = match self.inner {
+            SliceInner::Ref(inner) => return inner.into(),
+            SliceInner::Box(inner) => inner,
+            SliceInner::Any(inner) => match inner.with_rc(<dyn Reflect>::downcast_rc) {
+                Ok(inner) => inner,
+                Err(inner) => return inner.buf().into(),
+            },
+        };
+
+        Rc::try_unwrap(ref_boxed).unwrap_or_else(|inner| (*inner).clone())
+    }
+
+    pub fn owned_ref<T: AsRef<[u8]>>(&'a self) -> Option<&'a T> {
+        if let SliceInner::Any(inner) = &self.inner {
+            if let Some(inner) = inner.as_dyn().downcast_ref::<T>() {
+                return Some(inner);
+            }
+        }
+        None
     }
 
     /// Take the inner value if it is of the correct type passed in via `from_owned`.
-    pub fn take_owned<T: AsRef<[u8]> + 'a>(self) -> Result<T, Self> {
-        match self.inner {
-            SliceInner::Any(inner) if inner.id() == buf::type_id_of::<T>() => {
-                Ok(*unsafe { Box::from_raw(Box::into_raw(inner) as *mut T) })
-            }
-            _ => Err(self),
-        }
-    }
+    pub fn take_owned<T: AsRef<[u8]> + 'a>(self) -> Result<Rc<T>, Self> {
+        if let SliceInner::Any(inner) = self.inner {
+            return match inner.with_rc(<dyn Reflect>::downcast_rc) {
+                Ok(inner) => Ok(inner),
+                Err(inner) => Err(Self {
+                    inner: SliceInner::Any(inner),
+                }),
+            };
+        };
 
-    pub fn into_owned(self) -> Box<[u8]> {
-        match self.take_owned() {
-            Ok(inner) => inner,
-            Err(slice) => match slice.inner {
-                SliceInner::Ref(inner) => inner.into(),
-                SliceInner::Box(inner) => inner,
-                SliceInner::Any(inner) => inner.buf().into(),
-            },
-        }
+        Err(self)
+    }
+}
+
+impl<'a> Deref for Slice<'a> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
     }
 }
 
@@ -112,14 +122,22 @@ impl<'a> From<Box<[u8]>> for Slice<'a> {
 impl<'a> From<Vec<u8>> for Slice<'a> {
     fn from(inner: Vec<u8>) -> Self {
         Self {
-            inner: SliceInner::Box(inner.into()),
+            inner: SliceInner::Box(Rc::new(inner.into())),
+        }
+    }
+}
+
+impl<'a> From<Rc<Box<[u8]>>> for Slice<'a> {
+    fn from(inner: Rc<Box<[u8]>>) -> Self {
+        Self {
+            inner: SliceInner::Box(inner),
         }
     }
 }
 
 impl<'a> From<Slice<'a>> for Box<[u8]> {
     fn from(slice: Slice<'a>) -> Self {
-        slice.into_owned()
+        slice.into_boxed()
     }
 }
 
@@ -133,7 +151,7 @@ mod tests {
         let slice = Slice::from(&data[..]);
 
         assert_eq!(slice.as_ref(), data);
-        assert_eq!(&*slice.into_owned(), data);
+        assert_eq!(&*slice.into_boxed(), data);
     }
 
     #[test]
@@ -142,7 +160,7 @@ mod tests {
         let slice = Slice::from(data);
 
         assert_eq!(slice.as_ref(), [0; 5]);
-        assert_eq!(&*slice.into_owned(), [0; 5]);
+        assert_eq!(&*slice.into_boxed(), [0; 5]);
     }
 
     #[test]
@@ -151,7 +169,7 @@ mod tests {
         let slice = Slice::from(data);
 
         assert_eq!(slice.as_ref(), [0; 5]);
-        assert_eq!(&*slice.into_owned(), [0; 5]);
+        assert_eq!(&*slice.into_boxed(), [0; 5]);
     }
 
     #[test]
@@ -168,7 +186,7 @@ mod tests {
         let slice = Slice::from_owned(data);
 
         assert_eq!(slice.as_ref(), b"hello");
-        assert_eq!(&*slice.into_owned(), b"hello");
+        assert_eq!(&*slice.into_boxed(), b"hello");
     }
 
     #[test]
@@ -183,7 +201,7 @@ mod tests {
 
         let slice = slice.take_owned::<&[u8]>().unwrap();
 
-        assert_eq!(slice, data);
+        assert_eq!(*slice, data);
     }
 
     #[test]
@@ -198,7 +216,7 @@ mod tests {
 
         let slice = slice.take_owned::<[u8; 5]>().unwrap();
 
-        assert_eq!(slice, data);
+        assert_eq!(*slice, data);
     }
 
     #[test]
@@ -213,7 +231,7 @@ mod tests {
 
         let slice = slice.take_owned::<Vec<u8>>().unwrap();
 
-        assert_eq!(slice, [0; 5]);
+        assert_eq!(*slice, [0; 5]);
     }
 
     #[test]
