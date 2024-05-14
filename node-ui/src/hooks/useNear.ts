@@ -61,8 +61,8 @@ export function useRPC() {
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
-  const getLatestRelease = async (id) => {
-    const provider = new nearAPI.providers.JsonRpcProvider(JSON_RPC_ENDPOINT);
+  const getLatestRelease = async (id: string) => {
+    const provider = new nearAPI.providers.JsonRpcProvider({ url: JSON_RPC_ENDPOINT });
 
     const rawResult = await provider.query({
       request_type: "call_function",
@@ -77,6 +77,7 @@ export function useRPC() {
       ),
       finality: "final",
     });
+    // @ts-expect-error: Property 'result' does not exist on type 'QueryResponseKind'
     const releases = JSON.parse(Buffer.from(rawResult.result).toString());
     if (releases.length === 0) {
       return null;

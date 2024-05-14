@@ -5,7 +5,7 @@ import { UploadAppContent } from "../components/uploadApp/UploadAppContent";
 import { UploadApplication } from "../components/uploadApp/UploadApplication";
 import { AddPackageForm } from "../components/uploadApp/AddPackageForm";
 import { UploadSwitch } from "../components/uploadApp/UploadSwitch";
-import { BrowserWallet, setupWalletSelector } from "@near-wallet-selector/core";
+import { Account, BrowserWallet, setupWalletSelector } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { useRPC } from "../hooks/useNear";
 import axios from "axios";
@@ -13,6 +13,26 @@ import axios from "axios";
 import * as nearAPI from "near-api-js";
 
 const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
+
+export interface PackageInfo {
+  name: string;
+  description: string;
+  repository: string;
+}
+
+export interface ReleaseInfo {
+  name: string;
+  version: string;
+  notes: string;
+  path: string;
+  hash: string;
+}
+
+export interface DeployStatus {
+  title: string;
+  message: string;
+  error: boolean;
+}
 
 export default function UploadApp() {
   const fileInputRef = useRef(null);
@@ -23,21 +43,21 @@ export default function UploadApp() {
   const [packages, setPackages] = useState([]);
   const [addPackageLoader, setAddPackageLoader] = useState(false);
   const [addReleaseLoader, setAddReleaseLoader] = useState(false);
-  const [walletAccounts, setWalletAccounts] = useState([]);
+  const [walletAccounts, setWalletAccounts] = useState<Account[]>([]);
   const [deployerAccount, setDeployerAccount] = useState(null);
   const [showStatusModal, setShowStatusModal] = useState(false);
   // add types here
-  const [packageInfo, setPackageInfo] = useState({
+  const [packageInfo, setPackageInfo] = useState<PackageInfo>({
     name: "",
     description: "",
     repository: "",
   });
-  const [deployStatus, setDeployStatus] = useState({
+  const [deployStatus, setDeployStatus] = useState<DeployStatus>({
     title: "",
     message: "",
     error: false,
   });
-  const [releaseInfo, setReleaseInfo] = useState({
+  const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo>({
     name: "",
     version: "",
     notes: "",
