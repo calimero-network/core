@@ -1,7 +1,3 @@
 {
-  "label": "Explore",
-  "link": {
-    "type": "generated-index",
-    "description": "Learn about somethins"
-  }
+  "label": "Explore"
 }

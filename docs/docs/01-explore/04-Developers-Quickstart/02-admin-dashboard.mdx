@@ -1,0 +1,46 @@
+---
+id: admin-ui
+title: Admin Dashboard
+---
+
+Node is gated with authentication. In order to interact with the node from any app, you need to register a decentralized identity.
+We have build an Admin Dashboard which is a web application designed to streamline the management of node states within your system. Seamlessly connected with the API provided by the Admin Client API, this user interface offers a user-friendly platform for overseeing and controlling various aspects of your node infrastructure.
+
+### Run Admin Dashboard
+
+Position to the Admin Dashboard directory
+
+```console
+ cd node-ui
+```
+
+Install dependencies
+
+```console
+ pnpm install
+```
+
+Build the app
+
+```console
+ pnpm build
+```
+
+Run the Admin Dashboard
+
+```console
+ pnpm start
+```
+
+Open your web browser and access admin dashboard on http://localhost:NODE_PORT/admin/.
+Replace NODE_PORT with the `--server-port` value defined during node setup.
+
+You will see login page. On the first login, your selected wallet will be used as a root key to use further functionalities.
+
+### Admin Dashboard functionalities:
+
+- add root keys
+- add client keys
+- create context
+- upload application
+- export identity key
