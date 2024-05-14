@@ -10,19 +10,36 @@ type FeatureItem = {
 
 const FeatureList: FeatureItem[] = [
   {
-    title: "Tooling",
+    title: "Robust framework",
     Svg: require("@site/static/img/undraw_docusaurus_tree.svg").default,
-    description: <>Explain framework</>,
+    description: (
+      <>
+        Quickly launch and configure nodes in our peer-to-peer network with
+        user-friendly tools that minimize the complexity and technical
+        challenges.
+      </>
+    ),
   },
   {
-    title: "Decentralized applications",
+    title: "Comprehensive SDKs",
     Svg: require("@site/static/img/undraw_docusaurus_mountain.svg").default,
-    description: <>Explore applications in decentralized world</>,
+    description: (
+      <>
+        {" "}
+        Jumpstart your decentralized apps with our SDKs, designed for easy
+        integration into our robust peer-to-peer network.
+      </>
+    ),
   },
   {
-    title: "Contribute",
+    title: "Open Source project",
     Svg: require("@site/static/img/undraw_docusaurus_react.svg").default,
-    description: <>Help us build product you want to use</>,
+    description: (
+      <>
+        Contribute your code to help forge a platform that leads the way in
+        innovation in the decentralized space
+      </>
+    ),
   },
 ];
 
