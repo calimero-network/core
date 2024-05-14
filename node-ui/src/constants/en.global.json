@@ -116,6 +116,7 @@
         "deployerDropdownText": "Deployer Account"
     },
     "statusModal": {
+        "buttonContinueText": "Continue",
         "buttonDeleteText": "Delete",
         "buttonCopyText": "Copy",
         "buttonCloseText": "Close",
