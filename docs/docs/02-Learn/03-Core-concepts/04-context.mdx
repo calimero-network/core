@@ -1,16 +1,16 @@
 ---
-id: application-network
-title: Application Network
-slug: /application-network
+id: contexts
+title: Contexts
 ---
 
-Application Networks are the core of the Calimero ecosystem. These are application specific networks designed to enable direct communication between users, eliminating the need for intermediaries. Here's a closer look at how they operate:
 
-#### **How Application Networks Work:**
+Contexts are the core of the Calimero ecosystem. These are application specific networks designed to enable direct communication between users, eliminating the need for intermediaries. Here's a closer look at how they operate:
+
+#### **How Contexts Work:**
 
 1. **Initialization**: A user selects a WebAssembly (WASM) module from a repository, which contains the logic and rules for the application. With this, they initiate a new Application Network, creating a unique identity for this specific network and setting the initial parameters and update strategies.
 
-2. **Joining the Network**: 
+2. **Joining the Network**:
    - **Inviting Peers**: The initial user can invite others directly or set up Access Control Lists (ACLs) to govern how new members can join the network.
    - **New Member Process**: When a new user joins, they generate a unique identity for the network, download the relevant WASM module, and synchronize with the existing data on the network. This process ensures they're up to speed and ready to engage fully with the network's activities.
 
