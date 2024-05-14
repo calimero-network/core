@@ -3,7 +3,7 @@ use generic_array::GenericArray;
 
 use crate::db::Column;
 use crate::key::component::{ContextId, TransactionId};
-use crate::key::{Key, KeyParts};
+use crate::key::{AsKeyParts, Key};
 
 #[derive(Copy, Clone)]
 pub struct ContextIdentity(Key<ContextId>);
@@ -14,15 +14,11 @@ impl ContextIdentity {
     }
 }
 
-impl KeyParts for ContextIdentity {
+impl AsKeyParts for ContextIdentity {
     type Components = (ContextId,);
 
-    fn column(&self) -> Column {
-        Column::Identity
-    }
-
-    fn key(&self) -> &Key<Self::Components> {
-        (&self.0).into()
+    fn parts(&self) -> (Column, &Key<Self::Components>) {
+        (Column::Identity, (&self.0).into())
     }
 }
 
@@ -35,15 +31,11 @@ impl ContextState {
     }
 }
 
-impl KeyParts for ContextState {
+impl AsKeyParts for ContextState {
     type Components = (ContextId,);
 
-    fn column(&self) -> Column {
-        Column::State
-    }
-
-    fn key(&self) -> &Key<Self::Components> {
-        (&self.0).into()
+    fn parts(&self) -> (Column, &Key<Self::Components>) {
+        (Column::State, (&self.0).into())
     }
 }
 
@@ -58,15 +50,11 @@ impl ContextTransaction {
     }
 }
 
-impl KeyParts for ContextTransaction {
+impl AsKeyParts for ContextTransaction {
     type Components = (ContextId, TransactionId);
 
-    fn column(&self) -> Column {
-        Column::Transaction
-    }
-
-    fn key(&self) -> &Key<Self::Components> {
-        &self.0
+    fn parts(&self) -> (Column, &Key<Self::Components>) {
+        (Column::Transaction, &self.0)
     }
 }
 
@@ -79,14 +67,10 @@ impl ContextMembers {
     }
 }
 
-impl KeyParts for ContextMembers {
+impl AsKeyParts for ContextMembers {
     type Components = (ContextId,);
 
-    fn column(&self) -> Column {
-        Column::Membership
-    }
-
-    fn key(&self) -> &Key<Self::Components> {
-        (&self.0).into()
+    fn parts(&self) -> (Column, &Key<Self::Components>) {
+        (Column::Membership, (&self.0).into())
     }
 }

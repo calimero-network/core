@@ -24,7 +24,7 @@ impl<T: KeyComponents> Key<T> {
         &self.0
     }
 
-    pub fn as_slice(&self) -> Slice {
+    pub(crate) fn as_slice(&self) -> Slice {
         self.as_bytes().into()
     }
 }
@@ -39,10 +39,9 @@ where
     }
 }
 
-pub trait KeyParts: Copy {
+pub trait AsKeyParts: Copy {
     // KeyParts is Sealed so far as KeyComponents stays private
     type Components: KeyComponents;
 
-    fn column(&self) -> Column;
-    fn key(&self) -> &Key<Self::Components>;
+    fn parts(&self) -> (Column, &Key<Self::Components>);
 }

@@ -4,14 +4,14 @@ use std::rc::Rc;
 
 use calimero_primitives::reflect::{DynReflect, Reflect, ReflectExt};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum SliceInner<'a> {
     Ref(&'a [u8]),
     Box(Rc<Box<[u8]>>),
     Any(Rc<dyn BufRef + 'a>),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Slice<'a> {
     inner: SliceInner<'a>,
 }

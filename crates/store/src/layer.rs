@@ -1,4 +1,4 @@
-use crate::key::KeyParts;
+use crate::key::AsKeyParts;
 use crate::slice::Slice;
 use crate::tx::Transaction;
 
@@ -7,68 +7,57 @@ pub mod temporal;
 
 pub trait Layer {
     type Base: Layer;
-
-    /// Unwraps the layer, returning the base layer.
-    fn unwrap(self) -> Self::Base;
 }
 
-pub trait ReadLayer: Layer {
-    fn has(&self, key: impl KeyParts) -> eyre::Result<bool>;
-    fn get(&self, key: impl KeyParts) -> eyre::Result<Option<Slice>>;
+pub trait ReadLayer<'k>: Layer {
+    fn has(&self, key: &'k impl AsKeyParts) -> eyre::Result<bool>;
+    fn get(&self, key: &'k impl AsKeyParts) -> eyre::Result<Option<Slice>>;
 }
 
-pub trait WriteLayer: ReadLayer {
-    fn put(&mut self, key: impl KeyParts, value: Slice) -> eyre::Result<()>;
-    fn delete(&mut self, key: impl KeyParts) -> eyre::Result<()>;
-    fn apply(&mut self, tx: Transaction) -> eyre::Result<()>;
+pub trait WriteLayer<'k, 'v>: ReadLayer<'k> {
+    fn put(&mut self, key: &'k impl AsKeyParts, value: Slice<'v>) -> eyre::Result<()>;
+    fn delete(&mut self, key: &'k impl AsKeyParts) -> eyre::Result<()>;
+    fn apply(&mut self, tx: &Transaction<'k, 'v>) -> eyre::Result<()>;
 
-    fn commit(self) -> eyre::Result<Self::Base>;
+    fn commit(self) -> eyre::Result<()>;
 }
 
 impl Layer for crate::Store {
     type Base = Self;
+}
 
-    fn unwrap(self) -> Self::Base {
-        self
+impl<'k> ReadLayer<'k> for crate::Store {
+    fn has(&self, key: &impl AsKeyParts) -> eyre::Result<bool> {
+        let (col, key) = key.parts();
+
+        self.db.has(col, key.as_slice())
+    }
+
+    fn get(&self, key: &impl AsKeyParts) -> eyre::Result<Option<Slice>> {
+        let (col, key) = key.parts();
+
+        self.db.get(col, key.as_slice())
     }
 }
 
-impl ReadLayer for crate::Store {
-    fn has(&self, key: impl KeyParts) -> eyre::Result<bool> {
-        let col = key.column();
-        let key = key.key().as_slice();
+impl<'k, 'v> WriteLayer<'k, 'v> for crate::Store {
+    fn put(&mut self, key: &'k impl AsKeyParts, value: Slice<'v>) -> eyre::Result<()> {
+        let (col, key) = key.parts();
 
-        self.db.has(col, key)
+        self.db.put(col, key.as_slice(), value)
     }
 
-    fn get(&self, key: impl KeyParts) -> eyre::Result<Option<Slice>> {
-        let col = key.column();
-        let key = key.key().as_slice();
+    fn delete(&mut self, key: &'k impl AsKeyParts) -> eyre::Result<()> {
+        let (col, key) = key.parts();
 
-        self.db.get(col, key)
-    }
-}
-
-impl WriteLayer for crate::Store {
-    fn put(&mut self, key: impl KeyParts, value: Slice) -> eyre::Result<()> {
-        let col = key.column();
-        let key = key.key().as_slice();
-
-        self.db.put(col, key, value)
+        self.db.delete(col, key.as_slice())
     }
 
-    fn delete(&mut self, key: impl KeyParts) -> eyre::Result<()> {
-        let col = key.column();
-        let key = key.key().as_slice();
-
-        self.db.delete(col, key)
-    }
-
-    fn apply(&mut self, tx: Transaction) -> eyre::Result<()> {
+    fn apply(&mut self, tx: &Transaction<'k, 'v>) -> eyre::Result<()> {
         self.db.apply(tx)
     }
 
-    fn commit(self) -> eyre::Result<Self::Base> {
-        Ok(self)
+    fn commit(self) -> eyre::Result<()> {
+        Ok(())
     }
 }

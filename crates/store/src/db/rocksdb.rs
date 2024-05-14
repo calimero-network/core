@@ -67,19 +67,21 @@ impl Database for RocksDB {
         Ok(())
     }
 
-    fn apply(&self, tx: Transaction) -> eyre::Result<()> {
+    fn apply(&self, tx: &Transaction) -> eyre::Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
 
         let mut unknown_cfs = vec![];
 
-        for (entry, op) in tx {
-            let Some(cf) = self.cf_handle(&entry.column) else {
-                unknown_cfs.push(entry.column);
+        for (entry, op) in tx.iter() {
+            let (col, key) = (entry.column(), entry.key());
+
+            let Some(cf) = self.cf_handle(&col) else {
+                unknown_cfs.push(col);
                 continue;
             };
             match op {
-                Operation::Put { value } => batch.put_cf(cf, entry.key, value),
-                Operation::Delete => batch.delete_cf(cf, entry.key),
+                Operation::Put { value } => batch.put_cf(cf, key, value),
+                Operation::Delete => batch.delete_cf(cf, key),
             }
         }
 

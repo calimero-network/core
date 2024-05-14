@@ -1,15 +1,18 @@
-use crate::key::KeyParts;
+use crate::key::AsKeyParts;
 use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
 use crate::tx::{Operation, Transaction};
 
-pub struct Temporal<L: WriteLayer> {
-    inner: L,
-    shadow: Transaction,
+pub struct Temporal<'base, 'key, 'value, L> {
+    inner: &'base mut L,
+    shadow: Transaction<'key, 'value>,
 }
 
-impl<L: WriteLayer> Temporal<L> {
-    pub fn new(layer: L) -> Self {
+impl<'base, 'key, 'value, L> Temporal<'base, 'key, 'value, L>
+where
+    L: WriteLayer<'key, 'value>,
+{
+    pub fn new(layer: &'base mut L) -> Self {
         Self {
             inner: layer,
             shadow: Transaction::default(),
@@ -17,17 +20,18 @@ impl<L: WriteLayer> Temporal<L> {
     }
 }
 
-impl<L: WriteLayer> Layer for Temporal<L> {
+impl<'base, 'key, 'value, L> Layer for Temporal<'base, 'key, 'value, L>
+where
+    L: WriteLayer<'key, 'value>,
+{
     type Base = L;
-
-    /// Unwraps the layer, discarding any changes.
-    fn unwrap(self) -> Self::Base {
-        self.inner
-    }
 }
 
-impl<L: WriteLayer> ReadLayer for Temporal<L> {
-    fn has(&self, key: impl KeyParts) -> eyre::Result<bool> {
+impl<'base, 'key, 'value, L> ReadLayer<'key> for Temporal<'base, 'key, 'value, L>
+where
+    L: WriteLayer<'key, 'value>,
+{
+    fn has(&self, key: &'key impl AsKeyParts) -> eyre::Result<bool> {
         if self.shadow.get(key).is_some() {
             return Ok(true);
         }
@@ -35,7 +39,7 @@ impl<L: WriteLayer> ReadLayer for Temporal<L> {
         self.inner.has(key)
     }
 
-    fn get(&self, key: impl KeyParts) -> eyre::Result<Option<Slice>> {
+    fn get(&self, key: &'key impl AsKeyParts) -> eyre::Result<Option<Slice>> {
         if let Some(Operation::Put { value }) = self.shadow.get(key) {
             return Ok(Some(value.into()));
         }
@@ -44,30 +48,31 @@ impl<L: WriteLayer> ReadLayer for Temporal<L> {
     }
 }
 
-impl<L: WriteLayer> WriteLayer for Temporal<L> {
-    fn put(&mut self, key: impl KeyParts, value: Slice) -> eyre::Result<()> {
-        self.shadow.put(key, value.into());
+impl<'base, 'key, 'value, L> WriteLayer<'key, 'value> for Temporal<'base, 'key, 'value, L>
+where
+    L: WriteLayer<'key, 'value>,
+{
+    fn put(&mut self, key: &'key impl AsKeyParts, value: Slice<'value>) -> eyre::Result<()> {
+        self.shadow.put(key, value);
 
         Ok(())
     }
 
-    fn delete(&mut self, key: impl KeyParts) -> eyre::Result<()> {
+    fn delete(&mut self, key: &'key impl AsKeyParts) -> eyre::Result<()> {
         self.shadow.delete(key);
 
         Ok(())
     }
 
-    fn apply(&mut self, tx: Transaction) -> eyre::Result<()> {
+    fn apply(&mut self, tx: &Transaction<'key, 'value>) -> eyre::Result<()> {
         self.shadow.merge(tx);
 
         Ok(())
     }
 
-    fn commit(self) -> eyre::Result<Self::Base> {
-        let mut this = self;
+    fn commit(self) -> eyre::Result<()> {
+        self.inner.apply(&self.shadow)?;
 
-        this.inner.apply(this.shadow)?;
-
-        Ok(this.inner)
+        Ok(())
     }
 }

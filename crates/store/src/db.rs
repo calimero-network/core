@@ -24,5 +24,5 @@ pub trait Database: 'static {
     fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()>;
     fn delete(&self, col: Column, key: Slice) -> eyre::Result<()>;
 
-    fn apply(&self, tx: Transaction) -> eyre::Result<()>;
+    fn apply(&self, tx: &Transaction) -> eyre::Result<()>;
 }
