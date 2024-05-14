@@ -19,73 +19,22 @@ $ mkdir data
 
 Setup coordinator node used for managing the network transactions and peer nodes representing the network participants.
 
-#### Initialize and run coordinator node (separate terminal)
+#### Initialize and start coordinator node (separate terminal)
 
 ```
 $ cargo run -p calimero-node -- --home data/coordinator init --server-port 2427 --swarm-port 2527
 $ cargo run -p calimero-node -- --home data/coordinator run --node-type coordinator
 ```
 
-#### Initialize node 1 (separate terminal)
+#### Initialize and start your node (separate terminal)
 
 ```
 $ cargo run -p calimero-node -- --home data/node1 init --server-port 2428 --swarm-port 2528
-```
-
-#### Initialize node 2 (separate terminal) - optional
-
-```console
-$ cargo run -p calimero-node -- --home data/node2 init --server-port 2429 --swarm-port 2529
-```
-
-All nodes are now initialized and ready for use.
-
-### Inspect if your nodes are connected
-
-Build the application to inspect node local storage.
-
-```console
-$ ./apps/kv-store/build.sh
-```
-
-#### Start node 1 (separate terminal)
-
-```
 $ cargo run -p calimero-node -- --home data/node1 run
 ```
 
-#### Start node 2 (separate terminal) - optional
+Node is now initialized and ready for use.
 
-```console
-$ cargo run -p calimero-node -- --home data/node2 run
-```
-
-All configured node sessions will fall into interactive mode which means you can interact with the node using the command line where node runs.
-
-```console
-Usage: [call|peers|pool|gc|store] [args]
-
-> call <method> <JSON args>
-
-Call a method on the app with the provided JSON args
-
-> peers
-
-Show a count of connected peers
-
-> pool
-
-Show the transaction pool
-
-> gc
-
-Evict all transactions in the transaction pool that are awaiting confirmation
-
-> store
-
-Print the DB state
-```
-
-### Congratulations on setting up your local node!
+### Congratulations on setting up your node!
 
 Your next step is to add an authentication mechanism to your node by adding a decentralized identity.
