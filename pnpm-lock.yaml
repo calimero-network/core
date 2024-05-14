@@ -218,6 +218,9 @@ importers:
       eslint-plugin-react-refresh:
         specifier: ^0.4.6
         version: 0.4.6(eslint@8.57.0)
+      file-loader:
+        specifier: ^6.2.0
+        version: 6.2.0(webpack@5.91.0)
       vite:
         specifier: ^5.2.6
         version: 5.2.10(@types/node@18.19.31)(terser@5.30.4)
