@@ -1,0 +1,28 @@
+[package]
+name = "commit-reveal-rps"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk = { path = "../core/crates/sdk" }
+ring = "0.17.8"
+sha3 = "0.10"
+base64ct = "1.6.0"
+base16ct = "0.2.0"
+eyre = "0.6.12"
+serde = "1.0.201"
+
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
