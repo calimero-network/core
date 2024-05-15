@@ -68,7 +68,7 @@ export default function rowItem(item: any, id: number, count: number, onitemClic
         <MenuIconDropdown
           options={[
             {
-              buttonText: "Delete Context",
+              title: "Delete Context",
               onClick: () => onitemClicked(item.id),
             },
           ]}

@@ -168,7 +168,7 @@ export function IdentityTable({ identityList, deleteIdentity, addIdentity }: Ide
                     <MenuIconDropdown
                       options={[
                         {
-                          buttonText: t.deleteButtonText,
+                          title: t.deleteButtonText,
                           onClick: () => deleteIdentity(id),
                         },
                       ]}
