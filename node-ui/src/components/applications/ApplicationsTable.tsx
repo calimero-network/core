@@ -187,7 +187,7 @@ export function ApplicationsTable({ applications, changeTab, uninstall }: Applic
                     <MenuIconDropdown
                       options={[
                         {
-                          buttonText: t.uninstallButtonText,
+                          title: t.uninstallButtonText,
                           onClick: () => uninstall(id),
                         },
                       ]}

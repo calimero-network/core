@@ -73,7 +73,7 @@ const DropdownWrapper = styled.div`
 `;
 
 interface Option {
-  buttonText: string;
+  title: string;
   onClick: () => void;
 }
 
@@ -100,7 +100,7 @@ export default function MenuIconDropdown({ options }: MenuIconDropdownProps) {
                 onClick={option.onClick}
                 key={id}
               >
-                {option.buttonText}
+                {option.title}
               </Dropdown.Item>
             ))}
           </div>
