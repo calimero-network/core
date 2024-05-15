@@ -1,17 +1,31 @@
-export class ContextDataSource {
-  client;
+import { HttpClient } from "../httpClient";
 
-  constructor(client) {
+export interface Context {
+  applicationId: string;
+  id: string;
+  signingKey: { signingKey: string };
+}
+
+export interface NodeContexts {
+  joined: Context[];
+  invited: Context[];
+}
+
+export class ContextDataSource {
+  private client: HttpClient;
+
+  constructor(client: HttpClient) {
     this.client = client;
   }
 
-  async getContexts() {
+  async getContexts(): Promise<NodeContexts> {
     try {
       const response = await this.client.get("/admin-api/contexts");
       if (response?.data) {
         // invited is empty for now as we don't have this endpoint available
         // will be left as "no invites" until this becomes available
         return {
+          // @ts-ignore
           joined: response.data,
           invited: [],
         };
@@ -24,11 +38,12 @@ export class ContextDataSource {
     }
   }
 
-  async getContext(contextId) {
+  async getContext(contextId: string): Promise<Context | null> {
     try {
-      const response = await this.client.get(
+      const response = await this.client.get<Context>(
         `/admin-api/contexts/${contextId}`
       );
+      response?.data;
       if (response?.data) {
         return response.data;
       } else {
@@ -40,9 +55,9 @@ export class ContextDataSource {
     }
   }
 
-  async deleteContext(contextId) {
+  async deleteContext(contextId: string): Promise<boolean> {
     try {
-      const response = await this.client.delete(
+      const response = await this.client.delete<boolean>(
         `/admin-api/contexts/${contextId}`
       );
       if (response?.data) {
@@ -56,21 +71,25 @@ export class ContextDataSource {
     }
   }
 
-  async startContexts(applicationId, initFunction, initArguments) {
+  async startContexts(
+    applicationId: string,
+    initFunction: string,
+    initArguments: string
+  ): Promise<boolean> {
     try {
-      const response = await this.client.post("/admin-api/contexts", {
+      const response = await this.client.post<Context>("/admin-api/contexts", {
         applicationId: applicationId,
         ...(initFunction && { initFunction }),
         ...(initArguments && { initArgs: JSON.stringify(initArguments) }),
       });
       if (response?.data) {
-        return response.data;
+        return !!response.data;
       } else {
-        return [];
+        return false;
       }
     } catch (error) {
       console.error("Error starting contexts:", error);
-      return [];
+      return true;
     }
   }
 }
