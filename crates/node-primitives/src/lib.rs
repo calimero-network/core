@@ -40,9 +40,7 @@ pub enum QueryCallError {
     ApplicationNotInstalled {
         application_id: calimero_primitives::application::ApplicationId,
     },
-    ExecutionError {
-        message: String,
-    },
+    InternalError,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Error)]
@@ -56,11 +54,5 @@ pub enum MutateCallError {
         application_id: calimero_primitives::application::ApplicationId,
     },
     NoConnectedPeers,
-    ExecutionError {
-        message: String,
-    },
-    FailedToPushTransaction {
-        message: String,
-    },
     InternalError,
 }

@@ -459,11 +459,10 @@ impl Node {
 
         self.execute(application_id, None, method, payload)
             .await
-            .map_err(
-                |e| calimero_node_primitives::QueryCallError::ExecutionError {
-                    message: e.to_string(),
-                },
-            )
+            .map_err(|e| {
+                error!(%e,"Failed to execute query call.");
+                calimero_node_primitives::QueryCallError::InternalError
+            })
     }
 
     async fn call_mutate(
@@ -518,20 +517,16 @@ impl Node {
         };
 
         if let Err(err) = self
-            .push_action(
-                application_id.clone(),
-                types::PeerAction::Transaction(transaction),
-            )
+            .push_action(application_id, types::PeerAction::Transaction(transaction))
             .await
         {
-            let _ = self.tx_pool.remove(&tx_hash).expect(
-            "Failed to remove just inserted transaction from the pool. This is a bug and should be reported.",
-        );
-            return Err(
-                calimero_node_primitives::MutateCallError::FailedToPushTransaction {
-                    message: err.to_string(),
-                },
-            );
+            if self.tx_pool.remove(&tx_hash).is_none() {
+                error!("Failed to remove just inserted transaction from the pool. This is a bug and should be reported.");
+                return Err(calimero_node_primitives::MutateCallError::InternalError);
+            }
+
+            error!(%err, "Failed to push transaction over the network.");
+            return Err(calimero_node_primitives::MutateCallError::InternalError);
         }
 
         self.last_tx = tx_hash;
