@@ -1,9 +1,10 @@
 import React from "react";
-import { Link } from "react-router-dom";
-import CalimeroLogo from "../../assets/calimero-logo.svg";
-import StatusModal from "../common/StatusModal";
-import translations from "../../constants/en.global.json";
 import styled from "styled-components";
+import { Link } from "react-router-dom";
+import { UrlParams } from "../../utils/rootkey";
+import CalimeroLogo from "../../assets/calimero-logo.svg";
+import translations from "../../constants/en.global.json";
+import StatusModal, { ModalContent } from "../common/StatusModal";
 
 const Container = styled.div`
   background-color: #111111;
@@ -132,16 +133,11 @@ const Container = styled.div`
 `;
 
 interface RootKeyContainerProps {
-  params: {
-    accountId: string;
-    signature: string;
-    publicKey: string;
-    callbackUrl: string;
-  };
+  params: UrlParams;
   submitRootKeyRequest: () => void;
   showStatusModal: boolean;
   closeStatusModal: () => void;
-  addRootKeyStatus: any;
+  addRootKeyStatus: ModalContent;
 }
 
 export function RootKeyContainer({
@@ -194,7 +190,7 @@ export function RootKeyContainer({
   );
 }
 
-const renderParam = (label: string, value: string) => (
+const renderParam = (label: string, value: string): JSX.Element => (
   <div className="param">
     <div className="label">{label}</div>
     <div className="value">{value}</div>
