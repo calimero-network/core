@@ -10,10 +10,11 @@ import { useAdminClient } from "../hooks/useAdminClient";
 import { useNavigate } from "react-router-dom";
 import apiClient from "../api/index";
 import translations from "../constants/en.global.json";
+import { ModalContent } from "src/components/common/StatusModal";
 
-export const Tabs = {
-  INSTALL_APPLICATION: 0,
-  APPLICATION_LIST: 1,
+export enum Tabs {
+  INSTALL_APPLICATION,
+  APPLICATION_LIST
 };
 
 export interface Package {
@@ -24,11 +25,20 @@ export interface Package {
   owner: string;
 }
 
-interface Relese {
+export interface Release {
   version: string;
   notes: string;
   path: string;
   hash: string;
+}
+
+export interface NodeApp {
+  id: string;
+  version: string;
+}
+
+export interface Application extends Package {
+  version: string;
 }
 
 export default function Applications() {
@@ -38,12 +48,12 @@ export default function Applications() {
   const { installApplication } = useAdminClient();
   const [selectedTab, setSelectedTab] = useState(Tabs.APPLICATION_LIST);
   const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
-  const [selectedRelease, setSelectedRelease] = useState<Relese | null>(null);
+  const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
   const [packages, setPackages] = useState([]);
   const [releases, setReleases] = useState([]);
-  const [applications, setApplications] = useState([]);
+  const [applications, setApplications] = useState<Application[]>([]);
   const [showStatusModal, setShowStatusModal] = useState(false);
-  const [installationStatus, setInstallationStatus] = useState({
+  const [installationStatus, setInstallationStatus] = useState<ModalContent>({
     title: "",
     message: "",
     error: false,
@@ -65,7 +75,7 @@ export default function Applications() {
 
       if (installedApplications.length !== 0) {
         const tempApplications = await Promise.all(
-          installedApplications.map(async (app) => {
+          installedApplications.map(async (app: NodeApp) => {
             const packageData = await getPackage(app.id);
             return { ...packageData, id: app.id, version: app.version };
           })
