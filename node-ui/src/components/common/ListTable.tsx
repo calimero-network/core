@@ -76,18 +76,18 @@ const TableHeader = ({ tableHeaderItems }: TableHeaderProps) => {
   );
 };
 
-interface ListTableProps {
+interface ListTableProps<T> {
   ListDescription?: string;
   ListHeaderItems?: string[];
-  ListItems: any[];
-  rowItem: (item: any, id: number, lastIndex: number, onRowItemClick: any) => JSX.Element;
+  ListItems: T[];
+  rowItem: (item: T, id: number, lastIndex: number, onRowItemClick: any) => JSX.Element;
   columnItems: number;
   roundedTopList: boolean;
   noItemsText: string;
   onRowItemClick?: (id?: number | string) => void;
 }
 
-export default function ListTable({
+export default function ListTable<T>({
   ListDescription,
   ListHeaderItems,
   ListItems,
@@ -96,7 +96,7 @@ export default function ListTable({
   roundedTopList,
   noItemsText,
   onRowItemClick
-}: ListTableProps) {
+}: ListTableProps<T>) {
   return (
     <ListWrapper $columnItems={columnItems ?? 0} $roundedTopList={roundedTopList}>
       {ListDescription && (

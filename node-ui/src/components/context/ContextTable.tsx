@@ -73,7 +73,7 @@ export default function ContextTable({
           setCurrentOption={setCurrentOption}
         />
         {currentOption == Options.JOINED ? (
-          <ListTable
+          <ListTable<ContextObject>
             ListHeaderItems={["ID", "INSTALLED APPLICATION"]}
             columnItems={2}
             ListItems={nodeContextList.joined}
@@ -83,7 +83,7 @@ export default function ContextTable({
             onRowItemClick={showModal}
           />
         ) : (
-          <ListTable
+          <ListTable<ContextObject>
             ListDescription={t.invitedListDescription}
             columnItems={2}
             ListItems={nodeContextList.invited}

@@ -8,6 +8,7 @@ import rowItem from "./RowItem";
 import { Options } from "../../../constants/ApplicationsConstants";
 import { XMarkIcon } from "@heroicons/react/24/solid";
 import { Applications } from "./ApplicationsPopup";
+import { Application } from "../../../api/dataSource/AppsDataSource";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -58,7 +59,7 @@ export default function ApplicationsTable({
           setCurrentOption={setCurrentOption}
         />
         {currentOption == Options.AVAILABLE ? (
-          <ListTable
+          <ListTable<Application>
             ListHeaderItems={headersList}
             columnItems={4}
             ListItems={applicationsList.available}
@@ -68,7 +69,7 @@ export default function ApplicationsTable({
             onRowItemClick={selectApplication}
           />
         ) : (
-          <ListTable
+          <ListTable<Application>
             ListHeaderItems={headersList}
             columnItems={4}
             ListItems={applicationsList.owned}

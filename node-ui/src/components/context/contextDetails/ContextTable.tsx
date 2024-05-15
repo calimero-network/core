@@ -46,7 +46,7 @@ export default function ContextTable({
         />
         {currentOption == DetailsOptions.DETAILS && <DetailsCard details={nodeContextDetails}/>}
         {currentOption == DetailsOptions.CLIENT_KEYS && (
-          <ListTable
+          <ListTable<string>
             ListDescription={t.clientKeysListDescription}
             columnItems={3}
             ListHeaderItems={["TYPE", "ADDED", "PUBLIC KEY"]}
@@ -57,7 +57,7 @@ export default function ContextTable({
           />
         )}
         {currentOption == DetailsOptions.USERS && (
-          <ListTable
+          <ListTable<string>
             columnItems={2}
             ListItems={nodeContextDetails.users || []}
             ListHeaderItems={["USER ID", "JOINED"]}
