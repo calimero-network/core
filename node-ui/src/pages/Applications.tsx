@@ -16,7 +16,7 @@ export const Tabs = {
   APPLICATION_LIST: 1,
 };
 
-interface Package {
+export interface Package {
   id: string;
   name: string;
   description: string;
