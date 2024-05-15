@@ -7,11 +7,12 @@ import { ContentCard } from "../components/common/ConentCard";
 import StartContextCard from "../components/context/startContext/StartContextCard";
 import translations from "../constants/en.global.json";
 import apiClient from "../api/index";
+import { Application } from "./Applications";
 
 export default function StartContext() {
   const t = translations.startContextPage;
   const navigate = useNavigate();
-  const [application, setApplication] = useState(null);
+  const [application, setApplication] = useState<Application | null>(null);
   const [isArgsChecked, setIsArgsChecked] = useState(false);
   const [methodName, setMethodName] = useState("");
   const [argumentsJson, setArgumentsJson] = useState("");

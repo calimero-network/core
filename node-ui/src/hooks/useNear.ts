@@ -1,10 +1,11 @@
 import { Buffer } from "buffer";
 import * as nearAPI from "near-api-js";
+import { Package, Release } from "../pages/Applications";
 
 const JSON_RPC_ENDPOINT = "https://rpc.testnet.near.org";
 
 export function useRPC() {
-  const getPackages = async () => {
+  const getPackages = async (): Promise<Package[]> => {
     const provider = new nearAPI.providers.JsonRpcProvider({ url: JSON_RPC_ENDPOINT });
 
     const rawResult = await provider.query({
@@ -23,7 +24,7 @@ export function useRPC() {
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
-  const getPackage = async (id: string) => {
+  const getPackage = async (id: string): Promise<Package> => {
     const provider = new nearAPI.providers.JsonRpcProvider({ url: JSON_RPC_ENDPOINT });
 
     const rawResult = await provider.query({
@@ -41,7 +42,7 @@ export function useRPC() {
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
-  const getReleases = async (id: string) => {
+  const getReleases = async (id: string): Promise<Release[]> => {
     const provider = new nearAPI.providers.JsonRpcProvider({ url: JSON_RPC_ENDPOINT });
 
     const rawResult = await provider.query({
@@ -61,7 +62,7 @@ export function useRPC() {
     return JSON.parse(Buffer.from(rawResult.result).toString());
   };
 
-  const getLatestRelease = async (id: string) => {
+  const getLatestRelease = async (id: string): Promise<Release> => {
     const provider = new nearAPI.providers.JsonRpcProvider({ url: JSON_RPC_ENDPOINT });
 
     const rawResult = await provider.query({

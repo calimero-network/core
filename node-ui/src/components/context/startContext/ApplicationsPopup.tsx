@@ -2,9 +2,10 @@ import React, { useState, useEffect } from "react";
 import Modal from "react-bootstrap/Modal";
 import styled from "styled-components";
 import { Options } from "../../../constants/ApplicationsConstants";
-import apiClient from "../../../api/index";
 import ApplicationsTable from "./ApplicationsTable";
 import { useRPC } from "../../../hooks/useNear";
+import { Application, NodeApp } from "../../../pages/Applications";
+import apiClient from "../../../api";
 
 const ModalWrapper = styled.div`
   background-color: #212325;
@@ -27,7 +28,12 @@ const initialOptions = [
 interface ApplicationsPopupProps {
   show: boolean;
   closeModal: () => void;
-  setApplication: (application: any) => void;
+  setApplication: (application: Application) => void;
+}
+
+export interface Applications {
+  available: Application[];
+  owned: Application[];
 }
 
 export default function ApplicationsPopup({
@@ -38,7 +44,7 @@ export default function ApplicationsPopup({
   const { getPackage } = useRPC();
   const [currentOption, setCurrentOption] = useState(Options.AVAILABLE);
   const [tableOptions, setTableOptions] = useState(initialOptions);
-  const [applicationsList, setApplicationsList] = useState({
+  const [applicationsList, setApplicationsList] = useState<Applications>({
     available: [],
     owned: [],
   });
@@ -51,7 +57,7 @@ export default function ApplicationsPopup({
 
       if (installedApplications.length !== 0) {
         const tempApplications = await Promise.all(
-          installedApplications.map(async (app) => {
+          installedApplications.map(async (app: NodeApp) => {
             const packageData = await getPackage(app.id);
             return { ...packageData, id: app.id, version: app.version };
           })
@@ -78,7 +84,7 @@ export default function ApplicationsPopup({
     setApps();
   }, []);
 
-  const selectApplication = (application) => {
+  const selectApplication = (application: Application) => {
     setApplication(application);
     closeModal();
   };

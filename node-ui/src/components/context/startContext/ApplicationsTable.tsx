@@ -7,6 +7,7 @@ import ListTable from "../../common/ListTable";
 import rowItem from "./RowItem";
 import { Options } from "../../../constants/ApplicationsConstants";
 import { XMarkIcon } from "@heroicons/react/24/solid";
+import { Applications } from "./ApplicationsPopup";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -27,12 +28,12 @@ const FlexWrapper = styled.div`
 `;
 
 interface ApplicationsTableProps {
-  applicationsList: any;
+  applicationsList: Applications;
   currentOption: string;
   setCurrentOption: (option: string) => void;
-  tableOptions: any;
+  tableOptions: any[];
   closeModal: () => void;
-  selectApplication: (id: string) => void;
+  selectApplication: (application: string | any) => void;
 }
 
 export default function ApplicationsTable({

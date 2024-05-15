@@ -3,7 +3,8 @@ import styled from "styled-components";
 import Button from "../../common/Button";
 import ApplicationsPopup from "./ApplicationsPopup";
 import translations from "../../../constants/en.global.json";
-import StatusModal from "../../common/StatusModal";
+import StatusModal, { ModalContent } from "../../common/StatusModal";
+import { Application } from "../../../pages/Applications";
 
 const Wrapper = styled.div`
   display: flex;
@@ -122,22 +123,22 @@ const Wrapper = styled.div`
 `;
 
 interface StartContextCardProps {
-  application: any;
-  setApplication: any;
+  application: Application | null;
+  setApplication: (application: Application) => void;
   isArgsChecked: boolean;
-  setIsArgsChecked: any;
+  setIsArgsChecked: (checked: boolean) => void;
   methodName: string;
-  setMethodName: any;
+  setMethodName: (method: string) => void;
   argumentsJson: string;
-  setArgumentsJson: any;
-  startContext: any;
+  setArgumentsJson: (args: string) => void;
+  startContext: () => void;
   showBrowseApplication: boolean;
-  setShowBrowseApplication: any;
-  onUploadClick: any;
+  setShowBrowseApplication: (show: boolean) => void;
+  onUploadClick: () => void;
   isLoading: boolean;
   showStatusModal: boolean;
-  closeModal: any;
-  startContextStatus: any;
+  closeModal: () => void;
+  startContextStatus: ModalContent;
 }
 
 export default function StartContextCard({
