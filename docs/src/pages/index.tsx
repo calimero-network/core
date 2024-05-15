@@ -19,7 +19,7 @@ function HomepageHeader() {
         <div className={styles.buttons}>
           <Link
             className="button button--secondary button--lg"
-            to="/core/category/explore"
+            to="/core/explore/intro"
           >
             Dive into privacy preserving technology
           </Link>

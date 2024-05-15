@@ -36,6 +36,7 @@ const config: Config = {
           sidebarPath: "./sidebars.ts",
           routeBasePath: "/", // Serve the docs at the site's root
           breadcrumbs: true,
+          showLastUpdateTime: true,
         },
         blog: false,
         theme: {
@@ -63,12 +64,12 @@ const config: Config = {
       },
       items: [
         {
-          to: "/category/explore",
+          to: "/explore/intro",
           position: "left",
           label: "Explore",
         },
         {
-          to: "/category/learn",
+          to: "/learn/architecture",
           position: "left",
           label: "Learn",
         },
