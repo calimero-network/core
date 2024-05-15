@@ -2,7 +2,7 @@ import { Location } from 'react-router-dom';
 import { getWalletCallbackUrl } from "./wallet";
 import axios from "axios";
 
-interface UrlParams {
+export interface UrlParams {
   accountId: string;
   signature: string;
   publicKey: string;
