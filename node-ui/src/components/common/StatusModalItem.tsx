@@ -79,11 +79,17 @@ const ModalWrapper = styled.div`
   }
 `;
 
+export interface ModalContentItem {
+  title: string;
+  data: string;
+  error: boolean;
+}
+
 interface StatusModalItemProps {
   show: boolean;
   closeModal: () => void;
-  modalContent: any;
-  itemObject: (data: any) => JSX.Element;
+  modalContent: ModalContentItem;
+  itemObject: (data: string) => JSX.Element;
 }
 
 export default function StatusModalItem({
