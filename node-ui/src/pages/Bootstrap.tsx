@@ -8,19 +8,26 @@ import { Footer } from "../components/footer/Footer";
 import styled from "styled-components";
 import { getWalletCallbackUrl } from "../utils/wallet";
 
-const fetchChallenge = async () => {
+
+export interface Challenge {
+  nonce: string;
+  applicationId: string;
+  timestamp: number;
+  nodeSignature: string;
+}
+
+const fetchChallenge = async (): Promise<Challenge> => {
   const body = {
     applicationId: "admin-ui",
   };
   const response = await axios.post("/admin-api/request-challenge", body);
-  const payload = response.data.data;
-  console.log("Challenge received:", payload);
+  const payload: Challenge = response.data.data;
   return payload;
 };
 
 const verifyOwner = async () => {
   let nonceBase64 = null;
-  let challengeObject = null;
+  let challengeObject: null | Challenge = null;
   try {
     challengeObject = await fetchChallenge();
   } catch (e) {
@@ -49,7 +56,7 @@ const BootstrapWrapper = styled.div`
   height: 150px;
 `;
 
-function Bootstrap() {
+function Bootstrap(): JSX.Element {
   return (
     <BootstrapWrapper>
       <Login verifyOwner={verifyOwner} />
