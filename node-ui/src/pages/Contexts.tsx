@@ -12,7 +12,7 @@ import { ModalContent } from "src/components/common/StatusModal";
 
 export interface TableOptions {
   name: string;
-  id: Options;
+  id: string;
   count: number;
 }
 

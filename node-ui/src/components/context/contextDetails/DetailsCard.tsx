@@ -2,6 +2,7 @@ import React from "react";
 import styled from "styled-components";
 import LoaderSpinner from "../../common/LoaderSpinner";
 import translations from "../../../constants/en.global.json";
+import { ContextObject } from "../../../pages/ContextDetails";
 
 const DetailsCardWrapper = styled.div`
   padding-left: 1rem;
@@ -43,7 +44,7 @@ const DetailsCardWrapper = styled.div`
 `;
 
 interface DetailsCardProps {
-  details: any;
+  details: ContextObject;
 }
 
 export default function DetailsCard({ details }: DetailsCardProps) {
@@ -84,7 +85,7 @@ export default function DetailsCard({ details }: DetailsCardProps) {
         <div className="highlight title">{t.titleStorage}</div>
         <div className="item">
           {t.labelStorageText}
-          <span className="highlight">{details.storage ?? "-"}</span>
+          <span className="highlight">{"-"}</span>
         </div>
       </div>
     </DetailsCardWrapper>

@@ -9,7 +9,7 @@ import { Options } from "../../constants/ContextConstants";
 import StatusModal, { ModalContent } from "../common/StatusModal";
 import ActionDialog from "../common/ActionDialog";
 import { NodeContexts } from "../../api/dataSource/ContextDataSource";
-import { ContextObject } from "../../pages/Contexts";
+import { ContextObject, TableOptions } from "../../pages/Contexts";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -20,7 +20,7 @@ interface ContextTableProps {
   naviageToStartContext: () => void;
   currentOption: string;
   setCurrentOption: (option: string) => void;
-  tableOptions: any;
+  tableOptions: TableOptions[];
   deleteNodeContext: () => void;
   showStatusModal: boolean;
   closeModal: () => void;
