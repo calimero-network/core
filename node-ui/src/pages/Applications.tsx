@@ -71,7 +71,7 @@ export default function Applications() {
     const setApps = async () => {
       const installedApplications = await apiClient
         .admin()
-        .getInstalledAplications();
+        .getInstalledApplications();
 
       if (installedApplications.length !== 0) {
         const tempApplications = await Promise.all(

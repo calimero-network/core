@@ -42,7 +42,7 @@ export default function ApplicationsPopup({
   setApplication,
 }: ApplicationsPopupProps) {
   const { getPackage } = useRPC();
-  const [currentOption, setCurrentOption] = useState(Options.AVAILABLE);
+  const [currentOption, setCurrentOption] = useState<string>(Options.AVAILABLE);
   const [tableOptions, setTableOptions] = useState(initialOptions);
   const [applicationsList, setApplicationsList] = useState<Applications>({
     available: [],
@@ -53,7 +53,7 @@ export default function ApplicationsPopup({
     const setApps = async () => {
       const installedApplications = await apiClient
         .admin()
-        .getInstalledAplications();
+        .getInstalledApplications();
 
       if (installedApplications.length !== 0) {
         const tempApplications = await Promise.all(
