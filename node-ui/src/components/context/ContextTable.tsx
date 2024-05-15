@@ -6,26 +6,28 @@ import OptionsHeader from "../common/OptionsHeader";
 import ListTable from "../common/ListTable";
 import rowItem from "./RowItem";
 import { Options } from "../../constants/ContextConstants";
-import StatusModal from "../common/StatusModal";
+import StatusModal, { ModalContent } from "../common/StatusModal";
 import ActionDialog from "../common/ActionDialog";
+import { NodeContexts } from "../../api/dataSource/ContextDataSource";
+import { ContextObject } from "../../pages/Contexts";
 
 const FlexWrapper = styled.div`
   flex: 1;
 `;
 
 interface ContextTableProps {
-  nodeContextList: any;
+  nodeContextList: NodeContexts<ContextObject>;
   naviageToStartContext: () => void;
   currentOption: string;
   setCurrentOption: (option: string) => void;
   tableOptions: any;
-  deleteNodeContext: (contextId: string) => void;
+  deleteNodeContext: () => void;
   showStatusModal: boolean;
   closeModal: () => void;
-  deleteStatus: any;
+  deleteStatus: ModalContent;
   showActionDialog: boolean;
   setShowActionDialog: (show: boolean) => void;
-  showModal: (contextId: string) => void;
+  showModal: (id: number) => void;
 }
 
 export default function ContextTable({

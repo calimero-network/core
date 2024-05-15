@@ -77,14 +77,14 @@ const TableHeader = ({ tableHeaderItems }: TableHeaderProps) => {
 };
 
 interface ListTableProps {
-  ListDescription: string;
-  ListHeaderItems: string[];
+  ListDescription?: string;
+  ListHeaderItems?: string[];
   ListItems: any[];
   rowItem: (item: any, id: number, lastIndex: number, onRowItemClick: any) => JSX.Element;
   columnItems: number;
   roundedTopList: boolean;
   noItemsText: string;
-  onRowItemClick: () => void;
+  onRowItemClick?: (id?: number | string) => void;
 }
 
 export default function ListTable({

@@ -3,10 +3,27 @@ import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
 import PageContentWrapper from "../components/common/PageContentWrapper";
 import ContextTable from "../components/context/ContextTable";
-import apiClient from "../api/index";
 import { Options } from "../constants/ContextConstants";
 import { useNavigate } from "react-router-dom";
 import { useRPC } from "../hooks/useNear";
+import apiClient from "../api/index";
+import { Context, NodeContexts } from "../api/dataSource/ContextDataSource";
+import { ModalContent } from "src/components/common/StatusModal";
+
+export interface TableOptions {
+  name: string;
+  id: Options;
+  count: number;
+}
+
+export interface ContextObject {
+  id: string;
+  applicationId: string;
+  name: string;
+  description: string;
+  repository: string;
+  owner: string;
+}
 
 const initialOptions = [
   {
@@ -24,26 +41,26 @@ const initialOptions = [
 export default function Contexts() {
   const navigate = useNavigate();
   const { getPackage } = useRPC();
-  const [currentOption, setCurrentOption] = useState(Options.JOINED);
-  const [tableOptions, setTableOptions] = useState(initialOptions);
+  const [currentOption, setCurrentOption] = useState<string>(Options.JOINED);
+  const [tableOptions, setTableOptions] = useState<TableOptions[]>(initialOptions);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [showActionDialog, setShowActionDialog] = useState(false);
   const [selectedContextId, setSelectedContextId] = useState(null);
-  const [deleteStatus, setDeleteStatus] = useState({
+  const [deleteStatus, setDeleteStatus] = useState<ModalContent>({
     title: "",
     message: "",
     error: false,
   });
-  const [nodeContextList, setNodeContextList] = useState({
+  const [nodeContextList, setNodeContextList] = useState<NodeContexts<ContextObject>>({
     joined: [],
     invited: [],
   });
 
-  const generateContextObjects = async (contexts) => {
+  const generateContextObjects = async (contexts: Context[]): Promise<ContextObject[]> => {
     const tempContextObjects = await Promise.all(
-      contexts.map(async (app) => {
+      contexts.map(async (app: Context) => {
         const packageData = await getPackage(app.applicationId);
-        return { ...packageData, id: app.id, version: app.version };
+        return { ...packageData, id: app.id, applicationId: packageData.id };
       })
     );
     return tempContextObjects;
@@ -55,6 +72,7 @@ export default function Contexts() {
       const joinedContexts = await generateContextObjects(
         nodeContexts.joined
       );
+
       setNodeContextList(prevState => ({
         ...prevState,
         joined: joinedContexts
@@ -110,7 +128,7 @@ export default function Contexts() {
     });
   };
 
-  const showModal = (id) => {
+  const showModal = (id: number) => {
     setSelectedContextId(id);
     setShowActionDialog(true);
   }
