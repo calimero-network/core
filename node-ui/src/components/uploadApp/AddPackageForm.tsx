@@ -120,8 +120,8 @@ interface AddPackageFormProps {
   walletAccounts: Account[];
   addPackage: (packageInfo: PackageInfo) => void;
   addPackageLoader: boolean;
-  deployerAccount: any;
-  setDeployerAccount: (account: any) => void;
+  deployerAccount: Account | null;
+  setDeployerAccount: (account: Account) => void;
   showStatusModal: boolean;
   closeModal: () => void;
   deployStatus: DeployStatus;

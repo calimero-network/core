@@ -189,7 +189,7 @@ interface UploadApplicationProps {
   packages: PackageInfo[];
   addReleaseLoader: boolean;
   walletAccounts: Account[];
-  deployerAccount: Account;
+  deployerAccount: Account | null;
   setDeployerAccount: (account: Account) => void;
   showStatusModal: boolean;
   closeModal: () => void;

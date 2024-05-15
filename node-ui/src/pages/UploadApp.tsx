@@ -44,9 +44,8 @@ export default function UploadApp() {
   const [addPackageLoader, setAddPackageLoader] = useState(false);
   const [addReleaseLoader, setAddReleaseLoader] = useState(false);
   const [walletAccounts, setWalletAccounts] = useState<Account[]>([]);
-  const [deployerAccount, setDeployerAccount] = useState(null);
+  const [deployerAccount, setDeployerAccount] = useState<Account | null>(null);
   const [showStatusModal, setShowStatusModal] = useState(false);
-  // add types here
   const [packageInfo, setPackageInfo] = useState<PackageInfo>({
     name: "",
     description: "",
@@ -94,7 +93,7 @@ export default function UploadApp() {
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
-      // @ts-expect-error: The 'import.meta' meta-property is only allowed when the '--module' option is 'es2020'
+      // @ts-ignore: The 'import.meta' meta-property is only allowed when the '--module' option ...
       network: import.meta.env.VITE_NEAR_ENVIRONMENT ?? "testnet",
       modules: [setupMyNearWallet()],
     });
@@ -142,7 +141,7 @@ export default function UploadApp() {
     }
   };
 
-  const addPackage = async (packageInfo) => {
+  const addPackage = async (packageInfo: PackageInfo) => {
     setAddPackageLoader(true);
     const selector = await setupWalletSelector({
       network: "testnet",
@@ -151,7 +150,7 @@ export default function UploadApp() {
     const wallet = await selector.wallet("my-near-wallet");
     try {
       const res = await wallet.signAndSendTransaction({
-        signerId: deployerAccount,
+        signerId: deployerAccount.accountId,
         actions: [
           {
             type: "FunctionCall",
@@ -191,7 +190,7 @@ export default function UploadApp() {
     setAddPackageLoader(false);
   };
 
-  const addRelease = async (releaseInfo) => {
+  const addRelease = async (releaseInfo: ReleaseInfo) => {
     setAddReleaseLoader(true);
     const selector = await setupWalletSelector({
       network: "testnet",
@@ -200,7 +199,7 @@ export default function UploadApp() {
     const wallet = await selector.wallet("my-near-wallet");
     try {
       const res = await wallet.signAndSendTransaction({
-        signerId: deployerAccount,
+        signerId: deployerAccount.accountId,
         actions: [
           {
             type: "FunctionCall",
