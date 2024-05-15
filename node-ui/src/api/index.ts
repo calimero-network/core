@@ -6,7 +6,12 @@ import { AdminApi } from "./adminApi";
 import { ContextApi } from "./contextApi";
 import { AppsDataSource } from "./dataSource/AppsDataSource";
 
-class ApiClient {
+interface IApiClient {
+  admin(): AdminApi;
+  context(): ContextApi;
+}
+
+class ApiClient implements IApiClient{
   private adminApi: AdminApi;
   private contextApi: ContextApi;
 

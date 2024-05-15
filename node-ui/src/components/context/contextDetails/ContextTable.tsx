@@ -17,7 +17,7 @@ const FlexWrapper = styled.div`
 
 interface ContextTableProps {
   nodeContextDetails: ContextObject;
-  naviageToContextList: () => void;
+  navigateToContextList: () => void;
   currentOption: string;
   setCurrentOption: (option: string) => void;
   tableOptions: TableOptions[];
@@ -25,7 +25,7 @@ interface ContextTableProps {
 
 export default function ContextTable({
   nodeContextDetails,
-  naviageToContextList,
+  navigateToContextList,
   currentOption,
   setCurrentOption,
   tableOptions,
@@ -35,7 +35,7 @@ export default function ContextTable({
   return (
     <ContentCard
     headerBackText={t.title}
-    headerOnBackClick={naviageToContextList}
+    headerOnBackClick={navigateToContextList}
     >
       <FlexWrapper>
         <OptionsHeader

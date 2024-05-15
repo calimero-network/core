@@ -72,8 +72,13 @@ const DropdownWrapper = styled.div`
   }
 `;
 
+interface Option {
+  buttonText: string;
+  onClick: () => void;
+}
+
 interface MenuIconDropdownProps {
-  options: any[];
+  options: Option[];
 }
 
 export default function MenuIconDropdown({ options }: MenuIconDropdownProps) {

@@ -31,13 +31,11 @@ const CardWrapper = styled.div`
   }
 `;
 
-const exportItem = (data: string): JSX.Element => {
-  return (
-    <div className="item">
-      <div className="item-title">{data}</div>
-    </div>
-  );
-};
+const exportItem = (data: string): JSX.Element => (
+  <div className="item">
+    <div className="item-title">{data}</div>
+  </div>
+);
 
 interface ExportCardProps {
   onClick: () => void;

@@ -2,7 +2,7 @@ import { HttpClient } from "../httpClient";
 
 export interface Application {
   id: string;
-  version: String;
+  version: string;
 }
 
 export class AppsDataSource {
@@ -12,7 +12,7 @@ export class AppsDataSource {
     this.client = client;
   }
 
-  async getInstalledAplications(): Promise<Application[]> {
+  async getInstalledApplications(): Promise<Application[]> {
     try {
       const response = await this.client.get<any>("/admin-api/applications");
       // @ts-ignore with adminAPI update

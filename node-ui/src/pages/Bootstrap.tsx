@@ -25,7 +25,7 @@ const fetchChallenge = async (): Promise<Challenge> => {
   return payload;
 };
 
-const verifyOwner = async () => {
+const verifyOwner = async (): Promise<void> => {
   let nonceBase64 = null;
   let challengeObject: null | Challenge = null;
   try {

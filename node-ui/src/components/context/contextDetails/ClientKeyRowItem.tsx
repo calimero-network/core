@@ -1,11 +1,11 @@
 import React from "react";
 import styled from "styled-components";
 
-interface RowItemComponentProps {
+interface ClientKeyRowItemProps {
   $borders: boolean;
 }
 
-const RowItem = styled.div<RowItemComponentProps>`
+const RowItem = styled.div<ClientKeyRowItemProps>`
   display: flex;
   width: 100%;
   align-items: center;

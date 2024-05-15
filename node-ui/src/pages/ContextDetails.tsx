@@ -98,7 +98,7 @@ export default function ContextDetails() {
       <PageContentWrapper>
         <ContextTable
           nodeContextDetails={nodeContextDetails}
-          naviageToContextList={() => navigate("/contexts")}
+          navigateToContextList={() => navigate("/contexts")}
           currentOption={currentOption}
           setCurrentOption={setCurrentOption}
           tableOptions={tableOptions}
