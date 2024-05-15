@@ -5,9 +5,13 @@ import { IdentityContent } from "../components/identity/IdentityContent";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 
+export interface RootKey {
+  signing_key: string;
+}
+
 export default function Identity() {
   const navigate = useNavigate();
-  const [rootKeys, setRootKeys] = useState([]);
+  const [rootKeys, setRootKeys] = useState<RootKey[]>([]);
   useEffect(() => {
     const setDids = async () => {
       const response = await axios.get("/admin-api/did");

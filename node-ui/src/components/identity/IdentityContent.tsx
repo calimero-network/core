@@ -1,9 +1,10 @@
 import React from "react";
 import { ContentLayout } from "../applications/ApplicationsContent";
 import { IdentityTable } from "./IdentityTable";
+import { RootKey } from "src/pages/Identity";
 
 interface IdentityContentProps {
-  identityList: any[];
+  identityList: RootKey[];
   deleteIdentity: (id: number) => void;
   addIdentity: () => void;
 }
