@@ -19,7 +19,7 @@ pub const IPFS_BOOT_NODES: &[&str] = &[
 #[derive(Debug)]
 pub struct NetworkConfig {
     pub identity: identity::Keypair,
-    pub node_type: calimero_primitives::types::NodeType,
+    pub node_type: calimero_node_primitives::NodeType,
 
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,

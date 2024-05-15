@@ -21,7 +21,6 @@ function HomepageHeader() {
 }
 
 function HomepageBody() {
-  const { siteConfig } = useDocusaurusContext();
   return (
     <header className={styles.features}>
       <div className={styles.bodyContainer}>
@@ -39,7 +38,7 @@ function HomepageBody() {
       <div className={styles.buttons}>
         <Link
           className="button button--secondary button--lg"
-          to="/core/category/explore"
+          to="/core/explore/intro"
         >
           Dive into privacy preserving technology
         </Link>

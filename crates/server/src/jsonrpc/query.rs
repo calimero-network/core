@@ -35,8 +35,12 @@ async fn handle(
             }),
         },
         Ok(None) => Ok(QueryResponse { output: None }),
-        Err(err) => eyre::bail!(QueryError::ExecutionError {
-            message: err.to_string()
-        }),
+        Err(err) => match err {
+            jsonrpc::CallError::UpstreamCallError(err) => eyre::bail!(QueryError::CallError(err)),
+            jsonrpc::CallError::UpstreamFunctionCallError(message) => {
+                eyre::bail!(QueryError::FunctionCallError(message))
+            }
+            jsonrpc::CallError::InternalError(err) => eyre::bail!(err),
+        },
     }
 }

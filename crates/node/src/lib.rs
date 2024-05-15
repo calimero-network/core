@@ -19,7 +19,7 @@ type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
 pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
     pub identity: identity::Keypair,
-    pub node_type: calimero_primitives::types::NodeType,
+    pub node_type: calimero_node_primitives::NodeType,
     pub application: calimero_application::config::ApplicationConfig,
     pub network: calimero_network::config::NetworkConfig,
     pub server: calimero_server::config::ServerConfig,
@@ -28,7 +28,7 @@ pub struct NodeConfig {
 
 pub struct Node {
     id: calimero_network::types::PeerId,
-    typ: calimero_primitives::types::NodeType,
+    typ: calimero_node_primitives::NodeType,
     store: calimero_store::Store,
     tx_pool: transaction_pool::TransactionPool,
     application_manager: calimero_application::ApplicationManager,
@@ -91,19 +91,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((application_id, method, payload, write, tx)) = server_receiver.recv() => {
-                if write {
-                    if let Err(err) = node.call_mut(application_id, method, payload, tx).await {
-                        error!("Failed to send transaction: {}", err);
-                    }
-                } else {
-                    match node.call(application_id, method, payload).await {
-                        Ok(outcome) => {
-                            let _ = tx.send(outcome);
-                        },
-                        Err(err) => error!("Failed to execute transaction: {}", err)
-                    };
-                }
+            Some((application_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
+                node.handle_call(application_id, method, payload, write, outcome_sender).await;
             }
         }
     }
@@ -128,20 +117,20 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
-                        let (tx, rx) = oneshot::channel();
+                        let (outcome_sender, outcome_receiver) = oneshot::channel();
 
                         let tx_hash = match node
-                            .call_mut(
+                            .call_mutate(
                                 application_id.to_owned().into(),
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
-                                tx,
+                                outcome_sender,
                             )
                             .await
                         {
                             Ok(tx_hash) => tx_hash,
                             Err(e) => {
-                                println!("{IND} Failed to send transaction: {}", e);
+                                println!("{IND} Failed to execute transaction: {}", e);
                                 return Ok(());
                             }
                         };
@@ -149,9 +138,8 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Scheduled Transaction! {:?}", tx_hash);
 
                         tokio::spawn(async move {
-                            if let Ok(outcome) = rx.await {
+                            if let Ok(outcome) = outcome_receiver.await {
                                 println!("{IND} {:?}", tx_hash);
-
                                 match outcome.returns {
                                     Ok(result) => match result {
                                         Some(result) => {
@@ -399,38 +387,106 @@ impl Node {
         Ok(())
     }
 
-    pub async fn call(
+    pub async fn handle_call(
         &mut self,
         application_id: calimero_primitives::application::ApplicationId,
         method: String,
         payload: Vec<u8>,
-    ) -> eyre::Result<calimero_runtime::logic::Outcome> {
-        if !self
-            .application_manager
-            .is_application_installed(&application_id)
-        {
-            eyre::bail!("Application is not installed.");
-        }
+        write: bool,
+        outcome_sender: oneshot::Sender<
+            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
+        >,
+    ) {
+        if write {
+            let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
 
-        self.execute(application_id, None, method, payload).await
+            if let Err(err) = self
+                .call_mutate(
+                    application_id.clone(),
+                    method,
+                    payload,
+                    inner_outcome_sender,
+                )
+                .await
+            {
+                let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(err)));
+                return;
+            }
+
+            tokio::spawn(async move {
+                match inner_outcome_receiver.await {
+                    Ok(outcome) => {
+                        let _ = outcome_sender.send(Ok(outcome));
+                    }
+                    Err(err) => {
+                        error!("Failed to receive inner outcome of a transaction: {}", err);
+                        let _ =
+                            outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(
+                                calimero_node_primitives::MutateCallError::InternalError,
+                            )));
+                    }
+                }
+            });
+        } else {
+            match self.call_query(application_id, method, payload).await {
+                Ok(outcome) => {
+                    let _ = outcome_sender.send(Ok(outcome));
+                }
+                Err(err) => {
+                    let _ =
+                        outcome_sender.send(Err(calimero_node_primitives::CallError::Query(err)));
+                }
+            };
+        }
     }
 
-    pub async fn call_mut(
+    async fn call_query(
         &mut self,
         application_id: calimero_primitives::application::ApplicationId,
         method: String,
         payload: Vec<u8>,
-        tx: oneshot::Sender<calimero_runtime::logic::Outcome>,
-    ) -> eyre::Result<calimero_primitives::hash::Hash> {
+    ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::QueryCallError> {
+        if !self
+            .application_manager
+            .is_application_installed(&application_id)
+        {
+            return Err(
+                calimero_node_primitives::QueryCallError::ApplicationNotInstalled {
+                    application_id,
+                },
+            );
+        }
+
+        self.execute(application_id, None, method, payload)
+            .await
+            .map_err(|e| {
+                error!(%e,"Failed to execute query call.");
+                calimero_node_primitives::QueryCallError::InternalError
+            })
+    }
+
+    async fn call_mutate(
+        &mut self,
+        application_id: calimero_primitives::application::ApplicationId,
+        method: String,
+        payload: Vec<u8>,
+        outcome_sender: oneshot::Sender<calimero_runtime::logic::Outcome>,
+    ) -> Result<calimero_primitives::hash::Hash, calimero_node_primitives::MutateCallError> {
         if self.typ.is_coordinator() {
-            eyre::bail!("Coordinator can not create transactions!");
+            return Err(calimero_node_primitives::MutateCallError::InvalidNodeType {
+                node_type: self.typ,
+            });
         }
 
         if !self
             .application_manager
             .is_application_installed(&application_id)
         {
-            eyre::bail!("Application is not installed.");
+            return Err(
+                calimero_node_primitives::MutateCallError::ApplicationNotInstalled {
+                    application_id,
+                },
+            );
         }
 
         if self
@@ -439,7 +495,7 @@ impl Node {
             .await
             == 0
         {
-            eyre::bail!("No connected peers to send message to.");
+            return Err(calimero_node_primitives::MutateCallError::NoConnectedPeers);
         }
 
         let transaction = calimero_primitives::transaction::Transaction {
@@ -449,16 +505,29 @@ impl Node {
             prior_hash: self.last_tx,
         };
 
-        let tx_hash = self
+        let tx_hash = match self
             .tx_pool
-            .insert(self.id, transaction.clone(), Some(tx))?;
+            .insert(self.id, transaction.clone(), Some(outcome_sender))
+        {
+            Ok(tx_hash) => tx_hash,
+            Err(err) => {
+                error!(%err, "Failed to insert transaction into the pool.");
+                return Err(calimero_node_primitives::MutateCallError::InternalError);
+            }
+        };
 
-        // todo! consider including the outcome hash in the transaction
-        self.push_action(
-            application_id.clone(),
-            types::PeerAction::Transaction(transaction),
-        )
-        .await?;
+        if let Err(err) = self
+            .push_action(application_id, types::PeerAction::Transaction(transaction))
+            .await
+        {
+            if self.tx_pool.remove(&tx_hash).is_none() {
+                error!("Failed to remove just inserted transaction from the pool. This is a bug and should be reported.");
+                return Err(calimero_node_primitives::MutateCallError::InternalError);
+            }
+
+            error!(%err, "Failed to push transaction over the network.");
+            return Err(calimero_node_primitives::MutateCallError::InternalError);
+        }
 
         self.last_tx = tx_hash;
 
