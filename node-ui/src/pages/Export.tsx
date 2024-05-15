@@ -5,6 +5,7 @@ import { FlexLayout } from "../components/layout/FlexLayout";
 import styled from "styled-components";
 import ExportCard from "../components/exportIdentity/ExportCard";
 import translations from "../constants/en.global.json";
+import { ModalContentItem } from "../components/common/StatusModalItem";
 
 const ExportWrapper = styled.div`
   display: flex;
@@ -21,7 +22,7 @@ const ExportWrapper = styled.div`
 export default function Export() {
   const t = translations.exportIdentityPage;
   const [showStatusModal, setShowStatusModal] = useState(false);
-  const [exportStatus, setExportStatus] = useState({
+  const [exportStatus, setExportStatus] = useState<ModalContentItem>({
     title: "",
     data: "",
     error: false,

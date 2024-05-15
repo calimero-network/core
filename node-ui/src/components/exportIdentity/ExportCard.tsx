@@ -2,7 +2,7 @@ import React from "react";
 import styled from "styled-components";
 import translations from "../../constants/en.global.json";
 import Button from "../common/Button";
-import StatusModalItem from "../common/StatusModalItem";
+import StatusModalItem, { ModalContentItem } from "../common/StatusModalItem";
 
 const CardWrapper = styled.div`
   padding: 2rem 2rem 3.75rem;
@@ -31,19 +31,19 @@ const CardWrapper = styled.div`
   }
 `;
 
-const exportItem = (data: string) => {
-    return (
-        <div className="item">
-            <div className="item-title">{data}</div>
-        </div>
-    );
-}
+const exportItem = (data: string): JSX.Element => {
+  return (
+    <div className="item">
+      <div className="item-title">{data}</div>
+    </div>
+  );
+};
 
 interface ExportCardProps {
   onClick: () => void;
   showStatusModal: boolean;
   closeStatusModal: () => void;
-  exportStatus: any;
+  exportStatus: ModalContentItem;
 }
 
 export default function ExportCard({
