@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import { Tooltip } from "react-tooltip";
+import { Release } from "../../pages/Applications";
 
 const Item = styled.div`
   background-color: rgb(0, 0, 0, 0.12);
@@ -42,7 +43,7 @@ const Item = styled.div`
 `;
 
 interface ReleaseItemProps {
-  release: any;
+  release: Release;
 }
 
 export function ReleaseItem({ release }: ReleaseItemProps) {

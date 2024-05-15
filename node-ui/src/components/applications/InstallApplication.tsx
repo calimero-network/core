@@ -5,9 +5,9 @@ import { ArrowLeftIcon } from "@heroicons/react/24/solid";
 import { PackageItem } from "./Item";
 import { Form } from "react-bootstrap";
 import { ReleaseItem } from "./ReleaseItem";
-import StatusModal from "../common/StatusModal";
+import StatusModal, { ModalContent } from "../common/StatusModal";
 import translations from "../../constants/en.global.json";
-import { Tabs } from "../../pages/Applications";
+import { Package, Tabs, Release } from "../../pages/Applications";
 
 const InstallApplicationForm = styled.div`
   color: #fff;
@@ -108,19 +108,19 @@ const InstallApplicationForm = styled.div`
 `;
 
 interface InstallApplicationProps {
-  packages: any[];
-  releases: any[];
+  packages: Package[];
+  releases: Release[];
   installApplication: () => void;
-  setSelectedPackage: (pkg: any) => void;
-  setReleases: (releases: any[]) => void;
-  getReleases: (pkgId: string) => Promise<any[]>;
-  selectedPackage: any;
-  selectedRelease: any;
-  setSelectedRelease: (release: any) => void;
-  setSelectedTab: (tab: any) => void;
+  setSelectedPackage: (pkg: Package) => void;
+  setReleases: (releases: Release[]) => void;
+  getReleases: (pkgId: string) => Promise<Release[]>;
+  selectedPackage: Package | null;
+  selectedRelease: Release | null;
+  setSelectedRelease: (release: Release) => void;
+  setSelectedTab: (tab: Tabs) => void;
   showStatusModal: boolean;
   closeModal: () => void;
-  installationStatus: any;
+  installationStatus: ModalContent;
 }
 
 export function InstallApplication({

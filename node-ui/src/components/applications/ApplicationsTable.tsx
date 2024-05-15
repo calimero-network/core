@@ -7,6 +7,7 @@ import MenuIconDropdown from "../common/MenuIconDropdown";
 import { truncateHash } from "../../utils/displayFunctions";
 import { DocumentDuplicateIcon } from "@heroicons/react/24/solid";
 import { CopyToClipboard } from "react-copy-to-clipboard";
+import { Application } from "../../pages/Applications";
 
 const Table = styled.div`
   height: 100%;
@@ -119,9 +120,9 @@ const Table = styled.div`
 `;
 
 interface ApplicationsTableProps {
-  applications: any;
-  changeTab: any;
-  uninstall: any;
+  applications: Application[];
+  changeTab: () => void;
+  uninstall: (id: number) => void;
 }
 
 export function ApplicationsTable({ applications, changeTab, uninstall }: ApplicationsTableProps) {

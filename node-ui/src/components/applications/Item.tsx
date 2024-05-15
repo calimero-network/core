@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import { Tooltip } from "react-tooltip";
+import { Package } from "../../pages/Applications";
 
 const Item = styled.div`
   background-color: rgb(0, 0, 0, 0.12);
@@ -36,7 +37,7 @@ const Item = styled.div`
 `;
 
 interface PackageItemProps {
-  selectedItem: any;
+  selectedItem: Package;
 }
 
 export function PackageItem({ selectedItem }: PackageItemProps) {
