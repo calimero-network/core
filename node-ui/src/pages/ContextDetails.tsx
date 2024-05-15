@@ -8,6 +8,7 @@ import apiClient from "../api/index";
 import { DetailsOptions } from "../constants/ContextConstants";
 import { useNavigate } from "react-router-dom";
 import { useRPC } from "../hooks/useNear";
+import { TableOptions } from "./Contexts";
 
 const initialOptions = [
   {
@@ -27,11 +28,12 @@ const initialOptions = [
   },
 ];
 
-interface ContextObject {
+export interface ContextObject {
   id: string;
   applicationId: string;
   name: string;
   description: string;
+  repository: string;
   version: string;
   created: string;
   updated: string;
@@ -44,31 +46,21 @@ export default function ContextDetails() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [nodeContextDetails, setNodeContextDetails] = useState<ContextObject>();
-  const [currentOption, setCurrentOption] = useState(DetailsOptions.DETAILS);
-  const [tableOptions, setTableOptions] = useState(initialOptions);
+  const [currentOption, setCurrentOption] = useState<string>(
+    DetailsOptions.DETAILS
+  );
+  const [tableOptions, setTableOptions] =
+    useState<TableOptions[]>(initialOptions);
   const { getPackage, getLatestRelease } = useRPC();
 
   const generateContextObjects = async (context: any) => {
-    let tempContextObjects: ContextObject = {
-      id: "",
-      applicationId: "",
-      name: "",
-      description: "",
-      version: "",
-      created: "",
-      updated: "",
-      owner: "",
-      clientKeys: [],
-      users: []
-    };
     const packageData = await getPackage(context.applicationId);
     const versionData = await getLatestRelease(context.applicationId);
-    tempContextObjects = {
+    return {
       ...packageData,
       ...context,
-      ...versionData
+      ...versionData,
     };
-    return tempContextObjects;
   };
 
   useEffect(() => {
@@ -104,7 +96,7 @@ export default function ContextDetails() {
     <FlexLayout>
       <Navigation />
       <PageContentWrapper>
-      <ContextTable
+        <ContextTable
           nodeContextDetails={nodeContextDetails}
           naviageToContextList={() => navigate("/contexts")}
           currentOption={currentOption}

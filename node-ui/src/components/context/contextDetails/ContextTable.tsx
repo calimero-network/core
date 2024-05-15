@@ -8,17 +8,19 @@ import clientKeyRowItem from "./ClientKeyRowItem";
 import userRowItem from "./UserRowItem";
 import { DetailsOptions } from "../../../constants/ContextConstants";
 import DetailsCard from "./DetailsCard";
+import { TableOptions } from "../../../pages/Contexts";
+import { ContextObject } from "../../../pages/ContextDetails";
 
 const FlexWrapper = styled.div`
   flex: 1;
 `;
 
 interface ContextTableProps {
-  nodeContextDetails: any;
+  nodeContextDetails: ContextObject;
   naviageToContextList: () => void;
   currentOption: string;
   setCurrentOption: (option: string) => void;
-  tableOptions: any;
+  tableOptions: TableOptions[];
 }
 
 export default function ContextTable({
