@@ -5,6 +5,7 @@ import { ChevronUpDownIcon } from "@heroicons/react/24/solid";
 import translations from "../../constants/en.global.json";
 import MenuIconDropdown from "../common/MenuIconDropdown";
 import DidEditor from "./DidEditor";
+import { RootKey } from "src/pages/Identity";
 
 const Table = styled.div`
   height: 100%;
@@ -113,7 +114,7 @@ const Table = styled.div`
 const enable_option = false;
 
 interface IdentityTableProps {
-  identityList: any[];
+  identityList: RootKey[];
   deleteIdentity: (id: number) => void;
   addIdentity: () => void;
 }
