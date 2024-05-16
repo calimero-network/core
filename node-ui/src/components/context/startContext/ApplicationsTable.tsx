@@ -61,7 +61,7 @@ export default function ApplicationsTable({
         {currentOption == Options.AVAILABLE ? (
           <ListTable<Application>
             listHeaderItems={headersList}
-            columnItems={4}
+            numOfColumns={4}
             listItems={applicationsList.available}
             rowItem={rowItem}
             roundTopItem={true}
@@ -71,7 +71,7 @@ export default function ApplicationsTable({
         ) : (
           <ListTable<Application>
             listHeaderItems={headersList}
-            columnItems={4}
+            numOfColumns={4}
             listItems={applicationsList.owned}
             rowItem={rowItem}
             roundTopItem={true}

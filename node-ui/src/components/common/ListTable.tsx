@@ -2,7 +2,7 @@ import React from "react";
 import styled from "styled-components";
 
 interface ListWrapperProps {
-  columnItems: number;
+  numOfColumns: number;
   roundTopItem: boolean;
 }
 
@@ -25,7 +25,7 @@ const ListWrapper = styled.div<ListWrapperProps>`
 
   .header-items-grid {
     display: grid;
-    grid-template-columns: repeat(${(props) => props.columnItems}, 1fr);
+    grid-template-columns: repeat(${(props) => props.numOfColumns}, 1fr);
     grid-template-rows: auto;
     padding: 0.75rem 1.5rem;
     background-color: #15181f;
@@ -81,7 +81,7 @@ interface ListTableProps<T> {
   listHeaderItems?: string[];
   listItems: T[];
   rowItem: (item: T, id: number, lastIndex: number, onRowItemClick: any) => JSX.Element;
-  columnItems: number;
+  numOfColumns: number;
   roundTopItem: boolean;
   noItemsText: string;
   onRowItemClick?: (id: string) => void;
@@ -92,13 +92,13 @@ export default function ListTable<T>({
   listHeaderItems,
   listItems,
   rowItem,
-  columnItems,
+  numOfColumns,
   roundTopItem,
   noItemsText,
   onRowItemClick
 }: ListTableProps<T>) {
   return (
-    <ListWrapper columnItems={columnItems ?? 0} roundTopItem={roundTopItem}>
+    <ListWrapper numOfColumns={numOfColumns ?? 0} roundTopItem={roundTopItem}>
       {listDescription && (
         <div className="table-description">{listDescription}</div>
       )}

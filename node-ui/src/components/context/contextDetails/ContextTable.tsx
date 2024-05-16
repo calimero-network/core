@@ -31,11 +31,11 @@ export default function ContextTable({
   tableOptions,
 }: ContextTableProps) {
   const t = translations.contextPage.contextDetails;
-  
+
   return (
     <ContentCard
-    headerBackText={t.title}
-    headerOnBackClick={navigateToContextList}
+      headerBackText={t.title}
+      headerOnBackClick={navigateToContextList}
     >
       <FlexWrapper>
         <OptionsHeader
@@ -44,11 +44,13 @@ export default function ContextTable({
           currentOption={currentOption}
           setCurrentOption={setCurrentOption}
         />
-        {currentOption == DetailsOptions.DETAILS && <DetailsCard details={nodeContextDetails}/>}
+        {currentOption == DetailsOptions.DETAILS && (
+          <DetailsCard details={nodeContextDetails} />
+        )}
         {currentOption == DetailsOptions.CLIENT_KEYS && (
           <ListTable<ClientKey>
             listDescription={t.clientKeysListDescription}
-            columnItems={3}
+            numOfColumns={3}
             listHeaderItems={["TYPE", "ADDED", "PUBLIC KEY"]}
             listItems={nodeContextDetails.clientKeys || []}
             rowItem={clientKeyRowItem}
@@ -58,7 +60,7 @@ export default function ContextTable({
         )}
         {currentOption == DetailsOptions.USERS && (
           <ListTable<User>
-            columnItems={2}
+            numOfColumns={2}
             listItems={nodeContextDetails.users || []}
             listHeaderItems={["USER ID", "JOINED"]}
             rowItem={userRowItem}

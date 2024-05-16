@@ -75,7 +75,7 @@ export default function ContextTable({
         {currentOption == Options.JOINED ? (
           <ListTable<ContextObject>
             listHeaderItems={["ID", "INSTALLED APPLICATION"]}
-            columnItems={2}
+            numOfColumns={2}
             listItems={nodeContextList.joined}
             rowItem={rowItem}
             roundTopItem={true}
@@ -85,7 +85,7 @@ export default function ContextTable({
         ) : (
           <ListTable<ContextObject>
             listDescription={t.invitedListDescription}
-            columnItems={2}
+            numOfColumns={2}
             listItems={nodeContextList.invited}
             rowItem={rowItem}
             roundTopItem={true}
