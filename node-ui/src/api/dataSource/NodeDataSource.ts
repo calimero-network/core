@@ -27,12 +27,7 @@ export class NodeDataSource {
     try {
       const response = await this.client.get<Application[]>("/admin-api/applications");
       // @ts-ignore with adminAPI update
-      if (response?.apps) {
-        // @ts-ignore
-        return response.apps;
-      } else {
-        return [];
-      }
+      return response?.apps ?? [];
     } catch (error) {
       console.error("Error fetching installed applications:", error);
       return [];
