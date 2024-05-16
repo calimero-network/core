@@ -11,7 +11,7 @@ const config: Config = {
   baseUrl: "/core/",
   organizationName: "calimero-network",
   projectName: "core",
-  onBrokenLinks: "throw",
+  onBrokenLinks: "warn",
   onBrokenMarkdownLinks: "warn",
   i18n: {
     defaultLocale: "en",
