@@ -79,12 +79,12 @@ const config: Config = {
           label: "Build",
         },
         {
-          to: "/category/contribute",
+          to: "/contribute/github",
           position: "left",
           label: "Contribute",
         },
         {
-          to: "/category/resources",
+          to: "/resources/community",
           position: "left",
           label: "Resources",
         },
