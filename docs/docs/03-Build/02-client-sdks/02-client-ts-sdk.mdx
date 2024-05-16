@@ -3,7 +3,7 @@ id: client-ts-sdk
 title: TypeScript Client SDK
 ---
 
-### About TypeScript Client SDK
+## Getting Started with Calimero SDK for Typescript
 
 Our TypeScript Client SDK is a powerful tool designed to simplify the process of interacting with decentralized peer-to-peer applications installed on the node. It serves as an efficient conduit for communication between the client and the node’s server. This SDK is particularly beneficial for developers as it abstracts the complexities of server communication, allowing them to concentrate on the core application logic.
 
@@ -25,32 +25,38 @@ By designing our SDK in this way, we ensure that it remains flexible, scalable, 
 
 ```typescript
 export interface RpcClient {
-    query<Args, Output>(params: RpcQueryParams<Args>, config?: RequestConfig): Promise<RpcQueryResponse<Output>>;
-    mutate<Args, Output>(params: RpcMutateParams<Args>, config?: RequestConfig): Promise<RpcMutateResponse<Output>>;
+  query<Args, Output>(
+    params: RpcQueryParams<Args>,
+    config?: RequestConfig
+  ): Promise<RpcQueryResponse<Output>>;
+  mutate<Args, Output>(
+    params: RpcMutateParams<Args>,
+    config?: RequestConfig
+  ): Promise<RpcMutateResponse<Output>>;
 }
 
 export interface RequestConfig {
-    timeout?: number
+  timeout?: number;
 }
 
 export interface RpcQueryParams<Args> {
-    applicationId: ApplicationId;
-    method: string;
-    argsJson: Args;
+  applicationId: ApplicationId;
+  method: string;
+  argsJson: Args;
 }
 
 export interface RpcQueryResponse<Output> {
-    output?: Output;
+  output?: Output;
 }
 
 export interface RpcMutateParams<Args> {
-    applicationId: ApplicationId;
-    method: string;
-    argsJson: Args;
+  applicationId: ApplicationId;
+  method: string;
+  argsJson: Args;
 }
 
 export interface RpcMutateResponse<Output> {
-    output?: Output;
+  output?: Output;
 }
 ```
 
@@ -58,28 +64,34 @@ export interface RpcMutateResponse<Output> {
 
 ```typescript
 export interface SubscriptionsClient {
-    connect(connectionId?: string): void;
-    disconnect(connectionId?: string): void;
-    subscribe(applicationIds: string[], connectionId?: string): void;
-    unsubscribe(applicationIds: string[], connectionId?: string): void;
-    addCallback(callback: (event: NodeEvent) => void, connectionId?: string): void;
-    removeCallback(callback: (event: NodeEvent) => void, connectionId?: string): void;
+  connect(connectionId?: string): void;
+  disconnect(connectionId?: string): void;
+  subscribe(applicationIds: string[], connectionId?: string): void;
+  unsubscribe(applicationIds: string[], connectionId?: string): void;
+  addCallback(
+    callback: (event: NodeEvent) => void,
+    connectionId?: string
+  ): void;
+  removeCallback(
+    callback: (event: NodeEvent) => void,
+    connectionId?: string
+  ): void;
 }
 
 export type NodeEvent = ApplicationEvent;
 
 export interface ApplicationEvent {
-    application_id: ApplicationId;
-    type: 'TransactionExecuted' | 'PeerJoined'
-    data: TransactionExecuted | PeerJoined;
+  application_id: ApplicationId;
+  type: "TransactionExecuted" | "PeerJoined";
+  data: TransactionExecuted | PeerJoined;
 }
 
 export interface TransactionExecuted {
-    hash: string;
+  hash: string;
 }
 
 export interface PeerJoined {
-    peerId: string;
+  peerId: string;
 }
 ```
 
@@ -89,40 +101,60 @@ export interface PeerJoined {
 
 Here's an example of how to use it:
 
+Define application endpoint and application id.
+You can find application id in the Admin Dashboard -> Contexts -> select application id from the context where your app logic is installed
+
+```
+NEXT_PUBLIC_API_URL=http://localhost:{NODE_PORT}
+NEXT_PUBLIC_APPLICATION_ID="my-application-id"
+```
+
 ```typescript
 // Import the necessary classes and interfaces from the SDK
-import { RpcClient, JsonRpcClient, RpcMutateParams, RpcMutateResponse } from '@calimero-is-near/calimero-p2p-sdk';
+import {
+  RpcClient,
+  JsonRpcClient,
+  RpcMutateParams,
+  RpcMutateResponse,
+} from "@calimero-is-near/calimero-p2p-sdk";
 
 // Define the Args and Output interfaces
 interface CreatePost {
-    title: string;
-    text: string;
+  title: string;
+  text: string;
 }
 
 interface Post {
-    id: string;
-    title: string;
-    text: string;
+  id: string;
+  title: string;
+  text: string;
 }
 
 // Create an instance of JsonRpcClient
-const rpcClient: RpcClient = new JsonRpcClient("http://localhost:2529", "/jsonrpc");
+const rpcClient: RpcClient = new JsonRpcClient(
+    process.env["NEXT_PUBLIC_API_URL],
+    "/jsonrpc"
+);
 
 // Define the parameters for the mutate
-// applicationId argument can be obtained via admin server
 const params: RpcMutateParams<CreatePost> = {
-    applicationId: "my-application-id",
+    applicationId: process.env["NEXT_PUBLIC_APPLICATION_ID"],
     method: "create_post",
     argsJson: {
-        title: "My First Post",
-        text: "This is my first post using the TypeScript Client SDK"
-    }
+    title: "My First Post",
+    text: "This is my first post using the TypeScript Client SDK",
+    },
 };
 
 // Use the mutate method
-const respone: RpcMutateResponse<Post> = await rpcClient.mutate<CreatePost, Post>(params);
+const respone: RpcMutateResponse<Post> = await rpcClient.mutate<
+CreatePost,
+Post
+
+> (params);
 
 console.log(response);
+
 ```
 
 #### WsSubscriptionsClient
@@ -131,19 +163,26 @@ Here's an example of how to use it:
 
 ```typescript
 // Import the necessary classes and interfaces from the SDK
-import { SubscriptionsClient, WsSubscriptionsClient, NodeEvent } from '@calimero-is-near/calimero-p2p-sdk';
+import {
+  SubscriptionsClient,
+  WsSubscriptionsClient,
+  NodeEvent,
+} from "@calimero-is-near/calimero-p2p-sdk";
 
 // Create an instance of WsSubscriptionsClient
-const subscriptionsClient: SubscriptionsClient = new WsSubscriptionsClient("http://localhost:2529", "/ws");
+const subscriptionsClient: SubscriptionsClient = new WsSubscriptionsClient(
+  process.env["NEXT_PUBLIC_API_URL],
+  "/ws"
+);
 
 // Create (default) connection to the server
 await subscriptionsClient.connect();
 
 // Subscribe to an application events
-subscriptionsClient.subscribe(["my-application-id"]);
+subscriptionsClient.subscribe([process.env["NEXT_PUBLIC_APPLICATION_ID"]]);
 
 // Add a callback to process messages
 subscriptionsClient.addCallback((data: NodeEvent) => {
-    console.log(data);
+  console.log(data);
 });
 ```
