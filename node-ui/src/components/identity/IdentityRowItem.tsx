@@ -51,12 +51,12 @@ const RowItem = styled.div<RowItemProps>`
   }
 `;
 
-export default function IdentityRowItem(
+export default function identityRowItem(
   item: RootKeyObject,
   id: number,
   count: number,
   onitemClicked?: (id: string) => void
-) {
+): JSX.Element {
   return (
     <RowItem key={id} hasBorders={id === count}>
       <div className="row-item type">{item.type}</div>

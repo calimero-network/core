@@ -4,7 +4,7 @@ import translations from "../../constants/en.global.json";
 import { ContentCard } from "../common/ConentCard";
 import ListTable from "../common/ListTable";
 import { RootKeyObject } from "../../utils/rootkey";
-import IdentityRowItem from "./IdentityRowItem";
+import identityRowItem from "./IdentityRowItem";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -37,7 +37,7 @@ export default function IdentitiesTable({
           listHeaderItems={["TYPE", "ADDED", "PUBLIC KEY"]}
           numOfColumns={6}
           listItems={rootKeysList}
-          rowItem={IdentityRowItem}
+          rowItem={identityRowItem}
           roundTopItem={true}
           noItemsText={t.noRootKeysText}
           onRowItemClick={onCopyKeyClick}
