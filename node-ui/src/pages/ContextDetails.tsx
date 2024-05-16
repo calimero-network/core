@@ -76,44 +76,46 @@ export default function ContextDetails() {
 
   useEffect(() => {
     const fetchNodeContexts = async () => {
-      const nodeContext = await apiClient.context().getContext(id);
-      if (nodeContext) {
-        const contextObject = await generateContextObjects(nodeContext);
-        setNodeContextDetails(contextObject);
-        //TBD - after client keys and users are implemented
-        setTableOptions([
-          {
-            name: "Details",
-            id: DetailsOptions.DETAILS,
-            count: -1,
-          },
-          {
-            name: "Client Keys",
-            id: DetailsOptions.CLIENT_KEYS,
-            count: 0,
-          },
-          {
-            name: "Users",
-            id: DetailsOptions.USERS,
-            count: 0,
-          },
-        ]);
+      if (id) {
+        const nodeContext = await apiClient.node().getContext(id);
+        if (nodeContext) {
+          const contextObject = await generateContextObjects(nodeContext);
+          setNodeContextDetails(contextObject);
+          //TBD - after client keys and users are implemented
+          setTableOptions([
+            {
+              name: "Details",
+              id: DetailsOptions.DETAILS,
+              count: -1,
+            },
+            {
+              name: "Client Keys",
+              id: DetailsOptions.CLIENT_KEYS,
+              count: 0,
+            },
+            {
+              name: "Users",
+              id: DetailsOptions.USERS,
+              count: 0,
+            },
+          ]);
+        }
       }
     };
     fetchNodeContexts();
   }, []);
-
+  // TODO - handler for failed to fetch context details
   return (
     <FlexLayout>
       <Navigation />
       <PageContentWrapper>
-        <ContextTable
+        {nodeContextDetails && <ContextTable
           nodeContextDetails={nodeContextDetails}
           navigateToContextList={() => navigate("/contexts")}
           currentOption={currentOption}
           setCurrentOption={setCurrentOption}
           tableOptions={tableOptions}
-        />
+        />}
       </PageContentWrapper>
     </FlexLayout>
   );

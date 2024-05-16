@@ -49,8 +49,8 @@ export default function Applications() {
   const [selectedTab, setSelectedTab] = useState(Tabs.APPLICATION_LIST);
   const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
   const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
-  const [packages, setPackages] = useState([]);
-  const [releases, setReleases] = useState([]);
+  const [packages, setPackages] = useState<Package[]>([]);
+  const [releases, setReleases] = useState<Release[]>([]);
   const [applications, setApplications] = useState<Application[]>([]);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [installationStatus, setInstallationStatus] = useState<ModalContent>({
@@ -70,7 +70,7 @@ export default function Applications() {
   useEffect(() => {
     const setApps = async () => {
       const installedApplications = await apiClient
-        .admin()
+        .node()
         .getInstalledApplications();
 
       if (installedApplications.length !== 0) {

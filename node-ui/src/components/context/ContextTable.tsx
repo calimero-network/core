@@ -8,7 +8,7 @@ import rowItem from "./RowItem";
 import { Options } from "../../constants/ContextConstants";
 import StatusModal, { ModalContent } from "../common/StatusModal";
 import ActionDialog from "../common/ActionDialog";
-import { NodeContexts } from "../../api/dataSource/ContextDataSource";
+import { NodeContexts } from "../../api/dataSource/NodeDataSource";
 import { ContextObject, TableOptions } from "../../pages/Contexts";
 
 const FlexWrapper = styled.div`
@@ -27,7 +27,7 @@ interface ContextTableProps {
   deleteStatus: ModalContent;
   showActionDialog: boolean;
   setShowActionDialog: (show: boolean) => void;
-  showModal: (id: number) => void;
+  showModal: (id: string) => void;
 }
 
 export default function ContextTable({

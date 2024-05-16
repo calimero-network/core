@@ -123,8 +123,8 @@ const Wrapper = styled.div`
 `;
 
 interface StartContextCardProps {
-  application: Application | null;
-  setApplication: (application: Application) => void;
+  applicationId: string;
+  setApplicationId: (applicationId: string) => void;
   isArgsChecked: boolean;
   setIsArgsChecked: (checked: boolean) => void;
   methodName: string;
@@ -142,8 +142,8 @@ interface StartContextCardProps {
 }
 
 export default function StartContextCard({
-  application,
-  setApplication,
+  applicationId,
+  setApplicationId,
   isArgsChecked,
   setIsArgsChecked,
   methodName,
@@ -161,7 +161,7 @@ export default function StartContextCard({
 }: StartContextCardProps) {
   const t = translations.startContextPage;
   const onStartContextClick = async () => {
-    if (!application) {
+    if (!applicationId) {
       return;
     } else if (isArgsChecked && (!methodName || !argumentsJson)) {
       return;
@@ -190,16 +190,16 @@ export default function StartContextCard({
         <ApplicationsPopup
           show={showBrowseApplication}
           closeModal={() => setShowBrowseApplication(false)}
-          setApplication={setApplication}
+          setApplicationId={setApplicationId}
         />
       )}
       <div className="select-app-section">
         <div className="section-title">
-          {application ? t.selectedApplicationTitle : t.selectApplicationTitle}
+          {applicationId ? t.selectedApplicationTitle : t.selectApplicationTitle}
         </div>
-        {application ? (
-          <div className="selected-app" onClick={() => setApplication(null)}>
-            {application.name}
+        {applicationId ? (
+          <div className="selected-app" onClick={() => setApplicationId("")}>
+            {applicationId}
           </div>
         ) : (
           <div className="button-container">

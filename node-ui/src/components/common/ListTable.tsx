@@ -84,7 +84,7 @@ interface ListTableProps<T> {
   columnItems: number;
   roundedTopList: boolean;
   noItemsText: string;
-  onRowItemClick?: (id?: number | string) => void;
+  onRowItemClick?: (id: string) => void;
 }
 
 export default function ListTable<T>({
@@ -102,13 +102,13 @@ export default function ListTable<T>({
       {ListDescription && (
         <div className="table-description">{ListDescription}</div>
       )}
-      {ListHeaderItems?.length > 0 && (
+      {ListHeaderItems && ListHeaderItems?.length > 0 && (
         <TableHeader
           tableHeaderItems={ListHeaderItems}
         />
       )}
       <div className="list-items">
-        {ListItems?.map((item: any, id: number) => rowItem(item, id, ListItems.length - 1, onRowItemClick))}
+        {ListItems?.map((item: T, id: number) => rowItem(item, id, ListItems.length - 1, onRowItemClick))}
         {ListItems?.length === 0 && (
           <div className="no-items-text">{noItemsText}</div>
         )}

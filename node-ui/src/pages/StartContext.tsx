@@ -12,7 +12,7 @@ import { Application } from "./Applications";
 export default function StartContext() {
   const t = translations.startContextPage;
   const navigate = useNavigate();
-  const [application, setApplication] = useState<Application | null>(null);
+  const [applicationId, setApplicationId] = useState("");
   const [isArgsChecked, setIsArgsChecked] = useState(false);
   const [methodName, setMethodName] = useState("");
   const [argumentsJson, setArgumentsJson] = useState("");
@@ -28,9 +28,12 @@ export default function StartContext() {
   const startContext = async () => {
     setIsLoading(true);
     try {
+      if (!applicationId) {
+        return;
+      }
       const startContextResponse = await apiClient
-        .context()
-        .startContexts(application.id, methodName, argumentsJson);
+        .node()
+        .startContexts(applicationId, methodName, argumentsJson);
       if (startContextResponse) {
         setStartContextStatus({
           title: t.startContextSuccessTitle,
@@ -44,7 +47,7 @@ export default function StartContext() {
           error: true,
         });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
       setStartContextStatus({
         title: t.startContextErrorTitle,
@@ -78,8 +81,8 @@ export default function StartContext() {
           headerOnBackClick={() => navigate("/contexts")}
         >
           <StartContextCard
-            application={application}
-            setApplication={setApplication}
+            applicationId={applicationId}
+            setApplicationId={setApplicationId}
             isArgsChecked={isArgsChecked}
             setIsArgsChecked={setIsArgsChecked}
             methodName={methodName}

@@ -1,31 +1,21 @@
 import axios from "axios";
-
-import { ContextDataSource } from "./dataSource/ContextDataSource";
 import { AxiosHttpClient, HttpClient } from "./httpClient";
-import { AdminApi } from "./adminApi";
-import { ContextApi } from "./contextApi";
-import { AppsDataSource } from "./dataSource/AppsDataSource";
+import { NodeApi } from "./nodeApi";
+import { NodeDataSource } from "./dataSource/NodeDataSource";
 
 interface IApiClient {
-  admin(): AdminApi;
-  context(): ContextApi;
+  node(): NodeApi;
 }
 
 class ApiClient implements IApiClient{
-  private adminApi: AdminApi;
-  private contextApi: ContextApi;
+  private nodeApi: NodeApi;
 
   constructor(httpClient: HttpClient) {
-    this.adminApi = new AppsDataSource(httpClient);
-    this.contextApi = new ContextDataSource(httpClient);
+    this.nodeApi = new NodeDataSource(httpClient);
   }
 
-  admin() {
-    return this.adminApi;
-  }
-
-  context() {
-    return this.contextApi;
+  node() {
+    return this.nodeApi;
   }
 }
 

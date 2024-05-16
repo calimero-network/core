@@ -104,7 +104,9 @@ export class AxiosHttpClient implements HttpClient {
       const response = await promise;
 
       //head does not return body so we are adding data manually
+      // @ts-ignore
       if (response.config.method.toUpperCase() === "HEAD") {
+        // @ts-ignore
         return {
           data: undefined,
         };
@@ -114,6 +116,7 @@ export class AxiosHttpClient implements HttpClient {
     } catch (e: unknown) {
       if (e instanceof AxiosError) {
         //head does not return body so we are adding error manually
+        // @ts-ignore
         if (e.config.method.toUpperCase() === "HEAD") {
           return {
             error: {

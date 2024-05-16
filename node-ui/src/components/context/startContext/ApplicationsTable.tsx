@@ -8,7 +8,7 @@ import rowItem from "./RowItem";
 import { Options } from "../../../constants/ApplicationsConstants";
 import { XMarkIcon } from "@heroicons/react/24/solid";
 import { Applications } from "./ApplicationsPopup";
-import { Application } from "../../../api/dataSource/AppsDataSource";
+import { Application } from "../../../pages/Applications";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -34,7 +34,7 @@ interface ApplicationsTableProps {
   setCurrentOption: (option: string) => void;
   tableOptions: any[];
   closeModal: () => void;
-  selectApplication: (application: string | any) => void;
+  selectApplication: (applicationId: string) => void;
 }
 
 export default function ApplicationsTable({

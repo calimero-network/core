@@ -28,7 +28,7 @@ const initialOptions = [
 interface ApplicationsPopupProps {
   show: boolean;
   closeModal: () => void;
-  setApplication: (application: Application) => void;
+  setApplicationId: (application: string) => void;
 }
 
 export interface Applications {
@@ -39,7 +39,7 @@ export interface Applications {
 export default function ApplicationsPopup({
   show,
   closeModal,
-  setApplication,
+  setApplicationId,
 }: ApplicationsPopupProps) {
   const { getPackage } = useRPC();
   const [currentOption, setCurrentOption] = useState<string>(Options.AVAILABLE);
@@ -52,7 +52,7 @@ export default function ApplicationsPopup({
   useEffect(() => {
     const setApps = async () => {
       const installedApplications = await apiClient
-        .admin()
+        .node()
         .getInstalledApplications();
 
       if (installedApplications.length !== 0) {
@@ -84,8 +84,8 @@ export default function ApplicationsPopup({
     setApps();
   }, []);
 
-  const selectApplication = (application: Application) => {
-    setApplication(application);
+  const selectApplication = (applicationId: string) => {
+    setApplicationId(applicationId);
     closeModal();
   };
 

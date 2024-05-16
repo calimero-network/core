@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import { truncateHash } from "../../../utils/displayFunctions";
+import { Application } from "../../../pages/Applications";
 
 interface RowItemComponentProps {
   hasBorders: boolean;
@@ -53,13 +54,13 @@ const RowItem = styled.div<RowItemComponentProps>`
   }
 `;
 
-export default function rowItem(item: any, id: number, count: number, onRowItemClick: (item: any) => void) {
+export default function rowItem(item: Application, id: number, count: number, onRowItemClick: (item: any) => void) {
   return (
     <RowItem key={item.id} hasBorders={id === count}>
-      <div className="row-item name" onClick={() => onRowItemClick(item)}>{item.name}</div>
+      <div className="row-item name" onClick={() => onRowItemClick(item.id)}>{item.name}</div>
       <div className="row-item read">{truncateHash(item.id)}</div>
       <div className="row-item read">{item.version}</div>
-      <div className="row-item read">{item.published ?? "-"}</div>
+      <div className="row-item read">-</div>
     </RowItem>
   );
 }

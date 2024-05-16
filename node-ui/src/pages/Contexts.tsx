@@ -7,7 +7,7 @@ import { Options } from "../constants/ContextConstants";
 import { useNavigate } from "react-router-dom";
 import { useRPC } from "../hooks/useNear";
 import apiClient from "../api/index";
-import { Context, NodeContexts } from "../api/dataSource/ContextDataSource";
+import { Context, NodeContexts } from "../api/dataSource/NodeDataSource";
 import { ModalContent } from "src/components/common/StatusModal";
 
 export interface TableOptions {
@@ -45,7 +45,7 @@ export default function Contexts() {
   const [tableOptions, setTableOptions] = useState<TableOptions[]>(initialOptions);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [showActionDialog, setShowActionDialog] = useState(false);
-  const [selectedContextId, setSelectedContextId] = useState(null);
+  const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
   const [deleteStatus, setDeleteStatus] = useState<ModalContent>({
     title: "",
     message: "",
@@ -67,13 +67,13 @@ export default function Contexts() {
   };
 
   const fetchNodeContexts = async () => {
-    const nodeContexts = await apiClient.context().getContexts();
+    const nodeContexts = await apiClient.node().getContexts();
     if (nodeContexts) {
       const joinedContexts = await generateContextObjects(
         nodeContexts.joined
       );
 
-      setNodeContextList(prevState => ({
+      setNodeContextList((prevState: NodeContexts<ContextObject>) => ({
         ...prevState,
         joined: joinedContexts
       }));
@@ -97,7 +97,8 @@ export default function Contexts() {
   }, []);
 
   const deleteNodeContext = async () => {
-    const nodeContexts = await apiClient.context().deleteContext(selectedContextId);
+    if(!selectedContextId) return;
+    const nodeContexts = await apiClient.node().deleteContext(selectedContextId);
     if (nodeContexts) {
       setDeleteStatus({
         title: "Success",
@@ -128,7 +129,7 @@ export default function Contexts() {
     });
   };
 
-  const showModal = (id: number) => {
+  const showModal = (id: string) => {
     setSelectedContextId(id);
     setShowActionDialog(true);
   }
