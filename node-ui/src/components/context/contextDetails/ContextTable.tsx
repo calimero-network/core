@@ -9,7 +9,7 @@ import userRowItem from "./UserRowItem";
 import { DetailsOptions } from "../../../constants/ContextConstants";
 import DetailsCard from "./DetailsCard";
 import { TableOptions } from "../../../pages/Contexts";
-import { ContextObject } from "../../../pages/ContextDetails";
+import { ClientKey, ContextObject, User } from "../../../pages/ContextDetails";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -46,7 +46,7 @@ export default function ContextTable({
         />
         {currentOption == DetailsOptions.DETAILS && <DetailsCard details={nodeContextDetails}/>}
         {currentOption == DetailsOptions.CLIENT_KEYS && (
-          <ListTable<string>
+          <ListTable<ClientKey>
             ListDescription={t.clientKeysListDescription}
             columnItems={3}
             ListHeaderItems={["TYPE", "ADDED", "PUBLIC KEY"]}
@@ -57,7 +57,7 @@ export default function ContextTable({
           />
         )}
         {currentOption == DetailsOptions.USERS && (
-          <ListTable<string>
+          <ListTable<User>
             columnItems={2}
             ListItems={nodeContextDetails.users || []}
             ListHeaderItems={["USER ID", "JOINED"]}

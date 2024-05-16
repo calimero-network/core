@@ -1,4 +1,5 @@
 import React from "react";
+import { User } from "src/pages/ContextDetails";
 import styled from "styled-components";
 
 interface UserRowItemProps {
@@ -34,7 +35,8 @@ const RowItem = styled.div<UserRowItemProps>`
   }
 `;
 
-export default function userRowItem(item: any, id: number, count: number) {
+
+export default function userRowItem(item: User, id: number, count: number) {
   return (
     <RowItem key={item.userId} $borders={id === count}>
       <div className="row-item">{item.userId}</div>

@@ -1,4 +1,5 @@
 import React from "react";
+import { ClientKey } from "../../../pages/ContextDetails";
 import styled from "styled-components";
 
 interface ClientKeyRowItemProps {
@@ -38,9 +39,9 @@ const RowItem = styled.div<ClientKeyRowItemProps>`
   }
 `;
 
-export default function clientKeyRowItem(item: any, id: number, count: number) {
+export default function clientKeyRowItem(item: ClientKey, id: number, count: number) {
   return (
-    <RowItem key={item.publickey} $borders={id === count}>
+    <RowItem key={item.publicKey} $borders={id === count}>
       <div className="row-item type">{item.type}</div>
       <div className="row-item read">{item.date}</div>
       <div className="row-item pk">{item.publicKey}</div>

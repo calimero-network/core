@@ -28,6 +28,17 @@ const initialOptions = [
   },
 ];
 
+export interface User {
+  userId: string;
+  joined: string;
+}
+
+export interface ClientKey {
+  type: string;
+  date: string;
+  publicKey: string;
+}
+
 export interface ContextObject {
   id: string;
   applicationId: string;
@@ -38,8 +49,8 @@ export interface ContextObject {
   created: string;
   updated: string;
   owner: string;
-  clientKeys: string[];
-  users: string[];
+  clientKeys: ClientKey[];
+  users: User[];
 }
 
 export default function ContextDetails() {
