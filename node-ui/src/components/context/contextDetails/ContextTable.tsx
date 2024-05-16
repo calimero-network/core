@@ -52,7 +52,7 @@ export default function ContextTable({
             ListHeaderItems={["TYPE", "ADDED", "PUBLIC KEY"]}
             ListItems={nodeContextDetails.clientKeys || []}
             rowItem={clientKeyRowItem}
-            roundedTopList={true}
+            roundTopItem={true}
             noItemsText={t.noClientKeysText}
           />
         )}
@@ -62,7 +62,7 @@ export default function ContextTable({
             ListItems={nodeContextDetails.users || []}
             ListHeaderItems={["USER ID", "JOINED"]}
             rowItem={userRowItem}
-            roundedTopList={true}
+            roundTopItem={true}
             noItemsText={t.noUsersText}
           />
         )}

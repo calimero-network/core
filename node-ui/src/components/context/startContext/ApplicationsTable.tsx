@@ -64,7 +64,7 @@ export default function ApplicationsTable({
             columnItems={4}
             ListItems={applicationsList.available}
             rowItem={rowItem}
-            roundedTopList={true}
+            roundTopItem={true}
             noItemsText={t.noAvailableAppsText}
             onRowItemClick={selectApplication}
           />
@@ -74,7 +74,7 @@ export default function ApplicationsTable({
             columnItems={4}
             ListItems={applicationsList.owned}
             rowItem={rowItem}
-            roundedTopList={true}
+            roundTopItem={true}
             noItemsText={t.noOwnedAppsText}
           />
         )}

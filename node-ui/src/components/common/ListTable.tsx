@@ -2,8 +2,8 @@ import React from "react";
 import styled from "styled-components";
 
 interface ListWrapperProps {
-  $columnItems: number;
-  $roundedTopList: boolean;
+  columnItems: number;
+  roundTopItem: boolean;
 }
 
 const ListWrapper = styled.div<ListWrapperProps>`
@@ -25,12 +25,12 @@ const ListWrapper = styled.div<ListWrapperProps>`
 
   .header-items-grid {
     display: grid;
-    grid-template-columns: repeat(${(props) => props.$columnItems}, 1fr);
+    grid-template-columns: repeat(${(props) => props.columnItems}, 1fr);
     grid-template-rows: auto;
     padding: 0.75rem 1.5rem;
     background-color: #15181f;
     ${(props) =>
-      props.$roundedTopList &&
+      props.roundTopItem &&
       `
         border-top-left-radius: 0.5rem;
         border-top-right-radius: 0.5rem;
@@ -82,7 +82,7 @@ interface ListTableProps<T> {
   ListItems: T[];
   rowItem: (item: T, id: number, lastIndex: number, onRowItemClick: any) => JSX.Element;
   columnItems: number;
-  roundedTopList: boolean;
+  roundTopItem: boolean;
   noItemsText: string;
   onRowItemClick?: (id: string) => void;
 }
@@ -93,12 +93,12 @@ export default function ListTable<T>({
   ListItems,
   rowItem,
   columnItems,
-  roundedTopList,
+  roundTopItem,
   noItemsText,
   onRowItemClick
 }: ListTableProps<T>) {
   return (
-    <ListWrapper $columnItems={columnItems ?? 0} $roundedTopList={roundedTopList}>
+    <ListWrapper columnItems={columnItems ?? 0} roundTopItem={roundTopItem}>
       {ListDescription && (
         <div className="table-description">{ListDescription}</div>
       )}

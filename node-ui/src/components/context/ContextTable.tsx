@@ -78,7 +78,7 @@ export default function ContextTable({
             columnItems={2}
             ListItems={nodeContextList.joined}
             rowItem={rowItem}
-            roundedTopList={true}
+            roundTopItem={true}
             noItemsText={t.noJoinedAppsListText}
             onRowItemClick={showModal}
           />
@@ -88,7 +88,7 @@ export default function ContextTable({
             columnItems={2}
             ListItems={nodeContextList.invited}
             rowItem={rowItem}
-            roundedTopList={true}
+            roundTopItem={true}
             noItemsText={t.noInviedAppsListText}
           />
         )}
