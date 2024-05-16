@@ -24,6 +24,17 @@ export interface RootKey {
   signing_key: string;
 }
 
+interface ClientKey {
+  signing_key: string;
+  wallet_type: string;
+}
+
+interface RootkeyResponse {
+  client_keys: ClientKey[];
+  contexts: Context[];
+  root_keys: RootKey[];
+}
+
 export class NodeDataSource {
   private client: HttpClient;
 
@@ -117,7 +128,7 @@ export class NodeDataSource {
 
   async getDidList(): Promise<RootKey[]> {
     try {
-      const response = await this.client.get<any>("/admin-api/did");
+      const response = await this.client.get<RootkeyResponse>("/admin-api/did");
       if (response?.data?.root_keys) {
         return response.data.root_keys;
       } else {
