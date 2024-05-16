@@ -30,15 +30,15 @@ interface ApplicationsContentProps {
   redirectAppUpload: () => void;
 }
 
-export function ApplicationsContent({ children, redirectAppUpload }: ApplicationsContentProps) {
+export function ApplicationsContent(props: ApplicationsContentProps) {
   return (
     <ContentLayout>
       <div className="content-card">
         <div className="card-header">
           <div className="page-title">Applications</div>
-          <ButtonLight text="Upload Application" onClick={redirectAppUpload} />
+          <ButtonLight text="Upload Application" onClick={props.redirectAppUpload} />
         </div>
-        {children}
+        {props.children}
       </div>
     </ContentLayout>
   );
