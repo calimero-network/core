@@ -20,8 +20,14 @@ jobs:
         with:
           node-version: '18'
 
+      - uses: pnpm/action-setup@v4
+        name: Install pnpm
+        with:
+          version: 8
+          run_install: false
+
       - name: Change to docs Directory
-        run: cd docs && yarn install && yarn build
+        run: cd docs && pnpm install && pnpm build
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
