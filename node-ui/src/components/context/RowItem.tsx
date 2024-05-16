@@ -57,7 +57,7 @@ const RowItem = styled.div<RowItemComponentProps>`
 `;
 
 
-export default function rowItem(item: any, id: number, count: number, onitemClicked: (id: number) => void){
+export default function rowItem(item: any, id: number, count: number, onitemClicked: (id: number) => void): JSX.Element {
   return (
     <RowItem key={item.id} hasBorders={id === count}>
       <a href={`/admin/contexts/${item.id}`} className="row-item id">

@@ -54,7 +54,7 @@ const RowItem = styled.div<RowItemComponentProps>`
   }
 `;
 
-export default function rowItem(item: Application, id: number, count: number, onRowItemClick: (item: any) => void) {
+export default function rowItem(item: Application, id: number, count: number, onRowItemClick: (item: any) => void): JSX.Element {
   return (
     <RowItem key={item.id} hasBorders={id === count}>
       <div className="row-item name" onClick={() => onRowItemClick(item.id)}>{item.name}</div>
