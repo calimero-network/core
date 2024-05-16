@@ -26,7 +26,7 @@ export class NodeDataSource {
   async getInstalledApplications(): Promise<Application[]> {
     try {
       const response = await this.client.get<Application[]>("/admin-api/applications");
-      // @ts-ignore with adminAPI update
+      // @ts-ignore with adminAPI update TODO: fix admin api response
       return response?.apps ?? [];
     } catch (error) {
       console.error("Error fetching installed applications:", error);
