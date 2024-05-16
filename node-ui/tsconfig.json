@@ -3,11 +3,14 @@
     "jsx": "react",
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "strict": false,
+    "strict": true,
     "skipLibCheck": true,
     "baseUrl": ".",
     "resolveJsonModule": true,
-    "noImplicitAny": true
+    "noImplicitAny": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "strictBindCallApply": true,
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "src/utils/rootkey.ts", "custom.d.ts"],
   "exclude": [
