@@ -3,7 +3,7 @@ import { User } from "src/pages/ContextDetails";
 import styled from "styled-components";
 
 interface UserRowItemProps {
-  $borders: boolean;
+  hasBorders: boolean;
 }
 
 const RowItem = styled.div<UserRowItemProps>`
@@ -18,7 +18,7 @@ const RowItem = styled.div<UserRowItemProps>`
   padding-right: 1.5rem;
   padding-left: 1.5rem;
   ${(props) =>
-    props.$borders
+    props.hasBorders
       ? `
     border-top: 1px solid #23262D;
     border-bottom: 1px solid #23262D;
@@ -38,7 +38,7 @@ const RowItem = styled.div<UserRowItemProps>`
 
 export default function userRowItem(item: User, id: number, count: number) {
   return (
-    <RowItem key={item.userId} $borders={id === count}>
+    <RowItem key={item.userId} hasBorders={id === count}>
       <div className="row-item">{item.userId}</div>
       <div className="row-item">{item.joined}</div>
     </RowItem>

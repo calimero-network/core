@@ -3,14 +3,14 @@ import styled from "styled-components";
 import MenuIconDropdown from "../common/MenuIconDropdown";
 
 interface RowItemComponentProps {
-  $borders: boolean;
+  hasBorders: boolean;
 }
 
 const RowItem = styled.div<RowItemComponentProps>`
   display: flex;
   align-items: center;
   ${(props) =>
-    props.$borders
+    props.hasBorders
       ? `
     border-top: 1px solid #23262D;
     border-bottom: 1px solid #23262D;
@@ -59,7 +59,7 @@ const RowItem = styled.div<RowItemComponentProps>`
 
 export default function rowItem(item: any, id: number, count: number, onitemClicked: (id: number) => void){
   return (
-    <RowItem key={item.id} $borders={id === count}>
+    <RowItem key={item.id} hasBorders={id === count}>
       <a href={`/admin/contexts/${item.id}`} className="row-item id">
         {item.id}
       </a>

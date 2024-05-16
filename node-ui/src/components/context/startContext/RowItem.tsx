@@ -3,7 +3,7 @@ import styled from "styled-components";
 import { truncateHash } from "../../../utils/displayFunctions";
 
 interface RowItemComponentProps {
-  $borders: boolean;
+  hasBorders: boolean;
 }
 
 const RowItem = styled.div<RowItemComponentProps>`
@@ -24,7 +24,7 @@ const RowItem = styled.div<RowItemComponentProps>`
   padding-right: 1.5rem;
   padding-left: 1.5rem;
   ${(props) =>
-    props.$borders
+    props.hasBorders
       ? `
     border-top: 1px solid #23262D;
     border-bottom: 1px solid #23262D;
@@ -55,7 +55,7 @@ const RowItem = styled.div<RowItemComponentProps>`
 
 export default function rowItem(item: any, id: number, count: number, onRowItemClick: (item: any) => void) {
   return (
-    <RowItem key={item.id} $borders={id === count}>
+    <RowItem key={item.id} hasBorders={id === count}>
       <div className="row-item name" onClick={() => onRowItemClick(item)}>{item.name}</div>
       <div className="row-item read">{truncateHash(item.id)}</div>
       <div className="row-item read">{item.version}</div>
