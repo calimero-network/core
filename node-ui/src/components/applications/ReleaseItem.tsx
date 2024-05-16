@@ -46,24 +46,24 @@ interface ReleaseItemProps {
   release: Release;
 }
 
-export function ReleaseItem({ release }: ReleaseItemProps) {
+export function ReleaseItem(props: ReleaseItemProps) {
   return (
     <Item>
-      <div className="item-name app-item">{`${release.hash.substring(
+      <div className="item-name app-item">{`${props.release.hash.substring(
         0,
         4
-      )}...${release.hash.substring(release.hash.length - 4)}`}</div>
+      )}...${props.release.hash.substring(props.release.hash.length - 4)}`}</div>
       <div
         className="item-desc app-item app-item-desc"
         data-tooltip-id="my-tooltip"
       >
-        {release.notes}
-        {release.notes.length > 52 && (
-          <Tooltip id="my-tooltip" content={release.notes} />
+        {props.release.notes}
+        {props.release.notes.length > 52 && (
+          <Tooltip id="my-tooltip" content={props.release.notes} />
         )}
       </div>
-      <a href={release.path} target="_blank" className="app-item app-item-repo">
-        {release.path}
+      <a href={props.release.path} target="_blank" className="app-item app-item-repo">
+        {props.release.path}
       </a>
     </Item>
   );
