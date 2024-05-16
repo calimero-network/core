@@ -2,20 +2,22 @@ import { useEffect, useState } from "react";
 import React from "react";
 import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
-import { ApplicationsContent } from "../components/applications/ApplicationsContent";
-import { ApplicationsTable } from "../components/applications/ApplicationsTable";
 import { InstallApplication } from "../components/applications/InstallApplication";
 import { useRPC } from "../hooks/useNear";
 import { useAdminClient } from "../hooks/useAdminClient";
 import { useNavigate } from "react-router-dom";
 import apiClient from "../api/index";
 import translations from "../constants/en.global.json";
-import { ModalContent } from "src/components/common/StatusModal";
+import { ModalContent } from "../components/common/StatusModal";
+import PageContentWrapper from "../components/common/PageContentWrapper";
+import ApplicationsTable from "../components/applications/ApplicationsTable";
+import { TableOptions } from "../components/common/OptionsHeader";
+import { ApplicationOptions } from "../constants/ContextConstants";
 
 export enum Tabs {
   INSTALL_APPLICATION,
-  APPLICATION_LIST
-};
+  APPLICATION_LIST,
+}
 
 export interface Package {
   id: string;
@@ -41,17 +43,43 @@ export interface Application extends Package {
   version: string;
 }
 
+const initialOptions = [
+  {
+    name: "Available",
+    id: ApplicationOptions.AVAILABLE,
+    count: 0,
+  },
+  {
+    name: "Owned",
+    id: ApplicationOptions.OWNED,
+    count: 0,
+  },
+];
+
+export interface Applications {
+  available: Application[];
+  owned: Application[];
+}
+
 export default function Applications() {
   const t = translations.applicationsPage.installApplication;
   const navigate = useNavigate();
   const { getPackages, getReleases, getPackage } = useRPC();
   const { installApplication } = useAdminClient();
   const [selectedTab, setSelectedTab] = useState(Tabs.APPLICATION_LIST);
+  const [currentOption, setCurrentOption] = useState<string>(
+    ApplicationOptions.AVAILABLE
+  );
+  const [tableOptions, setTableOptions] =
+    useState<TableOptions[]>(initialOptions);
   const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
   const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);
   const [packages, setPackages] = useState<Package[]>([]);
   const [releases, setReleases] = useState<Release[]>([]);
-  const [applications, setApplications] = useState<Application[]>([]);
+  const [applications, setApplications] = useState<Applications>({
+    available: [],
+    owned: [],
+  });
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [installationStatus, setInstallationStatus] = useState<ModalContent>({
     title: "",
@@ -80,7 +108,10 @@ export default function Applications() {
             return { ...packageData, id: app.id, version: app.version };
           })
         );
-        setApplications(tempApplications);
+        setApplications((prevState: Applications) => ({
+          ...prevState,
+          available: tempApplications,
+        }));
       }
     };
 
@@ -128,7 +159,7 @@ export default function Applications() {
   return (
     <FlexLayout>
       <Navigation />
-      <ApplicationsContent redirectAppUpload={() => navigate("/upload-app")}>
+      <PageContentWrapper>
         {selectedTab === Tabs.INSTALL_APPLICATION ? (
           <InstallApplication
             getReleases={getReleases}
@@ -147,12 +178,17 @@ export default function Applications() {
           />
         ) : (
           <ApplicationsTable
-            applications={applications}
-            changeTab={() => setSelectedTab(Tabs.INSTALL_APPLICATION)}
-            uninstall={() => console.log("uninstall ?!?")}
+            applicationsList={applications}
+            currentOption={currentOption}
+            setCurrentOption={setCurrentOption}
+            tableOptions={tableOptions}
+            naviagateToAppDetails={(id: string) =>
+              navigate(`/applications/${id}`)
+            }
+            naviagateToPublishApp={() => navigate("/upload-app")}
           />
         )}
-      </ApplicationsContent>
+      </PageContentWrapper>
     </FlexLayout>
   );
 }

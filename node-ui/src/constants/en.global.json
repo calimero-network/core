@@ -15,14 +15,9 @@
     "applicationsPage": {
         "applicationsTable": {
             "title": "Applications",
-            "headerNameText": "Name",
-            "headerDescText": "Description",
-            "headerVersionText": "Version",
-            "headerIdText": "Id",
-            "headerRepoText": "Repository",
-            "uninstallButtonText": "Uninstall",
-            "installButtonText": "Install new applications",
-            "noApplicationsText": "No applications found in the node."
+            "publishNewAppText": "Publish new application",
+            "noAvailableAppsText": "No applications available",
+            "noOwnedAppsText": "No owned applications installed"
         },
         "installApplication": {
             "backbuttonText": "Back to Applications",
