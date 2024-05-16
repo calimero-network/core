@@ -3,16 +3,16 @@ import styled from "styled-components";
 import MenuIconDropdown from "../common/MenuIconDropdown";
 import { RootKeyObject } from "../../utils/rootkey";
 
-interface RowItemComponentProps {
-  $borders: boolean;
+interface RowItemProps {
+  hasBorders: boolean;
 }
 
-const RowItem = styled.div<RowItemComponentProps>`
+const RowItem = styled.div<RowItemProps>`
   display: flex;
   align-items: center;
   padding-left: 1.5rem;
   ${(props) =>
-    props.$borders
+    props.hasBorders
       ? `
     border-top: 1px solid #23262D;
     border-bottom: 1px solid #23262D;
@@ -58,7 +58,7 @@ export default function IdentityRowItem(
   onitemClicked?: (id: string) => void
 ) {
   return (
-    <RowItem key={id} $borders={id === count}>
+    <RowItem key={id} hasBorders={id === count}>
       <div className="row-item type">{item.type}</div>
       <div className="row-item date">{item.date}</div>
       <div className="row-item public-key">{item.publicKey}</div>
