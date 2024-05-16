@@ -1,20 +1,22 @@
 export const truncatePublicKey = (publicKey: string): string => {
-  return `
-      ${publicKey.split(":")[1].substring(0, 4)}...${publicKey
-    .split(":")[1]
-    .substring(
-      publicKey.split(":")[1].length - 4,
-      publicKey.split(":")[1].length
+  const keyValue = publicKey?.split(":")[1] ?? "";
+
+  if (keyValue) {
+    return `${keyValue.substring(0, 4)}...${keyValue.substring(
+      keyValue.length - 4,
+      keyValue.length
     )}`;
+  } else {
+    return "";
+  }
 };
 
 export const truncateHash = (hash: string): string => {
   return `
-      ${hash.substring(0, 4)}...${hash
-    .substring(
-      hash.length - 4,
-      hash.length
-    )}`;
+      ${hash.substring(0, 4)}...${hash.substring(
+    hash.length - 4,
+    hash.length
+  )}`;
 };
 
 export const getStatus = (active: boolean, revoked: boolean): string => {

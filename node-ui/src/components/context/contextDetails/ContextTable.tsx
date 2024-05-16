@@ -2,13 +2,12 @@ import React from "react";
 import styled from "styled-components";
 import translations from "../../../constants/en.global.json";
 import { ContentCard } from "../../common/ConentCard";
-import OptionsHeader from "../../common/OptionsHeader";
+import OptionsHeader, { TableOptions } from "../../common/OptionsHeader";
 import ListTable from "../../common/ListTable";
 import clientKeyRowItem from "./ClientKeyRowItem";
 import userRowItem from "./UserRowItem";
 import { DetailsOptions } from "../../../constants/ContextConstants";
 import DetailsCard from "./DetailsCard";
-import { TableOptions } from "../../../pages/Contexts";
 import { ClientKey, ContextObject, User } from "../../../pages/ContextDetails";
 
 const FlexWrapper = styled.div`

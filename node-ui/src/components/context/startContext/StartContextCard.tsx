@@ -4,7 +4,6 @@ import Button from "../../common/Button";
 import ApplicationsPopup from "./ApplicationsPopup";
 import translations from "../../../constants/en.global.json";
 import StatusModal, { ModalContent } from "../../common/StatusModal";
-import { Application } from "../../../pages/Applications";
 
 const Wrapper = styled.div`
   display: flex;

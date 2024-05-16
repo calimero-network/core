@@ -8,7 +8,7 @@ import apiClient from "../api/index";
 import { DetailsOptions } from "../constants/ContextConstants";
 import { useNavigate } from "react-router-dom";
 import { useRPC } from "../hooks/useNear";
-import { TableOptions } from "./Contexts";
+import { TableOptions } from "../components/common/OptionsHeader";
 
 const initialOptions = [
   {

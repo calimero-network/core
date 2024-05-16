@@ -3,13 +3,13 @@ import styled from "styled-components";
 import LoaderSpinner from "./LoaderSpinner";
 
 interface StyledButtonProps {
-  $btnWidth?: string;
+  btnWidth?: string;
 }
 
 const ButtonStyled = styled.div<StyledButtonProps>`
   background-color: #4cfafc;
   height: 2.375rem;
-  width: ${(props) => (props.$btnWidth ? props.$btnWidth : "fit-content")};
+  width: ${(props) => (props.btnWidth ? props.btnWidth : "fit-content")};
   padding: 0.625rem 0.75rem;
   border-radius: 0.5rem;
   color: #000;
@@ -33,7 +33,7 @@ interface ButtonProps {
 
 export default function Button({ onClick, text, width, isLoading }: ButtonProps) {
   return (
-    <ButtonStyled onClick={onClick} $btnWidth={width}>
+    <ButtonStyled onClick={onClick} btnWidth={width ?? ""}>
       {isLoading ? <LoaderSpinner/> : text}
     </ButtonStyled>
   );

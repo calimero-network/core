@@ -16,9 +16,9 @@ interface submitRootKeyResponse {
 
 export const getParams = (location: Location): UrlParams => {
   const queryParams = new URLSearchParams(location.hash.substring(1));
-  const accountId = queryParams.get("accountId");
-  const signature = queryParams.get("signature");
-  const publicKey = queryParams.get("publicKey");
+  const accountId = queryParams.get("accountId") ?? "";
+  const signature = queryParams.get("signature") ?? "";
+  const publicKey = queryParams.get("publicKey") ?? "";
   const callbackUrl = getWalletCallbackUrl();
   return { accountId, signature, publicKey, callbackUrl };
 };
@@ -30,6 +30,8 @@ export const submitRootKeyRequest = async (params: UrlParams): Promise<submitRoo
     return { data: message };
   } catch (error) {
     console.error("Failed to submit root key request:", error);
+    // TODO add error types
+    // @ts-ignore: Property 'message' does not exist on type 'unknown'
     return { error: error.message };
   }
 };

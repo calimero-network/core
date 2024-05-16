@@ -41,6 +41,8 @@ export default function Export() {
       console.error("Error exporting identity", error);
       setExportStatus({
         title: t.exportErrorTitle,
+        // @ts-ignore
+        // TODO add erorr type
         data: error.message,
         error: true,
       });

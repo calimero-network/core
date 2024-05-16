@@ -80,7 +80,12 @@ interface ListTableProps<T> {
   listDescription?: string;
   listHeaderItems?: string[];
   listItems: T[];
-  rowItem: (item: T, id: number, lastIndex: number, onRowItemClick: any) => JSX.Element;
+  rowItem: (
+    item: T,
+    id: number,
+    lastIndex: number,
+    onRowItemClick?: (id: string) => void
+  ) => JSX.Element;
   numOfColumns: number;
   roundTopItem: boolean;
   noItemsText: string;
@@ -95,7 +100,7 @@ export default function ListTable<T>({
   numOfColumns,
   roundTopItem,
   noItemsText,
-  onRowItemClick
+  onRowItemClick,
 }: ListTableProps<T>) {
   return (
     <ListWrapper numOfColumns={numOfColumns ?? 0} roundTopItem={roundTopItem}>
@@ -103,12 +108,12 @@ export default function ListTable<T>({
         <div className="table-description">{listDescription}</div>
       )}
       {listHeaderItems && listHeaderItems?.length > 0 && (
-        <TableHeader
-          tableHeaderItems={listHeaderItems}
-        />
+        <TableHeader tableHeaderItems={listHeaderItems} />
       )}
       <div className="list-items">
-        {listItems?.map((item: T, id: number) => rowItem(item, id, listItems.length - 1, onRowItemClick))}
+        {listItems?.map((item: T, id: number) =>
+          rowItem(item, id, listItems.length - 1, onRowItemClick)
+        )}
         {listItems?.length === 0 && (
           <div className="no-items-text">{noItemsText}</div>
         )}

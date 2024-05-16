@@ -6,6 +6,7 @@ import translations from "../../constants/en.global.json";
 import MenuIconDropdown from "../common/MenuIconDropdown";
 import DidEditor from "./DidEditor";
 import { RootKey } from "src/pages/Identity";
+import { truncatePublicKey } from "../../utils/displayFunctions";
 
 const Table = styled.div`
   height: 100%;
@@ -138,20 +139,13 @@ export function IdentityTable({ identityList, deleteIdentity, addIdentity }: Ide
       )}
       {identityList && (
         <div className="scroll-list">
-          {identityList?.map((identity, id: number) => {
+          {identityList?.map((identity: RootKey, id: number) => {
             return (
               <div className="application-item" key={identity.signing_key}>
                 <div className="item-type app-item">
                   {identity.signing_key.split(":")[0]}
                 </div>
-                <div className="item-id app-item">{`${identity.signing_key
-                  .split(":")[1]
-                  .substring(0, 4)}...${identity.signing_key
-                  .split(":")[1]
-                  .substring(
-                    identity.signing_key.split(":")[1].length - 4,
-                    identity.signing_key.split(":")[1].length
-                  )}`}</div>
+                <div className="item-id app-item">{truncatePublicKey(identity.signing_key)}</div>
                 {enable_option && (
                   <div className="menu">
                     <ChevronUpDownIcon

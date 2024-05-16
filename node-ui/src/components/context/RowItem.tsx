@@ -58,7 +58,7 @@ const RowItem = styled.div<RowItemComponentProps>`
 `;
 
 
-export default function rowItem(item: ContextObject, id: number, count: number, onitemClicked: (id: string) => void): JSX.Element {
+export default function rowItem(item: ContextObject, id: number, count: number, onitemClicked?: (id: string) => void): JSX.Element {
   return (
     <RowItem key={item.id} hasBorders={id === count}>
       <a href={`/admin/contexts/${item.id}`} className="row-item id">
@@ -70,7 +70,7 @@ export default function rowItem(item: ContextObject, id: number, count: number, 
           options={[
             {
               title: "Delete Context",
-              onClick: () => onitemClicked(item.id),
+              onClick: () => onitemClicked && onitemClicked(item.id),
             },
           ]}
         />

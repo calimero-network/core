@@ -11,6 +11,7 @@ import { useRPC } from "../hooks/useNear";
 import axios from "axios";
 
 import * as nearAPI from "near-api-js";
+import { Package } from "./Applications";
 
 const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
 
@@ -34,13 +35,15 @@ export interface DeployStatus {
   error: boolean;
 }
 
+// TODO: Add proper types
+
 export default function UploadApp() {
   const fileInputRef = useRef(null);
   const { getPackages } = useRPC();
   const [ipfsPath, setIpfsPath] = useState("");
   const [fileHash, setFileHash] = useState("");
   const [tabSwitch, setTabSwitch] = useState(true);
-  const [packages, setPackages] = useState([]);
+  const [packages, setPackages] = useState<Package[]>([]);
   const [addPackageLoader, setAddPackageLoader] = useState(false);
   const [addReleaseLoader, setAddReleaseLoader] = useState(false);
   const [walletAccounts, setWalletAccounts] = useState<Account[]>([]);
@@ -103,11 +106,12 @@ export default function UploadApp() {
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    // @ts-ignore: Object is possibly 'null'.
     const file = event.target.files[0];
     if (file && file.name.endsWith(".wasm")) {
       const reader = new FileReader();
       reader.onload = async (e) => {
-        // TEST
+        // @ts-ignore: Object is possibly 'null'.
         const arrayBuffer = new Uint8Array(e.target.result as ArrayBufferLike);
         const bytes = new Uint8Array(arrayBuffer);
         const blob = new Blob([bytes], { type: "application/wasm" });
@@ -134,6 +138,7 @@ export default function UploadApp() {
       };
 
       reader.onerror = (e) => {
+        // @ts-ignore: Property 'error' does not exist on type 'EventTarget'.
         console.error("Error occurred while reading the file:", e.target.error);
       };
 
@@ -150,7 +155,7 @@ export default function UploadApp() {
     const wallet = await selector.wallet("my-near-wallet");
     try {
       const res = await wallet.signAndSendTransaction({
-        signerId: deployerAccount.accountId,
+        signerId: deployerAccount ? deployerAccount.accountId : "",
         actions: [
           {
             type: "FunctionCall",
@@ -161,7 +166,7 @@ export default function UploadApp() {
                 description: packageInfo.description,
                 repository: packageInfo.repository,
               },
-              gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
+              gas: nearAPI.utils.format.parseNearAmount("0.00000000003") ?? "0",
               deposit: ""
             },
           },
@@ -177,6 +182,7 @@ export default function UploadApp() {
       }
     } catch (error) {
       const errorMessage =
+        // @ts-ignore: Property 'message' does not exist on type 'unknown'.
         JSON.parse(error.message).kind?.kind?.FunctionCallError
           ?.ExecutionError ?? "An error occurred while adding the package";
 
@@ -199,7 +205,7 @@ export default function UploadApp() {
     const wallet = await selector.wallet("my-near-wallet");
     try {
       const res = await wallet.signAndSendTransaction({
-        signerId: deployerAccount.accountId,
+        signerId: deployerAccount ? deployerAccount.accountId : "",
         actions: [
           {
             type: "FunctionCall",
@@ -212,7 +218,7 @@ export default function UploadApp() {
                 path: releaseInfo.path,
                 hash: releaseInfo.hash,
               },
-              gas: nearAPI.utils.format.parseNearAmount("0.00000000003"),
+              gas: nearAPI.utils.format.parseNearAmount("0.00000000003") ?? "0",
               deposit: ""
             },
           },
@@ -228,6 +234,7 @@ export default function UploadApp() {
       }
     } catch (error) {
       const errorMessage =
+        // @ts-ignore: Property 'message' does not exist on type 'unknown'.
         JSON.parse(error.message).kind?.kind?.FunctionCallError
           ?.ExecutionError ?? "An error occurred while adding the release";
 
@@ -260,6 +267,7 @@ export default function UploadApp() {
       setFileHash("");
       setIpfsPath("");
       if (fileInputRef.current) {
+        // @ts-ignore: Object is possibly 'null'.
         fileInputRef.current.value = "";
       }
     }

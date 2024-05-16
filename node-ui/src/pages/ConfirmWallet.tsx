@@ -28,7 +28,7 @@ export default function ConfirmWallet(): JSX.Element {
     } else {
       setAddRootKeyStatus({
         title: "Success",
-        message: addRootKeyResponse.data,
+        message: addRootKeyResponse.data ?? "",
         error: false,
       });
     }
