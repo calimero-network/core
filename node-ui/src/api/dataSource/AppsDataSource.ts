@@ -14,7 +14,7 @@ export class AppsDataSource {
 
   async getInstalledApplications(): Promise<Application[]> {
     try {
-      const response = await this.client.get<any>("/admin-api/applications");
+      const response = await this.client.get<Application[]>("/admin-api/applications");
       // @ts-ignore with adminAPI update
       if (response?.apps) {
         // @ts-ignore
