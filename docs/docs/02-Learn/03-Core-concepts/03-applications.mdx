@@ -1,4 +1,0 @@
----
-id: applications
-title: Applications
----
