@@ -60,9 +60,9 @@ export default function ApplicationsTable({
         />
         {currentOption == Options.AVAILABLE ? (
           <ListTable<Application>
-            ListHeaderItems={headersList}
+            listHeaderItems={headersList}
             columnItems={4}
-            ListItems={applicationsList.available}
+            listItems={applicationsList.available}
             rowItem={rowItem}
             roundTopItem={true}
             noItemsText={t.noAvailableAppsText}
@@ -70,9 +70,9 @@ export default function ApplicationsTable({
           />
         ) : (
           <ListTable<Application>
-            ListHeaderItems={headersList}
+            listHeaderItems={headersList}
             columnItems={4}
-            ListItems={applicationsList.owned}
+            listItems={applicationsList.owned}
             rowItem={rowItem}
             roundTopItem={true}
             noItemsText={t.noOwnedAppsText}

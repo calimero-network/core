@@ -47,10 +47,10 @@ export default function ContextTable({
         {currentOption == DetailsOptions.DETAILS && <DetailsCard details={nodeContextDetails}/>}
         {currentOption == DetailsOptions.CLIENT_KEYS && (
           <ListTable<ClientKey>
-            ListDescription={t.clientKeysListDescription}
+            listDescription={t.clientKeysListDescription}
             columnItems={3}
-            ListHeaderItems={["TYPE", "ADDED", "PUBLIC KEY"]}
-            ListItems={nodeContextDetails.clientKeys || []}
+            listHeaderItems={["TYPE", "ADDED", "PUBLIC KEY"]}
+            listItems={nodeContextDetails.clientKeys || []}
             rowItem={clientKeyRowItem}
             roundTopItem={true}
             noItemsText={t.noClientKeysText}
@@ -59,8 +59,8 @@ export default function ContextTable({
         {currentOption == DetailsOptions.USERS && (
           <ListTable<User>
             columnItems={2}
-            ListItems={nodeContextDetails.users || []}
-            ListHeaderItems={["USER ID", "JOINED"]}
+            listItems={nodeContextDetails.users || []}
+            listHeaderItems={["USER ID", "JOINED"]}
             rowItem={userRowItem}
             roundTopItem={true}
             noItemsText={t.noUsersText}
