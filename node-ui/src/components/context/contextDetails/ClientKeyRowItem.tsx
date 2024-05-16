@@ -39,7 +39,7 @@ const RowItem = styled.div<ClientKeyRowItemProps>`
   }
 `;
 
-export default function clientKeyRowItem(item: ClientKey, id: number, count: number) {
+export default function clientKeyRowItem(item: ClientKey, id: number, count: number): JSX.Element {
   return (
     <RowItem key={item.publicKey} hasBorders={id === count}>
       <div className="row-item type">{item.type}</div>
