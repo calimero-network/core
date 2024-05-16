@@ -40,12 +40,11 @@ export class NodeDataSource {
 
   async getContexts(): Promise<ContextsList<Context>> {
     try {
-      const response = await this.client.get("/admin-api/contexts");
+      const response = await this.client.get<Context[]>("/admin-api/contexts");
       if (response?.data) {
         // invited is empty for now as we don't have this endpoint available
         // will be left as "no invites" until this becomes available
         return {
-          // @ts-ignore
           joined: response.data,
           invited: [],
         };
