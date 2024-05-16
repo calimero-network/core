@@ -2,14 +2,14 @@ import React from "react";
 import styled from "styled-components";
 import translations from "../../constants/en.global.json";
 import { ContentCard } from "../common/ConentCard";
-import OptionsHeader from "../common/OptionsHeader";
+import OptionsHeader, { TableOptions } from "../common/OptionsHeader";
 import ListTable from "../common/ListTable";
 import rowItem from "./RowItem";
 import { Options } from "../../constants/ContextConstants";
 import StatusModal, { ModalContent } from "../common/StatusModal";
 import ActionDialog from "../common/ActionDialog";
 import { ContextsList } from "../../api/dataSource/NodeDataSource";
-import { ContextObject, TableOptions } from "../../pages/Contexts";
+import { ContextObject } from "../../pages/Contexts";
 
 const FlexWrapper = styled.div`
   flex: 1;

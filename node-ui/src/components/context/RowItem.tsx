@@ -1,6 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import MenuIconDropdown from "../common/MenuIconDropdown";
+import { ContextObject } from "../../pages/Contexts";
 
 interface RowItemComponentProps {
   hasBorders: boolean;
@@ -57,7 +58,7 @@ const RowItem = styled.div<RowItemComponentProps>`
 `;
 
 
-export default function rowItem(item: any, id: number, count: number, onitemClicked: (id: number) => void): JSX.Element {
+export default function rowItem(item: ContextObject, id: number, count: number, onitemClicked: (id: string) => void): JSX.Element {
   return (
     <RowItem key={item.id} hasBorders={id === count}>
       <a href={`/admin/contexts/${item.id}`} className="row-item id">
