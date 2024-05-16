@@ -44,18 +44,6 @@
         "submitButtonText": "Submit Request",
         "backButtonText": "Back to login"
     },
-    "identityTable": {
-        "title": "Identity",
-        "headerIdText": "Id",
-        "headerTypeText": "Type",
-        "headerPkText": "PublicKey",
-        "deleteButtonText": "Delete",
-        "addButtonText": "Add new identity",
-        "expandEditorTitle": "Edit DID",
-        "cancelButtonText": "Cancel",
-        "saveButtonText": "Save",
-        "noIdentityText": "No identity found in the node."
-    },
     "keysPage": {
         "title": "Keys"
     },

@@ -4,7 +4,7 @@ import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
 import { useNavigate } from "react-router-dom";
 import PageContentWrapper from "../components/common/PageContentWrapper";
-import IdentitiesTable from "../components/identity/IdentitiesTable";
+import IdentityTable from "../components/identity/IdentityTable";
 import { RootKeyObject, mapApiResponseToObjects } from "../utils/rootkey";
 
 export interface RootKey {
@@ -27,7 +27,7 @@ export default function Identity() {
     <FlexLayout>
       <Navigation />
       <PageContentWrapper>
-        <IdentitiesTable
+        <IdentityTable
           onAddRootKey={() => navigate("/")}
           rootKeysList={rootKeys}
           onCopyKeyClick={(publicKey: string) => navigator.clipboard.writeText(publicKey)}
