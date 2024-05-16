@@ -6,19 +6,16 @@ import { useNavigate } from "react-router-dom";
 import PageContentWrapper from "../components/common/PageContentWrapper";
 import IdentityTable from "../components/identity/IdentityTable";
 import { RootKeyObject, mapApiResponseToObjects } from "../utils/rootkey";
-
-export interface RootKey {
-  signing_key: string;
-}
+import apiClient from "../api";
 
 export default function Identity() {
   const navigate = useNavigate();
   const [rootKeys, setRootKeys] = useState<RootKeyObject[]>([]);
   useEffect(() => {
     const setDids = async () => {
-      const response = await axios.get("/admin-api/did");
-      const rootKeyList = mapApiResponseToObjects(response.data.data.root_keys);
-      setRootKeys(rootKeyList);
+      const  didList = await apiClient.did().getDidList();
+      const rootKeyObjectsList = mapApiResponseToObjects(didList);
+      setRootKeys(rootKeyObjectsList);
     };
     setDids();
   }, []);

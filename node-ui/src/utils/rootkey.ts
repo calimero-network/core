@@ -1,7 +1,7 @@
 import { Location } from "react-router-dom";
 import { getWalletCallbackUrl } from "./wallet";
 import axios from "axios";
-import { RootKey } from "src/pages/Identity";
+import { RootKey } from "../api/dataSource/DidDataSource";
 
 export interface UrlParams {
   accountId: string;
