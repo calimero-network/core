@@ -20,6 +20,10 @@ export interface ContextsList<T> {
   invited: T[];
 }
 
+export interface RootKey {
+  signing_key: string;
+}
+
 export class NodeDataSource {
   private client: HttpClient;
 
@@ -108,6 +112,20 @@ export class NodeDataSource {
     } catch (error) {
       console.error("Error starting contexts:", error);
       return true;
+    }
+  }
+
+  async getDidList(): Promise<RootKey[]> {
+    try {
+      const response = await this.client.get<any>("/admin-api/did");
+      if (response?.data?.root_keys) {
+        return response.data.root_keys;
+      } else {
+        return [];
+      }
+    } catch (error) {
+      console.error("Error fetching installed applications:", error);
+      return [];
     }
   }
 }

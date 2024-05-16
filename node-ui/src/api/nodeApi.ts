@@ -1,5 +1,4 @@
-import { Application } from "./dataSource/NodeDataSource";
-import { Context, ContextsList } from "./dataSource/NodeDataSource";
+import { Application, Context, ContextsList, RootKey } from "./dataSource/NodeDataSource";
 
 export interface NodeApi {
   getInstalledApplications(): Promise<Application[]>;
@@ -11,4 +10,5 @@ export interface NodeApi {
     initFunction: string,
     initArguments: string
   ): Promise<boolean>;
+  getDidList(): Promise<RootKey[]>;
 }
