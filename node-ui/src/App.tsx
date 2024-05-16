@@ -9,6 +9,7 @@ import Contexts from "./pages/Contexts";
 import StartContext from "./pages/StartContext";
 import ContextDetails from "./pages/ContextDetails";
 import Export from "./pages/Export";
+import ApplicationDetails from "./pages/ApplicationDetails";
 
 import "bootstrap/dist/css/bootstrap.min.css";
 
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="/confirm-wallet" element={<ConfirmWallet />} />
           <Route path="/identity" element={<Identity />} />
           <Route path="/applications" element={<Applications />} />
+          <Route path="/applications/:id" element={<ApplicationDetails />} />
           <Route path="/upload-app" element={<UploadApp />} />
           <Route path="/contexts" element={<Contexts />} />
           <Route path="/contexts/start-context" element={<StartContext />} />

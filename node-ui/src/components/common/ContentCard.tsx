@@ -78,6 +78,7 @@ interface ContentCardProps {
   headerBackText?: string;
   headerOnBackClick?: () => void;
   children: React.ReactNode;
+  descriptionComponent?: React.ReactNode;
 }
 
 export function ContentCard({
@@ -88,32 +89,40 @@ export function ContentCard({
   headerBackText,
   headerOnBackClick,
   children,
+  descriptionComponent,
 }: ContentCardProps) {
+  console.log(headerOptionText);
+  console.log(headerOnOptionClick);
+  console.log(headerTitle);
   return (
     <Container>
-      {headerBackText && (
-        <div className="header-back">
-          {headerOnBackClick && (
-            <ArrowLeftIcon
-              className="arrow-icon-left"
-              onClick={headerOnBackClick}
-            />
-          )}
-          {headerBackText}
-        </div>
-      )}
-      {headerTitle && (
+      {(headerTitle || headerBackText) && (
         <div className="header-option">
           <div className="flex-wrapper">
-            <div className="title">{headerTitle}</div>
-            {headerOptionText && headerOnOptionClick && (
-              <Button onClick={headerOnOptionClick} text={headerOptionText} />
+            {headerTitle ? (
+              <div className="title">{headerTitle}</div>
+            ) : (
+              <div className="header-back">
+                {headerBackText && headerOnBackClick && (
+                  <ArrowLeftIcon
+                    className="arrow-icon-left"
+                    onClick={headerOnBackClick}
+                  />
+                )}
+                {headerBackText}
+              </div>
+            )}
+            {headerOnOptionClick && (
+              <Button onClick={headerOnOptionClick} text={headerOptionText!} />
             )}
           </div>
           {headerDescription && (
             <div className="description">{headerDescription}</div>
           )}
         </div>
+      )}
+      {descriptionComponent && (
+        <div className="description-component">{descriptionComponent}</div>
       )}
       <div className="main-wrapper">{children}</div>
     </Container>
