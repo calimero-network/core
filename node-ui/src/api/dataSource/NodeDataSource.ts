@@ -62,7 +62,6 @@ export class NodeDataSource {
       const response = await this.client.get<Context>(
         `/admin-api/contexts/${contextId}`
       );
-      response?.data;
       if (response?.data) {
         return response.data;
       } else {
