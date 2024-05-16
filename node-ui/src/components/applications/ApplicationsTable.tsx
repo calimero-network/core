@@ -122,7 +122,7 @@ const Table = styled.div`
 interface ApplicationsTableProps {
   applications: Application[];
   changeTab: () => void;
-  uninstall: (id: number) => void;
+  uninstall: (applicationId: string) => void;
 }
 
 export function ApplicationsTable({ applications, changeTab, uninstall }: ApplicationsTableProps) {
@@ -188,7 +188,7 @@ export function ApplicationsTable({ applications, changeTab, uninstall }: Applic
                       options={[
                         {
                           title: t.uninstallButtonText,
-                          onClick: () => uninstall(id),
+                          onClick: () => uninstall(application.id),
                         },
                       ]}
                     />
