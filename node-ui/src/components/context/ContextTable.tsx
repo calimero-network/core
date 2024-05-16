@@ -8,7 +8,7 @@ import rowItem from "./RowItem";
 import { Options } from "../../constants/ContextConstants";
 import StatusModal, { ModalContent } from "../common/StatusModal";
 import ActionDialog from "../common/ActionDialog";
-import { NodeContexts } from "../../api/dataSource/NodeDataSource";
+import { ContextsList } from "../../api/dataSource/NodeDataSource";
 import { ContextObject, TableOptions } from "../../pages/Contexts";
 
 const FlexWrapper = styled.div`
@@ -16,7 +16,7 @@ const FlexWrapper = styled.div`
 `;
 
 interface ContextTableProps {
-  nodeContextList: NodeContexts<ContextObject>;
+  nodeContextList: ContextsList<ContextObject>;
   naviageToStartContext: () => void;
   currentOption: string;
   setCurrentOption: (option: string) => void;

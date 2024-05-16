@@ -15,7 +15,7 @@ export interface Context {
   signingKey: SigningKey;
 }
 
-export interface NodeContexts<T> {
+export interface ContextsList<T> {
   joined: T[];
   invited: T[];
 }
@@ -38,7 +38,7 @@ export class NodeDataSource {
     }
   }
 
-  async getContexts(): Promise<NodeContexts<Context>> {
+  async getContexts(): Promise<ContextsList<Context>> {
     try {
       const response = await this.client.get("/admin-api/contexts");
       if (response?.data) {

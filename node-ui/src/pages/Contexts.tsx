@@ -7,7 +7,7 @@ import { Options } from "../constants/ContextConstants";
 import { useNavigate } from "react-router-dom";
 import { useRPC } from "../hooks/useNear";
 import apiClient from "../api/index";
-import { Context, NodeContexts } from "../api/dataSource/NodeDataSource";
+import { Context, ContextsList } from "../api/dataSource/NodeDataSource";
 import { ModalContent } from "src/components/common/StatusModal";
 
 export interface TableOptions {
@@ -51,7 +51,7 @@ export default function Contexts() {
     message: "",
     error: false,
   });
-  const [nodeContextList, setNodeContextList] = useState<NodeContexts<ContextObject>>({
+  const [nodeContextList, setNodeContextList] = useState<ContextsList<ContextObject>>({
     joined: [],
     invited: [],
   });
@@ -73,7 +73,7 @@ export default function Contexts() {
         nodeContexts.joined
       );
 
-      setNodeContextList((prevState: NodeContexts<ContextObject>) => ({
+      setNodeContextList((prevState: ContextsList<ContextObject>) => ({
         ...prevState,
         joined: joinedContexts
       }));
