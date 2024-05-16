@@ -6,6 +6,7 @@ import ApplicationsTable from "./ApplicationsTable";
 import { useRPC } from "../../../hooks/useNear";
 import { Application, NodeApp } from "../../../pages/Applications";
 import apiClient from "../../../api";
+import { TableOptions } from "../../../components/common/OptionsHeader";
 
 const ModalWrapper = styled.div`
   background-color: #212325;
@@ -43,7 +44,7 @@ export default function ApplicationsPopup({
 }: ApplicationsPopupProps) {
   const { getPackage } = useRPC();
   const [currentOption, setCurrentOption] = useState<string>(Options.AVAILABLE);
-  const [tableOptions, setTableOptions] = useState(initialOptions);
+  const [tableOptions, setTableOptions] = useState<TableOptions[]>(initialOptions);
   const [applicationsList, setApplicationsList] = useState<Applications>({
     available: [],
     owned: [],

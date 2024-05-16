@@ -2,7 +2,7 @@ import React from "react";
 import styled from "styled-components";
 import translations from "../../../constants/en.global.json";
 import { ContentCard } from "../../common/ConentCard";
-import OptionsHeader from "../../common/OptionsHeader";
+import OptionsHeader, { TableOptions } from "../../common/OptionsHeader";
 import ListTable from "../../common/ListTable";
 import rowItem from "./RowItem";
 import { Options } from "../../../constants/ApplicationsConstants";
@@ -32,7 +32,7 @@ interface ApplicationsTableProps {
   applicationsList: Applications;
   currentOption: string;
   setCurrentOption: (option: string) => void;
-  tableOptions: any[];
+  tableOptions: TableOptions[];
   closeModal: () => void;
   selectApplication: (applicationId: string) => void;
 }

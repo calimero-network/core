@@ -8,13 +8,8 @@ import { useNavigate } from "react-router-dom";
 import { useRPC } from "../hooks/useNear";
 import apiClient from "../api/index";
 import { Context, ContextsList } from "../api/dataSource/NodeDataSource";
-import { ModalContent } from "src/components/common/StatusModal";
-
-export interface TableOptions {
-  name: string;
-  id: string;
-  count: number;
-}
+import { ModalContent } from "../components/common/StatusModal";
+import { TableOptions } from "../components/common/OptionsHeader";
 
 export interface ContextObject {
   id: string;

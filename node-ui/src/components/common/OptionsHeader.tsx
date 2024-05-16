@@ -27,8 +27,14 @@ const HeaderGrid = styled.div<HeaderGridProps>`
   }
 `;
 
+export interface TableOptions {
+  name: string;
+  id: string;
+  count: number;
+}
+
 interface OptionsHeaderProps {
-  tableOptions: any[];
+  tableOptions: TableOptions[];
   currentOption: string;
   setCurrentOption: (option: string) => void;
   showOptionsCount: boolean;
