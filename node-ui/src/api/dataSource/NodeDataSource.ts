@@ -5,10 +5,14 @@ export interface Application {
   version: string;
 }
 
+export interface SigningKey {
+  signingKey: string;
+}
+
 export interface Context {
   applicationId: string;
   id: string;
-  signingKey: { signingKey: string };
+  signingKey: SigningKey;
 }
 
 export interface NodeContexts<T> {
