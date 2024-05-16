@@ -26,6 +26,7 @@ const RowItem = styled.div<RowItemComponentProps>`
   }
   .row-item {
     width: 16%;
+    min-width: 4.375rem;
     padding: 0.75rem 0rem;
     min-height: 3.5rem;
     display: flex;
