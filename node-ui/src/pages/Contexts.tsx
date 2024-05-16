@@ -42,40 +42,50 @@ export default function Contexts() {
   const navigate = useNavigate();
   const { getPackage } = useRPC();
   const [currentOption, setCurrentOption] = useState<string>(Options.JOINED);
-  const [tableOptions, setTableOptions] = useState<TableOptions[]>(initialOptions);
+  const [tableOptions, setTableOptions] =
+    useState<TableOptions[]>(initialOptions);
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [showActionDialog, setShowActionDialog] = useState(false);
-  const [selectedContextId, setSelectedContextId] = useState<string | null>(null);
+  const [selectedContextId, setSelectedContextId] = useState<string | null>(
+    null
+  );
   const [deleteStatus, setDeleteStatus] = useState<ModalContent>({
     title: "",
     message: "",
     error: false,
   });
-  const [nodeContextList, setNodeContextList] = useState<ContextsList<ContextObject>>({
+  const [nodeContextList, setNodeContextList] = useState<
+    ContextsList<ContextObject>
+  >({
     joined: [],
     invited: [],
   });
 
-  const generateContextObjects = async (contexts: Context[]): Promise<ContextObject[]> => {
-    const tempContextObjects = await Promise.all(
-      contexts.map(async (app: Context) => {
-        const packageData = await getPackage(app.applicationId);
-        return { ...packageData, id: app.id, applicationId: packageData.id };
-      })
-    );
-    return tempContextObjects;
+  const generateContextObjects = async (
+    contexts: Context[]
+  ): Promise<ContextObject[]> => {
+    try {
+      const tempContextObjects = await Promise.all(
+        contexts.map(async (app: Context) => {
+          const packageData = await getPackage(app.applicationId);
+          return { ...packageData, id: app.id, applicationId: packageData.id };
+        })
+      );
+      return tempContextObjects;
+    } catch (error) {
+      console.error("Error generating context objects:", error);
+      return [];
+    }
   };
 
   const fetchNodeContexts = async () => {
     const nodeContexts = await apiClient.node().getContexts();
     if (nodeContexts) {
-      const joinedContexts = await generateContextObjects(
-        nodeContexts.joined
-      );
+      const joinedContexts = await generateContextObjects(nodeContexts.joined);
 
       setNodeContextList((prevState: ContextsList<ContextObject>) => ({
         ...prevState,
-        joined: joinedContexts
+        joined: joinedContexts,
       }));
       setTableOptions([
         {
@@ -97,8 +107,10 @@ export default function Contexts() {
   }, []);
 
   const deleteNodeContext = async () => {
-    if(!selectedContextId) return;
-    const nodeContexts = await apiClient.node().deleteContext(selectedContextId);
+    if (!selectedContextId) return;
+    const nodeContexts = await apiClient
+      .node()
+      .deleteContext(selectedContextId);
     if (nodeContexts) {
       setDeleteStatus({
         title: "Success",
@@ -117,9 +129,9 @@ export default function Contexts() {
     setShowStatusModal(true);
   };
 
-  const closeStatusModal = async() => {
+  const closeStatusModal = async () => {
     setShowStatusModal(false);
-    if(!deleteStatus.error) {
+    if (!deleteStatus.error) {
       await fetchNodeContexts();
     }
     setDeleteStatus({
@@ -132,7 +144,7 @@ export default function Contexts() {
   const showModal = (id: string) => {
     setSelectedContextId(id);
     setShowActionDialog(true);
-  }
+  };
 
   return (
     <FlexLayout>
