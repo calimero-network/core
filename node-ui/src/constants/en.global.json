@@ -175,5 +175,11 @@
         "buttonExportText": "Export Identity",
         "exportErrorTitle": "Failed to export node identity",
         "exportSuccessTitle": "Identity exported"
+    },
+    "identityPage": {
+        "title": "Root keys",
+        "addRootKeyText": "Add new root key",
+        "loggedInLabel": "Logged in with: ",
+        "noRootKeysText": "No root keys found in the node."
     }
 }

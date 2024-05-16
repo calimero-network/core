@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from "react";
+import axios from "axios";
 import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
-import { IdentityContent } from "../components/identity/IdentityContent";
 import { useNavigate } from "react-router-dom";
-import axios from "axios";
+import PageContentWrapper from "../components/common/PageContentWrapper";
+import IdentitiesTable from "../components/identity/IdentitiesTable";
+import { RootKeyObject, mapApiResponseToObjects } from "../utils/rootkey";
 
 export interface RootKey {
   signing_key: string;
@@ -11,11 +13,12 @@ export interface RootKey {
 
 export default function Identity() {
   const navigate = useNavigate();
-  const [rootKeys, setRootKeys] = useState<RootKey[]>([]);
+  const [rootKeys, setRootKeys] = useState<RootKeyObject[]>([]);
   useEffect(() => {
     const setDids = async () => {
       const response = await axios.get("/admin-api/did");
-      setRootKeys(response.data.data.root_keys);
+      const rootKeyList = mapApiResponseToObjects(response.data.data.root_keys);
+      setRootKeys(rootKeyList);
     };
     setDids();
   }, []);
@@ -23,11 +26,13 @@ export default function Identity() {
   return (
     <FlexLayout>
       <Navigation />
-      <IdentityContent
-        identityList={rootKeys}
-        deleteIdentity={() => console.log("TODO")}
-        addIdentity={() => navigate("/")}
-      />
+      <PageContentWrapper>
+        <IdentitiesTable
+          onAddRootKey={() => navigate("/")}
+          rootKeysList={rootKeys}
+          onCopyKeyClick={(publicKey: string) => navigator.clipboard.writeText(publicKey)}
+        />
+      </PageContentWrapper>
     </FlexLayout>
   );
 }

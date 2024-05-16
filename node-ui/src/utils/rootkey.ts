@@ -1,6 +1,7 @@
-import { Location } from 'react-router-dom';
+import { Location } from "react-router-dom";
 import { getWalletCallbackUrl } from "./wallet";
 import axios from "axios";
+import { RootKey } from "src/pages/Identity";
 
 export interface UrlParams {
   accountId: string;
@@ -23,7 +24,9 @@ export const getParams = (location: Location): UrlParams => {
   return { accountId, signature, publicKey, callbackUrl };
 };
 
-export const submitRootKeyRequest = async (params: UrlParams): Promise<submitRootKeyResponse> => {
+export const submitRootKeyRequest = async (
+  params: UrlParams
+): Promise<submitRootKeyResponse> => {
   try {
     const response = await axios.post("/admin-api/root-key", params);
     const message = response.data;
@@ -33,3 +36,28 @@ export const submitRootKeyRequest = async (params: UrlParams): Promise<submitRoo
     return { error: error.message };
   }
 };
+
+export interface RootKeyObject {
+  type: string;
+  date: string;
+  publicKey: string;
+}
+
+export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
+  return didList.map((item) => {
+    let type: string;
+    if (item.signing_key.startsWith("ed25519:")) {
+      type = "NEAR";
+    } else if (item.signing_key.startsWith("0x")) {
+      type = "ETH";
+    } else {
+      type = "Unknown";
+    }
+
+    return {
+      type: type,
+      date: "-",
+      publicKey: item.signing_key.split(":")[1].trim(),
+    };
+  });
+}

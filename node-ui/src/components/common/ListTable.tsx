@@ -108,7 +108,7 @@ export default function ListTable<T>({
         />
       )}
       <div className="list-items">
-        {ListItems?.map((item: any, id: number) => rowItem(item, id, ListItems.length - 1, onRowItemClick))}
+        {ListItems?.map((item: T, id: number) => rowItem(item, id, ListItems.length - 1, onRowItemClick))}
         {ListItems?.length === 0 && (
           <div className="no-items-text">{noItemsText}</div>
         )}
