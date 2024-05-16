@@ -135,7 +135,7 @@ export class NodeDataSource {
         return [];
       }
     } catch (error) {
-      console.error("Error fetching installed applications:", error);
+      console.error("Error fetching DID list:", error);
       return [];
     }
   }
