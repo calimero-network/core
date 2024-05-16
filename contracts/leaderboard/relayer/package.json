@@ -1,0 +1,13 @@
+{
+  "name": "relayer",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "Saeed",
+  "license": "MIT",
+  "dependencies": {
+    "command-line-args": "^5.2.1",
+    "near-api-js": "^4.0.1",
+    "prompt-sync": "^4.2.0",
+    "ws": "^8.17.0"
+  }
+}
