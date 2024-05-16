@@ -8,10 +8,10 @@ const config: Config = {
     "Calimero Network is a framework which enables building fully decentralized applications, ensuring everyone's data privacy.",
   favicon: "img/favicon.ico",
   url: "https://calimero-network.github.io",
-  baseUrl: "/core/",
+  baseUrl: "/",
   organizationName: "calimero-network",
   projectName: "core",
-  onBrokenLinks: "throw",
+  onBrokenLinks: "warn",
   onBrokenMarkdownLinks: "warn",
   i18n: {
     defaultLocale: "en",
