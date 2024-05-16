@@ -111,12 +111,12 @@ interface InstallApplicationProps {
   packages: Package[];
   releases: Release[];
   installApplication: () => void;
-  setSelectedPackage: (pkg: Package) => void;
+  setSelectedPackage: (installPackage: Package | null) => void;
   setReleases: (releases: Release[]) => void;
   getReleases: (pkgId: string) => Promise<Release[]>;
   selectedPackage: Package | null;
   selectedRelease: Release | null;
-  setSelectedRelease: (release: Release) => void;
+  setSelectedRelease: (release: Release | null) => void;
   setSelectedTab: (tab: Tabs) => void;
   showStatusModal: boolean;
   closeModal: () => void;
