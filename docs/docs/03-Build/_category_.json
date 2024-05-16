@@ -1,7 +1,3 @@
 {
-  "label": "Build",
-  "link": {
-    "type": "generated-index",
-    "description": "description"
-  }
+  "label": "Build"
 }

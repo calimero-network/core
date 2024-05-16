@@ -74,7 +74,7 @@ const config: Config = {
           label: "Learn",
         },
         {
-          to: "/category/build",
+          to: "/build/quickstart",
           position: "left",
           label: "Build",
         },
