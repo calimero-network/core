@@ -2,11 +2,11 @@ import React from "react";
 import styled from "styled-components";
 import LoaderSpinner from "./LoaderSpinner";
 
-interface ButtonStyledProps {
+interface StyledButtonProps {
   $btnWidth?: string;
 }
 
-const ButtonStyled = styled.div<ButtonStyledProps>`
+const ButtonStyled = styled.div<StyledButtonProps>`
   background-color: #4cfafc;
   height: 2.375rem;
   width: ${(props) => (props.$btnWidth ? props.$btnWidth : "fit-content")};
