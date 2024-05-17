@@ -24,15 +24,8 @@ export const RowItem = styled.div<RowItemProps>`
   text-align: left;
   padding-right: 1.5rem;
   padding-left: 1.5rem;
-  ${(props) =>
-    props.hasBorders
-      ? `
-      border-top: 1px solid #23262D;
-      border-bottom: 1px solid #23262D;
-    `
-      : `
-      border-top: 1px solid #23262D;
-    `}
+  border-top: 1px solid #23262d;
+  ${(props) => props.hasBorders && `border-bottom: 1px solid #23262D;`}
 
   .row-item {
     padding: 0.75rem 0rem;
