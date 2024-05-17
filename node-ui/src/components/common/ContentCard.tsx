@@ -91,9 +91,6 @@ export function ContentCard({
   children,
   descriptionComponent,
 }: ContentCardProps) {
-  console.log(headerOptionText);
-  console.log(headerOnOptionClick);
-  console.log(headerTitle);
   return (
     <Container>
       {(headerTitle || headerBackText) && (
