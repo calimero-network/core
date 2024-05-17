@@ -8,7 +8,7 @@ Start by reading the README to understand the project better.
 
 ## Project Status
 
-The project is actively being developed.
+This project is actively being developed.
 
 You can check out the open Issues, monitor the development progress, and contribute.
 

@@ -75,6 +75,5 @@ Community Impact Guidelines were inspired by Mozilla's code of conduct enforceme
 For answers to common questions about this code of conduct, see the FAQ at [FAQ](https://www.contributor-covenant.org/faq). Translations are available at [translations](https://www.contributor-covenant.org/translations).
 
 [homepage]: https://www.contributor-covenant.org
-[v2.1].
 
 For more information contact [info@calimero.network](mailto:info@calimero.network) with any additional questions or comments.
