@@ -36,7 +36,16 @@ Use Issues to report problems, request features, or discuss changes before creat
 
 Browse [existing issues](https://github.com/calimero-network/core/issues) to find one that interests you.
 
-If someone is already working on an issue, they will be assigned to it. If you want to work on an issue, you can assign it to yourself and then open a PR with your solution.
+## Contribution Guidelines for Working on Issues
+
+If someone is already working on an issue, they will either be officially assigned to it or have left a comment indicating they are working on it. If you would like to work on an issue, please follow these steps:
+
+1. **Comment on the Issue**: Leave a comment on the issue expressing your intention to work on it. For example, "I would like to work on this issue."
+2. **Wait for Confirmation**: A project maintainer will confirm your assignment by officially assigning the issue to you or by acknowledging your comment.
+3. **Start Working**: Once you have received confirmation, you can start working on the issue.
+4. **Open a Pull Request**: When your work is ready, open a pull request (PR) with your solution. Make sure to mention in the PR that you are working on the issue by referencing the issue number in the PR description (e.g., "This PR addresses issue #123").
+
+By following this process, we can avoid duplication of efforts and ensure clear communication among all contributors.
 
 ### Creating a New Issue
 
