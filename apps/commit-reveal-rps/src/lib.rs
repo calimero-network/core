@@ -159,7 +159,7 @@ impl Ord for Choice {
     }
 }
 
-//#[app::logic]
+#[app::logic]
 impl Game {
     fn calculate_hash(choice: &Choice, salt: &str) -> Result<Commitment, Error> {
         Sha3_256::new()
