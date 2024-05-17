@@ -6,8 +6,8 @@ interface StyledButtonProps {
   btnWidth?: string;
 }
 
-const ButtonStyled = styled.div<StyledButtonProps>`
-  background-color: #4cfafc;
+const ButtonStyled = styled.button<StyledButtonProps>`
+  background-color: ${(props) => (props.disabled ? "#434546" : "#4cfafc")};
   height: 2.375rem;
   width: ${(props) => (props.btnWidth ? props.btnWidth : "fit-content")};
   padding: 0.625rem 0.75rem;
@@ -18,6 +18,8 @@ const ButtonStyled = styled.div<StyledButtonProps>`
   line-height: 1.25rem;
   text-align: center;
   cursor: pointer;
+  outline: none;
+  border: none;
 
   &:hover {
     background-color: #76f5f9;
@@ -29,12 +31,23 @@ interface ButtonProps {
   text: string;
   width?: string;
   isLoading?: boolean;
+  isDisabled?: boolean;
 }
 
-export default function Button({ onClick, text, width, isLoading }: ButtonProps) {
+export default function Button({
+  onClick,
+  text,
+  width,
+  isLoading,
+  isDisabled = false,
+}: ButtonProps) {
   return (
-    <ButtonStyled onClick={onClick} btnWidth={width ?? ""}>
-      {isLoading ? <LoaderSpinner/> : text}
+    <ButtonStyled
+      onClick={onClick}
+      btnWidth={width ?? ""}
+      disabled={isDisabled}
+    >
+      {isLoading ? <LoaderSpinner /> : text}
     </ButtonStyled>
   );
 }

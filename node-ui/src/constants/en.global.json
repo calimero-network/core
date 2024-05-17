@@ -29,6 +29,13 @@
             "releaseSelectionLabel": "Select Application Release",
             "releaseDetailsLabel": "Release Details",
             "installErrorTitle": "Failed to install application"
+        },
+        "publishApplication": {
+            "title": "Publish new application",
+            "addAccountButtonText": "Add wallet account",
+            "connectAccountTitle": "Connect owner account",
+            "connectAccountSubtitle": "Owner account is holder of application and only that account can publish new releases.",
+            "connectAccountButtonText": "Connect account"
         }
     },
     "confirmWallet": {
@@ -77,11 +84,11 @@
         "subtitle": "To install the application first upload the application wasm to the IPFS, select the package you want to add the release for and fill the release details.",
         "uploadIpfsTitle": "IPFS Application upload",
         "inputLabelText": "Select Application .wasm file to upload",
-        "buttonUploadLabel": "Upload to IPFS",
+        "buttonUploadLabel": "Upload wasm",
         "buttonUploadText": "Upload",
         "cidLabelText": "File IPFS CID",
         "backButtonText": "Back",
-        "releaseTitle": "Release Details",
+        "releaseTitle": "Add new release",
         "nameLabelText": "Name",
         "pathLabelText": "Path",
         "versionLabelText": "Version",
@@ -95,10 +102,11 @@
         "loginLableText": "To Deploy new release, you need to sign in using wallet account button!",
         "deployerDropdownlabel": "Select deployer account",
         "deployerDropdownText": "Deployer Account",
-        "selectPackageLabel": "Select Package"
+        "selectPackageLabel": "Select Package",
+        "pathPlaceholder": "url to the wasm file"
     },
     "addPackageForm": {
-        "title": "Package Details",
+        "title": "Add application details",
         "subtitle": "To successfully install the application, first you need to add the package details and procceed to add relase.",
         "nameLabelText": "Package Name",
         "repositoryLabelText": "Repository URL",
@@ -106,8 +114,8 @@
         "buttonAddPackageText": "Add Package",
         "buttonNextText": "Next",
         "namePlaceholder": "chat-application",
-        "repositoryPlaceholder": "github.com/username/chat-application",
-        "descriptionPlaceholder": "A chat application built for P2P system",
+        "repositoryPlaceholder": "https://github.com/<application_repository>",
+        "descriptionPlaceholder": "A chat application built for P2P network",
         "loginLableText": "To Deploy new package, you need to sign in using wallet account button!",
         "deployerDropdownlabel": "Select deployer account",
         "deployerDropdownText": "Deployer Account"
