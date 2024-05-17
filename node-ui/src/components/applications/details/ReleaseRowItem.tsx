@@ -53,7 +53,7 @@ export default function releaseRowItem(
   count: number
 ): JSX.Element {
   return (
-    <RowItem key={id} hasBorders={id === count}>
+    <RowItem key={item.hash} hasBorders={id === count}>
       <div className="row-item name">{item.version}</div>
       <div className="row-item read">
         <span className="long-text">{item.path}</span>
