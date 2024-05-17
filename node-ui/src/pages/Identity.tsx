@@ -8,7 +8,7 @@ import { RootKeyObject, mapApiResponseToObjects } from "../utils/rootkey";
 import apiClient from "../api";
 
 export interface RootKey {
-  signing_key: string;
+  signingKey: string;
 }
 
 export default function Identity() {

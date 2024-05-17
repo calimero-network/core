@@ -46,9 +46,9 @@ export interface RootKeyObject {
 export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
   return didList.map((item) => {
     let type: string;
-    if (item.signing_key.startsWith("ed25519")) {
+    if (item.signingKey.startsWith("ed25519")) {
       type = "NEAR";
-    } else if (item.signing_key.startsWith("0x")) {
+    } else if (item.signingKey.startsWith("0x")) {
       type = "ETH";
     } else {
       type = "Unknown";
@@ -57,7 +57,7 @@ export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
     return {
       type: type,
       date: "-",
-      publicKey: item.signing_key.split(":")[1]!.trim(),
+      publicKey: item.signingKey.split(":")[1]!.trim(),
     };
   });
 }
