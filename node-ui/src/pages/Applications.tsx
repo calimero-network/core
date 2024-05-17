@@ -182,10 +182,10 @@ export default function Applications() {
             currentOption={currentOption}
             setCurrentOption={setCurrentOption}
             tableOptions={tableOptions}
-            naviagateToAppDetails={(id: string) =>
+            navigateToAppDetails={(id: string) =>
               navigate(`/applications/${id}`)
             }
-            naviagateToPublishApp={() => navigate("/upload-app")}
+            navigateToPublishApp={() => navigate("/upload-app")}
           />
         )}
       </PageContentWrapper>

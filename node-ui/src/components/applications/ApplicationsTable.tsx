@@ -31,8 +31,8 @@ interface ApplicationsTableProps {
   currentOption: string;
   setCurrentOption: (option: string) => void;
   tableOptions: TableOptions[];
-  naviagateToAppDetails: (applicationId: string) => void;
-  naviagateToPublishApp: () => void;
+  navigateToAppDetails: (applicationId: string) => void;
+  navigateToPublishApp: () => void;
 }
 
 export default function ApplicationsTable({
@@ -40,8 +40,8 @@ export default function ApplicationsTable({
   currentOption,
   setCurrentOption,
   tableOptions,
-  naviagateToAppDetails,
-  naviagateToPublishApp
+  navigateToAppDetails,
+  navigateToPublishApp
 }: ApplicationsTableProps) {
   const t = translations.applicationsPage.applicationsTable;
   const headersList = ["NAME", "ID", "LATEST VERSION", "PUBLISHED"];
@@ -50,7 +50,7 @@ export default function ApplicationsTable({
     <ContentCard
       headerTitle={t.title}
       headerOptionText={t.publishNewAppText}
-      headerOnOptionClick={naviagateToPublishApp}
+      headerOnOptionClick={navigateToPublishApp}
       >
       <FlexWrapper>
         <OptionsHeader
@@ -67,7 +67,7 @@ export default function ApplicationsTable({
             rowItem={applicationRowItem}
             roundTopItem={true}
             noItemsText={t.noAvailableAppsText}
-            onRowItemClick={naviagateToAppDetails}
+            onRowItemClick={navigateToAppDetails}
           />
         ) : (
           <ListTable<Application>
@@ -77,7 +77,7 @@ export default function ApplicationsTable({
             rowItem={applicationRowItem}
             roundTopItem={true}
             noItemsText={t.noOwnedAppsText}
-            onRowItemClick={naviagateToAppDetails}
+            onRowItemClick={navigateToAppDetails}
           />
         )}
       </FlexWrapper>
