@@ -21,6 +21,7 @@
             "installNewAppText": "install new application"
         },
         "installApplication": {
+            "title": "Install Application",
             "backbuttonText": "Back to Applications",
             "selectAppLabel": "Select Application to Install",
             "dropdownPlaceholder": "Applications",
