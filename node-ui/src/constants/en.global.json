@@ -17,7 +17,8 @@
             "title": "Applications",
             "publishNewAppText": "Publish new application",
             "noAvailableAppsText": "No applications available",
-            "noOwnedAppsText": "No owned applications installed"
+            "noOwnedAppsText": "No owned applications installed",
+            "installNewAppText": "install new application"
         },
         "installApplication": {
             "backbuttonText": "Back to Applications",

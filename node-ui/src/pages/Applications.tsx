@@ -186,6 +186,7 @@ export default function Applications() {
               navigate(`/applications/${id}`)
             }
             navigateToPublishApp={() => navigate("/upload-app")}
+            changeSelectedTab={() => setSelectedTab(Tabs.INSTALL_APPLICATION)}
           />
         )}
       </PageContentWrapper>

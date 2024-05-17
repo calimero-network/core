@@ -7,9 +7,11 @@ import ListTable from "../common/ListTable";
 import applicationRowItem from "./ApplicationRowItem";
 import { Options } from "../../constants/ApplicationsConstants";
 import { Application, Applications } from "../../pages/Applications";
+import { AddNewItem } from "../common/AddNewItem";
 
 const FlexWrapper = styled.div`
   flex: 1;
+  position: relative;
 
   .close-button {
     position: absolute;
@@ -24,6 +26,14 @@ const FlexWrapper = styled.div`
       color: #4cfafc;
     }
   }
+
+  .install-app-wrapper {
+    display: flex;
+    width: 100%;
+    justify-content: center;
+    position: absolute;
+    bottom: -1.75rem;
+  }
 `;
 
 interface ApplicationsTableProps {
@@ -33,6 +43,7 @@ interface ApplicationsTableProps {
   tableOptions: TableOptions[];
   navigateToAppDetails: (applicationId: string) => void;
   navigateToPublishApp: () => void;
+  changeSelectedTab: () => void;
 }
 
 export default function ApplicationsTable({
@@ -41,7 +52,8 @@ export default function ApplicationsTable({
   setCurrentOption,
   tableOptions,
   navigateToAppDetails,
-  navigateToPublishApp
+  navigateToPublishApp,
+  changeSelectedTab,
 }: ApplicationsTableProps) {
   const t = translations.applicationsPage.applicationsTable;
   const headersList = ["NAME", "ID", "LATEST VERSION", "PUBLISHED"];
@@ -51,7 +63,7 @@ export default function ApplicationsTable({
       headerTitle={t.title}
       headerOptionText={t.publishNewAppText}
       headerOnOptionClick={navigateToPublishApp}
-      >
+    >
       <FlexWrapper>
         <OptionsHeader
           tableOptions={tableOptions}
@@ -80,6 +92,9 @@ export default function ApplicationsTable({
             onRowItemClick={navigateToAppDetails}
           />
         )}
+        <div className="install-app-wrapper">
+          <AddNewItem text={t.installNewAppText} onClick={changeSelectedTab} />
+        </div>
       </FlexWrapper>
     </ContentCard>
   );
