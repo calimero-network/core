@@ -68,6 +68,10 @@ const Container = styled.div`
       color: #6b7280;
     }
   }
+
+  .description-component {
+    display: flex;
+  }
 `;
 
 interface ContentCardProps {
