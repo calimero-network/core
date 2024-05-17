@@ -19,10 +19,11 @@ members = [
   "./crates/server-primitives",
   "./crates/store",
 
+  "./apps/commit-reveal",
   "./apps/kv-store",
   "./apps/only-peers",
 
-  "./contracts/package-manager", "apps/commit-reveal-rps",
+  "./contracts/package-manager",
 ]
 
 [workspace.dependencies]
