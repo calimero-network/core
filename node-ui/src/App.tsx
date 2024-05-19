@@ -12,6 +12,7 @@ import ApplicationDetails from "./pages/ApplicationDetails";
 import PublishApplication from "./pages/PublishApplication";
 
 import "bootstrap/dist/css/bootstrap.min.css";
+import AddRelease from "./pages/AddRelease";
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
           <Route path="/applications" element={<Applications />} />
           <Route path="/applications/:id" element={<ApplicationDetails />} />
           <Route path="/publish-application" element={<PublishApplication />} />
+          <Route path="/applications/:id/add-release" element={<AddRelease />} />
           <Route path="/contexts" element={<Contexts />} />
           <Route path="/contexts/start-context" element={<StartContext />} />
           <Route path="/contexts/:id" element={<ContextDetails />} />
