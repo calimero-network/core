@@ -81,7 +81,7 @@ export default function PublishApplicationTable({
         <ConnectWalletAccountCard onClick={addWalletAccount} />
         <div className="button-wrapper">
           <Button
-            text="Publish"
+            text={t.buttonText}
             width="100%"
             onClick={publishApplication}
             isDisabled={

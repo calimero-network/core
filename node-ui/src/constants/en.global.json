@@ -35,7 +35,8 @@
             "addAccountButtonText": "Add wallet account",
             "connectAccountTitle": "Connect owner account",
             "connectAccountSubtitle": "Owner account is holder of application and only that account can publish new releases.",
-            "connectAccountButtonText": "Connect account"
+            "connectAccountButtonText": "Connect account",
+            "buttonText": "Publish"
         }
     },
     "confirmWallet": {
