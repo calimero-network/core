@@ -46,6 +46,7 @@ impl Serialize for PublicKey {
 pub enum Error {
     ConversionError(String),
     VerifyError(String),
+    ResetError(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -161,21 +162,19 @@ impl Ord for Choice {
 
 #[app::logic]
 impl Game {
-    fn calculate_hash(choice: &Choice, salt: &str) -> Result<Commitment, Error> {
+    fn calculate_hash(choice: &Choice, salt: &str) -> Commitment {
         Sha3_256::new()
             .chain_update(choice)
             .chain_update(salt)
             .finalize()
-            .deref()
-            .try_into()
-            .map_err(|_| Error::ConversionError("Failed to convert ".to_string()))
+            .into()
     }
 
     fn compare_hashes(hash: Commitment, salt: &str) -> Result<Choice, Error> {
-        let choices = vec![Choice::Rock, Choice::Paper, Choice::Scissors];
+        let choices: [Choice; 3] = [Choice::Rock, Choice::Paper, Choice::Scissors];
 
         for choice in choices {
-            if Game::calculate_hash(&choice, &salt)? == hash {
+            if Game::calculate_hash(&choice, &salt) == hash {
                 return Ok(choice);
             }
         }
@@ -185,11 +184,11 @@ impl Game {
         ))
     }
 
-    fn create_keypair(random_bytes: &[u8; 32]) -> SigningKey {
+    pub fn create_keypair(random_bytes: &[u8; 32]) -> SigningKey {
         SigningKey::from_bytes(random_bytes)
     }
 
-    fn sign(mut secret_key: SigningKey, message: &[u8]) -> Result<Signature, SignError> {
+    pub fn sign(mut secret_key: SigningKey, message: &[u8]) -> Result<Signature, SignError> {
         Ok(secret_key.sign(message))
     }
 
@@ -236,7 +235,7 @@ impl Game {
         }
     }
 
-    fn state(&self) -> [Option<(String, &State)>; 2] {
+    pub fn state(&self) -> [Option<(String, &State)>; 2] {
         let mut states = [None, None];
 
         for (i, player) in self.players.as_ref().into_iter().enumerate() {
@@ -252,12 +251,12 @@ impl Game {
         states
     }
 
-    fn prepare(
+    pub fn prepare(
         signing_key: &mut SigningKey,
         choice: Choice,
-        salt: &str,
+        nonce: &str,
     ) -> Result<(Commitment, Signature), Error> {
-        let hash: Commitment = Game::calculate_hash(&choice, salt)?;
+        let hash: Commitment = Game::calculate_hash(&choice, nonce);
         let signature = SigningKey::sign(signing_key, &hash);
         Ok((hash, signature))
     }
@@ -360,9 +359,21 @@ impl Game {
         }
     }
 
-    fn reset(&mut self) {
+    pub fn reset(
+        &mut self,
+        player_idx: usize,
+        message: &[u8],
+        signature: Signature,
+    ) -> Result<(), Error> {
+        if !self.verify(player_idx, message, signature)? {
+            return Err(Error::ResetError(
+                "Only players currently in the game can restart the game".to_string(),
+            ));
+        }
+
         self.players[0] = None;
         self.players[1] = None;
-        app::emit!(Event::StateDumped {})
+        app::emit!(Event::StateDumped {});
+        Ok(())
     }
 }
