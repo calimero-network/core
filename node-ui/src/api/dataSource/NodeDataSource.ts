@@ -20,6 +20,25 @@ export interface ContextsList<T> {
   invited: T[];
 }
 
+export interface RootKey {
+  signingKey: string;
+}
+
+export interface ApiRootKey {
+  signing_key: string;
+}
+
+interface ClientKey {
+  signing_key: string;
+  wallet_type: string;
+}
+
+interface RootkeyResponse {
+  client_keys: ClientKey[];
+  contexts: Context[];
+  root_keys: ApiRootKey[];
+}
+
 export class NodeDataSource {
   private client: HttpClient;
 
@@ -108,6 +127,23 @@ export class NodeDataSource {
     } catch (error) {
       console.error("Error starting contexts:", error);
       return true;
+    }
+  }
+
+  async getDidList(): Promise<RootKey[]> {
+    try {
+      const response = await this.client.get<RootkeyResponse>("/admin-api/did");
+      if (response?.data?.root_keys) {
+        const rootKeys: RootKey[] = response?.data?.root_keys?.map((obj: { signing_key: string }) => ({
+          signingKey: obj.signing_key
+        }));
+        return rootKeys;
+      } else {
+        return [];
+      }
+    } catch (error) {
+      console.error("Error fetching DID list:", error);
+      return [];
     }
   }
 }

@@ -1,6 +1,7 @@
 import { Location } from 'react-router-dom';
-import { getWalletCallbackUrl } from "./wallet";
 import axios from "axios";
+import { getWalletCallbackUrl } from "./wallet";
+import { RootKey } from "../api/dataSource/NodeDataSource";
 
 export interface UrlParams {
   accountId: string;
@@ -35,3 +36,28 @@ export const submitRootKeyRequest = async (params: UrlParams): Promise<submitRoo
     return { error: error.message };
   }
 };
+
+export interface RootKeyObject {
+  type: string;
+  date: string;
+  publicKey: string;
+}
+
+export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
+  return didList.map((item) => {
+    let type: string;
+    if (item.signingKey.startsWith("ed25519")) {
+      type = "NEAR";
+    } else if (item.signingKey.startsWith("0x")) {
+      type = "ETH";
+    } else {
+      type = "Unknown";
+    }
+
+    return {
+      type: type,
+      date: "-",
+      publicKey: item.signingKey.split(":")[1]!.trim(),
+    };
+  });
+}
