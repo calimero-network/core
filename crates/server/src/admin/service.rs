@@ -143,8 +143,25 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct GetHealthResponse {
+    data: HealthStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct HealthStatus {
+    status: String,
+}
+
 async fn health_check_handler() -> impl IntoResponse {
-    (StatusCode::OK, "alive")
+    ApiResponse {
+        payload: GetHealthResponse {
+            data: HealthStatus {
+                status: "alive".to_string(),
+            },
+        },
+    }
+    .into_response()
 }
 
 async fn create_root_key_handler(
