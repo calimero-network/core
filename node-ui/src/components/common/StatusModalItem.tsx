@@ -6,21 +6,22 @@ import {
   ShieldCheckIcon,
 } from "@heroicons/react/24/solid";
 import translations from "../../constants/en.global.json";
+import Button from "./Button";
 
 const ModalWrapper = styled.div`
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 16px;
-  border-radius: 6px;
+  padding: 1rem;
+  border-radius: 0.375rem;
   items-align: center;
-  background-color: #353540;
+  background-color: #17191b;
   text-align: center;
 
   .error-icon,
   .success-icon {
-    height: 32px;
-    width: 32px;
+    height: 2rem;
+    width: 2rem;
   }
 
   .error-icon {
@@ -32,49 +33,24 @@ const ModalWrapper = styled.div`
   }
 
   .modal-title {
+    font-size: 1rem;
+    font-weight: 500;
+    line-height: 1.25rem;
     color: #fff;
-    font-size: 20px;
-    font-weight: semi-bold;
   }
 
   .container {
-    margin-top: 20px;
+    margin-top: 1.25rem;
 
     .modal-item {
       width: 100%;
-      font-size: 14px;
+      font-size: 0.875rem;
       color: rgb(255, 255, 255, 0.7);
     }
 
     .button-wrapper {
       width: 100%;
-      margin-top: 12px;
-
-      .button {
-        border-radius: 4px;
-        background-color: #ff842d;
-        color: #111;
-        width: 100%;
-        height: 30px;
-        padding-left: 14px;
-        padding-right: 14px;
-        margin-top: 8px;
-        cursor: pointer;
-        border: none;
-        outline: none;
-        diplay: flex;
-        justify-content: center;
-        align-items: center;
-      }
-
-      .button:hover {
-        background-color: #ac5221;
-      }
-
-      .buttons-wrapper {
-        display: flex;
-        justify-content: space-between;
-      }
+      margin-top: 0.75rem;
     }
   }
 `;
@@ -119,9 +95,7 @@ export default function StatusModalItem({
         <div className="container">
           <div className="modal-item">{itemObject(modalContent.data)}</div>
           <div className="button-wrapper">
-            <button className="button" onClick={closeModal}>
-              {modalContent.error ? t.buttonCloseText : t.buttonCopyText}
-            </button>
+            <Button width="100%" text={modalContent.error ? t.buttonCloseText : t.buttonCopyText} onClick={closeModal}/>
           </div>
         </div>
       </ModalWrapper>
