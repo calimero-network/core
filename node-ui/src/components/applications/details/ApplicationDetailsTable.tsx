@@ -1,12 +1,12 @@
 import React from "react";
 import styled from "styled-components";
 import translations from "../../../constants/en.global.json";
-import { ContentCard } from "../../common/ConentCard";
 import ListTable from "../../common/ListTable";
 import { AppDetails } from "src/pages/ApplicationDetails";
 import { Release } from "src/pages/Applications";
 import DetailsCard from "./DetailsCard";
 import releaseRowItem from "./ReleaseRowItem";
+import { ContentCard } from "../../common/ContentCard";
 
 const FlexWrapper = styled.div`
   flex: 1;
