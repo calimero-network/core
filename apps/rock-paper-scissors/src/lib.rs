@@ -76,7 +76,7 @@ impl PlayerIdx {
     fn new(value: usize) -> Result<Self, &'static str> {
         match value {
             0 | 1 => Ok(PlayerIdx(value)),
-            _ => Err("Value must be 0 or 1"),
+            _ => Err("Player index must be either 0 or 1."),
         }
     }
 
