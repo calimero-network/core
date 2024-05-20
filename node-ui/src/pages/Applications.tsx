@@ -70,7 +70,7 @@ export default function Applications() {
   const [currentOption, setCurrentOption] = useState<string>(
     ApplicationOptions.AVAILABLE
   );
-  const [tableOptions, setTableOptions] =
+  const [tableOptions, _setTableOptions] =
     useState<TableOptions[]>(initialOptions);
   const [selectedPackage, setSelectedPackage] = useState<Package | null>(null);
   const [selectedRelease, setSelectedRelease] = useState<Release | null>(null);

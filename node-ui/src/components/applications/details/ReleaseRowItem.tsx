@@ -1,13 +1,13 @@
 import React from "react";
 import styled from "styled-components";
-import { truncateHash } from "../../utils/displayFunctions";
-import { Application } from "../../pages/Applications";
+import { truncateHash } from "../../../utils/displayFunctions";
+import { Release } from "../../../pages/Applications";
 
-interface ApplicationRowItemProps {
+export interface RowItemProps {
   hasBorders: boolean;
 }
 
-const RowItem = styled.div<ApplicationRowItemProps>`
+export const RowItem = styled.div<RowItemProps>`
   display: flex;
   width: 100%;
   align-items: center;
@@ -35,37 +35,33 @@ const RowItem = styled.div<ApplicationRowItemProps>`
     width: 25%;
   }
 
-  .name {
-    text-align: left;
-
-    &:hover {
-      color: #4cfafc;
-      cursor: pointer;
-    }
-  }
-
   .read {
     color: #9c9da3;
   }
+
+  .long-text {
+    width: 90%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 `;
 
-export default function applicationRowItem(
-  item: Application,
+export default function releaseRowItem(
+  item: Release,
   id: number,
-  count: number,
-  onRowItemClick?: (id: string) => void
+  count: number
 ): JSX.Element {
   return (
-    <RowItem key={item.id} hasBorders={id === count}>
-      <div
-        className="row-item name"
-        onClick={() => onRowItemClick && onRowItemClick(item.id)}
-      >
-        {item.name}
+    <RowItem key={item.hash} hasBorders={id === count}>
+      <div className="row-item name">{item.version}</div>
+      <div className="row-item read">
+        <span className="long-text">{item.path}</span>
       </div>
-      <div className="row-item read">{truncateHash(item.id)}</div>
-      <div className="row-item read">{item.version}</div>
-      <div className="row-item read">-</div>
+      <div className="row-item read">
+        <span className="long-text">{item.notes}</span>
+      </div>
+      <div className="row-item read">{truncateHash(item.hash)}</div>
     </RowItem>
   );
 }
