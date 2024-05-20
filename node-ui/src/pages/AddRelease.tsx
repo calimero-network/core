@@ -15,28 +15,9 @@ import { Package } from "./Applications";
 import PageContentWrapper from "../components/common/PageContentWrapper";
 import { useNavigate, useParams } from "react-router-dom";
 import AddReleaseTable from "../components/publishApplication/addRelease/AddReleaseTable";
+import { DeployStatus, ReleaseInfo } from "./PublishApplication";
 
 const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
-
-export interface PackageInfo {
-  name: string;
-  description: string;
-  repository: string;
-}
-
-export interface ReleaseInfo {
-  name: string;
-  version: string;
-  notes: string;
-  path: string;
-  hash: string;
-}
-
-export interface DeployStatus {
-  title: string;
-  message: string;
-  error: boolean;
-}
 
 export default function AddRelease() {
   const { id } = useParams();
@@ -48,7 +29,7 @@ export default function AddRelease() {
   const [deployerAccount, setDeployerAccount] = useState<Account>();
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [packageName, setPackageName] = useState("");
+  const [applicationInformation, setApplicationInformation] = useState<Package>();
   const [latestRelease, setLatestRelease] = useState("");
   const [deployStatus, setDeployStatus] = useState<DeployStatus>({
     title: "",
@@ -86,7 +67,7 @@ export default function AddRelease() {
     const fetchPackageInfo = async () => {
       if (id) {
         const packageInfo = await getPackage(id);
-        setPackageName(packageInfo.name);
+        setApplicationInformation(packageInfo);
         const latestRelease = await getLatestRelease(id);
         setLatestRelease(latestRelease?.version!);
       }
@@ -163,7 +144,7 @@ export default function AddRelease() {
             params: {
               methodName: "add_release",
               args: {
-                name: packageName,
+                name: applicationInformation?.name!,
                 version: releaseInfo.version,
                 notes: releaseInfo.notes,
                 path: releaseInfo.path,
@@ -179,7 +160,7 @@ export default function AddRelease() {
       if (res.status.SuccessValue === "") {
         setDeployStatus({
           title: "Application published",
-          message: `Release version ${releaseInfo.version} for ${packageName} has been added!`,
+          message: `Release version ${releaseInfo.version} for ${applicationInformation?.name!} has been added!`,
           error: false,
         });
       }
@@ -235,12 +216,12 @@ export default function AddRelease() {
       <PageContentWrapper>
         <AddReleaseTable
           addWalletAccount={addWalletAccount}
-          navigateToApplications={() => navigate("/applications")}
+          navigateToApplicationDetails={() => navigate(`/applications/${id}`)}
           deployerAccount={deployerAccount}
           showStatusModal={showStatusModal}
           closeModal={closeStatusModal}
           deployStatus={deployStatus}
-          packageName={packageName}
+          applicationInformation={applicationInformation}
           latestRelease={latestRelease}
           handleFileChange={handleFileChange}
           ipfsPath={ipfsPath}

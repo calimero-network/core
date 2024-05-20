@@ -8,6 +8,8 @@ import { AddReleaseForm } from "../AddReleaseForm";
 import { ConnectWalletAccountCard } from "../ConnectWalletAccountCard";
 import StatusModal, { ModalContent } from "../../common/StatusModal";
 import Button from "../../common/Button";
+import { Package } from "../../../pages/Applications";
+import DetailsCard from "../../applications/details/DetailsCard";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -27,12 +29,12 @@ const FlexWrapper = styled.div`
 
 interface AddReleaseTableProps {
   addWalletAccount: () => void;
-  navigateToApplications: () => void;
+  navigateToApplicationDetails: () => void;
   deployerAccount: Account | undefined;
   showStatusModal: boolean;
   closeModal: () => void;
   deployStatus: ModalContent;
-  packageName: string;
+  applicationInformation: Package | undefined;
   latestRelease: string;
   handleFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   ipfsPath: string;
@@ -45,12 +47,12 @@ interface AddReleaseTableProps {
 }
 export default function AddReleaseTable({
   addWalletAccount,
-  navigateToApplications,
+  navigateToApplicationDetails,
   deployerAccount,
   showStatusModal,
   closeModal,
   deployStatus,
-  packageName,
+  applicationInformation,
   latestRelease,
   handleFileChange,
   fileHash,
@@ -65,7 +67,10 @@ export default function AddReleaseTable({
   return (
     <ContentCard
       headerBackText={t.title}
-      headerOnBackClick={navigateToApplications}
+      headerOnBackClick={navigateToApplicationDetails}
+      descriptionComponent={
+        applicationInformation && <DetailsCard details={applicationInformation} />
+      }
     >
       <StatusModal
         closeModal={closeModal}
@@ -93,7 +98,7 @@ export default function AddReleaseTable({
             isDisabled={
               !(
                 deployerAccount &&
-                packageName &&
+                applicationInformation?.name &&
                 releaseInfo.version &&
                 releaseInfo.notes &&
                 releaseInfo.path &&
