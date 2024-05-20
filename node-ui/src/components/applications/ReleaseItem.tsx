@@ -32,7 +32,7 @@ const Item = styled.div`
 
   .app-item-repo {
     text-decoration: none;
-    color: #ff842d;
+    color: #4cfafc;
   }
 
   @media (max-width: 768px) {
