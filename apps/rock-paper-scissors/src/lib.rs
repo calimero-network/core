@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::marker::PhantomData;
 
 use calimero_sdk::app;
 use calimero_sdk::borsh::{io, BorshDeserialize, BorshSerialize};
@@ -66,6 +67,70 @@ impl<'de> Deserialize<'de> for PublicKey {
 
         Ok(PublicKey(key))
     }
+}
+
+pub trait AsKeyBytes {
+    fn as_key_bytes(&self) -> &[u8];
+}
+
+impl AsKeyBytes for PublicKey {
+    fn as_key_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl AsKeyBytes for SigningKey {
+    fn as_key_bytes(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "calimero_sdk::serde")]
+pub struct KeyComponent<T: AsKeyBytes> {
+    #[serde(
+        serialize_with = "serialize_base58",
+        deserialize_with = "deserialize_base58"
+    )]
+    key_bytes: Vec<u8>,
+    #[serde(skip)]
+    _marker: PhantomData<T>,
+}
+
+impl<T: AsKeyBytes> From<T> for KeyComponent<T> {
+    fn from(key: T) -> Self {
+        KeyComponent {
+            key_bytes: key.as_key_bytes().to_vec(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+fn serialize_base58<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: calimero_sdk::serde::Serializer,
+{
+    let encoded = bs58::encode(bytes).into_string();
+    serializer.serialize_str(&encoded)
+}
+
+fn deserialize_base58<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: calimero_sdk::serde::Deserializer<'de>,
+{
+    let s = <std::string::String as Deserialize>::deserialize(deserializer)?;
+    let decoded = bs58::decode(&s)
+        .into_vec()
+        .map_err(calimero_sdk::serde::de::Error::custom)?;
+    Ok(decoded)
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "calimero_sdk::serde")]
+
+pub struct KeyComponents {
+    pub pk: KeyComponent<PublicKey>,
+    pub sk: KeyComponent<SigningKey>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
@@ -215,8 +280,12 @@ impl Game {
         Err(Error::ConversionError())
     }
 
-    pub fn create_keypair(random_bytes: [u8; 32]) -> SigningKey {
-        SigningKey::from_bytes(&random_bytes)
+    pub fn create_keypair(random_bytes: [u8; 32]) -> KeyComponents {
+        let keypair = SigningKey::from_bytes(&random_bytes);
+        KeyComponents {
+            pk: KeyComponent::from(PublicKey(keypair.verifying_key())),
+            sk: KeyComponent::from(keypair),
+        }
     }
 
     pub fn sign(mut secret_key: SigningKey, message: &[u8]) -> Signature {
