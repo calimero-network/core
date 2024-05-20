@@ -1,5 +1,5 @@
 [package]
-name = "commit-reveal-rps"
+name = "rock-paper-scissors"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -10,5 +10,7 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+bs58.workspace = true
 calimero-sdk = { path = "../../crates/sdk" }
+ed25519-dalek = { workspace = true, features = ["serde"] }
 sha3.workspace = true

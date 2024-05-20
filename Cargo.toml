@@ -19,9 +19,9 @@ members = [
   "./crates/server-primitives",
   "./crates/store",
 
-  "./apps/commit-reveal",
   "./apps/kv-store",
   "./apps/only-peers",
+  "./apps/rock-paper-scissors",
 
   "./contracts/package-manager",
 ]
