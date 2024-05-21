@@ -84,7 +84,7 @@ const config: Config = {
           label: "Contribute",
         },
         {
-          to: "/resources/community",
+          to: "/resources/community-and-support",
           position: "left",
           label: "Resources",
         },
