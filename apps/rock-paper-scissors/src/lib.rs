@@ -261,7 +261,7 @@ impl PartialOrd for Choice {
     }
 }
 
-//#[app::logic]
+#[app::logic]
 impl Game {
     fn calculate_hash(choice: &Choice, salt: &str) -> Commitment {
         Sha3_256::new()
