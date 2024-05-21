@@ -185,7 +185,7 @@ export default function Applications() {
             navigateToAppDetails={(id: string) =>
               navigate(`/applications/${id}`)
             }
-            navigateToPublishApp={() => navigate("/upload-app")}
+            navigateToPublishApp={() => navigate("/publish-application")}
             changeSelectedTab={() => setSelectedTab(Tabs.INSTALL_APPLICATION)}
           />
         )}

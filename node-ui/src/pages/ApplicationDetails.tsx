@@ -33,7 +33,6 @@ export default function ApplicationDetails() {
     fetchApplicationData();
   }, []);
 
-  console.log(applicationInformation);
   return (
     <FlexLayout>
       <Navigation />

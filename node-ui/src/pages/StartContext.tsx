@@ -91,7 +91,7 @@ export default function StartContext() {
             startContext={startContext}
             showBrowseApplication={showBrowseApplication}
             setShowBrowseApplication={setShowBrowseApplication}
-            onUploadClick={() => navigate("/upload-app")}
+            onUploadClick={() => navigate("/publish-application")}
             isLoading={isLoading}
             showStatusModal={showStatusModal}
             closeModal={closeModal}
