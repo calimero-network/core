@@ -1,31 +1,28 @@
-mod choice;
-mod errors;
-mod events;
-mod key_component;
-mod keys;
-mod player_idx;
-
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
-use choice::Choice;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use errors::{CommitError, Error, JoinError, RevealError};
-use events::Event;
-use key_component::KeyComponent;
-use player_idx::PlayerIdx;
 use rand_chacha::rand_core::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use sha3::{Digest, Sha3_256};
 
-pub(crate) type Commitment = [u8; 32];
+mod choice;
+mod errors;
+mod key_component;
+mod keys;
+mod player_idx;
 
-pub(crate) type PublicKey = VerifyingKey;
+use choice::Choice;
+use errors::{CommitError, Error, JoinError, RevealError};
+use key_component::KeyComponent;
+use player_idx::PlayerIdx;
+
+pub(crate) type Commitment = [u8; 32];
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct KeyComponents {
-    pub pk: KeyComponent<PublicKey>,
+    pub pk: KeyComponent<VerifyingKey>,
     pub sk: KeyComponent<SigningKey>,
 }
 
@@ -41,7 +38,7 @@ struct Game {
 #[borsh(crate = "calimero_sdk::borsh")]
 struct Player {
     state: Option<State>,
-    public_key: KeyComponent<PublicKey>,
+    public_key: KeyComponent<VerifyingKey>,
     name: String,
 }
 
@@ -53,19 +50,26 @@ enum State {
     Revealed(Choice),
 }
 
+#[app::event]
+pub enum Event<'a> {
+    PlayerCommited { id: usize },
+    NewPlayer { id: usize, name: &'a str },
+    PlayerRevealed { id: usize, reveal: &'a Choice },
+    GameOver { winner: Option<usize> },
+    StateDumped,
+}
+
 #[app::logic]
 impl Game {
-    fn calculate_hash(choice: &Choice, salt: &str) -> KeyComponent<Commitment> {
-        KeyComponent {
-            key: Sha3_256::new()
-                .chain_update(choice)
-                .chain_update(salt)
-                .finalize()
-                .into(),
-        }
+    fn calculate_hash(choice: &Choice, salt: &str) -> Commitment {
+        Sha3_256::new()
+            .chain_update(choice)
+            .chain_update(salt)
+            .finalize()
+            .into()
     }
 
-    fn compare_hashes(hash: KeyComponent<Commitment>, salt: &str) -> Option<Choice> {
+    fn compare_hashes(hash: Commitment, salt: &str) -> Option<Choice> {
         let choices: [Choice; 3] = [Choice::Rock, Choice::Paper, Choice::Scissors];
 
         for choice in choices {
@@ -77,8 +81,8 @@ impl Game {
         None
     }
 
-    pub fn create_keypair(random_bytes: KeyComponent<[u8; 32]>) -> KeyComponents {
-        let mut csprng = ChaCha20Rng::from_seed(random_bytes.key);
+    pub fn create_keypair(random_bytes: [u8; 32]) -> KeyComponents {
+        let mut csprng = ChaCha20Rng::from_seed(random_bytes);
         let keypair = SigningKey::generate(&mut csprng);
         KeyComponents {
             pk: KeyComponent::from(keypair.verifying_key()),
@@ -106,7 +110,7 @@ impl Game {
     pub fn join(
         &mut self,
         player_name: String,
-        public_key: KeyComponent<PublicKey>,
+        public_key: KeyComponent<VerifyingKey>,
     ) -> Result<usize, JoinError> {
         let Some((index, slot)) = self
             .players
@@ -155,10 +159,10 @@ impl Game {
         signing_key: KeyComponent<SigningKey>,
         choice: Choice,
         nonce: &str,
-    ) -> Result<(KeyComponent<Commitment>, KeyComponent<Signature>), Error> {
-        let hash: Commitment = Game::calculate_hash(&choice, nonce).key;
+    ) -> Result<(Commitment, Signature), ()> {
+        let hash: Commitment = Game::calculate_hash(&choice, nonce);
         let signature = SigningKey::sign(&signing_key.key, &hash);
-        Ok((KeyComponent { key: hash }, KeyComponent { key: signature }))
+        Ok((hash, signature))
     }
 
     pub fn commit(
@@ -167,13 +171,9 @@ impl Game {
         commitment: KeyComponent<Commitment>,
         signature: KeyComponent<Signature>,
     ) -> Result<(), CommitError> {
-        if self.other_player(player_idx).is_none() {
-            return Err(CommitError::OtherNotJoined);
-        }
-
-        let player: &mut Player = self.players[player_idx.value() as usize]
-            .as_mut()
-            .ok_or(CommitError::PlayerNotFound)?;
+        let (player, other_player) = self
+            .players_mut(player_idx)
+            .ok_or(CommitError::OtherNotJoined)?;
 
         if let Some(_) = player.state {
             return Err(CommitError::AlreadyCommitted);
@@ -198,16 +198,10 @@ impl Game {
     pub fn reveal(&mut self, player_idx: PlayerIdx, nonce: &str) -> Result<(), RevealError> {
         let choice: Choice;
 
-        let player: &mut Player = self
-            .players
-            .get_mut(player_idx.value())
-            .ok_or(RevealError::PlayerNotFound)?
-            .as_mut()
-            .ok_or(RevealError::PlayerNotFound)?;
+        let (player, other_player) = self.players(player_idx).ok_or(RevealError::NotCommitted)?;
 
         if let Some(State::Commited(commitment)) = player.state {
-            choice = Game::compare_hashes(KeyComponent { key: commitment }, nonce)
-                .ok_or(RevealError::InvalidNonce)?;
+            choice = Game::compare_hashes(commitment, nonce).ok_or(RevealError::InvalidNonce)?;
             app::emit!(Event::PlayerRevealed {
                 id: player_idx.value(),
                 reveal: &choice
@@ -217,27 +211,23 @@ impl Game {
             return Err(RevealError::NotCommitted);
         }
 
-        if let Some(other_player) = self.other_player(player_idx) {
-            if let Some(State::Revealed(other_choice)) = &other_player.state {
-                Game::determine_winner(&choice, other_choice);
-                return Ok(());
-            } else {
-                return Err(RevealError::NotRevealed);
-            }
+        if let Some(State::Revealed(other_choice)) = &other_player.state {
+            Game::determine_winner(&choice, other_choice);
+            return Ok(());
         } else {
-            return Err(RevealError::PlayerNotFound);
+            return Err(RevealError::NotRevealed);
         }
     }
 
     fn determine_winner(choice0: &Choice, choice1: &Choice) {
-        if choice0 == choice1 {
-            app::emit!(Event::GameOver(None));
-        }
-        if choice0 > choice1 {
-            app::emit!(Event::GameOver(Some(0)));
-        } else {
-            app::emit!(Event::GameOver(Some(1)));
-        }
+        match choice0.partial_cmp(choice1) {
+            Some(result) => match result {
+                std::cmp::Ordering::Less => app::emit!(Event::GameOver { winner: Some(1) }),
+                std::cmp::Ordering::Equal => app::emit!(Event::GameOver { winner: None }),
+                std::cmp::Ordering::Greater => app::emit!(Event::GameOver { winner: Some(0) }),
+            },
+            None => (),
+        };
     }
     pub fn reset(
         &mut self,
@@ -254,8 +244,29 @@ impl Game {
         Ok(())
     }
 
-    fn other_player(&self, my_idx: PlayerIdx) -> Option<&Player> {
-        let other_idx = (my_idx.value() + 1) % 2;
-        self.players[other_idx].as_ref()
+    fn players(&self, my_idx: PlayerIdx) -> Option<(&Player, &Player)> {
+        let my_idx = my_idx.value();
+        let other_idx = (my_idx + 1) % 2;
+
+        match (
+            self.players[my_idx].as_ref(),
+            self.players[other_idx].as_ref(),
+        ) {
+            (Some(player), Some(other_player)) => Some((player, other_player)),
+            _ => None,
+        }
+    }
+
+    fn players_mut(&mut self, my_idx: PlayerIdx) -> Option<(&mut Player, &mut Player)> {
+        let my_idx = my_idx.value();
+        let other_idx = (my_idx + 1) % 2;
+
+        match (
+            self.players[my_idx].as_mut(),
+            self.players[other_idx].as_mut(),
+        ) {
+            (Some(player), Some(other_player)) => Some((player, other_player)),
+            _ => None,
+        }
     }
 }
