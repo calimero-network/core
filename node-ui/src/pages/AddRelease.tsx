@@ -4,6 +4,7 @@ import { FlexLayout } from "../components/layout/FlexLayout";
 import {
   Account,
   BrowserWallet,
+  FinalExecutionOutcome,
   setupWalletSelector,
 } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
@@ -16,20 +17,22 @@ import PageContentWrapper from "../components/common/PageContentWrapper";
 import { useNavigate, useParams } from "react-router-dom";
 import AddReleaseTable from "../components/publishApplication/addRelease/AddReleaseTable";
 import { DeployStatus, ReleaseInfo } from "./PublishApplication";
+import { isFinalExecutionStatus } from "../utils/wallet";
 
 const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
 
 export default function AddRelease() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const fileInputRef = useRef(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [ipfsPath, setIpfsPath] = useState("");
   const [fileHash, setFileHash] = useState("");
   const { getPackage, getLatestRelease } = useRPC();
   const [deployerAccount, setDeployerAccount] = useState<Account>();
   const [showStatusModal, setShowStatusModal] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [applicationInformation, setApplicationInformation] = useState<Package>();
+  const [applicationInformation, setApplicationInformation] =
+    useState<Package>();
   const [latestRelease, setLatestRelease] = useState("");
   const [deployStatus, setDeployStatus] = useState<DeployStatus>({
     title: "",
@@ -89,13 +92,11 @@ export default function AddRelease() {
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    // @ts-ignore: Object is possibly 'null'.
-    const file = event.target.files[0];
+    const file = event.target.files && event.target.files[0];
     if (file && file.name.endsWith(".wasm")) {
       const reader = new FileReader();
-      reader.onload = async (e) => {
-        // @ts-ignore: Object is possibly 'null'.
-        const arrayBuffer = new Uint8Array(e.target.result as ArrayBufferLike);
+      reader.onload = async (e: ProgressEvent<FileReader>) => {
+        const arrayBuffer = new Uint8Array(e.target?.result as ArrayBufferLike);
         const bytes = new Uint8Array(arrayBuffer);
         const blob = new Blob([bytes], { type: "application/wasm" });
 
@@ -120,9 +121,11 @@ export default function AddRelease() {
           });
       };
 
-      reader.onerror = (e) => {
-        // @ts-ignore: Property 'error' does not exist on type 'EventTarget'.
-        console.error("Error occurred while reading the file:", e.target.error);
+      reader.onerror = (e: ProgressEvent<FileReader>) => {
+        console.error(
+          "Error occurred while reading the file:",
+          e.target?.error
+        );
       };
 
       reader.readAsArrayBuffer(file);
@@ -136,39 +139,48 @@ export default function AddRelease() {
     });
     const wallet = await selector.wallet("my-near-wallet");
     try {
-      const res = await wallet.signAndSendTransaction({
-        signerId: deployerAccount ? deployerAccount.accountId : "",
-        actions: [
-          {
-            type: "FunctionCall",
-            params: {
-              methodName: "add_release",
-              args: {
-                name: applicationInformation?.name!,
-                version: releaseInfo.version,
-                notes: releaseInfo.notes,
-                path: releaseInfo.path,
-                hash: releaseInfo.hash,
+      const res: FinalExecutionOutcome | void =
+        await wallet.signAndSendTransaction({
+          signerId: deployerAccount ? deployerAccount.accountId : "",
+          actions: [
+            {
+              type: "FunctionCall",
+              params: {
+                methodName: "add_release",
+                args: {
+                  name: applicationInformation?.name!,
+                  version: releaseInfo.version,
+                  notes: releaseInfo.notes,
+                  path: releaseInfo.path,
+                  hash: releaseInfo.hash,
+                },
+                gas:
+                  nearAPI.utils.format.parseNearAmount("0.00000000003") ?? "0",
+                deposit: "",
               },
-              gas: nearAPI.utils.format.parseNearAmount("0.00000000003") ?? "0",
-              deposit: "",
             },
-          },
-        ],
-      });
-      // @ts-expect-error: Property 'status' does not exist on type 'void | FinalExecutionOutcome'.
-      if (res.status.SuccessValue === "") {
+          ],
+        });
+      if (
+        res &&
+        isFinalExecutionStatus(res.status) &&
+        res.status.SuccessValue === ""
+      ) {
         setDeployStatus({
           title: "Application published",
-          message: `Release version ${releaseInfo.version} for ${applicationInformation?.name!} has been added!`,
+          message: `Release version ${
+            releaseInfo.version
+          } for ${applicationInformation?.name!} has been added!`,
           error: false,
         });
       }
     } catch (error) {
-      const errorMessage =
-        // @ts-ignore: Property 'message' does not exist on type 'unknown'.
-        JSON.parse(error.message).kind?.kind?.FunctionCallError
-          ?.ExecutionError ?? "An error occurred while publishing the release";
+      let errorMessage = "";
+
+      if (error instanceof Error) {
+        errorMessage = JSON.parse(error.message).kind?.kind?.FunctionCallError
+        ?.ExecutionError ?? "An error occurred while publishing the release";
+      }
 
       setDeployStatus({
         title: "Failed to publish release",
@@ -191,7 +203,6 @@ export default function AddRelease() {
       setFileHash("");
       setIpfsPath("");
       if (fileInputRef.current) {
-        // @ts-ignore: Object is possibly 'null'.
         fileInputRef.current.value = "";
       }
     }
