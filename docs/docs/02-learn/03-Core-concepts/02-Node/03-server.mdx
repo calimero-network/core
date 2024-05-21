@@ -2,3 +2,22 @@
 id: server
 title: Server
 ---
+
+### Server
+
+The server is a core component for interacting with a Calimero node. Calimero can be embedded with your client to make it a self-contained node, or it can run as a remote node that multiple clients can connect to, allowing centralized state management.
+
+#### Core Capabilities
+
+- **JSON-RPC API**: Provides a standardized way for clients to query or mutate the state of their counterpart applications on the node, ensuring seamless integration and communication.
+
+- **WebSocket Interface**: Allows clients to subscribe to events emitted from applications, enabling real-time reactions to activity triggered by other peers in the network.
+
+- **Admin API**: Manages various aspects of the node, including:
+  - **Context Administration**: Create, delete, invite others to contexts, and accept invitations.
+  - **Storage Management**: Track usage, view raw state storage for each context, and view encrypted blobs.
+  - **State Management**: Manually garbage collect state-transitional transactions.
+  - **Network Management**: Manually connect to peers and manage blocklists.
+  - **Application Management**: Manage installed applications, create contexts from applications, delete applications if no contexts are associated, and manually sideload applications.
+  - **Peer Identity Management**: Rotate peer identities without affecting context identities.
+  - **Node Metrics**: Track network bandwidth usage, both total and by context, to manage resource usage effectively.
