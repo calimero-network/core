@@ -37,6 +37,11 @@
             "connectAccountSubtitle": "Owner account is holder of application and only that account can publish new releases.",
             "connectAccountButtonText": "Connect account",
             "buttonText": "Publish"
+        },
+        "addRelease": {
+            "title": "Add new release",
+            "buttonText": "Publish",
+            "latestReleaseText": "Latest application version is : "
         }
     },
     "confirmWallet": {
