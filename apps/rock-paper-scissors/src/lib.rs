@@ -195,6 +195,7 @@ pub enum Event<'a> {
     NewPlayer { id: usize, name: &'a str },
     PlayerRevealed { id: usize, reveal: &'a Choice },
     PlayerWon { id: usize },
+    Draw,
     StateDumped,
 }
 
@@ -270,16 +271,16 @@ impl Game {
             .into()
     }
 
-    fn compare_hashes(hash: Commitment, salt: &str) -> Result<Choice, Error> {
+    fn compare_hashes(hash: Commitment, salt: &str) -> Option<Choice> {
         let choices: [Choice; 3] = [Choice::Rock, Choice::Paper, Choice::Scissors];
 
         for choice in choices {
             if Game::calculate_hash(&choice, &salt) == hash {
-                return Ok(choice);
+                return Some(choice);
             }
         }
 
-        Err(Error::ConversionError)
+        None
     }
 
     pub fn create_keypair(random_bytes: [u8; 32]) -> KeyComponents {
@@ -301,11 +302,7 @@ impl Game {
         message: &[u8],
         signature: Signature,
     ) -> Option<bool> {
-        let signing_key = &self.players[player_idx.value()]
-            .as_ref()
-            .or_else(|| return None)
-            .unwrap()
-            .key;
+        let signing_key = &self.players[player_idx.value()].as_ref()?.key;
 
         Some(signing_key.0.verify(message, &signature).is_ok())
     }
@@ -403,8 +400,7 @@ impl Game {
             .unwrap();
 
         if let Some(State::Commited(commitment)) = player.state {
-            choice =
-                Game::compare_hashes(commitment, nonce).map_err(|_| RevealError::InvalidNonce)?;
+            choice = Game::compare_hashes(commitment, nonce).ok_or(RevealError::InvalidNonce)?;
             app::emit!(Event::PlayerRevealed {
                 id: player_idx.into(),
                 reveal: &choice
@@ -429,7 +425,7 @@ impl Game {
 
     fn determine_winner(choice0: &Choice, choice1: &Choice) {
         if choice0 == choice1 {
-            app::emit!(Event::PlayerWon { id: 3 });
+            app::emit!(Event::Draw);
         }
         if choice0 > choice1 {
             app::emit!(Event::PlayerWon { id: 0 });
