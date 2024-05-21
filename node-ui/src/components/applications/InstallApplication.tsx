@@ -1,69 +1,65 @@
 import React from "react";
 import styled from "styled-components";
 import Dropdown from "react-bootstrap/Dropdown";
-import { ArrowLeftIcon } from "@heroicons/react/24/solid";
 import { PackageItem } from "./Item";
 import { Form } from "react-bootstrap";
 import { ReleaseItem } from "./ReleaseItem";
 import StatusModal, { ModalContent } from "../common/StatusModal";
 import translations from "../../constants/en.global.json";
 import { Package, Tabs, Release } from "../../pages/Applications";
+import { ContentCard } from "../common/ContentCard";
 
 const InstallApplicationForm = styled.div`
-  color: #fff;
   position: relative;
-  height: 100%;
+  padding: 2rem;
+  flex: 1;
 
-  .back-button {
-    width: fit-content;
+  .title {
     display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 4px;
-    font-size: 14px;
-    cursor: pointer;
+    flex: 1;
+    font-size: 1rem;
+    line-height: 1.25rem;
+    color: #fff;
+    margin-bottom: 1rem;
+  }
+  .label {
+    font-size: 0.75rem;
     color: rgb(255, 255, 255, 0.7);
-    .arrow-icon {
-      height: 18px;
-      width: 18px;
-    }
   }
 
-  .install-form {
-    padding: 12px;
-    .label {
-      font-size: 12px;
-      color: rgb(255, 255, 255, 0.7);
-    }
-    .app-dropdown {
-      background-color: #ff842d;
-      border: none;
-      outline: none;
-      color: #111;
-      font-size: 14px;
-      font-weight: normal;
-      width: 250px;
-    }
-    .dropdown-menu {
-      background-color: #17171d;
-      width: 250px;
-    }
-    .dropdown-item {
-      color: #fff;
-    }
-    .dropdown-item:hover {
-      background-color: rgb(255, 255, 255, 0.06);
-    }
+  .app-dropdown {
+    background-color: #4cfafc;
+    border: none;
+    outline: none;
+    color: #111;
+    font-size: 0.875rem;;
+    font-weight: normal;
+    width: 15.625rem;
+  }
+
+  .dropdown-menu {
+    background-color: #17171d;
+    width: 15.625rem;
+    max-height: 15.625rem;
+    overflow: scroll;
+  }
+
+  .dropdown-item {
+    color: #fff;
+  }
+
+  .dropdown-item:hover {
+    background-color: rgb(255, 255, 255, 0.06);
   }
 
   .install-button {
-    border-radius: 4px;
+    border-radius: 0.25rem;
     background-color: rgba(255, 255, 255, 0.06);
     width: fit-content;
-    padding: 8px 32px 8px 32px;
+    padding: 0.5rem 2rem;
     position: absolute;
-    bottom: 24px;
-    right: 0px;
+    bottom: 1.5rem;
+    right: 1.5rem;
     cursor: pointer;
     border: none;
     outline: none;
@@ -72,15 +68,15 @@ const InstallApplicationForm = styled.div`
     background-color: rgba(255, 255, 255, 0.12);
   }
   .release-item {
-    margin-bottom: 4px;
+    margin-bottom: 0.25rem;
   }
   .radio-item {
     display: inline-block;
-    margin-right: 10px;
-    padding-left: 0px;
-    width: 140px;
-    height: 24px;
-    margin-bottom: 8px;
+    margin-right: 0.625rem;
+    padding-left: 0rem;
+    width: 8.75rem;
+    height: 1.5rem;
+    margin-bottom: 0.5rem;
   }
 
   .radio-item input[type="radio"] {
@@ -94,12 +90,13 @@ const InstallApplicationForm = styled.div`
     cursor: pointer;
     background-color: #17171d;
     color: white;
-    border-radius: 5px;
-    padding: 4px;
+    border-radius: 0.375rem;
+    padding: 0.25rem;
   }
 
   .radio-item input[type="radio"]:checked + label {
-    background-color: #ff842d;
+    background-color: #4cfafc;
+    color: #111;
   }
 
   .radio-item label:hover {
@@ -139,26 +136,22 @@ export function InstallApplication({
   installationStatus,
 }: InstallApplicationProps) {
   const t = translations.applicationsPage.installApplication;
-
   return (
-    <InstallApplicationForm>
+    <ContentCard
+      headerBackText={t.backbuttonText}
+      headerOnBackClick={() => {
+        setSelectedTab(Tabs.APPLICATION_LIST);
+        setSelectedPackage(null);
+        setSelectedRelease(null);
+      }}
+    >
       <StatusModal
         show={showStatusModal}
         closeModal={closeModal}
         modalContent={installationStatus}
       />
-      <div
-        onClick={() => {
-          setSelectedTab(Tabs.APPLICATION_LIST);
-          setSelectedPackage(null);
-          setSelectedRelease(null);
-        }}
-        className="back-button"
-      >
-        <ArrowLeftIcon className="arrow-icon" />
-        {t.backbuttonText}
-      </div>
-      <div className="install-form">
+      <InstallApplicationForm>
+        <div className="title">{t.title}</div>
         <label className="label">{t.selectAppLabel}</label>
         <Dropdown>
           <Dropdown.Toggle className="app-dropdown">
@@ -222,7 +215,7 @@ export function InstallApplication({
         >
           Install
         </button>
-      </div>
-    </InstallApplicationForm>
+      </InstallApplicationForm>
+    </ContentCard>
   );
 }
