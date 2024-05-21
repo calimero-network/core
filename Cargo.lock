@@ -6525,6 +6525,7 @@ dependencies = [
  "bs58 0.5.1",
  "calimero-sdk",
  "ed25519-dalek",
+ "getrandom 0.2.12",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "sha3",
