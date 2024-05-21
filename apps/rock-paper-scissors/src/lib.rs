@@ -5,6 +5,8 @@ use calimero_sdk::app;
 use calimero_sdk::borsh::{io, BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey, PUBLIC_KEY_LENGTH};
+use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 use sha3::{Digest, Sha3_256};
 
 pub(crate) type Commitment = [u8; 32];
@@ -159,38 +161,38 @@ impl Into<usize> for PlayerIdx {
 #[derive(Debug, Serialize)]
 #[serde(crate = "calimero_sdk::serde")]
 pub enum Error {
-    ConversionError(),
-    ResetError(),
+    ConversionError,
+    ResetError,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "calimero_sdk::serde")]
 pub enum JoinError {
-    GameFull(),
+    GameFull,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "calimero_sdk::serde")]
 pub enum CommitError {
-    OtherNotJoined(),
-    PlayerNotFound(),
-    InvalidSignature(),
-    AlreadyCommitted(),
+    OtherNotJoined,
+    PlayerNotFound,
+    InvalidSignature,
+    AlreadyCommitted,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "calimero_sdk::serde")]
 pub enum RevealError {
-    PlayerNotFound(),
-    InvalidNonce(),
-    NotCommitted(),
-    NotRevealed(),
+    PlayerNotFound,
+    InvalidNonce,
+    NotCommitted,
+    NotRevealed,
 }
 
 #[app::event]
 pub enum Event<'a> {
-    PlayerCommited { id: usize, hash: &'a [u8; 32] },
-    PlayerInserted { id: usize, name: &'a str },
+    PlayerCommited { id: usize },
+    NewPlayer { id: usize, name: &'a str },
     PlayerRevealed { id: usize, reveal: &'a Choice },
     PlayerWon { id: usize },
     StateDumped,
@@ -277,11 +279,12 @@ impl Game {
             }
         }
 
-        Err(Error::ConversionError())
+        Err(Error::ConversionError)
     }
 
     pub fn create_keypair(random_bytes: [u8; 32]) -> KeyComponents {
-        let keypair = SigningKey::from_bytes(&random_bytes);
+        let mut csprng = ChaCha20Rng::from_seed(random_bytes);
+        let keypair = SigningKey::generate(&mut csprng);
         KeyComponents {
             pk: KeyComponent::from(PublicKey(keypair.verifying_key())),
             sk: KeyComponent::from(keypair),
@@ -314,10 +317,10 @@ impl Game {
             .enumerate()
             .find(|(_, player)| player.is_none())
         else {
-            return Err(JoinError::GameFull());
+            return Err(JoinError::GameFull);
         };
 
-        app::emit!(Event::PlayerInserted {
+        app::emit!(Event::NewPlayer {
             id: index,
             name: &player_name
         });
@@ -366,27 +369,26 @@ impl Game {
         signature: Signature,
     ) -> Result<(), CommitError> {
         if self.players[(player_idx.value() + 1) % 2].is_none() {
-            return Err(CommitError::OtherNotJoined());
+            return Err(CommitError::OtherNotJoined);
         }
 
         let player: &mut Player = self.players[player_idx.value() as usize]
             .as_mut()
-            .ok_or(CommitError::PlayerNotFound())?;
+            .ok_or(CommitError::PlayerNotFound)?;
 
         if let Some(_) = player.state {
-            return Err(CommitError::AlreadyCommitted());
+            return Err(CommitError::AlreadyCommitted);
         }
 
         match player.key.0.verify(&commitment, &signature) {
             Ok(_) => {
                 app::emit!(Event::PlayerCommited {
                     id: player_idx.into(),
-                    hash: &commitment
                 });
                 player.state = Some(State::Commited(commitment));
                 return Ok(());
             }
-            Err(_) => Err(CommitError::InvalidSignature()),
+            Err(_) => Err(CommitError::InvalidSignature),
         }
     }
 
@@ -396,20 +398,20 @@ impl Game {
         let player: &mut Player = self
             .players
             .get_mut(player_idx.value())
-            .ok_or_else(|| RevealError::PlayerNotFound())?
+            .ok_or_else(|| RevealError::PlayerNotFound)?
             .as_mut()
             .unwrap();
 
         if let Some(State::Commited(commitment)) = player.state {
             choice =
-                Game::compare_hashes(commitment, nonce).map_err(|_| RevealError::InvalidNonce())?;
+                Game::compare_hashes(commitment, nonce).map_err(|_| RevealError::InvalidNonce)?;
             app::emit!(Event::PlayerRevealed {
                 id: player_idx.into(),
                 reveal: &choice
             });
             player.state = Some(State::Revealed(choice));
         } else {
-            return Err(RevealError::NotCommitted());
+            return Err(RevealError::NotCommitted);
         }
 
         let other_idx = (player_idx.value() + 1) % 2;
@@ -418,10 +420,10 @@ impl Game {
                 Game::determine_winner(&choice, other_choice);
                 return Ok(());
             } else {
-                return Err(RevealError::NotRevealed());
+                return Err(RevealError::NotRevealed);
             }
         } else {
-            return Err(RevealError::PlayerNotFound());
+            return Err(RevealError::PlayerNotFound);
         }
     }
 
@@ -442,7 +444,7 @@ impl Game {
         signature: Signature,
     ) -> Result<(), Error> {
         if self.verify(player_idx, message, signature).is_none() {
-            return Err(Error::ResetError());
+            return Err(Error::ResetError);
         }
 
         self.players = Default::default();
