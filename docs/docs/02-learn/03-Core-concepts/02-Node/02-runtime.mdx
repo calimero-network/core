@@ -3,13 +3,20 @@ id: runtime
 title: Runtime
 ---
 
+The runtime environment in the Calimero Network is essential for executing decentralized applications (DApps). It acts as a bridge between the application logic, the network, and storage layers, ensuring seamless operation and integration. The runtime ensures secure, isolated, and efficient execution of applications by managing resources effectively, supporting real-time event handling, enabling scalability, and providing robust storage and transaction management.
 
-### Runtime
+#### Core Capabilities
 
-Overview: The runtime environment of a client node in the Calimero Network is crucial for the execution of decentralized applications (DApps), particularly those compiled to WebAssembly (WASM).
+- **Security and Isolation**: The runtime provides a secure execution environment for Calimero applications using WebAssembly (WASM). Each application is sandboxed in the WASM VM, ensuring proper isolation and preventing interference between applications. This setup also ensures that applications cannot access unauthorized resources, maintaining a secure environment.
 
-Functionality:
+- **Multi-Application Support**: The runtime allows multiple applications to run concurrently on the same node and supports multiple instances (contexts) of the same application, each with its own state. This capability enhances the flexibility and scalability of the network.
 
-- State Synchronization: Each node can download and synchronize the state with existing applications, ensuring that all nodes participating in a particular application network are consistent and up-to-date.
-- Application Settings: Nodes can be configured with specific settings for each application, including which WASM modules to run, source URLs for fetching these modules, encryption protocols to be used, and more.
-- Network Topology & Update Rules: Defines the structure of the network and how nodes communicate and update each other. Proper update rules are crucial for application security and integrity, particularly in a decentralized setting where trust is distributed.
+- **Scoped Storage**: The runtime manages storage by partitioning it and governing where each context stores its state. These implementation details are abstracted from the app developer, ensuring that storage management is handled seamlessly and securely.
+
+- **Atomic Transactions**: The runtime guarantees atomic transactions, ensuring that if a transaction fails, it is completely rolled back with no state updates or side effects detected. This guarantees consistency and reliability in the application's state and any connected clients.
+
+- **Log Collection and Relaying Events**: The runtime facilitates log collection and relays events emitted by the applications to connected clients, enabling real-time monitoring and interaction.
+
+- **Resource Management**: The runtime defines resource limits for applications to ensure fair usage and prevent malicious behavior. This includes limiting CPU, memory, and network usage to prevent any single application from monopolizing system resources or compromising the host system.
+
+- **Task Management and Performance**: The runtime keeps track of WASM instances up to a defined threshold, effortlessly queueing transactions to reuse live instances and shutting down stale ones to reclaim system resources. These optimizations ensure efficient resource utilization and improved performance.
