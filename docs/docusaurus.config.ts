@@ -74,17 +74,17 @@ const config: Config = {
           label: "Learn",
         },
         {
-          to: "/category/build",
+          to: "/build/quickstart",
           position: "left",
           label: "Build",
         },
         {
-          to: "/category/contribute",
+          to: "/contribute/github",
           position: "left",
           label: "Contribute",
         },
         {
-          to: "/category/resources",
+          to: "/resources/community-and-support",
           position: "left",
           label: "Resources",
         },

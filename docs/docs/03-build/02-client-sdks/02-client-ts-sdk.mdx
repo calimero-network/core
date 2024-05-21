@@ -1,0 +1,188 @@
+---
+id: client-ts-sdk
+title: TypeScript Client SDK
+---
+
+## Getting Started with Calimero SDK for Typescript
+
+Our TypeScript Client SDK is a powerful tool designed to simplify the process of interacting with decentralized peer-to-peer applications installed on the node. It serves as an efficient conduit for communication between the client and the node’s server. This SDK is particularly beneficial for developers as it abstracts the complexities of server communication, allowing them to concentrate on the core application logic.
+
+The SDK is built with the modern features of TypeScript, a language that is gaining popularity for its static typing and advanced capabilities. By using our SDK, developers can write applications in TypeScript, and the SDK takes care of the rest. It handles all the interactions with the server, making the development process more streamlined and efficient.
+
+This not only enhances the overall development experience but also accelerates the deployment of innovative decentralized applications on our network. In essence, our TypeScript SDK is a comprehensive solution that makes building and interacting with decentralized applications a breeze. It’s all about making the development process more enjoyable and productive for developers worldwide.
+
+### Components
+
+Our TypeScript Client SDK is composed of two main components: `RpcClient` and `SubscriptionsClient`. Each of these components has an interface and a class that implements the interface. The `RpcClient` interface is implemented by the `JsonRpcClient` class, and the `SubscriptionsClient` interface is implemented by the `WsSubscriptionsClient` class.
+
+These components are designed with flexibility and future growth in mind. While currently there is only one implementation of each interface, we anticipate multiple implementations in the future. This is because our server will have multiple implementations of both the Rpc server and the Subscriptions server. This design allows us to easily add new classes that implement these interfaces as our server capabilities expand.
+
+The `RpcClient` and `SubscriptionsClient` interfaces define a standard set of methods that all implementations must provide. This ensures consistency across different implementations, making it easier for developers to switch between different Rpc and Subscriptions servers as needed.
+
+By designing our SDK in this way, we ensure that it remains flexible, scalable, and easy to use, regardless of how our server implementations evolve in the future.
+
+#### RpcClient interface
+
+```typescript
+export interface RpcClient {
+  query<Args, Output>(
+    params: RpcQueryParams<Args>,
+    config?: RequestConfig
+  ): Promise<RpcQueryResponse<Output>>;
+  mutate<Args, Output>(
+    params: RpcMutateParams<Args>,
+    config?: RequestConfig
+  ): Promise<RpcMutateResponse<Output>>;
+}
+
+export interface RequestConfig {
+  timeout?: number;
+}
+
+export interface RpcQueryParams<Args> {
+  applicationId: ApplicationId;
+  method: string;
+  argsJson: Args;
+}
+
+export interface RpcQueryResponse<Output> {
+  output?: Output;
+}
+
+export interface RpcMutateParams<Args> {
+  applicationId: ApplicationId;
+  method: string;
+  argsJson: Args;
+}
+
+export interface RpcMutateResponse<Output> {
+  output?: Output;
+}
+```
+
+#### SubscriptionsClient
+
+```typescript
+export interface SubscriptionsClient {
+  connect(connectionId?: string): void;
+  disconnect(connectionId?: string): void;
+  subscribe(applicationIds: string[], connectionId?: string): void;
+  unsubscribe(applicationIds: string[], connectionId?: string): void;
+  addCallback(
+    callback: (event: NodeEvent) => void,
+    connectionId?: string
+  ): void;
+  removeCallback(
+    callback: (event: NodeEvent) => void,
+    connectionId?: string
+  ): void;
+}
+
+export type NodeEvent = ApplicationEvent;
+
+export interface ApplicationEvent {
+  application_id: ApplicationId;
+  type: "TransactionExecuted" | "PeerJoined";
+  data: TransactionExecuted | PeerJoined;
+}
+
+export interface TransactionExecuted {
+  hash: string;
+}
+
+export interface PeerJoined {
+  peerId: string;
+}
+```
+
+### Examples
+
+#### JsonRpcClient
+
+Here's an example of how to use it:
+
+Define application endpoint and application id.
+You can find application id in the Admin Dashboard -> Contexts -> select application id from the context where your app logic is installed
+
+```
+NEXT_PUBLIC_API_URL=http://localhost:{NODE_PORT}
+NEXT_PUBLIC_APPLICATION_ID="my-application-id"
+```
+
+```typescript
+// Import the necessary classes and interfaces from the SDK
+import {
+  RpcClient,
+  JsonRpcClient,
+  RpcMutateParams,
+  RpcMutateResponse,
+} from "@calimero-is-near/calimero-p2p-sdk";
+
+// Define the Args and Output interfaces
+interface CreatePost {
+  title: string;
+  text: string;
+}
+
+interface Post {
+  id: string;
+  title: string;
+  text: string;
+}
+
+// Create an instance of JsonRpcClient
+const rpcClient: RpcClient = new JsonRpcClient(
+    process.env["NEXT_PUBLIC_API_URL],
+    "/jsonrpc"
+);
+
+// Define the parameters for the mutate
+const params: RpcMutateParams<CreatePost> = {
+    applicationId: process.env["NEXT_PUBLIC_APPLICATION_ID"],
+    method: "create_post",
+    argsJson: {
+    title: "My First Post",
+    text: "This is my first post using the TypeScript Client SDK",
+    },
+};
+
+// Use the mutate method
+const respone: RpcMutateResponse<Post> = await rpcClient.mutate<
+CreatePost,
+Post
+
+> (params);
+
+console.log(response);
+
+```
+
+#### WsSubscriptionsClient
+
+Here's an example of how to use it:
+
+```typescript
+// Import the necessary classes and interfaces from the SDK
+import {
+  SubscriptionsClient,
+  WsSubscriptionsClient,
+  NodeEvent,
+} from "@calimero-is-near/calimero-p2p-sdk";
+
+// Create an instance of WsSubscriptionsClient
+const subscriptionsClient: SubscriptionsClient = new WsSubscriptionsClient(
+  process.env["NEXT_PUBLIC_API_URL],
+  "/ws"
+);
+
+// Create (default) connection to the server
+await subscriptionsClient.connect();
+
+// Subscribe to an application events
+subscriptionsClient.subscribe([process.env["NEXT_PUBLIC_APPLICATION_ID"]]);
+
+// Add a callback to process messages
+subscriptionsClient.addCallback((data: NodeEvent) => {
+  console.log(data);
+});
+```

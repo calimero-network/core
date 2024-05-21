@@ -68,11 +68,12 @@ Project maintainers will follow these Community Impact Guidelines in determining
 
 ## Attribution
 
-This Code of Conduct is adapted from the [Contributor Covenant][homepage], version 2.1, available at [https://www.contributor-covenant.org/version/2/1/code_of_conduct.html][v2.1].
+This Code of Conduct is adapted from the [Contributor Covenant][homepage], version 2.1, available at [v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct.html).
 
 Community Impact Guidelines were inspired by Mozilla's code of conduct enforcement ladder.
 
 For answers to common questions about this code of conduct, see the FAQ at [FAQ](https://www.contributor-covenant.org/faq). Translations are available at [translations](https://www.contributor-covenant.org/translations).
 
 [homepage]: https://www.contributor-covenant.org
-[v2.1]: https://www
+
+For more information contact [info@calimero.network](mailto:info@calimero.network) with any additional questions or comments.
