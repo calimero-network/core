@@ -1,0 +1,27 @@
+---
+id: specialized-nodes
+title: Specialized Nodes
+---
+
+Specialized nodes in the Calimero Network are third-party nodes that augment a context's capacity and reliability. They participate in a context but have additional capabilities, providing various services while maintaining the decentralized nature of the network.
+
+### Key Concepts
+
+- **Incentivization**: These nodes can be incentivized through contracts on blockchains that pay them for their services, ensuring they remain motivated to perform their roles effectively.
+- **Permissions and Roles**: Specialized nodes can have different levels of permissions, ranging from being subscribed to encrypted network events to fully participating as part of the context.
+
+### Types of Specialized Nodes
+
+1. **Storage Nodes**:
+   - **Encrypted Transaction Storage**: These nodes store encrypted transactions without the ability to read them. They guarantee 100% uptime, ensuring that all transactions are available even when peers are offline. When peers come back online, the node provides missed transactions and new transactions for replication.
+   - **Blob Storage**: These nodes also store encrypted blobs of non-state-transitional data, ensuring that all necessary data is always available without holding decryption keys.
+
+2. **Delegated Execution Nodes**:
+   - **Context Maintenance**: These nodes fully join a context and maintain the context state on their end. They can handle resource-intensive executions, delegating specific calls to optimize performance and resource utilization.
+
+3. **Administrative Nodes**:
+   - **Event Observation and Action**: These nodes observe real-world events and act on them within the context. For example, in a billionaire's club context, an administrative node could monitor members' accounts on a blockchain and evict them if their balance falls below a certain threshold.
+
+### Reliability Through Decentralization
+
+Specialized nodes ensure that the context remains operational and consistent, even when primary peers are offline. They provide the necessary data and transactions to keep the context up-to-date. The decentralized nature ensures that the state is eventually consistent. Fragmentation does not cause issues as the system reconciles itself when peers come back online, highlighting the network's reliability without reliance on any single specialized node.

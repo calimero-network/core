@@ -3,6 +3,29 @@ id: encryption
 title: Encryption
 ---
 
-### Encryption:
+Encryption in Calimero ensures data security in transit over the network, maintaining confidentiality and integrity.
 
-Data stored on client nodes can be encrypted, providing an additional layer of security and privacy for user data.
+### Key Principles
+
+1. **Forward Secrecy**: Ensuring past messages remain secure even if a key is compromised in the future.
+2. **Post-Compromise Security**: Ensuring future messages remain secure even after any previous message has been compromised.
+3. **Zero Trust in Third Parties**: No reliance on intermediaries for security.
+4. **Verifiable End-to-End Encryption**: Confirming that only the intended recipients can read the messages.
+5. **Asynchronous Communication**: Ability to start communications without recipients being online.
+6. **Multi-Device Support**: Ensuring seamless use across multiple devices.
+7. **Deniability**: Providing plausible deniability for message authorship to non-context members.
+8. **Non-Interactive Group Management**: Adding and removing context members without requiring interaction.
+
+### Double Ratchet Algorithm
+
+Each network message uses a distinct encryption key derived from the ratchet state, providing forward secrecy by ensuring that the compromise of one key does not affect the security of previous messages.
+
+Each context can configure Diffie-Hellman reset parameters. For one-on-one peer interactions, resets can occur instantaneously, while for larger groups, resets can happen at non-deterministic intervals to balance security and performance.
+
+### Tree-Based Diffie-Hellman Key Exchange
+
+All contexts use a tree-based Diffie-Hellman key exchange. This method efficiently manages shared secrets among multiple members, ensuring that keys are updated and propagated correctly. The reset of keys occurs at the leaf nodes of the tree, guaranteeing post-compromise security.
+
+Adding a new member involves existing members using their prekeys to complete an X3DH (Triple Diffie-Hellman) exchange, securely adding the new member without requiring direct interaction. Removing a member involves invalidating their keys and updating the shared secrets among remaining members, ensuring efficient and secure updates.
+
+By leveraging advanced encryption techniques such as the Double Ratchet Algorithm and tree-based Diffie-Hellman key exchange, Calimero ensures that all data in transit is protected, maintaining the confidentiality and integrity of network messages.
