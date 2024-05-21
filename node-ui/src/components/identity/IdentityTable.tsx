@@ -1,7 +1,7 @@
 import React from "react";
 import styled from "styled-components";
 import translations from "../../constants/en.global.json";
-import { ContentCard } from "../common/ConentCard";
+import { ContentCard } from "../common/ContentCard";
 import ListTable from "../common/ListTable";
 import { RootKeyObject } from "../../utils/rootkey";
 import identityRowItem from "./IdentityRowItem";
