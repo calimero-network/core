@@ -8,23 +8,17 @@ use sha3::{Digest, Sha3_256};
 
 mod choice;
 mod errors;
-mod key_component;
-mod keys;
+mod key;
 mod player_idx;
+mod repr;
 
 use choice::Choice;
 use errors::{CommitError, Error, JoinError, RevealError};
-use key_component::KeyComponent;
+use key::KeyComponents;
 use player_idx::PlayerIdx;
+use repr::Repr;
 
 pub(crate) type Commitment = [u8; 32];
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(crate = "calimero_sdk::serde")]
-pub struct KeyComponents {
-    pub pk: KeyComponent<VerifyingKey>,
-    pub sk: KeyComponent<SigningKey>,
-}
 
 #[app::state(emits = for<'a> Event<'a>)]
 #[derive(Default, Debug, BorshSerialize, BorshDeserialize)]
@@ -38,7 +32,7 @@ struct Game {
 #[borsh(crate = "calimero_sdk::borsh")]
 struct Player {
     state: Option<State>,
-    public_key: KeyComponent<VerifyingKey>,
+    public_key: Repr<VerifyingKey, repr::Raw>,
     name: String,
 }
 
@@ -85,32 +79,30 @@ impl Game {
         let mut csprng = ChaCha20Rng::from_seed(random_bytes);
         let keypair = SigningKey::generate(&mut csprng);
         KeyComponents {
-            pk: KeyComponent::from(keypair.verifying_key()),
-            sk: KeyComponent::from(keypair),
+            pk: Repr::from(keypair.verifying_key()),
+            sk: Repr::from(keypair),
         }
     }
 
-    pub fn sign(secret_key: KeyComponent<SigningKey>, message: &[u8]) -> KeyComponent<Signature> {
-        KeyComponent {
-            key: secret_key.key.sign(message),
-        }
+    pub fn sign(secret_key: Repr<SigningKey>, message: &[u8]) -> Repr<Signature> {
+        Repr::from(secret_key.sign(message))
     }
 
     pub fn verify(
         &self,
         player_idx: PlayerIdx,
         message: &[u8],
-        signature: KeyComponent<Signature>,
+        signature: Repr<Signature>,
     ) -> Option<bool> {
-        let signing_key = &self.players[player_idx.value()].as_ref()?.public_key;
+        let signing_key = &self.players[*player_idx].as_ref()?.public_key;
 
-        Some(signing_key.key.verify(message, &signature.key).is_ok())
+        Some(signing_key.verify(message, &signature).is_ok())
     }
 
     pub fn join(
         &mut self,
         player_name: String,
-        public_key: KeyComponent<VerifyingKey>,
+        public_key: Repr<VerifyingKey>,
     ) -> Result<usize, JoinError> {
         let Some((index, slot)) = self
             .players
@@ -128,9 +120,7 @@ impl Game {
 
         let new_player = Player {
             state: None,
-            public_key: KeyComponent {
-                key: public_key.key,
-            },
+            public_key: Repr::from(public_key),
             name: player_name,
         };
 
@@ -156,39 +146,33 @@ impl Game {
     }
 
     pub fn prepare(
-        signing_key: KeyComponent<SigningKey>,
+        signing_key: Repr<SigningKey>,
         choice: Choice,
         nonce: &str,
     ) -> Result<(Commitment, Signature), ()> {
         let hash: Commitment = Game::calculate_hash(&choice, nonce);
-        let signature = SigningKey::sign(&signing_key.key, &hash);
+        let signature = SigningKey::sign(&signing_key, &hash);
         Ok((hash, signature))
     }
 
     pub fn commit(
         &mut self,
         player_idx: PlayerIdx,
-        commitment: KeyComponent<Commitment>,
-        signature: KeyComponent<Signature>,
+        commitment: Repr<Commitment>,
+        signature: Repr<Signature>,
     ) -> Result<(), CommitError> {
-        let (player, other_player) = self
-            .players_mut(player_idx)
+        let (player, _) = self
+            .players_mut(*player_idx)
             .ok_or(CommitError::OtherNotJoined)?;
 
         if let Some(_) = player.state {
             return Err(CommitError::AlreadyCommitted);
         }
 
-        match player
-            .public_key
-            .key
-            .verify(&commitment.key, &signature.key)
-        {
+        match player.public_key.verify(&*commitment, &signature) {
             Ok(_) => {
-                app::emit!(Event::PlayerCommited {
-                    id: player_idx.value(),
-                });
-                player.state = Some(State::Commited(commitment.key));
+                app::emit!(Event::PlayerCommited { id: *player_idx });
+                player.state = Some(State::Commited(*commitment));
                 return Ok(());
             }
             Err(_) => Err(CommitError::InvalidSignature),
@@ -198,12 +182,14 @@ impl Game {
     pub fn reveal(&mut self, player_idx: PlayerIdx, nonce: &str) -> Result<(), RevealError> {
         let choice: Choice;
 
-        let (player, other_player) = self.players(player_idx).ok_or(RevealError::NotCommitted)?;
+        let (player, other_player) = self
+            .players_mut(*player_idx)
+            .ok_or(RevealError::NotCommitted)?;
 
         if let Some(State::Commited(commitment)) = player.state {
             choice = Game::compare_hashes(commitment, nonce).ok_or(RevealError::InvalidNonce)?;
             app::emit!(Event::PlayerRevealed {
-                id: player_idx.value(),
+                id: *player_idx,
                 reveal: &choice
             });
             player.state = Some(State::Revealed(choice));
@@ -233,7 +219,7 @@ impl Game {
         &mut self,
         player_idx: PlayerIdx,
         message: &[u8],
-        signature: KeyComponent<Signature>,
+        signature: Repr<Signature>,
     ) -> Result<(), Error> {
         if self.verify(player_idx, message, signature).is_none() {
             return Err(Error::ResetError);
@@ -244,28 +230,22 @@ impl Game {
         Ok(())
     }
 
-    fn players(&self, my_idx: PlayerIdx) -> Option<(&Player, &Player)> {
-        let my_idx = my_idx.value();
+    fn players(&self, my_idx: usize) -> Option<(&Player, &Player)> {
         let other_idx = (my_idx + 1) % 2;
 
         match (
             self.players[my_idx].as_ref(),
             self.players[other_idx].as_ref(),
         ) {
-            (Some(player), Some(other_player)) => Some((player, other_player)),
+            (Some(a), Some(b)) => Some((a, b)),
             _ => None,
         }
     }
 
-    fn players_mut(&mut self, my_idx: PlayerIdx) -> Option<(&mut Player, &mut Player)> {
-        let my_idx = my_idx.value();
-        let other_idx = (my_idx + 1) % 2;
-
-        match (
-            self.players[my_idx].as_mut(),
-            self.players[other_idx].as_mut(),
-        ) {
-            (Some(player), Some(other_player)) => Some((player, other_player)),
+    fn players_mut(&mut self, my_idx: usize) -> Option<(&mut Player, &mut Player)> {
+        match (my_idx, self.players.each_mut()) {
+            (0, [Some(a), Some(b)]) => Some((a, b)),
+            (1, [Some(a), Some(b)]) => Some((b, a)),
             _ => None,
         }
     }
