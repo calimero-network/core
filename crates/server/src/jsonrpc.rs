@@ -166,6 +166,10 @@ pub(crate) async fn call(
                 info!("RPC log: {}", log);
             }
 
+            for event in outcome.events {
+                info!("RPC event: {:#?}", event);
+            }
+
             let Some(returns) = outcome
                 .returns
                 .map_err(|e| CallError::UpstreamFunctionCallError(e.to_string()))?
