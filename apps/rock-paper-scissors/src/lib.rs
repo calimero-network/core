@@ -126,6 +126,14 @@ impl Game {
         (Repr::from(commitment), Repr::from(signature))
     }
 
+    fn players(&mut self, my_idx: PlayerIdx) -> (Option<&mut Player>, Option<&mut Player>) {
+        let [a, b] = self.players.each_mut();
+        if my_idx.is_first() {
+            return (a.as_mut(), b.as_mut());
+        }
+        (b.as_mut(), a.as_mut())
+    }
+
     pub fn commit(
         &mut self,
         player_idx: PlayerIdx,
@@ -202,13 +210,5 @@ impl Game {
         app::emit!(Event::StateDumped);
 
         Ok(())
-    }
-
-    fn players(&mut self, my_idx: PlayerIdx) -> (Option<&mut Player>, Option<&mut Player>) {
-        let [a, b] = self.players.each_mut();
-        if my_idx.is_first() {
-            return (a.as_mut(), b.as_mut());
-        }
-        (b.as_mut(), a.as_mut())
     }
 }
