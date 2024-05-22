@@ -1,5 +1,5 @@
 ---
-id: admin-ui
+id: admin-dashboard
 title: Admin Dashboard
 ---
 
@@ -33,14 +33,34 @@ Run the Admin Dashboard
 ```
 
 Open your web browser and access admin dashboard on http://localhost:NODE_PORT/admin/.
-Replace NODE_PORT with the `--server-port` value defined during node setup.
+
+> **_NOTE:_**
+> Replace `NODE_PORT` with the `--server-port` value defined during node setup in [Getting-started](./01-getting-started.mdx)
 
 You will see login page. On the first login, your selected wallet will be used as a root key to use further functionalities.
 
 ### Admin Dashboard functionalities:
 
-- add root keys
-- add client keys
-- create context
-- upload application
-- export identity key
+#### Identity
+
+Preview added root keys or add new root key.
+
+![Identity](/admin-dashboard/identity.png)
+
+#### Contexts
+
+Preview context which you have already joined or invited. You can also create a new context.
+
+![Contexts](/admin-dashboard/contexts.png)
+
+#### Applications
+
+Preview available applications from other developers or applications you published. You can also publish new application
+
+![Applications](/admin-dashboard/applications.png)
+
+#### Export
+
+Allows you to export you identity on current device and import it on new device so you have seamless experience while onboarding to another device.
+
+![Export](/admin-dashboard/export-identity.png)
