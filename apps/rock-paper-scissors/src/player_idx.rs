@@ -1,16 +1,16 @@
-use std::ops::Deref;
-
 use calimero_sdk::serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Copy, Clone, Serialize)]
 #[serde(crate = "calimero_sdk::serde")]
-pub(crate) struct PlayerIdx(usize);
+pub struct PlayerIdx(pub usize);
 
-impl Deref for PlayerIdx {
-    type Target = usize;
+impl PlayerIdx {
+    pub fn other(&self) -> PlayerIdx {
+        PlayerIdx(1 - self.0)
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    pub fn is_first(&self) -> bool {
+        self.0 == 0
     }
 }
 

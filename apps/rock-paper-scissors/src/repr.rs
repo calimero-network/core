@@ -1,13 +1,17 @@
+use std::fmt;
+use std::io;
 use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::ops::Deref;
-use std::{fmt, io};
 
 use bs58::decode::DecodeTarget;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{de, ser, Deserialize, Serialize};
 
+#[derive(Copy, Eq, Clone, PartialEq)]
 pub enum Bs58 {}
 
+#[derive(Copy, Eq, Clone, PartialEq)]
 pub enum Raw {}
 
 mod private {
@@ -22,23 +26,19 @@ impl ReprFormat for Bs58 {}
 impl private::Sealed for Raw {}
 impl ReprFormat for Raw {}
 
+#[derive(Eq, Copy, Clone, PartialEq)]
 pub struct Repr<T, F = Bs58> {
     data: T,
     _phantom: PhantomData<F>,
-}
-
-impl<T, F> Repr<T, F> {
-    pub fn into_inner(self) -> T {
-        self.data
-    }
 }
 
 pub trait ReprBytes {
     type Bytes: AsRef<[u8]>;
 
     fn to_bytes(&self) -> Self::Bytes;
-    fn from_bytes(bytes: Self::Bytes) -> Result<Self, Self::Bytes>
+    fn from_bytes<F, E>(f: F) -> Option<Result<Self, E>>
     where
+        F: FnOnce(&mut Self::Bytes) -> Option<E>,
         Self: Sized;
 }
 
@@ -93,7 +93,7 @@ impl<T: ReprBytes> Serialize for Repr<T, Bs58> {
 
 impl<'de, T: ReprBytes> Deserialize<'de> for Repr<T, Bs58>
 where
-    T::Bytes: Default + DecodeTarget,
+    T::Bytes: DecodeTarget,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -101,13 +101,10 @@ where
     {
         let encoded = <String as Deserialize>::deserialize(deserializer)?;
 
-        let mut bytes = T::Bytes::default();
-
-        bs58::decode(&encoded)
-            .onto(&mut bytes)
-            .map_err(de::Error::custom)?;
-
-        let data = T::from_bytes(bytes).map_err(|_| de::Error::custom("invalid key"))?;
+        let data = match T::from_bytes(|bytes| bs58::decode(&encoded).onto(bytes).err()) {
+            Some(data) => data.map_err(de::Error::custom)?,
+            None => return Err(de::Error::custom("Invalid key")),
+        };
 
         Ok(Repr::from(data))
     }
@@ -129,8 +126,50 @@ where
     fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
         let bytes = T::Bytes::deserialize_reader(reader)?;
 
-        let data = T::from_bytes(bytes).map_err(|_| io::ErrorKind::InvalidData)?;
+        let data = match T::from_bytes(|data| {
+            *data = bytes;
+
+            None::<()>
+        }) {
+            Some(data) => unsafe { data.unwrap_unchecked() },
+            None => return Err(io::ErrorKind::InvalidData.into()),
+        };
 
         Ok(Repr::from(data))
+    }
+}
+
+impl<T: BorshSerialize> BorshSerialize for Repr<T, Bs58> {
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> Result<(), io::Error> {
+        self.data.serialize(writer)
+    }
+}
+
+impl<T: ReprBytes + BorshDeserialize> BorshDeserialize for Repr<T, Bs58> {
+    fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let data = T::deserialize_reader(reader)?;
+
+        Ok(Repr::from(data))
+    }
+}
+
+impl<const N: usize> ReprBytes for [u8; N] {
+    type Bytes = [u8; N];
+
+    fn to_bytes(&self) -> Self::Bytes {
+        *self
+    }
+
+    fn from_bytes<F, E>(f: F) -> Option<Result<Self, E>>
+    where
+        F: FnOnce(&mut Self::Bytes) -> Option<E>,
+    {
+        let mut bytes = MaybeUninit::zeroed();
+
+        if let Some(err) = f(unsafe { &mut *bytes.as_mut_ptr() }) {
+            return Some(Err(err));
+        }
+
+        Some(Ok(unsafe { bytes.assume_init() }))
     }
 }

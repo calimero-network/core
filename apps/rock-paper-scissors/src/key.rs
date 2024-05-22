@@ -1,10 +1,10 @@
 use calimero_sdk::serde::{Deserialize, Serialize};
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 
+use crate::commit::Commitment;
 use crate::repr::{Repr, ReprBytes};
-use crate::Commitment;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(crate = "calimero_sdk::serde")]
 pub struct KeyComponents {
     pub pk: Repr<VerifyingKey>,
@@ -18,8 +18,15 @@ impl ReprBytes for VerifyingKey {
         self.to_bytes()
     }
 
-    fn from_bytes(bytes: Self::Bytes) -> Result<VerifyingKey, Self::Bytes> {
-        VerifyingKey::from_bytes(&bytes).map_err(|_| bytes)
+    fn from_bytes<F, E>(f: F) -> Option<Result<Self, E>>
+    where
+        F: FnOnce(&mut Self::Bytes) -> Option<E>,
+    {
+        let mut bytes = [0; 32];
+        if let Some(err) = f(&mut bytes) {
+            return Some(Err(err));
+        }
+        Some(Ok(VerifyingKey::from_bytes(&bytes).ok()?))
     }
 }
 
@@ -30,8 +37,13 @@ impl ReprBytes for SigningKey {
         self.to_bytes()
     }
 
-    fn from_bytes(bytes: Self::Bytes) -> Result<SigningKey, Self::Bytes> {
-        Ok(SigningKey::from_bytes(&bytes))
+    fn from_bytes<F, E>(f: F) -> Option<Result<SigningKey, E>>
+    where
+        F: FnOnce(&mut Self::Bytes) -> Option<E>,
+    {
+        let mut bytes = [0; 32];
+
+        Some(f(&mut bytes).map_or_else(|| Ok(SigningKey::from_bytes(&bytes)), Err))
     }
 }
 
@@ -42,8 +54,13 @@ impl ReprBytes for Signature {
         self.to_bytes()
     }
 
-    fn from_bytes(bytes: Self::Bytes) -> Result<Signature, Self::Bytes> {
-        Ok(Signature::from_bytes(&bytes))
+    fn from_bytes<F, E>(f: F) -> Option<Result<Signature, E>>
+    where
+        F: FnOnce(&mut Self::Bytes) -> Option<E>,
+    {
+        let mut bytes = [0; 64];
+
+        Some(f(&mut bytes).map_or_else(|| Ok(Signature::from_bytes(&bytes)), Err))
     }
 }
 
@@ -51,10 +68,15 @@ impl ReprBytes for Commitment {
     type Bytes = [u8; 32];
 
     fn to_bytes(&self) -> Self::Bytes {
-        *self
+        self.to_bytes()
     }
 
-    fn from_bytes(bytes: Self::Bytes) -> Result<Self, Self::Bytes> {
-        Ok(bytes)
+    fn from_bytes<F, E>(f: F) -> Option<Result<Commitment, E>>
+    where
+        F: FnOnce(&mut Self::Bytes) -> Option<E>,
+    {
+        let mut bytes = [0; 32];
+
+        Some(f(&mut bytes).map_or_else(|| Ok(Commitment::from_bytes(&bytes)), Err))
     }
 }

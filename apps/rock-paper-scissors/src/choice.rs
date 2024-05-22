@@ -3,24 +3,31 @@ use std::cmp::Ordering;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
 
+use crate::commit::{Commitment, Nonce};
+
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Deserialize, Serialize,
+    Copy, Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Deserialize, Serialize,
 )]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
+#[repr(u8)]
 pub enum Choice {
     Rock,
     Paper,
     Scissors,
 }
 
-impl AsRef<[u8]> for Choice {
-    fn as_ref(&self) -> &[u8] {
-        match self {
-            Choice::Rock => b"Rock",
-            Choice::Paper => b"Paper",
-            Choice::Scissors => b"Scissors",
+impl Choice {
+    pub fn determine(commitment: &Commitment, nonce: &Nonce) -> Option<Self> {
+        let choices = [Choice::Rock, Choice::Paper, Choice::Scissors];
+
+        for choice in choices {
+            if *commitment == Commitment::of(choice, nonce) {
+                return Some(choice);
+            }
         }
+
+        None
     }
 }
 
