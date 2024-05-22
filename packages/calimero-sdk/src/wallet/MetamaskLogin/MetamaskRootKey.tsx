@@ -57,35 +57,6 @@ export default function MetamaskRootKey({
     const challengeResponseData: ResponseData<NodeChallenge> = await apiClient
       .node()
       .requestChallenge(rpcBaseUrl, applicationId);
-    // const { publicKey } = await getOrCreateKeypair();
-
-    // if (challengeResponseData.error) {
-    //   console.error("requestNodeData error", challengeResponseData.error);
-    //   //TODO handle error
-    //   return;
-    // }
-
-    // const signatureMessage = {
-    //   nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
-    // };
-
-    // const signatureMessageMetadata = {
-    //   nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
-    //   nonce:
-    //     challengeResponseData.data?.nonce ?? randomBytes(32).toString("hex"),
-    //   applicationId: challengeResponseData.data?.applicationId ?? "",
-    //   timestamp: challengeResponseData.data?.timestamp ?? new Date().getTime(),
-    //   message: JSON.stringify(signatureMessage),
-    // };
-    // const signatureMetadata: EthSignatureMessageMetadata = {};
-    // const payload = {
-    //   message: signatureMessageMetadata,
-    //   metadata: signatureMetadata,
-    // };
-    // const wsd = {
-    //   payload: payload,
-    //   clientPubKey: publicKey,
-    // };
     setWalletSignatureData(challengeResponseData.data?.nodeSignature ?? "");
   }, []);
 
