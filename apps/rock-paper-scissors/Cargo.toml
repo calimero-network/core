@@ -12,6 +12,6 @@ crate-type = ["cdylib"]
 [dependencies]
 bs58.workspace = true
 calimero-sdk = { path = "../../crates/sdk" }
-ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand_chacha.workspace = true
 sha3.workspace = true
