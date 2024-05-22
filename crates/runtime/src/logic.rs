@@ -93,8 +93,8 @@ pub struct Outcome {
 
 #[derive(Debug, Serialize)]
 pub struct Event {
-    kind: String,
-    data: Vec<u8>,
+    pub kind: String,
+    pub data: Vec<u8>,
 }
 
 impl<'a> VMLogic<'a> {

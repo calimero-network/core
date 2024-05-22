@@ -1136,6 +1136,7 @@ dependencies = [
  "fragile",
  "ouroboros",
  "owo-colors",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "thiserror",
