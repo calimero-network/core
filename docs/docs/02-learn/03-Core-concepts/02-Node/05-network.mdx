@@ -66,7 +66,7 @@ Boot node is the component used for the initial discovery of the peers in the ne
 - **Reference:** [libp2p Identify Documentation](https://github.com/libp2p/specs/blob/master/identify/README.md)
 
 #### Kademlia (Kad)
-- Kademlia is a distributed hash table (DHT) protocol used for peer discovery and data routing. It uses a XOR metric to ensure efficient and scalable peer lookup. Each node maintains a routing table with information about other nodes, facilitating quick lookups and robust network operation.
+- Kademlia is a distributed hash table (DHT) protocol used for peer discovery and data routing. It uses an XOR metric to ensure efficient and scalable peer lookup. Each node maintains a routing table with information about other nodes, facilitating quick lookups and robust network operation.
 - **Reference:** [libp2p Kademlia DHT Documentation](https://github.com/libp2p/specs/tree/master/kad-dht)
 
 #### mDNS (Multicast DNS)
@@ -94,7 +94,7 @@ One of the common techniques used for NAT traversal in P2P networks is **Hole Pu
   - **Step 2 - Exchange of Address Information:** The server shares the public address information of each peer with the other. This information includes the IP address and port number that the NAT has assigned for the connection to the server.
   - **Step 3 - Direct Connection:** Each peer sends a packet to the other peer's public address. Since a mapping for this address already exists in the NAT (from the connection to the server), the NAT forwards the packet to the appropriate internal address, and a direct connection is established.
 
-This technique is particularly useful in P2P networks as it allows peers to communicate directly, reducing the load on relay servers and improving network efficiency. However, it's worth noting that hole punching may not work with all types of NATs, and success can depend on the specific NAT implementation and configuration.
+This technique is particularly useful in P2P networks, as it allows peers to communicate directly, reducing the load on relay servers and improving network efficiency. However, it's worth noting that hole punching may not work with all types of NATs, and success can depend on the specific NAT implementation and configuration.
 
 - **Reference:** [Hole punching in libp2p](https://blog.ipfs.tech/2022-01-20-libp2p-hole-punching/)
 - **Reference:** [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
