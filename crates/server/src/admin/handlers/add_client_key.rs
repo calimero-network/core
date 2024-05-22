@@ -37,21 +37,21 @@ struct Payload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SignatureMessage {
+pub struct SignatureMessage {
     nonce: String,
     application_id: String,
     timestamp: i64,
     node_signature: String,
-    message: String,
+    pub message: String,
     client_public_key: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct WalletMetadata {
+pub struct WalletMetadata {
     #[serde(rename = "type")]
-    wallet_type: WalletType,
-    signing_key: String,
+    pub wallet_type: WalletType,
+    pub signing_key: String,
 }
 
 #[derive(Debug, Deserialize)]
