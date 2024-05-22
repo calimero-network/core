@@ -1,8 +1,7 @@
-use std::fmt;
-use std::io;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
+use std::{fmt, io};
 
 use bs58::decode::DecodeTarget;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
