@@ -13,3 +13,8 @@ export enum DetailsOptions {
   CLIENT_KEYS = "CLIENT_KEYS",
   USERS = "USERS",
 }
+
+export enum ApplicationOptions {
+  AVAILABLE = "AVAILABLE",
+  OWNED = "OWNED",
+}

@@ -11,6 +11,8 @@ const ListWrapper = styled.div<ListWrapperProps>`
   flex-direction: column;
   flex: 1;
   width: 100%;
+  overflow: scroll;
+  max-height: calc(100vh - 18rem);
 
   .table-description {
     padding-left: 1rem;
@@ -55,6 +57,11 @@ const ListWrapper = styled.div<ListWrapperProps>`
     line-height: 1rem;
     text-align: center;
     color: #9c9da3;
+  }
+
+  .list-items {
+    flex: 1;
+    overflow-y: auto;
   }
 `;
 

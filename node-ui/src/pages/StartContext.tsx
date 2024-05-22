@@ -3,7 +3,7 @@ import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
 import PageContentWrapper from "../components/common/PageContentWrapper";
 import { useNavigate } from "react-router-dom";
-import { ContentCard } from "../components/common/ConentCard";
+import { ContentCard } from "../components/common/ContentCard";
 import StartContextCard from "../components/context/startContext/StartContextCard";
 import translations from "../constants/en.global.json";
 import apiClient from "../api/index";
@@ -91,7 +91,7 @@ export default function StartContext() {
             startContext={startContext}
             showBrowseApplication={showBrowseApplication}
             setShowBrowseApplication={setShowBrowseApplication}
-            onUploadClick={() => navigate("/upload-app")}
+            onUploadClick={() => navigate("/publish-application")}
             isLoading={isLoading}
             showStatusModal={showStatusModal}
             closeModal={closeModal}

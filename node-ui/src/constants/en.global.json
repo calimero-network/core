@@ -15,16 +15,13 @@
     "applicationsPage": {
         "applicationsTable": {
             "title": "Applications",
-            "headerNameText": "Name",
-            "headerDescText": "Description",
-            "headerVersionText": "Version",
-            "headerIdText": "Id",
-            "headerRepoText": "Repository",
-            "uninstallButtonText": "Uninstall",
-            "installButtonText": "Install new applications",
-            "noApplicationsText": "No applications found in the node."
+            "publishNewAppText": "Publish new application",
+            "noAvailableAppsText": "No applications available",
+            "noOwnedAppsText": "No owned applications installed",
+            "installNewAppText": "install new application"
         },
         "installApplication": {
+            "title": "Install Application",
             "backbuttonText": "Back to Applications",
             "selectAppLabel": "Select Application to Install",
             "dropdownPlaceholder": "Applications",
@@ -32,6 +29,19 @@
             "releaseSelectionLabel": "Select Application Release",
             "releaseDetailsLabel": "Release Details",
             "installErrorTitle": "Failed to install application"
+        },
+        "publishApplication": {
+            "title": "Publish new application",
+            "addAccountButtonText": "Add wallet account",
+            "connectAccountTitle": "Connect owner account",
+            "connectAccountSubtitle": "Owner account is holder of application and only that account can publish new releases.",
+            "connectAccountButtonText": "Connect account",
+            "buttonText": "Publish"
+        },
+        "addRelease": {
+            "title": "Add new release",
+            "buttonText": "Publish",
+            "latestReleaseText": "Latest application version is : "
         }
     },
     "confirmWallet": {
@@ -43,18 +53,6 @@
         "callbackUrlText": "Callback Url",
         "submitButtonText": "Submit Request",
         "backButtonText": "Back to login"
-    },
-    "identityTable": {
-        "title": "Identity",
-        "headerIdText": "Id",
-        "headerTypeText": "Type",
-        "headerPkText": "PublicKey",
-        "deleteButtonText": "Delete",
-        "addButtonText": "Add new identity",
-        "expandEditorTitle": "Edit DID",
-        "cancelButtonText": "Cancel",
-        "saveButtonText": "Save",
-        "noIdentityText": "No identity found in the node."
     },
     "keysPage": {
         "title": "Keys"
@@ -80,11 +78,11 @@
         "subtitle": "To install the application first upload the application wasm to the IPFS, select the package you want to add the release for and fill the release details.",
         "uploadIpfsTitle": "IPFS Application upload",
         "inputLabelText": "Select Application .wasm file to upload",
-        "buttonUploadLabel": "Upload to IPFS",
+        "buttonUploadLabel": "Upload wasm",
         "buttonUploadText": "Upload",
         "cidLabelText": "File IPFS CID",
         "backButtonText": "Back",
-        "releaseTitle": "Release Details",
+        "releaseTitle": "Add new release",
         "nameLabelText": "Name",
         "pathLabelText": "Path",
         "versionLabelText": "Version",
@@ -98,10 +96,11 @@
         "loginLableText": "To Deploy new release, you need to sign in using wallet account button!",
         "deployerDropdownlabel": "Select deployer account",
         "deployerDropdownText": "Deployer Account",
-        "selectPackageLabel": "Select Package"
+        "selectPackageLabel": "Select Package",
+        "pathPlaceholder": "url to the wasm file"
     },
     "addPackageForm": {
-        "title": "Package Details",
+        "title": "Add application details",
         "subtitle": "To successfully install the application, first you need to add the package details and procceed to add relase.",
         "nameLabelText": "Package Name",
         "repositoryLabelText": "Repository URL",
@@ -109,8 +108,8 @@
         "buttonAddPackageText": "Add Package",
         "buttonNextText": "Next",
         "namePlaceholder": "chat-application",
-        "repositoryPlaceholder": "github.com/username/chat-application",
-        "descriptionPlaceholder": "A chat application built for P2P system",
+        "repositoryPlaceholder": "https://github.com/<application_repository>",
+        "descriptionPlaceholder": "A chat application built for P2P network",
         "loginLableText": "To Deploy new package, you need to sign in using wallet account button!",
         "deployerDropdownlabel": "Select deployer account",
         "deployerDropdownText": "Deployer Account"
@@ -175,5 +174,11 @@
         "buttonExportText": "Export Identity",
         "exportErrorTitle": "Failed to export node identity",
         "exportSuccessTitle": "Identity exported"
+    },
+    "identityPage": {
+        "title": "Root keys",
+        "addRootKeyText": "Add new root key",
+        "loggedInLabel": "Logged in with: ",
+        "noRootKeysText": "No root keys found in the node."
     }
 }

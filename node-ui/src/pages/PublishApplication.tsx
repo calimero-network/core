@@ -1,17 +1,20 @@
 import React, { useState, useEffect, useRef, ChangeEvent } from "react";
 import { Navigation } from "../components/Navigation";
 import { FlexLayout } from "../components/layout/FlexLayout";
-import { UploadAppContent } from "../components/uploadApp/UploadAppContent";
-import { UploadApplication } from "../components/uploadApp/UploadApplication";
-import { AddPackageForm } from "../components/uploadApp/AddPackageForm";
-import { UploadSwitch } from "../components/uploadApp/UploadSwitch";
-import { Account, BrowserWallet, setupWalletSelector } from "@near-wallet-selector/core";
+import {
+  Account,
+  BrowserWallet,
+  setupWalletSelector,
+} from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { useRPC } from "../hooks/useNear";
 import axios from "axios";
 
 import * as nearAPI from "near-api-js";
 import { Package } from "./Applications";
+import PageContentWrapper from "../components/common/PageContentWrapper";
+import PublishApplicationTable from "../components/publishApplication/PublishApplicationTable";
+import { useNavigate } from "react-router-dom";
 
 const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
 
@@ -35,20 +38,16 @@ export interface DeployStatus {
   error: boolean;
 }
 
-// TODO: Add proper types
-
-export default function UploadApp() {
+export default function PublishApplication() {
+  const navigate = useNavigate();
   const fileInputRef = useRef(null);
   const { getPackages } = useRPC();
   const [ipfsPath, setIpfsPath] = useState("");
   const [fileHash, setFileHash] = useState("");
-  const [tabSwitch, setTabSwitch] = useState(true);
   const [packages, setPackages] = useState<Package[]>([]);
-  const [addPackageLoader, setAddPackageLoader] = useState(false);
-  const [addReleaseLoader, setAddReleaseLoader] = useState(false);
-  const [walletAccounts, setWalletAccounts] = useState<Account[]>([]);
-  const [deployerAccount, setDeployerAccount] = useState<Account | null>(null);
+  const [deployerAccount, setDeployerAccount] = useState<Account>();
   const [showStatusModal, setShowStatusModal] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [packageInfo, setPackageInfo] = useState<PackageInfo>({
     name: "",
     description: "",
@@ -68,9 +67,9 @@ export default function UploadApp() {
   });
 
   useEffect(() => {
-      (async () => {
-        setPackages(await getPackages());
-      })();
+    (async () => {
+      setPackages(await getPackages());
+    })();
   }, [ipfsPath]);
 
   useEffect(() => {
@@ -89,7 +88,9 @@ export default function UploadApp() {
       });
       const wallet = await selector.wallet("my-near-wallet");
       const accounts = await wallet.getAccounts();
-      setWalletAccounts(accounts);
+      if (accounts.length !== 0) {
+        setDeployerAccount(accounts[0]);
+      }
     };
     fetchWalletAccounts();
   }, []);
@@ -146,8 +147,7 @@ export default function UploadApp() {
     }
   };
 
-  const addPackage = async (packageInfo: PackageInfo) => {
-    setAddPackageLoader(true);
+  const addPackage = async () => {
     const selector = await setupWalletSelector({
       network: "testnet",
       modules: [setupMyNearWallet()],
@@ -167,7 +167,7 @@ export default function UploadApp() {
                 repository: packageInfo.repository,
               },
               gas: nearAPI.utils.format.parseNearAmount("0.00000000003") ?? "0",
-              deposit: ""
+              deposit: "",
             },
           },
         ],
@@ -192,12 +192,9 @@ export default function UploadApp() {
         error: true,
       });
     }
-    setShowStatusModal(true);
-    setAddPackageLoader(false);
   };
 
-  const addRelease = async (releaseInfo: ReleaseInfo) => {
-    setAddReleaseLoader(true);
+  const addRelease = async () => {
     const selector = await setupWalletSelector({
       network: "testnet",
       modules: [setupMyNearWallet()],
@@ -212,23 +209,23 @@ export default function UploadApp() {
             params: {
               methodName: "add_release",
               args: {
-                name: releaseInfo.name,
+                name: packageInfo.name,
                 version: releaseInfo.version,
                 notes: releaseInfo.notes,
                 path: releaseInfo.path,
                 hash: releaseInfo.hash,
               },
               gas: nearAPI.utils.format.parseNearAmount("0.00000000003") ?? "0",
-              deposit: ""
+              deposit: "",
             },
           },
         ],
       });
       // @ts-expect-error: Property 'status' does not exist on type 'void | FinalExecutionOutcome'.
-      if (res.status.SuccessValue === '') {
+      if (res.status.SuccessValue === "") {
         setDeployStatus({
-          title: "Release added successfully",
-          message: `Release version ${releaseInfo.version} for ${releaseInfo.name} added successfully`,
+          title: "Application published",
+          message: `Application ${packageInfo.name} with release version ${releaseInfo.version} published`,
           error: false,
         });
       }
@@ -244,14 +241,11 @@ export default function UploadApp() {
         error: true,
       });
     }
-    setShowStatusModal(true);
-    setAddReleaseLoader(false);
   };
 
   const closeStatusModal = () => {
     setShowStatusModal(false);
     if (!deployStatus.error) {
-      setDeployerAccount(null);
       setPackageInfo({
         name: "",
         description: "",
@@ -279,46 +273,39 @@ export default function UploadApp() {
     });
   };
 
+  const publishApplication = async () => {
+    setIsLoading(true);
+    setShowStatusModal(false);
+    await addPackage();
+    await addRelease();
+    setShowStatusModal(true);
+    setIsLoading(false);
+  }
 
   return (
     <FlexLayout>
       <Navigation />
-      <UploadAppContent addWalletAccount={addWalletAccount}>
-        <UploadSwitch setTabSwitch={setTabSwitch} tabSwitch={tabSwitch}>
-          {tabSwitch ? (
-            <AddPackageForm
-              addPackage={addPackage}
-              addPackageLoader={addPackageLoader}
-              walletAccounts={walletAccounts}
-              deployerAccount={deployerAccount}
-              setDeployerAccount={setDeployerAccount}
-              showStatusModal={showStatusModal}
-              closeModal={closeStatusModal}
-              deployStatus={deployStatus}
-              packageInfo={packageInfo}
-              setPackageInfo={setPackageInfo}
-            />
-          ) : (
-            <UploadApplication
-              handleFileChange={handleFileChange}
-              addRelease={addRelease}
-              ipfsPath={ipfsPath}
-              fileHash={fileHash}
-              packages={packages}
-              walletAccounts={walletAccounts}
-              deployerAccount={deployerAccount}
-              setDeployerAccount={setDeployerAccount}
-              showStatusModal={showStatusModal}
-              addReleaseLoader={addReleaseLoader}
-              closeModal={closeStatusModal}
-              deployStatus={deployStatus}
-              releaseInfo={releaseInfo}
-              setReleaseInfo={setReleaseInfo}
-              fileInputRef={fileInputRef}
-            />
-          )}
-        </UploadSwitch>
-      </UploadAppContent>
+      <PageContentWrapper>
+        <PublishApplicationTable
+          addWalletAccount={addWalletAccount}
+          navigateToApplications={() => navigate("/applications")}
+          deployerAccount={deployerAccount}
+          showStatusModal={showStatusModal}
+          closeModal={closeStatusModal}
+          deployStatus={deployStatus}
+          packageInfo={packageInfo}
+          setPackageInfo={setPackageInfo}
+          handleFileChange={handleFileChange}
+          ipfsPath={ipfsPath}
+          fileHash={fileHash}
+          packages={packages}
+          releaseInfo={releaseInfo}
+          setReleaseInfo={setReleaseInfo}
+          fileInputRef={fileInputRef}
+          publishApplication={publishApplication}
+          isLoading={isLoading}
+        />
+      </PageContentWrapper>
     </FlexLayout>
   );
 }
