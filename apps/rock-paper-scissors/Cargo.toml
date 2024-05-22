@@ -1,0 +1,17 @@
+[package]
+name = "rock-paper-scissors"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bs58.workspace = true
+calimero-sdk = { path = "../../crates/sdk" }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+rand_chacha.workspace = true
+sha3.workspace = true

@@ -1150,6 +1150,7 @@ dependencies = [
  "fragile",
  "ouroboros",
  "owo-colors",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "thiserror",
@@ -6531,6 +6532,17 @@ checksum = "bb919243f34364b6bd2fc10ef797edbfa75f33c252e7998527479c6d6b47e1ec"
 dependencies = [
  "bytes",
  "rustc-hex",
+]
+
+[[package]]
+name = "rock-paper-scissors"
+version = "0.1.0"
+dependencies = [
+ "bs58 0.5.1",
+ "calimero-sdk",
+ "ed25519-dalek",
+ "rand_chacha 0.3.1",
+ "sha3",
 ]
 
 [[package]]

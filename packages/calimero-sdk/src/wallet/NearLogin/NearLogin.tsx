@@ -27,8 +27,6 @@ import {
   WalletType,
 } from "../../nodeApi";
 
-import "@near-wallet-selector/modal-ui/styles.css";
-
 export interface Message {
   premium: boolean;
   sender: string;

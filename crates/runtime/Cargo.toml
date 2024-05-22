@@ -24,6 +24,7 @@ assert-json-diff.workspace = true
 clap = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 owo-colors.workspace = true
+rand.workspace = true
 
 [features]
 host-traces = ["owo-colors"]

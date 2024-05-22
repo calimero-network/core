@@ -4,6 +4,8 @@ import { WalletSelectorContextProvider } from "@calimero-is-near/calimero-p2p-sd
 import NearLogin from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin/NearLogin";
 import { config } from "../calimeroConfig";
 
+import "@near-wallet-selector/modal-ui/styles.css";
+
 export default function Near() {
   const navigate = useNavigate();
   return (
