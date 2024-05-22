@@ -37,6 +37,15 @@ export interface LoginRequest {
   walletMetadata: WalletMetadata;
 }
 
+export interface RootKeyRequest {
+  accountId: String;
+  publicKey: string;
+  signature: string;
+  callbackUrl: string;
+  message: SignatureMetadata;
+  walletMetadata: WalletMetadata;
+}
+
 export interface NodeChallenge {
   nonce: String;
   applicationId: String;
@@ -98,8 +107,19 @@ export interface WalletSignatureData {
 }
 
 export interface LoginResponse {}
+export interface RootKeyResponse {}
 
 export interface NodeApi {
-  login(loginRequest: LoginRequest, rpcBaseUrl: string): ApiResponse<LoginResponse>;
-  requestChallenge(rpcBaseUrl: string, applicationId: string): ApiResponse<NodeChallenge>;
+  login(
+    loginRequest: LoginRequest,
+    rpcBaseUrl: string
+  ): ApiResponse<LoginResponse>;
+  requestChallenge(
+    rpcBaseUrl: string,
+    applicationId: string
+  ): ApiResponse<NodeChallenge>;
+  addRootKey(
+    rootKeyRequest: RootKeyRequest,
+    rpcBaseUrl: string
+  ): ApiResponse<RootKeyResponse>;
 }
