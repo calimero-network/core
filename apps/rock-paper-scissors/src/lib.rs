@@ -58,8 +58,8 @@ pub type Seed = [u8; 32];
 
 #[app::logic]
 impl Game {
-    pub fn create_keypair(seed: Repr<Seed>) -> KeyComponents {
-        let mut csprng = ChaCha20Rng::from_seed(*seed);
+    pub fn create_keypair(seed: Seed) -> KeyComponents {
+        let mut csprng = ChaCha20Rng::from_seed(seed);
 
         let keypair = SigningKey::generate(&mut csprng);
 
