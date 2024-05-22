@@ -1,68 +1,31 @@
 import React from "react";
-import { setupWalletSelector } from "@near-wallet-selector/core";
-import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
-import { Buffer } from "buffer";
-import axios from "axios";
-import { Login } from "../components/login/Login";
-import { Footer } from "../components/footer/Footer";
-import styled from "styled-components";
-import { getWalletCallbackUrl } from "../utils/wallet";
+import { useNavigate } from "react-router-dom";
+import { WalletSelectorContextProvider } from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin/WalletSelectorContext";
+import NearRootKey from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin/NearRootKey";
 
+import "@near-wallet-selector/modal-ui/styles.css";
 
-export interface Challenge {
-  nonce: string;
-  applicationId: string;
-  timestamp: number;
-  nodeSignature: string;
-}
-
-const fetchChallenge = async (): Promise<Challenge> => {
-  const body = {
-    applicationId: "admin-ui",
-  };
-  const response = await axios.post("/admin-api/request-challenge", body);
-  const payload: Challenge = response.data.data;
-  return payload;
-};
-
-const verifyOwner = async (): Promise<void> => {
-  let nonceBase64 = null;
-  let challengeObject: null | Challenge = null;
-  try {
-    challengeObject = await fetchChallenge();
-  } catch (e) {
-    console.error("Failed to fetch challenge:", e);
-    return;
-  }
-  const nonce = Buffer.from(challengeObject.nonce, "base64");
-  const selector = await setupWalletSelector({
-    network: "testnet",
-    modules: [setupMyNearWallet()],
-  });
-  const wallet = await selector.wallet("my-near-wallet");
-  const callbackUrl = getWalletCallbackUrl();
-  const message = challengeObject.nodeSignature;
-  const recipient = "me";
-  console.log("Signing message:", {
-    message,
-    recipient,
-    nonceBase64,
-    callbackUrl,
-  });
-  await wallet.signMessage({ message, nonce, recipient, callbackUrl });
-};
-
-const BootstrapWrapper = styled.div`
-  height: 150px;
-`;
-
-function Bootstrap(): JSX.Element {
+export default function Bootstrap() {
+  const navigate = useNavigate();
   return (
-    <BootstrapWrapper>
-      <Login verifyOwner={verifyOwner} />
-      <Footer />
-    </BootstrapWrapper>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        backgroundColor: "#111111",
+      }}
+    >
+      <WalletSelectorContextProvider network={"testnet"}>
+        <NearRootKey
+          appId={"admin-ui"}
+          rpcBaseUrl={"http://localhost:2428"}
+          successRedirect={() => navigate("/")}
+          navigateBack={() => navigate("/login")}
+          cardBackgroundColor={"#1c1c1c"}
+          nearTitleColor={"white"}
+        />
+      </WalletSelectorContextProvider>
+    </div>
   );
 }
-
-export default Bootstrap;

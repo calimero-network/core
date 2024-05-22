@@ -17,7 +17,7 @@ use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use tracing::{error, info};
 
-use super::handlers::add_client_key::{add_client_key_handler, SignatureMessage, WalletMetadata};
+use super::handlers::add_client_key::{add_client_key_handler, WalletMetadata};
 use super::handlers::challenge::{request_challenge_handler, NodeChallenge, CHALLENGE_KEY};
 use super::handlers::context::{
     create_context_handler, delete_context_handler, get_context_handler, get_contexts_handler,
@@ -217,7 +217,7 @@ async fn create_root_key_handler(
                 WalletType::ETH => {
                     if let Err(_) = verify_eth_signature(
                         &req.wallet_metadata.signing_key,
-                        &req.message.message,
+                        &req.message,
                         &req.signature
                     ) {
                         return (StatusCode::BAD_REQUEST, "Invalid signature");
@@ -290,6 +290,6 @@ struct PubKeyRequest {
     public_key: String,
     signature: String,
     callback_url: String,
-    pub wallet_metadata: WalletMetadata,
-    message: SignatureMessage
+    wallet_metadata: WalletMetadata,
+    message: String
 }
