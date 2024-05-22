@@ -28,7 +28,6 @@ struct Game {
     players: [Option<Player>; 2],
 }
 
-#[app::state]
 #[derive(Default, Debug, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct Player {
