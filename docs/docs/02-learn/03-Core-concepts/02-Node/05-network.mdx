@@ -46,8 +46,8 @@ Boot node is the component used for the initial discovery of the peers in the ne
   - **Characteristics:** Boot nodes are publicly available, long-running nodes that provide stable entry points to the network.
   - **Functions:**
     - **Bootstrap Node:** Acts as a well-known peer for the Kademlia protocol, facilitating peer discovery and network join operations.
-    - **Circuit Relay Server:** Serves as a relay for the DCUtR protocol, enabling peers to establish direct connections even when they are behind NAT or firewalls. The relay server is used only for the coordination of the hole punching between two nodes, not for relaying the entire traffic.
-
+    - **Circuit Relay Server:** Serves as a generic relay that provides the medium that facilitates the hole punching, enabling peers to establish direct connections even when they are behind NAT or firewalls. The relay server is used for the coordination of the hole punching between two nodes, and briding traffic if the hole punching attempt fails.
+    - **Rendezvous Server:** Facilitates peer discovery by allowing nodes to register their presence and query for other peers within a shared rendezvous namespace. This enables dynamic and efficient peer-to-peer connections without relying on a static list of peers.
 
 ## P2P protocols and techniques
 
