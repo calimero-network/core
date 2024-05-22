@@ -57,7 +57,7 @@ export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
     return {
       type: type,
       date: "-",
-      publicKey: item.signingKey.split(":")[1]!.trim(),
+      publicKey: type === "NEAR" ? item.signingKey.split(":")[1]!.trim() : item.signingKey,
     };
   });
 }
