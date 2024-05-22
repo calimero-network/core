@@ -3,8 +3,28 @@ id: publish-app
 title: Publish App
 ---
 
-<!-- So devs have created app logic with rust, and app ui with ts. How do they publish the app? How users download and run the app?  -->
+After you have built your application, you can publish it to the network. This will make it available for users to interact with.
 
-## TODO
+## Publishing application
 
-Explain how to add frontend to github pages
+Navigate to [Admin Dashboard](../explore/developers-quickstart/admin-dashboard) and select `Applications` tab.
+
+![Publish application](/admin-dashboard/publish-new-application.png)
+
+Enter the required data and publish the application. After publishing, your application will be available for users to interact with in new contexts.
+
+## Application preview
+
+Good practice allows users to try an app before they decide to use it. You can deploy an app to any host provider.
+
+We have used Github Pages to preview our [example app](../explore/developers-quickstart/example-app). You can do the same by following the steps below.
+
+## Example app preview
+
+First you need to enable Github Pages by following [Creating a Github Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/creating-a-github-pages-site)
+
+Our example app is written in next.js and code is available in [only-peers-client](https://github.com/calimero-network/only-peers-client)
+After enabling Github Pages, a few changes are required in your next.js app.
+`next.config.mjs` should contain output: "export" field
+
+Github Actions is a platform used to automate the deployment process. You can find example in [github workflow](https://github.com/calimero-network/only-peers-client/tree/master/.github/workflows)
