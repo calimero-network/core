@@ -1,5 +1,4 @@
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::{fmt, io};
 
@@ -149,26 +148,5 @@ impl<T: ReprBytes + BorshDeserialize> BorshDeserialize for Repr<T, Bs58> {
         let data = T::deserialize_reader(reader)?;
 
         Ok(Repr::from(data))
-    }
-}
-
-impl<const N: usize> ReprBytes for [u8; N] {
-    type Bytes = [u8; N];
-
-    fn to_bytes(&self) -> Self::Bytes {
-        *self
-    }
-
-    fn from_bytes<F, E>(f: F) -> Option<Result<Self, E>>
-    where
-        F: FnOnce(&mut Self::Bytes) -> Option<E>,
-    {
-        let mut bytes = MaybeUninit::zeroed();
-
-        if let Some(err) = f(unsafe { &mut *bytes.as_mut_ptr() }) {
-            return Some(Err(err));
-        }
-
-        Some(Ok(unsafe { bytes.assume_init() }))
     }
 }
