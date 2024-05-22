@@ -1,44 +1,46 @@
 ---
+
 id: network
 title: Network
 ---
 
 ## Overview
 
-This document provides an overview of the networking component of our P2P project, which is implemented using the `libp2p` library. The network consists of two types of peers: standard nodes and boot nodes, each serving distinct roles and utilizing specific protocols to facilitate peer-to-peer communication.
+This document provides an overview of the networking component of Calimero Network, which is implemented using the `libp2p` library. The network consists of two types of peers: client nodes and boot nodes, each serving distinct roles and utilizing specific protocols to facilitate peer-to-peer communication.
+Client node is the component which hosts and runs client applications, communicates and shares data between other client nodes. 
+Boot node is the component used for the initial discovery of the peers in the network.
 
 ## Node Types
 
 ### Standard Node
 - **Deployment:** Can run on any machine.
 - **Protocols Utilized:**
-  - `dcutr`
-  - `dns`
-  - `gossipsub`
-  - `identify`
-  - `kad`
-  - `mdns`
-  - `ping`
-  - `relay`
+  - [dcutr](#dcutr-direct-connection-upgrade-through-relay)
+  - [gossipsub](#gossipsub)
+  - [identify](#identify)
+  - [kad](#kademlia-kad)
+  - [mdns](#mdns-multicast-dns)
+  - [ping](#ping)
+  - [rendezvous](#rendezvous)
+  - [relay](#relay)
 
 - **Behavior:**
   - **Configuration:** A standard node can be configured to use zero or more relay servers.
   - **External Address:**
     - **Direct Public External Address:** Nodes with a direct public external address do not require relay servers. These nodes publish their public external address to the Kademlia DHT, making them directly accessible to other peers.
     - **Relayed External Address:** Nodes that do not have a direct public external address, typically those behind a NAT or firewall, can obtain a relayed external address by requesting a reservation at a relay server. Once the reservation is accepted, the node publishes its new external address to the Kademlia DHT. This address includes the relay information, allowing other nodes to connect via the relay server. The relay server is used only for the coordination of the hole punching between two nodes, not for relaying the entire traffic.
-  - **Discovery Protocols:**
-    - **mDNS:** Used for local network peer discovery, mDNS enables nodes to find peers within the same local network without the need for a central server.
-    - **Kademlia:** Used for global network peer discovery and routing, Kademlia facilitates the discovery of peers across the entire P2P network by maintaining a distributed hash table (DHT) of peer addresses.
-  - **Connection Management:** A peer, identified via PeerId, can be discovered either via mDNS or Kademlia. mDNS discovery provides local network addresses, while Kademlia discovery provides external addresses. The node maintains information about its connections to peers, including the discovery source. For a discovered external address, the node will only attempt to dial the peer if the same peer is not already connected via a discovered local address. This ensures that local connections are the priority and that there are no unnecessary hole punching attempts.
-  - **Message Relaying:** The node participates in the `gossipsub` protocol, relaying messages to all connected peers that support `gossipsub`. This enables efficient and scalable message dissemination across the network.
+  - **Discovery Protocols:** `mDNS`, `rendezvous` and `Kademlia`
+  - **Connection Management:** A peer, identified via PeerId, can be discovered either via mDNS, rendezvous or Kademlia. mDNS discovery provides local network addresses, while Kademlia discovery provides external addresses. The node maintains information about its connections to peers, including the discovery source. For a discovered external address, the node will only attempt to dial the peer if the same peer is not already connected via a discovered local address. This ensures that local connections have higher priority and that there are no unnecessary hole punching attempts.
+  - **Message Relaying:** The node participates in the `gossipsub` protocol, relaying messages to all connected peers that support it. This enables efficient and scalable message dissemination across the network.
 
 ### Boot Node
 - **Deployment:** Must run on a publicly available machine with a static IP address.
 - **Protocols Utilized:**
-  - `identify`
-  - `kad`
-  - `ping`
-  - `relay`
+  - [identify](#identify)
+  - [kad](#kademlia-kad)
+  - [ping](#ping)
+  - [rendezvous](#rendezvous)
+  - [relay](#relay)
 
 - **Behavior:**
   - **Characteristics:** Boot nodes are publicly available, long-running nodes that provide stable entry points to the network.
@@ -54,10 +56,6 @@ This document provides an overview of the networking component of our P2P projec
 #### DCUtR (Direct Connection Upgrade through Relay)
 - DCUtR is used to upgrade connections through relay nodes, allowing peers to establish direct connections even if they are behind NATs or firewalls. Peers initially connect via a relay node, then use the DCUtR protocol to attempt a direct connection, which reduces latency and bandwidth usage.
 - **Reference:** [libp2p DCUtR Documentation](https://github.com/libp2p/specs/blob/master/relay/DCUtR.md)
-
-#### DNS (Domain Name System)
-- DNS provides a mechanism for resolving domain names to IP addresses within the P2P network. It utilizes DNS-based service discovery to enable nodes to find peers without relying on a central server.
-- **Reference:** [libp2p DNS Documentation](https://github.com/libp2p/specs/blob/master/discovery/DNS.md)
 
 #### Gossipsub
 - Gossipsub is a scalable and efficient pub-sub protocol for message dissemination. It combines the best aspects of gossip protocols and topic-based pub-sub systems. It minimizes bandwidth usage by only gossiping metadata and ensuring that messages are only sent once per peer.
@@ -83,6 +81,10 @@ This document provides an overview of the networking component of our P2P projec
 - The Relay protocol supports relay-based communication, allowing peers to communicate through intermediary nodes when direct connections are not possible. Nodes can use relay nodes to forward their traffic, which is especially useful for nodes behind NATs or firewalls. The protocol includes mechanisms for reserving relay slots and managing relay connections.
 - **Reference:** [libp2p Relay Documentation](https://github.com/libp2p/specs/tree/master/relay)
 
+#### Rendezvous
+- The Rendezvous protocol enables peers to discover each other by registering at and querying a shared rendezvous point. This is useful for dynamically finding peers without needing a central directory or pre-established list of peers. Peers register their presence at a rendezvous server and can also query the server to find other peers.
+- **Reference:** [libp2p Rendezvous Documentation](https://github.com/libp2p/specs/tree/master/rendezvous)
+
 ### NAT Traversal Techniques
 
 One of the common techniques used for NAT traversal in P2P networks is **Hole Punching**. This technique allows two peers, each behind a NAT, to establish a direct connection with each other. Here's a brief explanation:
@@ -95,3 +97,5 @@ One of the common techniques used for NAT traversal in P2P networks is **Hole Pu
 This technique is particularly useful in P2P networks as it allows peers to communicate directly, reducing the load on relay servers and improving network efficiency. However, it's worth noting that hole punching may not work with all types of NATs, and success can depend on the specific NAT implementation and configuration.
 
 - **Reference:** [Hole punching in libp2p](https://blog.ipfs.tech/2022-01-20-libp2p-hole-punching/)
+- **Reference:** [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
+
