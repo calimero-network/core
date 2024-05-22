@@ -6,7 +6,7 @@ use calimero_sdk::serde::{Deserialize, Serialize};
 use crate::commit::{Commitment, Nonce};
 
 #[derive(
-    Copy, Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize, Deserialize, Serialize,
+    Eq, Copy, Clone, Debug, PartialEq, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
 )]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
@@ -17,9 +17,11 @@ pub enum Choice {
     Scissors,
 }
 
+use Choice::*;
+
 impl Choice {
     pub fn determine(commitment: &Commitment, nonce: &Nonce) -> Option<Self> {
-        let choices = [Choice::Rock, Choice::Paper, Choice::Scissors];
+        let choices = [Rock, Paper, Scissors];
 
         for choice in choices {
             if *commitment == Commitment::of(choice, nonce) {
@@ -33,16 +35,9 @@ impl Choice {
 
 impl PartialOrd for Choice {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        use Choice::*;
         match (self, other) {
-            (Rock, Scissors) => Some(Ordering::Greater),
-            (Scissors, Paper) => Some(Ordering::Greater),
-            (Paper, Rock) => Some(Ordering::Greater),
-
-            (Scissors, Rock) => Some(Ordering::Less),
-            (Paper, Scissors) => Some(Ordering::Less),
-            (Rock, Paper) => Some(Ordering::Less),
-
+            (Rock, Scissors) | (Scissors, Paper) | (Paper, Rock) => Some(Ordering::Greater),
+            (Scissors, Rock) | (Paper, Scissors) | (Rock, Paper) => Some(Ordering::Less),
             _ => Some(Ordering::Equal),
         }
     }

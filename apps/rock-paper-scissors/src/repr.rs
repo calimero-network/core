@@ -8,10 +8,10 @@ use bs58::decode::DecodeTarget;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{de, ser, Deserialize, Serialize};
 
-#[derive(Copy, Eq, Clone, PartialEq)]
+#[derive(Eq, Copy, Clone, PartialEq)]
 pub enum Bs58 {}
 
-#[derive(Copy, Eq, Clone, PartialEq)]
+#[derive(Eq, Copy, Clone, PartialEq)]
 pub enum Raw {}
 
 mod private {
