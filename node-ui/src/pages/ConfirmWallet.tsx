@@ -1,59 +1,24 @@
 import React from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import { useState } from "react";
-import { getParams, submitRootKeyRequest } from "../utils/rootkey";
-import { ModalContent } from "../components/common/StatusModal";
-import { RootKeyContainer } from "../components/confirmWallet/RootKeyContainer";
+import { useNavigate } from "react-router-dom";
+import MetamaskContext from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/MetamaskLogin/MetamaskWrapper";
 
-export default function ConfirmWallet(): JSX.Element {
-  const location = useLocation();
+export default function ConfirmWallet() {
   const navigate = useNavigate();
-  const params = getParams(location);
-  const [showStatusModal, setShowStatusModal] = useState(false);
-  const [addRootKeyStatus, setAddRootKeyStatus] = useState<ModalContent>({
-    title: "",
-    message: "",
-    error: false,
-  });
-
-  const addRootKey = async () => {
-    let addRootKeyResponse = await submitRootKeyRequest(params);
-
-    if (addRootKeyResponse.error) {
-      setAddRootKeyStatus({
-        title: "Failed to add root key",
-        message: addRootKeyResponse.error,
-        error: true,
-      });
-    } else {
-      setAddRootKeyStatus({
-        title: "Success",
-        message: addRootKeyResponse.data ?? "",
-        error: false,
-      });
-    }
-    setShowStatusModal(true);
-  };
-
-  const closeStatusModal = () => {
-    setShowStatusModal(false);
-    setAddRootKeyStatus({
-      title: "",
-      message: "",
-      error: false,
-    });
-    if (!addRootKeyStatus.error) {
-      navigate("/identity");
-    }
-  };
-
   return (
-    <RootKeyContainer
-      params={params}
-      submitRootKeyRequest={addRootKey}
-      showStatusModal={showStatusModal}
-      closeStatusModal={closeStatusModal}
-      addRootKeyStatus={addRootKeyStatus}
-    />
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+      }}
+    >
+      <MetamaskContext
+        applicationId={"admin-ui"}
+        rpcBaseUrl={"http://localhost:2428"}
+        successRedirect={() => console.log("root key added")}
+        navigateBack={() => navigate("/login")}
+        clientLogin={false}
+      />
+    </div>
   );
 }
