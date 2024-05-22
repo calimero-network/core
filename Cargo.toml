@@ -22,6 +22,7 @@ members = [
 
   "./apps/kv-store",
   "./apps/only-peers",
+  "./apps/rock-paper-scissors",
 
   "./contracts/package-manager",
 ]
@@ -56,9 +57,11 @@ prettyplease = "0.2.17"
 proc-macro2 = "1.0"
 quote = "1.0"
 rand = "0.8.5"
+rand_chacha = "0.3.1"
 reqwest = "0.12.2"
 rocksdb = "0.22.0"
 sha2 = "0.10.8"
+sha3 = "0.10.8"
 semver = "1.0.22"
 serde = "1.0.196"
 serde_json = "1.0.113"
