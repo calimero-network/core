@@ -11,8 +11,8 @@ cargo build --target wasm32-unknown-unknown --profile app-release
 
 mkdir -p res
 
-cp $TARGET/wasm32-unknown-unknown/app-release/rock-paper-scissors.wasm ./res/
+cp $TARGET/wasm32-unknown-unknown/app-release/rock_paper_scissors.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/rock-paper-scissors.wasm -o ./res/rock-paper-scissors.wasm
+  wasm-opt -Oz ./res/rock_paper_scissors.wasm -o ./res/rock_paper_scissors.wasm
 fi
