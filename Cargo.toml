@@ -25,6 +25,7 @@ members = [
   "./apps/rock-paper-scissors",
 
   "./contracts/package-manager",
+  "./contracts/leaderboard",
 ]
 
 [workspace.dependencies]
