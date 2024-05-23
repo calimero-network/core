@@ -40,11 +40,12 @@ const config: Config = {
         },
         blog: false,
         theme: {
-          customCss: "./src/css/custom.css",
+          customCss: "./src/css/custom.scss",
         },
       } satisfies Preset.Options,
     ],
   ],
+  plugins: ["docusaurus-plugin-sass"],
   themeConfig: {
     colorMode: {
       disableSwitch: false,
@@ -102,7 +103,7 @@ const config: Config = {
     prism: {
       theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
-      additionalLanguages: ["bash", "toml"]
+      additionalLanguages: ["bash", "toml"],
     },
   } satisfies Preset.ThemeConfig,
 };
