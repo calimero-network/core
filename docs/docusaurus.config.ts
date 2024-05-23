@@ -51,6 +51,14 @@ const config: Config = {
       defaultMode: "dark",
       respectPrefersColorScheme: true,
     },
+    announcementBar: {
+      id: "id-0002",
+      content:
+        '**🎉 Come check <a href="https://www.calimero.network/">our new website</a> 🎉**',
+      backgroundColor: "#247E80",
+      textColor: "#fff",
+      isCloseable: true,
+    },
     docs: {
       sidebar: {
         hideable: true,
@@ -102,7 +110,7 @@ const config: Config = {
     prism: {
       theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
-      additionalLanguages: ["bash", "toml"]
+      additionalLanguages: ["bash", "toml"],
     },
   } satisfies Preset.ThemeConfig,
 };
