@@ -61,7 +61,6 @@ const ListWrapper = styled.div<ListWrapperProps>`
   .list-items {
     overflow-y: scroll;
   }
-
 `;
 
 interface TableHeaderProps {
