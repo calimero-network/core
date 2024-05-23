@@ -60,6 +60,7 @@ export default function PublishApplicationTable({
     <ContentCard
       headerBackText={t.title}
       headerOnBackClick={navigateToApplications}
+      isOverflow={true}
     >
       <StatusModal
         closeModal={closeModal}
