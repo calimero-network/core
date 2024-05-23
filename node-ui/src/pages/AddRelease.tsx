@@ -224,7 +224,7 @@ export default function AddRelease() {
   return (
     <FlexLayout>
       <Navigation />
-      <PageContentWrapper>
+      <PageContentWrapper isOverflow={true}>
         <AddReleaseTable
           addWalletAccount={addWalletAccount}
           navigateToApplicationDetails={() => navigate(`/applications/${id}`)}

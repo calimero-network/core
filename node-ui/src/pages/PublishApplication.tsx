@@ -285,7 +285,7 @@ export default function PublishApplication() {
   return (
     <FlexLayout>
       <Navigation />
-      <PageContentWrapper>
+      <PageContentWrapper isOverflow={true}>
         <PublishApplicationTable
           addWalletAccount={addWalletAccount}
           navigateToApplications={() => navigate("/applications")}
