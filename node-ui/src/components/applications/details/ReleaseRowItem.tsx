@@ -56,7 +56,7 @@ export default function releaseRowItem(
     <RowItem key={item.hash} hasBorders={id === count}>
       <div className="row-item name">{item.version}</div>
       <div className="row-item read">
-        <span className="long-text">{item.path}</span>
+        <span className="long-text">{item.path.substring(0, 20)}...</span>
       </div>
       <div className="row-item read">
         <span className="long-text">{item.notes}</span>
