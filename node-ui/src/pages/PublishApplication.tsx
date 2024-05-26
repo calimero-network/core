@@ -4,6 +4,7 @@ import { FlexLayout } from "../components/layout/FlexLayout";
 import {
   Account,
   BrowserWallet,
+  NetworkId,
   setupWalletSelector,
 } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
@@ -97,8 +98,7 @@ export default function PublishApplication() {
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
-      // @ts-ignore: The 'import.meta' meta-property is only allowed when the '--module' option ...
-      network: import.meta.env.VITE_NEAR_ENVIRONMENT ?? "testnet",
+      network: (process.env["VITE_NEAR_ENVIRONMENT"] as NetworkId) ?? "testnet",
       modules: [setupMyNearWallet()],
     });
     const wallet: BrowserWallet = await selector.wallet("my-near-wallet");
