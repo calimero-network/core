@@ -15,6 +15,7 @@ import { Package } from "./Applications";
 import PageContentWrapper from "../components/common/PageContentWrapper";
 import PublishApplicationTable from "../components/publishApplication/PublishApplicationTable";
 import { useNavigate } from "react-router-dom";
+import { isFinalExecutionStatus } from "../utils/wallet";
 
 const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
 
@@ -40,7 +41,7 @@ export interface DeployStatus {
 
 export default function PublishApplication() {
   const navigate = useNavigate();
-  const fileInputRef = useRef(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { getPackages } = useRPC();
   const [ipfsPath, setIpfsPath] = useState("");
   const [fileHash, setFileHash] = useState("");
@@ -107,13 +108,11 @@ export default function PublishApplication() {
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    // @ts-ignore: Object is possibly 'null'.
-    const file = event.target.files[0];
+    const file = event.target.files && event.target.files[0];
     if (file && file.name.endsWith(".wasm")) {
       const reader = new FileReader();
       reader.onload = async (e) => {
-        // @ts-ignore: Object is possibly 'null'.
-        const arrayBuffer = new Uint8Array(e.target.result as ArrayBufferLike);
+        const arrayBuffer = new Uint8Array(e.target?.result as ArrayBufferLike);
         const bytes = new Uint8Array(arrayBuffer);
         const blob = new Blob([bytes], { type: "application/wasm" });
 
@@ -138,9 +137,8 @@ export default function PublishApplication() {
           });
       };
 
-      reader.onerror = (e) => {
-        // @ts-ignore: Property 'error' does not exist on type 'EventTarget'.
-        console.error("Error occurred while reading the file:", e.target.error);
+      reader.onerror = (e: ProgressEvent<FileReader>) => {
+        console.error("Error occurred while reading the file:", e.target?.error);
       };
 
       reader.readAsArrayBuffer(file);
@@ -172,8 +170,8 @@ export default function PublishApplication() {
           },
         ],
       });
-      // @ts-expect-error: Property 'status' does not exist on type 'void | FinalExecutionOutcome'.
-      if (res.status.SuccessValue) {
+      if (res &&
+        isFinalExecutionStatus(res.status) && res.status.SuccessValue) {
         setDeployStatus({
           title: "Package added successfully",
           message: `Package ${packageInfo.name} added successfully`,
@@ -181,10 +179,12 @@ export default function PublishApplication() {
         });
       }
     } catch (error) {
-      const errorMessage =
-        // @ts-ignore: Property 'message' does not exist on type 'unknown'.
-        JSON.parse(error.message).kind?.kind?.FunctionCallError
-          ?.ExecutionError ?? "An error occurred while adding the package";
+      let errorMessage = "";
+
+      if (error instanceof Error) {
+        errorMessage = JSON.parse(error.message).kind?.kind?.FunctionCallError
+        ?.ExecutionError ?? "An error occurred while publishing package";
+      }
 
       setDeployStatus({
         title: "Failed to add package",
@@ -221,8 +221,11 @@ export default function PublishApplication() {
           },
         ],
       });
-      // @ts-expect-error: Property 'status' does not exist on type 'void | FinalExecutionOutcome'.
-      if (res.status.SuccessValue === "") {
+      if (
+        res &&
+        isFinalExecutionStatus(res.status) &&
+        res.status.SuccessValue === ""
+      ) {
         setDeployStatus({
           title: "Application published",
           message: `Application ${packageInfo.name} with release version ${releaseInfo.version} published`,
@@ -230,10 +233,12 @@ export default function PublishApplication() {
         });
       }
     } catch (error) {
-      const errorMessage =
-        // @ts-ignore: Property 'message' does not exist on type 'unknown'.
-        JSON.parse(error.message).kind?.kind?.FunctionCallError
-          ?.ExecutionError ?? "An error occurred while adding the release";
+      let errorMessage = "";
+
+      if (error instanceof Error) {
+        errorMessage = JSON.parse(error.message).kind?.kind?.FunctionCallError
+        ?.ExecutionError ?? "An error occurred while publishing the release";
+      }
 
       setDeployStatus({
         title: "Failed to add release",
@@ -261,7 +266,6 @@ export default function PublishApplication() {
       setFileHash("");
       setIpfsPath("");
       if (fileInputRef.current) {
-        // @ts-ignore: Object is possibly 'null'.
         fileInputRef.current.value = "";
       }
     }
