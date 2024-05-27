@@ -215,12 +215,14 @@ async fn create_root_key_handler(
                         &state.store,
                         RootKey {
                             signing_key: req.public_key,
+                            wallet_type: WalletType::NEAR,
+                            date: req.wallet_metadata.date
                         },
                     );
 
                     handle_root_key_result(result)
                 }
-                WalletType::ETH => {
+                WalletType::ETH | WalletType::BNB | WalletType::ARB | WalletType::ZK => {
                     if let Err(_) = verify_eth_signature(
                         &req.wallet_metadata.signing_key,
                         &req.message,
@@ -233,6 +235,8 @@ async fn create_root_key_handler(
                         &state.store,
                         RootKey {
                             signing_key: req.public_key,
+                            wallet_type: req.wallet_metadata.wallet_type,
+                            date: req.wallet_metadata.date
                         },
                     );
 

@@ -7,6 +7,9 @@ enum AlgorithmType {
 export enum WalletType {
   ETH = "ETH",
   NEAR = "NEAR",
+  BNB = "BNB",
+  ARB = "ARB",
+  ZK = "ZK"
 }
 
 enum VerifiableCredentialType {
@@ -75,6 +78,7 @@ export interface Payload {
 export interface WalletMetadata {
   type: WalletType;
   signingKey: String;
+  date: number;
 }
 
 export interface NearMetadata extends WalletMetadata {

@@ -13,6 +13,8 @@ pub struct Did {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RootKey {
     pub signing_key: String,
+    pub wallet_type: WalletType,
+    pub date: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -34,6 +36,9 @@ pub struct Context {
 pub enum WalletType {
     NEAR,
     ETH,
+    BNB,
+    ARB,
+    ZK
 }
 
 #[derive(Debug, PartialEq, Eq)]

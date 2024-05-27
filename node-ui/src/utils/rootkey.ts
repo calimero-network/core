@@ -39,25 +39,14 @@ export const submitRootKeyRequest = async (params: UrlParams): Promise<submitRoo
 
 export interface RootKeyObject {
   type: string;
-  date: string;
+  date: number;
   publicKey: string;
 }
 
 export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
-  return didList.map((item) => {
-    let type: string;
-    if (item.signingKey.startsWith("ed25519")) {
-      type = "NEAR";
-    } else if (item.signingKey.startsWith("0x")) {
-      type = "ETH";
-    } else {
-      type = "Unknown";
-    }
-
-    return {
-      type: type,
-      date: "-",
-      publicKey: type === "NEAR" ? item.signingKey.split(":")[1]!.trim() : item.signingKey,
-    };
-  });
+  return didList.map((item) => ({
+      type: item.walletType,
+      date: item.date,
+      publicKey: item.walletType === "NEAR" ? item.signingKey.split(":")[1]!.trim() : item.signingKey,
+    }));
 }

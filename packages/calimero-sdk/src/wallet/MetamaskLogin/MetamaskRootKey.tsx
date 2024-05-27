@@ -10,11 +10,11 @@ import apiClient from "../../api";
 import {
   NodeChallenge,
   RootKeyRequest,
-  WalletType,
 } from "../../nodeApi";
 import { ResponseData } from "../../api-response";
 import { setStorageNodeAuthorized } from "../../storage/storage";
 import { Loading } from "../loading/Loading";
+import { getWalletType } from "../walletType";
 
 interface MetamaskRootKeyProps {
   applicationId: string;
@@ -35,7 +35,7 @@ export default function MetamaskRootKey({
   const [walletSignatureData, setWalletSignatureData] =
     useState(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const { ready } = useSDK();
+  const { chainId, ready } = useSDK();
 
   const signatureMessage = useCallback((): string | undefined => {
     return walletSignatureData
@@ -76,8 +76,9 @@ export default function MetamaskRootKey({
         callbackUrl: "",
         message: walletSignatureData,
         walletMetadata: {
-          type: WalletType.ETH,
+          type: getWalletType(chainId),
           signingKey: address,
+          date: Date.now(),
         },
       }
       await apiClient

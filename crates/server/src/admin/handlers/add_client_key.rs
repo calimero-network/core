@@ -42,6 +42,7 @@ pub struct WalletMetadata {
     #[serde(rename = "type")]
     pub wallet_type: WalletType,
     pub signing_key: String,
+    pub date: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,7 +110,7 @@ fn transform_request(
             })?;
             SignatureMetadataEnum::NEAR(metadata)
         }
-        WalletType::ETH => {
+        WalletType::ETH | WalletType::BNB | WalletType::ARB | WalletType::ZK => {
             let metadata = serde_json::from_value::<EthSignatureMessageMetadata>(
                 intermediate.payload.metadata,
             )
@@ -206,7 +207,7 @@ fn verify_node_signature(
             }
             Ok(true)
         }
-        WalletType::ETH => {
+        WalletType::ETH | WalletType::BNB | WalletType::ARB | WalletType::ZK => {
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
                 _ => {
@@ -308,6 +309,8 @@ fn validate_root_key_exists(
     //Check if root key exists
     let root_key = RootKey {
         signing_key: req.wallet_metadata.signing_key.clone(),
+        wallet_type: req.wallet_metadata.wallet_type,
+        date: req.wallet_metadata.date,
     };
 
     match get_root_key(&store, &root_key).map_err(|e| {

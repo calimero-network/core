@@ -18,11 +18,11 @@ import {
   SignatureMessageMetadata,
   WalletMetadata,
   WalletSignatureData,
-  WalletType,
 } from "../../nodeApi";
 import { ResponseData } from "../../api-response";
 import { setStorageNodeAuthorized } from "../../storage/storage";
 import { Loading } from "../loading/Loading";
+import { getWalletType } from "../walletType";
 
 interface LoginWithMetamaskProps {
   applicationId: string;
@@ -43,7 +43,7 @@ export default function LoginWithMetamask({
   const [walletSignatureData, setWalletSignatureData] =
     useState<WalletSignatureData | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const { ready } = useSDK();
+  const { chainId, ready } = useSDK();
 
   const signatureMessage = useCallback((): string | undefined => {
     return walletSignatureData
@@ -109,8 +109,9 @@ export default function LoginWithMetamask({
       //TODO handle error
     } else {
       const walletMetadata: WalletMetadata = {
-        type: WalletType.ETH,
+        type: getWalletType(chainId),
         signingKey: address,
+        date: Date.now(),
       };
       const loginRequest: LoginRequest = {
         walletSignature: signData,

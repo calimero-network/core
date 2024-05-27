@@ -142,6 +142,7 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
       walletMetadata: {
         type: WalletType.NEAR,
         signingKey: publicKey,
+        date: Date.now(),
       },
     }
 
