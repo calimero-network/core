@@ -5,11 +5,12 @@ import { ContentCard } from "../common/ContentCard";
 import OptionsHeader, { TableOptions } from "../common/OptionsHeader";
 import ListTable from "../common/ListTable";
 import rowItem from "./RowItem";
+import invitationRowItem from "./InvitationRowItem";
 import { Options } from "../../constants/ContextConstants";
 import StatusModal, { ModalContent } from "../common/StatusModal";
 import ActionDialog from "../common/ActionDialog";
 import { ContextsList } from "../../api/dataSource/NodeDataSource";
-import { ContextObject } from "../../pages/Contexts";
+import { ContextObject, Invitation } from "../../pages/Contexts";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -28,6 +29,7 @@ interface ContextTableProps {
   showActionDialog: boolean;
   setShowActionDialog: (show: boolean) => void;
   showModal: (id: string) => void;
+  handleInvitation: (id: string, isAccepted?: boolean) => Promise<void>;
 }
 
 export default function ContextTable({
@@ -42,7 +44,8 @@ export default function ContextTable({
   deleteStatus,
   showActionDialog,
   setShowActionDialog,
-  showModal
+  showModal,
+  handleInvitation
 }: ContextTableProps) {
   const t = translations.contextPage;
 
@@ -83,13 +86,14 @@ export default function ContextTable({
             onRowItemClick={showModal}
           />
         ) : (
-          <ListTable<ContextObject>
+          <ListTable<Invitation>
             listDescription={t.invitedListDescription}
             numOfColumns={2}
-            listItems={nodeContextList.invited}
-            rowItem={rowItem}
+            listItems={[]}
+            rowItem={invitationRowItem}
             roundTopItem={true}
             noItemsText={t.noInviedAppsListText}
+            onRowItemClick={handleInvitation}
           />
         )}
       </FlexWrapper>

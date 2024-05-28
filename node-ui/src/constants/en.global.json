@@ -147,6 +147,11 @@
         "actionDialog": {
             "title": "Delete Context",
             "subtitle": "Are you sure you want to delete this context? This action cannot be undone."
+        },
+        "contextInvitation": {
+            "invitationText": "Invited on ",
+            "acceptButtonText": "Accept",
+            "declineButtonText": "Decline"
         }
     },
     "startContextPage": {

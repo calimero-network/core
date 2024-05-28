@@ -11,6 +11,11 @@ import { Context, ContextsList } from "../api/dataSource/NodeDataSource";
 import { ModalContent } from "../components/common/StatusModal";
 import { TableOptions } from "../components/common/OptionsHeader";
 
+export interface Invitation {
+  id: string;
+  invitedOn: string;
+}
+
 export interface ContextObject {
   id: string;
   applicationId: string;
@@ -141,6 +146,15 @@ export default function Contexts() {
     setShowActionDialog(true);
   };
 
+  const handleInvitation = async (id: string, isAccepted?: boolean) => {
+    // TODO: when api for handling invitations is ready
+    if (isAccepted) {
+      // TODO: handle invitation acceptance
+    } else {
+      // TODO: handle invitation rejection
+    }
+  }
+
   return (
     <FlexLayout>
       <Navigation />
@@ -158,6 +172,7 @@ export default function Contexts() {
           showActionDialog={showActionDialog}
           setShowActionDialog={setShowActionDialog}
           showModal={showModal}
+          handleInvitation={handleInvitation}
         />
       </PageContentWrapper>
     </FlexLayout>

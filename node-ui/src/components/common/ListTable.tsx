@@ -94,7 +94,7 @@ interface ListTableProps<T> {
   numOfColumns: number;
   roundTopItem: boolean;
   noItemsText: string;
-  onRowItemClick?: (id: string) => void;
+  onRowItemClick?: (id: string, isAccepted?: boolean) => void;
 }
 
 export default function ListTable<T>({
