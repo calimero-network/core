@@ -225,7 +225,6 @@ const NearLogin: React.FC<NearLoginProps> = ({
       const walletMetadata: WalletMetadata = {
         type: WalletType.NEAR,
         signingKey: publicKey,
-        created_at: Date.now(),
       };
       const loginRequest: LoginRequest = {
         walletSignature: signature,

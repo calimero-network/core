@@ -21,6 +21,7 @@ pub struct RootKey {
 pub struct ClientKey {
     pub wallet_type: WalletType,
     pub signing_key: String,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -78,7 +78,6 @@ export default function MetamaskRootKey({
         walletMetadata: {
           type: getWalletType(chainId),
           signingKey: address,
-          created_at: Date.now(),
         },
       }
       await apiClient

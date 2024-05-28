@@ -9,6 +9,7 @@ use axum::{Extension, Json, Router};
 use calimero_identity::auth::verify_eth_signature;
 use calimero_primitives::identity::{RootKey, WalletType};
 use calimero_store::Store;
+use chrono::Utc;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -216,7 +217,7 @@ async fn create_root_key_handler(
                         RootKey {
                             signing_key: req.public_key,
                             wallet_type: WalletType::NEAR,
-                            created_at: req.wallet_metadata.created_at
+                            created_at: Utc::now().timestamp_millis() as u64
                         },
                     );
 
@@ -236,7 +237,7 @@ async fn create_root_key_handler(
                         RootKey {
                             signing_key: req.public_key,
                             wallet_type: req.wallet_metadata.wallet_type,
-                            created_at: req.wallet_metadata.created_at
+                            created_at: Utc::now().timestamp_millis() as u64
                         },
                     );
 

@@ -42,7 +42,6 @@ pub struct WalletMetadata {
     #[serde(rename = "type")]
     pub wallet_type: WalletType,
     pub signing_key: String,
-    pub created_at: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,6 +166,7 @@ fn store_client_key(
     let client_key = ClientKey {
         wallet_type: WalletType::NEAR,
         signing_key: req.payload.message.client_public_key.clone(),
+        created_at: Utc::now().timestamp_millis() as u64,
     };
     add_client_key(&store, client_key).map_err(|e| parse_api_error(e))?;
     info!("Client key stored successfully.");
@@ -306,14 +306,7 @@ fn validate_root_key_exists(
     req: AddClientKeyRequest,
     store: &Store,
 ) -> Result<AddClientKeyRequest, ApiError> {
-    //Check if root key exists
-    let root_key = RootKey {
-        signing_key: req.wallet_metadata.signing_key.clone(),
-        wallet_type: req.wallet_metadata.wallet_type,
-        created_at: req.wallet_metadata.created_at,
-    };
-
-    match get_root_key(&store, &root_key).map_err(|e| {
+    match get_root_key(&store, req.wallet_metadata.signing_key.clone()).map_err(|e| {
         info!("Error getting root key: {}", e);
         ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,

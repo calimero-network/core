@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Response};
 use calimero_identity::auth::verify_near_public_key;
 use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_store::Store;
+use chrono::Utc;
 use libp2p::futures::future::BoxFuture;
 use tower::{Layer, Service};
 use tracing::debug;
@@ -90,6 +91,7 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
     let client_key = ClientKey {
         wallet_type: auth_headers.wallet_type,
         signing_key: auth_headers.signing_key.clone(),
+        created_at: Utc::now().timestamp_millis() as u64,
     };
     let key_exists = exists_client_key(store, &client_key)
         .map_err(|_| UnauthorizedError::new("Issue during extracting client key"))?;

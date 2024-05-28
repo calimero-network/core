@@ -35,7 +35,7 @@ export interface ApiRootKey {
 interface ClientKey {
   signing_key: string;
   wallet_type: string;
-  date: number;
+  created_at: number;
 }
 
 interface RootkeyResponse {

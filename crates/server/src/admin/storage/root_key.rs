@@ -17,10 +17,10 @@ pub fn add_root_key(store: &Store, root_key: RootKey) -> eyre::Result<bool> {
     Ok(true)
 }
 
-pub fn get_root_key(store: &Store, root_key: &RootKey) -> eyre::Result<Option<RootKey>> {
+pub fn get_root_key(store: &Store, signing_key: String) -> eyre::Result<Option<RootKey>> {
     let did = get_or_create_did(store)?;
     Ok(did
         .root_keys
         .into_iter()
-        .find(|k| k.signing_key == root_key.signing_key))
+        .find(|k| k.signing_key == signing_key))
 }
