@@ -75,6 +75,7 @@ export default function invitationRowItem(
           height="1.875rem"
           padding="0.4375rem 0.6875rem"
           width="3.938rem"
+          borderRadius="0.25rem"
         />
         <Button
           onClick={() => onitemClicked && onitemClicked(item.id, false)}
@@ -88,6 +89,7 @@ export default function invitationRowItem(
           height="1.875rem"
           padding="0.4375rem 0.6875rem"
           width="3.938rem"
+          borderRadius="0.25rem"
         />
       </div>
     </RowItem>

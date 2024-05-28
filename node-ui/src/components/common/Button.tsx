@@ -12,6 +12,7 @@ interface StyledButtonProps {
   lineHeight: string;
   height: string;
   padding: string;
+  borderRadius: string;
 }
 
 const ButtonStyled = styled.button<StyledButtonProps>`
@@ -19,7 +20,7 @@ const ButtonStyled = styled.button<StyledButtonProps>`
   height: ${(props) => props.height};
   width: ${(props) => (props.btnWidth ? props.btnWidth : "fit-content")};
   padding: ${(props) => props.padding};
-  border-radius: 0.5rem;
+  border-radius: ${(props) => props.borderRadius};
   color: ${(props) => props.textColor};
   font-size: ${(props) => props.fontSize};
   font-weight: 500;
@@ -48,6 +49,7 @@ interface ButtonProps {
   lineHeight?: string;
   height?: string;
   padding?: string;
+  borderRadius?: string;
 }
 
 export default function Button({
@@ -63,7 +65,8 @@ export default function Button({
   fontSize = "0.875rem",
   lineHeight = "1.25rem",
   height = "2.375rem",
-  padding = "0.625rem 0.75rem"
+  padding = "0.625rem 0.75rem",
+  borderRadius = "0.5rem"
 }: ButtonProps) {
   return (
     <ButtonStyled
@@ -78,6 +81,7 @@ export default function Button({
       lineHeight={lineHeight}
       height={height}
       padding={padding}
+      borderRadius={borderRadius}
     >
       {isLoading ? <LoaderSpinner /> : text}
     </ButtonStyled>
