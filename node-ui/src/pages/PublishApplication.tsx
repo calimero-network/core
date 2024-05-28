@@ -140,6 +140,7 @@ export default function PublishApplication() {
             });
         } else {
           console.error("Failed to read file or file content is not available");
+          return;
         }
       };
 
@@ -148,6 +149,7 @@ export default function PublishApplication() {
           "Error occurred while reading the file:",
           e.target?.error
         );
+        return;
       };
 
       reader.readAsArrayBuffer(file);
