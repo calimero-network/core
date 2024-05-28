@@ -112,7 +112,7 @@ export default function PublishApplication() {
     if (file && file.name.endsWith(".wasm")) {
       const reader = new FileReader();
       reader.onload = async (e) => {
-        const arrayBuffer = new Uint8Array(e.target?.result as ArrayBufferLike);
+        const arrayBuffer = new Uint8Array(e?.target?.result as ArrayBufferLike);
         const bytes = new Uint8Array(arrayBuffer);
         const blob = new Blob([bytes], { type: "application/wasm" });
 
