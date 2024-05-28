@@ -78,7 +78,7 @@ export interface Payload {
 export interface WalletMetadata {
   type: WalletType;
   signingKey: String;
-  date: number;
+  created_at: number;
 }
 
 export interface NearMetadata extends WalletMetadata {

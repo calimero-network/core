@@ -216,7 +216,7 @@ async fn create_root_key_handler(
                         RootKey {
                             signing_key: req.public_key,
                             wallet_type: WalletType::NEAR,
-                            date: req.wallet_metadata.date
+                            created_at: req.wallet_metadata.created_at
                         },
                     );
 
@@ -236,7 +236,7 @@ async fn create_root_key_handler(
                         RootKey {
                             signing_key: req.public_key,
                             wallet_type: req.wallet_metadata.wallet_type,
-                            date: req.wallet_metadata.date
+                            created_at: req.wallet_metadata.created_at
                         },
                     );
 

@@ -111,7 +111,7 @@ export default function LoginWithMetamask({
       const walletMetadata: WalletMetadata = {
         type: getWalletType(chainId),
         signingKey: address,
-        date: Date.now(),
+        created_at: Date.now(),
       };
       const loginRequest: LoginRequest = {
         walletSignature: signData,

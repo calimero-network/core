@@ -23,13 +23,13 @@ export interface ContextsList<T> {
 export interface RootKey {
   signingKey: string;
   walletType: string;
-  date: number;
+  createdAt: number;
 }
 
 export interface ApiRootKey {
   signing_key: string;
   wallet_type: string;
-  date: number;
+  created_at: number;
 }
 
 interface ClientKey {
@@ -139,10 +139,10 @@ export class NodeDataSource {
     try {
       const response = await this.client.get<RootkeyResponse>("/admin-api/did");
       if (response?.data?.root_keys) {
-        const rootKeys: RootKey[] = response?.data?.root_keys?.map((obj: { signing_key: string, wallet_type: string, date: number }) => ({
+        const rootKeys: RootKey[] = response?.data?.root_keys?.map((obj: { signing_key: string, wallet_type: string, created_at: number }) => ({
           signingKey: obj.signing_key,
           walletType: obj.wallet_type,
-          date: obj.date
+          createdAt: obj.created_at
         }));
         return rootKeys;
       } else {

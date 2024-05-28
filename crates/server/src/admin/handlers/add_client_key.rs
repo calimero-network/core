@@ -42,7 +42,7 @@ pub struct WalletMetadata {
     #[serde(rename = "type")]
     pub wallet_type: WalletType,
     pub signing_key: String,
-    pub date: u64,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,7 +310,7 @@ fn validate_root_key_exists(
     let root_key = RootKey {
         signing_key: req.wallet_metadata.signing_key.clone(),
         wallet_type: req.wallet_metadata.wallet_type,
-        date: req.wallet_metadata.date,
+        created_at: req.wallet_metadata.created_at,
     };
 
     match get_root_key(&store, &root_key).map_err(|e| {

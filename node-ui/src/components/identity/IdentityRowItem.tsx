@@ -63,7 +63,7 @@ export default function identityRowItem(
   return (
     <RowItem key={id} hasBorders={id === count}>
       <div className="row-item type">{item.type}</div>
-      <div className="row-item date">{formatTimestampToDate(item.date)}</div>
+      <div className="row-item date">{formatTimestampToDate(item.createdAt)}</div>
       <div className="row-item public-key">{item.publicKey}</div>
       <div className="menu-dropdown">
         <MenuIconDropdown
