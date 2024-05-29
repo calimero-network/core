@@ -71,6 +71,7 @@ export default function AddReleaseTable({
       descriptionComponent={
         applicationInformation && <DetailsCard details={applicationInformation} />
       }
+      isOverflow={true}
     >
       <StatusModal
         closeModal={closeModal}

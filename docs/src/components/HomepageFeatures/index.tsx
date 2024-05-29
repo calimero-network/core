@@ -11,7 +11,7 @@ type FeatureItem = {
 const FeatureList: FeatureItem[] = [
   {
     title: "Robust framework",
-    Svg: require("@site/static/img/undraw_docusaurus_tree.svg").default,
+    Svg: require("@site/static/home/home-framework.svg").default,
     description: (
       <>
         Quickly launch and configure nodes in our peer-to-peer network with
@@ -22,7 +22,7 @@ const FeatureList: FeatureItem[] = [
   },
   {
     title: "Comprehensive SDKs",
-    Svg: require("@site/static/img/undraw_docusaurus_mountain.svg").default,
+    Svg: require("@site/static/home/home-sdk.svg").default,
     description: (
       <>
         {" "}
@@ -33,7 +33,7 @@ const FeatureList: FeatureItem[] = [
   },
   {
     title: "Open Source project",
-    Svg: require("@site/static/img/undraw_docusaurus_react.svg").default,
+    Svg: require("@site/static/home/home-open-source.svg").default,
     description: (
       <>
         Contribute your code to help forge a platform that leads the way in

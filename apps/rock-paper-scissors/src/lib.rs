@@ -49,7 +49,7 @@ pub enum Event<'a> {
     PlayerCommited { id: PlayerIdx },
     NewPlayer { id: PlayerIdx, name: &'a str },
     PlayerRevealed { id: PlayerIdx, reveal: &'a Choice },
-    GameOver { winner: Option<usize> },
+    GameOver { winner: Option<PlayerIdx> },
     StateDumped,
 }
 
@@ -179,9 +179,13 @@ impl Game {
 
         if let Some(State::Revealed(other)) = &other_player.state {
             match choice.partial_cmp(other) {
-                Some(Ordering::Less) => app::emit!(Event::GameOver { winner: Some(1) }),
+                Some(Ordering::Less) => app::emit!(Event::GameOver {
+                    winner: Some(player_idx.other())
+                }),
                 Some(Ordering::Equal) => app::emit!(Event::GameOver { winner: None }),
-                Some(Ordering::Greater) => app::emit!(Event::GameOver { winner: Some(0) }),
+                Some(Ordering::Greater) => app::emit!(Event::GameOver {
+                    winner: Some(player_idx)
+                }),
                 None => {}
             }
         }

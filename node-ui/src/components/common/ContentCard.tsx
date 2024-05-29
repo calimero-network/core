@@ -3,16 +3,16 @@ import styled from "styled-components";
 import { ArrowLeftIcon } from "@heroicons/react/24/solid";
 import Button from "./Button";
 
-const Container = styled.div`
+const Container = styled.div<{isOverflow: boolean}>`
   display: flex;
   flex: 1;
   flex-direction: column;
   gap: 1rem;
-  height: 100%;
   padding: 2rem;
   border-radius: 0.5rem;
   background-color: #212325;
   color: #fff;
+  ${(props) => props.isOverflow && "height: 100%;"}
 
   .header-back {
     display: flex;
@@ -83,6 +83,7 @@ interface ContentCardProps {
   headerOnBackClick?: () => void;
   children: React.ReactNode;
   descriptionComponent?: React.ReactNode;
+  isOverflow?: boolean;
 }
 
 export function ContentCard({
@@ -94,9 +95,10 @@ export function ContentCard({
   headerOnBackClick,
   children,
   descriptionComponent,
+  isOverflow = false
 }: ContentCardProps) {
   return (
-    <Container>
+    <Container isOverflow={isOverflow}>
       {(headerTitle || headerBackText) && (
         <div className="header-option">
           <div className="flex-wrapper">

@@ -41,3 +41,16 @@
 /* .menu__link{color: #fff;} */
 /* .menu__link--active{color: #5ed0d2;} */
 /* .menu__link--hover{color: #5ed0d2;} */
+
+@import "@feelback/react/styles/feelback.css";
+
+.feelback-container .feelback-btn{
+  background-color: #1a8870;
+  color: white;
+}
+
+.feelback-container textarea {
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 0.5rem;
+}

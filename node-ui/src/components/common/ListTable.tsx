@@ -11,7 +11,6 @@ const ListWrapper = styled.div<ListWrapperProps>`
   flex-direction: column;
   flex: 1;
   width: 100%;
-  overflow: scroll;
   max-height: calc(100vh - 18rem);
 
   .table-description {
@@ -60,8 +59,7 @@ const ListWrapper = styled.div<ListWrapperProps>`
   }
 
   .list-items {
-    flex: 1;
-    overflow-y: auto;
+    overflow-y: scroll;
   }
 `;
 
@@ -96,7 +94,7 @@ interface ListTableProps<T> {
   numOfColumns: number;
   roundTopItem: boolean;
   noItemsText: string;
-  onRowItemClick?: (id: string) => void;
+  onRowItemClick?: (id: string, isAccepted?: boolean) => void;
 }
 
 export default function ListTable<T>({
