@@ -190,7 +190,6 @@ async fn create_root_key_handler(
     Json(req): Json<PubKeyRequest>,
 ) -> impl IntoResponse {
     let recipient = "me";
-    println!("Request: {:?}", req.wallet_metadata);
     match session
         .get::<NodeChallenge>(CHALLENGE_KEY)
         .await
@@ -198,7 +197,6 @@ async fn create_root_key_handler(
         .flatten()
     {
         Some(challenge) => {
-
             match req.wallet_metadata.wallet_type {
                 WalletType::NEAR => {
                     if !verifysignature::verify_near_signature(
@@ -223,7 +221,7 @@ async fn create_root_key_handler(
 
                     handle_root_key_result(result)
                 }
-                WalletType::ETH { chain_id } => {
+                WalletType::ETH { chain_id: _ } => {
                     if let Err(_) = verify_eth_signature(
                         &req.wallet_metadata.signing_key,
                         &req.message,
@@ -238,7 +236,7 @@ async fn create_root_key_handler(
                             signing_key: req.public_key,
                             wallet_type: req.wallet_metadata.wallet_type,
                             created_at: Utc::now().timestamp_millis() as u64
-                        },
+                        }
                     );
 
                     handle_root_key_result(result)

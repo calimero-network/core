@@ -37,16 +37,39 @@ export const submitRootKeyRequest = async (params: UrlParams): Promise<submitRoo
   }
 };
 
+enum Network {
+  NEAR = "NEAR",
+  ETH = "ETH",
+  BNB = "BNB",
+  ARB = "ARB",
+  ZK = "ZK"
+}
+
+const getMetamaskType = (chainId: number): Network => {
+  switch (chainId) {
+    case 1:
+      return Network.ETH;
+    case 56:
+      return Network.BNB;
+    case 42161:
+      return Network.ARB;
+    case 324:
+      return Network.ZK
+    default:
+      return Network.ETH;
+  }
+}
+
 export interface RootKeyObject {
-  type: string;
+  type: Network;
   createdAt: number;
   publicKey: string;
 }
 
 export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
   return didList.map((item) => ({
-      type: item.walletType,
+      type: item.type === "NEAR" ? Network.NEAR : getMetamaskType(item.chainId),
       createdAt: item.createdAt,
-      publicKey: item.walletType === "NEAR" ? item.signingKey.split(":")[1]!.trim() : item.signingKey,
+      publicKey: item.type === "NEAR" ? item.signingKey.split(":")[1]!.trim() : item.signingKey,
     }));
 }

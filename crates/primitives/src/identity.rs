@@ -12,7 +12,6 @@ pub struct Did {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RootKey {
-    #[serde(flatten)]
     pub signing_key: String,
     #[serde(flatten)]
     pub wallet_type: WalletType,

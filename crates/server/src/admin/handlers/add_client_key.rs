@@ -45,22 +45,6 @@ pub struct WalletMetadata {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NearMetadata {
-    #[serde(rename = "type")]
-    wallet_type: WalletType,
-    signing_key: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EthMetadata {
-    #[serde(rename = "type")]
-    wallet_type: WalletType,
-    signing_key: String, // eth account 0x...
-}
-
-#[derive(Debug, Deserialize)]
 #[serde(tag = "type", content = "data")]
 enum SignatureMetadataEnum {
     NEAR(NearSignatureMessageMetadata),
@@ -109,7 +93,7 @@ fn transform_request(
             })?;
             SignatureMetadataEnum::NEAR(metadata)
         }
-        WalletType::ETH { chain_id }=> {
+        WalletType::ETH { chain_id: _ }=> {
             let metadata = serde_json::from_value::<EthSignatureMessageMetadata>(
                 intermediate.payload.metadata,
             )
@@ -207,7 +191,7 @@ fn verify_node_signature(
             }
             Ok(true)
         }
-        WalletType::ETH { chain_id } => {
+        WalletType::ETH { chain_id: _ } => {
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
                 _ => {
