@@ -614,8 +614,6 @@ impl Node {
             ));
         }
 
-        println!("EVENTS: {:?}", outcome.events);
-
         let _ = self
             .node_events
             .send(calimero_primitives::events::NodeEvent::Application(
