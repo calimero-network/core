@@ -190,7 +190,7 @@ async fn create_root_key_handler(
     Json(req): Json<PubKeyRequest>,
 ) -> impl IntoResponse {
     let recipient = "me";
-
+    println!("Request: {:?}", req.wallet_metadata);
     match session
         .get::<NodeChallenge>(CHALLENGE_KEY)
         .await
@@ -223,7 +223,7 @@ async fn create_root_key_handler(
 
                     handle_root_key_result(result)
                 }
-                WalletType::ETH | WalletType::BNB | WalletType::ARB | WalletType::ZK => {
+                WalletType::ETH { chain_id } => {
                     if let Err(_) = verify_eth_signature(
                         &req.wallet_metadata.signing_key,
                         &req.message,

@@ -12,13 +12,16 @@ pub struct Did {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RootKey {
+    #[serde(flatten)]
     pub signing_key: String,
+    #[serde(flatten)]
     pub wallet_type: WalletType,
     pub created_at: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClientKey {
+    #[serde(flatten)]
     pub wallet_type: WalletType,
     pub signing_key: String,
     pub created_at: u64,
@@ -34,12 +37,14 @@ pub struct Context {
 }
 
 #[derive(Debug, Deserialize, PartialEq, Serialize, Clone, Copy)]
+#[serde(rename_all = "UPPERCASE")]
+#[serde(tag = "type")]
 pub enum WalletType {
     NEAR,
-    ETH,
-    BNB,
-    ARB,
-    ZK
+    ETH {
+        #[serde(rename = "chainId")]
+        chain_id: u64,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -49,9 +54,17 @@ impl FromStr for WalletType {
     type Err = InvalidWalletTypeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ETH" => Ok(WalletType::ETH),
-            "NEAR" => Ok(WalletType::NEAR),
+        let parts: Vec<&str> = s.split(':').collect();
+
+        match parts.as_slice() {
+            ["NEAR"] => Ok(WalletType::NEAR),
+            ["ETH", chain_id_str] => {
+                if let Ok(chain_id) = chain_id_str.parse::<u64>() {
+                    Ok(WalletType::ETH { chain_id })
+                } else {
+                    Err(InvalidWalletTypeError)
+                }
+            }
             _ => Err(InvalidWalletTypeError),
         }
     }

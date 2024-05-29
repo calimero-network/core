@@ -109,7 +109,7 @@ fn transform_request(
             })?;
             SignatureMetadataEnum::NEAR(metadata)
         }
-        WalletType::ETH | WalletType::BNB | WalletType::ARB | WalletType::ZK => {
+        WalletType::ETH { chain_id }=> {
             let metadata = serde_json::from_value::<EthSignatureMessageMetadata>(
                 intermediate.payload.metadata,
             )
@@ -207,7 +207,7 @@ fn verify_node_signature(
             }
             Ok(true)
         }
-        WalletType::ETH | WalletType::BNB | WalletType::ARB | WalletType::ZK => {
+        WalletType::ETH { chain_id } => {
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
                 _ => {

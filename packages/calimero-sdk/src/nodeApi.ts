@@ -4,12 +4,26 @@ enum AlgorithmType {
   Ed25519,
 }
 
-export enum WalletType {
-  ETH = "ETH",
-  NEAR = "NEAR",
-  BNB = "BNB",
-  ARB = "ARB",
-  ZK = "ZK"
+interface WalletTypeBase<T extends Uppercase<string>> {
+  type: T,
+}
+
+interface ETHWalletType extends WalletTypeBase<"ETH"> {
+  chainId: number;
+}
+
+interface NEARWalletType extends WalletTypeBase<"NEAR"> { }
+
+export type WalletType =
+  | ETHWalletType
+  | NEARWalletType;
+
+export namespace WalletType {
+  export let NEAR: WalletType = <NEARWalletType>{ type: "NEAR" }
+
+  export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
+    return <ETHWalletType>{ type: "ETH", chainId };
+  }
 }
 
 enum VerifiableCredentialType {
@@ -78,16 +92,6 @@ export interface Payload {
 export interface WalletMetadata {
   type: WalletType;
   signingKey: String;
-}
-
-export interface NearMetadata extends WalletMetadata {
-  type: WalletType.NEAR;
-  signingKey: "e.g.: ed25519:DfRy7qn3upQS4KFTLChpMG9DmiR29zDMdR1YuUG7cYML";
-}
-
-export interface EthMetadata extends WalletMetadata {
-  type: WalletType.ETH;
-  signingKey: "e.g.: 0x63f9a92d8d61b48a9fff8d58080425a3012d05c8";
 }
 
 export interface SignatureMetadata {

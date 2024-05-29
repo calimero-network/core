@@ -5,7 +5,7 @@ use super::did::{get_or_create_did, update_did};
 
 pub fn add_root_key(store: &Store, root_key: RootKey) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;
-
+    println!("root_key: {:?}", root_key);
     if !did_document
         .root_keys
         .iter()
