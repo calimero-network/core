@@ -1,16 +1,17 @@
 const nearAPI = require('near-api-js');
 const fs = require('fs');
 const commandLineArgs = require('command-line-args');
-const WebSocket = require('ws');
+const GameEventListener = require('./ws');
 
 const { Contract } = nearAPI;
 
 const createKeyStore = async () => {
   const { KeyPair, keyStores } = nearAPI;
 
-  const ACCOUNT_ID = 'huge-drop.testnet';
+  const ACCOUNT_ID = 'highfalutin-act.testnet';
   const NETWORK_ID = 'testnet';
-  const KEY_PATH = '/home/saeed/.near-credentials/testnet/huge-drop.testnet.json';
+  const KEY_PATH =
+    '/home/saeed/.near-credentials/testnet/highfalutin-act.testnet.json';
 
   const credentials = JSON.parse(fs.readFileSync(KEY_PATH));
   const myKeyStore = new keyStores.InMemoryKeyStore();
@@ -39,22 +40,20 @@ const connectToNear = async () => {
   return nearConnection;
 };
 
-
 const addScore = async (account_id, app_name, score) => {
   if (contract === null) {
     throw new Error('Contract is not initialized');
   }
 
-  const account = await near.account('huge-drop.testnet');
+  const account = await near.account('highfalutin-act.testnet');
   await contract.add_score({
     signerAccount: account,
     args: {
       app_name,
       account_id,
-      score
+      score,
     },
-  }
-  );
+  });
 };
 
 const getScore = async (account_id, app_name) => {
@@ -65,8 +64,17 @@ const getScore = async (account_id, app_name) => {
   return await contract.get_score({
     app_name,
     account_id,
-  },
-  );
+  });
+};
+
+const getScores = async (app_name) => {
+  if (contract === null) {
+    throw new Error('Contract is not initialized');
+  }
+
+  return await contract.get_scores({
+    app_name,
+  });
 };
 
 let contract = null;
@@ -77,9 +85,12 @@ async function main() {
     { name: 'subscribe', type: Boolean },
     { name: 'add-score', type: Boolean },
     { name: 'get-score', type: Boolean },
+    { name: 'get-scores', type: Boolean },
     { name: 'account', type: String },
     { name: 'score', type: Number },
-    { name: 'app', type: String }
+    { name: 'app', type: String },
+    { name: 'applicationId', type: String },
+    { name: 'nodeUrl', type: String },
   ];
 
   const options = commandLineArgs(optionDefinitions);
@@ -88,47 +99,45 @@ async function main() {
   near = nearConnection;
   contract = new Contract(
     nearConnection.connection,
-    'huge-drop.testnet',
+    'highfalutin-act.testnet',
     {
       changeMethods: ['add_score'],
-      viewMethods: ['get_version', 'get_score']
+      viewMethods: ['get_version', 'get_score', 'get_scores'],
     }
   );
   if (options.subscribe) {
-    subscribe();
-  }
-  else if (options['add-score']) {
+    const { applicationId, nodeUrl } = options;
+    console.log(`Subscribed for the events of ${applicationId}`);
+    subscribe(applicationId, nodeUrl);
+  } else if (options['add-score']) {
     const { account, app, score } = options;
     await addScore(account, app, score);
-    console.log(`Score added for account: ${account}, app: ${app}, score: ${score}`);
+    console.log(
+      `Score added for account: ${account}, app: ${app}, score: ${score}`
+    );
   } else if (options['get-score']) {
     const { account, app } = options;
     const score = await getScore(account, app);
     console.log(`${account} score is: ${score}`);
+  } else if (options['get-scores']) {
+    const { app } = options;
+    const scores = await getScores(app);
+    console.log(`Scores for ${app}: ${JSON.stringify(scores)}`);
   }
 }
 
-const subscribe = () => {
-  const ws = new WebSocket('ws://localhost:8080');
-  ws.on('error', console.error);
-
-  ws.on('open', function open() {
-    console.log('open');
+let eventListener;
+let players = {};
+const subscribe = (applicationId, nodeUrl) => {
+  eventListener = new GameEventListener(nodeUrl, applicationId);
+  eventListener.on('NewPlayer', (player) => {
+    players[player.id] = player.name;
   });
 
-  ws.on('message', async function message(data) {
-    const message = JSON.parse(data);
-    const { action } = message;
-    console.log(`Receive ${action} from the server.`);
-    if (action === 'add-score') {
-      const { app, account, score } = message;
-      await addScore(account, app, score);
-      console.log(`Score added. Account: ${account}, App: ${app}, Score: ${score}`);
-    } else if (action === 'get-score') {
-      const { app, account } = message;
-      const score = await getScore(account, app);
-      console.log(`${account} score is: ${score}`);
-    }
+  eventListener.on('GameOver', (winner) => {
+    addScore(players[winner.winner], 'rsp', 1000).then(() =>
+      console.log(`Score added for ${players[winner.winner]}`)
+    );
   });
 };
 

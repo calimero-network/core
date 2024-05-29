@@ -22,6 +22,7 @@ pub struct ApplicationEvent {
 pub enum ApplicationEventPayload {
     TransactionExecuted(ExecutedTransactionPayload),
     PeerJoined(PeerJoinedPayload),
+    OutcomeEvent(OutcomeEventPayload),
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -34,4 +35,16 @@ pub struct ExecutedTransactionPayload {
 #[serde(rename_all = "camelCase")]
 pub struct PeerJoinedPayload {
     pub peer_id: libp2p::PeerId,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct OutcomeEvent {
+    pub kind: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct OutcomeEventPayload {
+    pub events: Vec<OutcomeEvent>,
 }
