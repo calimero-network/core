@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use near_sdk::json_types::U128;
 use near_sdk::near;
@@ -38,20 +38,12 @@ impl LeaderBoard {
             .map(|score| score.clone())
     }
 
-    pub fn get_scores(&self, app_name: String) -> Option<HashMap<String, u128>> {
+    pub fn get_scores(&self, app_name: String) -> Option<BTreeMap<String, u128>> {
         let mut map = BTreeMap::new();
         for (k, v) in self.scores.get(&app_name)? {
-                for (k, v) in map.iter() {
-                    map_inner.insert(k.to_string(), v.0);
-                }
-                Some(map_inner)
-            }
-            None => None,
+            map.insert(k.to_string(), v.0);
         }
-    }
-
-    pub fn get_version(&self) -> String {
-        "0.0.3".to_string()
+        Some(map)
     }
 }
 
