@@ -39,9 +39,8 @@ impl LeaderBoard {
     }
 
     pub fn get_scores(&self, app_name: String) -> Option<HashMap<String, u128>> {
-        match self.scores.get(&app_name) {
-            Some(map) => {
-                let mut map_inner = HashMap::new();
+        let mut map = BTreeMap::new();
+        for (k, v) in self.scores.get(&app_name)? {
                 for (k, v) in map.iter() {
                     map_inner.insert(k.to_string(), v.0);
                 }
