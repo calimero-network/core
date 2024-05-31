@@ -165,6 +165,19 @@ async fn health_check_handler() -> impl IntoResponse {
     .into_response()
 }
 
+fn handle_add_root_key_result(result: eyre::Result<bool>) -> (reqwest::StatusCode, &'static str) {
+    match result {
+        Ok(_) => {
+            info!("Root key added");
+            (StatusCode::OK, "Root key added")
+        }
+        Err(e) => {
+            error!("Failed to store root key: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to store root key")
+        }
+    }
+}
+
 async fn create_root_key_handler(
     session: Session,
     Extension(state): Extension<Arc<AdminState>>,
@@ -182,7 +195,7 @@ async fn create_root_key_handler(
 
             match req.wallet_metadata.wallet_type {
                 WalletType::NEAR => {
-                    if verifysignature::verify_near_signature(
+                    if !verifysignature::verify_near_signature(
                         &challenge.message.nonce,
                         &challenge.node_signature,
                         recipient,
@@ -190,29 +203,17 @@ async fn create_root_key_handler(
                         &req.signature,
                         &req.public_key,
                     ) {
-                        let result = add_root_key(
-                            &state.store,
-                            RootKey {
-                                signing_key: req.public_key,
-                            },
-                        );
-        
-                        match result {
-                            Ok(_) => {
-                                info!("Root key added");
-                                (StatusCode::OK, "Root key added")
-                            }
-                            Err(e) => {
-                                error!("Failed to store root key: {}", e);
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    "Failed to store root key",
-                                )
-                            }
-                        }
-                    } else {
-                        (StatusCode::BAD_REQUEST, "Invalid signature")
+                        return (StatusCode::BAD_REQUEST, "Invalid signature");
                     }
+
+                    let result = add_root_key(
+                        &state.store,
+                        RootKey {
+                            signing_key: req.public_key,
+                        },
+                    );
+
+                    handle_add_root_key_result(result)
                 }
                 WalletType::ETH => {
                     if let Err(_) = verify_eth_signature(
@@ -230,19 +231,7 @@ async fn create_root_key_handler(
                         },
                     );
 
-                    match result {
-                        Ok(_) => {
-                            info!("Root key added");
-                            (StatusCode::OK, "Root key added")
-                        }
-                        Err(e) => {
-                            error!("Failed to store root key: {}", e);
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Failed to store root key",
-                            )
-                        }
-                    }
+                    handle_add_root_key_result(result)
                 }
             }
         }
