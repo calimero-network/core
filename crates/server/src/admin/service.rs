@@ -193,7 +193,7 @@ async fn create_root_key_handler(
                         let result = add_root_key(
                             &state.store,
                             RootKey {
-                                signing_key: req.public_key.clone(),
+                                signing_key: req.public_key,
                             },
                         );
         
@@ -226,7 +226,7 @@ async fn create_root_key_handler(
                     let result = add_root_key(
                         &state.store,
                         RootKey {
-                            signing_key: req.public_key.clone(),
+                            signing_key: req.public_key,
                         },
                     );
 
