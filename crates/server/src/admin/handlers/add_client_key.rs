@@ -42,7 +42,7 @@ pub struct SignatureMessage {
     application_id: String,
     timestamp: i64,
     node_signature: String,
-    pub message: String,
+    message: String,
     client_public_key: String,
 }
 
