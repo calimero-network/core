@@ -1,3 +1,4 @@
+use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
@@ -604,7 +605,7 @@ impl Node {
                 .node_events
                 .send(calimero_primitives::events::NodeEvent::Application(
                 calimero_primitives::events::ApplicationEvent {
-                    application_id,
+                    application_id: application_id.clone(),
                     payload:
                         calimero_primitives::events::ApplicationEventPayload::TransactionExecuted(
                             calimero_primitives::events::ExecutedTransactionPayload { hash },
@@ -612,6 +613,26 @@ impl Node {
                 },
             ));
         }
+
+        let _ = self
+            .node_events
+            .send(calimero_primitives::events::NodeEvent::Application(
+                calimero_primitives::events::ApplicationEvent {
+                    application_id,
+                    payload: calimero_primitives::events::ApplicationEventPayload::OutcomeEvent(
+                        calimero_primitives::events::OutcomeEventPayload {
+                            events: outcome
+                                .events
+                                .iter()
+                                .map(|e| OutcomeEvent {
+                                    data: e.data.clone(),
+                                    kind: e.kind.clone(),
+                                })
+                                .collect(),
+                        },
+                    ),
+                },
+            ));
 
         Ok(outcome)
     }
