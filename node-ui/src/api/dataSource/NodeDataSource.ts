@@ -1,5 +1,13 @@
 import { HttpClient } from "../httpClient";
 
+export enum Network {
+  NEAR = "NEAR",
+  ETH = "ETH",
+  BNB = "BNB",
+  ARB = "ARB",
+  ZK = "ZK"
+}
+
 export interface Application {
   id: string;
   version: string;
@@ -22,21 +30,21 @@ export interface ContextsList<T> {
 
 export interface RootKey {
   signingKey: string;
-  type: string;
+  type: Network;
   chainId?: number;
   createdAt: number;
 }
 
 export interface ApiRootKey {
   signing_key: string;
-  type: string;
+  type: Network;
   chainId?: number;
   created_at: number;
 }
 
 interface ClientKey {
   signing_key: string;
-  type: string;
+  type: Network;
   created_at: number;
 }
 
@@ -141,7 +149,7 @@ export class NodeDataSource {
     try {
       const response = await this.client.get<RootkeyResponse>("/admin-api/did");
       if (response?.data?.root_keys) {
-        const rootKeys: RootKey[] = response?.data?.root_keys?.map((obj: { signing_key: string, type: string, chainId?: number, created_at: number }) => ({
+        const rootKeys: RootKey[] = response?.data?.root_keys?.map((obj: { signing_key: string, type: Network, chainId?: number, created_at: number }) => ({
           signingKey: obj.signing_key,
           type: obj.type,
           ...(obj.chainId !== undefined && { chainId: obj.chainId }),
