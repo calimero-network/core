@@ -1,6 +1,5 @@
 use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
-use std::time::Duration;
 
 use libp2p::futures::prelude::*;
 use libp2p::swarm::behaviour::toggle::Toggle;
@@ -10,8 +9,7 @@ use libp2p::{
 };
 use multiaddr::Multiaddr;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 pub mod client;
 pub mod config;
@@ -41,7 +39,7 @@ pub async fn run(
 ) -> eyre::Result<(NetworkClient, mpsc::Receiver<types::NetworkEvent>)> {
     let peer_id = config.identity.public().to_peer_id();
 
-    let (client, mut event_receiver, event_loop) = init(peer_id, config).await?;
+    let (client, event_receiver, event_loop) = init(peer_id, config).await?;
 
     tokio::spawn(event_loop.run());
 
@@ -49,25 +47,6 @@ pub async fn run(
         client.listen_on(addr.clone()).await?;
     }
 
-    // Reference: https://github.com/libp2p/rust-libp2p/blob/60fd566a955a33c42a6ab6eefc1f0fedef9f8b83/examples/dcutr/src/main.rs#L118
-    loop {
-        tokio::select! {
-            Some(event) = event_receiver.recv() => {
-                match event {
-                    types::NetworkEvent::ListeningOn { address, .. } => {
-                        info!("Listening on: {}", address)
-                    }
-                    _ => {
-                        error!("Recieved unexpected network event: {:?}", event)
-                    }
-                }
-            }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                // Likely listening on all interfaces now, thus continuing by breaking the loop.
-                break;
-            }
-        }
-    }
     let _ = client.bootstrap().await;
 
     Ok((client, event_receiver))
@@ -136,7 +115,9 @@ async fn init(
             relay: relay_behaviour,
             rendezvous: rendezvous::client::Behaviour::new(key.clone()),
         })?
-        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(time::Duration::from_secs(30)))
+        .with_swarm_config(|cfg| {
+            cfg.with_idle_connection_timeout(tokio::time::Duration::from_secs(30))
+        })
         .build();
 
     let (command_sender, command_receiver) = mpsc::channel(32);
