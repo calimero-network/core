@@ -1,7 +1,7 @@
 import { Location } from 'react-router-dom';
 import axios from "axios";
 import { getWalletCallbackUrl } from "./wallet";
-import { RootKey } from "../api/dataSource/NodeDataSource";
+import { ETHRootKey, NearRootKey } from "../api/dataSource/NodeDataSource";
 
 export interface UrlParams {
   accountId: string;
@@ -66,7 +66,7 @@ export interface RootKeyObject {
   publicKey: string;
 }
 
-export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
+export function mapApiResponseToObjects(didList: (ETHRootKey | NearRootKey)[]): RootKeyObject[] {
   return didList.map((item) => ({
       type: item.type === Network.NEAR ? Network.NEAR : getMetamaskType(item.chainId ?? 1),
       createdAt: item.createdAt,
