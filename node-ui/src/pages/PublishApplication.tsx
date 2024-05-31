@@ -15,7 +15,7 @@ import { Package } from "./Applications";
 import PageContentWrapper from "../components/common/PageContentWrapper";
 import PublishApplicationTable from "../components/publishApplication/PublishApplicationTable";
 import { useNavigate } from "react-router-dom";
-import { isFinalExecutionStatus } from "../utils/wallet";
+import { isFinalExecution } from "../utils/wallet";
 
 const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
 
@@ -180,9 +180,7 @@ export default function PublishApplication() {
         ],
       });
       if (
-        res &&
-        isFinalExecutionStatus(res.status) &&
-        res.status.SuccessValue
+        isFinalExecution(res)
       ) {
         setDeployStatus({
           title: "Package added successfully",
@@ -235,9 +233,7 @@ export default function PublishApplication() {
         ],
       });
       if (
-        res &&
-        isFinalExecutionStatus(res.status) &&
-        res.status.SuccessValue === ""
+        isFinalExecution(res)
       ) {
         setDeployStatus({
           title: "Application published",
