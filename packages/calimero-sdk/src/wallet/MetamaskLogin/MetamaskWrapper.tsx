@@ -7,9 +7,9 @@ interface MetamaskContextProps {
   applicationId: string;
   rpcBaseUrl: string;
   successRedirect: () => void;
-  cardBackgroundColor?: string | undefined;
-  metamaskTitleColor?: string | undefined;
-  navigateBack: () => void | undefined;
+  cardBackgroundColor?: string;
+  metamaskTitleColor?: string;
+  navigateBack?: () => void;
   clientLogin?: boolean;
 }
 
