@@ -70,6 +70,16 @@ export interface NodeChallenge {
   nodeSignature: String;
 }
 
+export interface NearMetadata extends WalletMetadata {
+  type: NEARWalletType;
+  signingKey: "e.g.: ed25519:DfRy7qn3upQS4KFTLChpMG9DmiR29zDMdR1YuUG7cYML";
+}
+
+export interface EthMetadata extends WalletMetadata {
+  type: ETHWalletType;
+  signingKey: "e.g.: 0x63f9a92d8d61b48a9fff8d58080425a3012d05c8";
+}
+
 export interface SignatureMessage {
   nodeSignature: String;
   clientPublicKey: String;
