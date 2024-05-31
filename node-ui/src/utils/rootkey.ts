@@ -68,7 +68,7 @@ export interface RootKeyObject {
 
 export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
   return didList.map((item) => ({
-      type: item.type === "NEAR" ? Network.NEAR : getMetamaskType(item.chainId),
+      type: item.type === "NEAR" ? Network.NEAR : getMetamaskType(item.chainId ?? 1),
       createdAt: item.createdAt,
       publicKey: item.type === "NEAR" ? item.signingKey.split(":")[1]!.trim() : item.signingKey,
     }));
