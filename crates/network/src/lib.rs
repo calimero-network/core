@@ -5,7 +5,9 @@ use std::time::Duration;
 use libp2p::futures::prelude::*;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
-use libp2p::{gossipsub, identify, kad, mdns, ping, relay, PeerId};
+use libp2p::{
+    dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, yamux, PeerId,
+};
 use multiaddr::Multiaddr;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
@@ -13,6 +15,7 @@ use tracing::{debug, error, info, trace, warn};
 
 pub mod client;
 pub mod config;
+mod discovery;
 mod events;
 pub mod types;
 
@@ -23,12 +26,14 @@ const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("C
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
-    identify: identify::Behaviour,
-    mdns: Toggle<mdns::tokio::Behaviour>,
-    kad: kad::Behaviour<kad::store::MemoryStore>,
+    dcutr: dcutr::Behaviour,
     gossipsub: gossipsub::Behaviour,
-    relay: relay::Behaviour,
+    identify: identify::Behaviour,
+    kad: kad::Behaviour<kad::store::MemoryStore>,
+    mdns: Toggle<mdns::tokio::Behaviour>,
     ping: ping::Behaviour,
+    rendezvous: rendezvous::client::Behaviour,
+    relay: relay::client::Behaviour,
 }
 
 pub async fn run(
@@ -98,7 +103,9 @@ async fn init(
             libp2p::yamux::Config::default,
         )?
         .with_quic()
-        .with_behaviour(|key| Behaviour {
+        .with_relay_client(noise::Config::new, yamux::Config::default)?
+        .with_behaviour(|key, relay_behaviour| Behaviour {
+            dcutr: dcutr::Behaviour::new(peer_id.clone()),
             identify: identify::Behaviour::new(
                 identify::Config::new(PROTOCOL_VERSION.to_owned(), key.public())
                     .with_push_listen_addr_updates(true),
@@ -111,7 +118,7 @@ async fn init(
                 .into(),
             kad: {
                 let mut kad = kad::Behaviour::new(peer_id, kad::store::MemoryStore::new(peer_id));
-                kad.set_mode(Some(kad::Mode::Server));
+                kad.set_mode(Some(kad::Mode::Client));
                 for (peer_id, addr) in bootstrap_peers {
                     kad.add_address(&peer_id, addr);
                 }
@@ -125,8 +132,9 @@ async fn init(
                 gossipsub::Config::default(),
             )
             .expect("Valid gossipsub config."),
-            relay: relay::Behaviour::new(peer_id, relay::Config::default()),
             ping: ping::Behaviour::default(),
+            relay: relay_behaviour,
+            rendezvous: rendezvous::client::Behaviour::new(key.clone()),
         })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(time::Duration::from_secs(30)))
         .build();
@@ -138,7 +146,9 @@ async fn init(
         sender: command_sender,
     };
 
-    let event_loop = EventLoop::new(swarm, command_receiver, event_sender);
+    let discovery_state = discovery::DiscoveryState::new(&config.discovery.rendezvous);
+
+    let event_loop = EventLoop::new(swarm, command_receiver, event_sender, discovery_state);
 
     Ok((client, event_receiver, event_loop))
 }
@@ -147,6 +157,7 @@ pub(crate) struct EventLoop {
     swarm: Swarm<Behaviour>,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<types::NetworkEvent>,
+    discovery_state: discovery::DiscoveryState,
     pending_dial: HashMap<PeerId, oneshot::Sender<eyre::Result<Option<()>>>>,
     pending_bootstrap: HashMap<kad::QueryId, oneshot::Sender<eyre::Result<Option<()>>>>,
     pending_start_providing: HashMap<kad::QueryId, oneshot::Sender<()>>,
@@ -158,11 +169,13 @@ impl EventLoop {
         swarm: Swarm<Behaviour>,
         command_receiver: mpsc::Receiver<Command>,
         event_sender: mpsc::Sender<types::NetworkEvent>,
+        discovery_state: discovery::DiscoveryState,
     ) -> Self {
         Self {
             swarm,
             command_receiver,
             event_sender,
+            discovery_state,
             pending_dial: Default::default(),
             pending_bootstrap: Default::default(),
             pending_start_providing: Default::default(),
@@ -171,6 +184,8 @@ impl EventLoop {
     }
 
     pub(crate) async fn run(mut self) {
+        let mut rendezvous_discover_tick = tokio::time::interval(Duration::from_secs(90));
+
         loop {
             tokio::select! {
                 event = self.swarm.next() => self.handle_swarm_event(event.expect("Swarm stream to be infinite.")).await,
@@ -178,6 +193,7 @@ impl EventLoop {
                     let Some(c) = command else { break };
                     self.handle_command(c).await;
                 }
+                _ = rendezvous_discover_tick.tick() => self.handle_rendezvous_discoveries().await,
             }
         }
     }
