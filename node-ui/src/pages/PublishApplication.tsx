@@ -112,36 +112,34 @@ export default function PublishApplication() {
     if (file && file.name.endsWith(".wasm")) {
       const reader = new FileReader();
       reader.onload = async (e) => {
-        if (e && e.target && e.target.result) {
-          const arrayBuffer = new Uint8Array(
-            e.target.result as ArrayBufferLike
-          );
-          const bytes = new Uint8Array(arrayBuffer);
-          const blob = new Blob([bytes], { type: "application/wasm" });
-
-          const hashBuffer = await crypto.subtle.digest(
-            "SHA-256",
-            await blob.arrayBuffer()
-          );
-
-          const hashHex = Array.from(new Uint8Array(hashBuffer))
-            .map((byte) => byte.toString(16).padStart(2, "0"))
-            .join("");
-
-          setFileHash(hashHex);
-
-          await axios
-            .post(BLOBBY_IPFS, blob)
-            .then((response) => {
-              setIpfsPath(`${BLOBBY_IPFS}/${response.data.cid}`);
-            })
-            .catch((error) => {
-              console.error("Error occurred while uploading the file:", error);
-            });
-        } else {
+        if (!e?.target?.result) {
           console.error("Failed to read file or file content is not available");
           return;
         }
+
+        const arrayBuffer = new Uint8Array(e.target.result as ArrayBufferLike);
+        const bytes = new Uint8Array(arrayBuffer);
+        const blob = new Blob([bytes], { type: "application/wasm" });
+
+        const hashBuffer = await crypto.subtle.digest(
+          "SHA-256",
+          await blob.arrayBuffer()
+        );
+
+        const hashHex = Array.from(new Uint8Array(hashBuffer))
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+
+        setFileHash(hashHex);
+
+        await axios
+          .post(BLOBBY_IPFS, blob)
+          .then((response) => {
+            setIpfsPath(`${BLOBBY_IPFS}/${response.data.cid}`);
+          })
+          .catch((error) => {
+            console.error("Error occurred while uploading the file:", error);
+          });
       };
 
       reader.onerror = (e: ProgressEvent<FileReader>) => {
