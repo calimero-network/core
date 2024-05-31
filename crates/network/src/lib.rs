@@ -146,9 +146,9 @@ async fn init(
         sender: command_sender,
     };
 
-    let discovery_state = discovery::DiscoveryState::new(&config.discovery.rendezvous);
+    let discovery = discovery::Discovery::new(&config.discovery.rendezvous);
 
-    let event_loop = EventLoop::new(swarm, command_receiver, event_sender, discovery_state);
+    let event_loop = EventLoop::new(swarm, command_receiver, event_sender, discovery);
 
     Ok((client, event_receiver, event_loop))
 }
@@ -157,7 +157,7 @@ pub(crate) struct EventLoop {
     swarm: Swarm<Behaviour>,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<types::NetworkEvent>,
-    discovery_state: discovery::DiscoveryState,
+    discovery: discovery::Discovery,
     pending_dial: HashMap<PeerId, oneshot::Sender<eyre::Result<Option<()>>>>,
     pending_bootstrap: HashMap<kad::QueryId, oneshot::Sender<eyre::Result<Option<()>>>>,
     pending_start_providing: HashMap<kad::QueryId, oneshot::Sender<()>>,
@@ -169,13 +169,13 @@ impl EventLoop {
         swarm: Swarm<Behaviour>,
         command_receiver: mpsc::Receiver<Command>,
         event_sender: mpsc::Sender<types::NetworkEvent>,
-        discovery_state: discovery::DiscoveryState,
+        discovery: discovery::Discovery,
     ) -> Self {
         Self {
             swarm,
             command_receiver,
             event_sender,
-            discovery_state,
+            discovery,
             pending_dial: Default::default(),
             pending_bootstrap: Default::default(),
             pending_start_providing: Default::default(),
@@ -184,7 +184,8 @@ impl EventLoop {
     }
 
     pub(crate) async fn run(mut self) {
-        let mut rendezvous_discover_tick = tokio::time::interval(Duration::from_secs(90));
+        let mut rendezvous_discover_tick =
+            tokio::time::interval(self.discovery.rendezvous_config.discovery_interval);
 
         loop {
             tokio::select! {

@@ -14,7 +14,8 @@ impl EventHandler<rendezvous::client::Event> for EventLoop {
                 registrations,
                 cookie,
             } => {
-                self.discovery_state
+                self.discovery
+                    .state
                     .update_rendezvous_cookie(&rendezvous_node, cookie);
 
                 for registration in registrations {
@@ -43,7 +44,7 @@ impl EventHandler<rendezvous::client::Event> for EventLoop {
             rendezvous::client::Event::Registered {
                 rendezvous_node, ..
             } => {
-                if let Some(peer_info) = self.discovery_state.get_peer_info(&rendezvous_node) {
+                if let Some(peer_info) = self.discovery.state.get_peer_info(&rendezvous_node) {
                     if peer_info
                         .rendezvous()
                         .and_then(|info| info.cookie())

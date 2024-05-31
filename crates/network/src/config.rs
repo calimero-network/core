@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, time};
 
 use libp2p::{identity, rendezvous};
 use multiaddr::Multiaddr;
@@ -94,7 +94,7 @@ impl Default for DiscoveryConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RendezvousConfig {
     #[serde(
         serialize_with = "serialize_rendezvous_namespace",
@@ -103,6 +103,8 @@ pub struct RendezvousConfig {
     pub namespace: rendezvous::Namespace,
 
     pub discovery_rpm: f32,
+
+    pub discovery_interval: time::Duration,
 }
 
 impl Default for RendezvousConfig {
@@ -110,6 +112,7 @@ impl Default for RendezvousConfig {
         Self {
             namespace: rendezvous::Namespace::from_static("/calimero/devnet/global"),
             discovery_rpm: 0.5,
+            discovery_interval: time::Duration::from_secs(90),
         }
     }
 }

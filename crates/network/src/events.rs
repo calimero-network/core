@@ -53,7 +53,8 @@ impl EventLoop {
                 debug!(%peer_id, ?endpoint, "Connection established");
                 match endpoint {
                     libp2p::core::ConnectedPoint::Dialer { .. } => {
-                        self.discovery_state
+                        self.discovery
+                            .state
                             .add_peer_addr(peer_id, endpoint.get_remote_address());
 
                         if let Some(sender) = self.pending_dial.remove(&peer_id) {
@@ -75,10 +76,10 @@ impl EventLoop {
                     peer_id, connection_id, endpoint, num_established, cause
                 );
                 if !self.swarm.is_connected(&peer_id)
-                    && !self.discovery_state.is_peer_relay(&peer_id)
-                    && !self.discovery_state.is_peer_rendezvous(&peer_id)
+                    && !self.discovery.state.is_peer_relay(&peer_id)
+                    && !self.discovery.state.is_peer_rendezvous(&peer_id)
                 {
-                    self.discovery_state.remove_peer(&peer_id);
+                    self.discovery.state.remove_peer(&peer_id);
                 }
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -104,13 +105,13 @@ impl EventLoop {
                 trace!("New external address candidate: {}", address)
             }
             SwarmEvent::ExternalAddrConfirmed { address } => {
-                info!("External address confirmed: {}", address);
+                debug!("External address confirmed: {}", address);
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
-                    self.discovery_state.update_relay_reservation_status(
+                    self.discovery.state.update_relay_reservation_status(
                         &relayed_addr.relay_peer,
-                        discovery::RelayReservationStatus::Accepted,
+                        discovery::state::RelayReservationStatus::Accepted,
                     );
-                    self.discovery_state.set_pending_addr_changes();
+                    self.discovery.state.set_pending_addr_changes();
                     if let Err(err) = self.broadcast_rendezvous_registrations() {
                         error!(%err, "Failed to handle rendezvous register");
                     };
@@ -119,12 +120,12 @@ impl EventLoop {
             SwarmEvent::ExternalAddrExpired { address } => {
                 debug!("External address expired: {}", address);
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
-                    self.discovery_state.update_relay_reservation_status(
+                    self.discovery.state.update_relay_reservation_status(
                         &relayed_addr.relay_peer_id(),
-                        discovery::RelayReservationStatus::Expired,
+                        discovery::state::RelayReservationStatus::Expired,
                     );
 
-                    self.discovery_state.set_pending_addr_changes();
+                    self.discovery.state.set_pending_addr_changes();
                     if let Err(err) = self.broadcast_rendezvous_registrations() {
                         error!(%err, "Failed to handle rendezvous register");
                     };
