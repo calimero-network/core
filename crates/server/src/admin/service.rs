@@ -165,15 +165,20 @@ async fn health_check_handler() -> impl IntoResponse {
     .into_response()
 }
 
-fn handle_add_root_key_result(result: eyre::Result<bool>) -> (reqwest::StatusCode, &'static str) {
+#[derive(Debug, Serialize)]
+struct RootKeyResponse {
+    data: String,
+}
+
+fn handle_root_key_result(result: eyre::Result<bool>) -> axum::http::Response<axum::body::Body>{
     match result {
         Ok(_) => {
             info!("Root key added");
-            (StatusCode::OK, "Root key added")
+            ApiResponse { payload: RootKeyResponse { data: "Root key added".to_string()} }.into_response()
         }
         Err(e) => {
             error!("Failed to store root key: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to store root key")
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to store root key").into_response()
         }
     }
 }
@@ -203,7 +208,7 @@ async fn create_root_key_handler(
                         &req.signature,
                         &req.public_key,
                     ) {
-                        return (StatusCode::BAD_REQUEST, "Invalid signature");
+                        return (StatusCode::BAD_REQUEST, "Invalid signature").into_response();
                     }
 
                     let result = add_root_key(
@@ -213,7 +218,7 @@ async fn create_root_key_handler(
                         },
                     );
 
-                    handle_add_root_key_result(result)
+                    handle_root_key_result(result)
                 }
                 WalletType::ETH => {
                     if let Err(_) = verify_eth_signature(
@@ -221,7 +226,7 @@ async fn create_root_key_handler(
                         &req.message,
                         &req.signature
                     ) {
-                        return (StatusCode::BAD_REQUEST, "Invalid signature");
+                        return (StatusCode::BAD_REQUEST, "Invalid signature").into_response();
                     }
 
                     let result = add_root_key(
@@ -231,11 +236,11 @@ async fn create_root_key_handler(
                         },
                     );
 
-                    handle_add_root_key_result(result)
+                    handle_root_key_result(result)
                 }
             }
         }
-        _ => (StatusCode::BAD_REQUEST, "Challenge not found"),
+        _ => (StatusCode::BAD_REQUEST, "Challenge not found").into_response(),
     }
 }
 
