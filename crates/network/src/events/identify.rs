@@ -12,7 +12,7 @@ impl EventHandler<identify::Event> for EventLoop {
             identify::Event::Received { peer_id, info } => {
                 self.discovery
                     .state
-                    .update_peer_protocols(&peer_id, info.protocols);
+                    .update_peer_protocols(&peer_id, &info.protocols);
 
                 if self.discovery.state.is_peer_relay(&peer_id) {
                     if let Err(err) = self.create_relay_reservation(&peer_id) {

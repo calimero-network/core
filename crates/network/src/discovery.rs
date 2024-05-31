@@ -10,7 +10,7 @@ use super::{config, EventLoop};
 #[derive(Debug)]
 pub(crate) struct Discovery {
     pub(crate) rendezvous_config: config::RendezvousConfig,
-    pub(crate) state: state::DiscoveryModel,
+    pub(crate) state: state::DiscoveryState,
 }
 
 impl Discovery {

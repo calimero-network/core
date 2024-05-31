@@ -9,16 +9,16 @@ const RENDEZVOUS_PROTOCOL_NAME: libp2p::StreamProtocol =
     libp2p::StreamProtocol::new("/rendezvous/1.0.0");
 
 #[derive(Debug)]
-pub(crate) struct DiscoveryModel {
+pub(crate) struct DiscoveryState {
     peers: BTreeMap<PeerId, PeerInfo>,
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
     pending_addr_changes: bool,
 }
 
-impl Default for DiscoveryModel {
+impl Default for DiscoveryState {
     fn default() -> Self {
-        DiscoveryModel {
+        DiscoveryState {
             peers: Default::default(),
             relay_index: Default::default(),
             rendezvous_index: Default::default(),
@@ -27,7 +27,7 @@ impl Default for DiscoveryModel {
     }
 }
 
-impl DiscoveryModel {
+impl DiscoveryState {
     pub(crate) fn add_peer_addr(&mut self, peer_id: PeerId, addr: &Multiaddr) {
         self.peers
             .entry(peer_id)
@@ -42,11 +42,7 @@ impl DiscoveryModel {
         self.rendezvous_index.remove(peer_id);
     }
 
-    pub(crate) fn update_peer_protocols(
-        &mut self,
-        peer_id: &PeerId,
-        protocols: Vec<StreamProtocol>,
-    ) {
+    pub(crate) fn update_peer_protocols(&mut self, peer_id: &PeerId, protocols: &[StreamProtocol]) {
         protocols.iter().for_each(|protocol| {
             if protocol == &libp2p::relay::HOP_PROTOCOL_NAME {
                 self.relay_index.insert(*peer_id);
@@ -134,7 +130,7 @@ impl PeerInfo {
         self.addrs.iter()
     }
 
-    pub(crate) fn get_preferred_addr(&self) -> Option<Multiaddr> {
+    pub(crate) fn get_preferred_addr(&self) -> Option<&Multiaddr> {
         let udp_addrs: Vec<&Multiaddr> = self
             .addrs
             .iter()
@@ -145,8 +141,8 @@ impl PeerInfo {
             .collect();
 
         match udp_addrs.len() {
-            0 => self.addrs.iter().next().cloned(),
-            _ => Some(udp_addrs[0].clone()),
+            0 => self.addrs.iter().next(),
+            _ => Some(udp_addrs[0]),
         }
     }
 
