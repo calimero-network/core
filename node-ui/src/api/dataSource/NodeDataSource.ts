@@ -1,11 +1,8 @@
 import { HttpClient } from "../httpClient";
 
-export enum Network {
+enum Network {
   NEAR = "NEAR",
   ETH = "ETH",
-  BNB = "BNB",
-  ARB = "ARB",
-  ZK = "ZK"
 }
 
 export interface Application {

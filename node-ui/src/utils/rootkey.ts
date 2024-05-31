@@ -37,7 +37,7 @@ export const submitRootKeyRequest = async (params: UrlParams): Promise<submitRoo
   }
 };
 
-export enum Network {
+enum Network {
   NEAR = "NEAR",
   ETH = "ETH",
   BNB = "BNB",
