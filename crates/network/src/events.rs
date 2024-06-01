@@ -83,13 +83,20 @@ impl EventLoop {
                 }
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                debug!(?peer_id, %error, "Outgoing connection error");
                 if let Some(peer_id) = peer_id {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
                         let _ = sender.send(Err(eyre::eyre!(error)));
                     }
                 }
             }
-            SwarmEvent::IncomingConnectionError { .. } => {}
+            SwarmEvent::IncomingConnectionError {
+                send_back_addr,
+                error,
+                ..
+            } => {
+                debug!(?send_back_addr, %error, "Incoming connection error");
+            }
             SwarmEvent::Dialing {
                 peer_id: Some(peer_id),
                 ..
