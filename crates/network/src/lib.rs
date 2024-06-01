@@ -21,6 +21,8 @@ use client::NetworkClient;
 use config::NetworkConfig;
 
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+const CALIMERO_KAD_PROTO_NAME: libp2p::StreamProtocol =
+    libp2p::StreamProtocol::new("/calimero/kad/1.0.0");
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
@@ -96,14 +98,24 @@ async fn init(
                 .and_then(|_| mdns::Behaviour::new(mdns::Config::default(), peer_id).ok())
                 .into(),
             kad: {
-                let mut kad = kad::Behaviour::new(peer_id, kad::store::MemoryStore::new(peer_id));
+                let mut kad_config = kad::Config::default();
+                kad_config.set_protocol_names(vec![CALIMERO_KAD_PROTO_NAME]);
+
+                let mut kad = kad::Behaviour::with_config(
+                    peer_id,
+                    kad::store::MemoryStore::new(peer_id),
+                    kad_config,
+                );
+
                 kad.set_mode(Some(kad::Mode::Client));
+
                 for (peer_id, addr) in bootstrap_peers {
                     kad.add_address(&peer_id, addr);
                 }
                 if let Err(err) = kad.bootstrap() {
-                    warn!("Failed to bootstrap with Kademlia: {}", err);
-                }
+                    warn!(%err, "Failed to bootstrap Kademlia");
+                };
+
                 kad
             },
             gossipsub: gossipsub::Behaviour::new(
