@@ -137,7 +137,9 @@ const subscribe = (applicationId, nodeUrl) => {
   eventListener.on('GameOver', (winner) => {
     addScore(players[winner.winner], 'rsp', 1000).then(() =>
       console.log(`Score added for ${players[winner.winner]}`)
-    );
+    ).catch(e => {
+      console.error(`Failed to add the score. ${e}`);
+    });
   });
 };
 
