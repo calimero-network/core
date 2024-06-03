@@ -18,7 +18,7 @@ import PageContentWrapper from "../components/common/PageContentWrapper";
 import { useNavigate, useParams } from "react-router-dom";
 import AddReleaseTable from "../components/publishApplication/addRelease/AddReleaseTable";
 import { DeployStatus, ReleaseInfo } from "./PublishApplication";
-import { isFinalExecutionStatus } from "../utils/wallet";
+import { isFinalExecution } from "../utils/wallet";
 
 const BLOBBY_IPFS = "https://blobby-public.euw3.prod.gcp.calimero.network";
 
@@ -162,9 +162,7 @@ export default function AddRelease() {
           ],
         });
       if (
-        res &&
-        isFinalExecutionStatus(res.status) &&
-        res.status.SuccessValue === ""
+        isFinalExecution(res)
       ) {
         setDeployStatus({
           title: "Application published",
