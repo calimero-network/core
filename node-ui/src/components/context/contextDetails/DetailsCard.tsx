@@ -59,7 +59,7 @@ export default function DetailsCard({ details }: DetailsCardProps) {
       <div className="container">
         <div className="context-id">
           {t.labelIdText}
-          {details.applicationId}
+          {details.contextId}
         </div>
         <div className="highlight title inter-mid">{t.titleApps}</div>
         <div className="item">
@@ -81,6 +81,10 @@ export default function DetailsCard({ details }: DetailsCardProps) {
         <div className="item">
           {t.lableVersionText}
           <span className="highlight">{details.version}</span>
+        </div>
+        <div className="item">
+          {t.labelAppId}
+          {details.applicationId}
         </div>
         <div className="highlight title">{t.titleStorage}</div>
         <div className="item">

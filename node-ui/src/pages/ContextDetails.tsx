@@ -51,6 +51,7 @@ export interface ContextObject {
   owner: string;
   clientKeys: ClientKey[];
   users: User[];
+  contextId: string;
 }
 
 export default function ContextDetails() {
@@ -71,6 +72,7 @@ export default function ContextDetails() {
       ...packageData,
       ...context,
       ...versionData,
+      contextId: id
     };
   };
 
