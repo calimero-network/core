@@ -43,7 +43,6 @@ interface ApplicationsTableProps {
   tableOptions: TableOptions[];
   navigateToAppDetails: (applicationId: string) => void;
   navigateToPublishApp: () => void;
-  changeSelectedTab: () => void;
 }
 
 export default function ApplicationsTable({
@@ -53,7 +52,6 @@ export default function ApplicationsTable({
   tableOptions,
   navigateToAppDetails,
   navigateToPublishApp,
-  changeSelectedTab,
 }: ApplicationsTableProps) {
   const t = translations.applicationsPage.applicationsTable;
   const headersList = ["NAME", "ID", "LATEST VERSION", "PUBLISHED"];
@@ -92,9 +90,6 @@ export default function ApplicationsTable({
             onRowItemClick={navigateToAppDetails}
           />
         )}
-        <div className="install-app-wrapper">
-          <AddNewItem text={t.installNewAppText} onClick={changeSelectedTab} />
-        </div>
       </FlexWrapper>
     </ContentCard>
   );

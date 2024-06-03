@@ -9,6 +9,7 @@ import {
 } from "@near-wallet-selector/core";
 import { setupMyNearWallet } from "@near-wallet-selector/my-near-wallet";
 import { useRPC } from "../hooks/useNear";
+import { useAdminClient } from "../hooks/useAdminClient";
 import axios from "axios";
 
 import * as nearAPI from "near-api-js";
@@ -43,7 +44,8 @@ export interface DeployStatus {
 export default function PublishApplication() {
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const { getPackages } = useRPC();
+  const { getPackages, getPackage } = useRPC();
+  const { installApplication } = useAdminClient();
   const [ipfsPath, setIpfsPath] = useState("");
   const [fileHash, setFileHash] = useState("");
   const [packages, setPackages] = useState<Package[]>([]);
@@ -99,7 +101,7 @@ export default function PublishApplication() {
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
-      network: process.env["VITE_NEAR_ENVIRONMENT"] as NetworkId ?? "testnet",
+      network: (process.env["VITE_NEAR_ENVIRONMENT"] as NetworkId) ?? "testnet",
       modules: [setupMyNearWallet()],
     });
     const wallet: BrowserWallet = await selector.wallet("my-near-wallet");
@@ -179,14 +181,16 @@ export default function PublishApplication() {
           },
         ],
       });
-      if (
-        isFinalExecution(res)
-      ) {
+      if (isFinalExecution(res)) {
+        const idHash = nearAPI.providers.getTransactionLastResult(
+          res as nearAPI.providers.FinalExecutionOutcome
+        );
         setDeployStatus({
           title: "Package added successfully",
           message: `Package ${packageInfo.name} added successfully`,
           error: false,
         });
+        return idHash;
       }
     } catch (error) {
       let errorMessage = "";
@@ -232,9 +236,7 @@ export default function PublishApplication() {
           },
         ],
       });
-      if (
-        isFinalExecution(res)
-      ) {
+      if (isFinalExecution(res)) {
         setDeployStatus({
           title: "Application published",
           message: `Application ${packageInfo.name} with release version ${releaseInfo.version} published`,
@@ -288,11 +290,34 @@ export default function PublishApplication() {
     });
   };
 
+  const installApplicationHandler = async (idHash: string) => {
+    if (!releaseInfo || !idHash) {
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    const response = await installApplication(idHash, releaseInfo.version);
+    if (response.error) {
+      setDeployStatus({
+        title: "Failed to install application",
+        message: response.error.message,
+        error: true,
+      });
+    } else {
+      setDeployStatus({
+        title: "Application deployed and installed",
+        message: `Deployed and installed application: ${packageInfo.name}, release version: ${releaseInfo.version}.`,
+        error: false,
+      });
+    }
+    setShowStatusModal(true);
+  };
+
   const publishApplication = async () => {
     setIsLoading(true);
     setShowStatusModal(false);
-    await addPackage();
+    const idHash = await addPackage();
     await addRelease();
+    await installApplicationHandler(idHash);
     setShowStatusModal(true);
     setIsLoading(false);
   };
