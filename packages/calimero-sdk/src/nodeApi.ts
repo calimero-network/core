@@ -100,7 +100,7 @@ export interface Payload {
 }
 
 export interface WalletMetadata {
-  type: WalletType;
+  wallet: WalletType;
   signingKey: String;
 }
 

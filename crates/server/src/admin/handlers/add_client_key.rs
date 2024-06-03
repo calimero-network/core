@@ -39,7 +39,7 @@ struct Payload {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletMetadata {
-    #[serde(rename = "type")]
+    #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
     pub signing_key: String,
 }

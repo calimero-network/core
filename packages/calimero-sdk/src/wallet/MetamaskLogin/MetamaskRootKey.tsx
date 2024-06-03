@@ -76,7 +76,7 @@ export default function MetamaskRootKey({
         callbackUrl: "",
         message: walletSignatureData,
         walletMetadata: {
-          type: getWalletType(chainId),
+          wallet: getWalletType(chainId),
           signingKey: address,
         },
       }

@@ -109,7 +109,7 @@ export default function LoginWithMetamask({
       //TODO handle error
     } else {
       const walletMetadata: WalletMetadata = {
-        type: getWalletType(chainId),
+        wallet: getWalletType(chainId),
         signingKey: address,
       };
       const loginRequest: LoginRequest = {

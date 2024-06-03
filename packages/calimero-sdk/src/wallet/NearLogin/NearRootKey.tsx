@@ -140,7 +140,7 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
       callbackUrl: requestObject.callbackUrl,
       message: requestObject.message,
       walletMetadata: {
-        type: WalletType.NEAR,
+        wallet: WalletType.NEAR,
         signingKey: publicKey,
       },
     }
