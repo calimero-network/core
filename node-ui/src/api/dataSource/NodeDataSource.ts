@@ -39,8 +39,15 @@ export interface NearRootKey extends RootKey {
   type: Network.NEAR;
 }
 
-export interface ApiRootKey extends ClientKey {
+interface NetworkType {
+  type: Network;
   chainId?: number;
+}
+
+interface ApiRootKey {
+  signing_key: string;
+  wallet: NetworkType;
+  created_at: number;
 }
 
 interface ClientKey {
@@ -154,17 +161,12 @@ export class NodeDataSource {
       if (response?.data?.root_keys) {
         const rootKeys: (ETHRootKey | NearRootKey)[] =
           response?.data?.root_keys?.map(
-            (obj: {
-              signing_key: string;
-              type: Network;
-              chainId?: number;
-              created_at: number;
-            }) => {
-              if (obj.type === Network.NEAR) {
+            (obj: ApiRootKey) => {
+              if (obj.wallet.type === Network.NEAR) {
                 return {
                   signingKey: obj.signing_key,
                   type: Network.NEAR,
-                  chainId: obj.chainId ?? 1,
+                  chainId: obj.wallet.chainId ?? 1,
                   createdAt: obj.created_at,
                 } as NearRootKey;
               } else {
@@ -172,7 +174,7 @@ export class NodeDataSource {
                   signingKey: obj.signing_key,
                   type: Network.ETH,
                   createdAt: obj.created_at,
-                  ...(obj.chainId !== undefined && { chainId: obj.chainId }),
+                  ...(obj.wallet.chainId !== undefined && { chainId: obj.wallet.chainId }),
                 } as ETHRootKey;
               }
             }
