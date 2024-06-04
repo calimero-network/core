@@ -12,7 +12,7 @@ const Container = styled.div<{isOverflow: boolean}>`
   border-radius: 0.5rem;
   background-color: #212325;
   color: #fff;
-  ${(props) => props.isOverflow && "height: 100%;"}
+  ${(props) => props.isOverflow ? "" : "height: 100%;"}
 
   .header-back {
     display: flex;
