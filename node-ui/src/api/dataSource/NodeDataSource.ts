@@ -39,11 +39,8 @@ export interface NearRootKey extends RootKey {
   type: Network.NEAR;
 }
 
-export interface ApiRootKey {
-  signing_key: string;
-  type: Network;
+export interface ApiRootKey extends ClientKey {
   chainId?: number;
-  created_at: number;
 }
 
 interface ClientKey {
