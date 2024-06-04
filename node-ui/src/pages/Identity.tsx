@@ -16,7 +16,7 @@ export default function Identity() {
   const [rootKeys, setRootKeys] = useState<RootKeyObject[]>([]);
   useEffect(() => {
     const setDids = async () => {
-      const  didList = await apiClient.node().getDidList();
+      const didList = await apiClient.node().getDidList();
       const rootKeyObjectsList = mapApiResponseToObjects(didList);
       setRootKeys(rootKeyObjectsList);
     };

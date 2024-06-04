@@ -1,5 +1,5 @@
 import { ApiResponse } from "../../api-response";
-import { LoginRequest, LoginResponse, NodeApi, NodeChallenge } from "../../nodeApi";
+import { LoginRequest, LoginResponse, NodeApi, NodeChallenge, RootKeyRequest, RootKeyResponse } from "../../nodeApi";
 import { HttpClient } from "../httpClient";
 
 
@@ -26,6 +26,17 @@ export class NodeApiDataSource implements NodeApi {
       `${rpcBaseUrl}/admin-api/add-client-key`,
       {
         ...loginRequest,
+      }
+    );
+  }
+
+  async addRootKey(rootKeyRequest: RootKeyRequest, rpcBaseUrl: string): ApiResponse<RootKeyResponse> {
+    console.log("Send request to node with params", rootKeyRequest);
+
+    return await this.client.post<LoginRequest>(
+      `${rpcBaseUrl}/admin-api/root-key`,
+      {
+        ...rootKeyRequest,
       }
     );
   }

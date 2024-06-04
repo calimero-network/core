@@ -1,14 +1,16 @@
 import React from "react";
 import LoginWithMetamask from "./Metamask";
+import MetamaskRootKey from "./MetamaskRootKey";
 import { MetaMaskUIProvider } from "@metamask/sdk-react-ui";
 
 interface MetamaskContextProps {
   applicationId: string;
   rpcBaseUrl: string;
   successRedirect: () => void;
-  cardBackgroundColor: string | undefined;
-  metamaskTitleColor: string | undefined;
-  navigateBack: () => void | undefined;
+  cardBackgroundColor?: string;
+  metamaskTitleColor?: string;
+  navigateBack?: () => void;
+  clientLogin?: boolean;
 }
 
 const MetamaskContext: React.FC<MetamaskContextProps> = ({
@@ -17,7 +19,8 @@ const MetamaskContext: React.FC<MetamaskContextProps> = ({
   successRedirect,
   cardBackgroundColor,
   metamaskTitleColor,
-  navigateBack
+  navigateBack,
+  clientLogin = true,
 }) => {
   return (
     <MetaMaskUIProvider
@@ -41,13 +44,23 @@ const MetamaskContext: React.FC<MetamaskContextProps> = ({
         }}
       >
         <div>
-          <LoginWithMetamask
-            applicationId={applicationId}
-            rpcBaseUrl={rpcBaseUrl}
-            successRedirect={successRedirect}
-            metamaskTitleColor={metamaskTitleColor}
-            navigateBack={navigateBack}
-          />
+          {clientLogin ? (
+            <LoginWithMetamask
+              applicationId={applicationId}
+              rpcBaseUrl={rpcBaseUrl}
+              successRedirect={successRedirect}
+              metamaskTitleColor={metamaskTitleColor}
+              navigateBack={navigateBack}
+            />
+          ) : (
+            <MetamaskRootKey
+              applicationId={applicationId}
+              rpcBaseUrl={rpcBaseUrl}
+              successRedirect={successRedirect}
+              metamaskTitleColor={metamaskTitleColor}
+              navigateBack={navigateBack}
+            />
+          )}
         </div>
       </div>
     </MetaMaskUIProvider>

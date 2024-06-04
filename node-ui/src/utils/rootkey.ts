@@ -1,7 +1,7 @@
 import { Location } from 'react-router-dom';
 import axios from "axios";
 import { getWalletCallbackUrl } from "./wallet";
-import { RootKey } from "../api/dataSource/NodeDataSource";
+import { ETHRootKey, NearRootKey } from "../api/dataSource/NodeDataSource";
 
 export interface UrlParams {
   accountId: string;
@@ -37,27 +37,39 @@ export const submitRootKeyRequest = async (params: UrlParams): Promise<submitRoo
   }
 };
 
+enum Network {
+  NEAR = "NEAR",
+  ETH = "ETH",
+  BNB = "BNB",
+  ARB = "ARB",
+  ZK = "ZK"
+}
+
+const getMetamaskType = (chainId: number): Network => {
+  switch (chainId) {
+    case 1:
+      return Network.ETH;
+    case 56:
+      return Network.BNB;
+    case 42161:
+      return Network.ARB;
+    case 324:
+      return Network.ZK
+    default:
+      return Network.ETH;
+  }
+}
+
 export interface RootKeyObject {
-  type: string;
-  date: string;
+  type: Network;
+  createdAt: number;
   publicKey: string;
 }
 
-export function mapApiResponseToObjects(didList: RootKey[]): RootKeyObject[] {
-  return didList.map((item) => {
-    let type: string;
-    if (item.signingKey.startsWith("ed25519")) {
-      type = "NEAR";
-    } else if (item.signingKey.startsWith("0x")) {
-      type = "ETH";
-    } else {
-      type = "Unknown";
-    }
-
-    return {
-      type: type,
-      date: "-",
-      publicKey: item.signingKey.split(":")[1]!.trim(),
-    };
-  });
+export function mapApiResponseToObjects(didList: (ETHRootKey | NearRootKey)[]): RootKeyObject[] {
+  return didList.map((item) => ({
+      type: item.type === Network.NEAR ? Network.NEAR : getMetamaskType(item.chainId ?? 1),
+      createdAt: item.createdAt,
+      publicKey: item.type === "NEAR" ? item.signingKey.split(":")[1]!.trim() : item.signingKey,
+    }));
 }

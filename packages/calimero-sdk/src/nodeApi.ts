@@ -4,9 +4,26 @@ enum AlgorithmType {
   Ed25519,
 }
 
-export enum WalletType {
-  ETH = "ETH",
-  NEAR = "NEAR",
+interface WalletTypeBase<T extends Uppercase<string>> {
+  type: T,
+}
+
+interface ETHWalletType extends WalletTypeBase<"ETH"> {
+  chainId: number;
+}
+
+interface NEARWalletType extends WalletTypeBase<"NEAR"> { }
+
+export type WalletType =
+  | ETHWalletType
+  | NEARWalletType;
+
+export namespace WalletType {
+  export let NEAR: WalletType = <NEARWalletType>{ type: "NEAR" }
+
+  export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
+    return <ETHWalletType>{ type: "ETH", chainId };
+  }
 }
 
 enum VerifiableCredentialType {
@@ -37,11 +54,30 @@ export interface LoginRequest {
   walletMetadata: WalletMetadata;
 }
 
+export interface RootKeyRequest {
+  accountId: String;
+  publicKey: string;
+  signature: string;
+  callbackUrl: string;
+  message: SignatureMetadata;
+  walletMetadata: WalletMetadata;
+}
+
 export interface NodeChallenge {
   nonce: String;
   applicationId: String;
   timestamp: number;
   nodeSignature: String;
+}
+
+export interface NearMetadata extends WalletMetadata {
+  type: NEARWalletType;
+  signingKey: "e.g.: ed25519:DfRy7qn3upQS4KFTLChpMG9DmiR29zDMdR1YuUG7cYML";
+}
+
+export interface EthMetadata extends WalletMetadata {
+  type: ETHWalletType;
+  signingKey: "e.g.: 0x63f9a92d8d61b48a9fff8d58080425a3012d05c8";
 }
 
 export interface SignatureMessage {
@@ -64,18 +100,8 @@ export interface Payload {
 }
 
 export interface WalletMetadata {
-  type: WalletType;
+  wallet: WalletType;
   signingKey: String;
-}
-
-export interface NearMetadata extends WalletMetadata {
-  type: WalletType.NEAR;
-  signingKey: "e.g.: ed25519:DfRy7qn3upQS4KFTLChpMG9DmiR29zDMdR1YuUG7cYML";
-}
-
-export interface EthMetadata extends WalletMetadata {
-  type: WalletType.ETH;
-  signingKey: "e.g.: 0x63f9a92d8d61b48a9fff8d58080425a3012d05c8";
 }
 
 export interface SignatureMetadata {
@@ -98,8 +124,19 @@ export interface WalletSignatureData {
 }
 
 export interface LoginResponse {}
+export interface RootKeyResponse {}
 
 export interface NodeApi {
-  login(loginRequest: LoginRequest, rpcBaseUrl: string): ApiResponse<LoginResponse>;
-  requestChallenge(rpcBaseUrl: string, applicationId: string): ApiResponse<NodeChallenge>;
+  login(
+    loginRequest: LoginRequest,
+    rpcBaseUrl: string
+  ): ApiResponse<LoginResponse>;
+  requestChallenge(
+    rpcBaseUrl: string,
+    applicationId: string
+  ): ApiResponse<NodeChallenge>;
+  addRootKey(
+    rootKeyRequest: RootKeyRequest,
+    rpcBaseUrl: string
+  ): ApiResponse<RootKeyResponse>;
 }
