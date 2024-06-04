@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { WalletSelectorContextProvider } from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin/WalletSelectorContext";
-import NearRootKey from "@calimero-is-near/calimero-p2p-sdk/lib/wallet/NearLogin/NearRootKey";
+import { WalletSelectorContextProvider } from "@calimero-is-near/calimero-p2p-sdk/lib/wallets/NearLogin/WalletSelectorContext";
+import NearRootKey from "@calimero-is-near/calimero-p2p-sdk/lib/wallets/NearLogin/NearRootKey";
 import ContentWrapper from "../components/login/ContentWrapper";
 
 import "@near-wallet-selector/modal-ui/styles.css";

@@ -9,6 +9,7 @@ use axum::{Extension, Json, Router};
 use calimero_identity::auth::verify_eth_signature;
 use calimero_primitives::identity::{RootKey, WalletType};
 use calimero_store::Store;
+use chrono::Utc;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -189,7 +190,6 @@ async fn create_root_key_handler(
     Json(req): Json<PubKeyRequest>,
 ) -> impl IntoResponse {
     let recipient = "me";
-
     match session
         .get::<NodeChallenge>(CHALLENGE_KEY)
         .await
@@ -197,7 +197,6 @@ async fn create_root_key_handler(
         .flatten()
     {
         Some(challenge) => {
-
             match req.wallet_metadata.wallet_type {
                 WalletType::NEAR => {
                     if !verifysignature::verify_near_signature(
@@ -215,12 +214,14 @@ async fn create_root_key_handler(
                         &state.store,
                         RootKey {
                             signing_key: req.public_key,
+                            wallet_type: WalletType::NEAR,
+                            created_at: Utc::now().timestamp_millis() as u64
                         },
                     );
 
                     handle_root_key_result(result)
                 }
-                WalletType::ETH => {
+                WalletType::ETH { .. } => {
                     if let Err(_) = verify_eth_signature(
                         &req.wallet_metadata.signing_key,
                         &req.message,
@@ -233,7 +234,9 @@ async fn create_root_key_handler(
                         &state.store,
                         RootKey {
                             signing_key: req.public_key,
-                        },
+                            wallet_type: req.wallet_metadata.wallet_type,
+                            created_at: Utc::now().timestamp_millis() as u64
+                        }
                     );
 
                     handle_root_key_result(result)

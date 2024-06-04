@@ -2,6 +2,7 @@ import React from "react";
 import styled from "styled-components";
 import MenuIconDropdown from "../common/MenuIconDropdown";
 import { RootKeyObject } from "../../utils/rootkey";
+import { formatTimestampToDate } from "../../utils/date";
 
 interface RowItemProps {
   hasBorders: boolean;
@@ -51,6 +52,8 @@ const RowItem = styled.div<RowItemProps>`
   }
 `;
 
+
+
 export default function identityRowItem(
   item: RootKeyObject,
   id: number,
@@ -60,7 +63,7 @@ export default function identityRowItem(
   return (
     <RowItem key={id} hasBorders={id === count}>
       <div className="row-item type">{item.type}</div>
-      <div className="row-item date">{item.date}</div>
+      <div className="row-item date">{formatTimestampToDate(item.createdAt)}</div>
       <div className="row-item public-key">{item.publicKey}</div>
       <div className="menu-dropdown">
         <MenuIconDropdown

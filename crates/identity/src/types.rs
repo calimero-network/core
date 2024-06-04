@@ -58,7 +58,7 @@ pub enum VerifiableCredentialType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename = "camelCase")]
 pub struct WalletVerifiableCredential {
-    #[serde(rename = "type")]
+    #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
     pub address: String,
     pub public_key: Vec<u8>,

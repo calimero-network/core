@@ -2,9 +2,9 @@ export * from "./rpc";
 export * from "./rpc/jsonrpc";
 export * from "./subscriptions";
 export * from "./subscriptions/ws"
-export * from "./wallet/NearLogin/WalletSelectorContext";
-export * from "./wallet/NearLogin/NearLogin";
-export * from "./wallet/NearLogin/NearRootKey";
-export * from "./wallet/MetamaskLogin/Metamask";
-export * from "./wallet/MetamaskLogin/MetamaskWrapper"
-export * from "./wallet/LoginSelector";
+export * from "./wallets/NearLogin/WalletSelectorContext";
+export * from "./wallets/NearLogin/NearLogin";
+export * from "./wallets/NearLogin/NearRootKey";
+export * from "./wallets/MetamaskLogin/Metamask";
+export * from "./wallets/MetamaskLogin/MetamaskWrapper"
+export * from "./wallets/LoginSelector";

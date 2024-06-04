@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -13,12 +11,17 @@ pub struct Did {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RootKey {
     pub signing_key: String,
+    #[serde(rename = "wallet")]
+    pub wallet_type: WalletType,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClientKey {
+    #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
     pub signing_key: String,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -31,24 +34,14 @@ pub struct Context {
 }
 
 #[derive(Debug, Deserialize, PartialEq, Serialize, Clone, Copy)]
+#[serde(rename_all = "UPPERCASE")]
+#[serde(tag = "type")]
 pub enum WalletType {
     NEAR,
-    ETH,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct InvalidWalletTypeError;
-
-impl FromStr for WalletType {
-    type Err = InvalidWalletTypeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ETH" => Ok(WalletType::ETH),
-            "NEAR" => Ok(WalletType::NEAR),
-            _ => Err(InvalidWalletTypeError),
-        }
-    }
+    ETH {
+        #[serde(rename = "chainId")]
+        chain_id: u64,
+    },
 }
 
 pub mod serde_signing_key {

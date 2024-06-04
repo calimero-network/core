@@ -1,5 +1,10 @@
 import { HttpClient } from "../httpClient";
 
+enum Network {
+  NEAR = "NEAR",
+  ETH = "ETH",
+}
+
 export interface Application {
   id: string;
   version: string;
@@ -22,15 +27,26 @@ export interface ContextsList<T> {
 
 export interface RootKey {
   signingKey: string;
+  createdAt: number;
 }
 
-export interface ApiRootKey {
-  signing_key: string;
+export interface ETHRootKey extends RootKey {
+  type: Network.ETH;
+  chainId: number;
+}
+
+export interface NearRootKey extends RootKey {
+  type: Network.NEAR;
+}
+
+export interface ApiRootKey extends ClientKey {
+  chainId?: number;
 }
 
 interface ClientKey {
   signing_key: string;
-  wallet_type: string;
+  type: Network;
+  created_at: number;
 }
 
 interface RootkeyResponse {
@@ -48,7 +64,9 @@ export class NodeDataSource {
 
   async getInstalledApplications(): Promise<Application[]> {
     try {
-      const response = await this.client.get<Application[]>("/admin-api/applications");
+      const response = await this.client.get<Application[]>(
+        "/admin-api/applications"
+      );
       // @ts-ignore with adminAPI update TODO: fix admin api response
       return response?.apps ?? [];
     } catch (error) {
@@ -130,13 +148,35 @@ export class NodeDataSource {
     }
   }
 
-  async getDidList(): Promise<RootKey[]> {
+  async getDidList(): Promise<(ETHRootKey | NearRootKey)[]> {
     try {
       const response = await this.client.get<RootkeyResponse>("/admin-api/did");
       if (response?.data?.root_keys) {
-        const rootKeys: RootKey[] = response?.data?.root_keys?.map((obj: { signing_key: string }) => ({
-          signingKey: obj.signing_key
-        }));
+        const rootKeys: (ETHRootKey | NearRootKey)[] =
+          response?.data?.root_keys?.map(
+            (obj: {
+              signing_key: string;
+              type: Network;
+              chainId?: number;
+              created_at: number;
+            }) => {
+              if (obj.type === Network.NEAR) {
+                return {
+                  signingKey: obj.signing_key,
+                  type: Network.NEAR,
+                  chainId: obj.chainId ?? 1,
+                  createdAt: obj.created_at,
+                } as NearRootKey;
+              } else {
+                return {
+                  signingKey: obj.signing_key,
+                  type: Network.ETH,
+                  createdAt: obj.created_at,
+                  ...(obj.chainId !== undefined && { chainId: obj.chainId }),
+                } as ETHRootKey;
+              }
+            }
+          );
         return rootKeys;
       } else {
         return [];
