@@ -221,7 +221,7 @@ async fn create_root_key_handler(
 
                     handle_root_key_result(result)
                 }
-                WalletType::ETH { chain_id: _ } => {
+                WalletType::ETH { .. } => {
                     if let Err(_) = verify_eth_signature(
                         &req.wallet_metadata.signing_key,
                         &req.message,

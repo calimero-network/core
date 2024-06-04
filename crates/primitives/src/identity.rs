@@ -11,14 +11,14 @@ pub struct Did {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RootKey {
     pub signing_key: String,
-    #[serde(flatten)]
+    #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
     pub created_at: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClientKey {
-    #[serde(flatten)]
+    #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
     pub signing_key: String,
     pub created_at: u64,

@@ -93,7 +93,7 @@ fn transform_request(
             })?;
             SignatureMetadataEnum::NEAR(metadata)
         }
-        WalletType::ETH { chain_id: _ }=> {
+        WalletType::ETH { .. }=> {
             let metadata = serde_json::from_value::<EthSignatureMessageMetadata>(
                 intermediate.payload.metadata,
             )
@@ -191,7 +191,7 @@ fn verify_node_signature(
             }
             Ok(true)
         }
-        WalletType::ETH { chain_id: _ } => {
+        WalletType::ETH { .. } => {
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
                 _ => {
