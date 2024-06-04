@@ -57,9 +57,9 @@ const RowItem = styled.div<RowItemComponentProps>`
 export default function rowItem(item: Application, id: number, count: number, onRowItemClick?: (id: string) => void): JSX.Element {
   return (
     <RowItem key={item.id} hasBorders={id === count}>
-      <div className="row-item name" onClick={() => onRowItemClick && onRowItemClick(item.id)}>{item.name}</div>
+      <div className="row-item name" onClick={() => item.version && onRowItemClick && onRowItemClick(item.id)}>{item.name}</div>
       <div className="row-item read">{truncateHash(item.id)}</div>
-      <div className="row-item read">{item.version}</div>
+      <div className="row-item read">{item.version ?? "N/A"}</div>
       <div className="row-item read">-</div>
     </RowItem>
   );

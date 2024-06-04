@@ -7,11 +7,23 @@ import { ContentCard } from "../components/common/ContentCard";
 import StartContextCard from "../components/context/startContext/StartContextCard";
 import translations from "../constants/en.global.json";
 import apiClient from "../api/index";
+import { useAdminClient } from "../hooks/useAdminClient";
+
+export interface ContextApplication {
+  appId: string;
+  name: string;
+  version: string;
+}
 
 export default function StartContext() {
   const t = translations.startContextPage;
   const navigate = useNavigate();
-  const [applicationId, setApplicationId] = useState("");
+  const { installApplication } = useAdminClient();
+  const [application, setApplication] = useState<ContextApplication>({
+    appId: "",
+    name: "",
+    version: ""
+  });
   const [isArgsChecked, setIsArgsChecked] = useState(false);
   const [methodName, setMethodName] = useState("");
   const [argumentsJson, setArgumentsJson] = useState("");
@@ -26,13 +38,19 @@ export default function StartContext() {
 
   const startContext = async () => {
     setIsLoading(true);
+    const response = await installApplicationHandler();
+    if (!response) {
+      setIsLoading(false);
+      setShowStatusModal(true);
+      return;
+    }
     try {
-      if (!applicationId) {
+      if (!application.appId) {
         return;
       }
       const startContextResponse = await apiClient
         .node()
-        .startContexts(applicationId, methodName, argumentsJson);
+        .startContexts(application.appId, methodName, argumentsJson);
       if (startContextResponse) {
         setStartContextStatus({
           title: t.startContextSuccessTitle,
@@ -58,6 +76,31 @@ export default function StartContext() {
     setShowStatusModal(true);
   };
 
+  const installApplicationHandler = async (): Promise<boolean> => {
+    if (!application.appId || !application.version) {
+      return false;
+    }
+    const response = await installApplication(
+      application.appId,
+      application.version
+    );
+    if (response.error) {
+      setStartContextStatus({
+        title: "Error installing application",
+        message: response.error.message,
+        error: true,
+      });
+      return false;
+    } else {
+      setStartContextStatus({
+        title: response.data,
+        message: `Installed application ${application.name}, version ${application.version}.`,
+        error: false,
+      });
+      return true;
+    }
+  };
+
   const closeModal = () => {
     setShowStatusModal(false);
     if (startContextStatus.error) {
@@ -80,8 +123,8 @@ export default function StartContext() {
           headerOnBackClick={() => navigate("/contexts")}
         >
           <StartContextCard
-            applicationId={applicationId}
-            setApplicationId={setApplicationId}
+            application={application}
+            setApplication={setApplication}
             isArgsChecked={isArgsChecked}
             setIsArgsChecked={setIsArgsChecked}
             methodName={methodName}

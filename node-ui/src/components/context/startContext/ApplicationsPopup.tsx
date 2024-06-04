@@ -4,9 +4,9 @@ import styled from "styled-components";
 import { Options } from "../../../constants/ApplicationsConstants";
 import ApplicationsTable from "./ApplicationsTable";
 import { useRPC } from "../../../hooks/useNear";
-import { Application, NodeApp } from "../../../pages/Applications";
-import apiClient from "../../../api";
+import { Application, Package } from "../../../pages/Applications";
 import { TableOptions } from "../../../components/common/OptionsHeader";
+import { ContextApplication } from "../../../pages/StartContext";
 
 const ModalWrapper = styled.div`
   background-color: #212325;
@@ -29,7 +29,7 @@ const initialOptions = [
 interface ApplicationsPopupProps {
   show: boolean;
   closeModal: () => void;
-  setApplicationId: (application: string) => void;
+  setApplication: (application: ContextApplication) => void;
 }
 
 export interface Applications {
@@ -40,27 +40,25 @@ export interface Applications {
 export default function ApplicationsPopup({
   show,
   closeModal,
-  setApplicationId,
+  setApplication,
 }: ApplicationsPopupProps) {
-  const { getPackage } = useRPC();
+  const { getPackages, getLatestRelease, getPackage } = useRPC();
   const [currentOption, setCurrentOption] = useState<string>(Options.AVAILABLE);
-  const [tableOptions, setTableOptions] = useState<TableOptions[]>(initialOptions);
+  const [tableOptions, setTableOptions] =
+    useState<TableOptions[]>(initialOptions);
   const [applicationsList, setApplicationsList] = useState<Applications>({
     available: [],
     owned: [],
   });
 
   useEffect(() => {
-    const setApps = async () => {
-      const installedApplications = await apiClient
-        .node()
-        .getInstalledApplications();
-
-      if (installedApplications.length !== 0) {
+    const setApplications = async () => {
+      const packages = await getPackages();
+      if (packages.length !== 0) {
         const tempApplications = await Promise.all(
-          installedApplications.map(async (app: NodeApp) => {
-            const packageData = await getPackage(app.id);
-            return { ...packageData, id: app.id, version: app.version };
+          packages.map(async (appPackage: Package) => {
+            const releseData = await getLatestRelease(appPackage.id);
+            return { ...appPackage, version: releseData?.version! };
           })
         );
         setApplicationsList((prevState) => ({
@@ -81,12 +79,17 @@ export default function ApplicationsPopup({
         ]);
       }
     };
-
-    setApps();
+    setApplications();
   }, []);
 
-  const selectApplication = (applicationId: string) => {
-    setApplicationId(applicationId);
+  const selectApplication = async (applicationId: string) => {
+    const application = await getPackage(applicationId);
+    const release = await getLatestRelease(applicationId);
+    setApplication({
+      appId: applicationId,
+      name: application.name,
+      version: release?.version ?? "",
+    });
     closeModal();
   };
 

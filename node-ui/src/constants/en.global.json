@@ -172,7 +172,10 @@
         "startContextSuccessTitle": "Context started",
         "startedContextMessage": "Application context has been started successfully.",
         "startContextErrorTitle": "Failed to start context",
-        "startContextErrorMessage": "Failed to start the application context."
+        "startContextErrorMessage": "Failed to start the application context.",
+        "idLabelText": "Application ID: ",
+        "nameLabelText": "Application Name: ",
+        "versionLabelText": "Version: "
     },
     "exportIdentityPage": {
         "title": "Export",
