@@ -1,6 +1,6 @@
-import { WalletType } from "../nodeApi";
+import { WalletType } from "../../nodeApi";
 
-export const getWalletType = (chainId: string): WalletType => {
+export const getNetworkType = (chainId: string): WalletType => {
   switch (chainId) {
     case "0x1":
       return WalletType.ETH({ chainId: 1 });

@@ -22,7 +22,7 @@ import {
 import { ResponseData } from "../../api-response";
 import { setStorageNodeAuthorized } from "../../storage/storage";
 import { Loading } from "../loading/Loading";
-import { getWalletType } from "../walletType";
+import { getNetworkType } from "../eth/type";
 
 interface LoginWithMetamaskProps {
   applicationId: string;
@@ -109,7 +109,7 @@ export default function LoginWithMetamask({
       //TODO handle error
     } else {
       const walletMetadata: WalletMetadata = {
-        wallet: getWalletType(chainId),
+        wallet: getNetworkType(chainId),
         signingKey: address,
       };
       const loginRequest: LoginRequest = {

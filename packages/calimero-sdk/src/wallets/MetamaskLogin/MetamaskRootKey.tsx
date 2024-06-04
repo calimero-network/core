@@ -14,7 +14,7 @@ import {
 import { ResponseData } from "../../api-response";
 import { setStorageNodeAuthorized } from "../../storage/storage";
 import { Loading } from "../loading/Loading";
-import { getWalletType } from "../walletType";
+import { getNetworkType } from "../eth/type";
 
 interface MetamaskRootKeyProps {
   applicationId: string;
@@ -76,7 +76,7 @@ export default function MetamaskRootKey({
         callbackUrl: "",
         message: walletSignatureData,
         walletMetadata: {
-          wallet: getWalletType(chainId),
+          wallet: getNetworkType(chainId),
           signingKey: address,
         },
       }
