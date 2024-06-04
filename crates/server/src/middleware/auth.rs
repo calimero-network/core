@@ -129,8 +129,7 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
     let wallet_type = String::from_utf8(wallet_type.as_bytes().to_vec())
         .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
 
-    let wallet_type = wallet_type
-        .parse::<WalletType>()
+    let wallet_type: WalletType = serde_json::from_slice(wallet_type.as_bytes())
         .map_err(|_| UnauthorizedError::new("Invalid wallet_type string"))?;
 
     let signature = headers

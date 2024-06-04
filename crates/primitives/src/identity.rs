@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -44,29 +42,6 @@ pub enum WalletType {
         #[serde(rename = "chainId")]
         chain_id: u64,
     },
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct InvalidWalletTypeError;
-
-impl FromStr for WalletType {
-    type Err = InvalidWalletTypeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split(':').collect();
-
-        match parts.as_slice() {
-            ["NEAR"] => Ok(WalletType::NEAR),
-            ["ETH", chain_id_str] => {
-                if let Ok(chain_id) = chain_id_str.parse::<u64>() {
-                    Ok(WalletType::ETH { chain_id })
-                } else {
-                    Err(InvalidWalletTypeError)
-                }
-            }
-            _ => Err(InvalidWalletTypeError),
-        }
-    }
 }
 
 pub mod serde_signing_key {
