@@ -7,7 +7,6 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_identity::auth::verify_eth_signature;
 use calimero_primitives::identity::{ClientKey, RootKey, WalletType};
-use calimero_server_primitives::admin::SignatureMessage;
 use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
 use libp2p::identity::Keypair;
@@ -34,6 +33,17 @@ struct AddClientKeyRequest {
 struct Payload {
     message: SignatureMessage,
     metadata: SignatureMetadataEnum,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureMessage {
+    pub nonce: String,
+    pub application_id: String,
+    pub timestamp: i64,
+    pub node_signature: String,
+    pub message: String,
+    pub client_public_key: String,
 }
 
 #[derive(Debug, Deserialize)]
