@@ -4,6 +4,8 @@ import Button from "../../common/Button";
 import ApplicationsPopup from "./ApplicationsPopup";
 import translations from "../../../constants/en.global.json";
 import StatusModal, { ModalContent } from "../../common/StatusModal";
+import { ContextApplication } from "../../../pages/StartContext";
+import { XMarkIcon } from "@heroicons/react/24/solid";
 
 const Wrapper = styled.div`
   display: flex;
@@ -26,6 +28,19 @@ const Wrapper = styled.div`
     color: #6b7280;
   }
 
+  .cancel-icon {
+    position: relative;
+    right: -0.25rem;
+    cursor: pointer;
+    height: 1.25rem;
+    width: 1.25rem;
+    color: #fff;
+    cursor: pointer;
+    &:hover {
+      color: #4cfafc;
+    }
+  }
+
   .select-app-section {
     .button-container {
       display: flex;
@@ -34,17 +49,19 @@ const Wrapper = styled.div`
     }
 
     .selected-app {
+      display: flex;
+      flex-direction: column;
       padding-top: 0.25rem;
       padding-left: 0.5rem;
       font-size: 0.875rem;
       font-weight: 500;
       line-height: 1.25rem;
       text-align: left;
-      color: #fff;
-      cursor: pointer;
-
-      &:hover {
-        color: #4cfafc;
+      .label {
+        color: #6b7280;
+      }
+      .value {
+        color: #fff;
       }
     }
   }
@@ -122,8 +139,8 @@ const Wrapper = styled.div`
 `;
 
 interface StartContextCardProps {
-  applicationId: string;
-  setApplicationId: (applicationId: string) => void;
+  application: ContextApplication;
+  setApplication: (application: ContextApplication) => void;
   isArgsChecked: boolean;
   setIsArgsChecked: (checked: boolean) => void;
   methodName: string;
@@ -141,8 +158,8 @@ interface StartContextCardProps {
 }
 
 export default function StartContextCard({
-  applicationId,
-  setApplicationId,
+  application,
+  setApplication,
   isArgsChecked,
   setIsArgsChecked,
   methodName,
@@ -160,7 +177,7 @@ export default function StartContextCard({
 }: StartContextCardProps) {
   const t = translations.startContextPage;
   const onStartContextClick = async () => {
-    if (!applicationId) {
+    if (!application.appId) {
       return;
     } else if (isArgsChecked && (!methodName || !argumentsJson)) {
       return;
@@ -189,16 +206,24 @@ export default function StartContextCard({
         <ApplicationsPopup
           show={showBrowseApplication}
           closeModal={() => setShowBrowseApplication(false)}
-          setApplicationId={setApplicationId}
+          setApplication={setApplication}
         />
       )}
       <div className="select-app-section">
         <div className="section-title">
-          {applicationId ? t.selectedApplicationTitle : t.selectApplicationTitle}
+          {application.appId ? t.selectedApplicationTitle : t.selectApplicationTitle}
+          {application.appId && <XMarkIcon className="cancel-icon" onClick={() => setApplication({
+            appId: "",
+            name: "",
+            version: ""
+          })}
+          />}
         </div>
-        {applicationId ? (
-          <div className="selected-app" onClick={() => setApplicationId("")}>
-            {applicationId}
+        {application.appId ? (
+          <div className="selected-app">
+            <p className="label">{t.idLabelText}<span className="value">{application.appId}</span></p>
+            <p className="label">{t.nameLabelText}<span className="value">{application.name}</span></p>
+            <p className="label">{t.versionLabelText}<span className="value">{application.version}</span></p>
           </div>
         ) : (
           <div className="button-container">

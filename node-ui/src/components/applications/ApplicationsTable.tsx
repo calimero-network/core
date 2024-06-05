@@ -7,7 +7,6 @@ import ListTable from "../common/ListTable";
 import applicationRowItem from "./ApplicationRowItem";
 import { Options } from "../../constants/ApplicationsConstants";
 import { Application, Applications } from "../../pages/Applications";
-import { AddNewItem } from "../common/AddNewItem";
 
 const FlexWrapper = styled.div`
   flex: 1;
@@ -25,14 +24,6 @@ const FlexWrapper = styled.div`
     &:hover {
       color: #4cfafc;
     }
-  }
-
-  .install-app-wrapper {
-    display: flex;
-    width: 100%;
-    justify-content: center;
-    position: absolute;
-    bottom: -1.75rem;
   }
 `;
 
@@ -92,9 +83,6 @@ export default function ApplicationsTable({
             onRowItemClick={navigateToAppDetails}
           />
         )}
-        <div className="install-app-wrapper">
-          <AddNewItem text={t.installNewAppText} onClick={changeSelectedTab} />
-        </div>
       </FlexWrapper>
     </ContentCard>
   );
