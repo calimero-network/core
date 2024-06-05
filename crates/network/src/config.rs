@@ -1,6 +1,6 @@
-use std::fmt;
+use std::{fmt, time};
 
-use libp2p::identity;
+use libp2p::{identity, rendezvous};
 use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +14,11 @@ pub const IPFS_BOOT_NODES: &[&str] = &[
     "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
     "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
     "/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+];
+
+pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
+    "/ip4/35.156.78.13/udp/4001/quic-v1/p2p/12D3KooWRnt7EmBwrNALhAXAgM151MdH7Ka9tvYS91ZUqnqwpjVg",
+    "/ip4/35.156.78.13/tcp/4001/p2p/12D3KooWRnt7EmBwrNALhAXAgM151MdH7Ka9tvYS91ZUqnqwpjVg",
 ];
 
 #[derive(Debug)]
@@ -61,18 +66,76 @@ impl BootstrapNodes {
                 .collect(),
         }
     }
+
+    pub fn calimero_dev() -> Self {
+        Self {
+            list: CALIMERO_DEV_BOOT_NODES
+                .iter()
+                .map(|s| s.parse().expect("invalid multiaddr"))
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub mdns: bool,
+
+    pub rendezvous: RendezvousConfig,
 }
 
 impl Default for DiscoveryConfig {
     fn default() -> Self {
-        Self { mdns: true }
+        Self {
+            mdns: true,
+            rendezvous: Default::default(),
+        }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RendezvousConfig {
+    #[serde(
+        serialize_with = "serialize_rendezvous_namespace",
+        deserialize_with = "deserialize_rendezvous_namespace"
+    )]
+    pub namespace: rendezvous::Namespace,
+
+    pub discovery_rpm: f32,
+
+    pub discovery_interval: time::Duration,
+}
+
+impl Default for RendezvousConfig {
+    fn default() -> Self {
+        Self {
+            namespace: rendezvous::Namespace::from_static("/calimero/devnet/global"),
+            discovery_rpm: 0.5,
+            discovery_interval: time::Duration::from_secs(90),
+        }
+    }
+}
+
+fn serialize_rendezvous_namespace<S>(
+    namespace: &rendezvous::Namespace,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let namespace_str = namespace.to_string();
+    serializer.serialize_str(&namespace_str)
+}
+
+fn deserialize_rendezvous_namespace<'de, D>(
+    deserializer: D,
+) -> Result<rendezvous::Namespace, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let namespace_str = String::deserialize(deserializer)?;
+    rendezvous::Namespace::new(namespace_str).map_err(serde::de::Error::custom)
 }
 
 fn deserialize_bootstrap<'de, D>(deserializer: D) -> Result<Vec<Multiaddr>, D::Error>

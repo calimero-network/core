@@ -1,8 +1,8 @@
 use libp2p::mdns;
 use owo_colors::OwoColorize;
-use tracing::debug;
+use tracing::{debug, error};
 
-use super::{EventHandler, EventLoop};
+use super::{EventHandler, EventLoop, RelayedMultiaddr};
 
 impl EventHandler<mdns::Event> for EventLoop {
     async fn handle(&mut self, event: mdns::Event) {
@@ -11,21 +11,20 @@ impl EventHandler<mdns::Event> for EventLoop {
         match event {
             mdns::Event::Discovered(peers) => {
                 for (peer_id, addr) in peers {
-                    debug!("Discovered {} at {}", peer_id, addr);
+                    if RelayedMultiaddr::try_from(&addr).is_ok() {
+                        // Skip "fake" relayed addresses to avoid OutgoingConnectionError e.g.:
+                        // /ip4/192.168.1.4/udp/4001/quic-v1/p2p/12D3KooWRnt7EmBwrNALhAXAgM151MdH7Ka9tvYS91ZUqnqwpjVg/p2p-circuit/p2p/12D3KooWSUpChB4mHmZNwVV26at6ZsRo25hNBHJRmPa8zfCeT41Y
+                        continue;
+                    }
 
-                    self.swarm.behaviour_mut().kad.add_address(&peer_id, addr);
+                    debug!(%peer_id, %addr, "Attempting to dial discovered peer via mdns");
+
+                    if let Err(err) = self.swarm.dial(addr) {
+                        error!("Failed to dial peer: {:?}", err);
+                    }
                 }
             }
-            mdns::Event::Expired(peers) => {
-                for (peer_id, addr) in peers {
-                    debug!("Expired {} at {}", peer_id, addr);
-
-                    self.swarm
-                        .behaviour_mut()
-                        .kad
-                        .remove_address(&peer_id, &addr);
-                }
-            }
+            _ => {}
         }
     }
 }

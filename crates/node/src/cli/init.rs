@@ -23,7 +23,7 @@ pub struct InitCommand {
     pub boot_nodes: Vec<Multiaddr>,
 
     /// Use nodes from a known network
-    #[clap(long, value_name = "NETWORK")]
+    #[clap(long, value_name = "NETWORK", default_value = "calimero-dev")]
     pub boot_network: Option<BootstrapNetwork>,
 
     /// Host to listen on
@@ -64,6 +64,7 @@ pub struct InitCommand {
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum BootstrapNetwork {
+    CalimeroDev,
     Ipfs,
 }
 
@@ -115,8 +116,13 @@ impl InitCommand {
         }
 
         let mut boot_nodes = self.boot_nodes;
-        if let Some(BootstrapNetwork::Ipfs) = self.boot_network {
-            boot_nodes.extend(BootstrapNodes::ipfs().list);
+        if let Some(network) = self.boot_network {
+            match network {
+                BootstrapNetwork::CalimeroDev => {
+                    boot_nodes.extend(BootstrapNodes::calimero_dev().list)
+                }
+                BootstrapNetwork::Ipfs => boot_nodes.extend(BootstrapNodes::ipfs().list),
+            }
         }
 
         let config = ConfigFile {
@@ -132,7 +138,10 @@ impl InitCommand {
                 bootstrap: BootstrapConfig {
                     nodes: BootstrapNodes { list: boot_nodes },
                 },
-                discovery: DiscoveryConfig { mdns },
+                discovery: DiscoveryConfig {
+                    mdns,
+                    rendezvous: Default::default(),
+                },
                 server: calimero_node::config::ServerConfig {
                     listen: self
                         .server_host

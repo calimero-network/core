@@ -1,18 +1,19 @@
 use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
-use std::time::Duration;
 
 use libp2p::futures::prelude::*;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
-use libp2p::{gossipsub, identify, kad, mdns, ping, relay, PeerId};
+use libp2p::{
+    dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, yamux, PeerId,
+};
 use multiaddr::Multiaddr;
 use tokio::sync::{mpsc, oneshot};
-use tokio::time;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 pub mod client;
 pub mod config;
+mod discovery;
 mod events;
 pub mod types;
 
@@ -20,15 +21,19 @@ use client::NetworkClient;
 use config::NetworkConfig;
 
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+const CALIMERO_KAD_PROTO_NAME: libp2p::StreamProtocol =
+    libp2p::StreamProtocol::new("/calimero/kad/1.0.0");
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
-    identify: identify::Behaviour,
-    mdns: Toggle<mdns::tokio::Behaviour>,
-    kad: kad::Behaviour<kad::store::MemoryStore>,
+    dcutr: dcutr::Behaviour,
     gossipsub: gossipsub::Behaviour,
-    relay: relay::Behaviour,
+    identify: identify::Behaviour,
+    kad: kad::Behaviour<kad::store::MemoryStore>,
+    mdns: Toggle<mdns::tokio::Behaviour>,
     ping: ping::Behaviour,
+    rendezvous: rendezvous::client::Behaviour,
+    relay: relay::client::Behaviour,
 }
 
 pub async fn run(
@@ -36,7 +41,7 @@ pub async fn run(
 ) -> eyre::Result<(NetworkClient, mpsc::Receiver<types::NetworkEvent>)> {
     let peer_id = config.identity.public().to_peer_id();
 
-    let (client, mut event_receiver, event_loop) = init(peer_id, config).await?;
+    let (client, event_receiver, event_loop) = init(peer_id, config).await?;
 
     tokio::spawn(event_loop.run());
 
@@ -44,25 +49,6 @@ pub async fn run(
         client.listen_on(addr.clone()).await?;
     }
 
-    // Reference: https://github.com/libp2p/rust-libp2p/blob/60fd566a955a33c42a6ab6eefc1f0fedef9f8b83/examples/dcutr/src/main.rs#L118
-    loop {
-        tokio::select! {
-            Some(event) = event_receiver.recv() => {
-                match event {
-                    types::NetworkEvent::ListeningOn { address, .. } => {
-                        info!("Listening on: {}", address)
-                    }
-                    _ => {
-                        error!("Recieved unexpected network event: {:?}", event)
-                    }
-                }
-            }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                // Likely listening on all interfaces now, thus continuing by breaking the loop.
-                break;
-            }
-        }
-    }
     let _ = client.bootstrap().await;
 
     Ok((client, event_receiver))
@@ -98,7 +84,9 @@ async fn init(
             libp2p::yamux::Config::default,
         )?
         .with_quic()
-        .with_behaviour(|key| Behaviour {
+        .with_relay_client(noise::Config::new, yamux::Config::default)?
+        .with_behaviour(|key, relay_behaviour| Behaviour {
+            dcutr: dcutr::Behaviour::new(peer_id.clone()),
             identify: identify::Behaviour::new(
                 identify::Config::new(PROTOCOL_VERSION.to_owned(), key.public())
                     .with_push_listen_addr_updates(true),
@@ -110,14 +98,24 @@ async fn init(
                 .and_then(|_| mdns::Behaviour::new(mdns::Config::default(), peer_id).ok())
                 .into(),
             kad: {
-                let mut kad = kad::Behaviour::new(peer_id, kad::store::MemoryStore::new(peer_id));
-                kad.set_mode(Some(kad::Mode::Server));
+                let mut kad_config = kad::Config::default();
+                kad_config.set_protocol_names(vec![CALIMERO_KAD_PROTO_NAME]);
+
+                let mut kad = kad::Behaviour::with_config(
+                    peer_id,
+                    kad::store::MemoryStore::new(peer_id),
+                    kad_config,
+                );
+
+                kad.set_mode(Some(kad::Mode::Client));
+
                 for (peer_id, addr) in bootstrap_peers {
                     kad.add_address(&peer_id, addr);
                 }
                 if let Err(err) = kad.bootstrap() {
-                    warn!("Failed to bootstrap with Kademlia: {}", err);
-                }
+                    warn!(%err, "Failed to bootstrap Kademlia");
+                };
+
                 kad
             },
             gossipsub: gossipsub::Behaviour::new(
@@ -125,10 +123,13 @@ async fn init(
                 gossipsub::Config::default(),
             )
             .expect("Valid gossipsub config."),
-            relay: relay::Behaviour::new(peer_id, relay::Config::default()),
             ping: ping::Behaviour::default(),
+            relay: relay_behaviour,
+            rendezvous: rendezvous::client::Behaviour::new(key.clone()),
         })?
-        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(time::Duration::from_secs(30)))
+        .with_swarm_config(|cfg| {
+            cfg.with_idle_connection_timeout(tokio::time::Duration::from_secs(30))
+        })
         .build();
 
     let (command_sender, command_receiver) = mpsc::channel(32);
@@ -138,7 +139,9 @@ async fn init(
         sender: command_sender,
     };
 
-    let event_loop = EventLoop::new(swarm, command_receiver, event_sender);
+    let discovery = discovery::Discovery::new(&config.discovery.rendezvous);
+
+    let event_loop = EventLoop::new(swarm, command_receiver, event_sender, discovery);
 
     Ok((client, event_receiver, event_loop))
 }
@@ -147,6 +150,7 @@ pub(crate) struct EventLoop {
     swarm: Swarm<Behaviour>,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<types::NetworkEvent>,
+    discovery: discovery::Discovery,
     pending_dial: HashMap<PeerId, oneshot::Sender<eyre::Result<Option<()>>>>,
     pending_bootstrap: HashMap<kad::QueryId, oneshot::Sender<eyre::Result<Option<()>>>>,
     pending_start_providing: HashMap<kad::QueryId, oneshot::Sender<()>>,
@@ -158,11 +162,13 @@ impl EventLoop {
         swarm: Swarm<Behaviour>,
         command_receiver: mpsc::Receiver<Command>,
         event_sender: mpsc::Sender<types::NetworkEvent>,
+        discovery: discovery::Discovery,
     ) -> Self {
         Self {
             swarm,
             command_receiver,
             event_sender,
+            discovery,
             pending_dial: Default::default(),
             pending_bootstrap: Default::default(),
             pending_start_providing: Default::default(),
@@ -171,6 +177,9 @@ impl EventLoop {
     }
 
     pub(crate) async fn run(mut self) {
+        let mut rendezvous_discover_tick =
+            tokio::time::interval(self.discovery.rendezvous_config.discovery_interval);
+
         loop {
             tokio::select! {
                 event = self.swarm.next() => self.handle_swarm_event(event.expect("Swarm stream to be infinite.")).await,
@@ -178,6 +187,7 @@ impl EventLoop {
                     let Some(c) = command else { break };
                     self.handle_command(c).await;
                 }
+                _ = rendezvous_discover_tick.tick() => self.handle_rendezvous_discoveries().await,
             }
         }
     }
