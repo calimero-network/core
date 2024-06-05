@@ -62,6 +62,11 @@ interface RootkeyResponse {
   root_keys: ApiRootKey[];
 }
 
+interface HttpsResponse<T> {
+  data: T;
+  error?: string;
+}
+
 export class NodeDataSource {
   private client: HttpClient;
 
@@ -71,11 +76,11 @@ export class NodeDataSource {
 
   async getInstalledApplications(): Promise<Application[]> {
     try {
-      const response = await this.client.get<Application[]>(
+      const response = await this.client.get<HttpsResponse<Application[]>>(
         "/admin-api/applications"
       );
       // @ts-ignore with adminAPI update TODO: fix admin api response
-      return response?.apps ?? [];
+      return response?.data?.apps ?? [];
     } catch (error) {
       console.error("Error fetching installed applications:", error);
       return [];
