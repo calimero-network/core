@@ -6,8 +6,7 @@ import ContentWrapper from "../components/login/ContentWrapper";
 
 import "@near-wallet-selector/modal-ui/styles.css";
 
-// @ts-expect-error
-const environment = import.meta.env.VITE_NEAR_ENVIRONMENT ?? "testnet";
+const environment = import.meta.env["VITE_NEAR_ENVIRONMENT"] ?? "testnet";
 
 export default function Near() {
   const navigate = useNavigate();

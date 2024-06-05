@@ -99,7 +99,7 @@ export default function PublishApplication() {
 
   const addWalletAccount = async () => {
     const selector = await setupWalletSelector({
-      network: process.env["VITE_NEAR_ENVIRONMENT"] as NetworkId ?? "testnet",
+      network: import.meta.env["VITE_NEAR_ENVIRONMENT"] as NetworkId ?? "testnet",
       modules: [setupMyNearWallet()],
     });
     const wallet: BrowserWallet = await selector.wallet("my-near-wallet");
