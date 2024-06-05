@@ -67,6 +67,10 @@ interface ListApplicationsResponse {
   apps: Application[];
 }
 
+export interface ApplicationStorageResponse {
+  size: string;
+}
+
 export class NodeDataSource {
   private client: HttpClient;
 
@@ -164,25 +168,25 @@ export class NodeDataSource {
       const response = await this.client.get<RootkeyResponse>("/admin-api/did");
       if (response?.data?.root_keys) {
         const rootKeys: (ETHRootKey | NearRootKey)[] =
-          response?.data?.root_keys?.map(
-            (obj: ApiRootKey) => {
-              if (obj.wallet.type === Network.NEAR) {
-                return {
-                  signingKey: obj.signing_key,
-                  type: Network.NEAR,
-                  chainId: obj.wallet.chainId ?? 1,
-                  createdAt: obj.created_at,
-                } as NearRootKey;
-              } else {
-                return {
-                  signingKey: obj.signing_key,
-                  type: Network.ETH,
-                  createdAt: obj.created_at,
-                  ...(obj.wallet.chainId !== undefined && { chainId: obj.wallet.chainId }),
-                } as ETHRootKey;
-              }
+          response?.data?.root_keys?.map((obj: ApiRootKey) => {
+            if (obj.wallet.type === Network.NEAR) {
+              return {
+                signingKey: obj.signing_key,
+                type: Network.NEAR,
+                chainId: obj.wallet.chainId ?? 1,
+                createdAt: obj.created_at,
+              } as NearRootKey;
+            } else {
+              return {
+                signingKey: obj.signing_key,
+                type: Network.ETH,
+                createdAt: obj.created_at,
+                ...(obj.wallet.chainId !== undefined && {
+                  chainId: obj.wallet.chainId,
+                }),
+              } as ETHRootKey;
             }
-          );
+          });
         return rootKeys;
       } else {
         return [];
@@ -190,6 +194,25 @@ export class NodeDataSource {
     } catch (error) {
       console.error("Error fetching DID list:", error);
       return [];
+    }
+  }
+
+  async getApplicationStorageUsage(
+    applicationId: string,
+    version: string
+  ): Promise<ApplicationStorageResponse> {
+    const response = await this.client.post<ApplicationStorageResponse>(
+      "/admin-api/storage",
+      {
+        applicationId: applicationId,
+        version: version,
+      }
+    );
+    console.log(response);
+    if (response?.data) {
+      return response.data;
+    } else {
+      return { size: "0" };
     }
   }
 }

@@ -1,4 +1,11 @@
-import { Application, Context, ContextsList, ETHRootKey, NearRootKey } from "./dataSource/NodeDataSource";
+import {
+  Application,
+  ApplicationStorageResponse,
+  Context,
+  ContextsList,
+  ETHRootKey,
+  NearRootKey,
+} from "./dataSource/NodeDataSource";
 
 export interface NodeApi {
   getInstalledApplications(): Promise<Application[]>;
@@ -11,4 +18,5 @@ export interface NodeApi {
     initArguments: string
   ): Promise<boolean>;
   getDidList(): Promise<(ETHRootKey | NearRootKey)[]>;
+  getApplicationStorageUsage(applicationId: string, version: string): Promise<ApplicationStorageResponse>;
 }

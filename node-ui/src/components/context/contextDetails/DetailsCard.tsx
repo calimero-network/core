@@ -89,7 +89,7 @@ export default function DetailsCard({ details }: DetailsCardProps) {
         <div className="highlight title">{t.titleStorage}</div>
         <div className="item">
           {t.labelStorageText}
-          <span className="highlight">{"-"}</span>
+          <span className="highlight">{details.storageUsage}MB</span>
         </div>
       </div>
     </DetailsCardWrapper>
