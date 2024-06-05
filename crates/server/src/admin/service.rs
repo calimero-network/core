@@ -8,6 +8,7 @@ use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use calimero_identity::auth::verify_eth_signature;
 use calimero_primitives::identity::{RootKey, WalletType};
+use calimero_server_primitives::admin::ApplicationListResult;
 use calimero_store::Store;
 use chrono::Utc;
 use libp2p::identity::Keypair;
@@ -261,6 +262,11 @@ async fn install_application_handler(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct ListApplicationsResponse {
+    data: ApplicationListResult,
+}
+
 async fn list_applications_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
@@ -270,11 +276,12 @@ async fn list_applications_handler(
         .await
     {
         Ok(applications) => ApiResponse {
-            payload: calimero_server_primitives::admin::ApplicationListResult {
-                apps: applications,
+            payload: ListApplicationsResponse {
+                data: ApplicationListResult { apps: applications},
             },
         }
         .into_response(),
+
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
