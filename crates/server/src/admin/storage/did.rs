@@ -25,6 +25,18 @@ pub fn create_did(store: &Store) -> eyre::Result<Did> {
     Ok(did_document)
 }
 
+pub fn get_did(store: &Store) -> eyre::Result<Option<Did>> {
+    let storage =
+        calimero_store::ReadOnlyStore::new(ApplicationId(NODE_STORE_KEY.to_string()), &store);
+
+    let did_vec = storage.get(&DID_KEY.as_bytes().to_vec())?;
+    match did_vec {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| eyre::Report::new(e).wrap_err("Deserialization error")),
+        None => Ok(None)
+    }
+}
+
 pub fn get_or_create_did(store: &Store) -> eyre::Result<Did> {
     let storage =
         calimero_store::ReadOnlyStore::new(ApplicationId(NODE_STORE_KEY.to_string()), &store);
