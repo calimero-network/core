@@ -6,27 +6,23 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
-use calimero_identity::auth::verify_eth_signature;
-use calimero_primitives::identity::{RootKey, WalletType};
 use calimero_server_primitives::admin::ApplicationListResult;
 use calimero_store::Store;
-use chrono::Utc;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_status::SetStatus;
-use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
-use tracing::{error, info};
+use tower_sessions::{MemoryStore, SessionManagerLayer};
+use tracing::info;
 
-use super::handlers::add_client_key::{add_client_key_handler, WalletMetadata};
-use super::handlers::challenge::{request_challenge_handler, NodeChallenge, CHALLENGE_KEY};
+use super::handlers::add_client_key::add_client_key_handler;
+use super::handlers::challenge::request_challenge_handler;
 use super::handlers::context::{
     create_context_handler, delete_context_handler, get_context_handler, get_contexts_handler,
 };
 use super::handlers::fetch_did::fetch_did_handler;
-use super::storage::root_key::add_root_key;
-use crate::verifysignature;
+use super::handlers::root_keys::create_root_key_handler;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
@@ -56,7 +52,7 @@ pub(crate) fn setup(
     let admin_path = "/admin-api";
 
     let session_store = MemoryStore::default();
-    let session_layer = SessionManagerLayer::new(session_store);
+    let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
     let shared_state = Arc::new(AdminState {
         store,
@@ -146,6 +142,16 @@ impl IntoResponse for ApiError {
     }
 }
 
+pub fn parse_api_error(err: eyre::Report) -> ApiError {
+    match err.downcast::<ApiError>() {
+        Ok(api_error) => api_error,
+        Err(original_error) => ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: original_error.to_string(),
+        },
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct GetHealthResponse {
     data: HealthStatus,
@@ -165,87 +171,6 @@ async fn health_check_handler() -> impl IntoResponse {
         },
     }
     .into_response()
-}
-
-#[derive(Debug, Serialize)]
-struct RootKeyResponse {
-    data: String,
-}
-
-fn handle_root_key_result(result: eyre::Result<bool>) -> axum::http::Response<axum::body::Body>{
-    match result {
-        Ok(_) => {
-            info!("Root key added");
-            ApiResponse { payload: RootKeyResponse { data: "Root key added".to_string()} }.into_response()
-        }
-        Err(e) => {
-            error!("Failed to store root key: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to store root key").into_response()
-        }
-    }
-}
-
-async fn create_root_key_handler(
-    session: Session,
-    Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<PubKeyRequest>,
-) -> impl IntoResponse {
-    let recipient = "me";
-    match session
-        .get::<NodeChallenge>(CHALLENGE_KEY)
-        .await
-        .ok()
-        .flatten()
-    {
-        Some(challenge) => {
-            match req.wallet_metadata.wallet_type {
-                WalletType::NEAR => {
-                    if !verifysignature::verify_near_signature(
-                        &challenge.message.nonce,
-                        &challenge.node_signature,
-                        recipient,
-                        &req.callback_url,
-                        &req.signature,
-                        &req.public_key,
-                    ) {
-                        return (StatusCode::BAD_REQUEST, "Invalid signature").into_response();
-                    }
-
-                    let result = add_root_key(
-                        &state.store,
-                        RootKey {
-                            signing_key: req.public_key,
-                            wallet_type: WalletType::NEAR,
-                            created_at: Utc::now().timestamp_millis() as u64
-                        },
-                    );
-
-                    handle_root_key_result(result)
-                }
-                WalletType::ETH { .. } => {
-                    if let Err(_) = verify_eth_signature(
-                        &req.wallet_metadata.signing_key,
-                        &req.message,
-                        &req.signature
-                    ) {
-                        return (StatusCode::BAD_REQUEST, "Invalid signature").into_response();
-                    }
-
-                    let result = add_root_key(
-                        &state.store,
-                        RootKey {
-                            signing_key: req.public_key,
-                            wallet_type: req.wallet_metadata.wallet_type,
-                            created_at: Utc::now().timestamp_millis() as u64
-                        }
-                    );
-
-                    handle_root_key_result(result)
-                }
-            }
-        }
-        _ => (StatusCode::BAD_REQUEST, "Challenge not found").into_response(),
-    }
 }
 
 async fn install_application_handler(
@@ -277,23 +202,11 @@ async fn list_applications_handler(
     {
         Ok(applications) => ApiResponse {
             payload: ListApplicationsResponse {
-                data: ApplicationListResult { apps: applications},
+                data: ApplicationListResult { apps: applications },
             },
         }
         .into_response(),
 
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PubKeyRequest {
-    // unused ATM, uncomment when used
-    // account_id: String,
-    public_key: String,
-    signature: String,
-    callback_url: String,
-    wallet_metadata: WalletMetadata,
-    message: String
 }

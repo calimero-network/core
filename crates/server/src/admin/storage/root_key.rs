@@ -33,3 +33,8 @@ pub fn get_root_key(store: &Store, signing_key: String) -> eyre::Result<Option<R
         .into_iter()
         .find(|k| k.signing_key == signing_key))
 }
+
+pub fn get_root_keys(store: &Store) -> eyre::Result<Vec<RootKey>> {
+    let did = get_or_create_did(store)?;
+    Ok(did.root_keys)
+}

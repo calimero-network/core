@@ -7,10 +7,7 @@ import {
   useSignMessage,
 } from "@metamask/sdk-react-ui";
 import apiClient from "../../api";
-import {
-  NodeChallenge,
-  RootKeyRequest,
-} from "../../nodeApi";
+import { NodeChallenge, RootKeyRequest, WalletMetadata } from "../../nodeApi";
 import { ResponseData } from "../../api-response";
 import { setStorageNodeAuthorized } from "../../storage/storage";
 import { Loading } from "../loading/Loading";
@@ -32,15 +29,12 @@ export default function MetamaskRootKey({
   navigateBack,
 }: MetamaskRootKeyProps) {
   const { isConnected, address } = useAccount();
-  const [walletSignatureData, setWalletSignatureData] =
-    useState(null);
+  const [walletSignatureData, setWalletSignatureData] = useState(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const { chainId, ready } = useSDK();
 
   const signatureMessage = useCallback((): string | undefined => {
-    return walletSignatureData
-      ? walletSignatureData
-      : undefined;
+    return walletSignatureData ? walletSignatureData : undefined;
   }, [walletSignatureData]);
 
   const {
@@ -69,17 +63,15 @@ export default function MetamaskRootKey({
       console.error("address is empty");
       //TODO handle error
     } else {
+      const walletMetadata: WalletMetadata = {
+        wallet: getNetworkType(chainId),
+        signingKey: address,
+      };
       const rootKeyRequest: RootKeyRequest = {
-        accountId: address,
-        signature: signData,
-        publicKey: address,
-        callbackUrl: "",
-        message: walletSignatureData,
-        walletMetadata: {
-          wallet: getNetworkType(chainId),
-          signingKey: address,
-        },
-      }
+        walletSignature: signData,
+        payload: walletSignatureData?.payload,
+        walletMetadata: walletMetadata,
+      };
       await apiClient
         .node()
         .addRootKey(rootKeyRequest, rpcBaseUrl)
