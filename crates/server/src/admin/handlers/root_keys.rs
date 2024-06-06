@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::identity::RootKey;
+use calimero_primitives::identity::{RootKey, WalletType};
 use calimero_server_primitives::admin::{AddPublicKeyRequest, IntermediateAddPublicKeyRequest};
 use calimero_store::Store;
 use chrono::Utc;
@@ -10,9 +10,10 @@ use serde::Serialize;
 use tracing::info;
 
 use super::add_client_key::transform_request;
+use crate::admin::handlers::add_client_key::store_client_key;
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
 use crate::admin::storage::root_key::{add_root_key, get_root_keys};
-use crate::admin::utils::auth::{validate_challenge, validate_root_key_exists};
+use crate::admin::utils::auth::validate_challenge;
 
 #[derive(Debug, Serialize)]
 struct CreateRootKeyResponse {
@@ -24,9 +25,8 @@ pub async fn create_root_key_handler(
     Json(intermediate_req): Json<IntermediateAddPublicKeyRequest>,
 ) -> impl IntoResponse {
     let response = transform_request(intermediate_req)
-        .and_then(|req| check_if_first_root_key(req, &state.store))
         .and_then(|req| validate_challenge(req, &state.keypair))
-        .and_then(|req| store_root_key(req, &state.store))
+        .and_then(|req| store_root(req, &state.store))
         .map_or_else(
             |err| err.into_response(),
             |_| {
@@ -41,34 +41,30 @@ pub async fn create_root_key_handler(
     response
 }
 
-/**
- * If first root key then don't validate wallet signature
- */
-fn check_if_first_root_key(
+pub fn store_root(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    let root_keys = get_root_keys(&store).map_err(|e| parse_api_error(e))?;
-    if root_keys.is_empty() {
-        println!("First root key");
-        Ok(req)
-    } else {
-        println!("Not first root key {:?}", root_keys);
-        validate_root_key_exists(req, &store)
-    }
+    store_root_key(
+        req.wallet_metadata.signing_key.clone(),
+        req.wallet_metadata.wallet_type,
+        &store,
+    )?;
+    Ok(req)
 }
 
-fn store_root_key(
-    req: AddPublicKeyRequest,
+pub fn store_root_key(
+    signing_key: String,
+    wallet_type: WalletType,
     store: &Store,
-) -> Result<AddPublicKeyRequest, ApiError> {
+) -> Result<bool, ApiError> {
     let root_key = RootKey {
-        signing_key: req.payload.message.public_key.clone(),
-        wallet_type: req.wallet_metadata.wallet_type,
+        signing_key,
+        wallet_type,
         created_at: Utc::now().timestamp_millis() as u64,
     };
     add_root_key(&store, root_key).map_err(|e| parse_api_error(e))?;
 
     info!("Root key stored successfully.");
-    Ok(req)
+    Ok(true)
 }

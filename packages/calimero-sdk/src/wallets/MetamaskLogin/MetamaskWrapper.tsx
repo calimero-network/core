@@ -1,9 +1,9 @@
 import React from "react";
-import LoginWithMetamask from "./Metamask";
+import LoginWithMetamask from "./LoginWithMetamask";
 import MetamaskRootKey from "./MetamaskRootKey";
 import { MetaMaskUIProvider } from "@metamask/sdk-react-ui";
 
-interface MetamaskContextProps {
+interface MetamaskWrapperProps {
   applicationId: string;
   rpcBaseUrl: string;
   successRedirect: () => void;
@@ -13,7 +13,7 @@ interface MetamaskContextProps {
   clientLogin?: boolean;
 }
 
-const MetamaskContext: React.FC<MetamaskContextProps> = ({
+const MetamaskWrapper: React.FC<MetamaskWrapperProps> = ({
   applicationId,
   rpcBaseUrl,
   successRedirect,
@@ -67,4 +67,4 @@ const MetamaskContext: React.FC<MetamaskContextProps> = ({
   );
 };
 
-export default MetamaskContext;
+export default MetamaskWrapper;

@@ -33,48 +33,28 @@ pub async fn request_challenge_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<RequestChallenge>,
 ) -> impl IntoResponse {
-    println!("request_challenge_handler");
-
-    if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
-        match serde_json::from_str::<NodeChallenge>(&challenge) {
-            Ok(challenge) => ApiResponse {
+    match generate_challenge(req.application_id.clone(), &state.keypair) {
+        Ok(challenge) => {
+            if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
+                error!("Failed to insert challenge into session: {}", err);
+                return ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "Failed to insert challenge into session".to_string(),
+                }
+                .into_response();
+            }
+            ApiResponse {
                 payload: RequestChallengeResponse { data: challenge },
             }
-            .into_response(),
-            Err(_) => ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to deserialize challenge".to_string(),
-            }
-            .into_response(),
+            .into_response()
         }
-    } else {
-        println!("generate_challenge");
-
-        match generate_challenge(req.application_id.clone(), &state.keypair) {
-            Ok(challenge) => {
-                if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
-                    error!("Failed to insert challenge into session: {}", err);
-                    return ApiError {
-                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                        message: "Failed to insert challenge into session".to_string(),
-                    }
-                    .into_response();
-                }
-                println!("id {:?}", session.id());
-
-                ApiResponse {
-                    payload: RequestChallengeResponse { data: challenge },
-                }
-                .into_response()
+        Err(err) => {
+            error!("Failed to generate client challenge: {}", err);
+            ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to generate challenge".to_string(),
             }
-            Err(err) => {
-                error!("Failed to generate client challenge: {}", err);
-                ApiError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "Failed to generate challenge".to_string(),
-                }
-                .into_response()
-            }
+            .into_response()
         }
     }
 }

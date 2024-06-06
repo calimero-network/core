@@ -196,7 +196,6 @@ const NearLogin: React.FC<NearLoginProps> = ({
 
     const stateMessage: SignatureMessageMetadata = JSON.parse(state.message);
     if (!stateMessage.publicKey) {
-      //root key
       stateMessage.publicKey = publicKey;
       state.message = JSON.stringify(stateMessage);
     }
@@ -217,8 +216,6 @@ const NearLogin: React.FC<NearLoginProps> = ({
     url.search = "";
     window.history.replaceState({}, document.title, url);
     localStorage.removeItem("message");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-
     if (isMessageVerified) {
       const signatureMetadata: NearSignatureMessageMetadata = {
         recipient: message.recipient,

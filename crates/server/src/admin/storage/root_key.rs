@@ -38,3 +38,19 @@ pub fn get_root_keys(store: &Store) -> eyre::Result<Vec<RootKey>> {
     let did = get_or_create_did(store)?;
     Ok(did.root_keys)
 }
+
+pub fn exists_root_keys(store: &Store) -> eyre::Result<bool> {
+    let did = get_or_create_did(store)?;
+    Ok(!did.root_keys.is_empty())
+}
+
+pub fn clean_keys(store: &Store) -> eyre::Result<()> {
+    let mut did = get_or_create_did(store)?;
+
+    did.client_keys.clear();
+    did.root_keys.clear();
+
+    update_did(store, did)?;
+
+    Ok(())
+}

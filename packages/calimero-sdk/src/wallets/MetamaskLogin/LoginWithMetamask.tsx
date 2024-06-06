@@ -93,8 +93,8 @@ export default function LoginWithMetamask({
       metadata: signatureMetadata,
     };
     const wsd: WalletSignatureData = {
-      payload: payload,
-      publicKey: publicKey,
+      payload,
+      publicKey,
     };
     setWalletSignatureData(wsd);
   }, []);

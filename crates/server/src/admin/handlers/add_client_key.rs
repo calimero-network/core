@@ -13,8 +13,10 @@ use chrono::Utc;
 use serde::Serialize;
 use tracing::info;
 
+use crate::admin::handlers::root_keys::store_root_key;
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
 use crate::admin::storage::client_keys::add_client_key;
+use crate::admin::storage::root_key::exists_root_keys;
 use crate::admin::utils::auth::{validate_challenge, validate_root_key_exists};
 
 pub fn transform_request(
@@ -64,7 +66,7 @@ pub async fn add_client_key_handler(
     Json(intermediate_req): Json<IntermediateAddPublicKeyRequest>,
 ) -> impl IntoResponse {
     let response = transform_request(intermediate_req)
-        .and_then(|req| validate_root_key_exists(req, &state.store))
+        .and_then(|req| check_root_key(req, &state.store))
         .and_then(|req| validate_challenge(req, &state.keypair))
         .and_then(|req| store_client_key(req, &state.store))
         .map_or_else(
@@ -81,7 +83,7 @@ pub async fn add_client_key_handler(
     response
 }
 
-fn store_client_key(
+pub fn store_client_key(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
@@ -93,4 +95,22 @@ fn store_client_key(
     add_client_key(&store, client_key).map_err(|e| parse_api_error(e))?;
     info!("Client key stored successfully.");
     Ok(req)
+}
+
+fn check_root_key(
+    req: AddPublicKeyRequest,
+    store: &Store,
+) -> Result<AddPublicKeyRequest, ApiError> {
+    let root_keys = exists_root_keys(&store).map_err(|e| parse_api_error(e))?;
+    if !root_keys {
+        //first login so store root key as well
+        store_root_key(
+            req.wallet_metadata.signing_key.clone(),
+            req.wallet_metadata.wallet_type,
+            &store,
+        )?;
+        Ok(req)
+    } else {
+        validate_root_key_exists(req, &store)
+    }
 }
