@@ -3,6 +3,9 @@ import { randomBytes } from "crypto";
 import { providers } from "near-api-js";
 import type { AccountView } from "near-api-js/lib/providers/provider";
 import {
+  SignedMessage,
+  verifyFullKeyBelongsToUser,
+  verifySignature,
   type SignMessageParams,
 } from "@near-wallet-selector/core";
 
@@ -15,7 +18,13 @@ import {
   RootKeyRequest,
   NodeChallenge,
   WalletType,
+  SignatureMessageMetadata,
+  NearSignatureMessageMetadata,
+  Payload,
+  WalletMetadata,
+  SignatureMessage,
 } from "../../nodeApi";
+import { getOrCreateKeypair } from "../../crypto/ed25519";
 
 type Account = AccountView & {
   account_id: string;
@@ -116,10 +125,47 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
     alert("Switched account to " + nextAccountId);
   }
 
+  const verifyMessage = useCallback(
+    async (
+      message: SignMessageParams,
+      signedMessage: SignedMessage
+    ): Promise<boolean> => {
+      console.log("verifyMessage", { message, signedMessage });
+
+      const verifiedSignature = verifySignature({
+        message: message.message,
+        nonce: message.nonce,
+        recipient: message.recipient,
+        publicKey: signedMessage.publicKey,
+        signature: signedMessage.signature,
+        callbackUrl: message.callbackUrl,
+      });
+      const verifiedFullKeyBelongsToUser = await verifyFullKeyBelongsToUser({
+        publicKey: signedMessage.publicKey,
+        accountId: signedMessage.accountId,
+        network: selector.options.network,
+      });
+
+      const isMessageVerified =
+        verifiedFullKeyBelongsToUser && verifiedSignature;
+
+      const resultMessage = isMessageVerified
+        ? "Successfully verified"
+        : "Failed to verify";
+
+      console.log(
+        `${resultMessage} signed message: '${
+          message.message
+        }': \n ${JSON.stringify(signedMessage)}`
+      );
+
+      return isMessageVerified;
+    },
+    [selector.options.network]
+  );
+
   const verifyMessageBrowserWallet = useCallback(async () => {
-    const urlParams = new URLSearchParams(
-      window.location.hash.substring(1)
-    );
+    const urlParams = new URLSearchParams(window.location.hash.substring(1));
     const accId = urlParams.get("accountId") as string;
     const publicKey = urlParams.get("publicKey") as string;
     const signature = urlParams.get("signature") as string;
@@ -129,21 +175,58 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
       return;
     }
 
-    const requestObject: SignMessageParams = JSON.parse(
+    const message: SignMessageParams = JSON.parse(
       localStorage.getItem("message")!
     );
-    
-    const rootKeyRequest: RootKeyRequest = {
+
+    const state: SignatureMessageMetadata = JSON.parse(message.state!);
+
+    if (!state.publicKey) {
+      state.publicKey = publicKey;
+    }
+
+    const stateMessage: SignatureMessageMetadata = JSON.parse(state.message);
+    if (!stateMessage.publicKey) {
+      stateMessage.publicKey = publicKey;
+      state.message = JSON.stringify(stateMessage);
+    }
+
+    const signedMessage = {
       accountId: accId,
-      signature: signature,
-      publicKey: publicKey,
-      callbackUrl: requestObject.callbackUrl,
-      message: requestObject.message,
-      walletMetadata: {
+      publicKey,
+      signature,
+    };
+
+    const isMessageVerified: boolean = await verifyMessage(
+      message,
+      signedMessage
+    );
+
+    const url = new URL(location.href);
+    url.hash = "";
+    url.search = "";
+    window.history.replaceState({}, document.title, url);
+    localStorage.removeItem("message");
+
+    if (isMessageVerified) {
+      const signatureMetadata: NearSignatureMessageMetadata = {
+        recipient: message.recipient,
+        callbackUrl: message.callbackUrl!,
+        nonce: message.nonce.toString("base64"),
+      };
+      const payload: Payload = {
+        message: state,
+        metadata: signatureMetadata,
+      };
+      const walletMetadata: WalletMetadata = {
         wallet: WalletType.NEAR,
         signingKey: publicKey,
-      },
-    }
+      };
+      const rootKeyRequest: RootKeyRequest = {
+        walletSignature: signature,
+        payload: payload,
+        walletMetadata: walletMetadata,
+      };
 
       await apiClient
         .node()
@@ -161,8 +244,11 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
         .catch(() => {
           console.error("error while adding root key");
         });
-   
-  }, []);
+    } else {
+      //TODO handle error
+      console.error("Message not verified");
+    }
+  }, [verifyMessage]);
 
   async function handleSignMessage() {
     const challengeResponseData: ResponseData<NodeChallenge> = await apiClient
@@ -173,6 +259,8 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
       console.log("requestChallenge api error", challengeResponseData.error);
       return;
     }
+
+    const { publicKey } = await getOrCreateKeypair();
 
     const wallet = await selector.wallet("my-near-wallet");
 
@@ -187,9 +275,14 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
     const timestamp =
       challengeResponseData.data?.timestamp ?? new Date().getTime();
 
-    const message = nodeSignature as string;
+    const signatureMessage: SignatureMessage = {
+      nodeSignature,
+      publicKey: publicKey,
+    };
+    const message: string = JSON.stringify(signatureMessage);
 
-    const state = {
+    const state: SignatureMessageMetadata = {
+      publicKey: publicKey,
       nodeSignature,
       nonce: nonce.toString("base64"),
       applicationId,

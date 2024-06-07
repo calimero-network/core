@@ -75,12 +75,12 @@ export default function LoginWithMetamask({
 
     const signatureMessage: SignatureMessage = {
       nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
-      clientPublicKey: publicKey,
+      publicKey: publicKey,
     };
 
     const signatureMessageMetadata: SignatureMessageMetadata = {
       nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
-      clientPublicKey: publicKey,
+      publicKey: publicKey,
       nonce:
         challengeResponseData.data?.nonce ?? randomBytes(32).toString("hex"),
       applicationId: challengeResponseData.data?.applicationId ?? "",
@@ -93,8 +93,8 @@ export default function LoginWithMetamask({
       metadata: signatureMetadata,
     };
     const wsd: WalletSignatureData = {
-      payload: payload,
-      clientPubKey: publicKey,
+      payload,
+      publicKey,
     };
     setWalletSignatureData(wsd);
   }, []);
@@ -114,7 +114,6 @@ export default function LoginWithMetamask({
       };
       const loginRequest: LoginRequest = {
         walletSignature: signData,
-        // @ts-ignore: payload is not undefined
         payload: walletSignatureData?.payload,
         walletMetadata: walletMetadata,
       };

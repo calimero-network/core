@@ -13,7 +13,9 @@ use libp2p::futures::future::BoxFuture;
 use tower::{Layer, Service};
 use tracing::debug;
 
+use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::client_keys::exists_client_key;
+use crate::admin::storage::root_key::{exists_root_keys, get_root_keys};
 
 #[derive(Clone)]
 pub struct AuthSignatureLayer {
@@ -93,11 +95,17 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
         signing_key: auth_headers.signing_key.clone(),
         created_at: Utc::now().timestamp_millis() as u64,
     };
+
     let key_exists = exists_client_key(store, &client_key)
         .map_err(|_| UnauthorizedError::new("Issue during extracting client key"))?;
 
     if !key_exists {
-        return Err(UnauthorizedError::new("Client key does not exist."));
+        //Only if there are no root keys, we add root key and client key from the request
+        let root_keys = exists_root_keys(&store)
+            .map_err(|_| UnauthorizedError::new("Issue during extracting root keys"))?;
+        if !root_keys {
+            return Err(UnauthorizedError::new("Client key does not exist."));
+        }
     }
 
     let is_signature_valid = verify_near_public_key(

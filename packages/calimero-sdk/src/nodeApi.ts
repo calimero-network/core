@@ -5,21 +5,19 @@ enum AlgorithmType {
 }
 
 interface WalletTypeBase<T extends Uppercase<string>> {
-  type: T,
+  type: T;
 }
 
 interface ETHWalletType extends WalletTypeBase<"ETH"> {
   chainId: number;
 }
 
-interface NEARWalletType extends WalletTypeBase<"NEAR"> { }
+interface NEARWalletType extends WalletTypeBase<"NEAR"> {}
 
-export type WalletType =
-  | ETHWalletType
-  | NEARWalletType;
+export type WalletType = ETHWalletType | NEARWalletType;
 
 export namespace WalletType {
-  export let NEAR: WalletType = <NEARWalletType>{ type: "NEAR" }
+  export let NEAR: WalletType = <NEARWalletType>{ type: "NEAR" };
 
   export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
     return <ETHWalletType>{ type: "ETH", chainId };
@@ -55,11 +53,8 @@ export interface LoginRequest {
 }
 
 export interface RootKeyRequest {
-  accountId: String;
-  publicKey: string;
-  signature: string;
-  callbackUrl: string;
-  message: SignatureMetadata;
+  walletSignature: String;
+  payload: Payload;
   walletMetadata: WalletMetadata;
 }
 
@@ -82,11 +77,11 @@ export interface EthMetadata extends WalletMetadata {
 
 export interface SignatureMessage {
   nodeSignature: String;
-  clientPublicKey: String;
+  publicKey: String;
 }
 
 export interface SignatureMessageMetadata {
-  clientPublicKey: String;
+  publicKey: String;
   nodeSignature: String;
   nonce: String;
   applicationId: String;
@@ -120,7 +115,7 @@ export interface EthSignatureMessageMetadata extends SignatureMetadata {
 
 export interface WalletSignatureData {
   payload: Payload | undefined;
-  clientPubKey: String | undefined;
+  publicKey: String | undefined;
 }
 
 export interface LoginResponse {}

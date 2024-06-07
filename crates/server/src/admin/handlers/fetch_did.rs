@@ -6,8 +6,7 @@ use calimero_primitives::identity::Did;
 use serde::Serialize;
 use tower_sessions::Session;
 
-use super::add_client_key::parse_api_error;
-use crate::admin::service::{AdminState, ApiResponse};
+use crate::admin::service::{parse_api_error, AdminState, ApiResponse};
 use crate::admin::storage::did::get_or_create_did;
 
 #[derive(Debug, Serialize)]

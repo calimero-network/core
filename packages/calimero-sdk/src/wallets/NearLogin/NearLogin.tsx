@@ -52,7 +52,7 @@ const NearLogin: React.FC<NearLoginProps> = ({
   successRedirect,
   cardBackgroundColor,
   nearTitleColor,
-  navigateBack
+  navigateBack,
 }) => {
   const { selector, accounts, modal, accountId } = useWalletSelector();
   const [account, setAccount] = useState<Account | null>(null);
@@ -190,6 +190,16 @@ const NearLogin: React.FC<NearLoginProps> = ({
 
     const state: SignatureMessageMetadata = JSON.parse(message.state!);
 
+    if (!state.publicKey) {
+      state.publicKey = publicKey;
+    }
+
+    const stateMessage: SignatureMessageMetadata = JSON.parse(state.message);
+    if (!stateMessage.publicKey) {
+      stateMessage.publicKey = publicKey;
+      state.message = JSON.stringify(stateMessage);
+    }
+
     const signedMessage = {
       accountId: accId,
       publicKey,
@@ -206,8 +216,6 @@ const NearLogin: React.FC<NearLoginProps> = ({
     url.search = "";
     window.history.replaceState({}, document.title, url);
     localStorage.removeItem("message");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-
     if (isMessageVerified) {
       const signatureMetadata: NearSignatureMessageMetadata = {
         recipient: message.recipient,
@@ -220,7 +228,7 @@ const NearLogin: React.FC<NearLoginProps> = ({
       };
       const walletSignatureData: WalletSignatureData = {
         payload: payload,
-        clientPubKey: publicKey,
+        publicKey: publicKey,
       };
       const walletMetadata: WalletMetadata = {
         wallet: WalletType.NEAR,
@@ -282,12 +290,12 @@ const NearLogin: React.FC<NearLoginProps> = ({
 
     const signatureMessage: SignatureMessage = {
       nodeSignature,
-      clientPublicKey: publicKey,
+      publicKey: publicKey,
     };
     const message: string = JSON.stringify(signatureMessage);
 
     const state: SignatureMessageMetadata = {
-      clientPublicKey: publicKey,
+      publicKey: publicKey,
       nodeSignature,
       nonce: nonce.toString("base64"),
       applicationId,

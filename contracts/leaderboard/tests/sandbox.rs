@@ -1,4 +1,5 @@
-use near_sdk::{json_types::U128, NearToken};
+use near_sdk::json_types::U128;
+use near_sdk::NearToken;
 use serde_json::json;
 
 #[tokio::test]

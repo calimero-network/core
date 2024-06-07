@@ -9,8 +9,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
-use super::add_client_key::parse_api_error;
-use crate::admin::service::{AdminState, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
 use crate::admin::storage::context::{add_context, delete_context, get_context, get_contexts};
 
 #[derive(Debug, Serialize, Deserialize)]

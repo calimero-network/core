@@ -8,13 +8,21 @@ import {
 } from "@metamask/sdk-react-ui";
 import apiClient from "../../api";
 import {
+  EthSignatureMessageMetadata,
   NodeChallenge,
+  Payload,
   RootKeyRequest,
+  SignatureMessage,
+  SignatureMessageMetadata,
+  WalletMetadata,
+  WalletSignatureData,
 } from "../../nodeApi";
 import { ResponseData } from "../../api-response";
 import { setStorageNodeAuthorized } from "../../storage/storage";
 import { Loading } from "../loading/Loading";
 import { getNetworkType } from "../eth/type";
+import { getOrCreateKeypair } from "../../crypto/ed25519";
+import { randomBytes } from "crypto";
 
 interface MetamaskRootKeyProps {
   applicationId: string;
@@ -33,13 +41,13 @@ export default function MetamaskRootKey({
 }: MetamaskRootKeyProps) {
   const { isConnected, address } = useAccount();
   const [walletSignatureData, setWalletSignatureData] =
-    useState(null);
+    useState<WalletSignatureData | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const { chainId, ready } = useSDK();
 
   const signatureMessage = useCallback((): string | undefined => {
     return walletSignatureData
-      ? walletSignatureData
+      ? walletSignatureData?.payload?.message.message
       : undefined;
   }, [walletSignatureData]);
 
@@ -57,7 +65,38 @@ export default function MetamaskRootKey({
     const challengeResponseData: ResponseData<NodeChallenge> = await apiClient
       .node()
       .requestChallenge(rpcBaseUrl, applicationId);
-    setWalletSignatureData(challengeResponseData.data?.nodeSignature ?? "");
+    const { publicKey } = await getOrCreateKeypair();
+
+    if (challengeResponseData.error) {
+      console.error("requestNodeData error", challengeResponseData.error);
+      //TODO handle error
+      return;
+    }
+
+    const signatureMessage: SignatureMessage = {
+      nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
+      publicKey: publicKey,
+    };
+
+    const signatureMessageMetadata: SignatureMessageMetadata = {
+      nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
+      publicKey: publicKey,
+      nonce:
+        challengeResponseData.data?.nonce ?? randomBytes(32).toString("hex"),
+      applicationId: challengeResponseData.data?.applicationId ?? "",
+      timestamp: challengeResponseData.data?.timestamp ?? new Date().getTime(),
+      message: JSON.stringify(signatureMessage),
+    };
+    const signatureMetadata: EthSignatureMessageMetadata = {};
+    const payload: Payload = {
+      message: signatureMessageMetadata,
+      metadata: signatureMetadata,
+    };
+    const wsd: WalletSignatureData = {
+      payload,
+      publicKey,
+    };
+    setWalletSignatureData(wsd);
   }, []);
 
   const login = useCallback(async () => {
@@ -69,17 +108,15 @@ export default function MetamaskRootKey({
       console.error("address is empty");
       //TODO handle error
     } else {
+      const walletMetadata: WalletMetadata = {
+        wallet: getNetworkType(chainId),
+        signingKey: address,
+      };
       const rootKeyRequest: RootKeyRequest = {
-        accountId: address,
-        signature: signData,
-        publicKey: address,
-        callbackUrl: "",
-        message: walletSignatureData,
-        walletMetadata: {
-          wallet: getNetworkType(chainId),
-          signingKey: address,
-        },
-      }
+        walletSignature: signData,
+        payload: walletSignatureData?.payload,
+        walletMetadata: walletMetadata,
+      };
       await apiClient
         .node()
         .addRootKey(rootKeyRequest, rpcBaseUrl)
