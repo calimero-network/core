@@ -22,7 +22,7 @@ use super::handlers::context::{
     create_context_handler, delete_context_handler, get_context_handler, get_contexts_handler,
 };
 use super::handlers::fetch_did::fetch_did_handler;
-use super::handlers::root_keys::create_root_key_handler;
+use super::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
@@ -62,6 +62,7 @@ pub(crate) fn setup(
 
     let admin_router = Router::new()
         .route("/health", get(health_check_handler))
+        // .route("/identity/keys", delete(delete_auth_keys_handler)) // Only for development
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/install-application", post(install_application_handler))
