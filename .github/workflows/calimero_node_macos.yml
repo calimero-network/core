@@ -27,6 +27,9 @@ jobs:
           profile: minimal
           override: true
 
+      - name: Install target for ${{ matrix.target }}
+        run: rustup target add ${{ matrix.target }}
+
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
