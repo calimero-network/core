@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - desktop-build
   pull_request:
     branches:
       - main
@@ -13,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, armv7-unknown-linux-gnueabihf]
 
     steps:
       - name: Checkout code
@@ -32,23 +33,34 @@ jobs:
       - name: Install dependencies for cross-compilation
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libssl-dev pkg-config
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+            libssl-dev pkg-config
 
       - name: Download and set up OpenSSL for cross-compilation
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
         run: |
           wget https://www.openssl.org/source/openssl-1.1.1k.tar.gz
           tar -xzf openssl-1.1.1k.tar.gz
           cd openssl-1.1.1k
-          ./Configure linux-aarch64 --prefix=$HOME/openssl-aarch64 --cross-compile-prefix=aarch64-linux-gnu-
+          if [ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]; then
+            ./Configure linux-aarch64 --prefix=$HOME/openssl-aarch64 --cross-compile-prefix=aarch64-linux-gnu-
+          elif [ "${{ matrix.target }}" == "armv7-unknown-linux-gnueabihf" ]; then
+            ./Configure linux-armv4 --prefix=$HOME/openssl-armv7 --cross-compile-prefix=arm-linux-gnueabihf-
+          fi
           make -j$(nproc)
           make install_sw
           cd ..
-          echo "OPENSSL_DIR=$HOME/openssl-aarch64" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$HOME/openssl-aarch64/lib/pkgconfig" >> $GITHUB_ENV
+          if [ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]; then
+            echo "OPENSSL_DIR=$HOME/openssl-aarch64" >> $GITHUB_ENV
+            echo "PKG_CONFIG_PATH=$HOME/openssl-aarch64/lib/pkgconfig" >> $GITHUB_ENV
+          elif [ "${{ matrix.target }}" == "armv7-unknown-linux-gnueabihf" ]; then
+            echo "OPENSSL_DIR=$HOME/openssl-armv7" >> $GITHUB_ENV
+            echo "PKG_CONFIG_PATH=$HOME/openssl-armv7/lib/pkgconfig" >> $GITHUB_ENV
+          fi
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=/" >> $GITHUB_ENV
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
       - name: Cache cargo registry
         uses: actions/cache@v3
@@ -66,18 +78,19 @@ jobs:
           key: ${{ runner.os }}-cargo-build-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-build-
 
-      - name: Build the crate for aarch64
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Build the crate for ARM and AArch64
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'armv7-unknown-linux-gnueabihf'
         env:
           OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
           PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
           PKG_CONFIG_ALLOW_CROSS: ${{ env.PKG_CONFIG_ALLOW_CROSS }}
           PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
-          CC: aarch64-linux-gnu-gcc
-          CXX: aarch64-linux-gnu-g++
-          AR: aarch64-linux-gnu-ar
-          RANLIB: aarch64-linux-gnu-ranlib
+          CC: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-gcc' || 'arm-linux-gnueabihf-gcc' }}
+          CXX: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-g++' || 'arm-linux-gnueabihf-g++' }}
+          AR: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-ar' || 'arm-linux-gnueabihf-ar' }}
+          RANLIB: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-ranlib' || 'arm-linux-gnueabihf-ranlib' }}
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
         run: cargo build -p calimero-node --release --target ${{ matrix.target }}
 
       - name: Build the crate for x86_64
