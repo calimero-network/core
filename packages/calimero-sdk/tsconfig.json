@@ -1,31 +1,26 @@
 {
-    "compilerOptions": {
-        "esModuleInterop": true,
-        "lib": [
-            "es2015",
-            "esnext",
-            "dom"
-        ],
-        "module": "ESNext",
-        "target": "ESNext",
-        "moduleResolution": "node",
-        "alwaysStrict": true,
-        "outDir": "./lib",
-        "declaration": true,
-        "preserveSymlinks": true,
-        "preserveWatchOutput": true,
-        "pretty": false,
-        "forceConsistentCasingInFileNames": true,
-        "noFallthroughCasesInSwitch": true,
-        "noImplicitAny": true,
-        "noImplicitReturns": true,
-        "noUnusedLocals": true,
-        "experimentalDecorators": true,
-        "resolveJsonModule": true,
-        "skipLibCheck": true,
-        "jsx": "react"
-    },
-    "files": [
-        "src/index.ts"
-    ]
+  "compilerOptions": {
+    "esModuleInterop": true,
+    "lib": ["es2015", "esnext", "dom"],
+    "module": "ESNext",
+    "target": "ESNext",
+    "moduleResolution": "node",
+    "alwaysStrict": true,
+    "outDir": "./lib",
+    "declaration": true,
+    "preserveSymlinks": true,
+    "preserveWatchOutput": true,
+    "pretty": false,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "experimentalDecorators": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "jsx": "react"
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules", "dist", "lib"]
 }

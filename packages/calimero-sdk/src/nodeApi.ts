@@ -121,6 +121,14 @@ export interface WalletSignatureData {
 export interface LoginResponse {}
 export interface RootKeyResponse {}
 
+export interface HealthRequest {
+  url: string;
+}
+
+export interface HealthStatus {
+  status: string;
+}
+
 export interface NodeApi {
   login(
     loginRequest: LoginRequest,
@@ -134,4 +142,5 @@ export interface NodeApi {
     rootKeyRequest: RootKeyRequest,
     rpcBaseUrl: string
   ): ApiResponse<RootKeyResponse>;
+  health(request: HealthRequest): ApiResponse<HealthStatus>;
 }

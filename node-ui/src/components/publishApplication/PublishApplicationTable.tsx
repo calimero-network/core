@@ -52,7 +52,7 @@ export default function PublishApplicationTable({
   setReleaseInfo,
   fileInputRef,
   publishApplication,
-  isLoading
+  isLoading,
 }: PublishApplicationTableProps) {
   const t = translations.applicationsPage.publishApplication;
 
@@ -104,4 +104,3 @@ export default function PublishApplicationTable({
     </ContentCard>
   );
 }
-  
