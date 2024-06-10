@@ -122,11 +122,11 @@ export interface LoginResponse {}
 export interface RootKeyResponse {}
 
 export interface HealthRequest {
-  url: String;
+  url: string;
 }
 
 export interface HealthStatus {
-  status: String;
+  status: string;
 }
 
 export interface NodeApi {
