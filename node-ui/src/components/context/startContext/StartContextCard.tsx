@@ -173,7 +173,7 @@ export default function StartContextCard({
   isLoading,
   showStatusModal,
   closeModal,
-  startContextStatus
+  startContextStatus,
 }: StartContextCardProps) {
   const t = translations.startContextPage;
   const onStartContextClick = async () => {
@@ -211,19 +211,36 @@ export default function StartContextCard({
       )}
       <div className="select-app-section">
         <div className="section-title">
-          {application.appId ? t.selectedApplicationTitle : t.selectApplicationTitle}
-          {application.appId && <XMarkIcon className="cancel-icon" onClick={() => setApplication({
-            appId: "",
-            name: "",
-            version: ""
-          })}
-          />}
+          {application.appId
+            ? t.selectedApplicationTitle
+            : t.selectApplicationTitle}
+          {application.appId && (
+            <XMarkIcon
+              className="cancel-icon"
+              onClick={() =>
+                setApplication({
+                  appId: "",
+                  name: "",
+                  version: "",
+                })
+              }
+            />
+          )}
         </div>
         {application.appId ? (
           <div className="selected-app">
-            <p className="label">{t.idLabelText}<span className="value">{application.appId}</span></p>
-            <p className="label">{t.nameLabelText}<span className="value">{application.name}</span></p>
-            <p className="label">{t.versionLabelText}<span className="value">{application.version}</span></p>
+            <p className="label">
+              {t.idLabelText}
+              <span className="value">{application.appId}</span>
+            </p>
+            <p className="label">
+              {t.nameLabelText}
+              <span className="value">{application.name}</span>
+            </p>
+            <p className="label">
+              {t.versionLabelText}
+              <span className="value">{application.version}</span>
+            </p>
           </div>
         ) : (
           <div className="button-container">
@@ -274,7 +291,12 @@ export default function StartContextCard({
             </div>
           </div>
         )}
-        <Button text="Start" width={"144px"} onClick={onStartContextClick} isLoading={isLoading}/>
+        <Button
+          text="Start"
+          width={"144px"}
+          onClick={onStartContextClick}
+          isLoading={isLoading}
+        />
       </div>
     </Wrapper>
   );
