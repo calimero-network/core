@@ -44,5 +44,5 @@ jobs:
         run: pnpm buildSdk
 
       - name: Publish Calimero SDK
-        run: pnpm publish --access public
+        run: pnpm publish --access public --no-git-checks
         working-directory: ./packages/calimero-sdk
