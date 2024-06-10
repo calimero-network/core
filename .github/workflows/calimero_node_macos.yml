@@ -52,5 +52,5 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v3
         with:
-          name: my_crate_binary_${{ matrix.target }}
+          name: calimero-node_${{ matrix.target }}
           path: target/${{ matrix.target }}/release/calimero-node
