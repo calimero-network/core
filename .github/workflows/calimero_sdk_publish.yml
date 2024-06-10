@@ -6,6 +6,7 @@ on:
       - master
     paths:
       - "packages/calimero-sdk/**"
+  workflow_dispatch:
 
 jobs:
   publish:
