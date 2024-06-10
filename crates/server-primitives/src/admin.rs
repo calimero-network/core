@@ -97,3 +97,18 @@ pub struct NodeChallengeMessage {
     pub application_id: String, //optional if challenge is used on admin level
     pub timestamp: i64,
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GetStorageRequest {
+    pub application_id: calimero_primitives::application::ApplicationId,
+    pub version: semver::Version,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GetStorageResponse {
+    pub application_id: calimero_primitives::application::ApplicationId,
+    pub version: semver::Version,
+    pub size_in_mb: u64,
+}

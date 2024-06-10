@@ -76,7 +76,7 @@ export default function ContextDetails() {
       ...context,
       ...versionData,
       contextId: id,
-      storageUsage: storageInfo.size,
+      storageUsage: storageInfo.sizeInMb,
     };
   };
 

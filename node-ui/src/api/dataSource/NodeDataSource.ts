@@ -68,7 +68,7 @@ interface ListApplicationsResponse {
 }
 
 export interface ApplicationStorageResponse {
-  size: string;
+  sizeInMb: string;
 }
 
 export class NodeDataSource {
@@ -212,7 +212,7 @@ export class NodeDataSource {
     if (response?.data) {
       return response.data;
     } else {
-      return { size: "0" };
+      return { sizeInMb: "0" };
     }
   }
 }
