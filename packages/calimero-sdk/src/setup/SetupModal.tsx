@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import apiClient from "../api";
 import React from "react";
 import Spinner from "../components/loader/Spinner";
+import styled from "styled-components";
 
 export interface SetupModalProps {
   successRoute: () => void;
@@ -9,7 +10,79 @@ export interface SetupModalProps {
   setNodeUrl: (url: string) => void;
 }
 
-export default function SetupModal(props: SetupModalProps) {
+const Container = styled.div`
+  display: flex;
+  height: 100vh;
+  justify-content: center;
+  background-color: #111111;
+`;
+
+const Content = styled.div`
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+`;
+
+const Box = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background-color: #1c1c1c;
+  padding: 2rem;
+  gap: 1rem;
+  border-radius: 0.5rem;
+`;
+
+const Grid = styled.div`
+  display: grid;
+  justify-items: center;
+  align-items: center;
+  gap: 2rem;
+  padding: 0 3.5rem;
+`;
+
+const Title = styled.div`
+  color: white;
+  font-size: 2.5rem;
+  font-weight: 600;
+`;
+
+const Input = styled.input`
+  width: 400px;
+  padding: 0.5rem;
+  border-radius: 0.375rem;
+`;
+
+const Error = styled.div`
+  color: #ef4444;
+`;
+
+const Button = styled.button`
+  background-color: #6b7280;
+  color: white;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem;
+  height: 46px;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 500;
+  border-radius: 0.375rem;
+  border: none;
+  outline: none;
+  padding-top: 0.5rem;
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+
+  &:disabled {
+    cursor: not-allowed;
+  }
+`;
+
+const SetupModal: React.FC<SetupModalProps> = (props: SetupModalProps) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [url, setUrl] = useState<string | null>(props.getNodeUrl());
@@ -54,61 +127,42 @@ export default function SetupModal(props: SetupModalProps) {
   }, [url]);
 
   return (
-    <div className="flex h-screen justify-center bg-[#111111]">
-      <div className="flex flex-col justify-center items-center">
-        <div className="items-center bg-[#1C1C1C] p-8 gap-y-4 rounded-lg">
-          <div className="grid justify-items-center items-center space-y-8 px-14">
-            <div className="text-white text-4xl font-semibold">App setup</div>
+    <Container>
+      <Content>
+        <Box>
+          <Grid>
+            <Title>App setup</Title>
             {loading ? (
               <Spinner />
             ) : (
               <>
                 <div>
-                  <input
+                  <Input
                     type="text"
-                    style={{ width: "400px" }}
-                    className="p-2 rounded-md"
                     placeholder="node url"
                     inputMode="url"
                     value={url?.toString() || ""}
-                    onChange={(e) => {
+                    onChange={(e: { target: { value: string } }) => {
                       handleChange(e.target.value);
                     }}
                   />
-                  <div className="text-red-500">{error}</div>
+                  <Error>{error}</Error>
                 </div>
-                <button
-                  style={{
-                    backgroundColor: "#6b7280",
-                    color: "white",
-                    width: "100%",
-                    display: "flex",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    gap: "0.5rem",
-                    height: "46px",
-                    cursor: "pointer",
-                    fontSize: "1rem",
-                    fontWeight: "500",
-                    borderRadius: "0.375rem",
-                    border: "none",
-                    outline: "none",
-                    paddingTop: "0.5rem",
-                    paddingLeft: "0.5rem",
-                    paddingRight: "0.5rem",
-                  }}
+                <Button
                   disabled={!url}
                   onClick={() => {
                     checkConnection();
                   }}
                 >
                   <span>Set node URL</span>
-                </button>
+                </Button>
               </>
             )}
-          </div>
-        </div>
-      </div>
-    </div>
+          </Grid>
+        </Box>
+      </Content>
+    </Container>
   );
-}
+};
+
+export default SetupModal;
