@@ -6,14 +6,14 @@ import Spinner from "../components/loader/Spinner";
 export interface SetupModalProps {
   successRoute: () => void;
   getNodeUrl: () => string | null;
-  setNodeUrl(url: string): void;
+  setNodeUrl: (url: string) => void;
 }
 
 export default function SetupModal(props: SetupModalProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [url, setUrl] = useState<string | null>(props.getNodeUrl());
-  const MINIMUM_LOADING_TIME = 1000; // Minimum loading time in milliseconds (e.g., 1 seconds)
+  const MINIMUM_LOADING_TIME_MS = 1000;
 
   function validateUrl(value: string): boolean {
     try {
@@ -24,10 +24,9 @@ export default function SetupModal(props: SetupModalProps) {
     }
   }
 
-  const handleChange = (e: { target: { value: any } }) => {
-    const value = e.target.value;
+  const handleChange = (url: string) => {
     setError("");
-    setUrl(value);
+    setUrl(url);
   };
 
   const checkConnection = useCallback(async () => {
@@ -35,7 +34,7 @@ export default function SetupModal(props: SetupModalProps) {
     if (validateUrl(url.toString())) {
       setLoading(true);
       const timer = new Promise((resolve) =>
-        setTimeout(resolve, MINIMUM_LOADING_TIME)
+        setTimeout(resolve, MINIMUM_LOADING_TIME_MS)
       );
 
       const fetchData = apiClient.node().health({ url: url });
@@ -72,7 +71,9 @@ export default function SetupModal(props: SetupModalProps) {
                     placeholder="node url"
                     inputMode="url"
                     value={url?.toString() || ""}
-                    onChange={handleChange}
+                    onChange={(e) => {
+                      handleChange(e.target.value);
+                    }}
                   />
                   <div className="text-red-500">{error}</div>
                 </div>
