@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::identity::Context;
+use calimero_primitives::identity::{ClientKey, Context};
 use rand::RngCore;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -13,8 +13,16 @@ use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
 use crate::admin::storage::context::{add_context, delete_context, get_context, get_contexts};
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextData {
+    context: Context,
+    client_keys: Vec<ClientKey>,
+    users: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetContextResponse {
-    data: Context,
+    data: ContextData,
 }
 
 pub async fn get_context_handler(
@@ -27,7 +35,7 @@ pub async fn get_context_handler(
     match context_result {
         Ok(ctx) => match ctx {
             Some(context) => ApiResponse {
-                payload: GetContextResponse { data: context },
+                payload: GetContextResponse { data: ContextData { context, client_keys: vec![], users: vec![] } },
             }
             .into_response(),
             None => ApiError {
