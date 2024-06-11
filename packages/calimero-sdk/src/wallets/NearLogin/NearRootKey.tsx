@@ -1,19 +1,19 @@
-import React, { Fragment, useCallback, useEffect, useState } from "react";
-import { randomBytes } from "crypto";
-import { providers } from "near-api-js";
-import type { AccountView } from "near-api-js/lib/providers/provider";
+import React, { Fragment, useCallback, useEffect, useState } from 'react';
+import { randomBytes } from 'crypto';
+import { providers } from 'near-api-js';
+import type { AccountView } from 'near-api-js/lib/providers/provider';
 import {
   SignedMessage,
   verifyFullKeyBelongsToUser,
   verifySignature,
   type SignMessageParams,
-} from "@near-wallet-selector/core";
+} from '@near-wallet-selector/core';
 
-import { useWalletSelector } from "./WalletSelectorContext";
-import apiClient from "../../api";
-import { ResponseData } from "../../api-response";
-import { setStorageNodeAuthorized } from "../../storage/storage";
-import { Loading } from "../loading/Loading";
+import { useWalletSelector } from './WalletSelectorContext';
+import apiClient from '../../api';
+import { ResponseData } from '../../types/api-response';
+import { setStorageNodeAuthorized } from '../../storage/storage';
+import { Loading } from '../loading/Loading';
 import {
   RootKeyRequest,
   NodeChallenge,
@@ -23,8 +23,8 @@ import {
   Payload,
   WalletMetadata,
   SignatureMessage,
-} from "../../nodeApi";
-import { getOrCreateKeypair } from "../../crypto/ed25519";
+} from '../../api/nodeApi';
+import { getOrCreateKeypair } from '../../crypto/ed25519';
 
 type Account = AccountView & {
   account_id: string;
@@ -39,7 +39,7 @@ interface NearRootKeyProps {
   navigateBack: () => void | undefined;
 }
 
-const NearRootKey: React.FC<NearRootKeyProps> = ({
+export const NearRootKey: React.FC<NearRootKeyProps> = ({
   rpcBaseUrl,
   appId,
   successRedirect,
@@ -50,7 +50,7 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
   const { selector, accounts, modal, accountId } = useWalletSelector();
   const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
-  const appName = "me";
+  const appName = 'me';
 
   const getAccount = useCallback(async (): Promise<Account | null> => {
     if (!accountId) {
@@ -62,8 +62,8 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
 
     return provider
       .query<AccountView>({
-        request_type: "view_account",
-        finality: "final",
+        request_type: 'view_account',
+        finality: 'final',
         account_id: accountId,
       })
       .then((data: any) => ({
@@ -105,7 +105,7 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
         setAccount(null);
       })
       .catch((err: any) => {
-        console.log("Failed to sign out");
+        console.log('Failed to sign out');
         console.error(err);
       });
   }
@@ -122,15 +122,15 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
 
     selector.setActiveAccount(nextAccountId);
 
-    alert("Switched account to " + nextAccountId);
+    alert('Switched account to ' + nextAccountId);
   }
 
   const verifyMessage = useCallback(
     async (
       message: SignMessageParams,
-      signedMessage: SignedMessage
+      signedMessage: SignedMessage,
     ): Promise<boolean> => {
-      console.log("verifyMessage", { message, signedMessage });
+      console.log('verifyMessage', { message, signedMessage });
 
       const verifiedSignature = verifySignature({
         message: message.message,
@@ -150,33 +150,33 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
         verifiedFullKeyBelongsToUser && verifiedSignature;
 
       const resultMessage = isMessageVerified
-        ? "Successfully verified"
-        : "Failed to verify";
+        ? 'Successfully verified'
+        : 'Failed to verify';
 
       console.log(
         `${resultMessage} signed message: '${
           message.message
-        }': \n ${JSON.stringify(signedMessage)}`
+        }': \n ${JSON.stringify(signedMessage)}`,
       );
 
       return isMessageVerified;
     },
-    [selector.options.network]
+    [selector.options.network],
   );
 
   const verifyMessageBrowserWallet = useCallback(async () => {
     const urlParams = new URLSearchParams(window.location.hash.substring(1));
-    const accId = urlParams.get("accountId") as string;
-    const publicKey = urlParams.get("publicKey") as string;
-    const signature = urlParams.get("signature") as string;
+    const accId = urlParams.get('accountId') as string;
+    const publicKey = urlParams.get('publicKey') as string;
+    const signature = urlParams.get('signature') as string;
 
     if (!accId && !publicKey && !signature) {
-      console.error("Missing params in url.");
+      console.error('Missing params in url.');
       return;
     }
 
     const message: SignMessageParams = JSON.parse(
-      localStorage.getItem("message")!
+      localStorage.getItem('message')!,
     );
 
     const state: SignatureMessageMetadata = JSON.parse(message.state!);
@@ -199,20 +199,20 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
 
     const isMessageVerified: boolean = await verifyMessage(
       message,
-      signedMessage
+      signedMessage,
     );
 
-    const url = new URL(location.href);
-    url.hash = "";
-    url.search = "";
+    const url = new URL(window.location.href);
+    url.hash = '';
+    url.search = '';
     window.history.replaceState({}, document.title, url);
-    localStorage.removeItem("message");
+    localStorage.removeItem('message');
 
     if (isMessageVerified) {
       const signatureMetadata: NearSignatureMessageMetadata = {
         recipient: message.recipient,
         callbackUrl: message.callbackUrl!,
-        nonce: message.nonce.toString("base64"),
+        nonce: message.nonce.toString('base64'),
       };
       const payload: Payload = {
         message: state,
@@ -232,22 +232,23 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
         .node()
         .addRootKey(rootKeyRequest, rpcBaseUrl)
         .then((result) => {
-          console.log("result", result);
+          console.log('result', result);
           if (result.error) {
-            console.error("Root key error", result.error);
+            console.error('Root key error', result.error);
           } else {
             setStorageNodeAuthorized();
             successRedirect();
-            console.log("root key added");
+            console.log('root key added');
           }
         })
         .catch(() => {
-          console.error("error while adding root key");
+          console.error('error while adding root key');
         });
     } else {
       //TODO handle error
-      console.error("Message not verified");
+      console.error('Message not verified');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [verifyMessage]);
 
   async function handleSignMessage() {
@@ -256,22 +257,22 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
       .requestChallenge(rpcBaseUrl, appId);
 
     if (challengeResponseData.error) {
-      console.log("requestChallenge api error", challengeResponseData.error);
+      console.log('requestChallenge api error', challengeResponseData.error);
       return;
     }
 
     const { publicKey } = await getOrCreateKeypair();
 
-    const wallet = await selector.wallet("my-near-wallet");
+    const wallet = await selector.wallet('my-near-wallet');
 
     const challengeNonce =
-      challengeResponseData?.data?.nonce ?? randomBytes(32).toString("hex");
+      challengeResponseData?.data?.nonce ?? randomBytes(32).toString('hex');
 
-    const nonce: Buffer = Buffer.from(challengeNonce, "base64");
+    const nonce: Buffer = Buffer.from(challengeNonce, 'base64');
     const recipient = appName;
-    const callbackUrl = location.href;
-    const applicationId = challengeResponseData.data?.applicationId ?? "";
-    const nodeSignature = challengeResponseData.data?.nodeSignature ?? "";
+    const callbackUrl = window.location.href;
+    const applicationId = challengeResponseData.data?.applicationId ?? '';
+    const nodeSignature = challengeResponseData.data?.nodeSignature ?? '';
     const timestamp =
       challengeResponseData.data?.timestamp ?? new Date().getTime();
 
@@ -284,24 +285,24 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
     const state: SignatureMessageMetadata = {
       publicKey: publicKey,
       nodeSignature,
-      nonce: nonce.toString("base64"),
+      nonce: nonce.toString('base64'),
       applicationId,
       timestamp,
       message,
     };
 
-    if (wallet.type === "browser") {
-      console.log("browser");
+    if (wallet.type === 'browser') {
+      console.log('browser');
 
       localStorage.setItem(
-        "message",
+        'message',
         JSON.stringify({
           message,
           nonce: [...nonce],
           recipient,
           callbackUrl,
           state: JSON.stringify(state),
-        })
+        }),
       );
     }
 
@@ -316,25 +317,25 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
     <Fragment>
       <div
         style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          backgroundColor: cardBackgroundColor ?? "#1C1C1C",
-          width: "fit-content",
-          padding: "2.5rem",
-          gap: "1rem",
-          borderRadius: "0.5rem",
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          backgroundColor: cardBackgroundColor ?? '#1C1C1C',
+          width: 'fit-content',
+          padding: '2.5rem',
+          gap: '1rem',
+          borderRadius: '0.5rem',
         }}
       >
         <span
           style={{
-            marginTop: "1.5rem",
-            display: "grid",
-            fontSize: "1.25rem",
-            fontWeight: "500",
-            textAlign: "center",
-            marginBottom: "0.5rem",
-            color: nearTitleColor ?? "#fff",
+            marginTop: '1.5rem',
+            display: 'grid',
+            fontSize: '1.25rem',
+            fontWeight: '500',
+            textAlign: 'center',
+            marginBottom: '0.5rem',
+            color: nearTitleColor ?? '#fff',
           }}
         >
           NEAR
@@ -342,38 +343,38 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
         {account && (
           <div
             style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              backgroundColor: "#25282D",
-              height: "73px",
-              borderRadius: "6px",
-              border: "none",
-              outline: "none",
-              paddingLeft: "12px",
-              paddingRight: "12px",
-              paddingTop: "4px",
-              paddingBottom: "4px",
-              width: "100%",
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              backgroundColor: '#25282D',
+              height: '73px',
+              borderRadius: '6px',
+              border: 'none',
+              outline: 'none',
+              paddingLeft: '12px',
+              paddingRight: '12px',
+              paddingTop: '4px',
+              paddingBottom: '4px',
+              width: '100%',
             }}
           >
             <div
               style={{
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
               }}
             >
               <div
                 style={{
-                  borderRadius: "50px",
-                  display: "inline-block",
-                  margin: "0px",
-                  overflow: "hidden",
-                  padding: "0px",
-                  backgroundColor: "rgb(241, 153, 2)",
-                  height: "30px",
-                  width: "30px",
+                  borderRadius: '50px',
+                  display: 'inline-block',
+                  margin: '0px',
+                  overflow: 'hidden',
+                  padding: '0px',
+                  backgroundColor: 'rgb(241, 153, 2)',
+                  height: '30px',
+                  width: '30px',
                 }}
               >
                 <svg
@@ -427,28 +428,28 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
               </div>
               <div
                 style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  paddingLeft: "1rem",
+                  display: 'flex',
+                  flexDirection: 'column',
+                  paddingLeft: '1rem',
                 }}
               >
                 <span
                   style={{
-                    color: "#fff",
-                    fontSize: "13px",
-                    lineHeight: "18px",
-                    height: "19.5px",
-                    fontWeight: "bold",
+                    color: '#fff',
+                    fontSize: '13px',
+                    lineHeight: '18px',
+                    height: '19.5px',
+                    fontWeight: 'bold',
                   }}
                 >
                   Account Id
                 </span>
                 <span
                   style={{
-                    color: "#fff",
-                    fontSize: "11px",
-                    height: "16.5px",
-                    fontWeight: "500",
+                    color: '#fff',
+                    fontSize: '11px',
+                    height: '16.5px',
+                    fontWeight: '500',
                   }}
                 >
                   {accountId}
@@ -457,11 +458,11 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
             </div>
             <div
               style={{
-                backgroundColor: "hsla(0, 0%, 100%, .05)",
-                color: "#fff",
-                cursor: "pointer",
-                padding: "8px",
-                borderRadius: "4px",
+                backgroundColor: 'hsla(0, 0%, 100%, .05)',
+                color: '#fff',
+                cursor: 'pointer',
+                padding: '8px',
+                borderRadius: '4px',
               }}
               onClick={() => {
                 if (account) {
@@ -475,29 +476,29 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
         )}
         <div
           style={{
-            display: "flex",
-            marginTop: account ? "155px" : "12px",
-            gap: "1rem",
+            display: 'flex',
+            marginTop: account ? '155px' : '12px',
+            gap: '1rem',
           }}
         >
           <button
             style={{
-              backgroundColor: "#FF7A00",
-              color: "white",
-              width: "fit-content",
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              gap: "0.5rem",
-              height: "46px",
-              cursor: "pointer",
-              fontSize: "1rem",
-              fontWeight: "500",
-              borderRadius: "0.375rem",
-              border: "none",
-              outline: "none",
-              paddingLeft: "0.5rem",
-              paddingRight: "0.5rem",
+              backgroundColor: '#FF7A00',
+              color: 'white',
+              width: 'fit-content',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: '0.5rem',
+              height: '46px',
+              cursor: 'pointer',
+              fontSize: '1rem',
+              fontWeight: '500',
+              borderRadius: '0.375rem',
+              border: 'none',
+              outline: 'none',
+              paddingLeft: '0.5rem',
+              paddingRight: '0.5rem',
             }}
             onClick={handleSwitchWallet}
           >
@@ -505,22 +506,22 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
           </button>
           <button
             style={{
-              backgroundColor: "#FF7A00",
-              color: "white",
-              width: "fit-content",
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              gap: "0.5rem",
-              height: "46px",
-              cursor: "pointer",
-              fontSize: "1rem",
-              fontWeight: "500",
-              borderRadius: "0.375rem",
-              border: "none",
-              outline: "none",
-              paddingLeft: "0.5rem",
-              paddingRight: "0.5rem",
+              backgroundColor: '#FF7A00',
+              color: 'white',
+              width: 'fit-content',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: '0.5rem',
+              height: '46px',
+              cursor: 'pointer',
+              fontSize: '1rem',
+              fontWeight: '500',
+              borderRadius: '0.375rem',
+              border: 'none',
+              outline: 'none',
+              paddingLeft: '0.5rem',
+              paddingRight: '0.5rem',
             }}
             onClick={handleSignMessage}
           >
@@ -529,22 +530,22 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
           {accounts.length > 1 && (
             <button
               style={{
-                backgroundColor: "#FF7A00",
-                color: "white",
-                width: "fit-content",
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-                gap: "0.5rem",
-                height: "46px",
-                cursor: "pointer",
-                fontSize: "1rem",
-                fontWeight: "500",
-                borderRadius: "0.375rem",
-                border: "none",
-                outline: "none",
-                paddingLeft: "0.5rem",
-                paddingRight: "0.5rem",
+                backgroundColor: '#FF7A00',
+                color: 'white',
+                width: 'fit-content',
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                gap: '0.5rem',
+                height: '46px',
+                cursor: 'pointer',
+                fontSize: '1rem',
+                fontWeight: '500',
+                borderRadius: '0.375rem',
+                border: 'none',
+                outline: 'none',
+                paddingLeft: '0.5rem',
+                paddingRight: '0.5rem',
               }}
               onClick={handleSwitchAccount}
             >
@@ -554,11 +555,11 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
         </div>
         <div
           style={{
-            paddingTop: "1rem",
-            fontSize: "14px",
-            color: "#fff",
-            textAlign: "center",
-            cursor: "pointer",
+            paddingTop: '1rem',
+            fontSize: '14px',
+            color: '#fff',
+            textAlign: 'center',
+            cursor: 'pointer',
           }}
           onClick={navigateBack}
         >
@@ -568,5 +569,3 @@ const NearRootKey: React.FC<NearRootKeyProps> = ({
     </Fragment>
   );
 };
-
-export default NearRootKey;

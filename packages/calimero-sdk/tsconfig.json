@@ -8,6 +8,7 @@
     "alwaysStrict": true,
     "outDir": "./lib",
     "declaration": true,
+    "declarationMap": true,
     "preserveSymlinks": true,
     "preserveWatchOutput": true,
     "pretty": false,
