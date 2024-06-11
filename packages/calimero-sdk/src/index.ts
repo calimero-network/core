@@ -4,3 +4,4 @@ export * from './wallets';
 export * from './setup';
 export * from './components';
 export * from './types';
+export * from './api/nodeApi';
