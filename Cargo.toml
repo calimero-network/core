@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 resolver = "2"
 members = [
   "./crates/application",
+  "./crates/cli",
   "./crates/identity",
   "./crates/network",
   "./crates/node",
