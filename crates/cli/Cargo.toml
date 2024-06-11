@@ -10,3 +10,4 @@ license.workspace = true
 
 [dependencies]
 clap = { workspace = true, features = ["env", "derive"] }
+git2 = "0.18.3"
