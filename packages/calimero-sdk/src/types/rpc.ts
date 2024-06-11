@@ -1,15 +1,15 @@
-import { ApplicationId } from "./application";
+import { ApplicationId } from './application';
 
 export type RpcRequestId = string | number;
 
 export interface RpcClient {
   query<Args, Out>(
     params: RpcQueryParams<Args>,
-    config?: RequestConfig
+    config?: RequestConfig,
   ): Promise<RpcResult<RpcQueryResponse<Out>>>;
   mutate<Args, Out>(
     params: RpcMutateParams<Args>,
-    config?: RequestConfig
+    config?: RequestConfig,
   ): Promise<RpcResult<RpcMutateResponse<Out>>>;
 }
 
@@ -39,24 +39,24 @@ export type RpcError =
   | RpcExecutionError;
 
 export interface UnknownServerError {
-  type: "UnknownServerError";
+  type: 'UnknownServerError';
   inner: any;
 }
 
 export interface InvalidRequestError {
-  type: "InvalidRequestError";
+  type: 'InvalidRequestError';
   data: any;
   code: number;
 }
 
 export interface MissmatchedRequestIdError {
-  type: "MissmatchedRequestIdError";
+  type: 'MissmatchedRequestIdError';
   expected: RpcRequestId;
   got: RpcRequestId;
 }
 
 export interface RpcExecutionError {
-  type: "RpcExecutionError";
+  type: 'RpcExecutionError';
   inner: any;
 }
 

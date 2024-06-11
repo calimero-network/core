@@ -1,7 +1,7 @@
-import React from "react";
-import LoginWithMetamask from "./LoginWithMetamask";
-import MetamaskRootKey from "./MetamaskRootKey";
-import { MetaMaskUIProvider } from "@metamask/sdk-react-ui";
+import React from 'react';
+import { LoginWithMetamask } from './LoginWithMetamask';
+import { MetamaskRootKey } from './MetamaskRootKey';
+import { MetaMaskUIProvider } from '@metamask/sdk-react-ui';
 
 interface MetamaskWrapperProps {
   applicationId: string;
@@ -13,7 +13,7 @@ interface MetamaskWrapperProps {
   clientLogin?: boolean;
 }
 
-const MetamaskWrapper: React.FC<MetamaskWrapperProps> = ({
+export const MetamaskWrapper: React.FC<MetamaskWrapperProps> = ({
   applicationId,
   rpcBaseUrl,
   successRedirect,
@@ -33,14 +33,14 @@ const MetamaskWrapper: React.FC<MetamaskWrapperProps> = ({
     >
       <div
         style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          backgroundColor: cardBackgroundColor ?? "#1C1C1C",
-          padding: "2rem",
-          gap: "1rem",
-          borderRadius: "0.5rem",
-          width: "fit-content",
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          backgroundColor: cardBackgroundColor ?? '#1C1C1C',
+          padding: '2rem',
+          gap: '1rem',
+          borderRadius: '0.5rem',
+          width: 'fit-content',
         }}
       >
         <div>
@@ -66,5 +66,3 @@ const MetamaskWrapper: React.FC<MetamaskWrapperProps> = ({
     </MetaMaskUIProvider>
   );
 };
-
-export default MetamaskWrapper;

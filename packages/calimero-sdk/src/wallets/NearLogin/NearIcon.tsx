@@ -1,6 +1,6 @@
-import React from "react";
+import React from 'react';
 
-export default function NearIcon() {
+export function NearIcon() {
   return (
     <svg
       width="24"

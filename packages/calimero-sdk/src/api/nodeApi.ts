@@ -1,4 +1,4 @@
-import { ApiResponse } from "./api-response";
+import { ApiResponse } from '../types/api-response';
 
 enum AlgorithmType {
   Ed25519,
@@ -8,19 +8,19 @@ interface WalletTypeBase<T extends Uppercase<string>> {
   type: T;
 }
 
-interface ETHWalletType extends WalletTypeBase<"ETH"> {
+interface ETHWalletType extends WalletTypeBase<'ETH'> {
   chainId: number;
 }
 
-interface NEARWalletType extends WalletTypeBase<"NEAR"> {}
+interface NEARWalletType extends WalletTypeBase<'NEAR'> {}
 
 export type WalletType = ETHWalletType | NEARWalletType;
 
 export namespace WalletType {
-  export let NEAR: WalletType = <NEARWalletType>{ type: "NEAR" };
+  export let NEAR: WalletType = <NEARWalletType>{ type: 'NEAR' };
 
   export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
-    return <ETHWalletType>{ type: "ETH", chainId };
+    return <ETHWalletType>{ type: 'ETH', chainId };
   }
 }
 
@@ -67,12 +67,12 @@ export interface NodeChallenge {
 
 export interface NearMetadata extends WalletMetadata {
   type: NEARWalletType;
-  signingKey: "e.g.: ed25519:DfRy7qn3upQS4KFTLChpMG9DmiR29zDMdR1YuUG7cYML";
+  signingKey: 'e.g.: ed25519:DfRy7qn3upQS4KFTLChpMG9DmiR29zDMdR1YuUG7cYML';
 }
 
 export interface EthMetadata extends WalletMetadata {
   type: ETHWalletType;
-  signingKey: "e.g.: 0x63f9a92d8d61b48a9fff8d58080425a3012d05c8";
+  signingKey: 'e.g.: 0x63f9a92d8d61b48a9fff8d58080425a3012d05c8';
 }
 
 export interface SignatureMessage {
@@ -132,15 +132,15 @@ export interface HealthStatus {
 export interface NodeApi {
   login(
     loginRequest: LoginRequest,
-    rpcBaseUrl: string
+    rpcBaseUrl: string,
   ): ApiResponse<LoginResponse>;
   requestChallenge(
     rpcBaseUrl: string,
-    applicationId: string
+    applicationId: string,
   ): ApiResponse<NodeChallenge>;
   addRootKey(
     rootKeyRequest: RootKeyRequest,
-    rpcBaseUrl: string
+    rpcBaseUrl: string,
   ): ApiResponse<RootKeyResponse>;
   health(request: HealthRequest): ApiResponse<HealthStatus>;
 }

@@ -1,8 +1,8 @@
-import { useCallback, useState } from "react";
-import apiClient from "../api";
-import React from "react";
-import Spinner from "../components/loader/Spinner";
-import styled from "styled-components";
+import { useCallback, useState } from 'react';
+import apiClient from '../api';
+import React from 'react';
+import Spinner from '../components/loader/Spinner';
+import styled from 'styled-components';
 
 export interface SetupModalProps {
   successRoute: () => void;
@@ -82,7 +82,9 @@ const Button = styled.button`
   }
 `;
 
-const SetupModal: React.FC<SetupModalProps> = (props: SetupModalProps) => {
+export const SetupModal: React.FC<SetupModalProps> = (
+  props: SetupModalProps,
+) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [url, setUrl] = useState<string | null>(props.getNodeUrl());
@@ -98,7 +100,7 @@ const SetupModal: React.FC<SetupModalProps> = (props: SetupModalProps) => {
   }
 
   const handleChange = (url: string) => {
-    setError("");
+    setError('');
     setUrl(url);
   };
 
@@ -107,24 +109,24 @@ const SetupModal: React.FC<SetupModalProps> = (props: SetupModalProps) => {
     if (validateUrl(url.toString())) {
       setLoading(true);
       const timer = new Promise((resolve) =>
-        setTimeout(resolve, MINIMUM_LOADING_TIME_MS)
+        setTimeout(resolve, MINIMUM_LOADING_TIME_MS),
       );
 
       const fetchData = apiClient.node().health({ url: url });
       Promise.all([timer, fetchData]).then(([, response]) => {
         if (response.data) {
-          setError("");
+          setError('');
           props.setNodeUrl(url);
           props.successRoute();
         } else {
-          setError("Connection failed. Please check if node url is correct.");
+          setError('Connection failed. Please check if node url is correct.');
         }
         setLoading(false);
       });
     } else {
-      setError("Connection failed. Please check if node url is correct.");
+      setError('Connection failed. Please check if node url is correct.');
     }
-  }, [url]);
+  }, [props, url]);
 
   return (
     <Container>
@@ -141,7 +143,7 @@ const SetupModal: React.FC<SetupModalProps> = (props: SetupModalProps) => {
                     type="text"
                     placeholder="node url"
                     inputMode="url"
-                    value={url?.toString() || ""}
+                    value={url?.toString() || ''}
                     onChange={(e: { target: { value: string } }) => {
                       handleChange(e.target.value);
                     }}
@@ -164,5 +166,3 @@ const SetupModal: React.FC<SetupModalProps> = (props: SetupModalProps) => {
     </Container>
   );
 };
-
-export default SetupModal;

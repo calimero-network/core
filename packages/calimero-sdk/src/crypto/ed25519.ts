@@ -1,9 +1,9 @@
-import { generateKeyPair } from "@libp2p/crypto/keys";
-import bs58 from "bs58";
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import bs58 from 'bs58';
 
-import { PrivateKey, Ed25519 } from "@libp2p/interface";
-import { getStorageClientKey, setStorageClientKey } from "../storage/storage";
-import { ClientKey } from "../storage";
+import { PrivateKey, Ed25519 } from '@libp2p/interface';
+import { getStorageClientKey, setStorageClientKey } from '../storage/storage';
+import { ClientKey } from '../types/storage';
 
 export async function generatePrivateKey(): Promise<PrivateKey> {
   return await generateKeyPair(Ed25519);
