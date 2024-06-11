@@ -9,3 +9,4 @@ export * from "./wallets/MetamaskLogin/LoginWithMetamask";
 export * from "./wallets/MetamaskLogin/MetamaskWrapper";
 export * from "./wallets/LoginSelector";
 export * from "./setup/SetupModal";
+export * from "./nodeApi";
