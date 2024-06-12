@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
+use crate::admin::storage::client_keys::get_context_client_key;
 use crate::admin::storage::context::{add_context, delete_context, get_context, get_contexts};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,10 +35,24 @@ pub async fn get_context_handler(
 
     match context_result {
         Ok(ctx) => match ctx {
-            Some(context) => ApiResponse {
-                payload: GetContextResponse { data: ContextData { context, client_keys: vec![], users: vec![] } },
+            Some(context) => {
+                let client_keys_result =
+                    get_context_client_key(&state.store, &context.application_id)
+                        .map_err(|err| parse_api_error(err).into_response());
+                match client_keys_result {
+                    Ok(client_keys) => ApiResponse {
+                        payload: GetContextResponse {
+                            data: ContextData {
+                                context,
+                                client_keys,
+                                users: vec![],
+                            },
+                        },
+                    }
+                    .into_response(),
+                    Err(err) => err.into_response(),
+                }
             }
-            .into_response(),
             None => ApiError {
                 status_code: StatusCode::NOT_FOUND,
                 message: "Context not found".into(),
