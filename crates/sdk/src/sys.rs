@@ -20,5 +20,5 @@ extern "C" {
     pub fn storage_read(key: Buffer, register_id: RegisterId) -> Bool;
     pub fn storage_write(key: Buffer, value: Buffer, register_id: RegisterId) -> Bool;
 
-    pub fn fetch(url: Buffer, headers: Buffer, out_register_id: RegisterId);
+    pub fn fetch(method: Buffer, url: Buffer, headers: Buffer, out_register_id: RegisterId);
 }

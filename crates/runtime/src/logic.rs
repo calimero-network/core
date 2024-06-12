@@ -309,16 +309,19 @@ impl<'a> VMHostFunctions<'a> {
 
     pub fn fetch(
         &mut self,
+        method_ptr: u64,
+        method_len: u64,
         url_ptr: u64,
         url_len: u64,
         headers_ptr: u64,
         headers_len: u64,
         out_register_id: u64,
     ) -> Result<()> {
+        let method = self.get_string(method_ptr, method_len)?;
         let url = self.get_string(url_ptr, url_len)?;
         let headers = self.read_guest_memory(headers_ptr, headers_len)?;
         let headers: HashMap<String, String> = borsh::from_slice(&headers).unwrap();
-        let mut request = ureq::request("GET", &url);
+        let mut request = ureq::request(&method, &url);
 
         for (key, value) in headers.iter() {
             request = request.set(key, value);
