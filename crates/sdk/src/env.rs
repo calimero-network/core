@@ -149,9 +149,12 @@ pub fn state_write<T: crate::state::AppState>(state: &T) {
 }
 
 pub fn fetch(url: &str, headers: HashMap<String, String>) -> String {
-    let headers = serde_json::to_string(&headers).unwrap();
+    let headers = match borsh::to_vec(&headers) {
+        Ok(data) => data,
+        Err(err) => panic_str(&format!("Cannot serialize headers: {:?}", err)),
+    };
     let url = sys::Buffer::from(url);
-    let headers = sys::Buffer::from(headers.as_str());
+    let headers = sys::Buffer::from(headers.as_slice());
     unsafe { sys::fetch(url, headers, DATA_REGISTER) }
     String::from_utf8(read_register(DATA_REGISTER).unwrap_or_else(expected_register)).unwrap()
 }

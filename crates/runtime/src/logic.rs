@@ -316,13 +316,19 @@ impl<'a> VMHostFunctions<'a> {
         out_register_id: u64,
     ) -> Result<()> {
         let url = self.get_string(url_ptr, url_len)?;
-        let headers = self.get_string(headers_ptr, headers_len)?;
-        let headers: HashMap<String, String> = serde_json::from_str(&headers).unwrap();
-        let body: String = ureq::get(&url).call().unwrap().into_string().unwrap();
+        let headers = self.read_guest_memory(headers_ptr, headers_len)?;
+        let headers: HashMap<String, String> = borsh::from_slice(&headers).unwrap();
+        let mut request = ureq::request("GET", &url);
+
+        for (key, value) in headers.iter() {
+            request = request.set(key, value);
+        }
+
+        let response = request.call().unwrap().into_string().unwrap();
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(&logic.limits, out_register_id, body.into_bytes())
+                .set(&logic.limits, out_register_id, response.into_bytes())
         })?;
         Ok(())
     }

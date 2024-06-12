@@ -16,6 +16,7 @@ thiserror.workspace = true
 ureq = "2.9.7"
 wasmer.workspace = true
 wasmer-types.workspace = true
+borsh = { workspace = true, features = ["derive"] }
 
 [[example]]
 name = "demo"
