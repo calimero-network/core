@@ -315,19 +315,36 @@ impl<'a> VMHostFunctions<'a> {
         url_len: u64,
         headers_ptr: u64,
         headers_len: u64,
+        body_ptr: u64,
+        body_len: u64,
         out_register_id: u64,
     ) -> Result<()> {
         let method = self.get_string(method_ptr, method_len)?;
         let url = self.get_string(url_ptr, url_len)?;
         let headers = self.read_guest_memory(headers_ptr, headers_len)?;
         let headers: HashMap<String, String> = borsh::from_slice(&headers).unwrap();
+        let body = self.read_guest_memory(body_ptr, body_len)?;
         let mut request = ureq::request(&method, &url);
 
         for (key, value) in headers.iter() {
             request = request.set(key, value);
         }
 
-        let response = request.call().unwrap().into_string().unwrap();
+        let response = if !body.is_empty() {
+            request.send_bytes(&body)
+        } else {
+            request.call()
+        }
+        .map_err(|e| HostError::FetchError {
+            url: url.clone(),
+            error: e.to_string(),
+        })?
+        .into_string()
+        .map_err(|e| HostError::FetchError {
+            url,
+            error: e.to_string(),
+        })?;
+
         self.with_logic_mut(|logic| {
             logic
                 .registers

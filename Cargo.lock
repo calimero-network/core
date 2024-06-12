@@ -1145,6 +1145,7 @@ name = "calimero-runtime"
 version = "0.1.0"
 dependencies = [
  "assert-json-diff",
+ "borsh 1.4.0",
  "clap 4.5.4",
  "eyre",
  "fragile",
