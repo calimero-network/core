@@ -44,6 +44,7 @@ impl<'a> VMLogic<'a> {
                 register_id: u64,
             ) -> u32;
             fn storage_read(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
+            fn fetch(url_ptr: u64, url_len: u64, headers_ptr: u64, headers_len: u64, out_register_id: u64);
         }
     }
 }

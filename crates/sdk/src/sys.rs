@@ -4,6 +4,7 @@ mod types;
 
 pub use types::*;
 
+#[link(wasm_import_module = "env")]
 extern "C" {
     pub fn panic(loc: Location) -> !;
     pub fn panic_utf8(msg: Buffer, loc: Location) -> !;
@@ -18,4 +19,6 @@ extern "C" {
     // --
     pub fn storage_read(key: Buffer, register_id: RegisterId) -> Bool;
     pub fn storage_write(key: Buffer, value: Buffer, register_id: RegisterId) -> Bool;
+
+    pub fn fetch(url: Buffer, headers: Buffer, out_register_id: RegisterId);
 }

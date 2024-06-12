@@ -13,6 +13,7 @@ owo-colors = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+ureq = "2.9.7"
 wasmer.workspace = true
 wasmer-types.workspace = true
 

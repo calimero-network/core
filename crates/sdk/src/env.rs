@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::sys;
 
 const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(sys::PtrSizedInt::MAX.as_usize() - 1);
@@ -144,4 +146,12 @@ pub fn state_write<T: crate::state::AppState>(state: &T) {
         Err(err) => panic_str(&format!("Cannot serialize app state: {:?}", err)),
     };
     storage_write(STATE_KEY, &data);
+}
+
+pub fn fetch(url: &str, headers: HashMap<String, String>) -> String {
+    let headers = serde_json::to_string(&headers).unwrap();
+    let url = sys::Buffer::from(url);
+    let headers = sys::Buffer::from(headers.as_str());
+    unsafe { sys::fetch(url, headers, DATA_REGISTER) }
+    String::from_utf8(read_register(DATA_REGISTER).unwrap_or_else(expected_register)).unwrap()
 }

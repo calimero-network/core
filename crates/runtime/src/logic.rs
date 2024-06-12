@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use ouroboros::self_referencing;
@@ -304,5 +305,25 @@ impl<'a> VMHostFunctions<'a> {
         };
 
         Ok(0)
+    }
+
+    pub fn fetch(
+        &mut self,
+        url_ptr: u64,
+        url_len: u64,
+        headers_ptr: u64,
+        headers_len: u64,
+        out_register_id: u64,
+    ) -> Result<()> {
+        let url = self.get_string(url_ptr, url_len)?;
+        let headers = self.get_string(headers_ptr, headers_len)?;
+        let headers: HashMap<String, String> = serde_json::from_str(&headers).unwrap();
+        let body: String = ureq::get(&url).call().unwrap().into_string().unwrap();
+        self.with_logic_mut(|logic| {
+            logic
+                .registers
+                .set(&logic.limits, out_register_id, body.into_bytes())
+        })?;
+        Ok(())
     }
 }
