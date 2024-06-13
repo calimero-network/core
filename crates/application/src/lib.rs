@@ -1,7 +1,6 @@
 use std::fs::{self, File};
 use std::io::Write;
 
-use calimero_primitives::application::StorageInfo;
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
 use near_jsonrpc_client::{methods, JsonRpcClient};
@@ -231,30 +230,5 @@ impl ApplicationManager {
         } else {
             None
         }
-    }
-
-    pub async fn get_application_storage(
-        &self,
-        application_id: &calimero_primitives::application::ApplicationId,
-        version: &semver::Version,
-    ) -> eyre::Result<StorageInfo> {
-        let base_path = format!(
-            "{}/{}/{}/binary.wasm",
-            &self.application_dir, application_id, version
-        );
-        let metadata = match fs::metadata(&base_path) {
-            Ok(metadata) => metadata,
-            Err(_) => return Ok(StorageInfo { size_in_mb: 0.0 }),
-        };
-        let file_size_bytes = metadata.len();
-        let file_size_mb = (file_size_bytes as f64) / (1024.0 * 1024.0);
-        let formatted_size_mb = format!("{:.2}", file_size_mb);
-        let size = match formatted_size_mb.parse::<f64>() {
-            Ok(size) => size,
-            Err(_) => 0.0,
-        };
-        Ok(StorageInfo {
-            size_in_mb: size,
-        })
     }
 }

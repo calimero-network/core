@@ -100,15 +100,6 @@ pub struct NodeChallengeMessage {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct GetStorageRequest {
-    pub application_id: calimero_primitives::application::ApplicationId,
-    pub version: semver::Version,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct GetStorageResponse {
-    pub application_id: calimero_primitives::application::ApplicationId,
-    pub version: semver::Version,
-    pub size_in_mb: u64,
+pub struct ContextStorage {
+    pub size_in_bytes: u64,
 }

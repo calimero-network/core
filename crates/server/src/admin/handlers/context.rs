@@ -4,6 +4,7 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::identity::Context;
+use calimero_server_primitives::admin::ContextStorage;
 use rand::RngCore;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -114,4 +115,19 @@ pub async fn create_context_handler(
     };
 
     response
+}
+
+#[derive(Debug, Serialize)]
+struct GetContextStorageResponse {
+    data: ContextStorage,
+}
+
+pub async fn get_context_storage_handler(
+    Path(_context_id): Path<String>,
+    Extension(_state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+        ApiResponse {
+            payload: GetContextStorageResponse { data:  ContextStorage { size_in_bytes: 0}},
+        }
+        .into_response()
 }

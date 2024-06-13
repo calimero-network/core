@@ -20,6 +20,7 @@ use super::handlers::add_client_key::add_client_key_handler;
 use super::handlers::challenge::request_challenge_handler;
 use super::handlers::context::{
     create_context_handler, delete_context_handler, get_context_handler, get_contexts_handler,
+    get_context_storage_handler,
 };
 use super::handlers::fetch_did::fetch_did_handler;
 use super::handlers::root_keys::create_root_key_handler;
@@ -71,8 +72,8 @@ pub(crate) fn setup(
         .route("/contexts", post(create_context_handler))
         .route("/contexts/:context_id", delete(delete_context_handler))
         .route("/contexts/:context_id", get(get_context_handler))
+        .route("/contexts/:context_id/storage", get(get_context_storage_handler))
         .route("/contexts", get(get_contexts_handler))
-        .route("/storage", post(get_application_storage_handler))
         .layer(Extension(shared_state))
         .layer(session_layer);
 
@@ -208,28 +209,6 @@ async fn list_applications_handler(
         }
         .into_response(),
 
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct GetApplicationStorageResponse {
-    data: calimero_primitives::application::StorageInfo,
-}
-
-async fn get_application_storage_handler(
-    Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<calimero_server_primitives::admin::GetStorageRequest>,
-) -> impl IntoResponse {
-    match state
-        .application_manager
-        .get_application_storage(&req.application_id, &req.version)
-        .await
-    {
-        Ok(storage) => ApiResponse {
-            payload: GetApplicationStorageResponse { data: storage },
-        }
-        .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }

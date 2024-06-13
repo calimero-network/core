@@ -42,10 +42,3 @@ pub struct Release {
     pub path: String,
     pub hash: String,
 }
-
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct StorageInfo {
-    pub size_in_mb: f64,
-}
