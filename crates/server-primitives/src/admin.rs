@@ -97,3 +97,9 @@ pub struct NodeChallengeMessage {
     pub application_id: String, //optional if challenge is used on admin level
     pub timestamp: i64,
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextStorage {
+    pub size_in_bytes: u64,
+}
