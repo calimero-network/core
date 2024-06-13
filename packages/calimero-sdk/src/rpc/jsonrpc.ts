@@ -7,10 +7,10 @@ import {
   RpcMutateParams,
   RequestConfig,
   RpcResult,
-} from "../rpc";
-import axios, { AxiosInstance } from "axios";
+} from '../types/rpc';
+import axios, { AxiosInstance } from 'axios';
 
-type JsonRpcVersion = "2.0";
+type JsonRpcVersion = '2.0';
 
 interface JsonRpcRequest<Params> {
   jsonrpc: JsonRpcVersion;
@@ -33,7 +33,7 @@ export class JsonRpcClient implements RpcClient {
   public constructor(
     baseUrl: string,
     path: string,
-    defaultTimeout: number = 1000
+    defaultTimeout: number = 1000,
   ) {
     this.path = path;
     this.axiosInstance = axios.create({
@@ -44,34 +44,34 @@ export class JsonRpcClient implements RpcClient {
 
   public async query<Args, Output>(
     params: RpcQueryParams<Args>,
-    config?: RequestConfig
+    config?: RequestConfig,
   ): Promise<RpcResult<RpcQueryResponse<Output>>> {
     return await this.request<RpcQueryParams<Args>, RpcQueryResponse<Output>>(
-      "query",
+      'query',
       params,
-      config
+      config,
     );
   }
 
   public async mutate<Args, Output>(
     params: RpcMutateParams<Args>,
-    config?: RequestConfig
+    config?: RequestConfig,
   ): Promise<RpcResult<RpcMutateResponse<Output>>> {
     return await this.request<RpcMutateParams<Args>, RpcMutateResponse<Output>>(
-      "mutate",
+      'mutate',
       params,
-      config
+      config,
     );
   }
 
   async request<Params, Result>(
     method: string,
     params: Params,
-    config?: RequestConfig
+    config?: RequestConfig,
   ): Promise<RpcResult<Result>> {
     const requestId = this.getRandomRequestId();
     const data: JsonRpcRequest<Params> = {
-      jsonrpc: "2.0",
+      jsonrpc: '2.0',
       id: requestId,
       method,
       params,
@@ -81,14 +81,14 @@ export class JsonRpcClient implements RpcClient {
       const response = await this.axiosInstance.post<JsonRpcResponse<Result>>(
         this.path,
         data,
-        config
+        config,
       );
       if (response.status === 200) {
         if (response.data.id !== requestId) {
           return {
             result: null,
             error: {
-              type: "MissmatchedRequestIdError",
+              type: 'MissmatchedRequestIdError',
               expected: requestId,
               got: response.data.id,
             },
@@ -99,7 +99,7 @@ export class JsonRpcClient implements RpcClient {
           return {
             result: null,
             error: {
-              type: "RpcExecutionError",
+              type: 'RpcExecutionError',
               inner: response.data.error,
             },
           };
@@ -113,7 +113,7 @@ export class JsonRpcClient implements RpcClient {
         return {
           result: null,
           error: {
-            type: "InvalidRequestError",
+            type: 'InvalidRequestError',
             data: response.data,
             code: response.status,
           },
@@ -123,7 +123,7 @@ export class JsonRpcClient implements RpcClient {
       return {
         result: null,
         error: {
-          type: "UnknownServerError",
+          type: 'UnknownServerError',
           inner: error,
         },
       };

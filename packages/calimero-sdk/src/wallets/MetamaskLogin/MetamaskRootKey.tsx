@@ -1,12 +1,12 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   MetaMaskButton,
   useAccount,
   useSDK,
   // @ts-ignore: sdk-react-ui does not export useSignMessage
   useSignMessage,
-} from "@metamask/sdk-react-ui";
-import apiClient from "../../api";
+} from '@metamask/sdk-react-ui';
+import apiClient from '../../api';
 import {
   EthSignatureMessageMetadata,
   NodeChallenge,
@@ -16,13 +16,13 @@ import {
   SignatureMessageMetadata,
   WalletMetadata,
   WalletSignatureData,
-} from "../../nodeApi";
-import { ResponseData } from "../../api-response";
-import { setStorageNodeAuthorized } from "../../storage/storage";
-import { Loading } from "../loading/Loading";
-import { getNetworkType } from "../eth/type";
-import { getOrCreateKeypair } from "../../crypto/ed25519";
-import { randomBytes } from "crypto";
+} from '../../api/nodeApi';
+import { ResponseData } from '../../types/api-response';
+import { setStorageNodeAuthorized } from '../../storage/storage';
+import { Loading } from '../loading/Loading';
+import { getNetworkType } from '../eth/type';
+import { getOrCreateKeypair } from '../../crypto/ed25519';
+import { randomBytes } from 'crypto';
 
 interface MetamaskRootKeyProps {
   applicationId: string;
@@ -32,7 +32,7 @@ interface MetamaskRootKeyProps {
   navigateBack: () => void | undefined;
 }
 
-export default function MetamaskRootKey({
+export function MetamaskRootKey({
   applicationId,
   rpcBaseUrl,
   successRedirect,
@@ -68,22 +68,22 @@ export default function MetamaskRootKey({
     const { publicKey } = await getOrCreateKeypair();
 
     if (challengeResponseData.error) {
-      console.error("requestNodeData error", challengeResponseData.error);
+      console.error('requestNodeData error', challengeResponseData.error);
       //TODO handle error
       return;
     }
 
     const signatureMessage: SignatureMessage = {
-      nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
+      nodeSignature: challengeResponseData.data?.nodeSignature ?? '',
       publicKey: publicKey,
     };
 
     const signatureMessageMetadata: SignatureMessageMetadata = {
-      nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
+      nodeSignature: challengeResponseData.data?.nodeSignature ?? '',
       publicKey: publicKey,
       nonce:
-        challengeResponseData.data?.nonce ?? randomBytes(32).toString("hex"),
-      applicationId: challengeResponseData.data?.applicationId ?? "",
+        challengeResponseData.data?.nonce ?? randomBytes(32).toString('hex'),
+      applicationId: challengeResponseData.data?.applicationId ?? '',
       timestamp: challengeResponseData.data?.timestamp ?? new Date().getTime(),
       message: JSON.stringify(signatureMessage),
     };
@@ -97,15 +97,15 @@ export default function MetamaskRootKey({
       publicKey,
     };
     setWalletSignatureData(wsd);
-  }, []);
+  }, [applicationId, rpcBaseUrl]);
 
   const login = useCallback(async () => {
     setErrorMessage(null);
     if (!signData) {
-      console.error("signature is empty");
+      console.error('signature is empty');
       //TODO handle error
     } else if (!address) {
-      console.error("address is empty");
+      console.error('address is empty');
       //TODO handle error
     } else {
       const walletMetadata: WalletMetadata = {
@@ -122,7 +122,7 @@ export default function MetamaskRootKey({
         .addRootKey(rootKeyRequest, rpcBaseUrl)
         .then((result) => {
           if (result.error) {
-            console.error("Login error: ", result.error);
+            console.error('Login error: ', result.error);
             setErrorMessage(result.error.message);
           } else {
             setStorageNodeAuthorized();
@@ -130,11 +130,18 @@ export default function MetamaskRootKey({
           }
         })
         .catch(() => {
-          console.error("error while login!");
-          setErrorMessage("Error while login!");
+          console.error('error while login!');
+          setErrorMessage('Error while login!');
         });
     }
-  }, [address, signData, walletSignatureData?.payload]);
+  }, [
+    address,
+    chainId,
+    rpcBaseUrl,
+    signData,
+    successRedirect,
+    walletSignatureData?.payload,
+  ]);
 
   useEffect(() => {
     if (isConnected) {
@@ -146,8 +153,8 @@ export default function MetamaskRootKey({
   useEffect(() => {
     if (isSignSuccess && walletSignatureData) {
       //send request to node
-      console.log("signature", signData);
-      console.log("address", address);
+      console.log('signature', signData);
+      console.log('address', address);
       login();
     }
   }, [address, isSignSuccess, login, signData, walletSignatureData]);
@@ -159,77 +166,77 @@ export default function MetamaskRootKey({
   return (
     <div
       style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        padding: "0.5rem",
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        padding: '0.5rem',
       }}
     >
       <div
         style={{
-          marginTop: "1.5rem",
-          display: "grid",
-          color: "white",
-          fontSize: "1.25rem",
-          fontWeight: "500",
-          textAlign: "center",
+          marginTop: '1.5rem',
+          display: 'grid',
+          color: 'white',
+          fontSize: '1.25rem',
+          fontWeight: '500',
+          textAlign: 'center',
         }}
       >
         <span
           style={{
-            marginBottom: "0.5rem",
-            color: metamaskTitleColor ?? "#fff",
+            marginBottom: '0.5rem',
+            color: metamaskTitleColor ?? '#fff',
           }}
         >
           Metamask
         </span>
         <header
           style={{
-            marginTop: "1.5rem",
-            display: "flex",
-            flexDirection: "column",
+            marginTop: '1.5rem',
+            display: 'flex',
+            flexDirection: 'column',
           }}
         >
           <MetaMaskButton
             theme="dark"
-            color={isConnected && walletSignatureData ? "blue" : "white"}
+            color={isConnected && walletSignatureData ? 'blue' : 'white'}
             buttonStyle={
               isConnected && walletSignatureData
                 ? {
-                    display: "flex",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    backgroundColor: "#25282D",
-                    height: "73px",
-                    borderRadius: "6px",
-                    border: "none",
-                    outline: "none",
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    backgroundColor: '#25282D',
+                    height: '73px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    outline: 'none',
                   }
                 : {
-                    cursor: "pointer",
+                    cursor: 'pointer',
                   }
             }
           ></MetaMaskButton>
           {isConnected && walletSignatureData && (
-            <div style={{ marginTop: "155px" }}>
+            <div style={{ marginTop: '155px' }}>
               <button
                 style={{
-                  backgroundColor: "#FF7A00",
-                  color: "white",
-                  width: "100%",
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
-                  gap: "0.5rem",
-                  height: "46px",
-                  cursor: "pointer",
-                  fontSize: "1rem",
-                  fontWeight: "500",
-                  borderRadius: "0.375rem",
-                  border: "none",
-                  outline: "none",
-                  paddingLeft: "0.5rem",
-                  paddingRight: "0.5rem",
+                  backgroundColor: '#FF7A00',
+                  color: 'white',
+                  width: '100%',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  height: '46px',
+                  cursor: 'pointer',
+                  fontSize: '1rem',
+                  fontWeight: '500',
+                  borderRadius: '0.375rem',
+                  border: 'none',
+                  outline: 'none',
+                  paddingLeft: '0.5rem',
+                  paddingRight: '0.5rem',
                 }}
                 disabled={isSignLoading}
                 onClick={() => signMessage()}
@@ -239,10 +246,10 @@ export default function MetamaskRootKey({
               {isSignError && (
                 <div
                   style={{
-                    color: "red",
-                    fontSize: "14px",
-                    fontWeight: "500",
-                    marginTop: "0.5rem",
+                    color: 'red',
+                    fontSize: '14px',
+                    fontWeight: '500',
+                    marginTop: '0.5rem',
                   }}
                 >
                   Error signing message
@@ -250,10 +257,10 @@ export default function MetamaskRootKey({
               )}
               <div
                 style={{
-                  color: "red",
-                  fontSize: "14px",
-                  fontWeight: "500",
-                  marginTop: "0.5rem",
+                  color: 'red',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  marginTop: '0.5rem',
                 }}
               >
                 {errorMessage}
@@ -264,11 +271,11 @@ export default function MetamaskRootKey({
       </div>
       <div
         style={{
-          paddingTop: "1rem",
-          fontSize: "14px",
-          color: "#fff",
-          textAlign: "center",
-          cursor: "pointer",
+          paddingTop: '1rem',
+          fontSize: '14px',
+          color: '#fff',
+          textAlign: 'center',
+          cursor: 'pointer',
         }}
         onClick={navigateBack}
       >
