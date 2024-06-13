@@ -14,10 +14,6 @@ jobs:
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
 
-    outputs:
-      artifact_path: ${{ steps.compress.outputs.artifact_path }}
-      target: ${{ matrix.target }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,8 +36,12 @@ jobs:
         id: compress
         run: |
           tar -czf calimero-node_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release calimero-node
-          echo "artifact_path=calimero-node_${{ matrix.target }}.tar.gz" >> $GITHUB_ENV
-          echo "artifact_path=calimero-node_${{ matrix.target }}.tar.gz" >> $GITHUB_OUTPUT
+
+      - name: Cache build artifact
+        uses: actions/cache@v3
+        with:
+          path: calimero-node_${{ matrix.target }}.tar.gz
+          key: build-artifact-${{ matrix.target }}-${{ github.sha }}
 
   upload:
     runs-on: ubuntu-latest
@@ -49,11 +49,19 @@ jobs:
     if: ${{ github.ref != 'refs/heads/main' }}
 
     steps:
+      - name: Restore build artifact
+        uses: actions/cache@v3
+        with:
+          path: calimero-node_${{ needs.build.outputs.target }}.tar.gz
+          key: build-artifact-${{ needs.build.outputs.target }}-${{ github.sha }}
+          restore-keys: |
+            build-artifact-${{ needs.build.outputs.target }}-
+
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v3
         with:
           name: calimero-node_${{ github.ref_name }}_${{ needs.build.outputs.target }}.tar.gz
-          path: ${{ needs.build.outputs.artifact_path }}
+          path: calimero-node_${{ needs.build.outputs.target }}.tar.gz
           retention-days: 2
 
   release:
@@ -64,6 +72,14 @@ jobs:
     steps:
       - name: Setup gh CLI
         uses: actions/setup-gh@v2
+
+      - name: Restore build artifact
+        uses: actions/cache@v3
+        with:
+          path: calimero-node_${{ needs.build.outputs.target }}.tar.gz
+          key: build-artifact-${{ needs.build.outputs.target }}-${{ github.sha }}
+          restore-keys: |
+            build-artifact-${{ needs.build.outputs.target }}-
 
       - name: Check if release exists
         id: check_release
@@ -92,4 +108,4 @@ jobs:
         if: steps.check_release.outputs.exists == 'false'
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | awk -F\" '{print $2}')
-          gh release upload "v$VERSION" ${{ needs.build.outputs.artifact_path }}
+          gh release upload "v$VERSION" calimero-node_${{ needs.build.outputs.target }}.tar.gz
