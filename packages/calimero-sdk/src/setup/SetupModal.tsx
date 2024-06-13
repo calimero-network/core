@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import apiClient from '../api';
 import React from 'react';
 import Spinner from '../components/loader/Spinner';
-import styled from 'styled-components';
+import { styled } from 'styled-components';
 
 export interface SetupModalProps {
   successRoute: () => void;
