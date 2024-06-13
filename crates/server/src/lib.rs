@@ -91,9 +91,6 @@ pub async fn start(
         if let Some((api_path, router)) =
             admin::service::setup(&config, store, application_manager)?
         {
-            if let Some((site_path, serve_dir)) = admin::service::site(&config)? {
-                app = app.nest_service(site_path, serve_dir);
-            }
             app = app.nest(api_path, router);
             serviced = true;
         }

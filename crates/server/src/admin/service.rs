@@ -80,26 +80,6 @@ pub(crate) fn setup(
     Ok(Some((admin_path, admin_router)))
 }
 
-pub(crate) fn site(
-    config: &crate::config::ServerConfig,
-) -> eyre::Result<Option<(&'static str, ServeDir<SetStatus<ServeFile>>)>> {
-    let _config = match &config.admin {
-        Some(config) if config.enabled => config,
-        _ => {
-            info!("Admin site is disabled");
-            return Ok(None);
-        }
-    };
-    let path = "/admin";
-
-    let react_static_files_path = "./node-ui/dist";
-    let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
-        ServeFile::new(format!("{}/index.html", react_static_files_path)),
-    );
-
-    Ok(Some((path, react_app_serve_dir)))
-}
-
 pub struct ApiResponse<T: Serialize> {
     pub(crate) payload: T,
 }
