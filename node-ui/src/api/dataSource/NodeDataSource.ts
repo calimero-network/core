@@ -67,10 +67,6 @@ interface ListApplicationsResponse {
   apps: Application[];
 }
 
-export interface ApplicationStorageResponse {
-  sizeInMb: string;
-}
-
 export class NodeDataSource {
   private client: HttpClient;
 
@@ -194,25 +190,6 @@ export class NodeDataSource {
     } catch (error) {
       console.error("Error fetching DID list:", error);
       return [];
-    }
-  }
-
-  async getApplicationStorageUsage(
-    applicationId: string,
-    version: string
-  ): Promise<ApplicationStorageResponse> {
-    const response = await this.client.post<ApplicationStorageResponse>(
-      "/admin-api/storage",
-      {
-        applicationId: applicationId,
-        version: version,
-      }
-    );
-    console.log(response);
-    if (response?.data) {
-      return response.data;
-    } else {
-      return { sizeInMb: "0" };
     }
   }
 }
