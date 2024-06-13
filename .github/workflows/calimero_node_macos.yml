@@ -34,9 +34,37 @@ jobs:
       - name: Build the crate
         run: cargo build -p calimero-node --release --target ${{ matrix.target }}
 
-      - name: Upload binary
+      - name: Compress artifact using gzip
+        run: |
+          tar -czf calimero-node_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release calimero-node
+
+      - name: Check if release exists
+        if: env.version_bumped == 'true' && github.event_name == 'push'
+        id: check_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_URL=$(curl --silent "https://api.github.com/repos/${{ github.repository }}/releases/tags/v${{ steps.version_check.outputs.version }}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" | jq -r '.url')
+          if [[ "$RELEASE_URL" != "null" ]]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        if: steps.check_release.outputs.exists == 'false' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ steps.version_check.outputs.version }}
+          gh release create "v$VERSION" calimero-node_${{ matrix.target }}.tar.gz --title "Release v$VERSION" --notes "Release for version $VERSION"
+
+      - name: Upload binary for pushes without version bump
+        if: steps.check_release.outputs.exists == 'false' && github.event_name == 'push'
         uses: actions/upload-artifact@v3
         with:
-          name: calimero-node_${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/calimero-node
+          name: calimero-node_${{ github.sha }}_${{ matrix.target }}.tar.gz
+          path: calimero-node_${{ matrix.target }}.tar.gz
           retention-days: 3
