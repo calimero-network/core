@@ -1,10 +1,4 @@
-import {
-  Application,
-  Context,
-  ContextsList,
-  ETHRootKey,
-  NearRootKey,
-} from "./dataSource/NodeDataSource";
+import { Application, Context, ContextsList, ETHRootKey, NearRootKey } from "./dataSource/NodeDataSource";
 
 export interface NodeApi {
   getInstalledApplications(): Promise<Application[]>;

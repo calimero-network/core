@@ -68,12 +68,11 @@ export default function ContextDetails() {
   const generateContextObjects = async (context: any) => {
     const packageData = await getPackage(context.applicationId);
     const versionData = await getLatestRelease(context.applicationId);
-
     return {
       ...packageData,
       ...context,
       ...versionData,
-      contextId: id,
+      contextId: id
     };
   };
 
