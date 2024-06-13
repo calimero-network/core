@@ -125,15 +125,17 @@ impl InitCommand {
             }
         }
 
+        println!("{:?}", boot_nodes);
+
         let config = ConfigFile {
             identity: identity.clone(),
-            store: StoreConfig {
+            store: Some(StoreConfig {
                 path: "data".into(),
-            },
-            application: ApplicationConfig {
+            }),
+            application: Some(ApplicationConfig {
                 path: "apps".into(),
-            },
-            network: NetworkConfig {
+            }),
+            network: Some(NetworkConfig {
                 swarm: SwarmConfig { listen },
                 bootstrap: BootstrapConfig {
                     nodes: BootstrapNodes { list: boot_nodes },
@@ -154,13 +156,13 @@ impl InitCommand {
                     jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
                     websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
                 },
-            },
+            }),
         };
 
         config.save(&root_args.home)?;
 
         calimero_store::Store::open(&calimero_store::config::StoreConfig {
-            path: root_args.home.join(config.store.path),
+            path: root_args.home.join(config.store.unwrap().path),
         })?;
 
         info!("Initialized a chat node in {:?}", root_args.home);

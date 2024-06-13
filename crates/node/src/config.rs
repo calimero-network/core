@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "config.toml";
 
-pub const DEFAULT_CALIMERO_CHAT_HOME: &str = ".calimero/experiments/chat-p0c";
+pub(crate) const DEFAULT_CALIMERO_HOME: &str = "Documents/core/data"; //ovo nece biti ovako, ne smije, treba nekako naci path
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConfigFile {
@@ -17,11 +17,11 @@ pub struct ConfigFile {
     pub identity: identity::Keypair,
 
     #[serde(flatten)]
-    pub network: NetworkConfig,
+    pub network: Option<NetworkConfig>,
 
-    pub store: StoreConfig,
+    pub store: Option<StoreConfig>,
 
-    pub application: ApplicationConfig,
+    pub application: Option<ApplicationConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -96,7 +96,7 @@ impl ConfigFile {
 pub fn default_chat_dir() -> camino::Utf8PathBuf {
     if let Some(home) = dirs::home_dir() {
         let home = camino::Utf8Path::from_path(&home).expect("invalid home directory");
-        return home.join(DEFAULT_CALIMERO_CHAT_HOME);
+        return home.join(DEFAULT_CALIMERO_HOME);
     }
 
     Default::default()
