@@ -25,12 +25,12 @@ pub fn get_client_key(store: &Store, signing_key: &str) -> eyre::Result<Option<C
         .find(|k| k.signing_key == signing_key))
 }
 
-pub fn get_context_client_key(store: &Store, application_id: &str) -> eyre::Result<Vec<ClientKey>> {
+pub fn get_context_client_key(store: &Store, context_id: &str) -> eyre::Result<Vec<ClientKey>> {
     let did = get_or_create_did(store)?;
     Ok(did
         .client_keys
         .into_iter()
-        .filter(|k| k.application_id == application_id)
+        .filter(|k| k.context_id == context_id)
         .collect())
 }
 
