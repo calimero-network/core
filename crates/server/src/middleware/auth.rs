@@ -155,7 +155,7 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .map_err(|_| UnauthorizedError::new("Invalid base58 challenge"))?;
 
     let applicaton_id = headers
-        .get(" applicaton_id")
+        .get("applicaton_id")
         .ok_or_else(|| UnauthorizedError::new("Missing  applicaton_id header"))?;
     let applicaton_id = String::from_utf8(applicaton_id.as_bytes().to_vec())
     .map_err(|_| UnauthorizedError::new("Invalid signing_key string"))?;
