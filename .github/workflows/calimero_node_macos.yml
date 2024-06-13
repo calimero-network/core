@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - macos-build-workflow
   pull_request:
     branches:
       - main
@@ -17,33 +18,18 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+      - name: Setup rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@v2
         with:
-          toolchain: stable
-          profile: minimal
-          override: true
+          key: ${{ runner.os }}-calimero-node-${{ matrix.target }}
 
       - name: Install target for ${{ matrix.target }}
         run: rustup target add ${{ matrix.target }}
-
-      - name: Cache cargo registry
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-build-
 
       - name: Build the crate
         run: cargo build -p calimero-node --release --target ${{ matrix.target }}
@@ -53,3 +39,4 @@ jobs:
         with:
           name: calimero-node_${{ matrix.target }}
           path: target/${{ matrix.target }}/release/calimero-node
+          retention-days: 3
