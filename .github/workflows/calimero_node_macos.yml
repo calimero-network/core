@@ -3,9 +3,9 @@ name: Build and Upload Binary
 on:
   push:
     branches:
-      - '**'  # Build on push to any branch
+      - '**'
   pull_request:
-    types: [closed]  # Check for PRs closed (merged) into the main branch
+    types: [closed]
 
 jobs:
   build:
@@ -49,7 +49,7 @@ jobs:
           path: calimero-node_${{ matrix.target }}.tar.gz
           key: build-artifact-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
-            build-artifact-${{ matrix.target }}-
+            build-artifact-${{ matrix.target }}
 
   upload:
     runs-on: ubuntu-latest
@@ -66,7 +66,7 @@ jobs:
           path: calimero-node_${{ matrix.target }}.tar.gz
           key: build-artifact-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
-            build-artifact-${{ matrix.target }}-
+            build-artifact-${{ matrix.target }}
 
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v3
@@ -93,7 +93,7 @@ jobs:
           path: calimero-node_${{ matrix.target }}.tar.gz
           key: build-artifact-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
-            build-artifact-${{ matrix.target }}-
+            build-artifact-${{ matrix.target }}
 
       - name: Check if release exists
         id: check_release
