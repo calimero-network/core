@@ -3,8 +3,7 @@ name: Build and Upload Binary
 on:
   push:
     branches:
-      - main
-      - macos-build-workflow
+      - '**'
   pull_request:
     branches:
       - main
@@ -38,13 +37,32 @@ jobs:
         run: |
           tar -czf calimero-node_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release calimero-node
 
+      - name: Upload binary as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: calimero-node_${{ github.sha }}_${{ matrix.target }}.tar.gz
+          path: calimero-node_${{ matrix.target }}.tar.gz
+          retention-days: 3
+
+  release:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup gh CLI
+        uses: actions/setup-gh@v2
+
       - name: Check if release exists
-        if: env.version_bumped == 'true' && github.event_name == 'push'
         id: check_release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RELEASE_URL=$(curl --silent "https://api.github.com/repos/${{ github.repository }}/releases/tags/v${{ steps.version_check.outputs.version }}" \
+          VERSION=$(grep '^version' Cargo.toml | head -1 | awk -F\" '{print $2}')
+          RELEASE_URL=$(curl --silent "https://api.github.com/repos/${{ github.repository }}/releases/tags/v$VERSION" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" | jq -r '.url')
           if [[ "$RELEASE_URL" != "null" ]]; then
@@ -54,17 +72,16 @@ jobs:
           fi
 
       - name: Create Release
-        if: steps.check_release.outputs.exists == 'false' && github.event_name == 'push'
+        if: steps.check_release.outputs.exists == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=${{ steps.version_check.outputs.version }}
-          gh release create "v$VERSION" calimero-node_${{ matrix.target }}.tar.gz --title "Release v$VERSION" --notes "Release for version $VERSION"
+          VERSION=$(grep '^version' Cargo.toml | head -1 | awk -F\" '{print $2}')
+          gh release create "v$VERSION" --title "Release v$VERSION" --notes "Release for version $VERSION"
 
-      - name: Upload binary for pushes without version bump
-        if: steps.check_release.outputs.exists == 'false' && github.event_name == 'push'
+      - name: Upload artifact to release
+        if: steps.check_release.outputs.exists == 'false'
         uses: actions/upload-artifact@v3
         with:
           name: calimero-node_${{ github.sha }}_${{ matrix.target }}.tar.gz
-          path: calimero-node_${{ matrix.target }}.tar.gz
-          retention-days: 3
+          path: target/${{ matrix.target }}/release/calimero-node
