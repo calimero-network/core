@@ -19,6 +19,7 @@ pub struct AddPublicKeyRequest {
     pub wallet_signature: String,
     pub payload: Payload,
     pub wallet_metadata: WalletMetadata,
+    pub context_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +74,7 @@ pub struct IntermediateAddPublicKeyRequest {
     pub wallet_signature: String,
     pub payload: IntermediatePayload,
     pub wallet_metadata: WalletMetadata, // Reuse WalletMetadata as it fits the intermediate step
+    pub context_id: String,
 }
 
 #[derive(Debug, Deserialize)]
