@@ -309,18 +309,18 @@ impl<'a> VMHostFunctions<'a> {
 
     pub fn fetch(
         &mut self,
-        method_ptr: u64,
-        method_len: u64,
         url_ptr: u64,
         url_len: u64,
+        method_ptr: u64,
+        method_len: u64,
         headers_ptr: u64,
         headers_len: u64,
         body_ptr: u64,
         body_len: u64,
         out_register_id: u64,
-    ) -> Result<()> {
-        let method = self.get_string(method_ptr, method_len)?;
+    ) -> Result<u32> {
         let url = self.get_string(url_ptr, url_len)?;
+        let method = self.get_string(method_ptr, method_len)?;
         let headers = self.read_guest_memory(headers_ptr, headers_len)?;
         let headers: HashMap<String, String> = borsh::from_slice(&headers).unwrap();
         let body = self.read_guest_memory(body_ptr, body_len)?;
@@ -334,22 +334,29 @@ impl<'a> VMHostFunctions<'a> {
             request.send_bytes(&body)
         } else {
             request.call()
-        }
-        .map_err(|e| HostError::FetchError {
-            url: url.clone(),
-            error: e.to_string(),
-        })?
-        .into_string()
-        .map_err(|e| HostError::FetchError {
-            url,
-            error: e.to_string(),
-        })?;
+        };
 
-        self.with_logic_mut(|logic| {
-            logic
-                .registers
-                .set(&logic.limits, out_register_id, response.into_bytes())
-        })?;
-        Ok(())
+        match response {
+            Ok(response) => {
+                let body = response.into_string().map_err(|e| HostError::FetchError {
+                    url,
+                    error: e.to_string(),
+                })?;
+                self.with_logic_mut(|logic| {
+                    logic
+                        .registers
+                        .set(&logic.limits, out_register_id, body.into_bytes())
+                })?;
+                Ok(1)
+            }
+            Err(e) => {
+                self.with_logic_mut(|logic| {
+                    logic
+                        .registers
+                        .set(&logic.limits, out_register_id, e.to_string().into_bytes())
+                })?;
+                Ok(0)
+            }
+        }
     }
 }

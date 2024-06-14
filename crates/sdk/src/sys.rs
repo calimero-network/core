@@ -21,10 +21,10 @@ extern "C" {
     pub fn storage_write(key: Buffer, value: Buffer, register_id: RegisterId) -> Bool;
 
     pub fn fetch(
-        method: Buffer,
         url: Buffer,
+        method: Buffer,
         headers: Buffer,
         body: Buffer,
         out_register_id: RegisterId,
-    );
+    ) -> Bool;
 }
