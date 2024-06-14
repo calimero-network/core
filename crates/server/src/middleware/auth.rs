@@ -82,6 +82,7 @@ struct AuthHeaders {
     signing_key: String,
     signature: Vec<u8>,
     challenge: Vec<u8>,
+    context_id: String,
 }
 
 pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<'static>> {
@@ -94,6 +95,7 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
         wallet_type: auth_headers.wallet_type,
         signing_key: auth_headers.signing_key.clone(),
         created_at: Utc::now().timestamp_millis() as u64,
+        context_id: auth_headers.context_id.clone(),
     };
 
     let key_exists = exists_client_key(store, &client_key)
@@ -152,11 +154,18 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .into_vec()
         .map_err(|_| UnauthorizedError::new("Invalid base58 challenge"))?;
 
+    let context_id = headers
+        .get("context_id")
+        .ok_or_else(|| UnauthorizedError::new("Missing  context_id header"))?;
+    let context_id = String::from_utf8(context_id.as_bytes().to_vec())
+    .map_err(|_| UnauthorizedError::new("Invalid signing_key string"))?;
+
     let auth = AuthHeaders {
         wallet_type,
         signing_key,
         signature,
         challenge,
+        context_id,
     };
     Ok(auth)
 }
