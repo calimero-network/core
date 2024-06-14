@@ -148,30 +148,36 @@ pub fn state_write<T: crate::state::AppState>(state: &T) {
     storage_write(STATE_KEY, &data);
 }
 
-pub fn fetch(
-    method: &str,
-    url: &str,
-    headers: HashMap<String, String>,
-    body: &[u8],
-) -> Result<Vec<u8>, String> {
-    let headers = match borsh::to_vec(&headers) {
-        Ok(data) => data,
-        Err(err) => panic_str(&format!("Cannot serialize headers: {:?}", err)),
-    };
-    let method = sys::Buffer::from(method);
-    let url = sys::Buffer::from(url);
-    let headers = sys::Buffer::from(headers.as_slice());
-    let body = sys::Buffer::from(body);
-    match unsafe { sys::fetch(method, url, headers, body, DATA_REGISTER).try_into() } {
-        Ok(true) => {
-            let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-            Ok(data)
+pub mod internal {
+    use super::*;
+
+    #[inline]
+    pub unsafe fn fetch(
+        method: &str,
+        url: &str,
+        headers: HashMap<String, String>,
+        body: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let headers = match borsh::to_vec(&headers) {
+            Ok(data) => data,
+            Err(err) => panic_str(&format!("Cannot serialize headers: {:?}", err)),
+        };
+        let method = sys::Buffer::from(method);
+        let url = sys::Buffer::from(url);
+        let headers = sys::Buffer::from(headers.as_slice());
+        let body = sys::Buffer::from(body);
+        match unsafe { sys::fetch(method, url, headers, body, DATA_REGISTER).try_into() } {
+            Ok(true) => {
+                let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+                Ok(data)
+            }
+            Ok(false) => {
+                let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+                Err(String::from_utf8(data).unwrap_or_else(|_| {
+                    panic_str("Cannot convert fetch response to UTF-8 string.")
+                }))
+            }
+            Err(val) => panic_str(&format!("Expected bool as 0|1, got: {}.", val)),
         }
-        Ok(false) => {
-            let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-            Err(String::from_utf8(data)
-                .unwrap_or_else(|_| panic_str("Cannot convert fetch response to UTF-8 string.")))
-        }
-        Err(val) => panic_str(&format!("Expected bool as 0|1, got: {}.", val)),
     }
 }
