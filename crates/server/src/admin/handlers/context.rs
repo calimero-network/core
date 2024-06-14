@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::identity::{ClientKey, Context};
+use calimero_primitives::identity::{ClientKey, Context, User};
 use calimero_server_primitives::admin::ContextStorage;
 use rand::RngCore;
 use reqwest::StatusCode;
@@ -15,16 +15,8 @@ use crate::admin::storage::client_keys::get_context_client_key;
 use crate::admin::storage::context::{add_context, delete_context, get_context, get_contexts};
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContextData {
-    context: Context,
-    client_keys: Vec<ClientKey>,
-    users: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct GetContextResponse {
-    data: ContextData,
+    data: Context,
 }
 
 pub async fn get_context_handler(
@@ -36,24 +28,10 @@ pub async fn get_context_handler(
 
     match context_result {
         Ok(ctx) => match ctx {
-            Some(context) => {
-                let client_keys_result =
-                    get_context_client_key(&state.store, &context.application_id)
-                        .map_err(|err| parse_api_error(err).into_response());
-                match client_keys_result {
-                    Ok(client_keys) => ApiResponse {
-                        payload: GetContextResponse {
-                            data: ContextData {
-                                context,
-                                client_keys,
-                                users: vec![],
-                            },
-                        },
-                    }
-                    .into_response(),
-                    Err(err) => err.into_response(),
-                }
+            Some(context) => ApiResponse {
+                payload: GetContextResponse { data: context },
             }
+            .into_response(),
             None => ApiError {
                 status_code: StatusCode::NOT_FOUND,
                 message: "Context not found".into(),
@@ -62,6 +40,44 @@ pub async fn get_context_handler(
         },
         Err(err) => err.into_response(),
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetContextClientKeysResponse {
+    data: Vec<ClientKey>,
+}
+
+pub async fn get_context_client_keys_handler(
+    Path(context_id): Path<String>,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    let client_keys_result = get_context_client_key(&state.store, &context_id).map_err(|err| parse_api_error(err).into_response());
+    match client_keys_result {
+        Ok(client_keys) => ApiResponse {
+            payload: GetContextClientKeysResponse {
+                data: client_keys,
+            },
+        }
+        .into_response(),
+        Err(err) => err.into_response()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetContextUsersResponse {
+    data: Vec<User>,
+}
+
+pub async fn get_context_users_handler(
+    Path(context_id): Path<String>,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    ApiResponse {
+        payload: GetContextUsersResponse {
+            data: vec![],
+        },
+    }
+    .into_response()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -149,8 +165,10 @@ pub async fn get_context_storage_handler(
     Path(_context_id): Path<String>,
     Extension(_state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-        ApiResponse {
-            payload: GetContextStorageResponse { data:  ContextStorage { size_in_bytes: 0}},
-        }
-        .into_response()
+    ApiResponse {
+        payload: GetContextStorageResponse {
+            data: ContextStorage { size_in_bytes: 0 },
+        },
+    }
+    .into_response()
 }
