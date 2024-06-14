@@ -42,6 +42,7 @@
     "eslint-plugin-react": "^7.34.1",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.6",
+    "husky": "^9.0.11",
     "jest": "^26.0.1",
     "prettier": "3.3.2",
     "rimraf": "^3.0.0",
@@ -68,7 +69,7 @@
     "prefuzz": "pnpm build",
     "fuzz": "jsfuzz test/fuzz/borsh-roundtrip.js test/fuzz/corpus/",
     "clean": "pnpm rimraf lib node_modules",
-    "prepare": "pnpm build",
+    "prepare": "husky",
     "bundlewatch": "bundlewatch",
     "prettier": "exec prettier . --write"
   },
