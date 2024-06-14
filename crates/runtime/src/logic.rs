@@ -322,7 +322,11 @@ impl<'a> VMHostFunctions<'a> {
         let url = self.get_string(url_ptr, url_len)?;
         let method = self.get_string(method_ptr, method_len)?;
         let headers = self.read_guest_memory(headers_ptr, headers_len)?;
-        let headers: HashMap<String, String> = borsh::from_slice(&headers).unwrap();
+        let headers: HashMap<String, String> =
+            borsh::from_slice(&headers).map_err(|e| HostError::FetchError {
+                url: url.clone(),
+                error: e.to_string(),
+            })?;
         let body = self.read_guest_memory(body_ptr, body_len)?;
         let mut request = ureq::request(&method, &url);
 
