@@ -43,29 +43,42 @@ pub async fn get_context_handler(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientKeys {
+    client_keys: Vec<ClientKey>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetContextClientKeysResponse {
-    data: Vec<ClientKey>,
+    data: ClientKeys,
 }
 
 pub async fn get_context_client_keys_handler(
     Path(context_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let client_keys_result = get_context_client_key(&state.store, &context_id).map_err(|err| parse_api_error(err).into_response());
+    let client_keys_result = get_context_client_key(&state.store, &context_id)
+        .map_err(|err| parse_api_error(err).into_response());
     match client_keys_result {
         Ok(client_keys) => ApiResponse {
             payload: GetContextClientKeysResponse {
-                data: client_keys,
+                data: ClientKeys { client_keys },
             },
         }
         .into_response(),
-        Err(err) => err.into_response()
+        Err(err) => err.into_response(),
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextUsers {
+    context_users: Vec<User>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetContextUsersResponse {
-    data: Vec<User>,
+    data: ContextUsers,
 }
 
 pub async fn get_context_users_handler(
@@ -74,7 +87,9 @@ pub async fn get_context_users_handler(
 ) -> impl IntoResponse {
     ApiResponse {
         payload: GetContextUsersResponse {
-            data: vec![],
+            data: ContextUsers {
+                context_users: vec![],
+            },
         },
     }
     .into_response()
