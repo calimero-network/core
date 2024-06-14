@@ -57,7 +57,7 @@ jobs:
     strategy:
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
-    if: ${{ github.ref != 'refs/heads/main' }}
+    if: ${{ github.ref != 'refs/heads/master' }}
 
     steps:
       - name: Restore build artifact
@@ -81,7 +81,7 @@ jobs:
     strategy:
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
-    if: ${{ github.ref == 'refs/heads/main' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main') }}
+    if: ${{ github.ref == 'refs/heads/master' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
 
     steps:
       - name: Setup gh CLI
