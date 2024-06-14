@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::identity::{ClientKey, Context, User};
+use calimero_primitives::identity::{ClientKey, Context, ContextUser};
 use calimero_server_primitives::admin::ContextStorage;
 use rand::RngCore;
 use reqwest::StatusCode;
@@ -73,7 +73,7 @@ pub async fn get_context_client_keys_handler(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextUsers {
-    context_users: Vec<User>,
+    context_users: Vec<ContextUser>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -28,7 +28,7 @@ pub struct ClientKey {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct User {
+pub struct ContextUser {
     pub user_id: String,
     pub joined_at: u64,
 }
