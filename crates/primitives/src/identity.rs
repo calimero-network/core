@@ -30,7 +30,6 @@ pub struct ClientKey {
 #[serde(rename_all = "camelCase")]
 pub struct User {
     pub user_id: String,
-    pub context_id: String,
     pub joined_at: u64,
 }
 
