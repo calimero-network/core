@@ -84,9 +84,6 @@ jobs:
     if: ${{ github.ref == 'refs/heads/master' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
 
     steps:
-      - name: Setup gh CLI
-        uses: actions/setup-gh@v2
-
       - name: Restore build artifact
         uses: actions/cache@v4
         with:
