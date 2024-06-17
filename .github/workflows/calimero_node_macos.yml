@@ -84,9 +84,6 @@ jobs:
     if: ${{ github.ref == 'refs/heads/master' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
 
     steps:
-      - name: Setup gh CLI
-        uses: actions/setup-gh@v2
-
       - name: Restore build artifact
         uses: actions/cache@v4
         with:
@@ -106,6 +103,7 @@ jobs:
             -H "Accept: application/vnd.github.v3+json" | jq -r '.url')
           if [[ "$RELEASE_URL" != "null" ]]; then
             echo "exists=true" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
@@ -116,7 +114,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | awk -F\" '{print $2}')
-          gh release create "v$VERSION" --title "Release v$VERSION" --notes "Release for version $VERSION"
+          gh release create "v${{ steps.check_release.outputs.version }}" --title "Release v${{ steps.check_release.outputs.version }}" --notes "Release for version ${{ steps.check_release.outputs.version }}"
 
       - name: Upload artifact to release
         if: steps.check_release.outputs.exists == 'false'
