@@ -131,33 +131,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifact
-        uses: actions/cache@v4
-        with:
-          path: calimero-node_${{ matrix.target }}.tar.gz
-          key: build-artifact-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-${{ matrix.target }}
-
       - name: Check if release exists
         id: check_release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=${{ needs.build.outputs.version }}
-          echo "version=$VERSION"
-          RELEASE_URL=$(curl --silent "https://api.github.com/repos/${{ github.repository }}/releases/tags/v$VERSION" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" | jq -r '.url')
-          echo "RELEASE_URL=$RELEASE_URL"
-          if [[ "$RELEASE_URL" != "null" ]]; then
-           echo "exists=true" >> $GITHUB_OUTPUT
+          if gh release view "v${{ github.event.inputs.version }}" >/dev/null 2>&1; then
+            echo "release_exists=true" >> $GITHUB_ENV
           else
-           echo "exists=false" >> $GITHUB_OUTPUT
+            echo "release_exists=false" >> $GITHUB_ENV
           fi
 
-      - name: Create Release
-        if: steps.check_release.outputs.exists == 'false'
+      - name: Create release if it does not exist
+        if: env.release_exists == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
