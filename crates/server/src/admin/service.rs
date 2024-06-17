@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
 
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
@@ -11,8 +11,6 @@ use calimero_store::Store;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tower_http::services::{ServeDir, ServeFile};
-use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
@@ -24,8 +22,6 @@ use super::handlers::context::{
 };
 use super::handlers::fetch_did::fetch_did_handler;
 use super::handlers::root_keys::create_root_key_handler;
-use super::storage::root_key::add_root_key;
-use crate::{middleware, verifysignature};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
