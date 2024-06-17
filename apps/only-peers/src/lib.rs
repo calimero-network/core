@@ -43,18 +43,6 @@ pub enum Event<'a> {
 
 #[app::logic]
 impl OnlyPeers {
-    pub fn fetch(&mut self) -> String {
-        // let near_sdk = NearSdk::testnet();
-        let response = env::ext::fetch(
-            "https://httpbin.org/get",
-            "GET",
-            &[("khar", "gav")],
-            &vec![],
-        )
-        .unwrap();
-        String::from_utf8(response).unwrap()
-    }
-
     pub fn post(&self, id: usize) -> Option<&Post> {
         env::log(&format!("Getting post with id: {:?}", id));
 

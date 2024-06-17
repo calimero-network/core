@@ -19,7 +19,7 @@ pub fn panic_str(message: &str) -> ! {
 #[track_caller]
 #[inline]
 fn expected_register<T>() -> T {
-    panic_str("Expected 0|1");
+    panic_str("Expected a register to be set, but it was not.");
 }
 
 #[track_caller]
