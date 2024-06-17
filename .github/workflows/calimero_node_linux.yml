@@ -101,7 +101,7 @@ jobs:
     strategy:
       matrix:
         target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
-    if: ${{ github.ref != 'refs/heads/desktop-build' }}
+    if: ${{ github.ref != 'refs/heads/master' }}
 
     steps:
       - name: Restore build artifact
@@ -125,7 +125,7 @@ jobs:
     strategy:
       matrix:
         target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
-    if: ${{ github.ref == 'refs/heads/desktop-build' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'desktop-build') }}
+    if: ${{ github.ref == 'refs/heads/master' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
 
     steps:
       - name: Checkout code
@@ -170,7 +170,7 @@ jobs:
     strategy:
       matrix:
         target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
-    if: ${{ github.ref == 'refs/heads/desktop-build' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'desktop-build') }}
+    if: ${{ github.ref == 'refs/heads/master' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
