@@ -1,6 +1,3 @@
-#![warn(unused_extern_crates)]
-#![deny(unused_crate_dependencies)]
-
 use clap::Parser;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
