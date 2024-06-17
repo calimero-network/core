@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use crate::config;
 
 mod init;
+mod link;
 mod run;
 mod setup;
 #[derive(Debug, Parser)]
@@ -20,6 +21,7 @@ pub enum SubCommands {
     Init(init::InitCommand),
     Setup(setup::SetupCommand),
     Run(run::RunCommand),
+    Link(link::LinkCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -37,6 +39,7 @@ impl RootCommand {
             SubCommands::Init(init) => return init.run(self.args),
             SubCommands::Setup(setup) => return setup.run(self.args),
             SubCommands::Run(run) => return run.run(self.args).await,
+            SubCommands::Link(link) => link.run(self.args),
         }
     }
 }

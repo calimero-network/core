@@ -19,8 +19,10 @@ eyre.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 multiaddr.workspace = true
 serde = { workspace = true, features = ["derive"] }
+sha2.workspace = true
 toml.workspace = true
 tracing.workspace = true
+hex.workspace = true
 
 calimero-node = { path = "../node" }
 calimero-network = { path = "../network" }
