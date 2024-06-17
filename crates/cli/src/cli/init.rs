@@ -8,7 +8,7 @@ use tracing::{info, warn};
 use crate::cli;
 use crate::config::{ConfigFile, ConfigImpl, InitFile};
 
-/// Initialize node configuration
+/// Initialize node and it's identity
 #[derive(Debug, Parser)]
 pub struct InitCommand {
     /// Name of node

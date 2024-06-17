@@ -63,6 +63,10 @@ pub struct SetupCommand {
     /// Force edit even if the argument already exists
     #[arg(long, short)]
     pub force: bool,
+
+    /// Print the config file
+    #[arg(long, short)]
+    pub print: bool,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -80,14 +84,12 @@ impl SetupCommand {
         // Extract subcommand matches for SetupCommand
         let setup_matches = matches.subcommand_matches("setup").unwrap();
 
-        let boot_nodes_provided = check_if_provided(&setup_matches, "boot_nodes");
         let boot_network_provided = check_if_provided(&setup_matches, "boot_network");
         let swarm_host_provided = check_if_provided(&setup_matches, "swarm_host");
         let swarm_port_provided = check_if_provided(&setup_matches, "swarm_port");
         let server_host_provided = check_if_provided(&setup_matches, "server_host");
         let server_port_provided = check_if_provided(&setup_matches, "server_port");
         let mdns_provided = check_if_provided(&setup_matches, "mdns");
-        let no_mdns_provided = check_if_provided(&setup_matches, "no_mdns");
 
         let identity;
         let mut swarm_listen = None;
@@ -100,6 +102,10 @@ impl SetupCommand {
                 eyre::bail!("Failed to open identity for node \nRun command node init -n <NAME>");
             }
             if let Ok(config) = ConfigFile::load(&path) {
+                if self.print {
+                    println!("{}", toml::to_string_pretty(&config)?);
+                    return Ok(());
+                }
                 if !self.force {
                     eyre::bail!(
                         "The config for the node is already initialized \nYou can override a setting by adding the -f flag"
