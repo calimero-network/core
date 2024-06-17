@@ -86,8 +86,6 @@ pub enum HostError {
     EventKindSizeOverflow,
     #[error("event data size overflow")]
     EventDataSizeOverflow,
-    #[error("failed to fetch data from {url} with error: {error}")]
-    FetchError { url: String, error: String },
 }
 
 #[derive(Debug, Serialize)]

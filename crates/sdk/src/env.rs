@@ -19,7 +19,14 @@ pub fn panic_str(message: &str) -> ! {
 #[track_caller]
 #[inline]
 fn expected_register<T>() -> T {
-    panic_str("Expected a register to be set, but it was not.");
+    panic_str("Expected 0|1");
+}
+
+#[track_caller]
+#[inline]
+// TODO: Do I need to make `e` generic?
+fn expected_boolean<T>(e: u32) -> T {
+    panic_str(&format!("Expected 0|1. Got {e}"));
 }
 
 pub fn setup_panic_hook() {
@@ -149,7 +156,7 @@ pub fn state_write<T: crate::state::AppState>(state: &T) {
 pub mod ext {
     use super::*;
 
-    #[inline]
+    #[doc(hidden)]
     pub unsafe fn fetch(
         url: &str,
         method: &str,
@@ -164,18 +171,18 @@ pub mod ext {
         let url = sys::Buffer::from(url);
         let headers = sys::Buffer::from(headers.as_slice());
         let body = sys::Buffer::from(body);
-        match unsafe { sys::fetch(url, method, headers, body, DATA_REGISTER) } {
-            0 => {
-                let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-                Ok(data)
-            }
-            1 => {
-                let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
-                Err(String::from_utf8(data).unwrap_or_else(|_| {
-                    panic_str("Cannot convert fetch response to UTF-8 string.")
-                }))
-            }
-            val => panic_str(&format!("Expected 0|1, got: {}.", val)),
+
+        let failed = unsafe {
+            sys::fetch(url, method, headers, body, DATA_REGISTER)
+                .try_into()
+                .unwrap_or_else(expected_boolean)
+        };
+        let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
+        if failed {
+            Err(String::from_utf8(data)
+                .unwrap_or_else(|_| panic_str("Cannot convert fetch response to UTF-8 string.")))
+        } else {
+            Ok(data)
         }
     }
 }

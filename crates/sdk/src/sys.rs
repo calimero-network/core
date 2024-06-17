@@ -26,5 +26,5 @@ extern "C" {
         headers: Buffer,
         body: Buffer,
         out_register_id: RegisterId,
-    ) -> u32;
+    ) -> Bool;
 }

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use ouroboros::self_referencing;
@@ -322,11 +321,7 @@ impl<'a> VMHostFunctions<'a> {
         let url = self.get_string(url_ptr, url_len)?;
         let method = self.get_string(method_ptr, method_len)?;
         let headers = self.read_guest_memory(headers_ptr, headers_len)?;
-        let headers: Vec<(String, String)> =
-            borsh::from_slice(&headers).map_err(|e| HostError::FetchError {
-                url: url.clone(),
-                error: e.to_string(),
-            })?;
+        let headers: Vec<(String, String)> = borsh::from_slice(&headers).unwrap();
         let body = self.read_guest_memory(body_ptr, body_len)?;
         let mut request = ureq::request(&method, &url);
 
@@ -340,27 +335,16 @@ impl<'a> VMHostFunctions<'a> {
             request.call()
         };
 
-        match response {
-            Ok(response) => {
-                let body = response.into_string().map_err(|e| HostError::FetchError {
-                    url,
-                    error: e.to_string(),
-                })?;
-                self.with_logic_mut(|logic| {
-                    logic
-                        .registers
-                        .set(&logic.limits, out_register_id, body.into_bytes())
-                })?;
-                Ok(0)
-            }
-            Err(e) => {
-                self.with_logic_mut(|logic| {
-                    logic
-                        .registers
-                        .set(&logic.limits, out_register_id, e.to_string().into_bytes())
-                })?;
-                Ok(1)
-            }
-        }
+        let (status, data) = match response {
+            Ok(response) => (0, response.into_string().map_err(|_| HostError::BadUTF8)?),
+            Err(e) => (1, e.to_string()),
+        };
+
+        self.with_logic_mut(|logic| {
+            logic
+                .registers
+                .set(&logic.limits, out_register_id, data.into_bytes().as_slice())
+        })?;
+        Ok(status)
     }
 }
