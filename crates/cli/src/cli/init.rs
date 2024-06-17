@@ -1,14 +1,12 @@
 use std::fs;
 
-//use calimero_node::config::{ConfigFile, ConfigImpl, InitFile};
 use clap::Parser;
 use eyre::WrapErr;
 use libp2p::identity;
-use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::cli;
-use crate::cli::config::{ConfigFile, ConfigImpl, InitFile};
+use crate::config::{ConfigFile, ConfigImpl, InitFile};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
@@ -25,7 +23,7 @@ pub struct InitCommand {
 impl InitCommand {
     pub fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
         let path = root_args.home.join(&self.node_name);
-        // tu dodati neki if il nes
+
         fs::create_dir_all(&path)
             .wrap_err_with(|| format!("failed to create directory {:?}", &path))?;
 
@@ -50,8 +48,8 @@ impl InitCommand {
                         );
                     }
                 }
-                Err(err) => match InitFile::load(&path) {
-                    Ok(config) => {
+                Err(_err) => match InitFile::load(&path) {
+                    Ok(_config) => {
                         if self.force {
                             eyre::bail!(
                                 "Node {} is already initialized in {:?}\nCan not override node identity",

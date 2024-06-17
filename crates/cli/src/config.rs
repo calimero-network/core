@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "config.toml";
 
-pub(crate) const DEFAULT_CALIMERO_HOME: &str = "Documents/core/data"; //ovo nece biti ovako, ne smije, treba nekako naci path
+pub(crate) const DEFAULT_CALIMERO_HOME: &str = "Documents/core/data"; //this has to be changed, find path to /core
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConfigFile {

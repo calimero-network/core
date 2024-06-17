@@ -1497,12 +1497,10 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "calimero-application",
- "calimero-identity",
  "calimero-network",
  "calimero-node",
  "calimero-node-primitives",
  "calimero-primitives",
- "calimero-runtime",
  "calimero-server",
  "calimero-store",
  "camino",
@@ -1512,10 +1510,7 @@ dependencies = [
  "eyre",
  "libp2p",
  "multiaddr",
- "owo-colors",
- "semver",
  "serde",
- "serde_json",
  "tokio",
  "toml 0.8.12",
  "tracing",

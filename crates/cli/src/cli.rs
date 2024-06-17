@@ -1,9 +1,10 @@
-use calimero_node::config;
 use clap::{Parser, Subcommand};
 
-mod init;
-mod setup;
+use crate::config;
 
+mod init;
+mod run;
+mod setup;
 #[derive(Debug, Parser)]
 #[command(author, about, version)]
 pub struct RootCommand {
@@ -18,6 +19,7 @@ pub struct RootCommand {
 pub enum SubCommands {
     Init(init::InitCommand),
     Setup(setup::SetupCommand),
+    Run(run::RunCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -30,10 +32,11 @@ pub struct RootArgs {
 
 impl RootCommand {
     pub async fn run(self) -> eyre::Result<()> {
-        let c = RootCommand::parse();
+        let _c = RootCommand::parse();
         match self.action {
             SubCommands::Init(init) => return init.run(self.args),
             SubCommands::Setup(setup) => return setup.run(self.args),
+            SubCommands::Run(run) => return run.run(self.args).await,
         }
     }
 }

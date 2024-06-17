@@ -1,20 +1,16 @@
-use std::fs;
 use std::net::IpAddr;
 
 use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
-use calimero_node::config::{
-    self, ApplicationConfig, ConfigFile, ConfigImpl, InitFile, NetworkConfig, StoreConfig,
-};
-use calimero_runtime::Constraint;
 use camino::Utf8PathBuf;
 use clap::parser::ValueSource;
-use clap::{ArgMatches, Command, CommandFactory, Parser, ValueEnum};
-use eyre::eyre;
-use libp2p::identity;
+use clap::{ArgMatches, CommandFactory, Parser, ValueEnum};
 use multiaddr::Multiaddr;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::cli;
+use crate::config::{
+    ApplicationConfig, ConfigFile, ConfigImpl, InitFile, NetworkConfig, ServerConfig, StoreConfig,
+};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
@@ -84,17 +80,6 @@ impl SetupCommand {
         // Extract subcommand matches for SetupCommand
         let setup_matches = matches.subcommand_matches("setup").unwrap();
 
-        /// Znaci
-        /// Ako se ucitao config, onda mijenjamo
-        /// Ako se nije ucitao config, onda samo guras ovo sta je dano i ostalo default
-        ///
-        /// Ako se ucitao:
-        ///     ako nema -f force, otpili ga
-        ///     ako ima, provjeri samo za svaki dal je zastavica tu:
-        ///         ako je, daj novi
-        ///         ako nije, daj mu stari
-        ///
-        /// SPREMI
         let boot_nodes_provided = check_if_provided(&setup_matches, "boot_nodes");
         let boot_network_provided = check_if_provided(&setup_matches, "boot_network");
         let swarm_host_provided = check_if_provided(&setup_matches, "swarm_host");
@@ -103,15 +88,6 @@ impl SetupCommand {
         let server_port_provided = check_if_provided(&setup_matches, "server_port");
         let mdns_provided = check_if_provided(&setup_matches, "mdns");
         let no_mdns_provided = check_if_provided(&setup_matches, "no_mdns");
-
-        // You can now use these boolean variables to check if the fields were provided
-        println!("boot_nodes provided: {}", boot_nodes_provided);
-        println!("swarm_host provided: {}", swarm_host_provided);
-        println!("swarm_port provided: {}", swarm_port_provided);
-        println!("server_host provided: {}", server_host_provided);
-        println!("server_port provided: {}", server_port_provided);
-        println!("mdns provided: {}", mdns_provided);
-        println!("no_mdns provided: {}", no_mdns_provided);
 
         let identity;
         let mut swarm_listen = None;
@@ -146,11 +122,6 @@ impl SetupCommand {
         } else {
             eyre::bail!("You have to initialize the node first \nRun command node init -n <NAME>");
         }
-
-        //sada ako je postavljeno, i ides promijenit port
-        //promijenit ce se port ali sa default hostom
-        //al to je ok...?
-        //jedino ako ne das ni jedno ni drugo, onda ostaje isto
 
         let mdns = self.mdns && !self.no_mdns;
 
@@ -205,7 +176,7 @@ impl SetupCommand {
                     mdns,
                     rendezvous: Default::default(),
                 },
-                server: calimero_node::config::ServerConfig {
+                server: ServerConfig {
                     listen: match server_listen {
                         Some(data) => data,
                         None => self
