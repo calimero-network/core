@@ -148,14 +148,14 @@ pub fn state_write<T: crate::state::AppState>(state: &T) {
     storage_write(STATE_KEY, &data);
 }
 
-pub mod internal {
+pub mod ext {
     use super::*;
 
     #[inline]
     pub unsafe fn fetch(
-        method: &str,
         url: &str,
-        headers: HashMap<String, String>,
+        method: &str,
+        headers: &[(&str, &str)],
         body: &[u8],
     ) -> Result<Vec<u8>, String> {
         let headers = match borsh::to_vec(&headers) {
@@ -166,7 +166,7 @@ pub mod internal {
         let url = sys::Buffer::from(url);
         let headers = sys::Buffer::from(headers.as_slice());
         let body = sys::Buffer::from(body);
-        match unsafe { sys::fetch(method, url, headers, body, DATA_REGISTER).try_into() } {
+        match unsafe { sys::fetch(url, method, headers, body, DATA_REGISTER).try_into() } {
             Ok(true) => {
                 let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
                 Ok(data)
