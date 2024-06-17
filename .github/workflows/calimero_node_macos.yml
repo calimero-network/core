@@ -17,6 +17,7 @@ jobs:
     outputs:
       artifact_path: ${{ steps.compress.outputs.artifact_path }}
       target: ${{ matrix.target }}
+      version: ${{ steps.extract_version.outputs.version }}
 
     steps:
       - name: Checkout code
@@ -35,6 +36,12 @@ jobs:
 
       - name: Build the crate
         run: cargo build -p calimero-node --release --target ${{ matrix.target }}
+
+      - name: Extract version
+        id: extract_version
+        run: |
+          VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "calimero-node") | .version')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Compress artifact using gzip
         id: compress
@@ -75,7 +82,7 @@ jobs:
           path: calimero-node_${{ matrix.target }}.tar.gz
           retention-days: 2
 
-  release:
+  create_release:
     runs-on: ubuntu-latest
     needs: build
     strategy:
@@ -84,6 +91,9 @@ jobs:
     if: ${{ github.ref == 'refs/heads/master' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Restore build artifact
         uses: actions/cache@v4
         with:
@@ -97,15 +107,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | awk -F\" '{print $2}')
+          VERSION=${{ needs.build.outputs.version }}
+          echo "version=$VERSION"
           RELEASE_URL=$(curl --silent "https://api.github.com/repos/${{ github.repository }}/releases/tags/v$VERSION" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" | jq -r '.url')
+          echo "RELEASE_URL=$RELEASE_URL"
           if [[ "$RELEASE_URL" != "null" ]]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
+           echo "exists=true" >> $GITHUB_OUTPUT
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+           echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Create Release
@@ -113,11 +124,53 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | awk -F\" '{print $2}')
-          gh release create "v${{ steps.check_release.outputs.version }}" --title "Release v${{ steps.check_release.outputs.version }}" --notes "Release for version ${{ steps.check_release.outputs.version }}"
+          VERSION=${{ needs.build.outputs.version }}
+          gh release create "v$VERSION" --title "Release v$VERSION" --notes "Release for version $VERSION"
+
+  upload_release_artifact:
+    runs-on: ubuntu-latest
+    needs: [build, create_release]
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    if: ${{ github.ref == 'refs/heads/master' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore build artifact
+        uses: actions/cache@v4
+        with:
+          path: calimero-node_${{ matrix.target }}.tar.gz
+          key: build-artifact-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            build-artifact-${{ matrix.target }}
+
+      - name: Check if artifact exists in release
+        id: check_artifact
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ needs.build.outputs.version }}
+          TARGET=${{ matrix.target }}
+          ARTIFACT_NAME="calimero-node_${TARGET}.tar.gz"
+          ASSET_ID=$(gh api \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            /repos/${{ github.repository }}/releases/tags/v$VERSION \
+            | jq -r ".assets[] | select(.name == \"$ARTIFACT_NAME\") | .id")
+          echo "ASSET_ID=$ASSET_ID"
+          if [[ -n "$ASSET_ID" ]]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload artifact to release
-        if: steps.check_release.outputs.exists == 'false'
+        if: steps.check_artifact.outputs.exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | awk -F\" '{print $2}')
-          gh release upload "v$VERSION" calimero-node_${{ matrix.target }}.tar.gz
+          VERSION=${{ needs.build.outputs.version }}
+          TARGET=${{ matrix.target }}
+          gh release upload "v$VERSION" calimero-node_${TARGET}.tar.gz
