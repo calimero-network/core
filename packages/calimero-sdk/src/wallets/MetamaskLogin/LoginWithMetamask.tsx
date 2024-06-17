@@ -118,6 +118,7 @@ export function LoginWithMetamask({
         walletSignature: signData,
         payload: walletSignatureData?.payload,
         walletMetadata: walletMetadata,
+        contextId: applicationId,
       };
       await apiClient
         .node()

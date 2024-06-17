@@ -9,7 +9,8 @@ import {
   RootKeyRequest,
   RootKeyResponse,
 } from '../nodeApi';
-import { HttpClient } from '../httpClient';
+import { Header, HttpClient } from '../httpClient';
+import { createAuthHeader } from '../../crypto/crypto';
 
 export class NodeApiDataSource implements NodeApi {
   private client: HttpClient;
@@ -22,11 +23,16 @@ export class NodeApiDataSource implements NodeApi {
     rpcBaseUrl: string,
     applicationId: string,
   ): ApiResponse<NodeChallenge> {
+    const authHeaders: Header[] = await createAuthHeader(
+      JSON.stringify(applicationId)
+    );
+
     return await this.client.post<NodeChallenge>(
       `${rpcBaseUrl}/admin-api/request-challenge`,
       {
         applicationId: applicationId,
       },
+      authHeaders
     );
   }
 
@@ -35,12 +41,16 @@ export class NodeApiDataSource implements NodeApi {
     rpcBaseUrl: string,
   ): ApiResponse<LoginResponse> {
     console.log('Send request to node with params', loginRequest);
+    const authHeaders: Header[] = await createAuthHeader(
+      JSON.stringify(loginRequest)
+    );
 
     return await this.client.post<LoginRequest>(
       `${rpcBaseUrl}/admin-api/add-client-key`,
       {
         ...loginRequest,
       },
+      authHeaders
     );
   }
 
@@ -49,18 +59,27 @@ export class NodeApiDataSource implements NodeApi {
     rpcBaseUrl: string,
   ): ApiResponse<RootKeyResponse> {
     console.log('Send request to node with params', rootKeyRequest);
+    const authHeaders: Header[] = await createAuthHeader(
+      JSON.stringify(rootKeyRequest)
+    );
 
     return await this.client.post<LoginRequest>(
       `${rpcBaseUrl}/admin-api/root-key`,
       {
         ...rootKeyRequest,
       },
+      authHeaders
     );
   }
 
   async health(request: HealthRequest): ApiResponse<HealthStatus> {
+    const authHeaders: Header[] = await createAuthHeader(
+      JSON.stringify(request)
+    );
+
     return await this.client.get<HealthStatus>(
       `${request.url}/admin-api/health`,
+      authHeaders
     );
   }
 }

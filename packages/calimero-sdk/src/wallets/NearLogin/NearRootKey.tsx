@@ -226,6 +226,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
         walletSignature: signature,
         payload: payload,
         walletMetadata: walletMetadata,
+        contextId: appId
       };
 
       await apiClient
