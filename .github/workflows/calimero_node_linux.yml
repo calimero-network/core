@@ -169,7 +169,7 @@ jobs:
     needs: [build, create_release]
     strategy:
       matrix:
-        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
     if: ${{ github.ref == 'refs/heads/desktop-build' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'desktop-build') }}
     steps:
       - name: Checkout code
