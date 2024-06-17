@@ -351,7 +351,7 @@ impl<'a> VMHostFunctions<'a> {
                         .registers
                         .set(&logic.limits, out_register_id, body.into_bytes())
                 })?;
-                Ok(1)
+                Ok(0)
             }
             Err(e) => {
                 self.with_logic_mut(|logic| {
@@ -359,7 +359,7 @@ impl<'a> VMHostFunctions<'a> {
                         .registers
                         .set(&logic.limits, out_register_id, e.to_string().into_bytes())
                 })?;
-                Ok(0)
+                Ok(1)
             }
         }
     }
