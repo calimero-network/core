@@ -26,7 +26,6 @@ fn expected_register<T>() -> T {
 
 #[track_caller]
 #[inline]
-// TODO: Do I need to make `e` generic?
 fn expected_boolean<T>(e: u32) -> T {
     panic_str(&format!("Expected 0|1. Got {e}"));
 }
