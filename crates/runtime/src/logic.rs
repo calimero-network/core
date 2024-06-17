@@ -316,7 +316,7 @@ impl<'a> VMHostFunctions<'a> {
         headers_len: u64,
         body_ptr: u64,
         body_len: u64,
-        out_register_id: u64,
+        register_id: u64,
     ) -> Result<u32> {
         let url = self.get_string(url_ptr, url_len)?;
         let method = self.get_string(method_ptr, method_len)?;
@@ -343,7 +343,7 @@ impl<'a> VMHostFunctions<'a> {
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(&logic.limits, out_register_id, data.into_bytes().as_slice())
+                .set(&logic.limits, register_id, data.into_bytes().as_slice())
         })?;
         Ok(status)
     }

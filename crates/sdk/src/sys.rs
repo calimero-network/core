@@ -25,6 +25,6 @@ extern "C" {
         method: Buffer,
         headers: Buffer,
         body: Buffer,
-        out_register_id: RegisterId,
+        register_id: RegisterId,
     ) -> Bool;
 }

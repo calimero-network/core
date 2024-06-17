@@ -54,7 +54,7 @@ impl<'a> VMLogic<'a> {
                 headers_len: u64,
                 body_ptr: u64,
                 body_len: u64,
-                out_register_id: u64
+                register_id: u64
             ) -> u32;
         }
     }
