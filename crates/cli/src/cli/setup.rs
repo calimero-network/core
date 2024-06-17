@@ -84,7 +84,7 @@ impl SetupCommand {
         // Extract subcommand matches for SetupCommand
         let setup_matches = matches.subcommand_matches("setup").unwrap();
 
-        let boot_network_provided = check_if_provided(&setup_matches, "boot_network");
+        let mut boot_network_provided = check_if_provided(&setup_matches, "boot_network");
         let swarm_host_provided = check_if_provided(&setup_matches, "swarm_host");
         let swarm_port_provided = check_if_provided(&setup_matches, "swarm_port");
         let server_host_provided = check_if_provided(&setup_matches, "server_host");
@@ -124,6 +124,8 @@ impl SetupCommand {
                         self.mdns = config.network.discovery.mdns;
                     }
                 }
+            } else {
+                boot_network_provided = true;
             }
         } else {
             eyre::bail!("You have to initialize the node first \nRun command node init -n <NAME>");
