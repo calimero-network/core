@@ -14,6 +14,8 @@ use serde_json::json;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
+use crate::middleware;
+
 use super::handlers::add_client_key::add_client_key_handler;
 use super::handlers::challenge::request_challenge_handler;
 use super::handlers::context::{
@@ -22,6 +24,7 @@ use super::handlers::context::{
 };
 use super::handlers::fetch_did::fetch_did_handler;
 use super::handlers::root_keys::create_root_key_handler;
+use super::storage::did::get_or_create_did;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
@@ -54,18 +57,14 @@ pub(crate) fn setup(
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
     let shared_state = Arc::new(AdminState {
-        store,
+        store: store.clone(),
         keypair: config.identity.clone(),
         application_manager,
     });
 
-    let admin_router = Router::new()
-        .route("/health", get(health_check_handler))
-        .route("/root-key", post(create_root_key_handler))
-        .route("/request-challenge", post(request_challenge_handler))
+    let protected_router = Router::new()
         .route("/install-application", post(install_application_handler))
         .route("/applications", get(list_applications_handler))
-        .route("/add-client-key", post(add_client_key_handler))
         .route("/did", get(fetch_did_handler))
         .route("/contexts", post(create_context_handler))
         .route("/contexts/:context_id", delete(delete_context_handler))
@@ -74,7 +73,30 @@ pub(crate) fn setup(
         .route("/contexts/:context_id/client-keys", get(get_context_client_keys_handler))
         .route("/contexts/:context_id/storage", get(get_context_storage_handler))
         .route("/contexts", get(get_contexts_handler))
-        .layer(Extension(shared_state))
+        .layer(middleware::auth::AuthSignatureLayer::new(store.clone()))
+        .layer(Extension(shared_state.clone()));
+
+    let did_result = get_or_create_did(&store).map_err(|err| parse_api_error(err));
+
+    let has_root_keys = match did_result {
+        Ok(did) => did.root_keys.len() > 0,
+        Err(_) => false,
+    };
+
+    let mut exempted_router = Router::new()
+        .route("/health", get(health_check_handler))
+        .route("/root-key", post(create_root_key_handler))
+        .route("/add-client-key", post(add_client_key_handler))
+        .route("/request-challenge", post(request_challenge_handler))
+        .layer(Extension(shared_state.clone()));
+
+    if has_root_keys {
+        exempted_router = exempted_router.layer(middleware::auth::AuthSignatureLayer::new(store));
+    }
+
+    let admin_router = Router::new()
+        .nest("/", exempted_router)
+        .nest("/", protected_router)
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
