@@ -1,4 +1,4 @@
-name: Build and Upload Binary
+name: Build and Upload Binary for MacOS
 
 on:
   push:
