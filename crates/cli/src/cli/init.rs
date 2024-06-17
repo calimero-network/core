@@ -1,16 +1,17 @@
 use std::fs;
 
-use calimero_node::config::ConfigFile;
+//use calimero_node::config::{ConfigFile, ConfigImpl, InitFile};
 use clap::Parser;
 use eyre::WrapErr;
 use libp2p::identity;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::cli;
+use crate::cli::config::{ConfigFile, ConfigImpl, InitFile};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
-
 pub struct InitCommand {
     /// Name of node
     #[arg(short, long, value_name = "NAME")]
@@ -28,7 +29,7 @@ impl InitCommand {
         fs::create_dir_all(&path)
             .wrap_err_with(|| format!("failed to create directory {:?}", &path))?;
 
-        if ConfigFile::exists(&path) {
+        if InitFile::exists(&path) {
             match ConfigFile::load(&path) {
                 Ok(config) => {
                     if self.force {
@@ -36,11 +37,8 @@ impl InitCommand {
                             "Overriding config.toml file for {}, keeping identity",
                             self.node_name
                         );
-                        let config_new = ConfigFile {
+                        let config_new = InitFile {
                             identity: config.identity,
-                            network: None,
-                            store: None,
-                            application: None,
                         };
                         config_new.save(&path)?;
                         return Ok(());
@@ -52,25 +50,31 @@ impl InitCommand {
                         );
                     }
                 }
-                Err(err) => {
-                    if !self.force {
-                        eyre::bail!("failed to load existing configuration: {}", err);
+                Err(err) => match InitFile::load(&path) {
+                    Ok(config) => {
+                        if self.force {
+                            eyre::bail!(
+                                "Node {} is already initialized in {:?}\nCan not override node identity",
+                                self.node_name,
+                                path
+                            );
+                        } else {
+                            eyre::bail!(
+                                "Node {} is already initialized in {:?}",
+                                self.node_name,
+                                path
+                            );
+                        }
                     }
-                    warn!(
-                        "Failed to load existing configuration, overwriting: {}",
-                        err
-                    );
-                }
+                    Err(err) => eyre::bail!("failed to load existing configuration: {}", err),
+                },
             }
         }
         let identity = identity::Keypair::generate_ed25519();
         info!("Generated identity: {:?}", identity.public().to_peer_id());
 
-        let config = ConfigFile {
+        let config = InitFile {
             identity: identity.clone(),
-            network: None,
-            store: None,
-            application: None,
         };
 
         config.save(&path)?;

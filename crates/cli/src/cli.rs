@@ -17,7 +17,7 @@ pub struct RootCommand {
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
     Init(init::InitCommand),
-    Config(setup::SetupCommand),
+    Setup(setup::SetupCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -30,9 +30,10 @@ pub struct RootArgs {
 
 impl RootCommand {
     pub async fn run(self) -> eyre::Result<()> {
+        let c = RootCommand::parse();
         match self.action {
             SubCommands::Init(init) => return init.run(self.args),
-            SubCommands::Config(setup) => return setup.run(self.args),
+            SubCommands::Setup(setup) => return setup.run(self.args),
         }
     }
 }

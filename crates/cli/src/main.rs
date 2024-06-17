@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
