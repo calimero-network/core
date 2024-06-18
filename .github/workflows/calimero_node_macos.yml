@@ -74,11 +74,17 @@ jobs:
           key: build-artifact-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
             build-artifact-${{ matrix.target }}
+      
+      - name: Sanitize ref name
+        id: sanitize
+        run: |
+          sanitized_ref_name=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9_-]/-/g; s/^-*//; s/-*$//')
+          echo "sanitized_ref_name=${sanitized_ref_name}" >> $GITHUB_OUTPUT
 
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: calimero-node_${{ github.ref_name }}_${{ matrix.target }}.tar.gz
+          name: calimero-node_${{ steps.sanitize.outputs.sanitized_ref_name }}_${{ matrix.target }}.tar.gz
           path: calimero-node_${{ matrix.target }}.tar.gz
           retention-days: 2
 
