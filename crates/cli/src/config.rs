@@ -58,10 +58,7 @@ pub struct StoreConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InitFile {
-    #[serde(
-        with = "calimero_primitives::identity::serde_identity",
-        default = "identity::Keypair::generate_ed25519"
-    )]
+    #[serde(with = "calimero_primitives::identity::serde_identity")]
     pub identity: identity::Keypair,
 }
 

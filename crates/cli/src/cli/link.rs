@@ -28,7 +28,7 @@ pub struct LinkCommand {
     pub app_name: camino::Utf8PathBuf,
 
     /// Version
-    #[clap(short, long, value_parser = validate_version)]
+    #[clap(short, long, value_parser = validate_version, default_value = "1.0.0")]
     pub version: String,
 }
 
