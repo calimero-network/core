@@ -112,21 +112,25 @@ jobs:
           restore-keys: |
             build-artifact-${{ matrix.target }}
 
+      - name: Sanitize ref name
+        id: sanitize
+        run: |
+          sanitized_ref_name=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9_-]/-/g; s/^-*//; s/-*$//')
+          echo "sanitized_ref_name=${sanitized_ref_name}" >> $GITHUB_OUTPUT
+
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: calimero-node_${{ github.ref_name }}_${{ matrix.target }}.tar.gz
+          name: calimero-node_${{ steps.sanitize.outputs.sanitized_ref_name }}_${{ matrix.target }}.tar.gz
           path: calimero-node_${{ matrix.target }}.tar.gz
           retention-days: 2
 
   create_release:
     runs-on: ubuntu-latest
     needs: build
-    strategy:
-      matrix:
-        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu]
-    if: ${{ github.ref == 'refs/heads/desktop-build' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'desktop-build') }}
-
+    outputs:
+      release_exists: ${{ steps.check_release.outputs.release_exists }}
+      version: ${{ needs.build.outputs.version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -134,14 +138,15 @@ jobs:
       - name: Check if release exists
         id: check_release
         run: |
-          if gh release view "v${{ github.event.inputs.version }}" >/dev/null 2>&1; then
-            echo "release_exists=true" >> $GITHUB_ENV
+          VERSION=${{ needs.build.outputs.version }}
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "release_exists=true" >> $GITHUB_OUTPUT
           else
-            echo "release_exists=false" >> $GITHUB_ENV
+            echo "release_exists=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Create release if it does not exist
-        if: env.release_exists == 'false'
+        if: steps.check_release.outputs.release_exists == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -180,7 +185,6 @@ jobs:
             -H "Accept: application/vnd.github.v3+json" \
             /repos/${{ github.repository }}/releases/tags/v$VERSION \
             | jq -r ".assets[] | select(.name == \"$ARTIFACT_NAME\") | .id")
-          echo "ASSET_ID=$ASSET_ID"
           if [[ -n "$ASSET_ID" ]]; then
             echo "exists=true" >> $GITHUB_OUTPUT
           else
