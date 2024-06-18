@@ -1,6 +1,24 @@
 use calimero_sdk::env;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "Result")]
+pub enum ResultAlt<T, E> {
+    #[serde(rename = "result")]
+    Ok(T),
+    #[serde(rename = "error")]
+    Err(E),
+}
+
+impl<T, E> From<ResultAlt<T, E>> for Result<T, E> {
+    fn from(result: ResultAlt<T, E>) -> Self {
+        match result {
+            ResultAlt::Ok(value) => Ok(value),
+            ResultAlt::Err(err) => Err(err),
+        }
+    }
+}
 
 pub(crate) struct Client {
     url: String,
@@ -27,8 +45,8 @@ impl Client {
         .map_err(|err| format!("Cannot serialize request: {:?}", err))?;
 
         let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }?;
-        serde_json::from_slice(&response)
-            .map_err(|err| format!("Cannot deserialize response: {:?}", err))?
+        let response = String::from_utf8(response).map_err(|e| e.to_string())?;
+        serde_json::from_str::<Response<T, E>>(&response).map_err(|e| e.to_string())
     }
 }
 
@@ -37,7 +55,7 @@ pub struct Response<T: DeserializeOwned, E: DeserializeOwned> {
     pub jsonrpc: Option<String>,
     pub id: String,
 
-    #[serde(with = "calimero_primitives::common::ResultAlt")]
+    #[serde(with = "ResultAlt", flatten)]
     pub data: Result<T, RpcError<E>>,
 }
 

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use ouroboros::self_referencing;
