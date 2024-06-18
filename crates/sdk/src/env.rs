@@ -1,5 +1,6 @@
 use crate::sys;
 
+#[doc(hidden)]
 pub mod ext;
 
 const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(sys::PtrSizedInt::MAX.as_usize() - 1);
@@ -75,16 +76,16 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
 
     let mut buffer = Vec::with_capacity(len);
 
-    unsafe {
+    let succeed = unsafe {
         buffer.set_len(len);
 
-        match sys::read_register(register_id, sys::BufferMut::new(&mut buffer))
+        sys::read_register(register_id, sys::BufferMut::new(&mut buffer))
             .try_into()
-            .unwrap_or_else(expected_boolean)
-        {
-            true => (),
-            false => panic_str("Buffer is too small."),
-        }
+            .unwrap_or_else(expected_boolean::<bool>)
+    };
+
+    if !succeed {
+        panic_str("Buffer is too small.");
     }
 
     Some(buffer)
@@ -120,13 +121,10 @@ pub fn emit<T: crate::event::AppEvent>(event: T) {
 
 #[inline]
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    match unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }
+    unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }
         .try_into()
-        .unwrap_or_else(expected_boolean)
-    {
-        false => None,
-        true => Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register)),
-    }
+        .unwrap_or_else(expected_boolean::<bool>)
+        .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
 }
 
 pub fn state_read<T: crate::state::AppState>() -> Option<T> {

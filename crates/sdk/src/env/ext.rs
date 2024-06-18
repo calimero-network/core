@@ -23,10 +23,10 @@ pub unsafe fn fetch(
         .unwrap_or_else(expected_boolean);
     let data = read_register(DATA_REGISTER).unwrap_or_else(expected_register);
     if failed {
-        Err(String::from_utf8(data).unwrap_or_else(|_| {
+        return Err(String::from_utf8(data).unwrap_or_else(|_| {
             panic_str("Fetch failed with an error but the error is an invalid UTF-8 string.")
-        }))
-    } else {
-        Ok(data)
+        }));
     }
+
+    Ok(data)
 }

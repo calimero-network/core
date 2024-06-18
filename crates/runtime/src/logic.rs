@@ -340,20 +340,13 @@ impl<'a> VMHostFunctions<'a> {
                 let mut buffer = vec![];
                 match response.into_reader().read_to_end(&mut buffer) {
                     Ok(_) => (0, buffer),
-                    Err(_) => (
-                        1,
-                        "Failed to read the response body.".to_string().into_bytes(),
-                    ),
+                    Err(_) => (1, "Failed to read the response body.".into()),
                 }
             }
             Err(e) => (1, e.to_string().into_bytes()),
         };
 
-        self.with_logic_mut(|logic| {
-            logic
-                .registers
-                .set(&logic.limits, register_id, data.as_slice())
-        })?;
+        self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, data))?;
         Ok(status)
     }
 }
