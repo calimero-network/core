@@ -1,6 +1,6 @@
 use calimero_sdk::env;
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 pub(crate) struct Client {
     url: String,
@@ -27,7 +27,8 @@ impl Client {
         .map_err(|err| format!("Cannot serialize request: {:?}", err))?;
 
         let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }?;
-        serde_json::from_slice(&response).unwrap()
+        serde_json::from_slice(&response)
+            .map_err(|err| format!("Cannot deserialize response: {:?}", err))?
     }
 }
 
