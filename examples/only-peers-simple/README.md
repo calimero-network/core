@@ -1,11 +1,24 @@
 # OnlyPeers (simple)
 
-OnlyPeers (simple) is a ReactJS project that demonstrates how to interact with the Calimero node using calimero-sdk. The project was created with vite, a blazing fast build tool that allows for lightning-fast development and deployment of web applications.
-Getting Started
-Prerequisites
+[Calimero]: https://www.calimero.network
+[Node.js]: https://nodejs.org
+[ReactJS]: https://react.dev
+[Vite]: https://vitejs.dev
+[pnpm]: https://pnpm.io
 
-To run this project, you need to have Node.js and pnmp installed on your computer.
-Installation
+OnlyPeers (simple) is a [ReactJS][] project that demonstrates how to interact
+with the [Calimero][] node using [`calimero-sdk`](https://github.com/calimero-network/core/tree/master/crates/sdk).
+The project was created with [Vite][], a blazing-fast build tool that allows for
+lightning-fast development and deployment of web applications.
+
+# Getting Started
+
+## Prerequisites
+
+To run this project, you need to have [Node.js][] and [pnpm][] installed on your
+computer.
+
+## Installation
 
 Clone the repository to your local machine:
 
@@ -22,39 +35,48 @@ cd examples/only-peers-simple
 Install the project dependencies:
 
 ```bash
-pnmp install
+pnpm install
 ```
 
-Usage:
+## Usage
+
 To start the development server, run the following command:
 
 ```bash
-pnmp dev
+pnpm dev
 ```
 
-This will start a development server at `http://localhost:3000`. Any changes you make to the code will be automatically hot-reloaded in the browser.
+This will start a development server at [`http://localhost:3000`](http://localhost:3000).
+Any changes you make to the code will be automatically hot-reloaded in the
+browser.
 
 To build the production-ready version of the application, run:
 
 ```bash
-pnmp build
+pnpm build
 ```
 
-This will create a dist directory containing the compiled and optimized version of the application. To preview the production build, you can run:
+This will create a `dist` directory containing the compiled and optimized
+version of the application.
+
+To preview the production build, you can run:
 
 ```bash
-pnmp preview
+pnpm preview
 ```
 
-This will start a server that serves the production build at `http://localhost:5000`.
+This will start a server that serves the production build at
+[`http://localhost:5000`](http://localhost:5000).
 
-Acknowledgements
+# Acknowledgements
 
 This project was created using the following technologies:
-ReactJS
-Vite
-near-api-js
 
-License
+  - [ReactJS][]
+  - [Vite][]
+  - [`near-api-js`](https://www.npmjs.com/package/near-api-js)
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+# License
+
+This project is licensed under the MIT License. See the [LICENSE](../../LICENSE.md)
+file for details.
