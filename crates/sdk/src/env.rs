@@ -1,5 +1,8 @@
 use crate::sys;
 
+#[doc(hidden)]
+pub mod ext;
+
 const DATA_REGISTER: sys::RegisterId = sys::RegisterId::new(sys::PtrSizedInt::MAX.as_usize() - 1);
 
 const STATE_KEY: &[u8] = b"STATE";
@@ -20,6 +23,12 @@ pub fn panic_str(message: &str) -> ! {
 #[inline]
 fn expected_register<T>() -> T {
     panic_str("Expected a register to be set, but it was not.");
+}
+
+#[track_caller]
+#[inline]
+fn expected_boolean<T>(e: u32) -> T {
+    panic_str(&format!("Expected 0|1. Got {e}"));
 }
 
 pub fn setup_panic_hook() {
@@ -67,14 +76,16 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
 
     let mut buffer = Vec::with_capacity(len);
 
-    unsafe {
+    let succeed: bool = unsafe {
         buffer.set_len(len);
 
-        match sys::read_register(register_id, sys::BufferMut::new(&mut buffer)).try_into() {
-            Ok(true) => (),
-            Ok(false) => panic_str("Buffer is too small."),
-            Err(val) => panic_str(&format!("Expected bool as 0|1, got: {}.", val)),
-        }
+        sys::read_register(register_id, sys::BufferMut::new(&mut buffer))
+            .try_into()
+            .unwrap_or_else(expected_boolean)
+    };
+
+    if !succeed {
+        panic_str("Buffer is too small.");
     }
 
     Some(buffer)
@@ -110,11 +121,10 @@ pub fn emit<T: crate::event::AppEvent>(event: T) {
 
 #[inline]
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    match unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }.try_into() {
-        Ok(false) => None,
-        Ok(true) => Some(read_register(DATA_REGISTER).unwrap_or_else(expected_register)),
-        Err(val) => panic_str(&format!("Expected bool as 0|1, got: {}.", val)),
-    }
+    unsafe { sys::storage_read(sys::Buffer::from(key), DATA_REGISTER) }
+        .try_into()
+        .unwrap_or_else(expected_boolean::<bool>)
+        .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
 }
 
 pub fn state_read<T: crate::state::AppState>() -> Option<T> {
@@ -135,7 +145,7 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
         )
         .try_into()
     }
-    .unwrap_or_else(|val| panic_str(&format!("Expected bool as 0|1, got: {}.", val)))
+    .unwrap_or_else(expected_boolean)
 }
 
 pub fn state_write<T: crate::state::AppState>(state: &T) {
