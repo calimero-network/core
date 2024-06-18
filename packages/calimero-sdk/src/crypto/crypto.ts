@@ -4,11 +4,14 @@ import bs58 from 'bs58';
 import { WalletType } from '../api/nodeApi';
 import { ClientKey } from '../types/storage';
 import { getStorageClientKey } from '../storage/storage';
-import { Header } from '../api/httpClient';
+
+export interface AxiosHeader {
+  [key: string]: string;
+}
 
 export async function createAuthHeader(
   payload: string,
-): Promise<Header[] | null> {
+): Promise<AxiosHeader | null> {
   const privateKey: PrivateKey = await getPrivateKey();
 
   if (!privateKey) {
@@ -27,12 +30,12 @@ export async function createAuthHeader(
   const signatureBase58 = bs58.encode(signature);
   const contentBase58 = bs58.encode(hashArray);
 
-  const headers: Header[] = [
-    { key: 'wallet_type', value: JSON.stringify(WalletType.NEAR) },
-    { key: 'signing_key', value: signing_key },
-    { key: 'signature', value: signatureBase58 },
-    { key: 'challenge', value: contentBase58 },
-  ];
+  const headers: AxiosHeader = {
+    wallet_type: JSON.stringify(WalletType.NEAR),
+    signing_key: signing_key,
+    signature: signatureBase58,
+    challenge: contentBase58,
+  };
 
   return headers;
 }
