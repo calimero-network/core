@@ -105,7 +105,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "v${{ github.event.inputs.version }}" >/dev/null 2>&1; then
+          VERSION=${{ needs.build.outputs.version }}
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
             echo "release_exists=true" >> $GITHUB_ENV
           else
             echo "release_exists=false" >> $GITHUB_ENV

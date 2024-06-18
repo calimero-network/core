@@ -128,6 +128,7 @@ jobs:
   create_release:
     runs-on: ubuntu-latest
     needs: build
+    if: ${{ github.ref == 'refs/heads/master' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master') }}
     outputs:
       release_exists: ${{ steps.check_release.outputs.release_exists }}
       version: ${{ needs.build.outputs.version }}
