@@ -26,6 +26,26 @@ pub struct LinkCommand {
     /// Name of application
     #[clap(short, long)]
     pub app_name: camino::Utf8PathBuf,
+
+    /// Version
+    #[clap(short, long, value_parser = validate_version)]
+    pub version: String,
+}
+
+fn validate_version(v: &str) -> Result<String, String> {
+    let parts: Vec<&str> = v.split('.').collect();
+    if parts.len() != 3 {
+        return Err(String::from("Version must have exactly three parts"));
+    }
+
+    for part in parts {
+        match part.parse::<u8>() {
+            Ok(_) => {}
+            Err(e) => return Err(format!("Invalid version number: {}", e)),
+        }
+    }
+
+    Ok(v.to_string())
 }
 
 impl LinkCommand {
@@ -39,13 +59,19 @@ impl LinkCommand {
                     hasher.update(id.as_bytes());
                     let hash_string = hex::encode(hasher.finalize());
 
-                    let app_path = path_to_node.join(config.application.path).join(hash_string);
+                    let app_path = path_to_node
+                        .join(config.application.path)
+                        .join(hash_string)
+                        .join(self.version);
 
                     fs::create_dir_all(&app_path)
                         .wrap_err_with(|| format!("failed to create directory {:?}", &app_path))?;
                     info!("Linking original file to: {:?}", app_path);
 
-                    symlink(self.path, app_path.join("binary.wasm"))?;
+                    match symlink(self.path, app_path.join("binary.wasm")) {
+                        Ok(_) => {}
+                        Err(err) => eyre::bail!("Symlinking failed: {}", err),
+                    }
                     info!(
                         "Application {} linked to node {}\nPath to linked file at {}",
                         self.app_name,
