@@ -15,7 +15,7 @@ members = [
   "./crates/primitives",
   "./crates/runtime",
   "./crates/sdk",
-  "./crates/near-sdk",
+  "./crates/sdk/libs/near",
   "./crates/sdk/macros",
   "./crates/server",
   "./crates/server-primitives",

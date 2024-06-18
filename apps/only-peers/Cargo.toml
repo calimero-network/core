@@ -11,4 +11,3 @@ crate-type = ["cdylib"]
 
 [dependencies]
 calimero-sdk = { path = "../../crates/sdk" }
-near-sdk = { path = "../../crates/near-sdk" }

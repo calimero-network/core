@@ -1,5 +1,5 @@
 [package]
-name = "near-sdk"
+name = "calimero-sdk-near"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -9,5 +9,5 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-calimero-sdk = { path = "../sdk" }
+calimero-sdk = { path = "../../" }
 
