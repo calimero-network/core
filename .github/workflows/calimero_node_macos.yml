@@ -78,7 +78,7 @@ jobs:
       - name: Sanitize ref name
         id: sanitize
         run: |
-          sanitized_ref_name=$(echo "${GITHUB_REF_NAME}" | tr '":<>|*?\\/\r\n' '-')
+          sanitized_ref_name=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9_-]/-/g; s/^-*//; s/-*$//')
           echo "sanitized_ref_name=${sanitized_ref_name}" >> $GITHUB_OUTPUT
 
       - name: Upload binary as artifact
