@@ -1,0 +1,5 @@
+pnpm test
+
+pnpm prettier
+
+pnpm lint:fix

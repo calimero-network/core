@@ -20,6 +20,7 @@ use super::handlers::add_client_key::add_client_key_handler;
 use super::handlers::challenge::request_challenge_handler;
 use super::handlers::context::{
     create_context_handler, delete_context_handler, get_context_handler, get_contexts_handler,
+    get_context_storage_handler, get_context_client_keys_handler, get_context_users_handler
 };
 use super::handlers::fetch_did::fetch_did_handler;
 use super::handlers::root_keys::create_root_key_handler;
@@ -71,31 +72,14 @@ pub(crate) fn setup(
         .route("/contexts", post(create_context_handler))
         .route("/contexts/:context_id", delete(delete_context_handler))
         .route("/contexts/:context_id", get(get_context_handler))
+        .route("/contexts/:context_id/users", get(get_context_users_handler))
+        .route("/contexts/:context_id/client-keys", get(get_context_client_keys_handler))
+        .route("/contexts/:context_id/storage", get(get_context_storage_handler))
         .route("/contexts", get(get_contexts_handler))
         .layer(Extension(shared_state))
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
-}
-
-pub(crate) fn site(
-    config: &crate::config::ServerConfig,
-) -> eyre::Result<Option<(&'static str, ServeDir<SetStatus<ServeFile>>)>> {
-    let _config = match &config.admin {
-        Some(config) if config.enabled => config,
-        _ => {
-            info!("Admin site is disabled");
-            return Ok(None);
-        }
-    };
-    let path = "/admin";
-
-    let react_static_files_path = "./node-ui/dist";
-    let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
-        ServeFile::new(format!("{}/index.html", react_static_files_path)),
-    );
-
-    Ok(Some((path, react_app_serve_dir)))
 }
 
 pub struct ApiResponse<T: Serialize> {

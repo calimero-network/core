@@ -17,10 +17,10 @@ interface NEARWalletType extends WalletTypeBase<'NEAR'> {}
 export type WalletType = ETHWalletType | NEARWalletType;
 
 export namespace WalletType {
-  export let NEAR: WalletType = <NEARWalletType>{ type: 'NEAR' };
+  export let NEAR: WalletType = { type: 'NEAR' } as NEARWalletType;
 
   export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
-    return <ETHWalletType>{ type: 'ETH', chainId };
+    return { type: 'ETH', chainId } as ETHWalletType;
   }
 }
 

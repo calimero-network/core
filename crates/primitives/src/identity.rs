@@ -17,11 +17,20 @@ pub struct RootKey {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ClientKey {
     #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
     pub signing_key: String,
     pub created_at: u64,
+    pub context_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUser {
+    pub user_id: String,
+    pub joined_at: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
