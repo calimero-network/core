@@ -137,6 +137,8 @@ jobs:
 
       - name: Check if release exists
         id: check_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=${{ needs.build.outputs.version }}
           if gh release view "v$VERSION" >/dev/null 2>&1; then
