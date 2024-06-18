@@ -63,7 +63,6 @@ pub(crate) fn setup(
     });
 
     let protected_router = Router::new()
-        .route("/add-client-key", post(add_client_key_handler))
         .route("/install-application", post(install_application_handler))
         .route("/applications", get(list_applications_handler))
         .route("/did", get(fetch_did_handler))
@@ -77,22 +76,12 @@ pub(crate) fn setup(
         .layer(middleware::auth::AuthSignatureLayer::new(store.clone()))
         .layer(Extension(shared_state.clone()));
 
-    let did_result = get_or_create_did(&store).map_err(|err| parse_api_error(err));
-
-    let has_root_keys = match did_result {
-        Ok(did) => did.root_keys.len() > 0,
-        Err(_) => false,
-    };
-
-    let mut exempted_router = Router::new()
+    let exempted_router = Router::new()
         .route("/health", get(health_check_handler))
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
+        .route("/add-client-key", post(add_client_key_handler))
         .layer(Extension(shared_state.clone()));
-
-    if has_root_keys {
-        exempted_router = exempted_router.layer(middleware::auth::AuthSignatureLayer::new(store));
-    }
 
     let admin_router = Router::new()
         .nest("/", exempted_router)
