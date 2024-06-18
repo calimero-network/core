@@ -76,12 +76,12 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
 
     let mut buffer = Vec::with_capacity(len);
 
-    let succeed = unsafe {
+    let succeed: bool = unsafe {
         buffer.set_len(len);
 
         sys::read_register(register_id, sys::BufferMut::new(&mut buffer))
             .try_into()
-            .unwrap_or_else(expected_boolean::<bool>)
+            .unwrap_or_else(expected_boolean)
     };
 
     if !succeed {
