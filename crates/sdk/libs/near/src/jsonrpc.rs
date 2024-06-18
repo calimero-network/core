@@ -31,30 +31,12 @@ impl Client {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "Result")]
-pub enum ResultAlt<T, E> {
-    #[serde(rename = "result")]
-    Ok(T),
-    #[serde(rename = "error")]
-    Err(E),
-}
-
-impl<T, E> From<ResultAlt<T, E>> for Result<T, E> {
-    fn from(result: ResultAlt<T, E>) -> Self {
-        match result {
-            ResultAlt::Ok(value) => Ok(value),
-            ResultAlt::Err(err) => Err(err),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct Response<T: DeserializeOwned, E: DeserializeOwned> {
     pub jsonrpc: Option<String>,
     pub id: String,
 
-    #[serde(with = "ResultAlt")]
+    #[serde(with = "calimero_primitives::common::ResultAlt")]
     pub data: Result<T, RpcError<E>>,
 }
 

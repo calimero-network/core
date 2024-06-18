@@ -1186,6 +1186,7 @@ dependencies = [
 name = "calimero-sdk-near"
 version = "0.1.0"
 dependencies = [
+ "calimero-primitives",
  "calimero-sdk",
  "serde",
  "serde_json",
