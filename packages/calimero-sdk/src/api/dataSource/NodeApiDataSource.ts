@@ -35,6 +35,7 @@ export class NodeApiDataSource implements NodeApi {
     rpcBaseUrl: string,
   ): ApiResponse<LoginResponse> {
     console.log('Send request to node with params', loginRequest);
+  
     return await this.client.post<LoginRequest>(
       `${rpcBaseUrl}/admin-api/add-client-key`,
       {
@@ -48,6 +49,7 @@ export class NodeApiDataSource implements NodeApi {
     rpcBaseUrl: string,
   ): ApiResponse<RootKeyResponse> {
     console.log('Send request to node with params', rootKeyRequest);
+  
     return await this.client.post<LoginRequest>(
       `${rpcBaseUrl}/admin-api/root-key`,
       {
