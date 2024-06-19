@@ -2,6 +2,8 @@ use libp2p::core::transport;
 pub use libp2p::gossipsub::{IdentTopic, Message, MessageId, TopicHash};
 pub use libp2p::identity::PeerId;
 
+use super::stream;
+
 #[derive(Debug)]
 pub enum NetworkEvent {
     ListeningOn {
@@ -15,5 +17,9 @@ pub enum NetworkEvent {
     Message {
         id: MessageId,
         message: Message,
+    },
+    StreamOpened {
+        peer_id: PeerId,
+        stream: stream::Stream,
     },
 }

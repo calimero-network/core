@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import apiClient from '../api';
 import React from 'react';
 import Spinner from '../components/loader/Spinner';
@@ -87,8 +87,12 @@ export const SetupModal: React.FC<SetupModalProps> = (
 ) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [url, setUrl] = useState<string | null>(props.getNodeUrl());
+  const [url, setUrl] = useState<string | null>(null);
   const MINIMUM_LOADING_TIME_MS = 1000;
+
+  useEffect(() => {
+    setUrl(props.getNodeUrl());
+  }, [props]);
 
   function validateUrl(value: string): boolean {
     try {

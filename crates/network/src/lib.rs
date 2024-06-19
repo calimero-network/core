@@ -15,6 +15,7 @@ pub mod client;
 pub mod config;
 mod discovery;
 mod events;
+pub mod stream;
 pub mod types;
 
 use client::NetworkClient;
@@ -34,6 +35,7 @@ struct Behaviour {
     ping: ping::Behaviour,
     rendezvous: rendezvous::client::Behaviour,
     relay: relay::client::Behaviour,
+    stream: libp2p_stream::Behaviour,
 }
 
 pub async fn run(
@@ -126,11 +128,24 @@ async fn init(
             ping: ping::Behaviour::default(),
             relay: relay_behaviour,
             rendezvous: rendezvous::client::Behaviour::new(key.clone()),
+            stream: libp2p_stream::Behaviour::new(),
         })?
         .with_swarm_config(|cfg| {
             cfg.with_idle_connection_timeout(tokio::time::Duration::from_secs(30))
         })
         .build();
+
+    let incoming_streams = match swarm
+        .behaviour()
+        .stream
+        .new_control()
+        .accept(stream::CALIMERO_STREAM_PROTOCOL)
+    {
+        Ok(incoming_streams) => incoming_streams,
+        Err(err) => {
+            eyre::bail!("Failed to setup control for stream protocol: {:?}", err)
+        }
+    };
 
     let (command_sender, command_receiver) = mpsc::channel(32);
     let (event_sender, event_receiver) = mpsc::channel(32);
@@ -141,13 +156,20 @@ async fn init(
 
     let discovery = discovery::Discovery::new(&config.discovery.rendezvous);
 
-    let event_loop = EventLoop::new(swarm, command_receiver, event_sender, discovery);
+    let event_loop = EventLoop::new(
+        swarm,
+        incoming_streams,
+        command_receiver,
+        event_sender,
+        discovery,
+    );
 
     Ok((client, event_receiver, event_loop))
 }
 
 pub(crate) struct EventLoop {
     swarm: Swarm<Behaviour>,
+    incoming_streams: libp2p_stream::IncomingStreams,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<types::NetworkEvent>,
     discovery: discovery::Discovery,
@@ -160,12 +182,14 @@ pub(crate) struct EventLoop {
 impl EventLoop {
     fn new(
         swarm: Swarm<Behaviour>,
+        incoming_streams: libp2p_stream::IncomingStreams,
         command_receiver: mpsc::Receiver<Command>,
         event_sender: mpsc::Sender<types::NetworkEvent>,
         discovery: discovery::Discovery,
     ) -> Self {
         Self {
             swarm,
+            incoming_streams,
             command_receiver,
             event_sender,
             discovery,
@@ -182,7 +206,12 @@ impl EventLoop {
 
         loop {
             tokio::select! {
-                event = self.swarm.next() => self.handle_swarm_event(event.expect("Swarm stream to be infinite.")).await,
+                event = self.swarm.next() => {
+                    self.handle_swarm_event(event.expect("Swarm stream to be infinite.")).await;
+                },
+                incoming_stream = self.incoming_streams.next() => {
+                    self.handle_incoming_stream(incoming_stream.expect("Incoming streams to be infinite.")).await;
+                },
                 command = self.command_receiver.recv() => {
                     let Some(c) = command else { break };
                     self.handle_command(c).await;
@@ -260,6 +289,9 @@ impl EventLoop {
 
                 let _ = sender.send(Ok(topic));
             }
+            Command::OpenStream { peer_id, sender } => {
+                let _ = sender.send(self.open_stream(peer_id).await.map_err(Into::into));
+            }
             Command::PeerCount { sender } => {
                 let _ = sender.send(self.swarm.connected_peers().count());
             }
@@ -328,6 +360,10 @@ enum Command {
     Unsubscribe {
         topic: gossipsub::IdentTopic,
         sender: oneshot::Sender<eyre::Result<gossipsub::IdentTopic>>,
+    },
+    OpenStream {
+        peer_id: PeerId,
+        sender: oneshot::Sender<eyre::Result<stream::Stream>>,
     },
     PeerCount {
         sender: oneshot::Sender<usize>,
