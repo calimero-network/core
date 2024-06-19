@@ -3,7 +3,11 @@ name: Build and Upload Binary for MacOS
 on:
   push:
     branches:
-      - '**'
+      - "**"
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
   pull_request:
     types: [closed]
 
@@ -74,7 +78,7 @@ jobs:
           key: build-artifact-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
             build-artifact-${{ matrix.target }}
-      
+
       - name: Sanitize ref name
         id: sanitize
         run: |
