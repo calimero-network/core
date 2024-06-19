@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use libp2p::{gossipsub, Multiaddr, PeerId};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::Command;
+use crate::{stream, Command};
 
 #[derive(Clone)]
 pub struct NetworkClient {
@@ -57,6 +57,17 @@ impl NetworkClient {
 
         self.sender
             .send(Command::Unsubscribe { topic, sender })
+            .await
+            .expect("Command receiver not to be dropped.");
+
+        receiver.await.expect("Sender not to be dropped.")
+    }
+
+    pub async fn open_stream(&self, peer_id: PeerId) -> eyre::Result<stream::Stream> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.sender
+            .send(Command::OpenStream { peer_id, sender })
             .await
             .expect("Command receiver not to be dropped.");
 
