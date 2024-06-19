@@ -3,7 +3,11 @@ name: Build and Upload Binary for Linux
 on:
   push:
     branches:
-      - '**'
+      - "**"
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - "crates/**"
   pull_request:
     types: [closed]
 
