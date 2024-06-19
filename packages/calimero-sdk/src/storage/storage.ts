@@ -1,6 +1,6 @@
 import { ClientKey } from '../types/storage';
 
-export const CLIENT_KEY = 'lient-key';
+export const CLIENT_KEY = 'client-key';
 export const APP_URL = 'app-url';
 export const AUTHORIZED = 'node-authorized';
 
