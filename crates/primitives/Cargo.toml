@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 bs58.workspace = true
 ed25519-dalek.workspace = true
-libp2p-identity = {workspace=true, features = ["peerid", "serde"]}
+libp2p-identity = {workspace = true, features = ["peerid", "serde"]}
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

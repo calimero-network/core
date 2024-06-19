@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+
 calimero-sdk = { path = "../../" }
 calimero-primitives = { path = "../../../primitives" }
 
