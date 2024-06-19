@@ -76,7 +76,7 @@ pub(crate) fn setup(
         .layer(middleware::auth::AuthSignatureLayer::new(store.clone()))
         .layer(Extension(shared_state.clone()));
 
-    let exempted_router = Router::new()
+    let unprotected_router = Router::new()
         .route("/health", get(health_check_handler))
         .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
@@ -84,7 +84,7 @@ pub(crate) fn setup(
         .layer(Extension(shared_state.clone()));
 
     let admin_router = Router::new()
-        .nest("/", exempted_router)
+        .nest("/", unprotected_router)
         .nest("/", protected_router)
         .layer(session_layer);
 
