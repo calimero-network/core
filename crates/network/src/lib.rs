@@ -290,14 +290,7 @@ impl EventLoop {
                 let _ = sender.send(Ok(topic));
             }
             Command::OpenStream { peer_id, sender } => {
-                match self.open_stream(peer_id).await {
-                    Ok(stream) => {
-                        let _ = sender.send(Ok(stream));
-                    }
-                    Err(err) => {
-                        let _ = sender.send(Err(eyre::eyre!(err)));
-                    }
-                };
+                let _ = sender.send(self.open_stream(peer_id).await.map_err(Into::into));
             }
             Command::PeerCount { sender } => {
                 let _ = sender.send(self.swarm.connected_peers().count());
