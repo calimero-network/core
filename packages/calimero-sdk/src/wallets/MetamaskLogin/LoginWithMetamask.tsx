@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { randomBytes } from 'crypto';
-import { getOrCreateKeypair } from '../../crypto/ed25519';
+import { getOrCreateKeypair } from '../../auth/ed25519';
 
 import {
   useAccount,

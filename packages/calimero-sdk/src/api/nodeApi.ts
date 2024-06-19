@@ -57,7 +57,6 @@ export interface RootKeyRequest {
   walletSignature: String;
   payload: Payload;
   walletMetadata: WalletMetadata;
-  contextId: string;
 }
 
 export interface NodeChallenge {

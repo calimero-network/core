@@ -1,2 +1,2 @@
-export * from './crypto';
+export * from './headers';
 export * from './ed25519';

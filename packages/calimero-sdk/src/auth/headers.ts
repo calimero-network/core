@@ -11,6 +11,7 @@ export interface AxiosHeader {
 
 export async function createAuthHeader(
   payload: string,
+  contextId: string = "admin-ui"
 ): Promise<AxiosHeader | null> {
   const privateKey: PrivateKey = await getPrivateKey();
 
@@ -35,6 +36,7 @@ export async function createAuthHeader(
     signing_key: signing_key,
     signature: signatureBase58,
     challenge: contentBase58,
+    context_id: contextId,
   };
 
   return headers;
