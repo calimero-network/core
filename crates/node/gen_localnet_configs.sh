@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 set -o pipefail
 
 # Check if an argument was provided
