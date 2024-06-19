@@ -1,6 +1,11 @@
 use jsonrpc::Response;
+use query::{QueryResponseKind, RpcQueryRequest};
+use types::BlockId;
+use views::QueryRequest;
 
 mod jsonrpc;
+pub mod query;
+pub mod types;
 pub mod views;
 
 pub struct Client {
@@ -20,19 +25,29 @@ impl Client {
         }
     }
 
-    pub fn view_account(&self, account_id: &str) -> Result<views::AccountView, String> {
-        let response: Response<views::AccountView, String> = self.client.call(
-            "query",
-            serde_json::json!({
-                "request_type": "view_account",
-                "finality": "final",
-                "account_id": account_id,
-            }),
-        )?;
+    pub fn view_account(
+        &self,
+        account_id: &str,
+        block_id: BlockId,
+    ) -> Result<views::AccountView, String> {
+        let request = RpcQueryRequest {
+            block_id,
+            request: QueryRequest::ViewAccount {
+                account_id: account_id.to_string(),
+            },
+        };
+        let response: Response<query::RpcQueryResponse, String> = self
+            .client
+            .call("query", serde_json::to_value(&request).unwrap())?;
 
         match response.data {
-            Ok(r) => Ok(r),
-            Err(e) => Err(e.message),
+            Ok(r) => {
+                if let QueryResponseKind::ViewAccount(va) = r.kind {
+                    return Ok(va);
+                }
+                return Err("Unexpected response returned.".to_string());
+            }
+            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
         }
     }
 
@@ -48,7 +63,7 @@ impl Client {
 
         match response.data {
             Ok(r) => Ok(r),
-            Err(e) => Err(e.message),
+            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
         }
     }
 }

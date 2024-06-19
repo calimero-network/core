@@ -32,8 +32,8 @@ impl Client {
         .map_err(|err| format!("Cannot serialize request: {:?}", err))?;
 
         let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }?;
-        let response = String::from_utf8(response).map_err(|e| e.to_string())?;
-        serde_json::from_str::<Response<T, E>>(&response).map_err(|e| e.to_string())
+        serde_json::from_slice::<Response<T, E>>(&response)
+            .map_err(|e| format!("Failed to parse response: {}", e.to_string(),))
     }
 }
 
