@@ -4,11 +4,15 @@ use serde::Deserialize;
 
 pub(crate) struct Client {
     url: String,
+    id: std::cell::RefCell<u64>,
 }
 
 impl Client {
     pub fn new(url: String) -> Self {
-        Self { url }
+        Self {
+            url,
+            id: std::cell::RefCell::new(0),
+        }
     }
 
     pub fn call<T: DeserializeOwned, E: DeserializeOwned>(
@@ -18,9 +22,10 @@ impl Client {
     ) -> Result<Response<T, E>, String> {
         let headers = [("Content-Type", "application/json")];
 
+        *self.id.borrow_mut() += 1;
         let body = serde_json::to_vec(&serde_json::json!({
             "jsonrpc": "2.0",
-            "id": "1",
+            "id": self.id.borrow().to_string(),
             "method": method,
             "params": params,
         }))
