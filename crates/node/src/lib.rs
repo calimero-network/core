@@ -367,6 +367,14 @@ impl Node {
             calimero_network::types::NetworkEvent::ListeningOn { address, .. } => {
                 info!("Listening on: {}", address);
             }
+            calimero_network::types::NetworkEvent::StreamOpened { peer_id, stream } => {
+                info!("Stream opened from peer: {}", peer_id);
+                if let Err(err) = self.handle_stream(stream).await {
+                    error!(%err, "Failed to handle stream");
+                }
+
+                info!("Stream closed from peer: {:?}", peer_id);
+            }
         }
 
         Ok(())
@@ -635,6 +643,14 @@ impl Node {
             ));
 
         Ok(outcome)
+    }
+
+    async fn handle_stream(
+        &mut self,
+        _stream: calimero_network::stream::Stream,
+    ) -> eyre::Result<()> {
+        // TODO: implement catchup mechanism once storage is ready
+        Ok(())
     }
 }
 

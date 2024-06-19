@@ -29,6 +29,7 @@ impl EventLoop {
                 BehaviourEvent::Rendezvous(event) => {
                     events::EventHandler::handle(self, event).await
                 }
+                BehaviourEvent::Stream(()) => {}
             },
             SwarmEvent::NewListenAddr {
                 listener_id,
