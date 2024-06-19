@@ -63,6 +63,7 @@ pub(crate) fn setup(
     });
 
     let protected_router = Router::new()
+        .route("/root-key", post(create_root_key_handler))
         .route("/install-application", post(install_application_handler))
         .route("/applications", get(list_applications_handler))
         .route("/did", get(fetch_did_handler))
@@ -78,7 +79,6 @@ pub(crate) fn setup(
 
     let unprotected_router = Router::new()
         .route("/health", get(health_check_handler))
-        .route("/root-key", post(create_root_key_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/add-client-key", post(add_client_key_handler))
         .layer(Extension(shared_state.clone()));
