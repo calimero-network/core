@@ -238,6 +238,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
         walletSignature: signature,
         payload: walletSignatureData.payload!,
         walletMetadata: walletMetadata,
+        contextId: appId,
       };
 
       await apiClient
