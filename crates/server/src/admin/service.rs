@@ -84,7 +84,7 @@ pub(crate) fn setup(
             get(handlers::context::get_context_storage_handler),
         )
         .route("/contexts", get(handlers::context::get_contexts_handler))
-        .layer(middleware::auth::AuthSignatureLayer::new(store.clone()))
+        .layer(middleware::auth::AuthSignatureLayer::new(store))
         .layer(Extension(shared_state.clone()));
 
     let unprotected_router = Router::new()
