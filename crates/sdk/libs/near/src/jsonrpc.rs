@@ -1,6 +1,6 @@
 use calimero_sdk::env;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub(crate) struct Client {
     url: String,
@@ -15,26 +15,35 @@ impl Client {
         }
     }
 
-    pub fn call<T: DeserializeOwned, E: DeserializeOwned>(
+    pub fn call<T: DeserializeOwned, E: DeserializeOwned, P: Serialize>(
         &self,
         method: &str,
-        params: serde_json::Value,
+        params: P,
     ) -> Result<Response<T, E>, String> {
         let headers = [("Content-Type", "application/json")];
 
         *self.id.borrow_mut() += 1;
-        let body = serde_json::to_vec(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": self.id.borrow().to_string(),
-            "method": method,
-            "params": params,
-        }))
+        let body = serde_json::to_vec(&Request {
+            jsonrpc: "2.0",
+            id: self.id.borrow().to_string(),
+            method: method.to_string(),
+            params,
+        })
         .map_err(|err| format!("Cannot serialize request: {:?}", err))?;
 
         let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }?;
         serde_json::from_slice::<Response<T, E>>(&response)
             .map_err(|e| format!("Failed to parse response: {}", e.to_string(),))
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Request<P: Serialize> {
+    pub jsonrpc: &'static str,
+    pub id: String,
+    pub method: String,
+
+    pub params: P,
 }
 
 #[derive(Debug, Clone, Deserialize)]

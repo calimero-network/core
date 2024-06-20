@@ -1,6 +1,6 @@
 use jsonrpc::Response;
 use query::{QueryResponseKind, RpcQueryRequest};
-use types::BlockId;
+use types::{BlockId, StoreKey};
 use views::QueryRequest;
 
 mod jsonrpc;
@@ -36,9 +36,8 @@ impl Client {
                 account_id: account_id.to_string(),
             },
         };
-        let response: Response<query::RpcQueryResponse, String> = self
-            .client
-            .call("query", serde_json::to_value(&request).unwrap())?;
+        let response: Response<query::RpcQueryResponse, String> =
+            self.client.call("query", request)?;
 
         match response.data {
             Ok(r) => {
@@ -51,18 +50,86 @@ impl Client {
         }
     }
 
-    pub fn view_code(&self, account_id: &str) -> Result<views::ContractCodeView, String> {
-        let response: Response<views::ContractCodeView, String> = self.client.call(
-            "query",
-            serde_json::json!({
-                "request_type": "view_code",
-                "finality": "final",
-                "account_id": account_id,
-            }),
-        )?;
+    pub fn view_code(
+        &self,
+        account_id: &str,
+        block_id: BlockId,
+    ) -> Result<views::ContractCodeView, String> {
+        let request = RpcQueryRequest {
+            block_id,
+            request: QueryRequest::ViewCode {
+                account_id: account_id.to_string(),
+            },
+        };
+
+        let response: Response<query::RpcQueryResponse, String> =
+            self.client.call("query", request)?;
 
         match response.data {
-            Ok(r) => Ok(r),
+            Ok(r) => {
+                if let QueryResponseKind::ViewCode(vc) = r.kind {
+                    return Ok(vc);
+                }
+                return Err("Unexpected response returned.".to_string());
+            }
+            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
+        }
+    }
+
+    pub fn view_state(
+        &self,
+        account_id: &str,
+        prefix: StoreKey,
+        include_proof: bool,
+        block_id: BlockId,
+    ) -> Result<views::ViewStateResult, String> {
+        let request = RpcQueryRequest {
+            block_id,
+            request: QueryRequest::ViewState {
+                account_id: account_id.to_string(),
+                prefix,
+                include_proof,
+            },
+        };
+
+        let response: Response<query::RpcQueryResponse, String> =
+            self.client.call("query", request)?;
+
+        match response.data {
+            Ok(r) => {
+                if let QueryResponseKind::ViewState(vs) = r.kind {
+                    return Ok(vs);
+                }
+                return Err("Unexpected response returned.".to_string());
+            }
+            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
+        }
+    }
+
+    pub fn view_access_key(
+        &self,
+        account_id: &str,
+        public_key: &str,
+        block_id: BlockId,
+    ) -> Result<views::ViewStateResult, String> {
+        let request = RpcQueryRequest {
+            block_id,
+            request: QueryRequest::ViewAccessKey {
+                account_id: account_id.to_string(),
+                public_key: public_key.to_string(),
+            },
+        };
+
+        let response: Response<query::RpcQueryResponse, String> =
+            self.client.call("query", request)?;
+
+        match response.data {
+            Ok(r) => {
+                if let QueryResponseKind::ViewState(vs) = r.kind {
+                    return Ok(vs);
+                }
+                return Err("Unexpected response returned.".to_string());
+            }
             Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
         }
     }

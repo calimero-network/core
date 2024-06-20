@@ -1,6 +1,8 @@
 use crate::{
     types::{BlockHash, BlockHeight, BlockId},
-    views::{AccountView, ContractCodeView, QueryRequest},
+    views::{
+        AccessKeyList, AccessKeyView, AccountView, ContractCodeView, QueryRequest, ViewStateResult,
+    },
 };
 
 #[derive(serde::Serialize, Debug)]
@@ -23,4 +25,7 @@ pub struct RpcQueryResponse {
 pub enum QueryResponseKind {
     ViewAccount(AccountView),
     ViewCode(ContractCodeView),
+    ViewState(ViewStateResult),
+    AccessKey(AccessKeyView),
+    AccessKeyList(AccessKeyList),
 }
