@@ -82,8 +82,8 @@ pub struct GetContextUsersResponse {
 }
 
 pub async fn get_context_users_handler(
-    Path(context_id): Path<String>,
-    Extension(state): Extension<Arc<AdminState>>,
+    Path(_context_id): Path<String>,
+    Extension(_state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     ApiResponse {
         payload: GetContextUsersResponse {
