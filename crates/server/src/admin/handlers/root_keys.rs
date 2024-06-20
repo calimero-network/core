@@ -10,9 +10,8 @@ use serde::Serialize;
 use tracing::info;
 
 use super::add_client_key::transform_request;
-use crate::admin::handlers::add_client_key::store_client_key;
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
-use crate::admin::storage::root_key::{add_root_key, get_root_keys};
+use crate::admin::storage::root_key::add_root_key;
 use crate::admin::utils::auth::validate_challenge;
 
 #[derive(Debug, Serialize)]

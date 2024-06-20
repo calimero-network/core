@@ -13,9 +13,8 @@ use libp2p::futures::future::BoxFuture;
 use tower::{Layer, Service};
 use tracing::debug;
 
-use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::client_keys::exists_client_key;
-use crate::admin::storage::root_key::{exists_root_keys, get_root_keys};
+use crate::admin::storage::root_key::exists_root_keys;
 
 #[derive(Clone)]
 pub struct AuthSignatureLayer {
@@ -158,7 +157,7 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .get("context_id")
         .ok_or_else(|| UnauthorizedError::new("Missing  context_id header"))?;
     let context_id = String::from_utf8(context_id.as_bytes().to_vec())
-    .map_err(|_| UnauthorizedError::new("Invalid signing_key string"))?;
+        .map_err(|_| UnauthorizedError::new("Invalid signing_key string"))?;
 
     let auth = AuthHeaders {
         wallet_type,
