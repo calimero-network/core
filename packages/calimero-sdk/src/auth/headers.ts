@@ -22,7 +22,7 @@ export async function createAuthHeader(
   const encoder = new TextEncoder();
   const contentBuff = encoder.encode(payload);
 
-  const signing_key = bs58.encode(privateKey.public.bytes);
+  const signingKey = bs58.encode(privateKey.public.bytes);
 
   const hashBuffer = await crypto.subtle.digest('SHA-256', contentBuff);
   const hashArray = new Uint8Array(hashBuffer);
@@ -33,7 +33,7 @@ export async function createAuthHeader(
 
   const headers: AxiosHeader = {
     wallet_type: JSON.stringify(WalletType.NEAR),
-    signing_key: signing_key,
+    signing_key: signingKey,
     signature: signatureBase58,
     challenge: contentBase58,
     context_id: contextId,
