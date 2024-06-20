@@ -5,14 +5,14 @@ import { WalletType } from '../api/nodeApi';
 import { ClientKey } from '../types/storage';
 import { getStorageClientKey } from '../storage/storage';
 
-export interface AxiosHeader {
+export interface Header {
   [key: string]: string;
 }
 
 export async function createAuthHeader(
   payload: string,
   contextId: string = "admin-ui"
-): Promise<AxiosHeader | null> {
+): Promise<Header | null> {
   const privateKey: PrivateKey = await getPrivateKey();
 
   if (!privateKey) {
@@ -31,7 +31,7 @@ export async function createAuthHeader(
   const signatureBase58 = bs58.encode(signature);
   const contentBase58 = bs58.encode(hashArray);
 
-  const headers: AxiosHeader = {
+  const headers: Header = {
     wallet_type: JSON.stringify(WalletType.NEAR),
     signing_key: signingKey,
     signature: signatureBase58,
