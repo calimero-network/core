@@ -1,13 +1,14 @@
-.idea/
-res/
 data/
+res/
 target/
+target
 .DS_Store
+.idea/
 .vscode/
 
 # typescript
-node_modules
 *.map
 coverage/
-lib/
 dist/
+lib/
+node_modules/
