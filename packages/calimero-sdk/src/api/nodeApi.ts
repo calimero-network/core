@@ -50,7 +50,7 @@ export interface LoginRequest {
   walletSignature: String;
   payload: Payload;
   walletMetadata: WalletMetadata;
-  contextId: String,
+  contextId: String;
 }
 
 export interface RootKeyRequest {

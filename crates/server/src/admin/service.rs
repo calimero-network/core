@@ -14,6 +14,8 @@ use serde_json::json;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
+use crate::middleware;
+
 use super::handlers;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,27 +49,18 @@ pub(crate) fn setup(
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
     let shared_state = Arc::new(AdminState {
-        store,
+        store: store.clone(),
         keypair: config.identity.clone(),
         application_manager,
     });
 
-    let admin_router = Router::new()
-        .route("/health", get(health_check_handler))
+    let protected_router = Router::new()
         .route(
             "/root-key",
             post(handlers::root_keys::create_root_key_handler),
         )
-        .route(
-            "/request-challenge",
-            post(handlers::challenge::request_challenge_handler),
-        )
         .route("/install-application", post(install_application_handler))
         .route("/applications", get(list_applications_handler))
-        .route(
-            "/add-client-key",
-            post(handlers::add_client_key::add_client_key_handler),
-        )
         .route("/did", get(handlers::fetch_did::fetch_did_handler))
         .route("/contexts", post(handlers::context::create_context_handler))
         .route(
@@ -91,7 +84,24 @@ pub(crate) fn setup(
             get(handlers::context::get_context_storage_handler),
         )
         .route("/contexts", get(handlers::context::get_contexts_handler))
-        .layer(Extension(shared_state))
+        .layer(middleware::auth::AuthSignatureLayer::new(store))
+        .layer(Extension(shared_state.clone()));
+
+    let unprotected_router = Router::new()
+        .route("/health", get(health_check_handler))
+        .route(
+            "/request-challenge",
+            post(handlers::challenge::request_challenge_handler),
+        )
+        .route(
+            "/add-client-key",
+            post(handlers::add_client_key::add_client_key_handler),
+        )
+        .layer(Extension(shared_state));
+
+    let admin_router = Router::new()
+        .nest("/", unprotected_router)
+        .nest("/", protected_router)
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
