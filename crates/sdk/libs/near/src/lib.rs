@@ -1,6 +1,6 @@
 use jsonrpc::Response;
 use query::{QueryResponseKind, RpcQueryRequest};
-use types::{BlockId, StoreKey};
+use types::{BlockId, FunctionArgs, StoreKey};
 use views::QueryRequest;
 
 mod jsonrpc;
@@ -127,6 +127,36 @@ impl Client {
             Ok(r) => {
                 if let QueryResponseKind::ViewState(vs) = r.kind {
                     return Ok(vs);
+                }
+                return Err("Unexpected response returned.".to_string());
+            }
+            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
+        }
+    }
+
+    pub fn call_function(
+        &self,
+        account_id: &str,
+        method_name: &str,
+        args: FunctionArgs,
+        block_id: BlockId,
+    ) -> Result<views::CallResult, String> {
+        let request = RpcQueryRequest {
+            block_id,
+            request: QueryRequest::CallFunction {
+                account_id: account_id.to_string(),
+                method_name: method_name.to_string(),
+                args,
+            },
+        };
+
+        let response: Response<query::RpcQueryResponse, String> =
+            self.client.call("query", request)?;
+
+        match response.data {
+            Ok(r) => {
+                if let QueryResponseKind::CallResult(cr) = r.kind {
+                    return Ok(cr);
                 }
                 return Err("Unexpected response returned.".to_string());
             }

@@ -1,7 +1,8 @@
 use crate::{
     types::{BlockHash, BlockHeight, BlockId},
     views::{
-        AccessKeyList, AccessKeyView, AccountView, ContractCodeView, QueryRequest, ViewStateResult,
+        AccessKeyList, AccessKeyView, AccountView, CallResult, ContractCodeView, QueryRequest,
+        ViewStateResult,
     },
 };
 
@@ -28,4 +29,5 @@ pub enum QueryResponseKind {
     ViewState(ViewStateResult),
     AccessKey(AccessKeyView),
     AccessKeyList(AccessKeyList),
+    CallResult(CallResult),
 }

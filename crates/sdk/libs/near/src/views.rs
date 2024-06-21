@@ -3,7 +3,9 @@ use std::sync::Arc;
 use serde_with::base64::Base64;
 use serde_with::serde_as;
 
-use crate::types::{AccountId, BlockHeight, Nonce, StorageUsage, StoreKey, StoreValue};
+use crate::types::{
+    AccountId, BlockHeight, FunctionArgs, Nonce, StorageUsage, StoreKey, StoreValue,
+};
 
 #[derive(serde::Serialize, Debug)]
 #[serde(tag = "request_type", rename_all = "snake_case")]
@@ -27,6 +29,12 @@ pub enum QueryRequest {
     },
     ViewAccessKeyList {
         account_id: AccountId,
+    },
+    CallFunction {
+        account_id: AccountId,
+        method_name: String,
+        #[serde(rename = "args_base64")]
+        args: FunctionArgs,
     },
 }
 
@@ -88,4 +96,10 @@ pub struct AccessKeyList {
 pub struct AccessKeyInfoView {
     pub public_key: String,
     pub access_key: AccessKeyView,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct CallResult {
+    pub result: Vec<u8>,
+    pub logs: Vec<String>,
 }

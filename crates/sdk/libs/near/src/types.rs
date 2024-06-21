@@ -23,3 +23,8 @@ pub struct StoreValue(#[serde_as(as = "Base64")] pub Vec<u8>);
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 #[serde(transparent)]
 pub struct StoreKey(#[serde_as(as = "Base64")] pub Vec<u8>);
+
+#[serde_as]
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(transparent)]
+pub struct FunctionArgs(#[serde_as(as = "Base64")] Vec<u8>);
