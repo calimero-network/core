@@ -13,4 +13,3 @@ serde_with = {workspace = true, features = ["base64"]}
 
 calimero-sdk = { path = "../../" }
 calimero-primitives = { path = "../../../primitives" }
-

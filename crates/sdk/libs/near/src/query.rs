@@ -1,9 +1,7 @@
-use crate::{
-    types::{BlockHash, BlockHeight, BlockId},
-    views::{
-        AccessKeyList, AccessKeyView, AccountView, CallResult, ContractCodeView, QueryRequest,
-        ViewStateResult,
-    },
+use crate::types::{BlockHash, BlockHeight, BlockId};
+use crate::views::{
+    AccessKeyList, AccessKeyView, AccountView, CallResult, ContractCodeView, QueryRequest,
+    ViewStateResult,
 };
 
 #[derive(serde::Serialize, Debug)]
