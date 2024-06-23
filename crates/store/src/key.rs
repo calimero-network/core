@@ -7,7 +7,7 @@ mod component;
 mod context;
 
 use component::KeyComponents;
-pub use context::{ContextIdentity, ContextMembers, ContextState, ContextTransaction};
+pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction};
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
