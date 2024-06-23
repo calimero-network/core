@@ -33,19 +33,19 @@ where
     L: WriteLayer<'key, 'value>,
 {
     fn has(&self, key: &'key impl AsKeyParts) -> eyre::Result<bool> {
-        if self.shadow.get(key).is_some() {
-            return Ok(true);
+        match self.shadow.get(key) {
+            Some(Operation::Delete) => Ok(false),
+            Some(Operation::Put { .. }) => Ok(true),
+            None => self.inner.has(key),
         }
-
-        self.inner.has(key)
     }
 
     fn get(&self, key: &'key impl AsKeyParts) -> eyre::Result<Option<Slice>> {
-        if let Some(Operation::Put { value }) = self.shadow.get(key) {
-            return Ok(Some(value.into()));
+        match self.shadow.get(key) {
+            Some(Operation::Delete) => Ok(None),
+            Some(Operation::Put { value }) => Ok(Some(value.into())),
+            None => self.inner.get(key),
         }
-
-        self.inner.get(key)
     }
 
     fn iter(&self, start: &'key impl AsKeyParts) -> eyre::Result<Iter> {
