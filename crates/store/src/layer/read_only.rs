@@ -1,3 +1,4 @@
+use crate::iter::Iter;
 use crate::key::AsKeyParts;
 use crate::layer::{Layer, ReadLayer};
 use crate::slice::Slice;
@@ -29,5 +30,9 @@ where
 
     fn get(&self, key: &'k impl AsKeyParts) -> eyre::Result<Option<Slice>> {
         self.inner.get(key)
+    }
+
+    fn iter(&self, start: &'k impl AsKeyParts) -> eyre::Result<Iter> {
+        self.inner.iter(start)
     }
 }

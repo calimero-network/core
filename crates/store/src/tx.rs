@@ -1,6 +1,7 @@
 use std::collections::btree_map;
 
 use crate::db::Column;
+use crate::iter::DBIter;
 use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
@@ -73,6 +74,16 @@ impl<'k, 'v> Transaction<'k, 'v> {
             inner: self.ops.iter(),
         }
     }
+
+    pub fn iter_range(&self, start: &'k impl AsKeyParts) -> IterRange<'_, 'k, 'v> {
+        let start = Entry::from(start);
+
+        IterRange {
+            col: start.column,
+            value: None,
+            inner: self.ops.range(start..),
+        }
+    }
 }
 
 pub struct Iter<'a, 'k, 'v> {
@@ -84,5 +95,42 @@ impl<'a, 'k, 'v> Iterator for Iter<'a, 'k, 'v> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
+    }
+}
+
+pub struct IterRange<'a, 'k, 'v> {
+    col: Column,
+    value: Option<&'a Slice<'v>>,
+    inner: btree_map::Range<'a, Entry<'k>, Operation<'v>>,
+}
+
+impl<'a, 'k, 'v> Iterator for IterRange<'a, 'k, 'v> {
+    type Item = (&'a Entry<'k>, &'a Operation<'v>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+impl<'a, 'k, 'v> DBIter for IterRange<'a, 'k, 'v> {
+    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+        let Some((entry, op)) = self.inner.next() else {
+            return Ok(None);
+        };
+
+        assert_ne!(entry.column(), self.col, "column mismatch");
+
+        match op {
+            Operation::Delete => eyre::bail!("delete operation"),
+            Operation::Put { value } => {
+                self.value = Some(value);
+
+                return Ok(Some(entry.key().into()));
+            }
+        }
+    }
+
+    fn read(&self) -> Option<Slice> {
+        self.value.map(Into::into)
     }
 }

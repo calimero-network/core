@@ -2,6 +2,7 @@ use strum::IntoEnumIterator;
 
 use crate::config::StoreConfig;
 use crate::db::{Column, Database};
+use crate::iter::{DBIter, Iter};
 use crate::slice::Slice;
 use crate::tx::{Operation, Transaction};
 
@@ -67,6 +68,15 @@ impl Database for RocksDB {
         Ok(())
     }
 
+    fn iter(&self, col: Column, key: Slice) -> eyre::Result<Iter> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        let mut iter = self.db.raw_iterator_cf(cf_handle);
+        iter.seek(key.as_ref());
+
+        Ok(Iter::new(DBIterator { iter }))
+    }
+
     fn apply(&self, tx: &Transaction) -> eyre::Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
 
@@ -92,5 +102,21 @@ impl Database for RocksDB {
         self.db.write(batch)?;
 
         Ok(())
+    }
+}
+
+pub struct DBIterator<'a> {
+    iter: rocksdb::DBRawIterator<'a>,
+}
+
+impl<'a> DBIter for DBIterator<'a> {
+    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+        self.iter.next();
+
+        Ok(self.iter.key().map(Into::into))
+    }
+
+    fn read(&self) -> Option<Slice> {
+        self.iter.value().map(Into::into)
     }
 }

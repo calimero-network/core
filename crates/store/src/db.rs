@@ -1,6 +1,7 @@
 use strum::{AsRefStr, EnumIter};
 
 use crate::config::StoreConfig;
+use crate::iter::Iter;
 use crate::slice::Slice;
 use crate::tx::Transaction;
 
@@ -11,7 +12,6 @@ pub enum Column {
     Identity,
     State,
     Transaction,
-    Membership,
 }
 
 pub trait Database: 'static {
@@ -23,6 +23,7 @@ pub trait Database: 'static {
     fn get(&self, col: Column, key: Slice) -> eyre::Result<Option<Slice>>;
     fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()>;
     fn delete(&self, col: Column, key: Slice) -> eyre::Result<()>;
+    fn iter(&self, col: Column, key: Slice) -> eyre::Result<Iter>;
 
     fn apply(&self, tx: &Transaction) -> eyre::Result<()>;
 }

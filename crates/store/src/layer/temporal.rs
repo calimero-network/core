@@ -1,3 +1,4 @@
+use crate::iter::{Iter, IterPair};
 use crate::key::AsKeyParts;
 use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
@@ -45,6 +46,13 @@ where
         }
 
         self.inner.get(key)
+    }
+
+    fn iter(&self, start: &'key impl AsKeyParts) -> eyre::Result<Iter> {
+        let inner = self.inner.iter(start)?;
+        let shadow = self.shadow.iter_range(start);
+
+        Ok(Iter::new(IterPair(inner, shadow)))
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::iter::Iter;
 use crate::key::AsKeyParts;
 use crate::slice::Slice;
 use crate::tx::Transaction;
@@ -12,6 +13,7 @@ pub trait Layer {
 pub trait ReadLayer<'k>: Layer {
     fn has(&self, key: &'k impl AsKeyParts) -> eyre::Result<bool>;
     fn get(&self, key: &'k impl AsKeyParts) -> eyre::Result<Option<Slice>>;
+    fn iter(&self, start: &'k impl AsKeyParts) -> eyre::Result<Iter>;
 }
 
 pub trait WriteLayer<'k, 'v>: ReadLayer<'k> {
@@ -37,6 +39,12 @@ impl<'k> ReadLayer<'k> for crate::Store {
         let (col, key) = key.parts();
 
         self.db.get(col, key.as_slice())
+    }
+
+    fn iter(&self, start: &impl AsKeyParts) -> eyre::Result<Iter> {
+        let (col, key) = start.parts();
+
+        self.db.iter(col, key.as_slice())
     }
 }
 
