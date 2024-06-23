@@ -141,6 +141,12 @@ impl<'a> From<Slice<'a>> for Box<[u8]> {
     }
 }
 
+impl<'a> PartialEq for Slice<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
