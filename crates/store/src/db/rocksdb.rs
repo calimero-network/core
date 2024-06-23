@@ -71,10 +71,10 @@ impl Database for RocksDB {
     fn iter(&self, col: Column, key: Slice) -> eyre::Result<Iter> {
         let cf_handle = self.try_cf_handle(&col)?;
 
-        let mut iter = self.db.raw_iterator_cf(cf_handle);
-        iter.seek(key.as_ref());
-
-        Ok(Iter::new(DBIterator { iter }))
+        Ok(Iter::new(DBIterator {
+            iter: self.db.raw_iterator_cf(cf_handle),
+            seek: Some(key.into_boxed().into()),
+        }))
     }
 
     fn apply(&self, tx: &Transaction) -> eyre::Result<()> {
@@ -105,13 +105,18 @@ impl Database for RocksDB {
     }
 }
 
-pub struct DBIterator<'a> {
+pub struct DBIterator<'a, 'k> {
+    seek: Option<Slice<'k>>,
     iter: rocksdb::DBRawIterator<'a>,
 }
 
-impl<'a> DBIter for DBIterator<'a> {
+impl<'a, 'k> DBIter for DBIterator<'a, 'k> {
     fn next(&mut self) -> eyre::Result<Option<Slice>> {
-        self.iter.next();
+        if let Some(seek) = self.seek.take() {
+            self.iter.seek(seek);
+        } else {
+            self.iter.next();
+        }
 
         Ok(self.iter.key().map(Into::into))
     }
