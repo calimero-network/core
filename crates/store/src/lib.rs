@@ -3,7 +3,7 @@ use std::sync::Arc;
 pub mod config;
 pub mod db;
 mod iter;
-mod key;
+pub mod key;
 pub mod layer;
 pub mod slice;
 mod tx;

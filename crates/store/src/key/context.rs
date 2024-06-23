@@ -4,7 +4,7 @@ use generic_array::GenericArray;
 
 use crate::db::Column;
 use crate::key::component::KeyComponent;
-use crate::key::{AsKeyParts, Key};
+use crate::key::{AsKeyParts, FromKeyParts, Key};
 
 pub struct ContextId;
 
@@ -12,12 +12,16 @@ impl KeyComponent for ContextId {
     type LEN = U32;
 }
 
-#[derive(Copy, Clone)]
+#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub struct ContextMeta(Key<ContextId>);
 
 impl ContextMeta {
     pub fn new(context_id: [u8; 32]) -> Self {
         Self(Key(context_id.into()))
+    }
+
+    pub fn context_id(&self) -> [u8; 32] {
+        *AsRef::<[_; 32]>::as_ref(&self.0)
     }
 }
 
@@ -29,18 +33,42 @@ impl AsKeyParts for ContextMeta {
     }
 }
 
+impl FromKeyParts for ContextMeta {
+    type Error = ();
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(*<&_>::from(&parts)))
+    }
+}
+
 pub struct PublicKey;
 
 impl KeyComponent for PublicKey {
     type LEN = U32;
 }
 
-#[derive(Copy, Clone)]
+#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub struct ContextIdentity(Key<(ContextId, PublicKey)>);
 
 impl ContextIdentity {
     pub fn new(context_id: [u8; 32], context_pk: [u8; 32]) -> Self {
         Self(Key(GenericArray::from(context_id).concat(context_pk.into())))
+    }
+
+    pub fn context_id(&self) -> [u8; 32] {
+        let mut context_id = [0; 32];
+
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+
+        context_id
+    }
+
+    pub fn public_key(&self) -> [u8; 32] {
+        let mut public_key = [0; 32];
+
+        public_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+
+        public_key
     }
 }
 
@@ -52,18 +80,42 @@ impl AsKeyParts for ContextIdentity {
     }
 }
 
+impl FromKeyParts for ContextIdentity {
+    type Error = ();
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
 pub struct StateKey;
 
 impl KeyComponent for StateKey {
     type LEN = U32;
 }
 
-#[derive(Copy, Clone)]
+#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub struct ContextState(Key<(ContextId, StateKey)>);
 
 impl ContextState {
     pub fn new(context_id: [u8; 32], state_key: [u8; 32]) -> Self {
         Self(Key(GenericArray::from(context_id).concat(state_key.into())))
+    }
+
+    pub fn context_id(&self) -> [u8; 32] {
+        let mut context_id = [0; 32];
+
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+
+        context_id
+    }
+
+    pub fn state_key(&self) -> [u8; 32] {
+        let mut state_key = [0; 32];
+
+        state_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+
+        state_key
     }
 }
 
@@ -75,13 +127,21 @@ impl AsKeyParts for ContextState {
     }
 }
 
+impl FromKeyParts for ContextState {
+    type Error = ();
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
+    }
+}
+
 pub struct TransactionId;
 
 impl KeyComponent for TransactionId {
     type LEN = U32;
 }
 
-#[derive(Copy, Clone)]
+#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub struct ContextTransaction(Key<(ContextId, TransactionId)>);
 
 impl ContextTransaction {
@@ -90,6 +150,22 @@ impl ContextTransaction {
             GenericArray::from(context_id).concat(transaction_id.into())
         ))
     }
+
+    pub fn context_id(&self) -> [u8; 32] {
+        let mut context_id = [0; 32];
+
+        context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
+
+        context_id
+    }
+
+    pub fn transaction_id(&self) -> [u8; 32] {
+        let mut transaction_id = [0; 32];
+
+        transaction_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
+
+        transaction_id
+    }
 }
 
 impl AsKeyParts for ContextTransaction {
@@ -97,5 +173,13 @@ impl AsKeyParts for ContextTransaction {
 
     fn parts(&self) -> (Column, &Key<Self::Components>) {
         (Column::Transaction, &self.0)
+    }
+}
+
+impl FromKeyParts for ContextTransaction {
+    type Error = ();
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(parts))
     }
 }

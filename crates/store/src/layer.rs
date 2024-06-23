@@ -1,5 +1,5 @@
-use crate::iter::Iter;
-use crate::key::AsKeyParts;
+use crate::iter::{Iter, Structured};
+use crate::key::{AsKeyParts, FromKeyParts};
 use crate::slice::Slice;
 use crate::tx::Transaction;
 
@@ -13,7 +13,8 @@ pub trait Layer {
 pub trait ReadLayer<'k>: Layer {
     fn has(&self, key: &'k impl AsKeyParts) -> eyre::Result<bool>;
     fn get(&self, key: &'k impl AsKeyParts) -> eyre::Result<Option<Slice>>;
-    fn iter(&self, start: &'k impl AsKeyParts) -> eyre::Result<Iter>;
+    fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &'k K)
+        -> eyre::Result<Iter<Structured<K>>>;
 }
 
 pub trait WriteLayer<'k, 'v>: ReadLayer<'k> {
@@ -41,10 +42,10 @@ impl<'k> ReadLayer<'k> for crate::Store {
         self.db.get(col, key.as_slice())
     }
 
-    fn iter(&self, start: &impl AsKeyParts) -> eyre::Result<Iter> {
+    fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &K) -> eyre::Result<Iter<Structured<K>>> {
         let (col, key) = start.parts();
 
-        self.db.iter(col, key.as_slice())
+        Ok(self.db.iter(col, key.as_slice())?.structured())
     }
 }
 

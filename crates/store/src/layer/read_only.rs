@@ -1,5 +1,5 @@
-use crate::iter::Iter;
-use crate::key::AsKeyParts;
+use crate::iter::{Iter, Structured};
+use crate::key::{AsKeyParts, FromKeyParts};
 use crate::layer::{Layer, ReadLayer};
 use crate::slice::Slice;
 
@@ -32,7 +32,10 @@ where
         self.inner.get(key)
     }
 
-    fn iter(&self, start: &'k impl AsKeyParts) -> eyre::Result<Iter> {
+    fn iter<K: AsKeyParts + FromKeyParts>(
+        &self,
+        start: &'k K,
+    ) -> eyre::Result<Iter<Structured<K>>> {
         self.inner.iter(start)
     }
 }
