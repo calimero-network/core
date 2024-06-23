@@ -114,19 +114,21 @@ impl<'a, 'k, 'v> Iterator for IterRange<'a, 'k, 'v> {
 
 impl<'a, 'k, 'v> DBIter for IterRange<'a, 'k, 'v> {
     fn next(&mut self) -> eyre::Result<Option<Slice>> {
-        let Some((entry, op)) = self.inner.next() else {
-            return Ok(None);
-        };
+        loop {
+            let Some((entry, op)) = self.inner.next() else {
+                return Ok(None);
+            };
 
-        assert_eq!(entry.column(), self.col, "column mismatch");
-
-        match op {
-            Operation::Delete => eyre::bail!("delete operation"),
-            Operation::Put { value } => {
-                self.value = Some(value);
-
-                return Ok(Some(entry.key().into()));
+            if entry.column() != self.col {
+                continue;
             }
+
+            match op {
+                Operation::Delete => eyre::bail!("delete operation"),
+                Operation::Put { value } => self.value = Some(value),
+            };
+
+            return Ok(Some(entry.key().into()));
         }
     }
 
