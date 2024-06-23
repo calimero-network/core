@@ -2,6 +2,7 @@ use std::fs;
 
 use calimero_store::config;
 use calimero_store::db;
+use calimero_store::key::ContextIdentity;
 use calimero_store::key::ContextState;
 use calimero_store::layer::{temporal, ReadLayer, WriteLayer};
 use calimero_store::Store;
@@ -64,19 +65,57 @@ fn rocks_store() {
     store.put(&key1, b"Hello, World".into()).unwrap();
     store.put(&key2, b"Another Value".into()).unwrap();
 
-    let mut iter = store.iter(&key1).unwrap();
+    {
+        let mut iter = store.iter(&key1).unwrap();
 
-    let mut keys = iter.keys();
+        let mut keys = iter.keys();
 
-    assert_eq!(Some(key1), keys.next());
-    assert_eq!(Some(key2), keys.next());
+        assert_eq!(Some(key1), keys.next());
+        assert_eq!(Some(key2), keys.next());
+        assert_eq!(None, keys.next());
 
-    let mut iter = store.iter(&key1).unwrap();
+        let mut iter = store.iter(&key1).unwrap();
 
-    let mut keys = iter.entries();
+        let mut keys = iter.entries();
 
-    assert_eq!(Some((key1, b"Hello, World".into())), keys.next());
-    assert_eq!(Some((key2, b"Another Value".into())), keys.next());
+        assert_eq!(Some((key1, b"Hello, World".into())), keys.next());
+        assert_eq!(Some((key2, b"Another Value".into())), keys.next());
+        assert_eq!(None, keys.next());
+    }
+
+    let public_key1 = [0u8; 32];
+
+    let key3 = ContextIdentity::new(context_id1, public_key1);
+
+    store.put(&key3, b"Some Associated Value".into()).unwrap();
+
+    let public_key2 = [1u8; 32];
+
+    let key4 = ContextIdentity::new(context_id1, public_key2);
+
+    store
+        .put(&key4, b"Another Associated Value".into())
+        .unwrap();
+
+    {
+        let mut iter = store.iter(&key1).unwrap();
+
+        let mut keys = iter.keys();
+
+        assert_eq!(Some(key1), keys.next());
+        assert_eq!(Some(key2), keys.next());
+        assert_eq!(None, keys.next());
+    }
+
+    {
+        let mut iter = store.iter(&key3).unwrap();
+
+        let mut keys = iter.keys();
+
+        assert_eq!(Some(key3), keys.next());
+        assert_eq!(Some(key4), keys.next());
+        assert_eq!(None, keys.next());
+    }
 }
 
 #[test]
@@ -139,17 +178,55 @@ fn temporal_store() {
     store.put(&key1, b"Hello, World".into()).unwrap();
     store.put(&key2, b"Another Value".into()).unwrap();
 
-    let mut iter = store.iter(&key1).unwrap();
+    {
+        let mut iter = store.iter(&key1).unwrap();
 
-    let mut keys = iter.keys();
+        let mut keys = iter.keys();
 
-    assert_eq!(Some(key1), keys.next());
-    assert_eq!(Some(key2), keys.next());
+        assert_eq!(Some(key1), keys.next());
+        assert_eq!(Some(key2), keys.next());
+        assert_eq!(None, keys.next());
 
-    let mut iter = store.iter(&key1).unwrap();
+        let mut iter = store.iter(&key1).unwrap();
 
-    let mut keys = iter.entries();
+        let mut keys = iter.entries();
 
-    assert_eq!(Some((key1, b"Hello, World".into())), keys.next());
-    assert_eq!(Some((key2, b"Another Value".into())), keys.next());
+        assert_eq!(Some((key1, b"Hello, World".into())), keys.next());
+        assert_eq!(Some((key2, b"Another Value".into())), keys.next());
+        assert_eq!(None, keys.next());
+    }
+
+    let public_key1 = [0u8; 32];
+
+    let key3 = ContextIdentity::new(context_id1, public_key1);
+
+    store.put(&key3, b"Some Associated Value".into()).unwrap();
+
+    let public_key2 = [1u8; 32];
+
+    let key4 = ContextIdentity::new(context_id1, public_key2);
+
+    store
+        .put(&key4, b"Another Associated Value".into())
+        .unwrap();
+
+    {
+        let mut iter = store.iter(&key1).unwrap();
+
+        let mut keys = iter.keys();
+
+        assert_eq!(Some(key1), keys.next());
+        assert_eq!(Some(key2), keys.next());
+        assert_eq!(None, keys.next());
+    }
+
+    {
+        let mut iter = store.iter(&key3).unwrap();
+
+        let mut keys = iter.keys();
+
+        assert_eq!(Some(key3), keys.next());
+        assert_eq!(Some(key4), keys.next());
+        assert_eq!(None, keys.next());
+    }
 }
