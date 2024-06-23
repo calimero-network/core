@@ -118,7 +118,7 @@ impl<'a, 'k, 'v> DBIter for IterRange<'a, 'k, 'v> {
             return Ok(None);
         };
 
-        assert_ne!(entry.column(), self.col, "column mismatch");
+        assert_eq!(entry.column(), self.col, "column mismatch");
 
         match op {
             Operation::Delete => eyre::bail!("delete operation"),
