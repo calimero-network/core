@@ -1,3 +1,5 @@
+use std::fmt;
+
 use generic_array::sequence::Concat;
 use generic_array::typenum::U32;
 use generic_array::GenericArray;
@@ -12,7 +14,7 @@ impl KeyComponent for ContextId {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
 pub struct ContextMeta(Key<ContextId>);
 
 impl ContextMeta {
@@ -41,13 +43,21 @@ impl FromKeyParts for ContextMeta {
     }
 }
 
+impl fmt::Debug for ContextMeta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextMeta")
+            .field("context_id", &self.context_id())
+            .finish()
+    }
+}
+
 pub struct PublicKey;
 
 impl KeyComponent for PublicKey {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
 pub struct ContextIdentity(Key<(ContextId, PublicKey)>);
 
 impl ContextIdentity {
@@ -88,13 +98,22 @@ impl FromKeyParts for ContextIdentity {
     }
 }
 
+impl fmt::Debug for ContextIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextIdentity")
+            .field("context_id", &self.context_id())
+            .field("public_key", &self.public_key())
+            .finish()
+    }
+}
+
 pub struct StateKey;
 
 impl KeyComponent for StateKey {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
 pub struct ContextState(Key<(ContextId, StateKey)>);
 
 impl ContextState {
@@ -135,13 +154,22 @@ impl FromKeyParts for ContextState {
     }
 }
 
+impl fmt::Debug for ContextState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextState")
+            .field("context_id", &self.context_id())
+            .field("state_key", &self.state_key())
+            .finish()
+    }
+}
+
 pub struct TransactionId;
 
 impl KeyComponent for TransactionId {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
 pub struct ContextTransaction(Key<(ContextId, TransactionId)>);
 
 impl ContextTransaction {
@@ -181,5 +209,14 @@ impl FromKeyParts for ContextTransaction {
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(parts))
+    }
+}
+
+impl fmt::Debug for ContextTransaction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextTransaction")
+            .field("context_id", &self.context_id())
+            .field("transaction_id", &self.transaction_id())
+            .finish()
     }
 }
