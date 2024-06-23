@@ -1,3 +1,5 @@
+use std::fs;
+
 use calimero_store::config;
 use calimero_store::db;
 use calimero_store::key::ContextState;
@@ -9,6 +11,14 @@ fn rocks_store() {
     let config = config::StoreConfig {
         path: "corpus/rocks".into(),
     };
+
+    if config.path.exists() {
+        if config.path.metadata().unwrap().is_dir() {
+            fs::remove_dir_all(&config.path).unwrap();
+        } else {
+            fs::remove_file(&config.path).unwrap();
+        }
+    }
 
     let mut store = Store::open::<db::RocksDB>(&config).unwrap();
 
@@ -74,6 +84,14 @@ fn temporal_store() {
     let config = config::StoreConfig {
         path: "corpus/temporal".into(),
     };
+
+    if config.path.exists() {
+        if config.path.metadata().unwrap().is_dir() {
+            fs::remove_dir_all(&config.path).unwrap();
+        } else {
+            fs::remove_file(&config.path).unwrap();
+        }
+    }
 
     let mut store = Store::open::<db::RocksDB>(&config).unwrap();
 
