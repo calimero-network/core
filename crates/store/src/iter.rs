@@ -71,10 +71,7 @@ pub struct IterEntries<'a, 'b> {
 
 type Value<'a> = Slice<'a>;
 
-pub struct Entry<'a> {
-    pub key: Key<'a>,
-    pub value: Value<'a>,
-}
+type Entry<'a> = (Key<'a>, Value<'a>);
 
 impl<'a, 'b> Iterator for IterEntries<'a, 'b> {
     type Item = Entry<'a>;
@@ -94,7 +91,7 @@ impl<'a, 'b> Iterator for IterEntries<'a, 'b> {
             unsafe { std::mem::transmute(value) }
         };
 
-        Some(Entry { key, value })
+        Some((key, value))
     }
 }
 
