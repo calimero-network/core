@@ -5,7 +5,10 @@ use crate::iter::Iter;
 use crate::slice::Slice;
 use crate::tx::Transaction;
 
-pub mod rocksdb;
+// mod memory;
+mod rocksdb;
+
+pub use rocksdb::RocksDB;
 
 #[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd, EnumIter, AsRefStr)]
 pub enum Column {
