@@ -1,11 +1,8 @@
 use std::fs;
 
-use calimero_store::config;
-use calimero_store::db;
-use calimero_store::key::ContextIdentity;
-use calimero_store::key::ContextState;
+use calimero_store::key::{ContextIdentity, ContextState};
 use calimero_store::layer::{temporal, ReadLayer, WriteLayer};
-use calimero_store::Store;
+use calimero_store::{config, db, Store};
 
 #[test]
 fn rocks_store() {
