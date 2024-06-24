@@ -93,8 +93,8 @@ pub struct Outcome {
 
 #[derive(Debug, Serialize)]
 pub struct Event {
-    kind: String,
-    data: Vec<u8>,
+    pub kind: String,
+    pub data: Vec<u8>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -304,5 +304,49 @@ impl<'a> VMHostFunctions<'a> {
         };
 
         Ok(0)
+    }
+
+    pub fn fetch(
+        &mut self,
+        url_ptr: u64,
+        url_len: u64,
+        method_ptr: u64,
+        method_len: u64,
+        headers_ptr: u64,
+        headers_len: u64,
+        body_ptr: u64,
+        body_len: u64,
+        register_id: u64,
+    ) -> Result<u32> {
+        let url = self.get_string(url_ptr, url_len)?;
+        let method = self.get_string(method_ptr, method_len)?;
+        let headers = self.read_guest_memory(headers_ptr, headers_len)?;
+        let headers: Vec<(String, String)> = borsh::from_slice(&headers).unwrap(); // safety: headers are coming from an inner source. Safe to deserialize.
+        let body = self.read_guest_memory(body_ptr, body_len)?;
+        let mut request = ureq::request(&method, &url);
+
+        for (key, value) in headers.iter() {
+            request = request.set(key, value);
+        }
+
+        let response = if !body.is_empty() {
+            request.send_bytes(&body)
+        } else {
+            request.call()
+        };
+
+        let (status, data) = match response {
+            Ok(response) => {
+                let mut buffer = vec![];
+                match response.into_reader().read_to_end(&mut buffer) {
+                    Ok(_) => (0, buffer),
+                    Err(_) => (1, "Failed to read the response body.".into()),
+                }
+            }
+            Err(e) => (1, e.to_string().into_bytes()),
+        };
+
+        self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, data))?;
+        Ok(status)
     }
 }

@@ -14,13 +14,35 @@ pub fn add_root_key(store: &Store, root_key: RootKey) -> eyre::Result<bool> {
         did_document.root_keys.push(root_key);
         update_did(store, did_document)?;
     }
+
     Ok(true)
 }
 
-pub fn get_root_key(store: &Store, root_key: &RootKey) -> eyre::Result<Option<RootKey>> {
+pub fn get_root_key(store: &Store, signing_key: String) -> eyre::Result<Option<RootKey>> {
     let did = get_or_create_did(store)?;
     Ok(did
         .root_keys
         .into_iter()
-        .find(|k| k.signing_key == root_key.signing_key))
+        .find(|k| k.signing_key == signing_key))
+}
+
+pub fn get_root_keys(store: &Store) -> eyre::Result<Vec<RootKey>> {
+    let did = get_or_create_did(store)?;
+    Ok(did.root_keys)
+}
+
+pub fn exists_root_keys(store: &Store) -> eyre::Result<bool> {
+    let did = get_or_create_did(store)?;
+    Ok(!did.root_keys.is_empty())
+}
+
+pub fn clean_keys(store: &Store) -> eyre::Result<()> {
+    let mut did = get_or_create_did(store)?;
+
+    did.client_keys.clear();
+    did.root_keys.clear();
+
+    update_did(store, did)?;
+
+    Ok(())
 }

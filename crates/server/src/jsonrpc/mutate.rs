@@ -35,8 +35,12 @@ async fn handle(
             }),
         },
         Ok(None) => Ok(MutateResponse { output: None }),
-        Err(err) => eyre::bail!(MutateError::ExecutionError {
-            message: err.to_string()
-        }),
+        Err(err) => match err {
+            jsonrpc::CallError::UpstreamCallError(err) => eyre::bail!(MutateError::CallError(err)),
+            jsonrpc::CallError::UpstreamFunctionCallError(message) => {
+                eyre::bail!(MutateError::FunctionCallError(message))
+            }
+            jsonrpc::CallError::InternalError(err) => eyre::bail!(err),
+        },
     }
 }

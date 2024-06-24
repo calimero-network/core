@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use calimero_server_primitives::admin::{NodeChallenge, NodeChallengeMessage};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, RngCore};
 use reqwest::StatusCode;
@@ -25,22 +26,6 @@ struct RequestChallengeResponse {
     data: NodeChallenge,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeChallenge {
-    #[serde(flatten)]
-    pub(crate) message: NodeChallengeMessage,
-    pub(crate) node_signature: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeChallengeMessage {
-    pub(crate) nonce: String,
-    pub(crate) application_id: String, //optional if challenge is used on admin level
-    pub(crate) timestamp: i64,
-}
-
 pub const CHALLENGE_KEY: &str = "challenge";
 
 pub async fn request_challenge_handler(
@@ -48,42 +33,28 @@ pub async fn request_challenge_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<RequestChallenge>,
 ) -> impl IntoResponse {
-    if let Some(challenge) = session.get::<String>(CHALLENGE_KEY).await.ok().flatten() {
-        match serde_json::from_str::<NodeChallenge>(&challenge) {
-            Ok(challenge) => ApiResponse {
+    match generate_challenge(req.application_id.clone(), &state.keypair) {
+        Ok(challenge) => {
+            if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
+                error!("Failed to insert challenge into session: {}", err);
+                return ApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "Failed to insert challenge into session".to_string(),
+                }
+                .into_response();
+            }
+            ApiResponse {
                 payload: RequestChallengeResponse { data: challenge },
             }
-            .into_response(),
-            Err(_) => ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to deserialize challenge".to_string(),
-            }
-            .into_response(),
+            .into_response()
         }
-    } else {
-        match generate_challenge(req.application_id.clone(), &state.keypair) {
-            Ok(challenge) => {
-                if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
-                    error!("Failed to insert challenge into session: {}", err);
-                    return ApiError {
-                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                        message: "Failed to insert challenge into session".to_string(),
-                    }
-                    .into_response();
-                }
-                ApiResponse {
-                    payload: RequestChallengeResponse { data: challenge },
-                }
-                .into_response()
+        Err(err) => {
+            error!("Failed to generate client challenge: {}", err);
+            ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Failed to generate challenge".to_string(),
             }
-            Err(err) => {
-                error!("Failed to generate client challenge: {}", err);
-                ApiError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "Failed to generate challenge".to_string(),
-                }
-                .into_response()
-            }
+            .into_response()
         }
     }
 }
