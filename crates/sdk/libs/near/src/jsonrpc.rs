@@ -2,6 +2,8 @@ use calimero_sdk::env;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::error::NearLibError;
+
 pub(crate) struct Client {
     url: String,
     id: std::cell::RefCell<u64>,
@@ -19,7 +21,7 @@ impl Client {
         &self,
         method: &str,
         params: P,
-    ) -> Result<Response<T, E>, String> {
+    ) -> Result<Response<T, E>, NearLibError> {
         let headers = [("Content-Type", "application/json")];
 
         *self.id.borrow_mut() += 1;
@@ -28,12 +30,11 @@ impl Client {
             id: &*self.id.borrow().to_string(),
             method,
             params,
-        })
-        .map_err(|err| format!("Cannot serialize request: {:?}", err))?;
+        })?;
 
-        let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }?;
-        serde_json::from_slice::<Response<T, E>>(&response)
-            .map_err(|e| format!("Failed to parse response: {}", e.to_string(),))
+        let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }
+            .map_err(NearLibError::FetchError)?;
+        Ok(serde_json::from_slice::<Response<T, E>>(&response)?)
     }
 }
 

@@ -1,10 +1,11 @@
+use serde_with::DisplayFromStr;
 use std::sync::Arc;
 
 use serde_with::base64::Base64;
 use serde_with::serde_as;
 
 use crate::types::{
-    AccountId, BlockHeight, FunctionArgs, Nonce, StorageUsage, StoreKey, StoreValue,
+    AccountId, Balance, BlockHeight, FunctionArgs, Nonce, StorageUsage, StoreKey, StoreValue,
 };
 
 #[derive(serde::Serialize, Debug)]
@@ -38,11 +39,14 @@ pub enum QueryRequest {
     },
 }
 
+#[serde_as]
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct AccountView {
-    pub amount: String,
-    pub locked: String,
-    pub code_hash: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub amount: Balance,
+    #[serde_as(as = "DisplayFromStr")]
+    pub locked: Balance,
+    pub code_hash: calimero_primitives::hash::Hash,
     pub storage_usage: StorageUsage,
     pub storage_paid_at: BlockHeight,
 }
@@ -53,7 +57,7 @@ pub struct ContractCodeView {
     #[serde(rename = "code_base64")]
     #[serde_as(as = "Base64")]
     pub code: Box<[u8]>,
-    pub hash: String,
+    pub hash: Box<str>,
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -77,12 +81,14 @@ pub struct AccessKeyView {
     pub permission: AccessKeyPermissionView,
 }
 
+#[serde_as]
 #[derive(Debug, Clone, serde::Deserialize)]
 pub enum AccessKeyPermissionView {
     FunctionCall {
-        allowance: Option<String>,
-        receiver_id: String,
-        method_names: Vec<String>,
+        #[serde_as(as = "Option<DisplayFromStr>")]
+        allowance: Option<Balance>,
+        receiver_id: Box<str>,
+        method_names: Box<[Box<str>]>,
     },
     FullAccess,
 }
@@ -94,12 +100,12 @@ pub struct AccessKeyList {
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct AccessKeyInfoView {
-    pub public_key: String,
+    pub public_key: Box<str>,
     pub access_key: AccessKeyView,
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct CallResult {
-    pub result: Vec<u8>,
-    pub logs: Vec<String>,
+    pub result: Box<[u8]>,
+    pub logs: Box<[Box<str>]>,
 }

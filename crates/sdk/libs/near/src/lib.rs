@@ -3,6 +3,7 @@ use query::{QueryResponseKind, RpcQueryRequest};
 use types::{BlockId, FunctionArgs, StoreKey};
 use views::QueryRequest;
 
+pub mod error;
 mod jsonrpc;
 pub mod query;
 pub mod types;
