@@ -74,7 +74,9 @@ impl ConfigCommand {
 
         let matches = cli::RootCommand::command().get_matches();
 
-        let setup_matches = matches.subcommand_matches("config").unwrap();
+        let setup_matches = matches
+            .subcommand_matches("config")
+            .ok_or_else(|| eyre::eyre!("Command not recognized. Expected 'config' subcommand."))?;
 
         let boot_network_provided = check_if_provided(&setup_matches, "boot_network");
         let swarm_host_provided = check_if_provided(&setup_matches, "swarm_host");
