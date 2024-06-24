@@ -27,7 +27,7 @@ impl Client {
         *self.id.borrow_mut() += 1;
         let body = serde_json::to_vec(&Request {
             jsonrpc: "2.0",
-            id: &*self.id.borrow().to_string(),
+            id: *self.id.borrow(),
             method,
             params,
         })?;
@@ -40,11 +40,11 @@ impl Client {
 
 #[derive(Debug, Clone, Serialize)]
 struct Request<'a, P: Serialize> {
-    pub jsonrpc: &'a str,
-    pub id: &'a str,
-    pub method: &'a str,
+    jsonrpc: &'a str,
+    id: u64,
+    method: &'a str,
 
-    pub params: P,
+    params: P,
 }
 
 #[derive(Debug, Clone, Deserialize)]
