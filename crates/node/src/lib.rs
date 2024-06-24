@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info};
 
 pub mod config;
-pub mod temporal_runtime_store;
+pub mod runtime_compat;
 pub mod transaction_pool;
 pub mod types;
 
@@ -575,18 +575,14 @@ impl Node {
 
     async fn execute(
         &mut self,
-        application_id: calimero_primitives::application::ApplicationId,
+        context_id: calimero_primitives::context::ContextId,
         hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let mut storage = match hash {
-            Some(_) => temporal_runtime_store::TemporalRuntimeStore::Write(
-                calimero_store::TemporalStore::new(application_id.clone(), &self.store),
-            ),
-            None => temporal_runtime_store::TemporalRuntimeStore::Read(
-                calimero_store::ReadOnlyStore::new(application_id.clone(), &self.store),
-            ),
+            Some(_) => runtime_compat::RuntimeCompatStore::temporal(&mut self.store, context_id),
+            None => runtime_compat::RuntimeCompatStore::read_only(&self.store, context_id),
         };
 
         let outcome = calimero_runtime::run(
@@ -599,7 +595,7 @@ impl Node {
             &get_runtime_limits()?,
         )?;
 
-        if let (Ok(_), temporal_runtime_store::TemporalRuntimeStore::Write(storage), Some(hash)) =
+        if let (Ok(_), runtime_compat::RuntimeCompatStore::Write(storage), Some(hash)) =
             (&outcome.returns, storage, hash)
         {
             if storage.has_changes() {

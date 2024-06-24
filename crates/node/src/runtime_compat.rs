@@ -5,8 +5,6 @@ use calimero_store::key::ContextState;
 use calimero_store::layer::{read_only, temporal, ReadLayer, WriteLayer};
 use calimero_store::Store;
 
-// todo! rename module to `runtime_compat`
-
 pub enum RuntimeCompatStoreInner<'a, 'k, 'v> {
     Read(read_only::ReadOnly<'k, Store>),
     Write(temporal::Temporal<'a, 'k, 'v, Store>),
