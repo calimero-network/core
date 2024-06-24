@@ -10,6 +10,7 @@ resolver = "2"
 members = [
   "./crates/application",
   "./crates/identity",
+  "./crates/meroctl",
   "./crates/network",
   "./crates/node",
   "./crates/node-primitives",
