@@ -1,14 +1,16 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { randomBytes } from "crypto";
-import { getOrCreateKeypair } from "../../crypto/ed25519";
+import React, { useCallback, useEffect, useState } from 'react';
+import { randomBytes } from 'crypto';
+import { getOrCreateKeypair } from '../../auth/ed25519';
+
 import {
-  MetaMaskButton,
   useAccount,
+  MetaMaskButton,
   useSDK,
   // @ts-ignore: sdk-react-ui does not export useSignMessage
   useSignMessage,
-} from "@metamask/sdk-react-ui";
-import apiClient from "../../api";
+} from '@metamask/sdk-react-ui';
+
+import apiClient from '../../api';
 import {
   EthSignatureMessageMetadata,
   LoginRequest,
@@ -18,11 +20,11 @@ import {
   SignatureMessageMetadata,
   WalletMetadata,
   WalletSignatureData,
-} from "../../nodeApi";
-import { ResponseData } from "../../api-response";
-import { setStorageNodeAuthorized } from "../../storage/storage";
-import { Loading } from "../loading/Loading";
-import { getNetworkType } from "../eth/type";
+} from '../../api/nodeApi';
+import { ResponseData } from '../../types/api-response';
+import { setStorageNodeAuthorized } from '../../storage/storage';
+import { Loading } from '../loading/Loading';
+import { getNetworkType } from '../eth/type';
 
 interface LoginWithMetamaskProps {
   applicationId: string;
@@ -32,7 +34,7 @@ interface LoginWithMetamaskProps {
   navigateBack: () => void | undefined;
 }
 
-export default function LoginWithMetamask({
+export function LoginWithMetamask({
   applicationId,
   rpcBaseUrl,
   successRedirect,
@@ -68,22 +70,22 @@ export default function LoginWithMetamask({
     const { publicKey } = await getOrCreateKeypair();
 
     if (challengeResponseData.error) {
-      console.error("requestNodeData error", challengeResponseData.error);
+      console.error('requestNodeData error', challengeResponseData.error);
       //TODO handle error
       return;
     }
 
     const signatureMessage: SignatureMessage = {
-      nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
+      nodeSignature: challengeResponseData.data?.nodeSignature ?? '',
       publicKey: publicKey,
     };
 
     const signatureMessageMetadata: SignatureMessageMetadata = {
-      nodeSignature: challengeResponseData.data?.nodeSignature ?? "",
+      nodeSignature: challengeResponseData.data?.nodeSignature ?? '',
       publicKey: publicKey,
       nonce:
-        challengeResponseData.data?.nonce ?? randomBytes(32).toString("hex"),
-      applicationId: challengeResponseData.data?.applicationId ?? "",
+        challengeResponseData.data?.nonce ?? randomBytes(32).toString('hex'),
+      applicationId: challengeResponseData.data?.applicationId ?? '',
       timestamp: challengeResponseData.data?.timestamp ?? new Date().getTime(),
       message: JSON.stringify(signatureMessage),
     };
@@ -102,10 +104,10 @@ export default function LoginWithMetamask({
   const login = useCallback(async () => {
     setErrorMessage(null);
     if (!signData) {
-      console.error("signature is empty");
+      console.error('signature is empty');
       //TODO handle error
     } else if (!address) {
-      console.error("address is empty");
+      console.error('address is empty');
       //TODO handle error
     } else {
       const walletMetadata: WalletMetadata = {
@@ -116,13 +118,14 @@ export default function LoginWithMetamask({
         walletSignature: signData,
         payload: walletSignatureData?.payload,
         walletMetadata: walletMetadata,
+        contextId: applicationId,
       };
       await apiClient
         .node()
         .login(loginRequest, rpcBaseUrl)
         .then((result) => {
           if (result.error) {
-            console.error("Login error: ", result.error);
+            console.error('Login error: ', result.error);
             setErrorMessage(result.error.message);
           } else {
             setStorageNodeAuthorized();
@@ -130,11 +133,18 @@ export default function LoginWithMetamask({
           }
         })
         .catch(() => {
-          console.error("error while login!");
-          setErrorMessage("Error while login!");
+          console.error('error while login!');
+          setErrorMessage('Error while login!');
         });
     }
-  }, [address, signData, walletSignatureData?.payload]);
+  }, [
+    address,
+    chainId,
+    rpcBaseUrl,
+    signData,
+    successRedirect,
+    walletSignatureData?.payload,
+  ]);
 
   useEffect(() => {
     if (isConnected) {
@@ -146,8 +156,8 @@ export default function LoginWithMetamask({
   useEffect(() => {
     if (isSignSuccess && walletSignatureData) {
       //send request to node
-      console.log("signature", signData);
-      console.log("address", address);
+      console.log('signature', signData);
+      console.log('address', address);
       login();
     }
   }, [address, isSignSuccess, login, signData, walletSignatureData]);
@@ -159,77 +169,77 @@ export default function LoginWithMetamask({
   return (
     <div
       style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        padding: "0.5rem",
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        padding: '0.5rem',
       }}
     >
       <div
         style={{
-          marginTop: "1.5rem",
-          display: "grid",
-          color: "white",
-          fontSize: "1.25rem",
-          fontWeight: "500",
-          textAlign: "center",
+          marginTop: '1.5rem',
+          display: 'grid',
+          color: 'white',
+          fontSize: '1.25rem',
+          fontWeight: '500',
+          textAlign: 'center',
         }}
       >
         <span
           style={{
-            marginBottom: "0.5rem",
-            color: metamaskTitleColor ?? "#fff",
+            marginBottom: '0.5rem',
+            color: metamaskTitleColor ?? '#fff',
           }}
         >
           Metamask
         </span>
         <header
           style={{
-            marginTop: "1.5rem",
-            display: "flex",
-            flexDirection: "column",
+            marginTop: '1.5rem',
+            display: 'flex',
+            flexDirection: 'column',
           }}
         >
           <MetaMaskButton
             theme="dark"
-            color={isConnected && walletSignatureData ? "blue" : "white"}
+            color={isConnected && walletSignatureData ? 'blue' : 'white'}
             buttonStyle={
               isConnected && walletSignatureData
                 ? {
-                    display: "flex",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    backgroundColor: "#25282D",
-                    height: "73px",
-                    borderRadius: "6px",
-                    border: "none",
-                    outline: "none",
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    backgroundColor: '#25282D',
+                    height: '73px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    outline: 'none',
                   }
                 : {
-                    cursor: "pointer",
+                    cursor: 'pointer',
                   }
             }
           ></MetaMaskButton>
           {isConnected && walletSignatureData && (
-            <div style={{ marginTop: "155px" }}>
+            <div style={{ marginTop: '155px' }}>
               <button
                 style={{
-                  backgroundColor: "#FF7A00",
-                  color: "white",
-                  width: "100%",
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
-                  gap: "0.5rem",
-                  height: "46px",
-                  cursor: "pointer",
-                  fontSize: "1rem",
-                  fontWeight: "500",
-                  borderRadius: "0.375rem",
-                  border: "none",
-                  outline: "none",
-                  paddingLeft: "0.5rem",
-                  paddingRight: "0.5rem",
+                  backgroundColor: '#FF7A00',
+                  color: 'white',
+                  width: '100%',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  height: '46px',
+                  cursor: 'pointer',
+                  fontSize: '1rem',
+                  fontWeight: '500',
+                  borderRadius: '0.375rem',
+                  border: 'none',
+                  outline: 'none',
+                  paddingLeft: '0.5rem',
+                  paddingRight: '0.5rem',
                 }}
                 disabled={isSignLoading}
                 onClick={() => signMessage()}
@@ -239,10 +249,10 @@ export default function LoginWithMetamask({
               {isSignError && (
                 <div
                   style={{
-                    color: "red",
-                    fontSize: "14px",
-                    fontWeight: "500",
-                    marginTop: "0.5rem",
+                    color: 'red',
+                    fontSize: '14px',
+                    fontWeight: '500',
+                    marginTop: '0.5rem',
                   }}
                 >
                   Error signing message
@@ -250,10 +260,10 @@ export default function LoginWithMetamask({
               )}
               <div
                 style={{
-                  color: "red",
-                  fontSize: "14px",
-                  fontWeight: "500",
-                  marginTop: "0.5rem",
+                  color: 'red',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  marginTop: '0.5rem',
                 }}
               >
                 {errorMessage}
@@ -264,11 +274,11 @@ export default function LoginWithMetamask({
       </div>
       <div
         style={{
-          paddingTop: "1rem",
-          fontSize: "14px",
-          color: "#fff",
-          textAlign: "center",
-          cursor: "pointer",
+          paddingTop: '1rem',
+          fontSize: '14px',
+          color: '#fff',
+          textAlign: 'center',
+          cursor: 'pointer',
         }}
         onClick={navigateBack}
       >

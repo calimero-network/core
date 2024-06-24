@@ -1,20 +1,20 @@
-import React, { Fragment, useCallback, useEffect, useState } from "react";
-import { randomBytes } from "crypto";
-import { providers } from "near-api-js";
-import type { AccountView } from "near-api-js/lib/providers/provider";
+import React, { Fragment, useCallback, useEffect, useState } from 'react';
+import { randomBytes } from 'crypto';
+import { providers } from 'near-api-js';
+import type { AccountView } from 'near-api-js/lib/providers/provider';
 import {
   verifyFullKeyBelongsToUser,
   verifySignature,
   type SignedMessage,
   type SignMessageParams,
-} from "@near-wallet-selector/core";
+} from '@near-wallet-selector/core';
 
-import { useWalletSelector } from "./WalletSelectorContext";
-import { getOrCreateKeypair } from "../../crypto/ed25519";
-import apiClient from "../../api";
-import { ResponseData } from "../../api-response";
-import { setStorageNodeAuthorized } from "../../storage/storage";
-import { Loading } from "../loading/Loading";
+import { useWalletSelector } from './WalletSelectorContext';
+import { getOrCreateKeypair } from '../../auth/ed25519';
+import apiClient from '../../api';
+import { ResponseData } from '../../types/api-response';
+import { setStorageNodeAuthorized } from '../../storage/storage';
+import { Loading } from '../loading/Loading';
 import {
   LoginRequest,
   NearSignatureMessageMetadata,
@@ -25,7 +25,7 @@ import {
   WalletMetadata,
   WalletSignatureData,
   WalletType,
-} from "../../nodeApi";
+} from '../../api/nodeApi';
 
 export interface Message {
   premium: boolean;
@@ -46,7 +46,7 @@ interface NearLoginProps {
   navigateBack: () => void | undefined;
 }
 
-const NearLogin: React.FC<NearLoginProps> = ({
+export const NearLogin: React.FC<NearLoginProps> = ({
   rpcBaseUrl,
   appId,
   successRedirect,
@@ -57,7 +57,7 @@ const NearLogin: React.FC<NearLoginProps> = ({
   const { selector, accounts, modal, accountId } = useWalletSelector();
   const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
-  const appName = "me";
+  const appName = 'me';
 
   const getAccount = useCallback(async (): Promise<Account | null> => {
     if (!accountId) {
@@ -69,8 +69,8 @@ const NearLogin: React.FC<NearLoginProps> = ({
 
     return provider
       .query<AccountView>({
-        request_type: "view_account",
-        finality: "final",
+        request_type: 'view_account',
+        finality: 'final',
         account_id: accountId,
       })
       .then((data: any) => ({
@@ -112,7 +112,7 @@ const NearLogin: React.FC<NearLoginProps> = ({
         setAccount(null);
       })
       .catch((err: any) => {
-        console.log("Failed to sign out");
+        console.log('Failed to sign out');
         console.error(err);
       });
   }
@@ -129,15 +129,15 @@ const NearLogin: React.FC<NearLoginProps> = ({
 
     selector.setActiveAccount(nextAccountId);
 
-    alert("Switched account to " + nextAccountId);
+    alert('Switched account to ' + nextAccountId);
   }
 
   const verifyMessage = useCallback(
     async (
       message: SignMessageParams,
-      signedMessage: SignedMessage
+      signedMessage: SignedMessage,
     ): Promise<boolean> => {
-      console.log("verifyMessage", { message, signedMessage });
+      console.log('verifyMessage', { message, signedMessage });
 
       const verifiedSignature = verifySignature({
         message: message.message,
@@ -157,35 +157,35 @@ const NearLogin: React.FC<NearLoginProps> = ({
         verifiedFullKeyBelongsToUser && verifiedSignature;
 
       const resultMessage = isMessageVerified
-        ? "Successfully verified"
-        : "Failed to verify";
+        ? 'Successfully verified'
+        : 'Failed to verify';
 
       console.log(
         `${resultMessage} signed message: '${
           message.message
-        }': \n ${JSON.stringify(signedMessage)}`
+        }': \n ${JSON.stringify(signedMessage)}`,
       );
 
       return isMessageVerified;
     },
-    [selector.options.network]
+    [selector.options.network],
   );
 
   const verifyMessageBrowserWallet = useCallback(async () => {
     const urlParams = new URLSearchParams(
-      window.location.hash.substring(1) // skip the first char (#)
+      window.location.hash.substring(1), // skip the first char (#)
     );
-    const accId = urlParams.get("accountId") as string;
-    const publicKey = urlParams.get("publicKey") as string;
-    const signature = urlParams.get("signature") as string;
+    const accId = urlParams.get('accountId') as string;
+    const publicKey = urlParams.get('publicKey') as string;
+    const signature = urlParams.get('signature') as string;
 
     if (!accId && !publicKey && !signature) {
-      console.error("Missing params in url.");
+      console.error('Missing params in url.');
       return;
     }
 
     const message: SignMessageParams = JSON.parse(
-      localStorage.getItem("message")!
+      localStorage.getItem('message')!,
     );
 
     const state: SignatureMessageMetadata = JSON.parse(message.state!);
@@ -208,19 +208,19 @@ const NearLogin: React.FC<NearLoginProps> = ({
 
     const isMessageVerified: boolean = await verifyMessage(
       message,
-      signedMessage
+      signedMessage,
     );
 
-    const url = new URL(location.href);
-    url.hash = "";
-    url.search = "";
+    const url = new URL(window.location.href);
+    url.hash = '';
+    url.search = '';
     window.history.replaceState({}, document.title, url);
-    localStorage.removeItem("message");
+    localStorage.removeItem('message');
     if (isMessageVerified) {
       const signatureMetadata: NearSignatureMessageMetadata = {
         recipient: message.recipient,
         callbackUrl: message.callbackUrl!,
-        nonce: message.nonce.toString("base64"),
+        nonce: message.nonce.toString('base64'),
       };
       const payload: Payload = {
         message: state,
@@ -238,30 +238,32 @@ const NearLogin: React.FC<NearLoginProps> = ({
         walletSignature: signature,
         payload: walletSignatureData.payload!,
         walletMetadata: walletMetadata,
+        contextId: appId,
       };
 
       await apiClient
         .node()
         .login(loginRequest, rpcBaseUrl)
         .then((result) => {
-          console.log("result", result);
+          console.log('result', result);
           if (result.error) {
-            console.error("login error", result.error);
+            console.error('login error', result.error);
             //TODO handle error
           } else {
             setStorageNodeAuthorized();
             successRedirect();
-            console.log("login success");
+            console.log('login success');
           }
         })
         .catch(() => {
-          console.error("error while login");
+          console.error('error while login');
           //TODO handle error
         });
     } else {
       //TODO handle error
-      console.error("Message not verified");
+      console.error('Message not verified');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [verifyMessage]);
 
   async function handleSignMessage() {
@@ -271,20 +273,20 @@ const NearLogin: React.FC<NearLoginProps> = ({
     const { publicKey } = await getOrCreateKeypair();
 
     if (challengeResponseData.error) {
-      console.log("requestChallenge api error", challengeResponseData.error);
+      console.log('requestChallenge api error', challengeResponseData.error);
       return;
     }
 
-    const wallet = await selector.wallet("my-near-wallet");
+    const wallet = await selector.wallet('my-near-wallet');
 
     const challengeNonce =
-      challengeResponseData?.data?.nonce ?? randomBytes(32).toString("hex");
+      challengeResponseData?.data?.nonce ?? randomBytes(32).toString('hex');
 
-    const nonce: Buffer = Buffer.from(challengeNonce, "base64");
+    const nonce: Buffer = Buffer.from(challengeNonce, 'base64');
     const recipient = appName;
-    const callbackUrl = location.href;
-    const applicationId = challengeResponseData.data?.applicationId ?? "";
-    const nodeSignature = challengeResponseData.data?.nodeSignature ?? "";
+    const callbackUrl = window.location.href;
+    const applicationId = challengeResponseData.data?.applicationId ?? '';
+    const nodeSignature = challengeResponseData.data?.nodeSignature ?? '';
     const timestamp =
       challengeResponseData.data?.timestamp ?? new Date().getTime();
 
@@ -297,24 +299,24 @@ const NearLogin: React.FC<NearLoginProps> = ({
     const state: SignatureMessageMetadata = {
       publicKey: publicKey,
       nodeSignature,
-      nonce: nonce.toString("base64"),
+      nonce: nonce.toString('base64'),
       applicationId,
       timestamp,
       message,
     };
 
-    if (wallet.type === "browser") {
-      console.log("browser");
+    if (wallet.type === 'browser') {
+      console.log('browser');
 
       localStorage.setItem(
-        "message",
+        'message',
         JSON.stringify({
           message,
           nonce: [...nonce],
           recipient,
           callbackUrl,
           state: JSON.stringify(state),
-        })
+        }),
       );
     }
 
@@ -329,25 +331,25 @@ const NearLogin: React.FC<NearLoginProps> = ({
     <Fragment>
       <div
         style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          backgroundColor: cardBackgroundColor ?? "#1C1C1C",
-          width: "fit-content",
-          padding: "2.5rem",
-          gap: "1rem",
-          borderRadius: "0.5rem",
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          backgroundColor: cardBackgroundColor ?? '#1C1C1C',
+          width: 'fit-content',
+          padding: '2.5rem',
+          gap: '1rem',
+          borderRadius: '0.5rem',
         }}
       >
         <span
           style={{
-            marginTop: "1.5rem",
-            display: "grid",
-            fontSize: "1.25rem",
-            fontWeight: "500",
-            textAlign: "center",
-            marginBottom: "0.5rem",
-            color: nearTitleColor ?? "#fff",
+            marginTop: '1.5rem',
+            display: 'grid',
+            fontSize: '1.25rem',
+            fontWeight: '500',
+            textAlign: 'center',
+            marginBottom: '0.5rem',
+            color: nearTitleColor ?? '#fff',
           }}
         >
           NEAR
@@ -355,38 +357,38 @@ const NearLogin: React.FC<NearLoginProps> = ({
         {account && (
           <div
             style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              backgroundColor: "#25282D",
-              height: "73px",
-              borderRadius: "6px",
-              border: "none",
-              outline: "none",
-              paddingLeft: "12px",
-              paddingRight: "12px",
-              paddingTop: "4px",
-              paddingBottom: "4px",
-              width: "100%",
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              backgroundColor: '#25282D',
+              height: '73px',
+              borderRadius: '6px',
+              border: 'none',
+              outline: 'none',
+              paddingLeft: '12px',
+              paddingRight: '12px',
+              paddingTop: '4px',
+              paddingBottom: '4px',
+              width: '100%',
             }}
           >
             <div
               style={{
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
               }}
             >
               <div
                 style={{
-                  borderRadius: "50px",
-                  display: "inline-block",
-                  margin: "0px",
-                  overflow: "hidden",
-                  padding: "0px",
-                  backgroundColor: "rgb(241, 153, 2)",
-                  height: "30px",
-                  width: "30px",
+                  borderRadius: '50px',
+                  display: 'inline-block',
+                  margin: '0px',
+                  overflow: 'hidden',
+                  padding: '0px',
+                  backgroundColor: 'rgb(241, 153, 2)',
+                  height: '30px',
+                  width: '30px',
                 }}
               >
                 <svg
@@ -440,28 +442,28 @@ const NearLogin: React.FC<NearLoginProps> = ({
               </div>
               <div
                 style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  paddingLeft: "1rem",
+                  display: 'flex',
+                  flexDirection: 'column',
+                  paddingLeft: '1rem',
                 }}
               >
                 <span
                   style={{
-                    color: "#fff",
-                    fontSize: "13px",
-                    lineHeight: "18px",
-                    height: "19.5px",
-                    fontWeight: "bold",
+                    color: '#fff',
+                    fontSize: '13px',
+                    lineHeight: '18px',
+                    height: '19.5px',
+                    fontWeight: 'bold',
                   }}
                 >
                   Account Id
                 </span>
                 <span
                   style={{
-                    color: "#fff",
-                    fontSize: "11px",
-                    height: "16.5px",
-                    fontWeight: "500",
+                    color: '#fff',
+                    fontSize: '11px',
+                    height: '16.5px',
+                    fontWeight: '500',
                   }}
                 >
                   {accountId}
@@ -470,11 +472,11 @@ const NearLogin: React.FC<NearLoginProps> = ({
             </div>
             <div
               style={{
-                backgroundColor: "hsla(0, 0%, 100%, .05)",
-                color: "#fff",
-                cursor: "pointer",
-                padding: "8px",
-                borderRadius: "4px",
+                backgroundColor: 'hsla(0, 0%, 100%, .05)',
+                color: '#fff',
+                cursor: 'pointer',
+                padding: '8px',
+                borderRadius: '4px',
               }}
               onClick={() => {
                 if (account) {
@@ -488,29 +490,29 @@ const NearLogin: React.FC<NearLoginProps> = ({
         )}
         <div
           style={{
-            display: "flex",
-            marginTop: account ? "155px" : "12px",
-            gap: "1rem",
+            display: 'flex',
+            marginTop: account ? '155px' : '12px',
+            gap: '1rem',
           }}
         >
           <button
             style={{
-              backgroundColor: "#FF7A00",
-              color: "white",
-              width: "fit-content",
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              gap: "0.5rem",
-              height: "46px",
-              cursor: "pointer",
-              fontSize: "1rem",
-              fontWeight: "500",
-              borderRadius: "0.375rem",
-              border: "none",
-              outline: "none",
-              paddingLeft: "0.5rem",
-              paddingRight: "0.5rem",
+              backgroundColor: '#FF7A00',
+              color: 'white',
+              width: 'fit-content',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: '0.5rem',
+              height: '46px',
+              cursor: 'pointer',
+              fontSize: '1rem',
+              fontWeight: '500',
+              borderRadius: '0.375rem',
+              border: 'none',
+              outline: 'none',
+              paddingLeft: '0.5rem',
+              paddingRight: '0.5rem',
             }}
             onClick={handleSwitchWallet}
           >
@@ -518,22 +520,22 @@ const NearLogin: React.FC<NearLoginProps> = ({
           </button>
           <button
             style={{
-              backgroundColor: "#FF7A00",
-              color: "white",
-              width: "fit-content",
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              gap: "0.5rem",
-              height: "46px",
-              cursor: "pointer",
-              fontSize: "1rem",
-              fontWeight: "500",
-              borderRadius: "0.375rem",
-              border: "none",
-              outline: "none",
-              paddingLeft: "0.5rem",
-              paddingRight: "0.5rem",
+              backgroundColor: '#FF7A00',
+              color: 'white',
+              width: 'fit-content',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: '0.5rem',
+              height: '46px',
+              cursor: 'pointer',
+              fontSize: '1rem',
+              fontWeight: '500',
+              borderRadius: '0.375rem',
+              border: 'none',
+              outline: 'none',
+              paddingLeft: '0.5rem',
+              paddingRight: '0.5rem',
             }}
             onClick={handleSignMessage}
           >
@@ -542,22 +544,22 @@ const NearLogin: React.FC<NearLoginProps> = ({
           {accounts.length > 1 && (
             <button
               style={{
-                backgroundColor: "#FF7A00",
-                color: "white",
-                width: "fit-content",
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-                gap: "0.5rem",
-                height: "46px",
-                cursor: "pointer",
-                fontSize: "1rem",
-                fontWeight: "500",
-                borderRadius: "0.375rem",
-                border: "none",
-                outline: "none",
-                paddingLeft: "0.5rem",
-                paddingRight: "0.5rem",
+                backgroundColor: '#FF7A00',
+                color: 'white',
+                width: 'fit-content',
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                gap: '0.5rem',
+                height: '46px',
+                cursor: 'pointer',
+                fontSize: '1rem',
+                fontWeight: '500',
+                borderRadius: '0.375rem',
+                border: 'none',
+                outline: 'none',
+                paddingLeft: '0.5rem',
+                paddingRight: '0.5rem',
               }}
               onClick={handleSwitchAccount}
             >
@@ -567,11 +569,11 @@ const NearLogin: React.FC<NearLoginProps> = ({
         </div>
         <div
           style={{
-            paddingTop: "1rem",
-            fontSize: "14px",
-            color: "#fff",
-            textAlign: "center",
-            cursor: "pointer",
+            paddingTop: '1rem',
+            fontSize: '14px',
+            color: '#fff',
+            textAlign: 'center',
+            cursor: 'pointer',
           }}
           onClick={navigateBack}
         >
@@ -581,5 +583,3 @@ const NearLogin: React.FC<NearLoginProps> = ({
     </Fragment>
   );
 };
-
-export default NearLogin;

@@ -11,18 +11,11 @@ use calimero_store::Store;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tower_http::services::{ServeDir, ServeFile};
-use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-use super::handlers::add_client_key::add_client_key_handler;
-use super::handlers::challenge::request_challenge_handler;
-use super::handlers::context::{
-    create_context_handler, delete_context_handler, get_context_handler, get_contexts_handler,
-};
-use super::handlers::fetch_did::fetch_did_handler;
-use super::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
+use super::handlers;
+use crate::middleware;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
@@ -55,49 +48,69 @@ pub(crate) fn setup(
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
     let shared_state = Arc::new(AdminState {
-        store,
+        store: store.clone(),
         keypair: config.identity.clone(),
         application_manager,
     });
-
-    let admin_router = Router::new()
-        .route("/health", get(health_check_handler))
-        // .route("/identity/keys", delete(delete_auth_keys_handler)) // Only for development
-        .route("/root-key", post(create_root_key_handler))
-        .route("/request-challenge", post(request_challenge_handler))
+    let protected_router = Router::new()
+        .route(
+            "/root-key",
+            post(handlers::root_keys::create_root_key_handler),
+        )
         .route("/install-application", post(install_application_handler))
         .route("/applications", get(list_applications_handler))
-        .route("/add-client-key", post(add_client_key_handler))
-        .route("/did", get(fetch_did_handler))
-        .route("/contexts", post(create_context_handler))
-        .route("/contexts/:context_id", delete(delete_context_handler))
-        .route("/contexts/:context_id", get(get_context_handler))
-        .route("/contexts", get(get_contexts_handler))
-        .layer(Extension(shared_state))
+        .route("/did", get(handlers::fetch_did::fetch_did_handler))
+        .route("/contexts", post(handlers::context::create_context_handler))
+        .route(
+            "/contexts/:context_id",
+            delete(handlers::context::delete_context_handler),
+        )
+        .route(
+            "/contexts/:context_id",
+            get(handlers::context::get_context_handler),
+        )
+        .route(
+            "/contexts/:context_id/users",
+            get(handlers::context::get_context_users_handler),
+        )
+        .route(
+            "/contexts/:context_id/client-keys",
+            get(handlers::context::get_context_client_keys_handler),
+        )
+        .route(
+            "/contexts/:context_id/storage",
+            get(handlers::context::get_context_storage_handler),
+        )
+        .route("/contexts", get(handlers::context::get_contexts_handler))
+        .route(
+            "/identity/keys",
+            delete(handlers::root_keys::delete_auth_keys_handler),
+        )
+        .layer(middleware::auth::AuthSignatureLayer::new(store))
+        .layer(Extension(shared_state.clone()));
+
+    let unprotected_router = Router::new()
+        .route("/health", get(health_check_handler))
+        .route(
+            "/request-challenge",
+            post(handlers::challenge::request_challenge_handler),
+        )
+        .route(
+            "/add-client-key",
+            post(handlers::add_client_key::add_client_key_handler),
+        )
+        .layer(Extension(shared_state));
+
+    let admin_router = Router::new()
+        .nest("/", unprotected_router)
+        .nest("/", protected_router)
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
 }
 
-pub(crate) fn site(
-    config: &crate::config::ServerConfig,
-) -> eyre::Result<Option<(&'static str, ServeDir<SetStatus<ServeFile>>)>> {
-    let _config = match &config.admin {
-        Some(config) if config.enabled => config,
-        _ => {
-            info!("Admin site is disabled");
-            return Ok(None);
-        }
-    };
-    let path = "/admin";
-
-    let react_static_files_path = "./node-ui/dist";
-    let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
-        ServeFile::new(format!("{}/index.html", react_static_files_path)),
-    );
-
-    Ok(Some((path, react_app_serve_dir)))
-}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Empty {}
 
 pub struct ApiResponse<T: Serialize> {
     pub(crate) payload: T,
