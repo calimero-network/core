@@ -14,9 +14,8 @@ use serde_json::json;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
-use crate::middleware;
-
 use super::handlers;
+use crate::middleware;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AdminConfig {
