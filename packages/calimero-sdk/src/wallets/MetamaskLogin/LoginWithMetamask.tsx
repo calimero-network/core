@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { randomBytes } from 'crypto';
-import { getOrCreateKeypair } from '../../crypto/ed25519';
+import { getOrCreateKeypair } from '../../auth/ed25519';
 
 import {
   useAccount,
@@ -118,6 +118,7 @@ export function LoginWithMetamask({
         walletSignature: signData,
         payload: walletSignatureData?.payload,
         walletMetadata: walletMetadata,
+        contextId: applicationId,
       };
       await apiClient
         .node()

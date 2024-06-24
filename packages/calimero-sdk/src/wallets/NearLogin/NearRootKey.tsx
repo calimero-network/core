@@ -24,7 +24,7 @@ import {
   WalletMetadata,
   SignatureMessage,
 } from '../../api/nodeApi';
-import { getOrCreateKeypair } from '../../crypto/ed25519';
+import { getOrCreateKeypair } from '../../auth/ed25519';
 
 type Account = AccountView & {
   account_id: string;
