@@ -25,7 +25,7 @@ impl Client {
         }
     }
 
-    pub fn call<M>(&self, method: M) -> Result<M::Response, Error<RpcError<M::Error>>>
+    pub fn call<M>(&self, method: M) -> Result<M::Response, Error<M::Error>>
     where
         M: RpcMethod,
     {
@@ -42,9 +42,9 @@ impl Client {
         let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }
             .map_err(Error::FetchError)?;
 
-        serde_json::from_slice::<Response<M::Response, RpcError<M::Error>>>(&response)?
+        serde_json::from_slice::<Response<M::Response, M::Error>>(&response)?
             .data
-            .map_err(|e| Error::ServerError(e))
+            .map_err(Error::ServerError)
     }
 }
 
