@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 pub type Key = Vec<u8>;
 pub type Value = Vec<u8>;
 
-pub trait Storage: Send {
+pub trait Storage {
     fn get(&self, key: &Key) -> Option<Value>;
     fn set(&mut self, key: Key, value: Value) -> Option<Value>;
     // fn remove(&mut self, key: &[u8]);

@@ -1,14 +1,70 @@
-pub enum TemporalRuntimeStore {
-    Read(calimero_store::ReadOnlyStore),
-    Write(calimero_store::TemporalStore),
+use std::cell::RefCell;
+
+use calimero_primitives::context::ContextId;
+use calimero_store::key::ContextState;
+use calimero_store::layer::{read_only, temporal, ReadLayer, WriteLayer};
+use calimero_store::Store;
+
+// todo! rename module to `runtime_compat`
+
+pub enum RuntimeCompatStoreInner<'a, 'k, 'v> {
+    Read(read_only::ReadOnly<'k, Store>),
+    Write(temporal::Temporal<'a, 'k, 'v, Store>),
 }
 
-impl calimero_runtime::store::Storage for TemporalRuntimeStore {
-    fn get(&self, key: &calimero_runtime::store::Key) -> Option<Vec<u8>> {
-        match self {
-            Self::Read(store) => store.get(key).ok().flatten(),
-            Self::Write(store) => store.get(key).ok().flatten(),
+pub struct RuntimeCompatStore<'a, 'k, 'v> {
+    context_id: ContextId,
+    inner: RuntimeCompatStoreInner<'a, 'k, 'v>,
+    // todo! unideal, will revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
+    keys: RefCell<Vec<ContextState>>,
+}
+
+impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
+    pub fn temporal(store: &'a mut Store, context_id: ContextId) -> Self {
+        Self {
+            context_id,
+            inner: RuntimeCompatStoreInner::Write(temporal::Temporal::new(store)),
+            keys: Default::default(),
         }
+    }
+
+    pub fn read_only(store: &'k Store, context_id: ContextId) -> Self {
+        Self {
+            context_id,
+            inner: RuntimeCompatStoreInner::Read(read_only::ReadOnly::new(store)),
+            keys: Default::default(),
+        }
+    }
+
+    fn state_key(&self, key: &[u8]) -> Option<&'k ContextState> {
+        let mut state_key = [0; 32];
+
+        (key.len() <= state_key.len()).then_some(())?;
+
+        (&mut state_key[..key.len()]).copy_from_slice(key);
+
+        let mut keys = self.keys.borrow_mut();
+
+        keys.push(ContextState::new(self.context_id, state_key));
+
+        unsafe {
+            std::mem::transmute::<Option<&ContextState>, Option<&'k ContextState>>(keys.last())
+        }
+    }
+}
+
+impl<'a, 'k, 'v> calimero_runtime::store::Storage for RuntimeCompatStore<'a, 'k, 'v> {
+    fn get(&self, key: &calimero_runtime::store::Key) -> Option<Vec<u8>> {
+        let key = self.state_key(key)?;
+
+        let maybe_slice = match &self.inner {
+            RuntimeCompatStoreInner::Read(store) => store.get(key),
+            RuntimeCompatStoreInner::Write(store) => store.get(key),
+        };
+
+        let slice = maybe_slice.ok()??;
+
+        Some(slice.into_boxed().into_vec())
     }
 
     fn set(
@@ -16,17 +72,34 @@ impl calimero_runtime::store::Storage for TemporalRuntimeStore {
         key: calimero_runtime::store::Key,
         value: calimero_runtime::store::Value,
     ) -> Option<calimero_runtime::store::Value> {
-        match self {
-            Self::Read(_) => unimplemented!("Can not write to read-only store."),
-            Self::Write(store) => store.put(key, value),
-        }
+        let key = self.state_key(&key)?;
+
+        let RuntimeCompatStoreInner::Write(store) = &mut self.inner else {
+            unimplemented!("Can not write to read-only store.");
+        };
+
+        let old = store
+            .has(key)
+            .ok()?
+            .then(|| store.get(key).ok().flatten())
+            .flatten()
+            .map(|slice| slice.into_boxed().into_vec());
+
+        store.put(key, value.into()).ok()?;
+
+        old
     }
 
     fn has(&self, key: &calimero_runtime::store::Key) -> bool {
-        // todo! optimize to avoid eager reads
-        match self {
-            Self::Read(store) => store.get(key).ok().is_some(),
-            Self::Write(store) => store.get(key).ok().is_some(),
+        let Some(key) = self.state_key(key) else {
+            return false;
+        };
+
+        match &self.inner {
+            RuntimeCompatStoreInner::Read(store) => store.has(key),
+            RuntimeCompatStoreInner::Write(store) => store.has(key),
         }
+        .ok()
+        .unwrap_or(false)
     }
 }
