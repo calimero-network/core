@@ -49,10 +49,11 @@ impl Encoder<Message> for MessageJsonCodec {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use futures_util::StreamExt;
     use tokio_test::io::Builder;
     use tokio_util::codec::FramedRead;
+
+    use super::*;
 
     #[test]
     fn test_my_frame_encoding_decoding() {
