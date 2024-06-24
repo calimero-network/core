@@ -1,11 +1,11 @@
-use error::NearLibError;
-use jsonrpc::Response;
-
-pub mod error;
+mod error;
 mod jsonrpc;
 pub mod query;
 pub mod types;
 pub mod views;
+
+pub use error::Error;
+use jsonrpc::Response;
 
 pub struct Client {
     client: jsonrpc::Client,
@@ -31,7 +31,7 @@ impl Client {
         }
     }
 
-    pub fn call<M>(&self, method: M) -> Result<Response<M::Response, String>, NearLibError>
+    pub fn call<M>(&self, method: M) -> Result<Response<M::Response, String>, Error>
     where
         M: RpcMethod,
     {

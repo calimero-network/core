@@ -2,7 +2,7 @@ use calimero_sdk::env;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::error::NearLibError;
+use crate::Error;
 
 pub(crate) struct Client {
     url: String,
@@ -21,7 +21,7 @@ impl Client {
         &self,
         method: &str,
         params: P,
-    ) -> Result<Response<T, E>, NearLibError> {
+    ) -> Result<Response<T, E>, Error> {
         let headers = [("Content-Type", "application/json")];
 
         *self.id.borrow_mut() += 1;
@@ -33,7 +33,7 @@ impl Client {
         })?;
 
         let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }
-            .map_err(NearLibError::FetchError)?;
+            .map_err(Error::FetchError)?;
         Ok(serde_json::from_slice::<Response<T, E>>(&response)?)
     }
 }
