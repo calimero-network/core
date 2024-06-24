@@ -25,8 +25,8 @@ impl Client {
         *self.id.borrow_mut() += 1;
         let body = serde_json::to_vec(&Request {
             jsonrpc: "2.0",
-            id: self.id.borrow().to_string(),
-            method: method.to_string(),
+            id: &*self.id.borrow().to_string(),
+            method,
             params,
         })
         .map_err(|err| format!("Cannot serialize request: {:?}", err))?;
@@ -38,10 +38,10 @@ impl Client {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct Request<P: Serialize> {
-    pub jsonrpc: &'static str,
-    pub id: String,
-    pub method: String,
+struct Request<'a, P: Serialize> {
+    pub jsonrpc: &'a str,
+    pub id: &'a str,
+    pub method: &'a str,
 
     pub params: P,
 }

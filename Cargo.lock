@@ -965,6 +965,7 @@ version = "0.1.0"
 dependencies = [
  "calimero-primitives",
  "calimero-sdk",
+ "near-account-id",
  "serde",
  "serde_json",
  "serde_with",

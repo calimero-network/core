@@ -2,8 +2,8 @@ use serde_with::base64::Base64;
 use serde_with::serde_as;
 
 pub type BlockHeight = u64;
-pub type BlockHash = String;
-pub type AccountId = String;
+pub type BlockHash = calimero_primitives::hash::Hash;
+pub type AccountId = near_account_id::AccountId;
 pub type StorageUsage = u64;
 pub type Nonce = u64;
 

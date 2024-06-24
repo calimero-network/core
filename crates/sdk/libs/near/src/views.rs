@@ -32,7 +32,7 @@ pub enum QueryRequest {
     },
     CallFunction {
         account_id: AccountId,
-        method_name: String,
+        method_name: Box<str>,
         #[serde(rename = "args_base64")]
         args: FunctionArgs,
     },
@@ -52,7 +52,7 @@ pub struct AccountView {
 pub struct ContractCodeView {
     #[serde(rename = "code_base64")]
     #[serde_as(as = "Base64")]
-    pub code: Vec<u8>,
+    pub code: Box<[u8]>,
     pub hash: String,
 }
 
