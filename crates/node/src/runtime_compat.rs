@@ -45,6 +45,7 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
 
         keys.push(ContextState::new(self.context_id, state_key));
 
+        // safety: TemporalStore lives as long as Self, so the reference will hold
         unsafe {
             std::mem::transmute::<Option<&ContextState>, Option<&'k ContextState>>(keys.last())
         }
