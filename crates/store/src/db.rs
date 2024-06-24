@@ -17,7 +17,7 @@ pub enum Column {
     Transaction,
 }
 
-pub trait Database: 'static {
+pub trait Database: Send + Sync + 'static {
     fn open(config: &StoreConfig) -> eyre::Result<Self>
     where
         Self: Sized;
