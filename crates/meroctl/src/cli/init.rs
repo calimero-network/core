@@ -70,8 +70,6 @@ impl InitCommand {
 
         let path = root_args.home.join(root_args.node_name);
 
-        println!("{}", path);
-
         fs::create_dir_all(&path)
             .wrap_err_with(|| format!("failed to create directory {:?}", path))?;
 
