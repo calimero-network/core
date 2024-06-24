@@ -181,6 +181,11 @@ async fn health_check_handler() -> impl IntoResponse {
     .into_response()
 }
 
+#[derive(Debug, Serialize)]
+struct InstallApplicationResponse {
+    data: bool,
+}
+
 async fn install_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<calimero_server_primitives::admin::InstallApplicationRequest>,
@@ -190,7 +195,10 @@ async fn install_application_handler(
         .install_application(req.application, &req.version)
         .await
     {
-        Ok(()) => ApiResponse { payload: () }.into_response(),
+        Ok(()) => ApiResponse {
+            payload: InstallApplicationResponse { data: true },
+        }
+        .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
