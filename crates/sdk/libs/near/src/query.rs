@@ -1,8 +1,11 @@
+use serde_json::json;
+
 use crate::types::{BlockHash, BlockHeight, BlockId};
 use crate::views::{
     AccessKeyList, AccessKeyView, AccountView, CallResult, ContractCodeView, QueryRequest,
     ViewStateResult,
 };
+use crate::RpcMethod;
 
 #[derive(serde::Serialize, Debug)]
 pub struct RpcQueryRequest {
@@ -28,4 +31,16 @@ pub enum QueryResponseKind {
     AccessKey(AccessKeyView),
     AccessKeyList(AccessKeyList),
     CallResult(CallResult),
+}
+
+impl RpcMethod for RpcQueryRequest {
+    type Response = RpcQueryResponse;
+
+    fn method_name(&self) -> &str {
+        "query"
+    }
+
+    fn params(&self) -> Result<serde_json::Value, std::io::Error> {
+        Ok(json!(self))
+    }
 }

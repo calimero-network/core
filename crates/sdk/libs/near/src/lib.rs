@@ -1,7 +1,5 @@
+use error::NearLibError;
 use jsonrpc::Response;
-use query::{QueryResponseKind, RpcQueryRequest};
-use types::{BlockId, FunctionArgs, StoreKey};
-use views::QueryRequest;
 
 pub mod error;
 mod jsonrpc;
@@ -11,6 +9,13 @@ pub mod views;
 
 pub struct Client {
     client: jsonrpc::Client,
+}
+
+pub trait RpcMethod {
+    type Response: serde::de::DeserializeOwned;
+
+    fn method_name(&self) -> &str;
+    fn params(&self) -> Result<serde_json::Value, std::io::Error>;
 }
 
 impl Client {
@@ -26,142 +31,10 @@ impl Client {
         }
     }
 
-    pub fn view_account(
-        &self,
-        account_id: &str,
-        block_id: BlockId,
-    ) -> Result<views::AccountView, String> {
-        let request = RpcQueryRequest {
-            block_id,
-            request: QueryRequest::ViewAccount {
-                account_id: account_id.to_string(),
-            },
-        };
-        let response: Response<query::RpcQueryResponse, String> =
-            self.client.call("query", request)?;
-
-        match response.data {
-            Ok(r) => {
-                if let QueryResponseKind::ViewAccount(va) = r.kind {
-                    return Ok(va);
-                }
-                return Err("Unexpected response returned.".to_string());
-            }
-            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
-        }
-    }
-
-    pub fn view_code(
-        &self,
-        account_id: &str,
-        block_id: BlockId,
-    ) -> Result<views::ContractCodeView, String> {
-        let request = RpcQueryRequest {
-            block_id,
-            request: QueryRequest::ViewCode {
-                account_id: account_id.to_string(),
-            },
-        };
-
-        let response: Response<query::RpcQueryResponse, String> =
-            self.client.call("query", request)?;
-
-        match response.data {
-            Ok(r) => {
-                if let QueryResponseKind::ViewCode(vc) = r.kind {
-                    return Ok(vc);
-                }
-                return Err("Unexpected response returned.".to_string());
-            }
-            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
-        }
-    }
-
-    pub fn view_state(
-        &self,
-        account_id: &str,
-        prefix: StoreKey,
-        include_proof: bool,
-        block_id: BlockId,
-    ) -> Result<views::ViewStateResult, String> {
-        let request = RpcQueryRequest {
-            block_id,
-            request: QueryRequest::ViewState {
-                account_id: account_id.to_string(),
-                prefix,
-                include_proof,
-            },
-        };
-
-        let response: Response<query::RpcQueryResponse, String> =
-            self.client.call("query", request)?;
-
-        match response.data {
-            Ok(r) => {
-                if let QueryResponseKind::ViewState(vs) = r.kind {
-                    return Ok(vs);
-                }
-                return Err("Unexpected response returned.".to_string());
-            }
-            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
-        }
-    }
-
-    pub fn view_access_key(
-        &self,
-        account_id: &str,
-        public_key: &str,
-        block_id: BlockId,
-    ) -> Result<views::ViewStateResult, String> {
-        let request = RpcQueryRequest {
-            block_id,
-            request: QueryRequest::ViewAccessKey {
-                account_id: account_id.to_string(),
-                public_key: public_key.to_string(),
-            },
-        };
-
-        let response: Response<query::RpcQueryResponse, String> =
-            self.client.call("query", request)?;
-
-        match response.data {
-            Ok(r) => {
-                if let QueryResponseKind::ViewState(vs) = r.kind {
-                    return Ok(vs);
-                }
-                return Err("Unexpected response returned.".to_string());
-            }
-            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
-        }
-    }
-
-    pub fn call_function(
-        &self,
-        account_id: &str,
-        method_name: &str,
-        args: FunctionArgs,
-        block_id: BlockId,
-    ) -> Result<views::CallResult, String> {
-        let request = RpcQueryRequest {
-            block_id,
-            request: QueryRequest::CallFunction {
-                account_id: account_id.to_string(),
-                method_name: method_name.to_string(),
-                args,
-            },
-        };
-
-        let response: Response<query::RpcQueryResponse, String> =
-            self.client.call("query", request)?;
-
-        match response.data {
-            Ok(r) => {
-                if let QueryResponseKind::CallResult(cr) = r.kind {
-                    return Ok(cr);
-                }
-                return Err("Unexpected response returned.".to_string());
-            }
-            Err(e) => Err(format!("Error: {}, Code: {}", e.message, e.code,)),
-        }
+    pub fn call<M>(&self, method: M) -> Result<Response<M::Response, String>, NearLibError>
+    where
+        M: RpcMethod,
+    {
+        self.client.call(method.method_name(), &method.params()?)
     }
 }
