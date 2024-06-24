@@ -8,9 +8,11 @@ use crate::slice::Slice;
 
 mod component;
 mod context;
+mod generic;
 
 use component::KeyComponents;
 pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction};
+pub use generic::Generic;
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 

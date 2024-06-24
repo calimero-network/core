@@ -15,6 +15,7 @@ pub enum Column {
     Identity,
     State,
     Transaction,
+    Generic,
 }
 
 pub trait Database: Send + Sync + 'static {
