@@ -1,6 +1,5 @@
-use crate::sys;
-
 use super::{expected_boolean, expected_register, panic_str, read_register, DATA_REGISTER};
+use crate::sys;
 
 #[doc(hidden)]
 pub unsafe fn fetch(
