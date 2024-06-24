@@ -27,7 +27,7 @@ pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
 
     let key = did_key();
 
-    storage.put(&key, did_document_vec.into());
+    storage.put(&key, did_document_vec.into())?;
 
     storage.commit()?;
 
@@ -55,7 +55,7 @@ pub fn update_did(store: &mut Store, did: Did) -> eyre::Result<()> {
 
     let key = did_key();
 
-    storage.put(&key, did_document_vec.into());
+    storage.put(&key, did_document_vec.into())?;
 
     storage.commit()?;
 

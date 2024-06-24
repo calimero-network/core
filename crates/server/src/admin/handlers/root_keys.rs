@@ -25,7 +25,7 @@ pub async fn create_root_key_handler(
 ) -> impl IntoResponse {
     let response = transform_request(intermediate_req)
         .and_then(|req| validate_challenge(req, &state.keypair))
-        .and_then(|req| store_root(req, &state.store))
+        .and_then(|req| store_root(req, &mut state.store.clone()))
         .map_or_else(
             |err| err.into_response(),
             |_| {
@@ -42,12 +42,12 @@ pub async fn create_root_key_handler(
 
 pub fn store_root(
     req: AddPublicKeyRequest,
-    store: &Store,
+    store: &mut Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     store_root_key(
         req.wallet_metadata.signing_key.clone(),
         req.wallet_metadata.wallet_type,
-        &store,
+        store,
     )?;
     Ok(req)
 }
@@ -55,14 +55,14 @@ pub fn store_root(
 pub fn store_root_key(
     signing_key: String,
     wallet_type: WalletType,
-    store: &Store,
+    store: &mut Store,
 ) -> Result<bool, ApiError> {
     let root_key = RootKey {
         signing_key,
         wallet_type,
         created_at: Utc::now().timestamp_millis() as u64,
     };
-    add_root_key(&store, root_key).map_err(|e| parse_api_error(e))?;
+    add_root_key(store, root_key).map_err(|e| parse_api_error(e))?;
 
     info!("Root key stored successfully.");
     Ok(true)

@@ -3,7 +3,7 @@ use calimero_store::Store;
 
 use super::did::{get_or_create_did, update_did};
 
-pub fn add_context(store: &Store, context: Context) -> eyre::Result<bool> {
+pub fn add_context(store: &mut Store, context: Context) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;
 
     if !did_document.contexts.iter().any(|k| k.id == context.id) {
@@ -12,7 +12,7 @@ pub fn add_context(store: &Store, context: Context) -> eyre::Result<bool> {
     }
     Ok(true)
 }
-pub fn delete_context(store: &Store, context_id: &str) -> eyre::Result<bool> {
+pub fn delete_context(store: &mut Store, context_id: &str) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;
 
     match did_document
@@ -29,12 +29,12 @@ pub fn delete_context(store: &Store, context_id: &str) -> eyre::Result<bool> {
     }
 }
 
-pub fn get_context(store: &Store, context_id: &str) -> eyre::Result<Option<Context>> {
+pub fn get_context(store: &mut Store, context_id: &str) -> eyre::Result<Option<Context>> {
     let did = get_or_create_did(store)?;
     Ok(did.contexts.into_iter().find(|k| k.id == context_id))
 }
 
-pub fn get_contexts(store: &Store) -> eyre::Result<Vec<Context>> {
+pub fn get_contexts(store: &mut Store) -> eyre::Result<Vec<Context>> {
     let did = get_or_create_did(store)?;
     Ok(did.contexts)
 }
