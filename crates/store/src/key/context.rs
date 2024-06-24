@@ -18,12 +18,12 @@ impl KeyComponent for ContextId {
 pub struct ContextMeta(Key<ContextId>);
 
 impl ContextMeta {
-    pub fn new(context_id: [u8; 32]) -> Self {
-        Self(Key(context_id.into()))
+    pub fn new(context_id: calimero_primitives::context::ContextId) -> Self {
+        Self(Key((*context_id).into()))
     }
 
-    pub fn context_id(&self) -> [u8; 32] {
-        *AsRef::<[_; 32]>::as_ref(&self.0)
+    pub fn context_id(&self) -> calimero_primitives::context::ContextId {
+        (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
     }
 }
 
@@ -61,16 +61,18 @@ impl KeyComponent for PublicKey {
 pub struct ContextIdentity(Key<(ContextId, PublicKey)>);
 
 impl ContextIdentity {
-    pub fn new(context_id: [u8; 32], context_pk: [u8; 32]) -> Self {
-        Self(Key(GenericArray::from(context_id).concat(context_pk.into())))
+    pub fn new(context_id: calimero_primitives::context::ContextId, context_pk: [u8; 32]) -> Self {
+        Self(Key(
+            GenericArray::from(*context_id).concat(context_pk.into())
+        ))
     }
 
-    pub fn context_id(&self) -> [u8; 32] {
+    pub fn context_id(&self) -> calimero_primitives::context::ContextId {
         let mut context_id = [0; 32];
 
         context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
 
-        context_id
+        context_id.into()
     }
 
     pub fn public_key(&self) -> [u8; 32] {
@@ -117,16 +119,16 @@ impl KeyComponent for StateKey {
 pub struct ContextState(Key<(ContextId, StateKey)>);
 
 impl ContextState {
-    pub fn new(context_id: [u8; 32], state_key: [u8; 32]) -> Self {
-        Self(Key(GenericArray::from(context_id).concat(state_key.into())))
+    pub fn new(context_id: calimero_primitives::context::ContextId, state_key: [u8; 32]) -> Self {
+        Self(Key(GenericArray::from(*context_id).concat(state_key.into())))
     }
 
-    pub fn context_id(&self) -> [u8; 32] {
+    pub fn context_id(&self) -> calimero_primitives::context::ContextId {
         let mut context_id = [0; 32];
 
         context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
 
-        context_id
+        context_id.into()
     }
 
     pub fn state_key(&self) -> [u8; 32] {
@@ -173,18 +175,21 @@ impl KeyComponent for TransactionId {
 pub struct ContextTransaction(Key<(ContextId, TransactionId)>);
 
 impl ContextTransaction {
-    pub fn new(context_id: [u8; 32], transaction_id: [u8; 32]) -> Self {
+    pub fn new(
+        context_id: calimero_primitives::context::ContextId,
+        transaction_id: [u8; 32],
+    ) -> Self {
         Self(Key(
-            GenericArray::from(context_id).concat(transaction_id.into())
+            GenericArray::from(*context_id).concat(transaction_id.into())
         ))
     }
 
-    pub fn context_id(&self) -> [u8; 32] {
+    pub fn context_id(&self) -> calimero_primitives::context::ContextId {
         let mut context_id = [0; 32];
 
         context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
 
-        context_id
+        context_id.into()
     }
 
     pub fn transaction_id(&self) -> [u8; 32] {
