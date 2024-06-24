@@ -34,7 +34,7 @@ impl Client {
         *self.id.borrow_mut() += 1;
         let body = serde_json::to_vec(&Request {
             jsonrpc: "2.0",
-            id: &*self.id.borrow().to_string(),
+            id: *self.id.borrow(),
             method: method.method_name(),
             params: method.params()?,
         })?;
@@ -51,7 +51,7 @@ impl Client {
 #[derive(Debug, Clone, Serialize)]
 struct Request<'a, P: Serialize> {
     jsonrpc: &'a str,
-    id: &'a str,
+    id: u64,
     method: &'a str,
 
     params: P,
@@ -60,7 +60,7 @@ struct Request<'a, P: Serialize> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Response<T: DeserializeOwned, E: DeserializeOwned> {
     pub jsonrpc: Option<String>,
-    pub id: String,
+    pub id: u64,
 
     #[serde(with = "calimero_primitives::common::ResultAlt", flatten)]
     pub data: Result<T, RpcError<E>>,
