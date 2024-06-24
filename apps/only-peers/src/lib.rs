@@ -43,17 +43,6 @@ pub enum Event<'a> {
 
 #[app::logic]
 impl OnlyPeers {
-    pub fn foo(&mut self) -> String {
-        let client = calimero_sdk_near::Client::testnet();
-        match client.view_account(
-            "nearkat.testnet",
-            calimero_sdk_near::types::BlockId::Height(166710735),
-        ) {
-            Ok(r) => format!("{}", r.amount),
-            Err(e) => e,
-        }
-    }
-
     pub fn post(&self, id: usize) -> Option<&Post> {
         env::log(&format!("Getting post with id: {:?}", id));
 

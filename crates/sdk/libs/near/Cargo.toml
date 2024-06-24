@@ -7,7 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-near-account-id = { workspace = true }
+near-account-id = { workspace = true, features = ["serde"]}
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_with = {workspace = true, features = ["base64"]}
