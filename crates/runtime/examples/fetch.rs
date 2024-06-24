@@ -24,7 +24,7 @@ fn main() -> eyre::Result<()> {
     let cx = logic::VMContext {
         input: serde_json::to_vec(&json!({}))?,
     };
-    let get_outcome = run(file, "foo", cx, &mut storage, &limits)?;
+    let get_outcome = run(file, "fetch", cx, &mut storage, &limits)?;
     let returns = String::from_utf8(get_outcome.returns.unwrap().unwrap()).unwrap();
     println!("{returns}");
 
