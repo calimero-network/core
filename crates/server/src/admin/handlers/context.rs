@@ -96,8 +96,13 @@ pub async fn get_context_users_handler(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ContextList {
+    contexts: Vec<Context>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetContextsResponse {
-    data: Vec<Context>,
+    data: ContextList,
 }
 
 pub async fn get_contexts_handler(
@@ -106,7 +111,9 @@ pub async fn get_contexts_handler(
     let contexts = get_contexts(&state.store).map_err(|err| parse_api_error(err));
     return match contexts {
         Ok(contexts) => ApiResponse {
-            payload: GetContextsResponse { data: contexts },
+            payload: GetContextsResponse {
+                data: ContextList { contexts },
+            },
         }
         .into_response(),
         Err(err) => err.into_response(),
