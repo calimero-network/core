@@ -3,6 +3,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::application::ApplicationId;
 use crate::hash::Hash;
@@ -44,11 +45,15 @@ impl From<ContextId> for String {
     }
 }
 
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct InvalidContextId(HashError);
+
 impl FromStr for ContextId {
-    type Err = String; // todo! use a better-typed error
+    type Err = InvalidContextId;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(s.parse::<Hash>().map(Self)?)
+        Ok(Self(s.parse().map_err(InvalidContextId)?))
     }
 }
 
