@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::application::ApplicationId;
-use crate::hash::Hash;
+use crate::hash::{Error as HashError, Hash};
 
 #[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
 // todo! define macros that construct newtypes
