@@ -7,7 +7,7 @@ use multiaddr::Multiaddr;
 use tracing::info;
 
 use crate::cli;
-use crate::config::{ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig};
+use crate::config_file::{ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]

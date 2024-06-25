@@ -3,7 +3,8 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
-mod config;
+mod config_file;
+mod defaults;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
