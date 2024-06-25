@@ -1,4 +1,5 @@
 use calimero_primitives::identity::WalletType;
+use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -6,6 +7,7 @@ use serde_json::Value;
 pub struct InstallApplicationRequest {
     pub application: calimero_primitives::application::ApplicationId, // TODO: rename to application_id
     pub version: semver::Version,
+    pub path: Option<Utf8PathBuf>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

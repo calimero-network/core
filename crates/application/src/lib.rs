@@ -1,5 +1,9 @@
 use std::fs::{self, File};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_file as symlink;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
@@ -45,6 +49,28 @@ impl ApplicationManager {
         let release = self.get_release(&application_id, version).await?;
         self.download_release(&application_id, &release, &self.application_dir)
             .await?;
+
+        let topic_hash = self
+            .network_client
+            .subscribe(calimero_network::types::IdentTopic::new(application_id))
+            .await?;
+
+        info!(%topic_hash, "Subscribed to network topic");
+        return Ok(());
+    }
+
+    pub async fn install_dev_application(
+        &self,
+        application_id: calimero_primitives::application::ApplicationId,
+        version: &semver::Version,
+        path: Option<Utf8PathBuf>,
+    ) -> eyre::Result<()> {
+        self.link_release(
+            &application_id,
+            &self.application_dir,
+            version,
+            &path.unwrap(),
+        )?;
 
         let topic_hash = self
             .network_client
@@ -183,6 +209,31 @@ impl ApplicationManager {
             }
             return Err(e.into());
         }
+
+        Ok(())
+    }
+
+    fn link_release(
+        &self,
+        application_id: &calimero_primitives::application::ApplicationId,
+        dir: &camino::Utf8Path,
+        version: &semver::Version,
+        link_path: &camino::Utf8Path,
+    ) -> eyre::Result<()> {
+        let base_path = format!("{}/{}/{}", dir, application_id, version);
+        info! {"{}", base_path};
+        fs::create_dir_all(&base_path)?;
+
+        let file_path = format!("{}/binary.wasm", base_path);
+        info!("{}", file_path);
+        match symlink(link_path, &file_path) {
+            Ok(_) => {}
+            Err(err) => eyre::bail!("Symlinking failed: {}", err),
+        }
+        info!(
+            "Application {} linked to node\nPath to linked file at {}",
+            application_id, file_path
+        );
 
         Ok(())
     }
