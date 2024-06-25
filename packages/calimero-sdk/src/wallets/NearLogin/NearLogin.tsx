@@ -10,7 +10,7 @@ import {
 } from '@near-wallet-selector/core';
 
 import { useWalletSelector } from './WalletSelectorContext';
-import { getOrCreateKeypair } from '../../crypto/ed25519';
+import { getOrCreateKeypair } from '../../auth/ed25519';
 import apiClient from '../../api';
 import { ResponseData } from '../../types/api-response';
 import { setStorageNodeAuthorized } from '../../storage/storage';
@@ -238,6 +238,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
         walletSignature: signature,
         payload: walletSignatureData.payload!,
         walletMetadata: walletMetadata,
+        contextId: appId,
       };
 
       await apiClient

@@ -92,7 +92,7 @@ pub fn store_client_key(
         wallet_type: WalletType::NEAR,
         signing_key: req.payload.message.public_key.clone(),
         created_at: Utc::now().timestamp_millis() as u64,
-        context_id: req.context_id.clone()
+        context_id: req.context_id.clone(),
     };
     add_client_key(&store, client_key).map_err(|e| parse_api_error(e))?;
     info!("Client key stored successfully.");

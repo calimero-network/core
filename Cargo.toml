@@ -3,6 +3,7 @@ authors = ["Calimero Limited <info@calimero.network>"]
 edition = "2021"
 repository = "https://github.com/calimero-network/core"
 license = "MIT OR Apache-2.0"
+license-file = "LICENSE.md"
 
 [workspace]
 resolver = "2"
@@ -22,10 +23,8 @@ members = [
 
   "./apps/kv-store",
   "./apps/only-peers",
-  "./apps/rock-paper-scissors",
 
   "./contracts/package-manager",
-  "./contracts/leaderboard",
 ]
 
 [workspace.dependencies]

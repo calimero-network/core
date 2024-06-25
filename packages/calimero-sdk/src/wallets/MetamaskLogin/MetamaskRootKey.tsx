@@ -21,7 +21,7 @@ import { ResponseData } from '../../types/api-response';
 import { setStorageNodeAuthorized } from '../../storage/storage';
 import { Loading } from '../loading/Loading';
 import { getNetworkType } from '../eth/type';
-import { getOrCreateKeypair } from '../../crypto/ed25519';
+import { getOrCreateKeypair } from '../../auth/ed25519';
 import { randomBytes } from 'crypto';
 
 interface MetamaskRootKeyProps {
