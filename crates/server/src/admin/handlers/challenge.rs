@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{NodeChallenge, NodeChallengeMessage};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, RngCore};
@@ -17,7 +18,7 @@ use crate::admin::service::{AdminState, ApiError, ApiResponse};
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestChallenge {
-    pub(crate) application_id: Option<String>,
+    pub(crate) context_id: Option<ContextId>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -33,7 +34,7 @@ pub async fn request_challenge_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<RequestChallenge>,
 ) -> impl IntoResponse {
-    match generate_challenge(req.application_id.clone(), &state.keypair) {
+    match generate_challenge(req.context_id, &state.keypair) {
         Ok(challenge) => {
             if let Err(err) = session.insert(CHALLENGE_KEY, &challenge).await {
                 error!("Failed to insert challenge into session: {}", err);
@@ -60,7 +61,7 @@ pub async fn request_challenge_handler(
 }
 
 fn generate_challenge(
-    application_id: Option<String>,
+    context_id: Option<ContextId>,
     keypair: &Keypair,
 ) -> Result<NodeChallenge, ApiError> {
     let random_bytes = generate_random_bytes();
@@ -68,7 +69,7 @@ fn generate_challenge(
 
     let node_challenge_message = NodeChallengeMessage {
         nonce: encoded,
-        application_id: application_id.unwrap_or_default(),
+        context_id,
         timestamp: chrono::Utc::now().timestamp(),
     };
 

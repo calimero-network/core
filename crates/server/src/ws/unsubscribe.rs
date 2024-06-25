@@ -13,11 +13,11 @@ async fn handle(
     connection_state: ws::ConnectionState,
 ) -> eyre::Result<UnsubscribeResponse> {
     let mut inner = connection_state.inner.write().await;
-    request.application_ids.iter().for_each(|id| {
+    request.context_id.iter().for_each(|id| {
         inner.subscriptions.remove(id);
     });
 
     Ok(UnsubscribeResponse {
-        application_ids: request.application_ids,
+        context_id: request.context_id,
     })
 }
