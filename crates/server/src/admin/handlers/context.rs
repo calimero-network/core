@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::identity::{ClientKey, ContextUser};
 use calimero_server_primitives::admin::ContextStorage;
@@ -141,7 +142,7 @@ pub async fn delete_context_handler(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
-    application_id: String,
+    application_id: ApplicationId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -161,7 +162,7 @@ pub async fn create_context_handler(
     let context = Context {
         id: (*context_id.as_bytes()).into(),
         // signing_key, // todo! move to the Identity column
-        application_id: req.application_id.into(),
+        application_id: req.application_id,
     };
 
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
