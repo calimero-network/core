@@ -4,6 +4,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use sha2::Digest;
+use thiserror::Error;
 
 const BYTES_LEN: usize = 32;
 const MAX_STR_LEN: usize = (BYTES_LEN + 1) * 4 / 3;
@@ -140,14 +141,23 @@ impl fmt::Debug for Hash {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("invalid hash length")]
+    InvalidLength,
+
+    #[error("invalid base58")]
+    DecodeError(#[from] bs58::decode::Error),
+}
+
 impl FromStr for Hash {
-    type Err = String; // todo! use a better-typed error
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match Self::from_str(s) {
             Ok(hash) => Ok(hash),
-            Err(None) => Err("invalid length".to_string()),
-            Err(Some(err)) => Err(err.to_string()),
+            Err(None) => Err(Error::InvalidLength),
+            Err(Some(err)) => Err(Error::DecodeError(err)),
         }
     }
 }
