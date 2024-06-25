@@ -1,12 +1,13 @@
 use std::fmt;
 use std::ops::Deref;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
 use crate::application::ApplicationId;
 use crate::hash::Hash;
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
 // todo! define macros that construct newtypes
 // todo! wrapping Hash<N> with this interface
 pub struct ContextId(Hash);
@@ -34,6 +35,20 @@ impl ContextId {
 impl fmt::Display for ContextId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
+    }
+}
+
+impl From<ContextId> for String {
+    fn from(id: ContextId) -> Self {
+        id.as_str().to_string()
+    }
+}
+
+impl FromStr for ContextId {
+    type Err = String; // todo! use a better-typed error
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(s.parse::<Hash>().map(Self)?)
     }
 }
 

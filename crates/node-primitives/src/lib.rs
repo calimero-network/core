@@ -18,7 +18,7 @@ impl NodeType {
 }
 
 pub type ServerSender = mpsc::Sender<(
-    calimero_primitives::application::ApplicationId,
+    calimero_primitives::context::ContextId,
     String,
     Vec<u8>,
     bool,
