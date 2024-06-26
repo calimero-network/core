@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "config.toml";
 
-pub(crate) const DEFAULT_CALIMERO_HOME: &str = "data";
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ConfigFile {
     #[serde(
@@ -98,13 +96,4 @@ impl ConfigFile {
 
         Ok(())
     }
-}
-
-pub fn default_chat_dir() -> camino::Utf8PathBuf {
-    if let Some(home) = dirs::home_dir() {
-        let home = camino::Utf8Path::from_path(&home).expect("invalid home directory");
-        return home.join(DEFAULT_CALIMERO_HOME);
-    }
-
-    Default::default()
 }

@@ -1,11 +1,12 @@
 use clap::{Parser, Subcommand};
 
-use crate::config as struct_config;
+use crate::defaults;
 
 mod config;
 mod context;
 mod init;
 mod run;
+
 #[derive(Debug, Parser)]
 #[command(author, about, version)]
 pub struct RootCommand {
@@ -27,7 +28,7 @@ pub enum SubCommands {
 #[derive(Debug, Parser)]
 pub struct RootArgs {
     /// Directory for config and data
-    #[arg(long, value_name = "PATH", default_value_t = struct_config::default_chat_dir())]
+    #[arg(long, value_name = "PATH", default_value_t = defaults::default_chat_dir())]
     #[arg(env = "CALIMERO_HOME", hide_env_values = true)]
     pub home: camino::Utf8PathBuf,
 
