@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::fmt;
 
 use generic_array::sequence::Concat;
@@ -36,7 +37,7 @@ impl AsKeyParts for ContextMeta {
 }
 
 impl FromKeyParts for ContextMeta {
-    type Error = ();
+    type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(*<&_>::from(&parts)))
@@ -93,7 +94,7 @@ impl AsKeyParts for ContextIdentity {
 }
 
 impl FromKeyParts for ContextIdentity {
-    type Error = ();
+    type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(parts))
@@ -149,7 +150,7 @@ impl AsKeyParts for ContextState {
 }
 
 impl FromKeyParts for ContextState {
-    type Error = ();
+    type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(parts))
@@ -210,7 +211,7 @@ impl AsKeyParts for ContextTransaction {
 }
 
 impl FromKeyParts for ContextTransaction {
-    type Error = ();
+    type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(parts))

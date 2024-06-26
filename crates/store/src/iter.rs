@@ -3,13 +3,14 @@ use std::marker::PhantomData;
 
 use calimero_primitives::reflect::Reflect;
 
+use crate::entry::DataType;
 use crate::key::{FromKeyParts, Key as KeyCore}; // rename key here to KeyBuf
 use crate::slice::Slice;
 
 #[derive(Debug)]
-pub struct Iter<'a, K = Unstructured> {
+pub struct Iter<'a, K = Unstructured, V = Unstructured> {
     inner: Box<dyn DBIter + 'a>,
-    _priv: PhantomData<K>,
+    _priv: PhantomData<(K, V)>,
 }
 
 pub trait DBIter {
@@ -23,7 +24,7 @@ impl<'a> fmt::Debug for dyn DBIter + 'a {
     }
 }
 
-impl<'a, K> Iter<'a, K> {
+impl<'a, K, V> Iter<'a, K, V> {
     pub fn new<T: DBIter + 'a>(inner: T) -> Self {
         Self {
             inner: Box::new(inner),
@@ -31,17 +32,17 @@ impl<'a, K> Iter<'a, K> {
         }
     }
 
-    pub fn keys(&mut self) -> IterKeys<'_, 'a, K> {
+    pub fn keys(&mut self) -> IterKeys<'_, 'a, K, V> {
         IterKeys { iter: self }
     }
 
-    pub fn entries(&mut self) -> IterEntries<'_, 'a, K> {
+    pub fn entries(&mut self) -> IterEntries<'_, 'a, K, V> {
         IterEntries { iter: self }
     }
 }
 
-impl<'a> Iter<'a, Unstructured> {
-    pub fn structured<K: FromKeyParts>(self) -> Iter<'a, Structured<K>> {
+impl<'a, V> Iter<'a, Unstructured, V> {
+    pub fn structured_key<K: FromKeyParts>(self) -> Iter<'a, Structured<K>, V> {
         Iter {
             inner: self.inner,
             _priv: PhantomData,
@@ -49,7 +50,19 @@ impl<'a> Iter<'a, Unstructured> {
     }
 }
 
-impl<'a, K> DBIter for Iter<'a, K> {
+impl<'a, K> Iter<'a, K, Unstructured> {
+    pub fn structured_value<V: DataType>(self) -> Iter<'a, K, Structured<V>> {
+        Iter {
+            inner: self.inner,
+            _priv: PhantomData,
+        }
+    }
+}
+
+type Key<'a> = Slice<'a>;
+type Value<'a> = Slice<'a>;
+
+impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
     fn next(&mut self) -> eyre::Result<Option<Key>> {
         self.inner.next()
     }
@@ -59,13 +72,11 @@ impl<'a, K> DBIter for Iter<'a, K> {
     }
 }
 
-pub struct IterKeys<'a, 'b, K> {
-    iter: &'a mut Iter<'b, K>,
+pub struct IterKeys<'a, 'b, K, V> {
+    iter: &'a mut Iter<'b, K, V>,
 }
 
-type Key<'a> = Slice<'a>;
-
-impl<'a, 'b, K: TryIntoKey<'a>> Iterator for IterKeys<'a, 'b, K> {
+impl<'a, 'b, K: TryIntoKey<'a>, V> Iterator for IterKeys<'a, 'b, K, V> {
     type Item = K::Key;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -78,16 +89,12 @@ impl<'a, 'b, K: TryIntoKey<'a>> Iterator for IterKeys<'a, 'b, K> {
     }
 }
 
-pub struct IterEntries<'a, 'b, K> {
-    iter: &'a mut Iter<'b, K>,
+pub struct IterEntries<'a, 'b, K, V> {
+    iter: &'a mut Iter<'b, K, V>,
 }
 
-type Value<'a> = Slice<'a>;
-
-type Entry<'a, K> = (K, Value<'a>);
-
-impl<'a, 'b, K: TryIntoKey<'a>> Iterator for IterEntries<'a, 'b, K> {
-    type Item = Entry<'a, K::Key>;
+impl<'a, 'b, K: TryIntoKey<'a>, V: TryIntoValue<'a>> Iterator for IterEntries<'a, 'b, K, V> {
+    type Item = (K::Key, V::Value);
 
     fn next(&mut self) -> Option<Self::Item> {
         let key = {
@@ -104,7 +111,7 @@ impl<'a, 'b, K: TryIntoKey<'a>> Iterator for IterEntries<'a, 'b, K> {
             unsafe { std::mem::transmute(value) }
         };
 
-        Some((K::try_into_key(key).ok()?, value))
+        Some((K::try_into_key(key).ok()?, V::try_into_value(value).ok()?))
     }
 }
 
@@ -127,6 +134,13 @@ pub trait TryIntoKey<'a>: private::Sealed {
     fn try_into_key(key: Key<'a>) -> Result<Self::Key, Self::Error>;
 }
 
+pub trait TryIntoValue<'a>: private::Sealed {
+    type Value;
+    type Error;
+
+    fn try_into_value(key: Value<'a>) -> Result<Self::Value, Self::Error>;
+}
+
 pub enum Error<E> {
     SizeMismatch,
     Structured(E),
@@ -144,6 +158,15 @@ impl<'a, K: FromKeyParts> TryIntoKey<'a> for Structured<K> {
     }
 }
 
+impl<'a, V: DataType> TryIntoValue<'a> for Structured<V> {
+    type Value = V;
+    type Error = Error<V::Error>;
+
+    fn try_into_value(value: Value<'a>) -> Result<Self::Value, Self::Error> {
+        V::from_slice(value).map_err(Error::Structured)
+    }
+}
+
 impl private::Sealed for Unstructured {}
 impl<'a> TryIntoKey<'a> for Unstructured {
     type Key = Key<'a>;
@@ -151,6 +174,15 @@ impl<'a> TryIntoKey<'a> for Unstructured {
 
     fn try_into_key(key: Key<'a>) -> Result<Self::Key, Self::Error> {
         Ok(key)
+    }
+}
+
+impl<'a> TryIntoValue<'a> for Unstructured {
+    type Value = Value<'a>;
+    type Error = ();
+
+    fn try_into_value(value: Value<'a>) -> Result<Self::Value, Self::Error> {
+        Ok(value)
     }
 }
 

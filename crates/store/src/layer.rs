@@ -2,6 +2,7 @@ use crate::iter::{Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
 use crate::slice::Slice;
 use crate::tx::Transaction;
+use crate::{Store, StoreHandle};
 
 // todo!
 // mod cache;
@@ -28,11 +29,21 @@ pub trait WriteLayer<'k, 'v>: ReadLayer<'k> {
     fn commit(self) -> eyre::Result<()>;
 }
 
-impl Layer for crate::Store {
+pub trait LayerExt: Sized {
+    fn handle(self) -> StoreHandle<Self>;
+}
+
+impl<L: Layer> LayerExt for L {
+    fn handle(self) -> StoreHandle<Self> {
+        StoreHandle::new(self)
+    }
+}
+
+impl Layer for Store {
     type Base = Self;
 }
 
-impl<'k> ReadLayer<'k> for crate::Store {
+impl<'k> ReadLayer<'k> for Store {
     fn has(&self, key: &impl AsKeyParts) -> eyre::Result<bool> {
         let (col, key) = key.parts();
 
@@ -48,11 +59,11 @@ impl<'k> ReadLayer<'k> for crate::Store {
     fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &K) -> eyre::Result<Iter<Structured<K>>> {
         let (col, key) = start.parts();
 
-        Ok(self.db.iter(col, key.as_slice())?.structured())
+        Ok(self.db.iter(col, key.as_slice())?.structured_key())
     }
 }
 
-impl<'k, 'v> WriteLayer<'k, 'v> for crate::Store {
+impl<'k, 'v> WriteLayer<'k, 'v> for Store {
     fn put(&mut self, key: &'k impl AsKeyParts, value: Slice<'v>) -> eyre::Result<()> {
         let (col, key) = key.parts();
 

@@ -21,13 +21,15 @@ mod layer {
     impl private::Sealed for Interior {}
     impl Discriminant for Interior {
         type Ref<'a, T> = &'a T
-        where T: ?Sized + 'a;
+        where
+            T: ?Sized + 'a;
     }
 
     impl private::Sealed for Identity {}
     impl Discriminant for Identity {
         type Ref<'a, T> = &'a mut T
-        where T: ?Sized + 'a;
+        where
+            T: ?Sized + 'a;
     }
 
     pub trait WriteLayer<D: Discriminant> {
