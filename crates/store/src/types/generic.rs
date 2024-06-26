@@ -5,7 +5,7 @@ use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
-#[derive(Debug)]
+#[derive(Eq, Clone, Debug, PartialEq)]
 pub struct GenericData(Box<[u8]>);
 
 impl DataType for GenericData {

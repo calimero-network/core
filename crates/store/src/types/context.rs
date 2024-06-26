@@ -7,7 +7,7 @@ use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextMeta {}
 
 impl DataType for ContextMeta {
@@ -26,7 +26,7 @@ impl PredefinedEntry for key::ContextMeta {
     type DataType = ContextMeta;
 }
 
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextState {}
 
 impl DataType for ContextState {
@@ -45,7 +45,7 @@ impl PredefinedEntry for key::ContextState {
     type DataType = ContextState;
 }
 
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextIdentity {}
 
 impl DataType for ContextIdentity {
@@ -64,7 +64,7 @@ impl PredefinedEntry for key::ContextIdentity {
     type DataType = ContextIdentity;
 }
 
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextTransaction {}
 
 impl DataType for ContextTransaction {
