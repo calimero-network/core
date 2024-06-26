@@ -1,3 +1,6 @@
+use crate::entry::{DataType, Entry};
+use crate::iter::{Iter, Structured};
+use crate::key::FromKeyParts;
 use crate::layer::{read_only, temporal, Layer, ReadLayer, WriteLayer};
 use crate::Store;
 
@@ -24,5 +27,44 @@ impl<'k, L: ReadLayer<'k>> StoreHandle<L> {
 impl<'base, 'k, 'v, L: WriteLayer<'k, 'v>> StoreHandle<L> {
     pub fn temporal(&'base mut self) -> temporal::Temporal<'base, 'k, 'v, L> {
         temporal::Temporal::new(&mut self.inner)
+    }
+}
+
+pub enum Error<E: DataType> {
+    LayerError(eyre::Report),
+    CodecError(E::Error),
+}
+
+impl<E: DataType> From<eyre::Report> for Error<E> {
+    fn from(err: eyre::Report) -> Self {
+        Self::LayerError(err)
+    }
+}
+
+impl<'k, L: ReadLayer<'k>> StoreHandle<L> {
+    pub fn has<E: Entry>(&self, key: &'k E::Key) -> Result<bool, Error<E::DataType>> {
+        Ok(self.inner.has(key)?)
+    }
+
+    pub fn get<E: Entry>(
+        &self,
+        key: &'k E::Key,
+    ) -> Result<Option<E::DataType>, Error<E::DataType>> {
+        match self.inner.get(key)? {
+            Some(value) => Ok(Some(
+                E::DataType::from_slice(value).map_err(Error::CodecError)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub fn iter<E: Entry>(
+        &'k self,
+        start: &'k E::Key,
+    ) -> Result<Iter<Structured<E::Key>, Structured<E::DataType>>, Error<E::DataType>>
+    where
+        E::Key: FromKeyParts,
+    {
+        Ok(self.inner.iter(start)?.structured_value())
     }
 }
