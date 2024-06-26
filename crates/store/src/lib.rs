@@ -24,8 +24,6 @@ impl Store {
     }
 
     pub fn handle(&self) -> StoreHandle {
-        StoreHandle {
-            inner: self.clone(),
-        }
+        StoreHandle::new(self.clone())
     }
 }
