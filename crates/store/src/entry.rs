@@ -11,4 +11,6 @@ pub trait DataType: Sized {
 pub trait Entry {
     type Key: AsKeyParts;
     type DataType: DataType;
+
+    fn key(&self) -> &Self::Key;
 }
