@@ -68,9 +68,9 @@ pub struct StateItem {
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct ViewStateResult {
     pub values: Box<[StateItem]>,
-    #[serde_as(as = "Vec<Base64>")]
+    #[serde_as(as = "Box<[Base64]>")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub proof: Vec<Arc<[u8]>>,
+    pub proof: Box<[Arc<[u8]>]>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

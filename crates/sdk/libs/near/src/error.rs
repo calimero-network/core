@@ -9,7 +9,7 @@ pub enum Error<R> {
     #[error("Failed to fetch: {0}")]
     FetchError(String),
 
-    #[error("Server error {0}")]
+    #[error("Server error: {0}")]
     ServerError(RpcError<R>),
 }
 
