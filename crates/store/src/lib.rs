@@ -23,9 +23,7 @@ impl Store {
         Ok(Self { db: Arc::new(db) })
     }
 
-    pub fn handle(&self) -> StoreHandle<Store> {
-        StoreHandle {
-            inner: self.clone(),
-        }
+    pub fn handle(&self) -> StoreHandle {
+        StoreHandle::new(self.clone())
     }
 }

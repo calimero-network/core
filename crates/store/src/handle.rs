@@ -6,7 +6,7 @@ use crate::tx::Transaction;
 use crate::Store;
 
 pub struct StoreHandle<L = Store> {
-    pub(crate) inner: L,
+    inner: L,
 }
 
 impl<L: Layer> StoreHandle<L> {
@@ -14,54 +14,9 @@ impl<L: Layer> StoreHandle<L> {
         Self { inner }
     }
 
+    // todo! can remove when/if commit returns Layer::Base
     pub fn into_inner(self) -> L {
         self.inner
-    }
-}
-
-impl Layer for StoreHandle<Store> {
-    type Base = Self;
-}
-
-impl<'k> ReadLayer<'k> for StoreHandle {
-    fn has(&self, key: &impl AsKeyParts) -> eyre::Result<bool> {
-        let (col, key) = key.parts();
-
-        self.inner.db.has(col, key.as_slice())
-    }
-
-    fn get(&self, key: &impl AsKeyParts) -> eyre::Result<Option<Slice>> {
-        let (col, key) = key.parts();
-
-        self.inner.db.get(col, key.as_slice())
-    }
-
-    fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &K) -> eyre::Result<Iter<Structured<K>>> {
-        let (col, key) = start.parts();
-
-        Ok(self.inner.db.iter(col, key.as_slice())?.structured())
-    }
-}
-
-impl<'k, 'v> WriteLayer<'k, 'v> for StoreHandle {
-    fn put(&mut self, key: &'k impl AsKeyParts, value: Slice<'v>) -> eyre::Result<()> {
-        let (col, key) = key.parts();
-
-        self.inner.db.put(col, key.as_slice(), value)
-    }
-
-    fn delete(&mut self, key: &'k impl AsKeyParts) -> eyre::Result<()> {
-        let (col, key) = key.parts();
-
-        self.inner.db.delete(col, key.as_slice())
-    }
-
-    fn apply(&mut self, tx: &Transaction<'k, 'v>) -> eyre::Result<()> {
-        self.inner.db.apply(tx)
-    }
-
-    fn commit(self) -> eyre::Result<()> {
-        Ok(())
     }
 }
 
