@@ -7,10 +7,12 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+borsh = { workspace = true, features = ["derive"] }
 camino.workspace = true
 eyre.workspace = true
 generic-array.workspace = true
 rocksdb.workspace = true
 strum = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
 
 calimero-primitives = { path = "../primitives" }

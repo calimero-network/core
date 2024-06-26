@@ -20,7 +20,7 @@ fn rocks_store() {
 
     let mut store = Store::open::<db::RocksDB>(&config).unwrap();
 
-    let context_id1 = [0u8; 32];
+    let context_id1 = [0u8; 32].into();
     let state_key1 = [0u8; 32];
     let key1 = ContextState::new(context_id1, state_key1);
 
@@ -133,7 +133,7 @@ fn temporal_store() {
 
     let mut store = temporal::Temporal::new(&mut store);
 
-    let context_id1 = [0u8; 32];
+    let context_id1 = [0u8; 32].into();
     let state_key1 = [0u8; 32];
     let key1 = ContextState::new(context_id1, state_key1);
 

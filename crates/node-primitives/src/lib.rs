@@ -31,6 +31,9 @@ pub type ServerSender = mpsc::Sender<(
 pub enum CallError {
     Query(QueryCallError),
     Mutate(MutateCallError),
+    ContextNotFound {
+        context_id: calimero_primitives::context::ContextId,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Error)]
