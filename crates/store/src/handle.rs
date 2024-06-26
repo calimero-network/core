@@ -33,23 +33,26 @@ impl<'base, 'k, 'v, L: WriteLayer<'k, 'v>> StoreHandle<L> {
 }
 
 #[derive(Debug, Error)]
-pub enum Error<E: DataType> {
+pub enum Error<'a, E: DataType<'a>> {
     LayerError(eyre::Report),
     CodecError(E::Error),
 }
 
-impl<E: DataType> From<eyre::Report> for Error<E> {
+impl<'a, E: DataType<'a>> From<eyre::Report> for Error<'a, E> {
     fn from(err: eyre::Report) -> Self {
         Self::LayerError(err)
     }
 }
 
-impl<'k, L: ReadLayer<'k>> StoreHandle<L> {
-    pub fn has<E: Entry>(&self, entry: &'k E) -> Result<bool, Error<E::DataType>> {
+impl<'a, 'k, L: ReadLayer<'k>> StoreHandle<L> {
+    pub fn has<E: Entry>(&self, entry: &'k E) -> Result<bool, Error<E::DataType<'_>>> {
         Ok(self.inner.has(entry.key())?)
     }
 
-    pub fn get<E: Entry>(&self, entry: &'k E) -> Result<Option<E::DataType>, Error<E::DataType>> {
+    pub fn get<E: Entry>(
+        &self,
+        entry: &'k E,
+    ) -> Result<Option<E::DataType<'_>>, Error<E::DataType<'_>>> {
         match self.inner.get(entry.key())? {
             Some(value) => Ok(Some(
                 E::DataType::from_slice(value).map_err(Error::CodecError)?,
@@ -61,23 +64,23 @@ impl<'k, L: ReadLayer<'k>> StoreHandle<L> {
     pub fn iter<E: Entry<Key: FromKeyParts>>(
         &'k self,
         start: &'k E,
-    ) -> Result<Iter<Structured<E::Key>, Structured<E::DataType>>, Error<E::DataType>> {
+    ) -> Result<Iter<Structured<E::Key>, Structured<E::DataType<'_>>>, Error<E::DataType<'_>>> {
         Ok(self.inner.iter(start.key())?.structured_value())
     }
 }
 
 impl<'k, 'v, L: WriteLayer<'k, 'v>> StoreHandle<L> {
     pub fn put<E: Entry>(
-        &mut self,
+        &'v mut self,
         entry: &'k E,
-        value: &'v E::DataType,
-    ) -> Result<(), Error<E::DataType>> {
+        value: &'v E::DataType<'v>,
+    ) -> Result<(), Error<E::DataType<'_>>> {
         self.inner
             .put(entry.key(), value.as_slice().map_err(Error::CodecError)?)
             .map_err(Error::LayerError)
     }
 
-    pub fn delete<E: Entry>(&mut self, entry: &'k E) -> Result<(), Error<E::DataType>> {
+    pub fn delete<E: Entry>(&mut self, entry: &'k E) -> Result<(), Error<E::DataType<'_>>> {
         self.inner.delete(entry.key()).map_err(Error::LayerError)
     }
 }

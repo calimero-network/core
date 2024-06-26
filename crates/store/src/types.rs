@@ -8,12 +8,12 @@ pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction
 pub use generic::GenericData;
 
 pub trait PredefinedEntry: key::AsKeyParts {
-    type DataType: DataType;
+    type DataType<'a>: DataType<'a>;
 }
 
 impl<T: PredefinedEntry> Entry for T {
     type Key = T;
-    type DataType = T::DataType;
+    type DataType<'a> = T::DataType<'a>;
 
     fn key(&self) -> &Self::Key {
         self
