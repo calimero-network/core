@@ -6,6 +6,8 @@ pub mod views;
 
 pub use error::Error;
 pub use jsonrpc::Client;
+pub use query::*;
+pub use types::*;
 
 pub trait RpcMethod {
     type Response: serde::de::DeserializeOwned;

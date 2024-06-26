@@ -1,9 +1,9 @@
 use serde_json::json;
 
-use crate::types::{AccountId, BlockHash, BlockHeight, BlockId, BlockReference, ShardId};
+use crate::types::{AccountId, BlockHash, BlockHeight, BlockId, ShardId};
 use crate::views::{
-    AccessKeyList, AccessKeyView, AccountView, CallResult, ContractCodeView, QueryRequest,
-    ViewStateResult,
+    AccessKeyList, AccessKeyView, AccountView, BlockReference, CallResult, ContractCodeView,
+    QueryRequest, ViewStateResult,
 };
 use crate::RpcMethod;
 
