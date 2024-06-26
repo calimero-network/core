@@ -62,7 +62,7 @@ impl<'a, K> Iter<'a, K, Unstructured> {
 type Key<'a> = Slice<'a>;
 type Value<'a> = Slice<'a>;
 
-impl<'a, K> DBIter for Iter<'a, K> {
+impl<'a> DBIter for Iter<'a, Unstructured, Unstructured> {
     fn next(&mut self) -> eyre::Result<Option<Key>> {
         self.inner.next()
     }
