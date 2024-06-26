@@ -1,25 +1,23 @@
-//use std::fs;
+use std::fs;
 use std::net::IpAddr;
 
-//use std::path::Path;
 use calimero_network::config::BootstrapNodes;
 use clap::{Parser, ValueEnum};
 use multiaddr::{Multiaddr, Protocol};
-//use toml_edit::{DocumentMut, Item, Table, Value};
+use toml_edit::{DocumentMut, Value};
 use tracing::info;
 
 use crate::cli;
-use crate::config_file::ConfigFile;
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
 pub struct ConfigCommand {
     /// List of bootstrap nodes
-    #[arg(long, value_name = "ADDR")]
+    #[arg(long, value_name = "ADDR", conflicts_with = "boot_network")]
     pub boot_nodes: Vec<Multiaddr>,
 
     /// Use nodes from a known network
-    #[arg(long, value_name = "NETWORK", default_value = "calimero-dev")]
+    #[arg(long, value_name = "NETWORK", conflicts_with = "boot_nodes")]
     pub boot_network: Option<BootstrapNetwork>,
 
     /// Host to listen on
@@ -58,44 +56,46 @@ pub enum BootstrapNetwork {
 
 impl ConfigCommand {
     pub fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
-        let path = root_args.home.join(&root_args.node_name);
+        let path = root_args
+            .home
+            .join(&root_args.node_name)
+            .join("config.toml");
 
-        let mut config = if ConfigFile::exists(&path) {
-            ConfigFile::load(&path)?
-        } else {
-            eyre::bail!("You have to initialize the node first \nRun command node init -n <NAME>");
-        };
+        // Load the existing TOML file
+        let toml_str = fs::read_to_string(&path)
+            .map_err(|_| eyre::eyre!("Node must be initialized first."))?;
+        let mut doc = toml_str.parse::<DocumentMut>()?;
 
         if self.print {
-            println!("{}", toml::to_string_pretty(&config)?);
+            println!("{}", doc.to_string());
             return Ok(());
         }
 
-        // Update boot nodes if provided
-        if !self.boot_nodes.is_empty() {
-            config.network.bootstrap.nodes.list = self.boot_nodes;
-        } else if let Some(network) = self.boot_network {
-            config.network.bootstrap.nodes.list = match network {
-                BootstrapNetwork::CalimeroDev => BootstrapNodes::calimero_dev().list,
-                BootstrapNetwork::Ipfs => BootstrapNodes::ipfs().list,
-            };
-        }
+        let ipv4_host = self.swarm_host.iter().find_map(|ip| {
+            if let IpAddr::V4(v4) = ip {
+                Some(*v4)
+            } else {
+                None
+            }
+        });
 
-        // Update swarm host and/or port if provided
+        let ipv6_host = self.swarm_host.iter().find_map(|ip| {
+            if let IpAddr::V6(v6) = ip {
+                Some(*v6)
+            } else {
+                None
+            }
+        });
+
+        // Update swarm listen addresses
         if !self.swarm_host.is_empty() || self.swarm_port.is_some() {
-            let mut new_listen = Vec::new();
+            let swarm_table = doc["swarm"].as_table_mut().unwrap();
+            let listen_array = swarm_table["listen"].as_array_mut().unwrap();
 
-            let ipv4_host = self.swarm_host.iter().find_map(|ip| match ip {
-                IpAddr::V4(v4) => Some(*v4),
-                _ => None,
-            });
-
-            let ipv6_host = self.swarm_host.iter().find_map(|ip| match ip {
-                IpAddr::V6(v6) => Some(*v6),
-                _ => None,
-            });
-            for addr in config.network.swarm.listen.iter() {
+            for item in listen_array.iter_mut() {
+                let addr: Multiaddr = item.as_str().unwrap().parse().unwrap();
                 let mut new_addr = Multiaddr::empty();
+
                 for protocol in addr.iter() {
                     match protocol {
                         Protocol::Ip4(_) if ipv4_host.is_some() => {
@@ -115,28 +115,20 @@ impl ConfigCommand {
                         _ => new_addr.push(protocol),
                     }
                 }
-                new_listen.push(new_addr);
-            }
 
-            config.network.swarm.listen = new_listen;
+                *item = Value::from(new_addr.to_string());
+            }
         }
 
-        // Update server host and/or port if provided
+        // Update server listen addresses
         if !self.server_host.is_empty() || self.server_port.is_some() {
-            let mut new_listen = Vec::new();
+            let server_table = doc["server"].as_table_mut().unwrap();
+            let listen_array = server_table["listen"].as_array_mut().unwrap();
 
-            let ipv4_host = self.swarm_host.iter().find_map(|ip| match ip {
-                IpAddr::V4(v4) => Some(*v4),
-                _ => None,
-            });
-
-            let ipv6_host = self.swarm_host.iter().find_map(|ip| match ip {
-                IpAddr::V6(v6) => Some(*v6),
-                _ => None,
-            });
-
-            for addr in config.network.server.listen.iter() {
+            for item in listen_array.iter_mut() {
+                let addr: Multiaddr = item.as_str().unwrap().parse().unwrap();
                 let mut new_addr = Multiaddr::empty();
+
                 for protocol in addr.iter() {
                     match protocol {
                         Protocol::Ip4(_) if ipv4_host.is_some() => {
@@ -151,18 +143,40 @@ impl ConfigCommand {
                         _ => new_addr.push(protocol),
                     }
                 }
-                new_listen.push(new_addr);
+
+                *item = Value::from(new_addr.to_string());
             }
-
-            config.network.server.listen = new_listen;
         }
 
-        // Update mDNS setting
+        // Update boot nodes if provided
+        if !self.boot_nodes.is_empty() {
+            let bootstrap_table = doc["bootstrap"].as_table_mut().unwrap();
+            let list_array = bootstrap_table["nodes"].as_array_mut().unwrap();
+            list_array.clear();
+            for node in self.boot_nodes.iter() {
+                list_array.push(node.to_string());
+            }
+        } else if let Some(network) = self.boot_network {
+            let bootstrap_table = doc["bootstrap"].as_table_mut().unwrap();
+            let list_array = bootstrap_table["nodes"].as_array_mut().unwrap();
+            list_array.clear();
+            let new_nodes = match network {
+                BootstrapNetwork::CalimeroDev => BootstrapNodes::calimero_dev().list,
+                BootstrapNetwork::Ipfs => BootstrapNodes::ipfs().list,
+            };
+            for node in new_nodes.iter() {
+                list_array.push(node.to_string());
+            }
+        }
+
+        // Update mDNS setting if provided
         if self.mdns != self.no_mdns {
-            config.network.discovery.mdns = self.mdns && !self.no_mdns;
+            let discovery_table = doc["discovery"].as_table_mut().unwrap();
+            discovery_table["mdns"] = toml_edit::value(self.mdns && !self.no_mdns);
         }
 
-        config.save(&path)?;
+        // Save the updated TOML back to the file
+        fs::write(&path, doc.to_string())?;
 
         info!("Node configuration has been updated");
 
