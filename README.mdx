@@ -75,6 +75,9 @@ decentralized platforms can achieve.
 
 ```mermaid
 graph TD
+
+    S2[CLI]
+
     subgraph Datastore
         DS1[Context]
         DS2[Generic]
@@ -86,7 +89,7 @@ graph TD
         DS2 --> DS8[Fragment]
         DS3 --> DS9[KAD]
 
-        subgraph impl
+        subgraph \n\n
           DI1[Memory]
           DI2[S3]
           DI3[Level]
@@ -95,13 +98,14 @@ graph TD
     end
 
     subgraph Blobstore
-        BS1[FS]
-        BS2[S3]
         BS3[Applications]
         BS4[Generic Data]
-        BS3 --> BS1
-        BS4 --> BS2
+        subgraph \n
+          BS1[FS]
+          BS2[S3]
+       end
     end
+    Blobstore --> BS3
 
     Node --> Network
 
@@ -111,19 +115,15 @@ graph TD
 
     subgraph Server
         S1[Auth Gated Client]
-        S2[CLI]
         S3[JSONRPC]
         S4[WebSocket]
         S5[Raw Sockets]
-        S2 --> S1
-        S3 --> S2
-        S4 --> S2
-        S5 --> S2
+
         Apps --> S3
         Apps --> S4
         Apps --> S5
     end
-
+    S2 --> Server
     S1 --> Client
     Node --> Runtime[Runtime]
     Node --> Datastore
