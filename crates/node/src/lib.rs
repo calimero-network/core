@@ -1,7 +1,6 @@
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
-use calimero_store::layer::ReadLayer;
 use calimero_store::Store;
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
@@ -259,7 +258,6 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         "store" => {
             // todo! revisit: get specific context state
             // todo! test this
-            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32].into());
 
             let k = format!(
                 "{c1:44}|{c2:44}|{c3}",
@@ -268,7 +266,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 c3 = "Value"
             );
 
-            for (k, v) in node.store.iter(&key)?.entries() {
+            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32].into());
+
+            for (k, v) in node.store.handle().iter(&key)?.entries() {
                 let (cx, state_key) = (k.context_id(), k.state_key());
                 let sk = calimero_primitives::hash::Hash::from(state_key);
                 let entry = format!("{c1:44}|{c2:44}|{c3}", c1 = cx, c2 = sk, c3 = v);
@@ -420,7 +420,21 @@ impl Node {
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
         >,
     ) {
-        let context: calimero_primitives::context::Context = todo!("get context from store");
+        let key = calimero_store::key::ContextMeta::new(context_id);
+
+        let Some(context) = self.store.handle().get(&key)? else {
+            let _ =
+                outcome_sender.send(Err(calimero_node_primitives::CallError::ContextNotFound {
+                    context_id,
+                }));
+            return;
+        };
+
+        let context = calimero_primitives::context::Context {
+            id: context_id,
+            // todo!
+            application_id: context.application_id.into_string().into(),
+        };
 
         if write {
             let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
@@ -568,7 +582,18 @@ impl Node {
             return Ok(None);
         };
 
-        let context: calimero_primitives::context::Context = todo!("get context from store");
+        let key = calimero_store::key::ContextMeta::new(context_id);
+
+        let Some(context) = self.store.handle().get(&key)? else {
+            error!("Context not installed, but the transaction was in the pool.");
+            return Ok(None);
+        };
+
+        let context = calimero_primitives::context::Context {
+            id: context_id,
+            // todo!
+            application_id: context.application_id.into_string().into(),
+        };
 
         let outcome = self
             .execute(context, Some(hash), transaction.method, transaction.payload)
