@@ -81,3 +81,5 @@ impl<'k, 'v, L: WriteLayer<'k, 'v>> StoreHandle<L> {
         self.inner.delete(entry.key()).map_err(Error::LayerError)
     }
 }
+
+// todo! experiment with restoring {Read,Write}Layer for StoreHandle
