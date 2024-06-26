@@ -1,3 +1,4 @@
+use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
 pub trait DataType: Sized {
@@ -5,4 +6,9 @@ pub trait DataType: Sized {
 
     fn from_slice(slice: Slice) -> Result<Self, Self::Error>;
     fn as_slice(&self) -> Result<Slice, Self::Error>;
+}
+
+pub trait Entry {
+    type Key: AsKeyParts;
+    type DataType: DataType;
 }

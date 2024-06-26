@@ -9,6 +9,7 @@ pub mod key;
 pub mod layer;
 pub mod slice;
 mod tx;
+pub mod types;
 
 use handle::StoreHandle;
 
