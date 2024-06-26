@@ -59,7 +59,7 @@ impl<'k> ReadLayer<'k> for Store {
     fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &K) -> eyre::Result<Iter<Structured<K>>> {
         let (col, key) = start.parts();
 
-        Ok(self.db.iter(col, key.as_slice())?.structured())
+        Ok(self.db.iter(col, key.as_slice())?.structured_key())
     }
 }
 
