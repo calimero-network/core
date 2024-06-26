@@ -2,11 +2,14 @@ use std::sync::Arc;
 
 pub mod config;
 pub mod db;
+mod handle;
 pub mod iter;
 pub mod key;
 pub mod layer;
 pub mod slice;
 mod tx;
+
+pub use handle::StoreHandle;
 
 #[derive(Clone)]
 pub struct Store {
@@ -18,5 +21,11 @@ impl Store {
         let db = T::open(&config)?;
 
         Ok(Self { db: Arc::new(db) })
+    }
+
+    pub fn handle(&self) -> StoreHandle<Store> {
+        StoreHandle {
+            inner: self.clone(),
+        }
     }
 }
