@@ -1,8 +1,8 @@
+use crate::handle::StoreHandle;
 use crate::iter::{Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
 use crate::slice::Slice;
 use crate::tx::Transaction;
-use crate::StoreHandle;
 
 // todo!
 // mod cache;
