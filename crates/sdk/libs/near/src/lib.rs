@@ -12,5 +12,5 @@ pub trait RpcMethod {
     type Error: serde::de::DeserializeOwned;
 
     fn method_name(&self) -> &str;
-    fn params(&self) -> Result<serde_json::Value, std::io::Error>;
+    fn params(&self) -> serde_json::Value;
 }

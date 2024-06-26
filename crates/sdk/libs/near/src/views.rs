@@ -26,7 +26,7 @@ pub enum QueryRequest {
     },
     ViewAccessKey {
         account_id: AccountId,
-        public_key: String,
+        public_key: Box<str>,
     },
     ViewAccessKeyList {
         account_id: AccountId,
@@ -69,7 +69,7 @@ pub struct StateItem {
 #[serde_as]
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct ViewStateResult {
-    pub values: Vec<StateItem>,
+    pub values: Box<[StateItem]>,
     #[serde_as(as = "Vec<Base64>")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proof: Vec<Arc<[u8]>>,
@@ -95,7 +95,7 @@ pub enum AccessKeyPermissionView {
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct AccessKeyList {
-    pub keys: Vec<AccessKeyInfoView>,
+    pub keys: Box<[AccessKeyInfoView]>,
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]

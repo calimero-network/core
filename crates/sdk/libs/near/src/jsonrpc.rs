@@ -2,6 +2,7 @@ use calimero_sdk::env;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::error::RpcError;
 use crate::{Error, RpcMethod};
 
 pub struct Client {
@@ -36,13 +37,13 @@ impl Client {
             jsonrpc: "2.0",
             id: *self.id.borrow(),
             method: method.method_name(),
-            params: method.params()?,
+            params: method.params(),
         })?;
 
         let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }
             .map_err(Error::FetchError)?;
 
-        serde_json::from_slice::<Response<M::Response, M::Error>>(&response)?
+        serde_json::from_slice::<Response<_, _>>(&response)?
             .data
             .map_err(Error::ServerError)
     }
@@ -64,11 +65,4 @@ pub struct Response<T: DeserializeOwned, E: DeserializeOwned> {
 
     #[serde(with = "calimero_primitives::common::ResultAlt", flatten)]
     pub data: Result<T, RpcError<E>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct RpcError<E> {
-    pub code: i32,
-    pub message: String,
-    pub data: Option<E>,
 }
