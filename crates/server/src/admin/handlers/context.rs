@@ -15,8 +15,13 @@ use crate::admin::storage::client_keys::get_context_client_key;
 use crate::admin::storage::context::{add_context, delete_context, get_context, get_contexts};
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ContextObject {
+    context: Context,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetContextResponse {
-    data: Context,
+    data: ContextObject,
 }
 
 pub async fn get_context_handler(
@@ -29,7 +34,7 @@ pub async fn get_context_handler(
     match context_result {
         Ok(ctx) => match ctx {
             Some(context) => ApiResponse {
-                payload: GetContextResponse { data: context },
+                payload: GetContextResponse { data: ContextObject { context } },
             }
             .into_response(),
             None => ApiError {
