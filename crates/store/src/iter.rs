@@ -51,7 +51,7 @@ impl<'a, V> Iter<'a, Unstructured, V> {
 }
 
 impl<'a, K> Iter<'a, K, Unstructured> {
-    pub fn structured_value<V: DataType>(self) -> Iter<'a, K, Structured<V>> {
+    pub fn structured_value<V: DataType<'a>>(self) -> Iter<'a, K, Structured<V>> {
         Iter {
             inner: self.inner,
             _priv: PhantomData,
@@ -158,7 +158,7 @@ impl<'a, K: FromKeyParts> TryIntoKey<'a> for Structured<K> {
     }
 }
 
-impl<'a, V: DataType> TryIntoValue<'a> for Structured<V> {
+impl<'a, V: DataType<'a>> TryIntoValue<'a> for Structured<V> {
     type Value = V;
     type Error = Error<V::Error>;
 

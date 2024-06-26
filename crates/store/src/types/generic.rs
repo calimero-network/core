@@ -6,20 +6,22 @@ use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
 #[derive(Eq, Clone, Debug, PartialEq)]
-pub struct GenericData(Box<[u8]>);
+pub struct GenericData<'a> {
+    value: Slice<'a>,
+}
 
-impl DataType for GenericData {
+impl<'a> DataType<'a> for GenericData<'a> {
     type Error = Infallible;
 
-    fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
-        Ok(Self(slice.into_boxed()))
+    fn from_slice(slice: Slice<'a>) -> Result<Self, Self::Error> {
+        Ok(Self { value: slice })
     }
 
-    fn as_slice(&self) -> Result<Slice, Self::Error> {
-        Ok(self.0.as_ref().into())
+    fn as_slice(&'a self) -> Result<Slice<'a>, Self::Error> {
+        Ok(self.value.as_ref().into())
     }
 }
 
 impl PredefinedEntry for key::Generic {
-    type DataType = GenericData;
+    type DataType<'a> = GenericData<'a>;
 }

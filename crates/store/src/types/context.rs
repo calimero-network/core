@@ -8,9 +8,12 @@ use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct ContextMeta {}
+pub struct ContextMeta {
+    // todo! make [u8; 32] when application_id<->meta is a separate record
+    pub application_id: Box<str>,
+}
 
-impl DataType for ContextMeta {
+impl DataType<'_> for ContextMeta {
     type Error = io::Error;
 
     fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
@@ -23,32 +26,36 @@ impl DataType for ContextMeta {
 }
 
 impl PredefinedEntry for key::ContextMeta {
-    type DataType = ContextMeta;
+    type DataType<'a> = ContextMeta;
 }
 
-#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct ContextState {}
+#[derive(Eq, Clone, Debug, PartialEq)]
+pub struct ContextState<'a> {
+    pub value: Slice<'a>,
+}
 
-impl DataType for ContextState {
+impl<'a> DataType<'a> for ContextState<'a> {
     type Error = io::Error;
 
-    fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
-        borsh::from_slice(&slice)
+    fn from_slice(slice: Slice<'a>) -> Result<Self, Self::Error> {
+        Ok(Self { value: slice })
     }
 
-    fn as_slice(&self) -> Result<Slice, Self::Error> {
-        borsh::to_vec(self).map(Into::into)
+    fn as_slice(&'a self) -> Result<Slice<'a>, Self::Error> {
+        Ok(self.value.as_ref().into())
     }
 }
 
 impl PredefinedEntry for key::ContextState {
-    type DataType = ContextState;
+    type DataType<'a> = ContextState<'a>;
 }
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct ContextIdentity {}
+pub struct ContextIdentity {
+    pub private_key: Option<[u8; 32]>,
+}
 
-impl DataType for ContextIdentity {
+impl DataType<'_> for ContextIdentity {
     type Error = io::Error;
 
     fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
@@ -61,13 +68,18 @@ impl DataType for ContextIdentity {
 }
 
 impl PredefinedEntry for key::ContextIdentity {
-    type DataType = ContextIdentity;
+    type DataType<'a> = ContextIdentity;
 }
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct ContextTransaction {}
+pub struct ContextTransaction {
+    pub context_id: [u8; 32],
+    pub method: Box<str>,
+    pub payload: Box<[u8]>,
+    pub prior_hash: [u8; 32],
+}
 
-impl DataType for ContextTransaction {
+impl DataType<'_> for ContextTransaction {
     type Error = io::Error;
 
     fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
@@ -80,5 +92,5 @@ impl DataType for ContextTransaction {
 }
 
 impl PredefinedEntry for key::ContextTransaction {
-    type DataType = ContextTransaction;
+    type DataType<'a> = ContextTransaction;
 }
