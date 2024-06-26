@@ -50,6 +50,14 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
             std::mem::transmute::<Option<&ContextState>, Option<&'k ContextState>>(keys.last())
         }
     }
+
+    pub fn commit(self) -> eyre::Result<bool> {
+        if let RuntimeCompatStoreInner::Write(store) = self.inner {
+            return store.commit().and(Ok(true));
+        }
+
+        Ok(false)
+    }
 }
 
 impl<'a, 'k, 'v> calimero_runtime::store::Storage for RuntimeCompatStore<'a, 'k, 'v> {

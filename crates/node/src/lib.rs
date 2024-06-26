@@ -603,15 +603,12 @@ impl Node {
             &get_runtime_limits()?,
         )?;
 
-        if let (Ok(_), runtime_compat::RuntimeCompatStore::Write(storage), Some(hash)) =
-            (&outcome.returns, storage, hash)
-        {
-            if storage.has_changes() {
-                storage.commit()?;
-            }
-            /* else {
-                todo!("return an error to the caller that the method did not write to storage")
-            } */
+        if let Some(hash) = hash {
+            assert!(storage.commit()?, "do we have a non-temporal store?");
+
+            // todo! return an error to the caller if the method did not write to storage
+            // todo! debate: when we switch to optimistic execution
+            // todo! we won't have query vs. mutate methods anymore, so this shouldn't matter
 
             let _ = self
                 .node_events
