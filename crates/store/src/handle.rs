@@ -65,3 +65,19 @@ impl<'k, L: ReadLayer<'k>> StoreHandle<L> {
         Ok(self.inner.iter(start.key())?.structured_value())
     }
 }
+
+impl<'k, 'v, L: WriteLayer<'k, 'v>> StoreHandle<L> {
+    pub fn put<E: Entry>(
+        &mut self,
+        entry: &'k E,
+        value: &'v E::DataType,
+    ) -> Result<(), Error<E::DataType>> {
+        self.inner
+            .put(entry.key(), value.as_slice().map_err(Error::CodecError)?)
+            .map_err(Error::LayerError)
+    }
+
+    pub fn delete<E: Entry>(&mut self, entry: &'k E) -> Result<(), Error<E::DataType>> {
+        self.inner.delete(entry.key()).map_err(Error::LayerError)
+    }
+}
