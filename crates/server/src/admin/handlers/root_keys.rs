@@ -6,12 +6,12 @@ use calimero_primitives::identity::{RootKey, WalletType};
 use calimero_server_primitives::admin::{AddPublicKeyRequest, IntermediateAddPublicKeyRequest};
 use calimero_store::Store;
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::add_client_key::transform_request;
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
-use crate::admin::storage::root_key::add_root_key;
+use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
+use crate::admin::storage::root_key::{add_root_key, clean_auth_keys};
 use crate::admin::utils::auth::validate_challenge;
 
 #[derive(Debug, Serialize)]
@@ -66,4 +66,22 @@ pub fn store_root_key(
 
     info!("Root key stored successfully.");
     Ok(true)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteKeysResponse {
+    data: Empty,
+}
+pub async fn delete_auth_keys_handler(
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    clean_auth_keys(&state.store).map_or_else(
+        |err| parse_api_error(err).into_response(),
+        |_| {
+            ApiResponse {
+                payload: DeleteKeysResponse { data: Empty {} },
+            }
+            .into_response()
+        },
+    );
 }
