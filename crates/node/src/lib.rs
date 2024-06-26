@@ -1,6 +1,7 @@
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
+use calimero_store::layer::ReadLayer;
 use calimero_store::Store;
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
@@ -256,9 +257,24 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             }
         }
         "store" => {
-            let state = format!("{:#?}", node.store.get(&b"STATE".to_vec()));
-            for line in state.lines() {
-                println!("{IND} {}", line.cyan());
+            // todo! revisit: get specific context state
+            // todo! test this
+            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32].into());
+
+            let k = format!(
+                "{c1:44}|{c2:44}|{c3}",
+                c1 = "Context ID",
+                c2 = "State Key",
+                c3 = "Value"
+            );
+
+            for (k, v) in node.store.iter(&key)?.entries() {
+                let (cx, state_key) = (k.context_id(), k.state_key());
+                let sk = calimero_primitives::hash::Hash::from(state_key);
+                let entry = format!("{c1:44}|{c2:44}|{c3}", c1 = cx, c2 = sk, c3 = v);
+                for line in entry.lines() {
+                    println!("{IND} {}", line.cyan());
+                }
             }
         }
         unknown => {
