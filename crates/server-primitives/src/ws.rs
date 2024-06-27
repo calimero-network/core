@@ -74,13 +74,13 @@ pub struct SubscribeResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeRequest {
-    pub context_id: Vec<calimero_primitives::context::ContextId>,
+    pub context_ids: Vec<calimero_primitives::context::ContextId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeResponse {
-    pub context_id: Vec<calimero_primitives::context::ContextId>,
+    pub context_ids: Vec<calimero_primitives::context::ContextId>,
 }
 // *************************************************************************
 
