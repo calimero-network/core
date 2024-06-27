@@ -1,31 +1,8 @@
 #![allow(dead_code)]
 
-#[cfg(not(target_arch = "wasm32"))]
 mod types;
 
 pub use types::*;
-
-macro_rules! wasm_imports {
-    ($module:literal => { $(fn $func_name:ident($($arg:ident: $arg_ty:ty),*) $(-> $returns:ty)?;)* }) => {
-        cfg_if::cfg_if! {
-            if #[cfg(target_arch = "wasm32")] {
-                #[link(wasm_import_module = $module)]
-                extern "C" {
-                    $(
-                        pub fn $func_name($($arg: $arg_ty),*) $(-> $returns)?;
-                    )*
-                }
-            } else {
-                $(
-                    #[allow(unused_variables)]
-                    pub unsafe fn $func_name($($arg: $arg_ty),*) $(-> $returns)? {
-                        panic!("host function `{}` is only available when compiled for wasm32", stringify!($func_name));
-                    }
-                )*
-            }
-        }
-    };
-}
 
 wasm_imports! {
     "env" => {
@@ -52,3 +29,27 @@ wasm_imports! {
         ) -> Bool;
     }
 }
+
+macro_rules! wasm_imports {
+    ($module:literal => { $(fn $func_name:ident($($arg:ident: $arg_ty:ty),*) $(-> $returns:ty)?;)* }) => {
+        cfg_if::cfg_if! {
+            if #[cfg(target_arch = "wasm32")] {
+                #[link(wasm_import_module = $module)]
+                extern "C" {
+                    $(
+                        pub fn $func_name($($arg: $arg_ty),*) $(-> $returns)?;
+                    )*
+                }
+            } else {
+                $(
+                    #[allow(unused_variables)]
+                    pub unsafe fn $func_name($($arg: $arg_ty),*) $(-> $returns)? {
+                        panic!("host function `{}` is only available when compiled for wasm32", stringify!($func_name));
+                    }
+                )*
+            }
+        }
+    };
+}
+
+use wasm_imports;
