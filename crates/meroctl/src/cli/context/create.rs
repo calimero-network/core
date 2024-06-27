@@ -2,17 +2,16 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::Context;
 use calimero_server_primitives::admin::ApplicationListResult;
 use camino::Utf8PathBuf;
-use clap::Parser;
-use eyre::eyre;
+use clap::{ArgGroup, Parser};
 use reqwest::{Client, Url};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::info;
 
-use super::get_ip;
+use crate::cli::context::common::get_ip;
 use crate::cli::RootArgs;
-use crate::config::ConfigFile;
+use crate::config_file::ConfigFile;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,54 +36,86 @@ struct ListApplicationsResponse {
     data: ApplicationListResult,
 }
 
+// #[derive(Debug, Parser)]
+// #[clap(group(
+//     ArgGroup::new("mode")
+//         .required(true)
+//         .args(&["application_id", "dev"]),
+// ))]
+// pub struct CreateCommand {
+//     /// The application ID to attach to the context
+//     #[clap(
+//         long,
+//         short = 'a',
+//         group = "mode",
+//         default_value = "",
+//         exclusive = true
+//     )]
+//     application_id: String,
+
+//     /// Enable dev mode
+//     #[clap(long, group = "mode")]
+//     dev: bool,
+
+//     /// Path to use in dev mode (required in dev mode)
+//     #[clap(short, long, requires = "dev", default_value = "")]
+//     path: Utf8PathBuf,
+
+//     /// Version of the application (required in dev mode)
+//     #[clap(short, long, requires = "dev", default_value = ".0.0")]
+//     version: Version,
+// }
+
 #[derive(Debug, Parser)]
+#[clap(group(
+    ArgGroup::new("dev_args")
+        .multiple(true)
+        .requires_all(&["dev", "path", "version"])
+))]
 pub struct CreateCommand {
     /// The application ID to attach to the context
-    #[clap(long, short = 'a')]
-    application_id: Option<String>,
+    #[clap(long, short = 'a', default_value = "", exclusive = true)]
+    application_id: String,
 
     /// Enable dev mode
-    #[clap(long)]
+    #[clap(long, group = "dev_args")]
     dev: bool,
 
     /// Path to use in dev mode (required in dev mode)
-    #[clap(short, long, requires = "dev")]
-    path: Option<Utf8PathBuf>,
+    #[clap(short, long, group = "dev_args", default_value = "")]
+    path: Utf8PathBuf,
 
     /// Version of the application (required in dev mode)
-    #[clap(short, long, requires = "dev")]
-    version: Option<Version>,
+    #[clap(short, long, group = "dev_args", default_value = "0.0.0")]
+    version: Version,
 }
+
 impl CreateCommand {
     pub async fn run(self, root_args: RootArgs) -> eyre::Result<()> {
         let path = root_args.home.join(&root_args.node_name);
-        if ConfigFile::exists(&path) {
-            if let Ok(config) = ConfigFile::load(&path) {
-                let multiaddr = config
-                    .network
-                    .server
-                    .listen
-                    .first()
-                    .ok_or_else(|| eyre!("No address."))?;
-                let base_url = get_ip(multiaddr)?;
 
-                match self.dev {
-                    true => Ok(link_local_app(base_url, self.path, self.version).await?),
-                    false => Ok(create_context(base_url, self.application_id).await?),
-                }
-            } else {
-                Err(eyre!("Failed to load config file"))
-            }
-        } else {
-            Err(eyre!("Config file does not exist"))
+        if !ConfigFile::exists(&path) {
+            eyre::bail!("Config file does not exist")
+        };
+
+        let Ok(config) = ConfigFile::load(&path) else {
+            eyre::bail!("Failed to load config file")
+        };
+
+        let Some(multiaddr) = config.network.server.listen.first() else {
+            eyre::bail!("No address.")
+        };
+
+        let base_url = get_ip(multiaddr)?;
+
+        match self.dev {
+            true => Ok(link_local_app(base_url, self.path, self.version).await?),
+            false => Ok(create_context(base_url, self.application_id).await?),
         }
     }
 }
 
-async fn create_context(base_url: Url, application_id: Option<String>) -> eyre::Result<()> {
-    let application_id =
-        application_id.ok_or_else(|| eyre!("Application ID is required for starting context"))?;
-
+async fn create_context(base_url: Url, application_id: String) -> eyre::Result<()> {
     app_installed(&base_url, &application_id).await?;
 
     let url = format!("{}admin-api/contexts-dev", base_url);
@@ -103,11 +134,11 @@ async fn create_context(base_url: Url, application_id: Option<String>) -> eyre::
     } else {
         let status = response.status();
         let error_text = response.text().await?;
-        return Err(eyre!(
+        eyre::bail!(
             "Request failed with status: {}. Error: {}",
             status,
             error_text
-        ));
+        );
     }
     Ok(())
 }
@@ -121,26 +152,18 @@ async fn app_installed(base_url: &Url, application_id: &String) -> eyre::Result<
         let app_list = api_response.data.apps;
         let x = app_list
             .iter()
-            .map(|app| app.id.0.clone())
-            .any(|app| app == *application_id);
+            .any(|app| app.id.as_ref() == *application_id);
         if x {
             return Ok(());
         } else {
-            return Err(eyre!("The app with the id {} is not installed\nTo create a context, install an app first", application_id));
+            eyre::bail!("The app with the id {} is not installed\nTo create a context, install an app first", application_id)
         }
     } else {
-        return Err(eyre!("Request failed with status: {}", response.status()));
+        eyre::bail!("Request failed with status: {}", response.status())
     }
 }
 
-async fn link_local_app(
-    base_url: Url,
-    path: Option<Utf8PathBuf>,
-    version: Option<Version>,
-) -> eyre::Result<()> {
-    let path = path.ok_or_else(|| eyre!("Path is required in dev mode"))?;
-    let version = version.ok_or_else(|| eyre!("Version is required in dev mode"))?;
-
+async fn link_local_app(base_url: Url, path: Utf8PathBuf, version: Version) -> eyre::Result<()> {
     let install_url = format!("{}admin-api/install-dev-application", base_url);
 
     let id = format!("{}:{}", version, path);
@@ -164,16 +187,16 @@ async fn link_local_app(
     if !install_response.status().is_success() {
         let status = install_response.status();
         let error_text = install_response.text().await?;
-        return Err(eyre!(
+        eyre::bail!(
             "Application installation failed with status: {}. Error: {}",
             status,
             error_text
-        ));
+        )
     }
 
     info!("Application installed successfully.");
 
-    create_context(base_url, Some(application_id)).await?;
+    create_context(base_url, application_id).await?;
 
     Ok(())
 }

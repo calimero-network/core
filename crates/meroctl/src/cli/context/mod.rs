@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand};
-use reqwest::Url;
 
 use crate::cli::RootArgs;
 
+mod common;
 mod create;
-mod ls;
+mod list;
 mod members;
 mod mutate;
 mod query;
@@ -17,7 +17,7 @@ pub struct ContextCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ContextSubCommands {
-    Ls(ls::LsCommand),
+    List(list::ListCommand),
     Create(create::CreateCommand),
     Query(query::QueryCommand),
     Mutate(mutate::MutateCommand),
@@ -27,31 +27,11 @@ pub enum ContextSubCommands {
 impl ContextCommand {
     pub async fn run(self, args: RootArgs) -> eyre::Result<()> {
         match self.subcommand {
-            ContextSubCommands::Ls(ls) => ls.run(args).await,
+            ContextSubCommands::List(list) => list.run(args).await,
             ContextSubCommands::Create(create) => create.run(args).await,
             ContextSubCommands::Query(query) => query.run(args).await,
             ContextSubCommands::Mutate(mutate) => mutate.run(args).await,
             ContextSubCommands::Members(members) => members.run(args).await,
         }
     }
-}
-
-pub(crate) fn get_ip(multiaddr: &libp2p::Multiaddr) -> eyre::Result<reqwest::Url> {
-    let ip = multiaddr
-        .iter()
-        .find_map(|p| match p {
-            libp2p::multiaddr::Protocol::Ip4(ip) => Some(ip),
-            _ => None,
-        })
-        .ok_or_else(|| eyre::eyre!("No IP address found in Multiaddr"))?;
-
-    let port = multiaddr
-        .iter()
-        .find_map(|p| match p {
-            libp2p::multiaddr::Protocol::Tcp(port) => Some(port),
-            _ => None,
-        })
-        .ok_or_else(|| eyre::eyre!("No TCP port found in Multiaddr"))?;
-    let url = Url::parse(&format!("http://{}:{}", ip, port))?;
-    return Ok(url);
 }
