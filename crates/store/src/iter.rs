@@ -76,7 +76,7 @@ pub struct IterKeys<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
 }
 
-impl<'a, 'b, K: TryIntoKey<'a>, V> Iterator for IterKeys<'a, 'b, K, V> {
+impl<'a, 'b, K: TryIntoKey<'b>, V> Iterator for IterKeys<'a, 'b, K, V> {
     type Item = K::Key;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -93,7 +93,7 @@ pub struct IterEntries<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
 }
 
-impl<'a, 'b, K: TryIntoKey<'a>, V: TryIntoValue<'a>> Iterator for IterEntries<'a, 'b, K, V> {
+impl<'a, 'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'a, 'b, K, V> {
     type Item = (K::Key, V::Value);
 
     fn next(&mut self) -> Option<Self::Item> {
