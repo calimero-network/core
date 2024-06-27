@@ -7,7 +7,7 @@ use calimero_sdk_near::Client;
 #[app::state]
 #[derive(Default, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
-struct GenExt;
+pub struct GenExt;
 
 #[app::logic]
 impl GenExt {
