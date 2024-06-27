@@ -151,8 +151,13 @@ pub struct CreateContextRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ConextResponse {
+    context: Context,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateContextResponse {
-    data: Context,
+    data: ConextResponse,
 }
 
 pub async fn create_context_handler(
@@ -174,7 +179,7 @@ pub async fn create_context_handler(
 
     let response = match result {
         Ok(_) => ApiResponse {
-            payload: CreateContextResponse { data: context },
+            payload: CreateContextResponse { data: ConextResponse { context } },
         }
         .into_response(),
         Err(err) => err.into_response(),
