@@ -26,15 +26,37 @@ pub fn delete_context(store: &mut Store, context_id: &ContextId) -> eyre::Result
 }
 
 pub fn get_context(store: &mut Store, context_id: &ContextId) -> eyre::Result<Option<Context>> {
-    let did = get_or_create_did(store)?;
+    let handle = store.handle();
 
-    todo!("Implement get_context")
-    // Ok(did.contexts.into_iter().find(|k| k.id == context_id))
+    let key = calimero_store::key::ContextMeta::new(*context_id);
+
+    let Some(context_meta) = handle.get(&key)? else {
+        return Ok(None);
+    };
+
+    let context = Context {
+        id: *context_id,
+        application_id: context_meta.application_id.into_string().into(),
+    };
+
+    Ok(Some(context))
 }
 
 pub fn get_contexts(store: &mut Store) -> eyre::Result<Vec<Context>> {
-    let did = get_or_create_did(store)?;
+    let handle = store.handle();
 
-    todo!("Implement get_contexts")
-    // Ok(did.contexts)
+    let start = calimero_store::key::ContextMeta::new([0; 32].into());
+
+    let mut contexts = vec![];
+
+    for (key, context_meta) in handle.iter(&start)?.entries() {
+        let context = Context {
+            id: key.context_id(),
+            application_id: context_meta.application_id.into_string().into(),
+        };
+
+        contexts.push(context);
+    }
+
+    Ok(contexts)
 }
