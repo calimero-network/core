@@ -943,6 +943,7 @@ version = "0.1.0"
 dependencies = [
  "borsh 1.4.0",
  "calimero-sdk-macros",
+ "cfg-if 1.0.0",
  "serde",
  "serde_json",
  "trybuild",
