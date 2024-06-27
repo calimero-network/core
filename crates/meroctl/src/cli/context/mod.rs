@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use const_format::concatcp;
 
 use crate::cli::RootArgs;
 
@@ -9,7 +10,23 @@ mod members;
 mod mutate;
 mod query;
 
+pub const EXAMPLES: &str = r#"
+  # List all contexts
+  $ meroctl --home data/ --node-name node1 context ls
+
+  # Create a new context
+  $ meroctl --home data/ --node-name node1 context create --application-id my-app-id
+
+  # Create a new context in dev mode
+  $ meroctl --home data/ --node-name node1 context create --dev --path /path/to/app --version 1.0.0
+"#;
+
 #[derive(Debug, Parser)]
+#[command(about = "Manage contexts")]
+#[command(after_help = concatcp!(
+    "Examples:",
+    EXAMPLES
+))]
 pub struct ContextCommand {
     #[command(subcommand)]
     pub subcommand: ContextSubCommands,
