@@ -6,6 +6,17 @@ use super::did::{get_or_create_did, update_did};
 pub fn add_context(store: &mut Store, context: Context) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;
 
+    let mut handle = store.handle();
+
+    let key = calimero_store::key::ContextMeta::new(context.id);
+
+    handle.put(
+        &key,
+        &calimero_store::types::ContextMeta {
+            application_id: context.application_id.0.into(),
+        },
+    )?;
+
     if !did_document.contexts.contains(&context.id) {
         did_document.contexts.push(context.id);
         update_did(store, did_document)?;
