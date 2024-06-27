@@ -94,12 +94,12 @@ impl CreateCommand {
             eyre::bail!("No address.")
         };
 
-        let base_url = get_ip(multiaddr)?;
+        let base_url = get_ip(multiaddr, None)?;
 
-        match self.dev {
-            true => Ok(link_local_app(base_url, self.path, self.version).await?),
-            false => Ok(create_context(base_url, self.application_id).await?),
+        if self.dev {
+            return link_local_app(base_url, self.path, self.version).await;
         }
+        create_context(base_url, self.application_id).await
     }
 }
 

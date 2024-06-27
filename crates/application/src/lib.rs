@@ -221,14 +221,12 @@ impl ApplicationManager {
         link_path: &camino::Utf8Path,
     ) -> eyre::Result<()> {
         let base_path = format!("{}/{}/{}", dir, application_id, version);
-        info! {"{}", base_path};
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
         info!("{}", file_path);
-        match symlink(link_path, &file_path) {
-            Ok(_) => {}
-            Err(err) => eyre::bail!("Symlinking failed: {}", err),
+        if let Err(err) = symlink(link_path, &file_path) {
+            eyre::bail!("Symlinking failed: {}", err);
         }
         info!(
             "Application {} linked to node\nPath to linked file at {}",

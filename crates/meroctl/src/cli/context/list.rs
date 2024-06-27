@@ -1,6 +1,5 @@
 use calimero_primitives::identity::Context;
 use clap::Parser;
-use eyre::eyre;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -20,32 +19,27 @@ impl ListCommand {
         let path = root_args.home.join(&root_args.node_name);
         if !ConfigFile::exists(&path) {
             eyre::bail!("Config file does not exist")
-        } else {
-            let Ok(config) = ConfigFile::load(&path) else {
-                eyre::bail!("Failed to load config file");
-            };
-            let multiaddr = config
-                .network
-                .server
-                .listen
-                .first()
-                .ok_or_else(|| eyre!("No address."))?;
-            let base_url = get_ip(multiaddr)?;
-            let url = format!("{}admin-api/contexts-dev", base_url);
+        }
+        let Ok(config) = ConfigFile::load(&path) else {
+            eyre::bail!("Failed to load config file");
+        };
+        let Some(multiaddr) = config.network.server.listen.first() else {
+            eyre::bail!("No address.")
+        };
 
-            let client = Client::new();
-            let response = client.get(&url).send().await?;
+        let url = get_ip(multiaddr, Some("admin-api/contexts-dev".to_string()))?;
+        let client = Client::new();
+        let response = client.get(url).send().await?;
 
-            if response.status().is_success() {
-                let api_response: GetContextsResponse = response.json().await?;
-                let contexts = api_response.data;
+        if response.status().is_success() {
+            let api_response: GetContextsResponse = response.json().await?;
+            let contexts = api_response.data;
 
-                for context in contexts {
-                    println!("{}", context.id);
-                }
-            } else {
-                eyre::bail!("Request failed with status: {}", response.status());
+            for context in contexts {
+                println!("{}", context.id);
             }
+        } else {
+            eyre::bail!("Request failed with status: {}", response.status());
         }
 
         Ok(())
