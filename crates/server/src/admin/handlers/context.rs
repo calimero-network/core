@@ -126,8 +126,14 @@ pub async fn get_contexts_handler(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedContext {
+    is_deleted: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeleteContextResponse {
-    data: bool,
+    data: DeletedContext,
 }
 
 pub async fn delete_context_handler(
@@ -138,7 +144,7 @@ pub async fn delete_context_handler(
     let result = delete_context(&state.store, &context_id).map_err(|err| parse_api_error(err));
     return match result {
         Ok(result) => ApiResponse {
-            payload: DeleteContextResponse { data: result },
+            payload: DeleteContextResponse { data: DeletedContext { is_deleted: result } },
         }
         .into_response(),
         Err(err) => err.into_response(),
