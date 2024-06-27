@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
+mod mock;
 mod types;
 
 pub use types::*;
