@@ -17,7 +17,7 @@ macro_rules! wasm_imports {
                 }
             } else {
                 $(
-                    #[no_mangle]
+                    #[allow(unused_variables)]
                     pub unsafe fn $func_name($($arg: $arg_ty),*) $(-> $returns)? {
                         panic!("host function `{}` is only available when compiled for wasm32", stringify!($func_name));
                     }
@@ -29,23 +29,26 @@ macro_rules! wasm_imports {
 
 wasm_imports! {
     "env" => {
-        fn panic(_loc: Location) -> !;
-        fn panic_utf8(_msg: Buffer, _loc: Location) -> !;
-        fn register_len(_register_id: RegisterId) -> PtrSizedInt;
-        fn read_register(_register_id: RegisterId, _buf: BufferMut) -> Bool;
-        fn input(_register_id: RegisterId);
-        fn value_return(_value: ValueReturn);
-        fn log_utf8(_msg: Buffer);
-        fn emit(_event: Event);
-        fn storage_read(_key: Buffer, _register_id: RegisterId) -> Bool;
-        fn storage_write(_key: Buffer, _value: Buffer, _register_id: RegisterId) -> Bool;
-
+        fn panic(loc: Location) -> !;
+        fn panic_utf8(msg: Buffer, loc: Location) -> !;
+        // --
+        fn register_len(register_id: RegisterId) -> PtrSizedInt;
+        fn read_register(register_id: RegisterId, buf: BufferMut) -> Bool;
+        // --
+        fn input(register_id: RegisterId);
+        fn value_return(value: ValueReturn);
+        fn log_utf8(msg: Buffer);
+        fn emit(event: Event);
+        // --
+        fn storage_read(key: Buffer, register_id: RegisterId) -> Bool;
+        fn storage_write(key: Buffer, value: Buffer, register_id: RegisterId) -> Bool;
+        // --
         fn fetch(
-            _url: Buffer,
-            _method: Buffer,
-            _headers: Buffer,
-            _body: Buffer,
-            _register_id: RegisterId
+            url: Buffer,
+            method: Buffer,
+            headers: Buffer,
+            body: Buffer,
+            register_id: RegisterId
         ) -> Bool;
     }
 }
