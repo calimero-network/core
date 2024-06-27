@@ -44,19 +44,37 @@ struct ListApplicationsResponse {
 ))]
 pub struct CreateCommand {
     /// The application ID to attach to the context
-    #[clap(long, short = 'a', default_value = "", exclusive = true)]
+    #[clap(
+        long,
+        short = 'a',
+        default_value = "",
+        exclusive = true,
+        value_name = "APP_ID"
+    )]
     application_id: String,
 
     /// Enable dev mode
     #[clap(long, group = "dev_args")]
     dev: bool,
 
-    /// Path to use in dev mode (required in dev mode)
-    #[clap(short, long, group = "dev_args", default_value = "")]
+    /// Path to use in dev mode
+    #[clap(
+        short,
+        long,
+        group = "dev_args",
+        default_value = "",
+        value_name = "PATH"
+    )]
     path: Utf8PathBuf,
 
-    /// Version of the application (required in dev mode)
-    #[clap(short, long, group = "dev_args", default_value = "0.0.0")]
+    /// Version of the application
+    #[clap(
+        short,
+        long,
+        group = "dev_args",
+        default_value = "0.0.0",
+        value_name = "VERSION"
+    )]
     version: Version,
 }
 
