@@ -19,10 +19,10 @@ impl ListCommand {
     pub async fn run(self, root_args: RootArgs) -> eyre::Result<()> {
         let path = root_args.home.join(&root_args.node_name);
         if !ConfigFile::exists(&path) {
-            return Err(eyre!("Config file does not exist"));
+            eyre::bail!("Config file does not exist")
         } else {
             let Ok(config) = ConfigFile::load(&path) else {
-                return Err(eyre!("Failed to load config file"));
+                eyre::bail!("Failed to load config file");
             };
             let multiaddr = config
                 .network
@@ -40,14 +40,11 @@ impl ListCommand {
                 let api_response: GetContextsResponse = response.json().await?;
                 let contexts = api_response.data;
 
-                println!("Contexts:");
                 for context in contexts {
-                    println!("App ID: {}", context.application_id);
-                    println!("Context ID: {}", context.id);
-                    println!();
+                    println!("{}", context.id);
                 }
             } else {
-                return Err(eyre!("Request failed with status: {}", response.status()));
+                eyre::bail!("Request failed with status: {}", response.status());
             }
         }
 

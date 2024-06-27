@@ -36,36 +36,6 @@ struct ListApplicationsResponse {
     data: ApplicationListResult,
 }
 
-// #[derive(Debug, Parser)]
-// #[clap(group(
-//     ArgGroup::new("mode")
-//         .required(true)
-//         .args(&["application_id", "dev"]),
-// ))]
-// pub struct CreateCommand {
-//     /// The application ID to attach to the context
-//     #[clap(
-//         long,
-//         short = 'a',
-//         group = "mode",
-//         default_value = "",
-//         exclusive = true
-//     )]
-//     application_id: String,
-
-//     /// Enable dev mode
-//     #[clap(long, group = "mode")]
-//     dev: bool,
-
-//     /// Path to use in dev mode (required in dev mode)
-//     #[clap(short, long, requires = "dev", default_value = "")]
-//     path: Utf8PathBuf,
-
-//     /// Version of the application (required in dev mode)
-//     #[clap(short, long, requires = "dev", default_value = ".0.0")]
-//     version: Version,
-// }
-
 #[derive(Debug, Parser)]
 #[clap(group(
     ArgGroup::new("dev_args")

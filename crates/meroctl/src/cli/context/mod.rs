@@ -17,6 +17,7 @@ pub struct ContextCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ContextSubCommands {
+    #[command(alias = "ls")]
     List(list::ListCommand),
     Create(create::CreateCommand),
     Query(query::QueryCommand),
