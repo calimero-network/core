@@ -52,7 +52,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let application_manager =
         calimero_application::start_manager(&config.application, network_client.clone()).await?;
 
-    let store = calimero_store::Store::open(&config.store)?;
+    let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
     let mut node = Node::new(
         &config,
@@ -92,8 +92,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((application_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
-                node.handle_call(application_id, method, payload, write, outcome_sender).await;
+            Some((context_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
+                node.handle_call(context_id, method, payload, write, outcome_sender).await;
             }
         }
     }
@@ -113,16 +113,23 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     // TODO: should be replaced with RPC endpoints
     match command {
         "call" => {
-            if let Some((application_id, args)) = args.and_then(|args| args.split_once(' ')) {
+            if let Some((context_id, args)) = args.and_then(|args| args.split_once(' ')) {
                 let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
 
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
                         let (outcome_sender, outcome_receiver) = oneshot::channel();
 
+                        let context_id = context_id.parse()?;
+
+                        let Ok(Some(context)) = node.get_context(context_id) else {
+                            println!("{IND} Context not found: {}", context_id);
+                            return Ok(());
+                        };
+
                         let tx_hash = match node
                             .call_mutate(
-                                application_id.to_owned().into(),
+                                context,
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
                                 outcome_sender,
@@ -259,7 +266,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             // todo! revisit: get specific context state
             // todo! test this
 
-            let k = format!(
+            println!(
                 "{c1:44}|{c2:44}|{c3}",
                 c1 = "Context ID",
                 c2 = "State Key",
@@ -268,10 +275,12 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
             let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32].into());
 
-            for (k, v) in node.store.handle().iter(&key)?.entries() {
+            let handle = node.store.handle();
+
+            for (k, v) in &mut handle.iter(&key)?.entries() {
                 let (cx, state_key) = (k.context_id(), k.state_key());
                 let sk = calimero_primitives::hash::Hash::from(state_key);
-                let entry = format!("{c1:44}|{c2:44}|{c3}", c1 = cx, c2 = sk, c3 = v);
+                let entry = format!("{c1:44}|{c2:44}|{c3:?}", c1 = cx, c2 = sk, c3 = v);
                 for line in entry.lines() {
                     println!("{IND} {}", line.cyan());
                 }
@@ -410,6 +419,25 @@ impl Node {
         Ok(())
     }
 
+    fn get_context(
+        &self,
+        context_id: calimero_primitives::context::ContextId,
+    ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
+        let key = calimero_store::key::ContextMeta::new(context_id);
+
+        let handle = self.store.handle();
+
+        let Some(context_meta) = handle.get(&key)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(calimero_primitives::context::Context {
+            id: context_id,
+            // todo!
+            application_id: context_meta.application_id.into_string().into(),
+        }))
+    }
+
     pub async fn handle_call(
         &mut self,
         context_id: calimero_primitives::context::ContextId,
@@ -420,20 +448,12 @@ impl Node {
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
         >,
     ) {
-        let key = calimero_store::key::ContextMeta::new(context_id);
-
-        let Some(context) = self.store.handle().get(&key)? else {
+        let Ok(Some(context)) = self.get_context(context_id) else {
             let _ =
                 outcome_sender.send(Err(calimero_node_primitives::CallError::ContextNotFound {
                     context_id,
                 }));
             return;
-        };
-
-        let context = calimero_primitives::context::Context {
-            id: context_id,
-            // todo!
-            application_id: context.application_id.into_string().into(),
         };
 
         if write {
@@ -582,17 +602,9 @@ impl Node {
             return Ok(None);
         };
 
-        let key = calimero_store::key::ContextMeta::new(context_id);
-
-        let Some(context) = self.store.handle().get(&key)? else {
+        let Some(context) = self.get_context(context_id)? else {
             error!("Context not installed, but the transaction was in the pool.");
             return Ok(None);
-        };
-
-        let context = calimero_primitives::context::Context {
-            id: context_id,
-            // todo!
-            application_id: context.application_id.into_string().into(),
         };
 
         let outcome = self
