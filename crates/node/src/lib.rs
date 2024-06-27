@@ -52,7 +52,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let application_manager =
         calimero_application::start_manager(&config.application, network_client.clone()).await?;
 
-    let store = calimero_store::Store::open(&config.store)?;
+    let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
     let mut node = Node::new(
         &config,
