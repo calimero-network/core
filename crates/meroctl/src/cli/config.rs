@@ -97,16 +97,15 @@ impl ConfigCommand {
                 let mut new_addr = Multiaddr::empty();
 
                 for protocol in addr.iter() {
-                    match protocol {
-                        Protocol::Ip4(_) if ipv4_host.is_some() => {
-                            new_addr.push(Protocol::Ip4(ipv4_host.unwrap()));
+                    match (&protocol, ipv4_host, ipv6_host, self.swarm_port) {
+                        (Protocol::Ip4(_), Some(ipv4_host), _, _) => {
+                            new_addr.push(Protocol::Ip4(ipv4_host));
                         }
-                        Protocol::Ip6(_) if ipv6_host.is_some() => {
-                            new_addr.push(Protocol::Ip6(ipv6_host.unwrap()));
+                        (Protocol::Ip6(_), _, Some(ipv6_host), _) => {
+                            new_addr.push(Protocol::Ip6(ipv6_host));
                         }
-                        Protocol::Tcp(_) | Protocol::Udp(_) if self.swarm_port.is_some() => {
-                            let new_port = self.swarm_port.unwrap();
-                            new_addr.push(match protocol {
+                        (Protocol::Tcp(_) | Protocol::Udp(_), _, _, Some(new_port)) => {
+                            new_addr.push(match &protocol {
                                 Protocol::Tcp(_) => Protocol::Tcp(new_port),
                                 Protocol::Udp(_) => Protocol::Udp(new_port),
                                 _ => unreachable!(),
@@ -130,15 +129,15 @@ impl ConfigCommand {
                 let mut new_addr = Multiaddr::empty();
 
                 for protocol in addr.iter() {
-                    match protocol {
-                        Protocol::Ip4(_) if ipv4_host.is_some() => {
-                            new_addr.push(Protocol::Ip4(ipv4_host.unwrap()));
+                    match (&protocol, ipv4_host, ipv6_host, self.server_port) {
+                        (Protocol::Ip4(_), Some(ipv4_host), _, _) => {
+                            new_addr.push(Protocol::Ip4(ipv4_host));
                         }
-                        Protocol::Ip6(_) if ipv6_host.is_some() => {
-                            new_addr.push(Protocol::Ip6(ipv6_host.unwrap()));
+                        (Protocol::Ip6(_), _, Some(ipv6_host), _) => {
+                            new_addr.push(Protocol::Ip6(ipv6_host));
                         }
-                        Protocol::Tcp(_) if self.server_port.is_some() => {
-                            new_addr.push(Protocol::Tcp(self.server_port.unwrap()));
+                        (Protocol::Tcp(_), _, _, Some(new_port)) => {
+                            new_addr.push(Protocol::Tcp(new_port));
                         }
                         _ => new_addr.push(protocol),
                     }
@@ -170,10 +169,9 @@ impl ConfigCommand {
         }
 
         // Update mDNS setting if provided
-        if self.mdns != self.no_mdns {
-            let discovery_table = doc["discovery"].as_table_mut().unwrap();
-            discovery_table["mdns"] = toml_edit::value(self.mdns && !self.no_mdns);
-        }
+        let mdns_enabled = if self.no_mdns { false } else { self.mdns };
+        let discovery_table = doc["discovery"].as_table_mut().unwrap();
+        discovery_table["mdns"] = toml_edit::value(mdns_enabled);
 
         // Save the updated TOML back to the file
         fs::write(&path, doc.to_string())?;
