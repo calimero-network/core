@@ -23,8 +23,17 @@ pub fn add_context(store: &mut Store, context: Context) -> eyre::Result<bool> {
     }
     Ok(true)
 }
+
 pub fn delete_context(store: &mut Store, context_id: &ContextId) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;
+
+    let mut handle = store.handle();
+
+    let key = calimero_store::key::ContextMeta::new(*context_id);
+
+    if handle.has(&key)? {
+        handle.delete(&key)?;
+    }
 
     match did_document.contexts.iter().position(|id| id == context_id) {
         Some(position) => {
