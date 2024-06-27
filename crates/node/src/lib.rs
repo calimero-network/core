@@ -602,19 +602,9 @@ impl Node {
             return Ok(None);
         };
 
-        let key = calimero_store::key::ContextMeta::new(context_id);
-
-        let handle = self.store.handle();
-
-        let Some(context) = handle.get(&key)? else {
+        let Some(context) = self.get_context(context_id)? else {
             error!("Context not installed, but the transaction was in the pool.");
             return Ok(None);
-        };
-
-        let context = calimero_primitives::context::Context {
-            id: context_id,
-            // todo!
-            application_id: context.application_id.into_string().into(),
         };
 
         let outcome = self
