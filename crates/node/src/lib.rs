@@ -92,8 +92,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((application_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
-                node.handle_call(application_id, method, payload, write, outcome_sender).await;
+            Some((context_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
+                node.handle_call(context_id, method, payload, write, outcome_sender).await;
             }
         }
     }
