@@ -2,7 +2,6 @@ use std::fs;
 use std::net::IpAddr;
 
 use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
-use calimero_node::config::{ApplicationConfig, ConfigFile, NetworkConfig, StoreConfig};
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
 use libp2p::identity;
@@ -10,6 +9,7 @@ use multiaddr::Multiaddr;
 use tracing::{info, warn};
 
 use crate::cli;
+use crate::config_file::{ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
@@ -134,7 +134,7 @@ impl InitCommand {
                     mdns,
                     rendezvous: Default::default(),
                 },
-                server: calimero_node::config::ServerConfig {
+                server: ServerConfig {
                     listen: self
                         .server_host
                         .into_iter()

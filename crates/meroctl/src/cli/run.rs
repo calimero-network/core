@@ -1,7 +1,7 @@
-use calimero_node::config::ConfigFile;
 use clap::{Parser, ValueEnum};
 
 use crate::cli;
+use crate::config_file::ConfigFile;
 
 /// Run a node
 #[derive(Debug, Parser)]
