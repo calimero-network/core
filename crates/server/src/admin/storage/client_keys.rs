@@ -3,7 +3,7 @@ use calimero_store::Store;
 
 use super::did::{get_or_create_did, update_did};
 
-pub fn add_client_key(store: &Store, client_key: ClientKey) -> eyre::Result<bool> {
+pub fn add_client_key(store: &mut Store, client_key: ClientKey) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;
 
     if !did_document
@@ -17,7 +17,7 @@ pub fn add_client_key(store: &Store, client_key: ClientKey) -> eyre::Result<bool
     Ok(true)
 }
 
-pub fn get_client_key(store: &Store, signing_key: &str) -> eyre::Result<Option<ClientKey>> {
+pub fn get_client_key(store: &mut Store, signing_key: &str) -> eyre::Result<Option<ClientKey>> {
     let did = get_or_create_did(store)?;
     Ok(did
         .client_keys
@@ -25,7 +25,7 @@ pub fn get_client_key(store: &Store, signing_key: &str) -> eyre::Result<Option<C
         .find(|k| k.signing_key == signing_key))
 }
 
-pub fn get_context_client_key(store: &Store, context_id: &str) -> eyre::Result<Vec<ClientKey>> {
+pub fn get_context_client_key(store: &mut Store, context_id: &str) -> eyre::Result<Vec<ClientKey>> {
     let did = get_or_create_did(store)?;
     Ok(did
         .client_keys
@@ -34,7 +34,7 @@ pub fn get_context_client_key(store: &Store, context_id: &str) -> eyre::Result<V
         .collect())
 }
 
-pub fn exists_client_key(store: &Store, client_key: &ClientKey) -> eyre::Result<bool> {
+pub fn exists_client_key(store: &mut Store, client_key: &ClientKey) -> eyre::Result<bool> {
     let did = get_or_create_did(store)?;
     Ok(did
         .client_keys
@@ -43,7 +43,7 @@ pub fn exists_client_key(store: &Store, client_key: &ClientKey) -> eyre::Result<
         .is_some())
 }
 
-pub fn remove_client_key(store: &Store, client_key: &ClientKey) -> eyre::Result<()> {
+pub fn remove_client_key(store: &mut Store, client_key: &ClientKey) -> eyre::Result<()> {
     let mut did_document = get_or_create_did(store)?;
 
     if let Some(pos) = did_document

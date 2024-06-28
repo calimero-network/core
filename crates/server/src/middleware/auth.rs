@@ -59,7 +59,8 @@ where
     }
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
-        let result = auth(request.headers(), &self.store);
+        // todo! experiment with Interior<Store>: WriteLayer<Interior>
+        let result = auth(request.headers(), &mut self.store.clone());
 
         if let Err(err) = result {
             let error_response = err.into_response();
@@ -84,7 +85,7 @@ struct AuthHeaders {
     context_id: String,
 }
 
-pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<'static>> {
+pub fn auth(headers: &HeaderMap, store: &mut Store) -> Result<(), UnauthorizedError<'static>> {
     let auth_headers = get_auth_headers(headers).map_err(|e| {
         debug!("Failed to extract authentication headers {}", e);
         UnauthorizedError::new("Failed to extract authentication headers.")
@@ -102,7 +103,7 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
 
     if !key_exists {
         //Only if there are no root keys, we add root key and client key from the request
-        let root_keys = exists_root_keys(&store)
+        let root_keys = exists_root_keys(store)
             .map_err(|_| UnauthorizedError::new("Issue during extracting root keys"))?;
         if !root_keys {
             return Err(UnauthorizedError::new("Client key does not exist."));

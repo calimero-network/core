@@ -12,6 +12,7 @@ pub mod admin;
 pub mod config;
 #[cfg(feature = "jsonrpc")]
 pub mod jsonrpc;
+#[cfg(feature = "admin")]
 mod middleware;
 mod verifysignature;
 #[cfg(feature = "websocket")]

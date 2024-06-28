@@ -28,8 +28,9 @@ pub async fn get_context_handler(
     Path(context_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let context_result =
-        get_context(&state.store, &context_id).map_err(|err| parse_api_error(err).into_response());
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let context_result = get_context(&mut state.store.clone(), &context_id)
+        .map_err(|err| parse_api_error(err).into_response());
 
     match context_result {
         Ok(ctx) => match ctx {
@@ -62,7 +63,8 @@ pub async fn get_context_client_keys_handler(
     Path(context_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let client_keys_result = get_context_client_key(&state.store, &context_id)
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let client_keys_result = get_context_client_key(&mut state.store.clone(), &context_id)
         .map_err(|err| parse_api_error(err).into_response());
     match client_keys_result {
         Ok(client_keys) => ApiResponse {
@@ -113,7 +115,8 @@ pub struct GetContextsResponse {
 pub async fn get_contexts_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let contexts = get_contexts(&state.store).map_err(|err| parse_api_error(err));
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let contexts = get_contexts(&mut state.store.clone()).map_err(|err| parse_api_error(err));
     return match contexts {
         Ok(contexts) => ApiResponse {
             payload: GetContextsResponse {
@@ -141,7 +144,9 @@ pub async fn delete_context_handler(
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let result = delete_context(&state.store, &context_id).map_err(|err| parse_api_error(err));
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let result =
+        delete_context(&mut state.store.clone(), &context_id).map_err(|err| parse_api_error(err));
     return match result {
         Ok(result) => ApiResponse {
             payload: DeleteContextResponse { data: DeletedContext { is_deleted: result } },
@@ -181,7 +186,9 @@ pub async fn create_context_handler(
         application_id: req.application_id,
     };
 
-    let result = add_context(&state.store, context.clone()).map_err(|err| parse_api_error(err));
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let result =
+        add_context(&mut state.store.clone(), context.clone()).map_err(|err| parse_api_error(err));
 
     let response = match result {
         Ok(_) => ApiResponse {

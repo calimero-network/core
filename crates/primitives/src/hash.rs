@@ -1,5 +1,6 @@
 use std::fmt;
 use std::mem::MaybeUninit;
+use std::ops::Deref;
 use std::str::FromStr;
 
 use sha2::Digest;
@@ -9,6 +10,7 @@ const MAX_STR_LEN: usize = (BYTES_LEN + 1) * 4 / 3;
 
 #[derive(Copy, Clone)]
 pub struct Hash {
+    // todo! consider genericizing over a const N
     bytes: [u8; BYTES_LEN],
     bs58: MaybeUninit<(usize, [u8; MAX_STR_LEN])>,
 }
@@ -18,6 +20,7 @@ impl Hash {
         &self.bytes
     }
 
+    // todo! genericize over D: Digest
     pub fn hash(data: &[u8]) -> Self {
         Self {
             bytes: sha2::Sha256::digest(data).into(),
@@ -25,6 +28,7 @@ impl Hash {
         }
     }
 
+    // todo! genericize over D: Digest
     pub fn hash_json<T: serde::Serialize>(data: &T) -> serde_json::Result<Self> {
         let mut hasher = sha2::Sha256::default();
 
@@ -38,6 +42,8 @@ impl Hash {
 
     // todo! pub fn hash_borsh
 
+    // todo! using generic-array;
+    // todo! as_str(&self, buf: &mut [u8; N]) -> &str
     pub fn as_str(&self) -> &str {
         let (len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
 
@@ -60,6 +66,30 @@ impl Hash {
             Ok(_) => Err(None),
             Err(err) => Err(Some(err)),
         }
+    }
+}
+
+// todo! re-evaluate controlled construction
+impl From<[u8; BYTES_LEN]> for Hash {
+    fn from(bytes: [u8; BYTES_LEN]) -> Self {
+        Self {
+            bytes,
+            bs58: MaybeUninit::zeroed(),
+        }
+    }
+}
+
+impl From<Hash> for [u8; BYTES_LEN] {
+    fn from(hash: Hash) -> Self {
+        hash.bytes
+    }
+}
+
+impl Deref for Hash {
+    type Target = [u8; BYTES_LEN];
+
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
     }
 }
 
