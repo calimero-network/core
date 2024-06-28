@@ -10,6 +10,7 @@ import {
   RootKeyResponse,
 } from '../nodeApi';
 import { HttpClient } from '../httpClient';
+import { Header, createAuthHeader } from '../../auth/headers';
 
 export class NodeApiDataSource implements NodeApi {
   private client: HttpClient;
@@ -47,14 +48,21 @@ export class NodeApiDataSource implements NodeApi {
   async addRootKey(
     rootKeyRequest: RootKeyRequest,
     rpcBaseUrl: string,
+    applicationId: string,
   ): ApiResponse<RootKeyResponse> {
     console.log('Send request to node with params', rootKeyRequest);
+
+    const headers: Header | null = await createAuthHeader(
+      JSON.stringify(rootKeyRequest),
+      applicationId,
+    );
 
     return await this.client.post<LoginRequest>(
       `${rpcBaseUrl}/admin-api/root-key`,
       {
         ...rootKeyRequest,
       },
+      headers
     );
   }
 
