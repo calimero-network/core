@@ -15,8 +15,13 @@ use crate::admin::storage::client_keys::get_context_client_key;
 use crate::admin::storage::context::{add_context, delete_context, get_context, get_contexts};
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ContextObject {
+    context: Context,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetContextResponse {
-    data: Context,
+    data: ContextObject,
 }
 
 pub async fn get_context_handler(
@@ -30,7 +35,7 @@ pub async fn get_context_handler(
     match context_result {
         Ok(ctx) => match ctx {
             Some(context) => ApiResponse {
-                payload: GetContextResponse { data: context },
+                payload: GetContextResponse { data: ContextObject { context } },
             }
             .into_response(),
             None => ApiError {
@@ -98,8 +103,13 @@ pub async fn get_context_users_handler(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ContextList {
+    contexts: Vec<Context>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GetContextsResponse {
-    data: Vec<Context>,
+    data: ContextList,
 }
 
 pub async fn get_contexts_handler(
@@ -109,7 +119,9 @@ pub async fn get_contexts_handler(
     let contexts = get_contexts(&mut state.store.clone()).map_err(|err| parse_api_error(err));
     return match contexts {
         Ok(contexts) => ApiResponse {
-            payload: GetContextsResponse { data: contexts },
+            payload: GetContextsResponse {
+                data: ContextList { contexts },
+            },
         }
         .into_response(),
         Err(err) => err.into_response(),
@@ -117,8 +129,14 @@ pub async fn get_contexts_handler(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedContext {
+    is_deleted: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeleteContextResponse {
-    data: bool,
+    data: DeletedContext,
 }
 
 pub async fn delete_context_handler(
@@ -131,7 +149,7 @@ pub async fn delete_context_handler(
         delete_context(&mut state.store.clone(), &context_id).map_err(|err| parse_api_error(err));
     return match result {
         Ok(result) => ApiResponse {
-            payload: DeleteContextResponse { data: result },
+            payload: DeleteContextResponse { data: DeletedContext { is_deleted: result } },
         }
         .into_response(),
         Err(err) => err.into_response(),
@@ -144,8 +162,13 @@ pub struct CreateContextRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ContextResponse {
+    context: Context,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateContextResponse {
-    data: Context,
+    data: ContextResponse,
 }
 
 pub async fn create_context_handler(
@@ -169,7 +192,7 @@ pub async fn create_context_handler(
 
     let response = match result {
         Ok(_) => ApiResponse {
-            payload: CreateContextResponse { data: context },
+            payload: CreateContextResponse { data: ContextResponse { context } },
         }
         .into_response(),
         Err(err) => err.into_response(),

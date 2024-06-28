@@ -5,14 +5,14 @@ use calimero_sdk::{app, env};
 #[app::state(emits = for<'a> Event<'a>)]
 #[derive(Default, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
-struct OnlyPeers {
+pub struct OnlyPeers {
     posts: Vec<Post>,
 }
 
 #[derive(Default, Serialize, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
-struct Post {
+pub struct Post {
     id: usize,
     title: String,
     content: String,
@@ -22,7 +22,7 @@ struct Post {
 #[derive(Default, Serialize, BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "calimero_sdk::borsh")]
 #[serde(crate = "calimero_sdk::serde")]
-struct Comment {
+pub struct Comment {
     text: String,
     user: String,
 }

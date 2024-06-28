@@ -1,0 +1,17 @@
+[package]
+name = "calimero-sdk-near"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+near-account-id = { workspace = true, features = ["serde"]}
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_with = {workspace = true, features = ["base64"]}
+thiserror.workspace = true
+
+calimero-sdk = { path = "../../" }
+calimero-primitives = { path = "../../../primitives" }
