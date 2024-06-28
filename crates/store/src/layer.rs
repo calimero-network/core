@@ -31,6 +31,20 @@ pub trait WriteLayer<'k, 'v>: ReadLayer<'k> {
 
 pub trait LayerExt: Sized {
     fn handle(self) -> StoreHandle<Self>;
+
+    fn temporal<'k, 'v>(&mut self) -> temporal::Temporal<'_, 'k, 'v, Self>
+    where
+        Self: WriteLayer<'k, 'v>,
+    {
+        temporal::Temporal::new(self)
+    }
+
+    fn read_only<'k>(&'k self) -> read_only::ReadOnly<'k, Self>
+    where
+        Self: ReadLayer<'k>,
+    {
+        read_only::ReadOnly::new(self)
+    }
 }
 
 impl<L: Layer> LayerExt for L {
