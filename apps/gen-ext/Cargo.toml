@@ -1,0 +1,14 @@
+[package]
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+name = "gen-ext"
+repository.workspace = true
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk = {path = "../../crates/sdk"}
+calimero-sdk-near = { path = "../../crates/sdk/libs/near" }
