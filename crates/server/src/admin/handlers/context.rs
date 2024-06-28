@@ -3,7 +3,9 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::identity::{ClientKey, Context, ContextUser};
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::identity::{ClientKey, ContextUser};
 use calimero_server_primitives::admin::ContextStorage;
 use rand::RngCore;
 use reqwest::StatusCode;
@@ -25,7 +27,7 @@ pub struct GetContextResponse {
 }
 
 pub async fn get_context_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
@@ -60,7 +62,7 @@ pub struct GetContextClientKeysResponse {
 }
 
 pub async fn get_context_client_keys_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
@@ -140,7 +142,7 @@ pub struct DeleteContextResponse {
 }
 
 pub async fn delete_context_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<ContextId>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
@@ -158,7 +160,7 @@ pub async fn delete_context_handler(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
-    application_id: String,
+    application_id: ApplicationId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -181,8 +183,8 @@ pub async fn create_context_handler(
     let context_id = signing_key.verifying_key();
 
     let context = Context {
-        id: bs58::encode(&context_id).into_string(),
-        signing_key,
+        id: (*context_id.as_bytes()).into(),
+        // signing_key, // todo! move to the Identity column
         application_id: req.application_id,
     };
 

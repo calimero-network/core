@@ -18,9 +18,6 @@ mod verifysignature;
 #[cfg(feature = "websocket")]
 pub mod ws;
 
-pub const APPLICATION_ID: &str =
-    "/calimero/experimental/app/9SFTEoc6RBHtCn9b6cm4PPmhYzrogaMCd5CRiYAQichP";
-
 pub async fn start(
     config: ServerConfig,
     server_sender: calimero_node_primitives::ServerSender,

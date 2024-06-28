@@ -6,6 +6,7 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use calimero_identity::auth::verify_near_public_key;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_store::Store;
 use chrono::Utc;
@@ -82,7 +83,7 @@ struct AuthHeaders {
     signing_key: String,
     signature: Vec<u8>,
     challenge: Vec<u8>,
-    context_id: String,
+    context_id: ContextId,
 }
 
 pub fn auth(headers: &HeaderMap, store: &mut Store) -> Result<(), UnauthorizedError<'static>> {
@@ -95,7 +96,7 @@ pub fn auth(headers: &HeaderMap, store: &mut Store) -> Result<(), UnauthorizedEr
         wallet_type: auth_headers.wallet_type,
         signing_key: auth_headers.signing_key.clone(),
         created_at: Utc::now().timestamp_millis() as u64,
-        context_id: auth_headers.context_id.clone(),
+        context_id: auth_headers.context_id,
     };
 
     let key_exists = exists_client_key(store, &client_key)
@@ -157,8 +158,14 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
     let context_id = headers
         .get("context_id")
         .ok_or_else(|| UnauthorizedError::new("Missing  context_id header"))?;
-    let context_id = String::from_utf8(context_id.as_bytes().to_vec())
-        .map_err(|_| UnauthorizedError::new("Invalid signing_key string"))?;
+
+    let context_id = context_id
+        .to_str()
+        .map_err(|_| UnauthorizedError::new("Invalid context_id string"))?;
+
+    let context_id = context_id
+        .parse()
+        .map_err(|_| UnauthorizedError::new("Invalid context_id"))?;
 
     let auth = AuthHeaders {
         wallet_type,

@@ -1,4 +1,4 @@
-use calimero_primitives::identity::ClientKey;
+use calimero_primitives::{context::ContextId, identity::ClientKey};
 use calimero_store::Store;
 
 use super::did::{get_or_create_did, update_did};
@@ -25,12 +25,15 @@ pub fn get_client_key(store: &mut Store, signing_key: &str) -> eyre::Result<Opti
         .find(|k| k.signing_key == signing_key))
 }
 
-pub fn get_context_client_key(store: &mut Store, context_id: &str) -> eyre::Result<Vec<ClientKey>> {
+pub fn get_context_client_key(
+    store: &mut Store,
+    context_id: &ContextId,
+) -> eyre::Result<Vec<ClientKey>> {
     let did = get_or_create_did(store)?;
     Ok(did
         .client_keys
         .into_iter()
-        .filter(|k| k.context_id == context_id)
+        .filter(|k| &k.context_id == context_id)
         .collect())
 }
 

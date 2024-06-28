@@ -146,7 +146,7 @@ pub(crate) enum CallError {
 
 pub(crate) async fn call(
     sender: calimero_node_primitives::ServerSender,
-    application_id: calimero_primitives::application::ApplicationId,
+    context_id: calimero_primitives::context::ContextId,
     method: String,
     args: Vec<u8>,
     writes: bool,
@@ -154,7 +154,7 @@ pub(crate) async fn call(
     let (outcome_sender, outcome_receiver) = oneshot::channel();
 
     sender
-        .send((application_id, method, args, writes, outcome_sender))
+        .send((context_id, method, args, writes, outcome_sender))
         .await
         .map_err(|e| CallError::InternalError(eyre::eyre!("Failed to send call message: {}", e)))?;
 

@@ -1,63 +1,66 @@
 use calimero_primitives::identity::Did;
+use calimero_store::entry::{Entry, Json};
 use calimero_store::key::Generic;
-use calimero_store::layer::{read_only, temporal, ReadLayer, WriteLayer};
 use calimero_store::Store;
 
-const DID_KEY: &str = "did:cali";
-const DID_SCOPE: &[u8; 16] = b"id:calimero:node";
+struct DidEntry {
+    key: Generic,
+}
 
-pub const NODE_STORE_KEY: &str = "node";
+impl Entry for DidEntry {
+    type Key = Generic;
+    type DataType<'a> = Json<Did>;
 
-fn did_key() -> Generic {
-    Generic::new(*DID_SCOPE, [0; 32])
+    fn key(&self) -> &Self::Key {
+        &self.key
+    }
+}
+
+impl DidEntry {
+    fn new() -> Self {
+        Self {
+            key: Generic::new(*b"id:calimero:node", [0; 32]),
+        }
+    }
 }
 
 pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
-    let mut storage = temporal::Temporal::new(store);
+    let did_document = Json::new(Did {
+        id: "did:cali".to_string(),
+        root_keys: vec![],
+        client_keys: vec![],
+        contexts: vec![],
+    });
 
-    let did_document = Did {
-        id: DID_KEY.to_string(),
-        root_keys: Vec::new(),
-        client_keys: Vec::new(),
-        contexts: Vec::new(),
-    };
+    let entry = DidEntry::new();
 
-    let did_document_vec = serde_json::to_vec(&did_document)
-        .map_err(|e| eyre::Report::new(e).wrap_err("Serialization error"))?;
+    let mut handle = store.handle();
 
-    let key = did_key();
+    handle.put(&entry, &did_document)?;
 
-    storage.put(&key, did_document_vec.into())?;
-
-    storage.commit()?;
-
-    Ok(did_document)
+    Ok(did_document.value())
 }
 
 pub fn get_or_create_did(store: &mut Store) -> eyre::Result<Did> {
-    let storage = read_only::ReadOnly::new(store);
+    let entry = DidEntry::new();
 
-    let key = did_key();
+    let handle = store.handle();
 
-    let Some(bytes) = storage.get(&key)? else {
+    let Some(did_document) = handle.get(&entry)? else {
         return create_did(store);
     };
 
-    serde_json::from_slice(&bytes)
-        .map_err(|e| eyre::Report::new(e).wrap_err("Deserialization error"))
+    Ok(did_document.value())
 }
 
 pub fn update_did(store: &mut Store, did: Did) -> eyre::Result<()> {
-    let did_document_vec = serde_json::to_vec(&did)
-        .map_err(|e| eyre::Report::new(e).wrap_err("Serialization error"))?;
+    let entry = DidEntry::new();
 
-    let mut storage = temporal::Temporal::new(store);
+    let did_document = Json::new(did);
 
-    let key = did_key();
+    let mut handle = store.handle();
 
-    storage.put(&key, did_document_vec.into())?;
-
-    storage.commit()?;
+    handle.put(&entry, &did_document)?;
 
     Ok(())
 }
