@@ -1021,6 +1021,8 @@ dependencies = [
  "eyre",
  "generic-array 1.0.0",
  "rocksdb",
+ "serde",
+ "serde_json",
  "strum 0.26.2",
  "thiserror",
 ]
