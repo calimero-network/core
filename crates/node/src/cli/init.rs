@@ -159,9 +159,11 @@ impl InitCommand {
 
         config.save(&root_args.home)?;
 
-        calimero_store::Store::open(&calimero_store::config::StoreConfig {
-            path: root_args.home.join(config.store.path),
-        })?;
+        calimero_store::Store::open::<calimero_store::db::RocksDB>(
+            &calimero_store::config::StoreConfig {
+                path: root_args.home.join(config.store.path),
+            },
+        )?;
 
         info!("Initialized a chat node in {:?}", root_args.home);
 

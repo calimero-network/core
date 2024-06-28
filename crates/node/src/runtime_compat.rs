@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use calimero_primitives::context::ContextId;
 use calimero_store::key::ContextState;
-use calimero_store::layer::{read_only, temporal, ReadLayer, WriteLayer};
+use calimero_store::layer::{read_only, temporal, LayerExt, ReadLayer, WriteLayer};
 use calimero_store::Store;
 
 pub enum RuntimeCompatStoreInner<'a, 'k, 'v> {
@@ -21,7 +21,7 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
     pub fn temporal(store: &'a mut Store, context_id: ContextId) -> Self {
         Self {
             context_id,
-            inner: RuntimeCompatStoreInner::Write(temporal::Temporal::new(store)),
+            inner: RuntimeCompatStoreInner::Write(store.temporal()),
             keys: Default::default(),
         }
     }
@@ -29,7 +29,7 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
     pub fn read_only(store: &'k Store, context_id: ContextId) -> Self {
         Self {
             context_id,
-            inner: RuntimeCompatStoreInner::Read(read_only::ReadOnly::new(store)),
+            inner: RuntimeCompatStoreInner::Read(store.read_only()),
             keys: Default::default(),
         }
     }
@@ -49,6 +49,14 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
         unsafe {
             std::mem::transmute::<Option<&ContextState>, Option<&'k ContextState>>(keys.last())
         }
+    }
+
+    pub fn commit(self) -> eyre::Result<bool> {
+        if let RuntimeCompatStoreInner::Write(store) = self.inner {
+            return store.commit().and(Ok(true));
+        }
+
+        Ok(false)
     }
 }
 
