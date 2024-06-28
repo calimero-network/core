@@ -107,7 +107,7 @@ pub async fn start(
         cors::CorsLayer::new()
             .allow_origin(cors::Any)
             .allow_headers(cors::Any)
-            .allow_methods([http::Method::POST]),
+            .allow_methods([http::Method::POST, http::Method::GET, http::Method::DELETE, http::Method::PUT, http::Method::OPTIONS]),
     );
 
     let mut set = tokio::task::JoinSet::new();

@@ -34,7 +34,7 @@ pub struct ExecutedTransactionPayload {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerJoinedPayload {
-    pub peer_id: libp2p::PeerId,
+    pub peer_id: libp2p_identity::PeerId,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

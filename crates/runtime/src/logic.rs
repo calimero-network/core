@@ -321,7 +321,11 @@ impl<'a> VMHostFunctions<'a> {
         let url = self.get_string(url_ptr, url_len)?;
         let method = self.get_string(method_ptr, method_len)?;
         let headers = self.read_guest_memory(headers_ptr, headers_len)?;
-        let headers: Vec<(String, String)> = borsh::from_slice(&headers).unwrap(); // safety: headers are coming from an inner source. Safe to deserialize.
+
+// Safety: The `fetch` function cannot be directly called by applications.
+// Therefore, the headers are generated exclusively by our code, ensuring
+// that it is safe to deserialize them.
+        let headers: Vec<(String, String)> = borsh::from_slice(&headers).unwrap();
         let body = self.read_guest_memory(body_ptr, body_len)?;
         let mut request = ureq::request(&method, &url);
 

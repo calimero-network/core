@@ -36,7 +36,7 @@ pub fn exists_root_keys(store: &mut Store) -> eyre::Result<bool> {
     Ok(!did.root_keys.is_empty())
 }
 
-pub fn clean_keys(store: &mut Store) -> eyre::Result<()> {
+pub fn clean_auth_keys(store: &mut Store) -> eyre::Result<()> {
     let mut did = get_or_create_did(store)?;
 
     did.client_keys.clear();
