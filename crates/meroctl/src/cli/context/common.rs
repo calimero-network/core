@@ -1,6 +1,6 @@
 use reqwest::Url;
 
-pub(crate) fn get_ip(
+pub(crate) fn multiaddr_to_url(
     multiaddr: &libp2p::Multiaddr,
     api_path: Option<String>,
 ) -> eyre::Result<reqwest::Url> {
@@ -20,7 +20,16 @@ pub(crate) fn get_ip(
         })
         .ok_or_else(|| eyre::eyre!("No TCP port found in Multiaddr"))?;
 
-    let mut url = Url::parse(&format!("http://{}:{}", ip, port))?;
+    let scheme = multiaddr
+        .iter()
+        .find_map(|p| match p {
+            libp2p::multiaddr::Protocol::Http => Some("http"),
+            libp2p::multiaddr::Protocol::Https => Some("https"),
+            _ => None,
+        })
+        .unwrap_or("http");
+
+    let mut url = Url::parse(&format!("{}://{}:{}", scheme, ip, port))?;
 
     if let Some(api_path) = api_path {
         url.set_path(&api_path);

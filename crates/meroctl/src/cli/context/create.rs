@@ -3,13 +3,14 @@ use calimero_primitives::identity::Context;
 use calimero_server_primitives::admin::ApplicationListResult;
 use camino::Utf8PathBuf;
 use clap::{ArgGroup, Parser};
-use reqwest::{Client, Url};
+use libp2p::Multiaddr;
+use reqwest::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::info;
 
-use crate::cli::context::common::get_ip;
+use crate::cli::context::common::multiaddr_to_url;
 use crate::cli::RootArgs;
 use crate::config_file::ConfigFile;
 
@@ -94,23 +95,21 @@ impl CreateCommand {
             eyre::bail!("No address.")
         };
 
-        let base_url = get_ip(multiaddr, None)?;
-
         if self.dev {
-            return link_local_app(base_url, self.path, self.version).await;
+            return link_local_app(multiaddr, self.path, self.version).await;
         }
-        create_context(base_url, self.application_id).await
+        create_context(multiaddr, self.application_id).await
     }
 }
 
-async fn create_context(base_url: Url, application_id: String) -> eyre::Result<()> {
-    app_installed(&base_url, &application_id).await?;
+async fn create_context(base_multiaddr: &Multiaddr, application_id: String) -> eyre::Result<()> {
+    app_installed(&base_multiaddr, &application_id).await?;
 
-    let url = format!("{}admin-api/contexts-dev", base_url);
+    let url = multiaddr_to_url(base_multiaddr, Some("admin-api/contexts-dev".to_string()))?;
     let client = Client::new();
     let request = CreateContextRequest { application_id };
 
-    let response = client.post(&url).json(&request).send().await?;
+    let response = client.post(url).json(&request).send().await?;
 
     if response.status().is_success() {
         let context_response: CreateContextResponse = response.json().await?;
@@ -131,10 +130,13 @@ async fn create_context(base_url: Url, application_id: String) -> eyre::Result<(
     Ok(())
 }
 
-async fn app_installed(base_url: &Url, application_id: &String) -> eyre::Result<()> {
-    let url = format!("{}admin-api/applications-dev", base_url);
+async fn app_installed(base_multiaddr: &Multiaddr, application_id: &String) -> eyre::Result<()> {
+    let url = multiaddr_to_url(
+        base_multiaddr,
+        Some("admin-api/applications-dev".to_string()),
+    )?;
     let client = Client::new();
-    let response = client.get(&url).send().await?;
+    let response = client.get(url).send().await?;
     if response.status().is_success() {
         let api_response: ListApplicationsResponse = response.json().await?;
         let app_list = api_response.data.apps;
@@ -151,8 +153,15 @@ async fn app_installed(base_url: &Url, application_id: &String) -> eyre::Result<
     }
 }
 
-async fn link_local_app(base_url: Url, path: Utf8PathBuf, version: Version) -> eyre::Result<()> {
-    let install_url = format!("{}admin-api/install-dev-application", base_url);
+async fn link_local_app(
+    base_multiaddr: &Multiaddr,
+    path: Utf8PathBuf,
+    version: Version,
+) -> eyre::Result<()> {
+    let install_url = multiaddr_to_url(
+        base_multiaddr,
+        Some("admin-api/install-dev-application".to_string()),
+    )?;
 
     let id = format!("{}:{}", version, path);
     let mut hasher = Sha256::new();
@@ -167,7 +176,7 @@ async fn link_local_app(base_url: Url, path: Utf8PathBuf, version: Version) -> e
     };
 
     let install_response = client
-        .post(&install_url)
+        .post(install_url)
         .json(&install_request)
         .send()
         .await?;
@@ -184,7 +193,7 @@ async fn link_local_app(base_url: Url, path: Utf8PathBuf, version: Version) -> e
 
     info!("Application installed successfully.");
 
-    create_context(base_url, application_id).await?;
+    create_context(base_multiaddr, application_id).await?;
 
     Ok(())
 }

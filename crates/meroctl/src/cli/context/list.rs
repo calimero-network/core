@@ -3,7 +3,7 @@ use clap::Parser;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::cli::context::common::get_ip;
+use crate::cli::context::common::multiaddr_to_url;
 use crate::cli::RootArgs;
 use crate::config_file::ConfigFile;
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,7 +27,7 @@ impl ListCommand {
             eyre::bail!("No address.")
         };
 
-        let url = get_ip(multiaddr, Some("admin-api/contexts-dev".to_string()))?;
+        let url = multiaddr_to_url(multiaddr, Some("admin-api/contexts-dev".to_string()))?;
         let client = Client::new();
         let response = client.get(url).send().await?;
 
