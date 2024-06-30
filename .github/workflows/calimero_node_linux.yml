@@ -208,3 +208,4 @@ jobs:
           VERSION=${{ needs.build.outputs.version }}
           TARGET=${{ matrix.target }}
           gh release upload "v$VERSION" calimero-node-lib_${TARGET}.tar.gz
+          
