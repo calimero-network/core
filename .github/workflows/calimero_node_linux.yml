@@ -1,4 +1,4 @@
-name: Build and Upload Binary for Linux
+name: Build and Upload Library for Linux
 
 on:
   push:
@@ -60,7 +60,7 @@ jobs:
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=/" >> $GITHUB_ENV
 
-      - name: Build the crate for AArch64
+      - name: Build the library for AArch64
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         env:
           OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
@@ -72,11 +72,11 @@ jobs:
           AR: aarch64-linux-gnu-ar
           RANLIB: aarch64-linux-gnu-ranlib
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build -p calimero-node --release --target ${{ matrix.target }}
+        run: cargo build -p calimero-node --lib --release --target ${{ matrix.target }}
 
-      - name: Build the crate for x86_64
+      - name: Build the library for x86_64
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo build -p calimero-node --release --target ${{ matrix.target }}
+        run: cargo build -p calimero-node --lib --release --target ${{ matrix.target }}
 
       - name: Extract version
         id: extract_version
@@ -87,17 +87,19 @@ jobs:
       - name: Compress artifact using gzip
         id: compress
         run: |
-          tar -czf calimero-node_${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release calimero-node
-          echo "artifact_path=calimero-node_${{ matrix.target }}.tar.gz" >> $GITHUB_OUTPUT
+          mkdir -p release
+          cp target/${{ matrix.target }}/release/libcalimero_node.rlib release/
+          tar -czf calimero-node-lib_${{ matrix.target }}.tar.gz -C release libcalimero_node.rlib
+          echo "artifact_path=calimero-node-lib_${{ matrix.target }}.tar.gz" >> $GITHUB_OUTPUT
           echo "target=${{ matrix.target }}" >> $GITHUB_OUTPUT
 
       - name: Cache build artifact
         uses: actions/cache@v4
         with:
-          path: calimero-node_${{ matrix.target }}.tar.gz
-          key: build-artifact-${{ matrix.target }}-${{ github.sha }}
+          path: calimero-node-lib_${{ matrix.target }}.tar.gz
+          key: build-artifact-lib-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
-            build-artifact-${{ matrix.target }}
+            build-artifact-lib-${{ matrix.target }}
 
   upload_branch_artifact:
     runs-on: ubuntu-latest
@@ -111,10 +113,10 @@ jobs:
       - name: Restore build artifact
         uses: actions/cache@v4
         with:
-          path: calimero-node_${{ matrix.target }}.tar.gz
-          key: build-artifact-${{ matrix.target }}-${{ github.sha }}
+          path: calimero-node-lib_${{ matrix.target }}.tar.gz
+          key: build-artifact-lib-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
-            build-artifact-${{ matrix.target }}
+            build-artifact-lib-${{ matrix.target }}
 
       - name: Sanitize ref name
         id: sanitize
@@ -122,11 +124,11 @@ jobs:
           sanitized_ref_name=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9_-]/-/g; s/^-*//; s/-*$//')
           echo "sanitized_ref_name=${sanitized_ref_name}" >> $GITHUB_OUTPUT
 
-      - name: Upload binary as artifact
+      - name: Upload library as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: calimero-node_${{ steps.sanitize.outputs.sanitized_ref_name }}_${{ matrix.target }}.tar.gz
-          path: calimero-node_${{ matrix.target }}.tar.gz
+          name: calimero-node-lib_${{ steps.sanitize.outputs.sanitized_ref_name }}_${{ matrix.target }}.tar.gz
+          path: calimero-node-lib_${{ matrix.target }}.tar.gz
           retention-days: 2
 
   create_release:
@@ -174,10 +176,10 @@ jobs:
       - name: Restore build artifact
         uses: actions/cache@v4
         with:
-          path: calimero-node_${{ matrix.target }}.tar.gz
-          key: build-artifact-${{ matrix.target }}-${{ github.sha }}
+          path: calimero-node-lib_${{ matrix.target }}.tar.gz
+          key: build-artifact-lib-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
-            build-artifact-${{ matrix.target }}
+            build-artifact-lib-${{ matrix.target }}
 
       - name: Check if artifact exists in release
         id: check_artifact
@@ -186,7 +188,7 @@ jobs:
         run: |
           VERSION=${{ needs.build.outputs.version }}
           TARGET=${{ matrix.target }}
-          ARTIFACT_NAME="calimero-node_${TARGET}.tar.gz"
+          ARTIFACT_NAME="calimero-node-lib_${TARGET}.tar.gz"
           ASSET_ID=$(gh api \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
@@ -205,4 +207,4 @@ jobs:
         run: |
           VERSION=${{ needs.build.outputs.version }}
           TARGET=${{ matrix.target }}
-          gh release upload "v$VERSION" calimero-node_${TARGET}.tar.gz
+          gh release upload "v$VERSION" calimero-node-lib_${TARGET}.tar.gz
