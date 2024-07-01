@@ -43,6 +43,7 @@ pub struct RootCommand {
 pub enum SubCommands {
     Init(init::InitCommand),
     Config(config::ConfigCommand),
+    #[command(alias = "up")]
     Run(run::RunCommand),
     Context(context::ContextCommand),
 }
