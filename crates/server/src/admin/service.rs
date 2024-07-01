@@ -99,6 +99,16 @@ pub(crate) fn setup(
             "/add-client-key",
             post(handlers::add_client_key::add_client_key_handler),
         )
+        .route(
+            "/install-dev-application",
+            post(install_dev_application_handler),
+        )
+        .route(
+            "/contexts-dev",
+            get(handlers::context::get_contexts_handler)
+                .post(handlers::context::create_context_handler),
+        )
+        .route("/applications-dev", get(list_applications_handler))
         .layer(Extension(shared_state));
 
     let admin_router = Router::new()
@@ -205,6 +215,20 @@ async fn install_application_handler(
             payload: InstallApplicationResponse { data: true },
         }
         .into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn install_dev_application_handler(
+    Extension(state): Extension<Arc<AdminState>>,
+    Json(req): Json<calimero_server_primitives::admin::InstallDevApplicationRequest>,
+) -> impl IntoResponse {
+    match state
+        .application_manager
+        .install_dev_application(req.application, &req.version, req.path)
+        .await
+    {
+        Ok(()) => ApiResponse { payload: () }.into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }

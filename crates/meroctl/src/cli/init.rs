@@ -2,7 +2,6 @@ use std::fs;
 use std::net::IpAddr;
 
 use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
-use calimero_node::config::{self, ApplicationConfig, ConfigFile, NetworkConfig, StoreConfig};
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
 use libp2p::identity;
@@ -10,13 +9,10 @@ use multiaddr::Multiaddr;
 use tracing::{info, warn};
 
 use crate::cli;
+use crate::config_file::{ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
-// todo! simplify this, by splitting the steps
-// todo! $ calimero node init
-// todo! $ calimero node config 'swarm.listen:=["", ""]' discovery.mdns:=false
-// todo! $ calimero node config discovery.mdns
 pub struct InitCommand {
     /// List of bootstrap nodes
     #[clap(long, value_name = "ADDR")]
@@ -72,17 +68,13 @@ impl InitCommand {
     pub fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
         let mdns = self.mdns && !self.no_mdns;
 
-        if !root_args.home.exists() {
-            if root_args.home == config::default_chat_dir() {
-                fs::create_dir_all(&root_args.home)
-            } else {
-                fs::create_dir(&root_args.home)
-            }
-            .wrap_err_with(|| format!("failed to create directory {:?}", root_args.home))?;
-        }
+        let path = root_args.home.join(root_args.node_name);
 
-        if ConfigFile::exists(&root_args.home) {
-            if let Err(err) = ConfigFile::load(&root_args.home) {
+        fs::create_dir_all(&path)
+            .wrap_err_with(|| format!("failed to create directory {:?}", path))?;
+
+        if ConfigFile::exists(&path) {
+            if let Err(err) = ConfigFile::load(&path) {
                 if self.force {
                     warn!(
                         "Failed to load existing configuration, overwriting: {}",
@@ -93,7 +85,7 @@ impl InitCommand {
                 }
             }
             if !self.force {
-                eyre::bail!("chat node is already initialized in {:?}", root_args.home);
+                eyre::bail!("Node is already initialized in {:?}", path);
             }
         }
 
@@ -142,7 +134,7 @@ impl InitCommand {
                     mdns,
                     rendezvous: Default::default(),
                 },
-                server: calimero_node::config::ServerConfig {
+                server: ServerConfig {
                     listen: self
                         .server_host
                         .into_iter()
@@ -157,13 +149,13 @@ impl InitCommand {
             },
         };
 
-        config.save(&root_args.home)?;
+        config.save(&path)?;
 
         calimero_store::Store::open(&calimero_store::config::StoreConfig {
-            path: root_args.home.join(config.store.path),
+            path: path.join(config.store.path),
         })?;
 
-        info!("Initialized a chat node in {:?}", root_args.home);
+        info!("Initialized a node in {:?}", path);
 
         Ok(())
     }
