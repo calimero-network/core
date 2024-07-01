@@ -2,7 +2,7 @@ use std::fs;
 use std::net::IpAddr;
 
 use calimero_network::config::BootstrapNodes;
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, ValueEnum};
 use multiaddr::{Multiaddr, Protocol};
 use toml_edit::{DocumentMut, Value};
 use tracing::info;
@@ -36,16 +36,23 @@ pub struct ConfigCommand {
     #[arg(long, value_name = "PORT")]
     pub server_port: Option<u16>,
 
-    /// Enable mDNS discovery
-    #[arg(long, conflicts_with("no_mdns"))]
-    pub mdns: Option<bool>,
-
-    #[arg(long, hide = true, conflicts_with("mdns"))]
-    pub no_mdns: Option<bool>,
+    #[command(flatten)]
+    pub mdns: Option<MdnsArgs>,
 
     /// Print the config file
     #[arg(long, short)]
     pub print: bool,
+}
+
+#[derive(Debug, Args)]
+#[group(multiple = false)]
+pub struct MdnsArgs {
+    /// Enable mDNS discovery
+    #[arg(long, default_value_t = true)]
+    pub mdns: bool,
+
+    #[arg(long, hide = true)]
+    pub no_mdns: bool,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -157,10 +164,9 @@ impl ConfigCommand {
         }
 
         // Update mDNS setting if provided
-        self.mdns
-            .map(|mdns| doc["discovery"]["mdns"] = toml_edit::value(mdns));
-        self.no_mdns
-            .map(|no_mdns| doc["discovery"]["mdns"] = toml_edit::value(no_mdns));
+        if let Some(opts) = self.mdns {
+            doc["discovery"]["mdns"] = toml_edit::value(opts.mdns && !opts.no_mdns);
+        }
 
         // Save the updated TOML back to the file
         fs::write(&path, doc.to_string())?;
