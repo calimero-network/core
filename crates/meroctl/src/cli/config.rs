@@ -37,11 +37,11 @@ pub struct ConfigCommand {
     pub server_port: Option<u16>,
 
     /// Enable mDNS discovery
-    #[arg(long, default_value_t = true, overrides_with("no_mdns"))]
-    pub mdns: bool,
+    #[arg(long, conflicts_with("no_mdns"))]
+    pub mdns: Option<bool>,
 
-    #[arg(long, hide = true, overrides_with("mdns"))]
-    pub no_mdns: bool,
+    #[arg(long, hide = true, conflicts_with("mdns"))]
+    pub no_mdns: Option<bool>,
 
     /// Print the config file
     #[arg(long, short)]
@@ -170,13 +170,11 @@ impl ConfigCommand {
 
         // Update mDNS setting if provided
         let discovery_table = doc["discovery"].as_table_mut().unwrap();
-        let mdns_current = &discovery_table["mdns"]
-            .as_bool()
-            .ok_or(eyre::eyre!("mdns value wasn't set as a bool"))?;
-        let mdns = self.mdns && !self.no_mdns;
-        if *mdns_current != mdns {
-            discovery_table["mdns"] = toml_edit::value(mdns);
-        }
+
+        self.mdns
+            .map(|mdns| discovery_table["mdns"] = toml_edit::value(mdns));
+        self.no_mdns
+            .map(|no_mdns| discovery_table["mdns"] = toml_edit::value(no_mdns));
 
         // Save the updated TOML back to the file
         fs::write(&path, doc.to_string())?;
