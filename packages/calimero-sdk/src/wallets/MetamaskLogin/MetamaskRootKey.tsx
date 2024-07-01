@@ -116,10 +116,11 @@ export function MetamaskRootKey({
         walletSignature: signData,
         payload: walletSignatureData?.payload,
         walletMetadata: walletMetadata,
+        contextId: applicationId,
       };
       await apiClient
         .node()
-        .addRootKey(rootKeyRequest, rpcBaseUrl)
+        .addRootKey(rootKeyRequest, rpcBaseUrl, applicationId)
         .then((result) => {
           if (result.error) {
             console.error('Login error: ', result.error);
@@ -141,6 +142,7 @@ export function MetamaskRootKey({
     signData,
     successRedirect,
     walletSignatureData?.payload,
+    applicationId
   ]);
 
   useEffect(() => {

@@ -162,6 +162,7 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
                 .map_err(|_| UnauthorizedError::new("Invalid context_id string"))
                 .and_then(|s| s.parse().map_err(|_| UnauthorizedError::new("Invalid context_id")).map(Some))
         })?;
+
     let auth = AuthHeaders {
         wallet_type,
         signing_key,
