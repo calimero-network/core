@@ -27,7 +27,7 @@ import { Loading } from '../loading/Loading';
 import { getNetworkType } from '../eth/type';
 
 interface LoginWithMetamaskProps {
-  applicationId: string;
+  contextId?: string;
   rpcBaseUrl: string;
   successRedirect: () => void;
   metamaskTitleColor: string | undefined;
@@ -35,7 +35,7 @@ interface LoginWithMetamaskProps {
 }
 
 export function LoginWithMetamask({
-  applicationId,
+  contextId,
   rpcBaseUrl,
   successRedirect,
   metamaskTitleColor,
@@ -66,7 +66,7 @@ export function LoginWithMetamask({
   const requestNodeData = useCallback(async () => {
     const challengeResponseData: ResponseData<NodeChallenge> = await apiClient
       .node()
-      .requestChallenge(rpcBaseUrl, applicationId);
+      .requestChallenge(rpcBaseUrl, contextId);
     const { publicKey } = await getOrCreateKeypair();
 
     if (challengeResponseData.error) {
@@ -85,7 +85,7 @@ export function LoginWithMetamask({
       publicKey: publicKey,
       nonce:
         challengeResponseData.data?.nonce ?? randomBytes(32).toString('hex'),
-      applicationId: challengeResponseData.data?.applicationId ?? '',
+      contextId: challengeResponseData.data?.contextId ?? null,
       timestamp: challengeResponseData.data?.timestamp ?? new Date().getTime(),
       message: JSON.stringify(signatureMessage),
     };
@@ -118,7 +118,7 @@ export function LoginWithMetamask({
         walletSignature: signData,
         payload: walletSignatureData?.payload,
         walletMetadata: walletMetadata,
-        contextId: applicationId,
+        contextId,
       };
       await apiClient
         .node()
@@ -128,6 +128,7 @@ export function LoginWithMetamask({
             console.error('Login error: ', result.error);
             setErrorMessage(result.error.message);
           } else {
+            console.log("login success");
             setStorageNodeAuthorized();
             successRedirect();
           }

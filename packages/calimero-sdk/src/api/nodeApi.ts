@@ -61,7 +61,7 @@ export interface RootKeyRequest {
 
 export interface NodeChallenge {
   nonce: String;
-  applicationId: String;
+  contextId: String;
   timestamp: number;
   nodeSignature: String;
 }
@@ -85,7 +85,7 @@ export interface SignatureMessageMetadata {
   publicKey: String;
   nodeSignature: String;
   nonce: String;
-  applicationId: String;
+  contextId: String;
   timestamp: number;
   message: string; //signed message by wallet
 }
@@ -137,7 +137,7 @@ export interface NodeApi {
   ): ApiResponse<LoginResponse>;
   requestChallenge(
     rpcBaseUrl: string,
-    applicationId: string,
+    contextId: string,
   ): ApiResponse<NodeChallenge>;
   addRootKey(
     rootKeyRequest: RootKeyRequest,

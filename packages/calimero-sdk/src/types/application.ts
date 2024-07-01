@@ -1,1 +1,0 @@
-export type ApplicationId = string;

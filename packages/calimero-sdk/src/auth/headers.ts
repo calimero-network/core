@@ -11,7 +11,7 @@ export interface Header {
 
 export async function createAuthHeader(
   payload: string,
-  contextId: string
+  contextId: string | null
 ): Promise<Header | null> {
   const privateKey: PrivateKey = await getPrivateKey();
 

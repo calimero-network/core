@@ -32,7 +32,7 @@ type Account = AccountView & {
 
 interface NearRootKeyProps {
   rpcBaseUrl: string;
-  appId: string;
+  contextId?: string;
   successRedirect: () => void;
   cardBackgroundColor: string | undefined;
   nearTitleColor: string | undefined;
@@ -41,7 +41,7 @@ interface NearRootKeyProps {
 
 export const NearRootKey: React.FC<NearRootKeyProps> = ({
   rpcBaseUrl,
-  appId,
+  contextId,
   successRedirect,
   cardBackgroundColor,
   nearTitleColor,
@@ -254,7 +254,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
   async function handleSignMessage() {
     const challengeResponseData: ResponseData<NodeChallenge> = await apiClient
       .node()
-      .requestChallenge(rpcBaseUrl, appId);
+      .requestChallenge(rpcBaseUrl, contextId as string);
 
     if (challengeResponseData.error) {
       console.log('requestChallenge api error', challengeResponseData.error);
@@ -271,7 +271,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
     const nonce: Buffer = Buffer.from(challengeNonce, 'base64');
     const recipient = appName;
     const callbackUrl = window.location.href;
-    const applicationId = challengeResponseData.data?.applicationId ?? '';
+    const challengeContextId = challengeResponseData.data?.contextId ?? null;
     const nodeSignature = challengeResponseData.data?.nodeSignature ?? '';
     const timestamp =
       challengeResponseData.data?.timestamp ?? new Date().getTime();
@@ -286,7 +286,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
       publicKey: publicKey,
       nodeSignature,
       nonce: nonce.toString('base64'),
-      applicationId,
+      contextId: challengeContextId,
       timestamp,
       message,
     };

@@ -1,4 +1,4 @@
-import { ApplicationId } from '../types/application';
+import { ContextId } from '../types/context';
 
 export interface SubscriptionsClient {
   connect(connectionId: string): void;
@@ -15,7 +15,7 @@ export interface SubscriptionsClient {
 export type NodeEvent = ApplicationEvent;
 
 export interface ApplicationEvent {
-  application_id: ApplicationId;
+  context_id: ContextId;
   type: 'TransactionExecuted' | 'PeerJoined';
   data: TransactionExecuted | PeerJoined;
 }

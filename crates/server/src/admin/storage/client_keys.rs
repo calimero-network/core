@@ -32,8 +32,9 @@ pub fn get_context_client_key(
     let did = get_or_create_did(store)?;
     Ok(did
         .client_keys
-        .into_iter()
-        .filter(|k| &k.context_id == context_id)
+        .iter()
+        .filter(|k| k.context_id.as_ref() == Some(context_id))
+        .cloned()
         .collect())
 }
 

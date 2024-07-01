@@ -109,7 +109,7 @@ pub fn construct_node_challenge(
 ) -> Result<NodeChallengeMessage, ApiError> {
     Ok(NodeChallengeMessage {
         nonce: message.nonce.clone(),
-        context_id: Some(message.context_id.clone()),
+        context_id: message.context_id.clone(),
         timestamp: message.timestamp,
     })
 }

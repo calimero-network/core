@@ -4,7 +4,7 @@ import { MetamaskRootKey } from './MetamaskRootKey';
 import { MetaMaskUIProvider } from '@metamask/sdk-react-ui';
 
 interface MetamaskWrapperProps {
-  applicationId: string;
+  contextId?: string;
   rpcBaseUrl: string;
   successRedirect: () => void;
   cardBackgroundColor?: string;
@@ -14,7 +14,7 @@ interface MetamaskWrapperProps {
 }
 
 export const MetamaskWrapper: React.FC<MetamaskWrapperProps> = ({
-  applicationId,
+  contextId,
   rpcBaseUrl,
   successRedirect,
   cardBackgroundColor,
@@ -26,7 +26,7 @@ export const MetamaskWrapper: React.FC<MetamaskWrapperProps> = ({
     <MetaMaskUIProvider
       sdkOptions={{
         dappMetadata: {
-          name: applicationId,
+          name: contextId,
         },
         checkInstallationOnAllCalls: true,
       }}
@@ -46,7 +46,7 @@ export const MetamaskWrapper: React.FC<MetamaskWrapperProps> = ({
         <div>
           {clientLogin ? (
             <LoginWithMetamask
-              applicationId={applicationId}
+              contextId={contextId}
               rpcBaseUrl={rpcBaseUrl}
               successRedirect={successRedirect}
               metamaskTitleColor={metamaskTitleColor}
@@ -54,7 +54,7 @@ export const MetamaskWrapper: React.FC<MetamaskWrapperProps> = ({
             />
           ) : (
             <MetamaskRootKey
-              applicationId={applicationId}
+              contextId={contextId}
               rpcBaseUrl={rpcBaseUrl}
               successRedirect={successRedirect}
               metamaskTitleColor={metamaskTitleColor}

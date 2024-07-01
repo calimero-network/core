@@ -25,7 +25,7 @@ pub struct ClientKey {
     pub wallet_type: WalletType,
     pub signing_key: String,
     pub created_at: u64,
-    pub context_id: ContextId,
+    pub context_id: Option<ContextId>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

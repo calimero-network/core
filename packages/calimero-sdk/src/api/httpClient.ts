@@ -10,7 +10,7 @@ export interface HttpClient {
   post<T>(
     url: string,
     body?: unknown,
-    headers?: Header[],
+    headers?: Header,
   ): Promise<ResponseData<T>>;
   put<T>(
     url: string,
@@ -48,12 +48,10 @@ export class AxiosHttpClient implements HttpClient {
   async post<T>(
     url: string,
     body?: unknown,
-    headers?: Header[],
+    headers: Header = {},
   ): Promise<ResponseData<T>> {
     return this.request<T>(
-      this.axios.post<ResponseData<T>>(url, body, {
-        headers: headers?.reduce((acc, curr) => ({ ...acc, ...curr }), {}),
-      }),
+      this.axios.post<ResponseData<T>>(url, body, { headers }),
     );
   }
 

@@ -83,7 +83,7 @@ struct AuthHeaders {
     signing_key: String,
     signature: Vec<u8>,
     challenge: Vec<u8>,
-    context_id: ContextId,
+    context_id: Option<ContextId>,
 }
 
 pub fn auth(headers: &HeaderMap, store: &mut Store) -> Result<(), UnauthorizedError<'static>> {
@@ -157,16 +157,11 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
 
     let context_id = headers
         .get("context_id")
-        .ok_or_else(|| UnauthorizedError::new("Missing  context_id header"))?;
-
-    let context_id = context_id
-        .to_str()
-        .map_err(|_| UnauthorizedError::new("Invalid context_id string"))?;
-
-    let context_id = context_id
-        .parse()
-        .map_err(|_| UnauthorizedError::new("Invalid context_id"))?;
-
+        .map_or(Ok(None), |header_value| {
+            header_value.to_str()
+                .map_err(|_| UnauthorizedError::new("Invalid context_id string"))
+                .and_then(|s| s.parse().map_err(|_| UnauthorizedError::new("Invalid context_id")).map(Some))
+        })?;
     let auth = AuthHeaders {
         wallet_type,
         signing_key,
