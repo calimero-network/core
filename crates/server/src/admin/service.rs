@@ -221,7 +221,7 @@ async fn install_application_handler(
 
 async fn install_dev_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<calimero_server_primitives::admin::InstallApplicationRequest>,
+    Json(req): Json<calimero_server_primitives::admin::InstallDevApplicationRequest>,
 ) -> impl IntoResponse {
     match state
         .application_manager
