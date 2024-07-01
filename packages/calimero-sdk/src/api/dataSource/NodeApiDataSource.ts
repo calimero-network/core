@@ -48,12 +48,13 @@ export class NodeApiDataSource implements NodeApi {
   async addRootKey(
     rootKeyRequest: RootKeyRequest,
     rpcBaseUrl: string,
-    applicationId: string,
+    contextId: string,
   ): ApiResponse<RootKeyResponse> {
     console.log('Send request to node with params', rootKeyRequest);
 
     const headers: Header | null = await createAuthHeader(
       JSON.stringify(rootKeyRequest),
+      contextId
     );
 
     return await this.client.post<LoginRequest>(

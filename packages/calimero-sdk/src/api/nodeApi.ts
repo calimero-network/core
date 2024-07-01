@@ -143,7 +143,7 @@ export interface NodeApi {
   addRootKey(
     rootKeyRequest: RootKeyRequest,
     rpcBaseUrl: string,
-    applicationId: string,
+    contextId: string,
   ): ApiResponse<RootKeyResponse>;
   health(request: HealthRequest): ApiResponse<HealthStatus>;
 }

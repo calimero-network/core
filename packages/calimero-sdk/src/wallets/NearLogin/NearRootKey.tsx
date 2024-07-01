@@ -226,12 +226,12 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
         walletSignature: signature,
         payload: payload,
         walletMetadata: walletMetadata,
-        contextId: appId,
+        contextId: contextId,
       };
 
       await apiClient
         .node()
-        .addRootKey(rootKeyRequest, rpcBaseUrl, appId)
+        .addRootKey(rootKeyRequest, rpcBaseUrl, contextId)
         .then((result) => {
           console.log('result', result);
           if (result.error) {
