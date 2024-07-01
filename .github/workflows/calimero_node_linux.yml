@@ -1,4 +1,4 @@
-name: Build and Upload MeroCtl for Linux
+name: Build and Upload Meroctl for Linux
 
 on:
   push:
