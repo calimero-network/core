@@ -128,7 +128,6 @@ export function LoginWithMetamask({
             console.error('Login error: ', result.error);
             setErrorMessage(result.error.message);
           } else {
-            console.log("login success");
             setStorageNodeAuthorized();
             successRedirect();
           }
