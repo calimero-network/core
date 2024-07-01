@@ -1,4 +1,4 @@
-import { ApplicationId } from './application';
+import { ContextId } from './context';
 
 export type RpcRequestId = string | number;
 
@@ -61,7 +61,7 @@ export interface RpcExecutionError {
 }
 
 export interface RpcQueryParams<Args> {
-  applicationId: ApplicationId;
+  contextId: ContextId;
   method: string;
   argsJson: Args;
 }
@@ -71,7 +71,7 @@ export interface RpcQueryResponse<Output> {
 }
 
 export interface RpcMutateParams<Args> {
-  applicationId: ApplicationId;
+  contextId: ContextId;
   method: string;
   argsJson: Args;
 }

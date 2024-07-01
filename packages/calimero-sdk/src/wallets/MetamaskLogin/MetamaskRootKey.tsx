@@ -25,7 +25,7 @@ import { getOrCreateKeypair } from '../../auth/ed25519';
 import { randomBytes } from 'crypto';
 
 interface MetamaskRootKeyProps {
-  applicationId: string;
+  contextId?: string;
   rpcBaseUrl: string;
   successRedirect: () => void;
   metamaskTitleColor: string | undefined;
@@ -33,7 +33,7 @@ interface MetamaskRootKeyProps {
 }
 
 export function MetamaskRootKey({
-  applicationId,
+  contextId,
   rpcBaseUrl,
   successRedirect,
   metamaskTitleColor,
@@ -64,7 +64,7 @@ export function MetamaskRootKey({
   const requestNodeData = useCallback(async () => {
     const challengeResponseData: ResponseData<NodeChallenge> = await apiClient
       .node()
-      .requestChallenge(rpcBaseUrl, applicationId);
+      .requestChallenge(rpcBaseUrl, contextId);
     const { publicKey } = await getOrCreateKeypair();
 
     if (challengeResponseData.error) {
@@ -83,7 +83,7 @@ export function MetamaskRootKey({
       publicKey: publicKey,
       nonce:
         challengeResponseData.data?.nonce ?? randomBytes(32).toString('hex'),
-      applicationId: challengeResponseData.data?.applicationId ?? '',
+      contextId: challengeResponseData.data?.contextId ?? null,
       timestamp: challengeResponseData.data?.timestamp ?? new Date().getTime(),
       message: JSON.stringify(signatureMessage),
     };
@@ -97,7 +97,7 @@ export function MetamaskRootKey({
       publicKey,
     };
     setWalletSignatureData(wsd);
-  }, [applicationId, rpcBaseUrl]);
+  }, [contextId, rpcBaseUrl]);
 
   const login = useCallback(async () => {
     setErrorMessage(null);
@@ -116,11 +116,11 @@ export function MetamaskRootKey({
         walletSignature: signData,
         payload: walletSignatureData?.payload,
         walletMetadata: walletMetadata,
-        contextId: applicationId,
+        contextId: contextId,
       };
       await apiClient
         .node()
-        .addRootKey(rootKeyRequest, rpcBaseUrl, applicationId)
+        .addRootKey(rootKeyRequest, rpcBaseUrl, contextId)
         .then((result) => {
           if (result.error) {
             console.error('Login error: ', result.error);
@@ -142,7 +142,7 @@ export function MetamaskRootKey({
     signData,
     successRedirect,
     walletSignatureData?.payload,
-    applicationId
+    contextId
   ]);
 
   useEffect(() => {

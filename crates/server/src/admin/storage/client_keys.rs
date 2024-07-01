@@ -33,7 +33,7 @@ pub fn get_context_client_key(
     Ok(did
         .client_keys
         .into_iter()
-        .filter(|k| &k.context_id == context_id)
+        .filter(|k| k.context_id.as_ref() == Some(context_id))
         .collect())
 }
 
