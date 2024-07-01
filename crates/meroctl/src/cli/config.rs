@@ -9,7 +9,7 @@ use tracing::info;
 
 use crate::cli;
 
-/// Initialize node configuration
+/// Configure the node
 #[derive(Debug, Parser)]
 pub struct ConfigCommand {
     /// List of bootstrap nodes
@@ -71,26 +71,17 @@ impl ConfigCommand {
             return Ok(());
         }
 
-        let ipv4_host = self.swarm_host.iter().find_map(|ip| {
-            if let IpAddr::V4(v4) = ip {
-                Some(*v4)
-            } else {
-                None
-            }
-        });
-
-        let ipv6_host = self.swarm_host.iter().find_map(|ip| {
-            if let IpAddr::V6(v6) = ip {
-                Some(*v6)
-            } else {
-                None
-            }
-        });
+        let (ipv4_host, ipv6_host) =
+            self.swarm_host
+                .iter()
+                .fold((None, None), |(v4, v6), ip| match ip {
+                    IpAddr::V4(v4_addr) => (Some(*v4_addr), v6),
+                    IpAddr::V6(v6_addr) => (v4, Some(*v6_addr)),
+                });
 
         // Update swarm listen addresses
         if !self.swarm_host.is_empty() || self.swarm_port.is_some() {
-            let swarm_table = doc["swarm"].as_table_mut().unwrap();
-            let listen_array = swarm_table["listen"].as_array_mut().unwrap();
+            let listen_array = doc["swarm"]["listen"].as_array_mut().unwrap();
 
             for item in listen_array.iter_mut() {
                 let addr: Multiaddr = item.as_str().unwrap().parse().unwrap();
@@ -121,8 +112,7 @@ impl ConfigCommand {
 
         // Update server listen addresses
         if !self.server_host.is_empty() || self.server_port.is_some() {
-            let server_table = doc["server"].as_table_mut().unwrap();
-            let listen_array = server_table["listen"].as_array_mut().unwrap();
+            let listen_array = doc["server"]["listen"].as_array_mut().unwrap();
 
             for item in listen_array.iter_mut() {
                 let addr: Multiaddr = item.as_str().unwrap().parse().unwrap();
@@ -149,15 +139,13 @@ impl ConfigCommand {
 
         // Update boot nodes if provided
         if !self.boot_nodes.is_empty() {
-            let bootstrap_table = doc["bootstrap"].as_table_mut().unwrap();
-            let list_array = bootstrap_table["nodes"].as_array_mut().unwrap();
+            let list_array = doc["bootstrap"]["nodes"].as_array_mut().unwrap();
             list_array.clear();
             for node in self.boot_nodes.iter() {
                 list_array.push(node.to_string());
             }
         } else if let Some(network) = self.boot_network {
-            let bootstrap_table = doc["bootstrap"].as_table_mut().unwrap();
-            let list_array = bootstrap_table["nodes"].as_array_mut().unwrap();
+            let list_array = doc["bootstrap"]["nodes"].as_array_mut().unwrap();
             list_array.clear();
             let new_nodes = match network {
                 BootstrapNetwork::CalimeroDev => BootstrapNodes::calimero_dev().list,
@@ -169,12 +157,10 @@ impl ConfigCommand {
         }
 
         // Update mDNS setting if provided
-        let discovery_table = doc["discovery"].as_table_mut().unwrap();
-
         self.mdns
-            .map(|mdns| discovery_table["mdns"] = toml_edit::value(mdns));
+            .map(|mdns| doc["discovery"]["mdns"] = toml_edit::value(mdns));
         self.no_mdns
-            .map(|no_mdns| discovery_table["mdns"] = toml_edit::value(no_mdns));
+            .map(|no_mdns| doc["discovery"]["mdns"] = toml_edit::value(no_mdns));
 
         // Save the updated TOML back to the file
         fs::write(&path, doc.to_string())?;
