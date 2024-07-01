@@ -2,7 +2,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::Context;
 use calimero_server_primitives::admin::ApplicationListResult;
 use camino::Utf8PathBuf;
-use clap::{ArgGroup, Parser};
+use clap::Parser;
 use libp2p::Multiaddr;
 use reqwest::Client;
 use semver::Version;
@@ -38,11 +38,7 @@ struct ListApplicationsResponse {
 }
 
 #[derive(Debug, Parser)]
-#[clap(group(
-    ArgGroup::new("dev_args")
-        .multiple(true)
-        .requires_all(&["dev", "path", "version"])
-))]
+#[group(requires_all(&["dev", "path", "version"]))]
 pub struct CreateCommand {
     /// The application ID to attach to the context
     #[clap(
@@ -59,13 +55,7 @@ pub struct CreateCommand {
     dev: bool,
 
     /// Path to use in dev mode
-    #[clap(
-        short,
-        long,
-        group = "dev_args",
-        default_value = "",
-        value_name = "PATH"
-    )]
+    #[clap(short, long, group = "dev_args", value_name = "PATH")]
     path: Utf8PathBuf,
 
     /// Version of the application

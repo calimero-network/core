@@ -105,11 +105,8 @@ pub(crate) fn setup(
         )
         .route(
             "/contexts-dev",
-            post(handlers::context::create_context_handler),
-        )
-        .route(
-            "/contexts-dev",
-            get(handlers::context::get_contexts_handler),
+            get(handlers::context::get_contexts_handler)
+                .post(handlers::context::create_context_handler),
         )
         .route("/applications-dev", get(list_applications_handler))
         .layer(Extension(shared_state));
