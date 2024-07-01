@@ -49,11 +49,11 @@ pub struct ConfigCommand {
 #[group(multiple = false)]
 pub struct MdnsArgs {
     /// Enable mDNS discovery
-    #[arg(long, default_value_t = true)]
+    #[arg(long)]
     pub mdns: bool,
 
     #[arg(long, hide = true)]
-    pub no_mdns: bool,
+    pub _no_mdns: bool,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -180,7 +180,7 @@ impl ConfigCommand {
 
         // Update mDNS setting if provided
         if let Some(opts) = self.mdns {
-            doc["discovery"]["mdns"] = toml_edit::value(opts.mdns && !opts.no_mdns);
+            doc["discovery"]["mdns"] = toml_edit::value(opts.mdns);
         }
 
         // Save the updated TOML back to the file
