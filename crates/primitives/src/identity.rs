@@ -124,7 +124,7 @@ pub mod serde_signing_key {
 pub mod serde_identity {
     use std::fmt;
 
-    use libp2p::identity::Keypair;
+    use libp2p_identity::Keypair;
     use serde::de::{self, MapAccess};
     use serde::ser::{self, SerializeMap};
     use serde::{Deserializer, Serializer};

@@ -7,7 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-camino.workspace = true
+camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
 futures-util.workspace = true
 near-jsonrpc-client.workspace = true

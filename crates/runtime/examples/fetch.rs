@@ -2,7 +2,7 @@ use calimero_runtime::{logic, run, store, Constraint};
 use serde_json::json;
 
 fn main() -> eyre::Result<()> {
-    let file = include_bytes!("../../../apps/only-peers/res/only_peers.wasm");
+    let file = include_bytes!("../../../apps/gen-ext/res/gen_ext.wasm");
 
     let mut storage = store::InMemoryStorage::default();
 
@@ -22,9 +22,12 @@ fn main() -> eyre::Result<()> {
     };
 
     let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({}))?,
+        input: serde_json::to_vec(&json!({
+            "block_height": 167345193,
+            "account_id": "nearkat.testnet",
+        }))?,
     };
-    let get_outcome = run(file, "fetch", cx, &mut storage, &limits)?;
+    let get_outcome = run(file, "view_account", cx, &mut storage, &limits)?;
     let returns = String::from_utf8(get_outcome.returns.unwrap().unwrap()).unwrap();
     println!("{returns}");
 

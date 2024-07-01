@@ -10,8 +10,13 @@ use crate::admin::service::{parse_api_error, AdminState, ApiResponse};
 use crate::admin::storage::did::get_or_create_did;
 
 #[derive(Debug, Serialize)]
+struct NodeDid {
+    did: Did,
+}
+
+#[derive(Debug, Serialize)]
 struct DidResponse {
-    data: Did,
+    data: NodeDid,
 }
 
 pub async fn fetch_did_handler(
@@ -21,7 +26,7 @@ pub async fn fetch_did_handler(
     let did = get_or_create_did(&state.store).map_err(|err| parse_api_error(err));
     return match did {
         Ok(did) => ApiResponse {
-            payload: DidResponse { data: did },
+            payload: DidResponse { data: NodeDid { did } },
         }
         .into_response(),
         Err(err) => err.into_response(),

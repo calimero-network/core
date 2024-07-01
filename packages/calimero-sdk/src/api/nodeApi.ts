@@ -57,6 +57,7 @@ export interface RootKeyRequest {
   walletSignature: String;
   payload: Payload;
   walletMetadata: WalletMetadata;
+  contextId?: String;
 }
 
 export interface NodeChallenge {
@@ -142,6 +143,7 @@ export interface NodeApi {
   addRootKey(
     rootKeyRequest: RootKeyRequest,
     rpcBaseUrl: string,
+    applicationId: string,
   ): ApiResponse<RootKeyResponse>;
   health(request: HealthRequest): ApiResponse<HealthStatus>;
 }

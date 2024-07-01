@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
+cfg-if.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 

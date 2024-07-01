@@ -52,7 +52,6 @@ pub(crate) fn setup(
         keypair: config.identity.clone(),
         application_manager,
     });
-
     let protected_router = Router::new()
         .route(
             "/root-key",
@@ -83,6 +82,10 @@ pub(crate) fn setup(
             get(handlers::context::get_context_storage_handler),
         )
         .route("/contexts", get(handlers::context::get_contexts_handler))
+        .route(
+            "/identity/keys",
+            delete(handlers::root_keys::delete_auth_keys_handler),
+        )
         .layer(middleware::auth::AuthSignatureLayer::new(store))
         .layer(Extension(shared_state.clone()));
 
@@ -118,6 +121,9 @@ pub(crate) fn setup(
 
     Ok(Some((admin_path, admin_router)))
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Empty {}
 
 pub struct ApiResponse<T: Serialize> {
     pub(crate) payload: T,
@@ -194,6 +200,11 @@ async fn health_check_handler() -> impl IntoResponse {
     .into_response()
 }
 
+#[derive(Debug, Serialize)]
+struct InstallApplicationResponse {
+    data: bool,
+}
+
 async fn install_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<calimero_server_primitives::admin::InstallApplicationRequest>,
@@ -203,7 +214,10 @@ async fn install_application_handler(
         .install_application(req.application, &req.version)
         .await
     {
-        Ok(()) => ApiResponse { payload: () }.into_response(),
+        Ok(()) => ApiResponse {
+            payload: InstallApplicationResponse { data: true },
+        }
+        .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }
