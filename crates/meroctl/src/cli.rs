@@ -4,6 +4,7 @@ use const_format::concatcp;
 use crate::defaults;
 
 mod config;
+mod context;
 mod init;
 mod run;
 
@@ -43,6 +44,7 @@ pub enum SubCommands {
     Init(init::InitCommand),
     Config(config::ConfigCommand),
     Run(run::RunCommand),
+    Context(context::ContextCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -63,6 +65,7 @@ impl RootCommand {
             SubCommands::Init(init) => init.run(self.args),
             SubCommands::Config(config) => config.run(self.args),
             SubCommands::Run(run) => run.run(self.args).await,
+            SubCommands::Context(context) => context.run(self.args).await,
         }
     }
 }
