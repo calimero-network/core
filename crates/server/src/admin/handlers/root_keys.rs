@@ -75,7 +75,7 @@ pub struct DeleteKeysResponse {
 pub async fn delete_auth_keys_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    clean_auth_keys(&state.store).map_or_else(
+    clean_auth_keys(&mut state.store.clone()).map_or_else(
         |err| parse_api_error(err).into_response(),
         |_| {
             ApiResponse {
