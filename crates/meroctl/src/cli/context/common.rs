@@ -2,7 +2,7 @@ use reqwest::Url;
 
 pub(crate) fn multiaddr_to_url(
     multiaddr: &libp2p::Multiaddr,
-    api_path: Option<String>,
+    api_path: String,
 ) -> eyre::Result<reqwest::Url> {
     let ip = multiaddr
         .iter()
@@ -31,8 +31,7 @@ pub(crate) fn multiaddr_to_url(
 
     let mut url = Url::parse(&format!("{}://{}:{}", scheme, ip, port))?;
 
-    if let Some(api_path) = api_path {
-        url.set_path(&api_path);
-    }
+    url.set_path(&api_path);
+
     Ok(url)
 }

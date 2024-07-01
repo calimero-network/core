@@ -27,7 +27,7 @@ impl ListCommand {
             eyre::bail!("No address.")
         };
 
-        let url = multiaddr_to_url(multiaddr, Some("admin-api/contexts-dev".to_string()))?;
+        let url = multiaddr_to_url(multiaddr, "admin-api/contexts-dev".to_string())?;
         let client = Client::new();
         let response = client.get(url).send().await?;
 

@@ -105,7 +105,7 @@ impl CreateCommand {
 async fn create_context(base_multiaddr: &Multiaddr, application_id: String) -> eyre::Result<()> {
     app_installed(&base_multiaddr, &application_id).await?;
 
-    let url = multiaddr_to_url(base_multiaddr, Some("admin-api/contexts-dev".to_string()))?;
+    let url = multiaddr_to_url(base_multiaddr, "admin-api/contexts-dev".to_string())?;
     let client = Client::new();
     let request = CreateContextRequest { application_id };
 
@@ -131,10 +131,7 @@ async fn create_context(base_multiaddr: &Multiaddr, application_id: String) -> e
 }
 
 async fn app_installed(base_multiaddr: &Multiaddr, application_id: &String) -> eyre::Result<()> {
-    let url = multiaddr_to_url(
-        base_multiaddr,
-        Some("admin-api/applications-dev".to_string()),
-    )?;
+    let url = multiaddr_to_url(base_multiaddr, "admin-api/applications-dev".to_string())?;
     let client = Client::new();
     let response = client.get(url).send().await?;
     if response.status().is_success() {
@@ -160,7 +157,7 @@ async fn link_local_app(
 ) -> eyre::Result<()> {
     let install_url = multiaddr_to_url(
         base_multiaddr,
-        Some("admin-api/install-dev-application".to_string()),
+        "admin-api/install-dev-application".to_string(),
     )?;
 
     let id = format!("{}:{}", version, path);
