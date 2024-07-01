@@ -3,6 +3,7 @@ use std::net::IpAddr;
 
 use calimero_network::config::BootstrapNodes;
 use clap::{Parser, ValueEnum};
+use eyre::eyre;
 use multiaddr::{Multiaddr, Protocol};
 use toml_edit::{DocumentMut, Value};
 use tracing::info;
@@ -62,8 +63,8 @@ impl ConfigCommand {
             .join("config.toml");
 
         // Load the existing TOML file
-        let toml_str = fs::read_to_string(&path)
-            .map_err(|_| eyre::eyre!("Node must be initialized first."))?;
+        let toml_str =
+            fs::read_to_string(&path).map_err(|_| eyre!("Node must be initialized first."))?;
         let mut doc = toml_str.parse::<DocumentMut>()?;
 
         if self.print {
@@ -81,10 +82,15 @@ impl ConfigCommand {
 
         // Update swarm listen addresses
         if !self.swarm_host.is_empty() || self.swarm_port.is_some() {
-            let listen_array = doc["swarm"]["listen"].as_array_mut().unwrap();
+            let listen_array = doc["swarm"]["listen"]
+                .as_array_mut()
+                .ok_or(eyre!("No swarm table in config.toml"))?;
 
             for item in listen_array.iter_mut() {
-                let addr: Multiaddr = item.as_str().unwrap().parse().unwrap();
+                let addr: Multiaddr = item
+                    .as_str()
+                    .ok_or(eyre!("Value can't be parsed as string"))?
+                    .parse()?;
                 let mut new_addr = Multiaddr::empty();
 
                 for protocol in addr.iter() {
@@ -112,10 +118,15 @@ impl ConfigCommand {
 
         // Update server listen addresses
         if !self.server_host.is_empty() || self.server_port.is_some() {
-            let listen_array = doc["server"]["listen"].as_array_mut().unwrap();
+            let listen_array = doc["server"]["listen"]
+                .as_array_mut()
+                .ok_or(eyre!("No server table in config.toml"))?;
 
             for item in listen_array.iter_mut() {
-                let addr: Multiaddr = item.as_str().unwrap().parse().unwrap();
+                let addr: Multiaddr = item
+                    .as_str()
+                    .ok_or(eyre!("Value can't be parsed as string"))?
+                    .parse()?;
                 let mut new_addr = Multiaddr::empty();
 
                 for protocol in addr.iter() {
@@ -139,13 +150,17 @@ impl ConfigCommand {
 
         // Update boot nodes if provided
         if !self.boot_nodes.is_empty() {
-            let list_array = doc["bootstrap"]["nodes"].as_array_mut().unwrap();
+            let list_array = doc["bootstrap"]["nodes"]
+                .as_array_mut()
+                .ok_or(eyre!("No swarm table in config.toml"))?;
             list_array.clear();
             for node in self.boot_nodes.iter() {
                 list_array.push(node.to_string());
             }
         } else if let Some(network) = self.boot_network {
-            let list_array = doc["bootstrap"]["nodes"].as_array_mut().unwrap();
+            let list_array = doc["bootstrap"]["nodes"]
+                .as_array_mut()
+                .ok_or(eyre!("No swarm table in config.toml"))?;
             list_array.clear();
             let new_nodes = match network {
                 BootstrapNetwork::CalimeroDev => BootstrapNodes::calimero_dev().list,

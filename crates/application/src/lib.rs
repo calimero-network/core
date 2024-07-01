@@ -63,14 +63,9 @@ impl ApplicationManager {
         &self,
         application_id: calimero_primitives::application::ApplicationId,
         version: &semver::Version,
-        path: Option<Utf8PathBuf>,
+        path: Utf8PathBuf,
     ) -> eyre::Result<()> {
-        self.link_release(
-            &application_id,
-            &self.application_dir,
-            version,
-            &path.unwrap(),
-        )?;
+        self.link_release(&application_id, &self.application_dir, version, &path)?;
 
         let topic_hash = self
             .network_client
