@@ -23,7 +23,8 @@ pub async fn fetch_did_handler(
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let did = get_or_create_did(&state.store).map_err(|err| parse_api_error(err));
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let did = get_or_create_did(&mut state.store.clone()).map_err(|err| parse_api_error(err));
     return match did {
         Ok(did) => ApiResponse {
             payload: DidResponse { data: NodeDid { did } },

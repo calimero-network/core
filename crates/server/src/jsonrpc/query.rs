@@ -21,7 +21,7 @@ async fn handle(
 
     match jsonrpc::call(
         state.server_sender.clone(),
-        request.application_id,
+        request.context_id,
         request.method,
         args,
         false,

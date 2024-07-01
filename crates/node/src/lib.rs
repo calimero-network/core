@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info};
 
 pub mod config;
-pub mod temporal_runtime_store;
+pub mod runtime_compat;
 pub mod transaction_pool;
 pub mod types;
 
@@ -52,7 +52,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let application_manager =
         calimero_application::start_manager(&config.application, network_client.clone()).await?;
 
-    let store = calimero_store::Store::open(&config.store)?;
+    let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
     let mut node = Node::new(
         &config,
@@ -92,8 +92,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((application_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
-                node.handle_call(application_id, method, payload, write, outcome_sender).await;
+            Some((context_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
+                node.handle_call(context_id, method, payload, write, outcome_sender).await;
             }
         }
     }
@@ -113,16 +113,23 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     // TODO: should be replaced with RPC endpoints
     match command {
         "call" => {
-            if let Some((application_id, args)) = args.and_then(|args| args.split_once(' ')) {
+            if let Some((context_id, args)) = args.and_then(|args| args.split_once(' ')) {
                 let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
 
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
                         let (outcome_sender, outcome_receiver) = oneshot::channel();
 
+                        let context_id = context_id.parse()?;
+
+                        let Ok(Some(context)) = node.get_context(context_id) else {
+                            println!("{IND} Context not found: {}", context_id);
+                            return Ok(());
+                        };
+
                         let tx_hash = match node
                             .call_mutate(
-                                application_id.to_owned().into(),
+                                context,
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
                                 outcome_sender,
@@ -256,9 +263,27 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             }
         }
         "store" => {
-            let state = format!("{:#?}", node.store.get(&b"STATE".to_vec()));
-            for line in state.lines() {
-                println!("{IND} {}", line.cyan());
+            // todo! revisit: get specific context state
+            // todo! test this
+
+            println!(
+                "{c1:44}|{c2:44}|{c3}",
+                c1 = "Context ID",
+                c2 = "State Key",
+                c3 = "Value"
+            );
+
+            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32].into());
+
+            let handle = node.store.handle();
+
+            for (k, v) in &mut handle.iter(&key)?.entries() {
+                let (cx, state_key) = (k.context_id(), k.state_key());
+                let sk = calimero_primitives::hash::Hash::from(state_key);
+                let entry = format!("{c1:44}|{c2:44}|{c3:?}", c1 = cx, c2 = sk, c3 = v);
+                for line in entry.lines() {
+                    println!("{IND} {}", line.cyan());
+                }
             }
         }
         unknown => {
@@ -311,9 +336,7 @@ impl Node {
                         self.node_events
                             .send(calimero_primitives::events::NodeEvent::Application(
                             calimero_primitives::events::ApplicationEvent {
-                                application_id: calimero_primitives::application::ApplicationId(
-                                    topic_hash.into_string().clone(),
-                                ),
+                                context_id: topic_hash.as_str().parse()?,
                                 payload:
                                     calimero_primitives::events::ApplicationEventPayload::PeerJoined(
                                         calimero_primitives::events::PeerJoinedPayload {
@@ -337,10 +360,10 @@ impl Node {
                             self.nonce += 1;
 
                             self.push_action(
-                                transaction.application_id.clone(),
+                                transaction.context_id,
                                 types::PeerAction::TransactionConfirmation(
                                     types::TransactionConfirmation {
-                                        application_id: transaction.application_id.clone(),
+                                        context_id: transaction.context_id,
                                         nonce: self.nonce,
                                         transaction_hash,
                                         // todo! proper confirmation hash
@@ -356,7 +379,7 @@ impl Node {
                     types::PeerAction::TransactionConfirmation(confirmation) => {
                         // todo! ensure this was only sent by a coordinator
                         self.execute_in_pool(
-                            confirmation.application_id,
+                            confirmation.context_id,
                             confirmation.transaction_hash,
                         )
                         .await?;
@@ -382,12 +405,12 @@ impl Node {
 
     pub async fn push_action(
         &mut self,
-        application_id: calimero_primitives::application::ApplicationId,
+        context_id: calimero_primitives::context::ContextId,
         action: types::PeerAction,
     ) -> eyre::Result<()> {
         self.network_client
             .publish(
-                TopicHash::from_raw(application_id.to_string()),
+                TopicHash::from_raw(context_id),
                 serde_json::to_vec(&action)?,
             )
             .await
@@ -396,9 +419,28 @@ impl Node {
         Ok(())
     }
 
+    fn get_context(
+        &self,
+        context_id: calimero_primitives::context::ContextId,
+    ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
+        let key = calimero_store::key::ContextMeta::new(context_id);
+
+        let handle = self.store.handle();
+
+        let Some(context_meta) = handle.get(&key)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(calimero_primitives::context::Context {
+            id: context_id,
+            // todo!
+            application_id: context_meta.application_id.into_string().into(),
+        }))
+    }
+
     pub async fn handle_call(
         &mut self,
-        application_id: calimero_primitives::application::ApplicationId,
+        context_id: calimero_primitives::context::ContextId,
         method: String,
         payload: Vec<u8>,
         write: bool,
@@ -406,16 +448,19 @@ impl Node {
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
         >,
     ) {
+        let Ok(Some(context)) = self.get_context(context_id) else {
+            let _ =
+                outcome_sender.send(Err(calimero_node_primitives::CallError::ContextNotFound {
+                    context_id,
+                }));
+            return;
+        };
+
         if write {
             let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
 
             if let Err(err) = self
-                .call_mutate(
-                    application_id.clone(),
-                    method,
-                    payload,
-                    inner_outcome_sender,
-                )
+                .call_mutate(context, method, payload, inner_outcome_sender)
                 .await
             {
                 let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(err)));
@@ -437,7 +482,7 @@ impl Node {
                 }
             });
         } else {
-            match self.call_query(application_id, method, payload).await {
+            match self.call_query(context, method, payload).await {
                 Ok(outcome) => {
                     let _ = outcome_sender.send(Ok(outcome));
                 }
@@ -451,22 +496,22 @@ impl Node {
 
     async fn call_query(
         &mut self,
-        application_id: calimero_primitives::application::ApplicationId,
+        context: calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
     ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::QueryCallError> {
         if !self
             .application_manager
-            .is_application_installed(&application_id)
+            .is_application_installed(&context.application_id)
         {
             return Err(
                 calimero_node_primitives::QueryCallError::ApplicationNotInstalled {
-                    application_id,
+                    application_id: context.application_id,
                 },
             );
         }
 
-        self.execute(application_id, None, method, payload)
+        self.execute(context, None, method, payload)
             .await
             .map_err(|e| {
                 error!(%e,"Failed to execute query call.");
@@ -476,7 +521,7 @@ impl Node {
 
     async fn call_mutate(
         &mut self,
-        application_id: calimero_primitives::application::ApplicationId,
+        context: calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
         outcome_sender: oneshot::Sender<calimero_runtime::logic::Outcome>,
@@ -489,18 +534,18 @@ impl Node {
 
         if !self
             .application_manager
-            .is_application_installed(&application_id)
+            .is_application_installed(&context.application_id)
         {
             return Err(
                 calimero_node_primitives::MutateCallError::ApplicationNotInstalled {
-                    application_id,
+                    application_id: context.application_id,
                 },
             );
         }
 
         if self
             .network_client
-            .mesh_peer_count(TopicHash::from_raw(application_id.clone().to_string()))
+            .mesh_peer_count(TopicHash::from_raw(context.id))
             .await
             == 0
         {
@@ -508,7 +553,7 @@ impl Node {
         }
 
         let transaction = calimero_primitives::transaction::Transaction {
-            application_id: application_id.clone(),
+            context_id: context.id,
             method,
             payload,
             prior_hash: self.last_tx,
@@ -526,7 +571,7 @@ impl Node {
         };
 
         if let Err(err) = self
-            .push_action(application_id, types::PeerAction::Transaction(transaction))
+            .push_action(context.id, types::PeerAction::Transaction(transaction))
             .await
         {
             if self.tx_pool.remove(&tx_hash).is_none() {
@@ -545,7 +590,7 @@ impl Node {
 
     async fn execute_in_pool(
         &mut self,
-        application_id: calimero_primitives::application::ApplicationId,
+        context_id: calimero_primitives::context::ContextId,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<Option<()>> {
         let Some(transaction_pool::TransactionPoolEntry {
@@ -557,13 +602,13 @@ impl Node {
             return Ok(None);
         };
 
+        let Some(context) = self.get_context(context_id)? else {
+            error!("Context not installed, but the transaction was in the pool.");
+            return Ok(None);
+        };
+
         let outcome = self
-            .execute(
-                application_id,
-                Some(hash),
-                transaction.method,
-                transaction.payload,
-            )
+            .execute(context, Some(hash), transaction.method, transaction.payload)
             .await?;
 
         if let Some(sender) = outcome_sender {
@@ -575,45 +620,38 @@ impl Node {
 
     async fn execute(
         &mut self,
-        application_id: calimero_primitives::application::ApplicationId,
+        context: calimero_primitives::context::Context,
         hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let mut storage = match hash {
-            Some(_) => temporal_runtime_store::TemporalRuntimeStore::Write(
-                calimero_store::TemporalStore::new(application_id.clone(), &self.store),
-            ),
-            None => temporal_runtime_store::TemporalRuntimeStore::Read(
-                calimero_store::ReadOnlyStore::new(application_id.clone(), &self.store),
-            ),
+            Some(_) => runtime_compat::RuntimeCompatStore::temporal(&mut self.store, context.id),
+            None => runtime_compat::RuntimeCompatStore::read_only(&self.store, context.id),
         };
 
         let outcome = calimero_runtime::run(
             &self
                 .application_manager
-                .load_application_blob(&application_id)?,
+                .load_application_blob(&context.application_id)?,
             &method,
             calimero_runtime::logic::VMContext { input: payload },
             &mut storage,
             &get_runtime_limits()?,
         )?;
 
-        if let (Ok(_), temporal_runtime_store::TemporalRuntimeStore::Write(storage), Some(hash)) =
-            (&outcome.returns, storage, hash)
-        {
-            if storage.has_changes() {
-                storage.commit()?;
-            }
-            /* else {
-                todo!("return an error to the caller that the method did not write to storage")
-            } */
+        if let Some(hash) = hash {
+            assert!(storage.commit()?, "do we have a non-temporal store?");
+
+            // todo! return an error to the caller if the method did not write to storage
+            // todo! debate: when we switch to optimistic execution
+            // todo! we won't have query vs. mutate methods anymore, so this shouldn't matter
 
             let _ = self
                 .node_events
                 .send(calimero_primitives::events::NodeEvent::Application(
                 calimero_primitives::events::ApplicationEvent {
-                    application_id: application_id.clone(),
+                    context_id: context.id,
                     payload:
                         calimero_primitives::events::ApplicationEventPayload::TransactionExecuted(
                             calimero_primitives::events::ExecutedTransactionPayload { hash },
@@ -626,7 +664,7 @@ impl Node {
             .node_events
             .send(calimero_primitives::events::NodeEvent::Application(
                 calimero_primitives::events::ApplicationEvent {
-                    application_id,
+                    context_id: context.id,
                     payload: calimero_primitives::events::ApplicationEventPayload::OutcomeEvent(
                         calimero_primitives::events::OutcomeEventPayload {
                             events: outcome

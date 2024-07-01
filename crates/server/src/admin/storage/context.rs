@@ -1,25 +1,41 @@
-use calimero_primitives::identity::Context;
+use calimero_primitives::context::{Context, ContextId};
 use calimero_store::Store;
 
 use super::did::{get_or_create_did, update_did};
 
-pub fn add_context(store: &Store, context: Context) -> eyre::Result<bool> {
+pub fn add_context(store: &mut Store, context: Context) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;
 
-    if !did_document.contexts.iter().any(|k| k.id == context.id) {
-        did_document.contexts.push(context);
+    let mut handle = store.handle();
+
+    let key = calimero_store::key::ContextMeta::new(context.id);
+
+    handle.put(
+        &key,
+        &calimero_store::types::ContextMeta {
+            application_id: context.application_id.0.into(),
+        },
+    )?;
+
+    if !did_document.contexts.contains(&context.id) {
+        did_document.contexts.push(context.id);
         update_did(store, did_document)?;
     }
     Ok(true)
 }
-pub fn delete_context(store: &Store, context_id: &str) -> eyre::Result<bool> {
+
+pub fn delete_context(store: &mut Store, context_id: &ContextId) -> eyre::Result<bool> {
     let mut did_document = get_or_create_did(store)?;
 
-    match did_document
-        .contexts
-        .iter()
-        .position(|k| k.id == context_id)
-    {
+    let mut handle = store.handle();
+
+    let key = calimero_store::key::ContextMeta::new(*context_id);
+
+    if handle.has(&key)? {
+        handle.delete(&key)?;
+    }
+
+    match did_document.contexts.iter().position(|id| id == context_id) {
         Some(position) => {
             did_document.contexts.remove(position);
             update_did(store, did_document)?;
@@ -29,12 +45,38 @@ pub fn delete_context(store: &Store, context_id: &str) -> eyre::Result<bool> {
     }
 }
 
-pub fn get_context(store: &Store, context_id: &str) -> eyre::Result<Option<Context>> {
-    let did = get_or_create_did(store)?;
-    Ok(did.contexts.into_iter().find(|k| k.id == context_id))
+pub fn get_context(store: &mut Store, context_id: &ContextId) -> eyre::Result<Option<Context>> {
+    let handle = store.handle();
+
+    let key = calimero_store::key::ContextMeta::new(*context_id);
+
+    let Some(context_meta) = handle.get(&key)? else {
+        return Ok(None);
+    };
+
+    let context = Context {
+        id: *context_id,
+        application_id: context_meta.application_id.into_string().into(),
+    };
+
+    Ok(Some(context))
 }
 
-pub fn get_contexts(store: &Store) -> eyre::Result<Vec<Context>> {
-    let did = get_or_create_did(store)?;
-    Ok(did.contexts)
+pub fn get_contexts(store: &mut Store) -> eyre::Result<Vec<Context>> {
+    let handle = store.handle();
+
+    let start = calimero_store::key::ContextMeta::new([0; 32].into());
+
+    let mut contexts = vec![];
+
+    for (key, context_meta) in handle.iter(&start)?.entries() {
+        let context = Context {
+            id: key.context_id(),
+            application_id: context_meta.application_id.into_string().into(),
+        };
+
+        contexts.push(context);
+    }
+
+    Ok(contexts)
 }

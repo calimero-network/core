@@ -19,7 +19,7 @@ pub struct AddPublicKeyRequest {
     pub wallet_signature: String,
     pub payload: Payload,
     pub wallet_metadata: WalletMetadata,
-    pub context_id: String,
+    pub context_id: calimero_primitives::context::ContextId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,8 +32,8 @@ pub struct Payload {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignatureMessage {
+    pub context_id: calimero_primitives::context::ContextId,
     pub nonce: String,
-    pub application_id: String,
     pub timestamp: i64,
     pub node_signature: String,
     pub message: String,
@@ -74,7 +74,7 @@ pub struct IntermediateAddPublicKeyRequest {
     pub wallet_signature: String,
     pub payload: IntermediatePayload,
     pub wallet_metadata: WalletMetadata, // Reuse WalletMetadata as it fits the intermediate step
-    pub context_id: String,
+    pub context_id: calimero_primitives::context::ContextId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,7 +96,7 @@ pub struct NodeChallenge {
 #[serde(rename_all = "camelCase")]
 pub struct NodeChallengeMessage {
     pub nonce: String,
-    pub application_id: String, //optional if challenge is used on admin level
+    pub context_id: Option<calimero_primitives::context::ContextId>,
     pub timestamp: i64,
 }
 

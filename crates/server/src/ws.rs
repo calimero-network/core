@@ -24,7 +24,7 @@ pub struct WsConfig {
 
 #[derive(Debug, Default)]
 pub(crate) struct ConnectionStateInner {
-    subscriptions: HashSet<calimero_primitives::application::ApplicationId>,
+    subscriptions: HashSet<calimero_primitives::context::ContextId>,
 }
 
 #[derive(Clone, Debug)]
@@ -172,7 +172,7 @@ async fn handle_node_events(
                         .read()
                         .await
                         .subscriptions
-                        .contains(&event.application_id)
+                        .contains(&event.context_id)
                 } =>
             {
                 calimero_primitives::events::NodeEvent::Application(event)

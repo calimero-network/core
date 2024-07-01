@@ -98,7 +98,7 @@ pub enum ServerResponseError {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
-    pub application_id: calimero_primitives::application::ApplicationId,
+    pub context_id: calimero_primitives::context::ContextId,
     pub method: String,
     pub args_json: serde_json::Value,
 }
@@ -123,7 +123,7 @@ pub enum QueryError {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutateRequest {
-    pub application_id: calimero_primitives::application::ApplicationId,
+    pub context_id: calimero_primitives::context::ContextId,
     pub method: String,
     pub args_json: serde_json::Value,
 }

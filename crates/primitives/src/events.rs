@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::application::ApplicationId;
+use crate::context::ContextId;
 use crate::hash::Hash;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -12,7 +12,7 @@ pub enum NodeEvent {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationEvent {
-    pub application_id: ApplicationId,
+    pub context_id: ContextId,
     #[serde(flatten)]
     pub payload: ApplicationEventPayload,
 }

@@ -1,49 +1,66 @@
-use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::Did;
+use calimero_store::entry::{Entry, Json};
+use calimero_store::key::Generic;
 use calimero_store::Store;
 
-const DID_KEY: &str = "did:cali";
-pub const NODE_STORE_KEY: &str = "node";
-
-pub fn create_did(store: &Store) -> eyre::Result<Did> {
-    let mut storage =
-        calimero_store::TemporalStore::new(ApplicationId(NODE_STORE_KEY.to_string()), &store);
-
-    let did_document = Did {
-        id: DID_KEY.to_string(),
-        root_keys: Vec::new(),
-        client_keys: Vec::new(),
-        contexts: Vec::new(),
-    };
-
-    let did_document_vec = serde_json::to_vec(&did_document)
-        .map_err(|e| eyre::Report::new(e).wrap_err("Serialization error"))?;
-
-    storage.put(DID_KEY.as_bytes().to_owned(), did_document_vec);
-    storage.commit()?;
-
-    Ok(did_document)
+struct DidEntry {
+    key: Generic,
 }
 
-pub fn get_or_create_did(store: &Store) -> eyre::Result<Did> {
-    let storage =
-        calimero_store::ReadOnlyStore::new(ApplicationId(NODE_STORE_KEY.to_string()), &store);
+impl Entry for DidEntry {
+    type Key = Generic;
+    type DataType<'a> = Json<Did>;
 
-    let did_vec = storage.get(&DID_KEY.as_bytes().to_vec())?;
-    match did_vec {
-        Some(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| eyre::Report::new(e).wrap_err("Deserialization error")),
-        None => create_did(store),
+    fn key(&self) -> &Self::Key {
+        &self.key
     }
 }
 
-pub fn update_did(store: &Store, did: Did) -> eyre::Result<()> {
-    let did_document_vec = serde_json::to_vec(&did)
-        .map_err(|e| eyre::Report::new(e).wrap_err("Serialization error"))?;
+impl DidEntry {
+    fn new() -> Self {
+        Self {
+            key: Generic::new(*b"id:calimero:node", [0; 32]),
+        }
+    }
+}
 
-    let mut storage =
-        calimero_store::TemporalStore::new(ApplicationId(NODE_STORE_KEY.to_string()), store);
-    storage.put(DID_KEY.as_bytes().to_owned(), did_document_vec);
-    storage.commit()?;
+pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
+    let did_document = Json::new(Did {
+        id: "did:cali".to_string(),
+        root_keys: vec![],
+        client_keys: vec![],
+        contexts: vec![],
+    });
+
+    let entry = DidEntry::new();
+
+    let mut handle = store.handle();
+
+    handle.put(&entry, &did_document)?;
+
+    Ok(did_document.value())
+}
+
+pub fn get_or_create_did(store: &mut Store) -> eyre::Result<Did> {
+    let entry = DidEntry::new();
+
+    let handle = store.handle();
+
+    let Some(did_document) = handle.get(&entry)? else {
+        return create_did(store);
+    };
+
+    Ok(did_document.value())
+}
+
+pub fn update_did(store: &mut Store, did: Did) -> eyre::Result<()> {
+    let entry = DidEntry::new();
+
+    let did_document = Json::new(did);
+
+    let mut handle = store.handle();
+
+    handle.put(&entry, &did_document)?;
+
     Ok(())
 }

@@ -1,50 +1,127 @@
+use strum::IntoEnumIterator;
+
 use crate::config::StoreConfig;
-use crate::db::{Database, Key, Value};
+use crate::db::{Column, Database};
+use crate::iter::{DBIter, Iter};
+use crate::slice::Slice;
+use crate::tx::{Operation, Transaction};
 
 pub struct RocksDB {
-    inner: rocksdb::DB,
-    /* options: rocksdb::Options, */
+    db: rocksdb::DB,
 }
 
 impl RocksDB {
-    pub fn open(config: &StoreConfig) -> eyre::Result<Self> {
-        let mut options = rocksdb::Options::default();
-        options.create_if_missing(true);
+    fn cf_handle(&self, column: &Column) -> Option<&rocksdb::ColumnFamily> {
+        self.db.cf_handle(column.as_ref())
+    }
 
-        let inner = rocksdb::DB::open(&options, &config.path)?;
+    fn try_cf_handle(&self, column: &Column) -> eyre::Result<&rocksdb::ColumnFamily> {
+        let Some(cf_handle) = self.cf_handle(column) else {
+            eyre::bail!("unknown column family: {:?}", column);
+        };
 
-        Ok(Self {
-            inner, /* , options */
-        })
+        Ok(cf_handle)
     }
 }
 
 impl Database for RocksDB {
-    fn get(&self, key: &Key) -> eyre::Result<Option<Vec<u8>>> {
-        let Some(value) = self.inner.get(key)? else {
-            return Ok(None);
-        };
-        Ok(Some(value.to_vec()))
+    fn open(config: &StoreConfig) -> eyre::Result<Self> {
+        let mut options = rocksdb::Options::default();
+
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+
+        Ok(Self {
+            db: rocksdb::DB::open_cf(&options, &config.path, Column::iter())?,
+        })
     }
 
-    fn put(&self, key: &Key, value: Value) -> eyre::Result<()> {
-        self.inner.put(key, value)?;
+    fn has(&self, col: Column, key: Slice) -> eyre::Result<bool> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        let exists = self.db.key_may_exist_cf(cf_handle, key.as_ref());
+
+        Ok(exists)
+    }
+
+    fn get(&self, col: Column, key: Slice) -> eyre::Result<Option<Slice>> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        let value = self.db.get_pinned_cf(cf_handle, key.as_ref())?;
+
+        Ok(value.map(Slice::from_owned))
+    }
+
+    fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        self.db.put_cf(cf_handle, key.as_ref(), value.as_ref())?;
 
         Ok(())
     }
 
-    fn apply(&self, tx: super::Transaction) -> eyre::Result<()> {
+    fn delete(&self, col: Column, key: Slice) -> eyre::Result<()> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        self.db.delete_cf(cf_handle, key.as_ref())?;
+
+        Ok(())
+    }
+
+    fn iter(&self, col: Column, key: Slice) -> eyre::Result<Iter> {
+        let cf_handle = self.try_cf_handle(&col)?;
+
+        Ok(Iter::new(DBIterator {
+            iter: self.db.raw_iterator_cf(cf_handle),
+            seek: Some(key.into_boxed().into()),
+        }))
+    }
+
+    fn apply(&self, tx: &Transaction) -> eyre::Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
 
-        for op in tx.ops {
+        let mut unknown_cfs = vec![];
+
+        for (entry, op) in tx.iter() {
+            let (col, key) = (entry.column(), entry.key());
+
+            let Some(cf) = self.cf_handle(&col) else {
+                unknown_cfs.push(col);
+                continue;
+            };
             match op {
-                super::Operation::Put { key, value } => batch.put(key, value),
-                super::Operation::Delete { key } => batch.delete(key),
+                Operation::Put { value } => batch.put_cf(cf, key, value),
+                Operation::Delete => batch.delete_cf(cf, key),
             }
         }
 
-        self.inner.write(batch)?;
+        if !unknown_cfs.is_empty() {
+            eyre::bail!("unknown column families: {:?}", unknown_cfs);
+        }
+
+        self.db.write(batch)?;
 
         Ok(())
+    }
+}
+
+pub struct DBIterator<'a, 'k> {
+    seek: Option<Slice<'k>>,
+    iter: rocksdb::DBRawIterator<'a>,
+}
+
+impl<'a, 'k> DBIter for DBIterator<'a, 'k> {
+    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+        if let Some(seek) = self.seek.take() {
+            self.iter.seek(seek);
+        } else {
+            self.iter.next();
+        }
+
+        Ok(self.iter.key().map(Into::into))
+    }
+
+    fn read(&self) -> Option<Slice> {
+        self.iter.value().map(Into::into)
     }
 }
