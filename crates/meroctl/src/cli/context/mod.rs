@@ -6,9 +6,6 @@ use crate::cli::RootArgs;
 mod common;
 mod create;
 mod list;
-mod members;
-mod mutate;
-mod query;
 
 pub const EXAMPLES: &str = r#"
   # List all contexts
@@ -37,9 +34,6 @@ pub enum ContextSubCommands {
     #[command(alias = "ls")]
     List(list::ListCommand),
     Create(create::CreateCommand),
-    Query(query::QueryCommand),
-    Mutate(mutate::MutateCommand),
-    Members(members::MembersCommand),
 }
 
 impl ContextCommand {
@@ -47,9 +41,6 @@ impl ContextCommand {
         match self.subcommand {
             ContextSubCommands::List(list) => list.run(args).await,
             ContextSubCommands::Create(create) => create.run(args).await,
-            ContextSubCommands::Query(query) => query.run(args).await,
-            ContextSubCommands::Mutate(mutate) => mutate.run(args).await,
-            ContextSubCommands::Members(members) => members.run(args).await,
         }
     }
 }
