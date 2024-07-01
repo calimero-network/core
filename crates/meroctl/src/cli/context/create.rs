@@ -2,7 +2,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::Context;
 use calimero_server_primitives::admin::{ApplicationListResult, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Args, Parser};
 use libp2p::Multiaddr;
 use reqwest::Client;
 use semver::Version;
@@ -36,35 +36,37 @@ struct ListApplicationsResponse {
         .required(true)
         .args(&["application_id", "dev"]),
 ))]
-#[group(requires_all(&["dev", "path", "version"]))]
 pub struct CreateCommand {
     /// The application ID to attach to the context
     #[clap(long, short = 'a', group = "mode", exclusive = true)]
     application_id: Option<String>,
 
+    #[clap(flatten)]
+    dev_args: Option<DevArgs>,
+}
+
+#[derive(Debug, Args)]
+#[group(requires_all(&["dev", "path", "version"]))]
+struct DevArgs {
     /// Enable dev mode
-    #[clap(long, group = "mode")]
+    #[clap(long)]
     dev: bool,
 
-    /// Path to use in dev mode (required in dev mode)
+    /// Path to use in dev mode
     #[clap(
         short,
         long,
-        requires = "dev",
-        required_if_eq("dev", "true"),
         help = "Path to use in dev mode (requires --dev and --version)"
     )]
-    path: Option<Utf8PathBuf>,
+    path: Utf8PathBuf,
 
-    /// Version of the application (required in dev mode)
+    /// Version of the application
     #[clap(
         short,
         long,
-        requires = "dev",
-        required_if_eq("dev", "true"),
         help = "Version of the application (requires --dev and --path)"
     )]
-    version: Option<Version>,
+    version: Version,
 }
 
 impl CreateCommand {
@@ -85,16 +87,17 @@ impl CreateCommand {
 
         let client = Client::new();
 
-        if self.dev {
-            return link_local_app(
-                multiaddr,
-                self.path.unwrap(),
-                self.version.unwrap(),
-                &client,
-            )
-            .await;
+        match self {
+            CreateCommand {
+                application_id: Some(app_id),
+                dev_args: None,
+            } => create_context(multiaddr, app_id, &client).await,
+            CreateCommand {
+                application_id: None,
+                dev_args: Some(dev_args),
+            } => link_local_app(multiaddr, dev_args.path, dev_args.version, &client).await,
+            _ => eyre::bail!("Invalid command configuration"),
         }
-        create_context(multiaddr, self.application_id.unwrap(), &client).await
     }
 }
 
