@@ -11,7 +11,7 @@ pub struct InstallApplicationRequest {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct InstallDevApplicationRequest {
-    pub application: calimero_primitives::application::ApplicationId, // TODO: rename to application_id
+    pub application_id: calimero_primitives::application::ApplicationId,
     pub version: semver::Version,
     pub path: Utf8PathBuf,
 }

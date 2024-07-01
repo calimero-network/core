@@ -73,7 +73,7 @@ impl ApplicationManager {
             .await?;
 
         info!(%topic_hash, "Subscribed to network topic");
-        return Ok(());
+        Ok(())
     }
 
     pub async fn list_installed_applications(
@@ -219,7 +219,7 @@ impl ApplicationManager {
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
-        info!("{}", file_path);
+        info!("Application file saved at: {}", file_path);
         if let Err(err) = symlink(link_path, &file_path) {
             eyre::bail!("Symlinking failed: {}", err);
         }

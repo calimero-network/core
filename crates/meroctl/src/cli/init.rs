@@ -8,8 +8,8 @@ use libp2p::identity;
 use multiaddr::Multiaddr;
 use tracing::{info, warn};
 
-use crate::cli;
 use crate::config_file::{ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig};
+use crate::{cli, defaults};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
@@ -70,8 +70,14 @@ impl InitCommand {
 
         let path = root_args.home.join(root_args.node_name);
 
-        fs::create_dir_all(&path)
+        if !path.exists() {
+            if root_args.home == defaults::default_node_dir() {
+                fs::create_dir_all(&path)
+            } else {
+                fs::create_dir(&path)
+            }
             .wrap_err_with(|| format!("failed to create directory {:?}", path))?;
+        }
 
         if ConfigFile::exists(&path) {
             if let Err(err) = ConfigFile::load(&path) {
@@ -81,7 +87,7 @@ impl InitCommand {
                         err
                     );
                 } else {
-                    eyre::bail!("failed to load existing configuration: {}", err);
+                    eyre::bail!("Failed to load existing configuration: {}", err);
                 }
             }
             if !self.force {

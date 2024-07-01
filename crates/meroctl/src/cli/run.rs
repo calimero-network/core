@@ -32,7 +32,7 @@ impl RunCommand {
         let path = root_args.home.join(root_args.node_name);
 
         if !ConfigFile::exists(&path) {
-            eyre::bail!("chat node is not initialized in {:?}", path);
+            eyre::bail!("Node is not initialized in {:?}", path);
         }
 
         let config = ConfigFile::load(&path)?;

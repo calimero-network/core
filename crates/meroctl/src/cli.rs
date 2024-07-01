@@ -51,7 +51,7 @@ pub enum SubCommands {
 #[derive(Debug, Parser)]
 pub struct RootArgs {
     /// Directory for config and data
-    #[arg(long, value_name = "PATH", default_value_t = defaults::default_chat_dir())]
+    #[arg(long, value_name = "PATH", default_value_t = defaults::default_node_dir())]
     #[arg(env = "CALIMERO_HOME", hide_env_values = true)]
     pub home: camino::Utf8PathBuf,
 

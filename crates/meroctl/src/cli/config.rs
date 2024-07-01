@@ -63,12 +63,12 @@ impl ConfigCommand {
             .join("config.toml");
 
         // Load the existing TOML file
-        let toml_str =
-            fs::read_to_string(&path).map_err(|_| eyre!("Node must be initialized first."))?;
+        let toml_str = fs::read_to_string(&path)
+            .map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
         let mut doc = toml_str.parse::<DocumentMut>()?;
 
         if self.print {
-            println!("{}", doc.to_string());
+            println!("{}", doc);
             return Ok(());
         }
 

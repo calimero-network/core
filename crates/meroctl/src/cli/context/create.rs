@@ -1,8 +1,8 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::Context;
-use calimero_server_primitives::admin::ApplicationListResult;
+use calimero_server_primitives::admin::{ApplicationListResult, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 use libp2p::Multiaddr;
 use reqwest::Client;
 use semver::Version;
@@ -26,41 +26,45 @@ pub struct CreateContextResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct InstallApplicationRequest {
-    pub application: ApplicationId,
-    pub version: Version,
-    pub path: Utf8PathBuf,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct ListApplicationsResponse {
     data: ApplicationListResult,
 }
 
 #[derive(Debug, Parser)]
+#[clap(group(
+    ArgGroup::new("mode")
+        .required(true)
+        .args(&["application_id", "dev"]),
+))]
 #[group(requires_all(&["dev", "path", "version"]))]
 pub struct CreateCommand {
     /// The application ID to attach to the context
-    #[clap(long, short = 'a', exclusive = true, value_name = "APP_ID")]
-    application_id: String,
+    #[clap(long, short = 'a', group = "mode", exclusive = true)]
+    application_id: Option<String>,
 
     /// Enable dev mode
-    #[clap(long, group = "dev_args")]
+    #[clap(long, group = "mode")]
     dev: bool,
 
-    /// Path to use in dev mode
-    #[clap(short, long, group = "dev_args", value_name = "PATH")]
-    path: Utf8PathBuf,
-
-    /// Version of the application
+    /// Path to use in dev mode (required in dev mode)
     #[clap(
         short,
         long,
-        group = "dev_args",
-        default_value = "0.0.0",
-        value_name = "VERSION"
+        requires = "dev",
+        required_if_eq("dev", "true"),
+        help = "Path to use in dev mode (requires --dev and --version)"
     )]
-    version: Version,
+    path: Option<Utf8PathBuf>,
+
+    /// Version of the application (required in dev mode)
+    #[clap(
+        short,
+        long,
+        requires = "dev",
+        required_if_eq("dev", "true"),
+        help = "Version of the application (requires --dev and --path)"
+    )]
+    version: Option<Version>,
 }
 
 impl CreateCommand {
@@ -79,18 +83,31 @@ impl CreateCommand {
             eyre::bail!("No address.")
         };
 
+        let client = Client::new();
+
         if self.dev {
-            return link_local_app(multiaddr, self.path, self.version).await;
+            return link_local_app(
+                multiaddr,
+                self.path.unwrap(),
+                self.version.unwrap(),
+                &client,
+            )
+            .await;
         }
-        create_context(multiaddr, self.application_id).await
+        create_context(multiaddr, self.application_id.unwrap(), &client).await
     }
 }
 
-async fn create_context(base_multiaddr: &Multiaddr, application_id: String) -> eyre::Result<()> {
-    app_installed(&base_multiaddr, &application_id).await?;
+async fn create_context(
+    base_multiaddr: &Multiaddr,
+    application_id: String,
+    client: &Client,
+) -> eyre::Result<()> {
+    if !app_installed(&base_multiaddr, &application_id, client).await? {
+        eyre::bail!("Application is not installed on node.")
+    }
 
     let url = multiaddr_to_url(base_multiaddr, "admin-api/contexts-dev")?;
-    let client = Client::new();
     let request = CreateContextRequest { application_id };
 
     let response = client.post(url).json(&request).send().await?;
@@ -114,30 +131,30 @@ async fn create_context(base_multiaddr: &Multiaddr, application_id: String) -> e
     Ok(())
 }
 
-async fn app_installed(base_multiaddr: &Multiaddr, application_id: &String) -> eyre::Result<()> {
+async fn app_installed(
+    base_multiaddr: &Multiaddr,
+    application_id: &String,
+    client: &Client,
+) -> eyre::Result<bool> {
     let url = multiaddr_to_url(base_multiaddr, "admin-api/applications-dev")?;
-    let client = Client::new();
     let response = client.get(url).send().await?;
-    if response.status().is_success() {
-        let api_response: ListApplicationsResponse = response.json().await?;
-        let app_list = api_response.data.apps;
-        let x = app_list
-            .iter()
-            .any(|app| app.id.as_ref() == *application_id);
-        if x {
-            return Ok(());
-        } else {
-            eyre::bail!("The app with the id {} is not installed\nTo create a context, install an app first", application_id)
-        }
-    } else {
+
+    if !response.status().is_success() {
         eyre::bail!("Request failed with status: {}", response.status())
     }
+
+    let api_response: ListApplicationsResponse = response.json().await?;
+    let app_list = api_response.data.apps;
+    let is_installed = app_list.iter().any(|app| app.id.as_ref() == application_id);
+
+    Ok(is_installed)
 }
 
 async fn link_local_app(
     base_multiaddr: &Multiaddr,
     path: Utf8PathBuf,
     version: Version,
+    client: &Client,
 ) -> eyre::Result<()> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/install-dev-application")?;
 
@@ -146,9 +163,8 @@ async fn link_local_app(
     hasher.update(id.as_bytes());
     let application_id = hex::encode(hasher.finalize());
 
-    let client = Client::new();
-    let install_request = InstallApplicationRequest {
-        application: ApplicationId(application_id.clone()),
+    let install_request = InstallDevApplicationRequest {
+        application_id: ApplicationId(application_id.clone()),
         version: version,
         path,
     };
@@ -171,7 +187,7 @@ async fn link_local_app(
 
     info!("Application installed successfully.");
 
-    create_context(base_multiaddr, application_id).await?;
+    create_context(base_multiaddr, application_id, &client).await?;
 
     Ok(())
 }

@@ -64,11 +64,7 @@ impl ConfigFile {
         dir.join(CONFIG_FILE).is_file()
     }
 
-    pub(crate) fn load(dir: &camino::Utf8Path) -> eyre::Result<Self>
-    where
-        Self: Sized,
-        for<'de> Self: Deserialize<'de>,
-    {
+    pub(crate) fn load(dir: &camino::Utf8Path) -> eyre::Result<Self> {
         let path = dir.join(CONFIG_FILE);
         let content = fs::read_to_string(&path).wrap_err_with(|| {
             format!(
@@ -80,10 +76,7 @@ impl ConfigFile {
         toml::from_str(&content).map_err(Into::into)
     }
 
-    pub(crate) fn save(&self, dir: &camino::Utf8Path) -> eyre::Result<()>
-    where
-        Self: Serialize,
-    {
+    pub(crate) fn save(&self, dir: &camino::Utf8Path) -> eyre::Result<()> {
         let path = dir.join(CONFIG_FILE);
         let content = toml::to_string_pretty(self)?;
 

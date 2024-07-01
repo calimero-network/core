@@ -225,7 +225,7 @@ async fn install_dev_application_handler(
 ) -> impl IntoResponse {
     match state
         .application_manager
-        .install_dev_application(req.application, &req.version, req.path)
+        .install_dev_application(req.application_id, &req.version, req.path)
         .await
     {
         Ok(()) => ApiResponse { payload: () }.into_response(),
