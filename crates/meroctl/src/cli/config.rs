@@ -169,9 +169,14 @@ impl ConfigCommand {
         }
 
         // Update mDNS setting if provided
-        let mdns_enabled = if self.no_mdns { false } else { self.mdns };
         let discovery_table = doc["discovery"].as_table_mut().unwrap();
-        discovery_table["mdns"] = toml_edit::value(mdns_enabled);
+        let mdns_current = &discovery_table["mdns"]
+            .as_bool()
+            .ok_or(eyre::eyre!("mdns value wasn't set as a bool"))?;
+        let mdns = self.mdns && !self.no_mdns;
+        if *mdns_current != mdns {
+            discovery_table["mdns"] = toml_edit::value(mdns);
+        }
 
         // Save the updated TOML back to the file
         fs::write(&path, doc.to_string())?;
