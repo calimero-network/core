@@ -29,7 +29,7 @@ pub struct CreateContextResponse {
 pub struct InstallApplicationRequest {
     pub application: ApplicationId,
     pub version: Version,
-    pub path: Option<Utf8PathBuf>,
+    pub path: Utf8PathBuf,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -150,7 +150,7 @@ async fn link_local_app(
     let install_request = InstallApplicationRequest {
         application: ApplicationId(application_id.clone()),
         version: version,
-        path: Some(path),
+        path,
     };
 
     let install_response = client
