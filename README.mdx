@@ -71,6 +71,84 @@ Calimero Network's story is one of relentless pursuit of a more private,
 efficient, and user-centric decentralized web, setting a new standard for what
 decentralized platforms can achieve.
 
+## Architecture
+
+```mermaid
+graph TD
+
+    subgraph Datastore
+        ctx[Context]
+        gen[Generic]
+        net[Network]
+        ctx --> id[Identity]
+        ctx --> st[State]
+        ctx --> tx[Transactions]
+        gen --> sc[Scope]
+        gen --> fr[Fragment]
+        net --> kad[KAD]
+
+        subgraph " "
+            direction LR
+            mem[Memory]
+            s3[S3]
+            lvl[Level]
+            rdb[RocksDB]
+        end
+    end
+
+    subgraph Blobstore
+        apps[Applications]
+        genData[Generic Data]
+        
+        subgraph " "
+            direction LR
+            fs[FS]
+            blobS3[S3]
+        end
+    end
+    
+    subgraph Server
+        direction LR
+        jrpc[JSONRPC]
+        ws[WebSocket]
+        raw[Raw Sockets]
+    end
+
+    applications[Apps]
+    client[Client]
+    capi[C-API]
+    auth[Auth Gated Client]
+    did[DID]
+    cli[CLI]
+    node[Node]
+    network[Network]
+    runtime[Runtime]
+
+    client --> node
+
+    applications --> capi
+    applications --> client
+    applications --> Server
+
+    cli --> client
+    cli --> auth
+    cli --> Server
+
+    Server --> auth
+
+    capi --> client
+    
+    auth --> client
+    auth --> did
+    did --> gen
+
+    node --> network
+    node --> runtime
+    node --> ctx
+    node --> net
+    node --> Blobstore
+```
+
 ## Contributing
 
 Calimero is Open Source under the [Apache License 2.0](LICENSE), and is the
