@@ -74,79 +74,77 @@ decentralized platforms can achieve.
 ## Architecture
 
 ```mermaid
-graph TD
-
-    subgraph Datastore
-        ctx[Context]
-        gen[Generic]
-        net[Network]
-        ctx --> id[Identity]
-        ctx --> st[State]
-        ctx --> tx[Transactions]
-        gen --> sc[Scope]
-        gen --> fr[Fragment]
-        net --> kad[KAD]
-
-        subgraph " "
-            direction LR
-            mem[Memory]
-            s3[S3]
-            lvl[Level]
-            rdb[RocksDB]
-        end
-    end
-
-    subgraph Blobstore
-        apps[Applications]
-        genData[Generic Data]
-        
-        subgraph " "
-            direction LR
-            fs[FS]
-            blobS3[S3]
-        end
-    end
-    
-    subgraph Server
-        direction LR
-        jrpc[JSONRPC]
-        ws[WebSocket]
-        raw[Raw Sockets]
-    end
-
-    applications[Apps]
-    client[Client]
-    capi[C-API]
-    auth[Auth Gated Client]
-    did[DID]
-    cli[CLI]
-    node[Node]
-    network[Network]
-    runtime[Runtime]
-
-    client --> node
-
-    applications --> capi
-    applications --> client
-    applications --> Server
-
-    cli --> client
-    cli --> auth
-    cli --> Server
-
-    Server --> auth
-
+flowchart TD
+ subgraph DatastoreImpl["Implementations"]
+        rdb["RocksDB"]
+        mem["Memory"]
+        lvl["LevelDB"]
+        s3["S3"]
+  end
+ subgraph ctx["Context"]
+    direction LR
+        id["Identity"]
+        st["State"]
+        tx["Transactions"]
+  end
+ subgraph net["Network"]
+    direction LR
+        peers["Peers (Kademlia)"]
+  end
+ subgraph gen["Generic"]
+    direction LR
+        sc["Scope"]
+        fr["Fragment"]
+  end
+ subgraph DatastoreWrapper["Content"]
+        ctx
+        net
+        gen
+  end
+ subgraph Datastore["Data Store"]
+        DatastoreWrapper
+        DatastoreImpl
+  end
+ subgraph BlobstoreImpl["Implementations"]
+    direction LR
+        fs["File System"]
+        blobS3["S3"]
+  end
+ subgraph BlobstoreWrapper["Content"]
+    direction LR
+        apps["Applications"]
+        genData["Generic Data"]
+  end
+ subgraph Blobstore["Blob Store"]
+        BlobstoreWrapper
+        BlobstoreImpl
+  end
+ subgraph Server["Server"]
+    direction LR
+        jrpc["JSONRPC"]
+        ws["WebSocket"]
+        raw["Raw Sockets"]
+  end
+ subgraph libp2p["libp2p"]
+    direction LR
+        tcp["TCP::Raw"]
+        tcpws["TCP::WebSockets"]
+        udpqc["UDP::Quic"]
+        udpqcwt["UDP::Quic::WebTransport"]
+  end
+ subgraph Network["Network"]
+        libp2p
+  end
+    DatastoreWrapper --o DatastoreImpl
+    BlobstoreWrapper --o BlobstoreImpl
+    client["Client"] --> node["Node"]
+    applications["Apps"] --> capi["C-API"] & client & Server
     capi --> client
-    
-    auth --> client
-    auth --> did
+    cli["CLI"] --> Server & client & auth["Auth Gated Client"]
+    Server --> auth
+    auth --> did["DID"] & client
     did --> gen
-
-    node --> network
-    node --> runtime
-    node --> ctx
-    node --> net
-    node --> Blobstore
+    node --> Network & runtime["Runtime"] & net & ctx & Blobstore
 ```
 
 ## Contributing
