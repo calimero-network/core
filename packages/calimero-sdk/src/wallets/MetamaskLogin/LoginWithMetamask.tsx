@@ -173,6 +173,7 @@ export function LoginWithMetamask({
         flexDirection: 'column',
         alignItems: 'center',
         padding: '0.5rem',
+        maxWidth: '400px',
       }}
     >
       <div
@@ -191,8 +192,20 @@ export function LoginWithMetamask({
             color: metamaskTitleColor ?? '#fff',
           }}
         >
-          Metamask
+          Login with Metamask
         </span>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'start',
+            alignItems: 'center',
+            fontSize: '14px',
+            color: '#778899',
+            whiteSpace: 'break-spaces',
+          }}
+        >
+          <span>Choose which account from your wallet you want to log in with</span>
+        </div>
         <header
           style={{
             marginTop: '1.5rem',
