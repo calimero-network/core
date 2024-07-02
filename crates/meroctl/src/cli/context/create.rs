@@ -2,7 +2,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::identity::Context;
 use calimero_server_primitives::admin::{ApplicationListResult, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
-use clap::{ArgGroup, Args, Parser};
+use clap::{Args, Parser};
 use libp2p::Multiaddr;
 use reqwest::Client;
 use semver::Version;
@@ -31,11 +31,7 @@ struct ListApplicationsResponse {
 }
 
 #[derive(Debug, Parser)]
-#[clap(group(
-    ArgGroup::new("mode")
-        .required(true)
-        .args(&["application_id", "dev"]),
-))]
+#[group(required = true)]
 pub struct CreateCommand {
     /// The application ID to attach to the context
     #[clap(long, short = 'a', group = "mode", exclusive = true)]
@@ -110,7 +106,7 @@ async fn create_context(
         eyre::bail!("Application is not installed on node.")
     }
 
-    let url = multiaddr_to_url(base_multiaddr, "admin-api/contexts-dev")?;
+    let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
     let request = CreateContextRequest { application_id };
 
     let response = client.post(url).json(&request).send().await?;
@@ -139,7 +135,7 @@ async fn app_installed(
     application_id: &String,
     client: &Client,
 ) -> eyre::Result<bool> {
-    let url = multiaddr_to_url(base_multiaddr, "admin-api/applications-dev")?;
+    let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/applications")?;
     let response = client.get(url).send().await?;
 
     if !response.status().is_success() {
@@ -159,7 +155,7 @@ async fn link_local_app(
     version: Version,
     client: &Client,
 ) -> eyre::Result<()> {
-    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/install-dev-application")?;
+    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
     let id = format!("{}:{}", version, path);
     let mut hasher = Sha256::new();
