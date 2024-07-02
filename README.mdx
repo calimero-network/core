@@ -76,64 +76,77 @@ decentralized platforms can achieve.
 ```mermaid
 graph TD
 
-    S2[CLI]
-
     subgraph Datastore
-        DS1[Context]
-        DS2[Generic]
-        DS3[Network]
-        DS1 --> DS4[Identity]
-        DS1 --> DS5[State]
-        DS1 --> DS6[Transactions]
-        DS2 --> DS7[Scope]
-        DS2 --> DS8[Fragment]
-        DS3 --> DS9[KAD]
+        ctx[Context]
+        gen[Generic]
+        net[Network]
+        ctx --> id[Identity]
+        ctx --> st[State]
+        ctx --> tx[Transactions]
+        gen --> sc[Scope]
+        gen --> fr[Fragment]
+        net --> kad[KAD]
 
-        subgraph \n\n
-          DI1[Memory]
-          DI2[S3]
-          DI3[Level]
-          DI4[RocksDB]
+        subgraph " "
+            direction LR
+            mem[Memory]
+            s3[S3]
+            lvl[Level]
+            rdb[RocksDB]
         end
     end
 
     subgraph Blobstore
-        BS3[Applications]
-        BS4[Generic Data]
-        subgraph \n
-          BS1[FS]
-          BS2[S3]
-       end
+        apps[Applications]
+        genData[Generic Data]
+        
+        subgraph " "
+            direction LR
+            fs[FS]
+            blobS3[S3]
+        end
     end
-    Blobstore --> BS3
-
-    Node --> Network
-
-    subgraph Client
-        C1[C-API]
-    end
-
+    
     subgraph Server
-        S1[Auth Gated Client]
-        S3[JSONRPC]
-        S4[WebSocket]
-        S5[Raw Sockets]
-
-        Apps --> S3
-        Apps --> S4
-        Apps --> S5
-    end
-    S2 --> Server
-    S1 --> Client
-    Node --> Runtime[Runtime]
-    Node --> Datastore
-    Node --> Blobstore
-    C1 --> Node
-    Node --> S1
-
-    subgraph Apps
+        direction LR
+        jrpc[JSONRPC]
+        ws[WebSocket]
+        raw[Raw Sockets]
     end
 
+    applications[Apps]
+    client[Client]
+    capi[C-API]
+    auth[Auth Gated Client]
+    did[DID]
+    cli[CLI]
+    node[Node]
+    network[Network]
+    runtime[Runtime]
+
+    client --> node
+
+    applications --> capi
+    applications --> client
+    applications --> Server
+
+    cli --> client
+    cli --> auth
+    cli --> Server
+
+    Server --> auth
+
+    capi --> client
+    
+    auth --> client
+    auth --> did
+    did --> gen
+
+    node --> network
+    node --> runtime
+    node --> ctx
+    node --> net
+    node --> Blobstore
 ```
 
 ## Contributing
