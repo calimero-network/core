@@ -172,6 +172,7 @@ export function MetamaskRootKey({
         flexDirection: 'column',
         alignItems: 'center',
         padding: '0.5rem',
+        maxWidth: '400px',
       }}
     >
       <div
@@ -190,8 +191,21 @@ export function MetamaskRootKey({
             color: metamaskTitleColor ?? '#fff',
           }}
         >
-          Metamask
+          Add root key with Metamask
         </span>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'start',
+            alignItems: 'center',
+            fontSize: '14px',
+            color: '#778899',
+            whiteSpace: 'break-spaces',
+          }}
+        >
+          <span>Choose which account from your wallet you want to add a node root key for.
+          Each key, and therefore each account, can only be added once</span>
+        </div>
         <header
           style={{
             marginTop: '1.5rem',

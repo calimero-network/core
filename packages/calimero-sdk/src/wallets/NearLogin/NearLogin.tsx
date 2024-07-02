@@ -339,6 +339,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
           padding: '2.5rem',
           gap: '1rem',
           borderRadius: '0.5rem',
+          maxWidth: '400px',
         }}
       >
         <span
@@ -352,8 +353,20 @@ export const NearLogin: React.FC<NearLoginProps> = ({
             color: nearTitleColor ?? '#fff',
           }}
         >
-          NEAR
+          Login with NEAR
         </span>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'start',
+            alignItems: 'center',
+            fontSize: '14px',
+            color: '#778899',
+            whiteSpace: 'break-spaces'
+          }}
+        >
+          <span>Choose which account from your wallet you want to log in with</span>
+        </div>
         {account && (
           <div
             style={{
