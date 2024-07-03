@@ -710,18 +710,14 @@ impl Node {
         &mut self,
         mut stream: calimero_network::stream::Stream,
     ) -> eyre::Result<()> {
-        let request = match stream.next().await {
-            Some(message) => match message {
-                Ok(message) => match serde_json::from_slice(&message.data)? {
-                    types::CatchupStreamMessage::Request(req) => req,
-                    message => {
-                        eyre::bail!("Unexpected message: {:?}", message)
-                    }
-                },
-                Err(err) => eyre::bail!(err),
-            },
-            None => {
-                eyre::bail!("Stream closed unexpectedly")
+        let Some(message) = stream.next().await else {
+            eyre::bail!("Stream closed unexpectedly")
+        };
+
+        let request = match serde_json::from_slice(&message?.data)? {
+            types::CatchupStreamMessage::Request(req) => req,
+            message => {
+                eyre::bail!("Unexpected message: {:?}", message)
             }
         };
 
