@@ -83,13 +83,17 @@ flowchart TD
   end
  subgraph ctx["Context"]
     direction LR
-        id["Identity"]
+        me["Metadata"]
         st["State"]
+        id["Identities"]
         tx["Transactions"]
+  end
+ subgraph kad["Kademlia"]
+        pe["Peers"]
   end
  subgraph net["Network"]
     direction LR
-        peers["Peers (Kademlia)"]
+        kad
   end
  subgraph gen["Generic"]
     direction LR
@@ -128,7 +132,7 @@ flowchart TD
  subgraph libp2p["libp2p"]
     direction LR
         tcp["TCP::Raw"]
-        tcpws["TCP::WebSockets"]
+        tcpws["TCP::WebSocket"]
         udpqc["UDP::Quic"]
         udpqcwt["UDP::Quic::WebTransport"]
   end
