@@ -609,12 +609,14 @@ impl Node {
 
         let outcome = self
             .execute(
-                context,
+                context.clone(),
                 Some(hash),
                 transaction.method.clone(),
                 transaction.payload.clone(),
             )
             .await?;
+
+        let mut handle = self.store.handle();
 
         let key = calimero_store::key::ContextTransaction::new(context_id, hash.into());
         let value = calimero_store::types::ContextTransaction {
@@ -623,8 +625,13 @@ impl Node {
             payload: transaction.payload.into(),
             prior_hash: *transaction.prior_hash,
         };
+        handle.put(&key, &value)?;
 
-        let mut handle = self.store.handle();
+        let key = calimero_store::key::ContextMeta::new(context_id);
+        let value = calimero_store::types::ContextMeta {
+            application_id: context.application_id.0.into(),
+            last_transaction_hash: *hash.as_bytes(),
+        };
         handle.put(&key, &value)?;
 
         if let Some(sender) = outcome_sender {
