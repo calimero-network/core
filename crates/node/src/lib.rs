@@ -620,7 +620,6 @@ impl Node {
 
         let key = calimero_store::key::ContextTransaction::new(context_id, hash.into());
         let value = calimero_store::types::ContextTransaction {
-            context_id: *context_id,
             method: transaction.method.into(),
             payload: transaction.payload.into(),
             prior_hash: *transaction.prior_hash,
