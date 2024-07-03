@@ -1,7 +1,10 @@
+use std::collections::VecDeque;
+
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
+use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
 use owo_colors::OwoColorize;
@@ -9,6 +12,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info};
 
+pub mod catchup;
 pub mod config;
 pub mod runtime_compat;
 pub mod transaction_pool;
@@ -384,7 +388,6 @@ impl Node {
                         )
                         .await?;
                     }
-                    message => error!("Unhandled PeerAction: {:?}", message),
                 }
             }
             calimero_network::types::NetworkEvent::ListeningOn { address, .. } => {
@@ -704,12 +707,113 @@ impl Node {
 
         Ok(outcome)
     }
-
     async fn handle_stream(
         &mut self,
-        _stream: calimero_network::stream::Stream,
+        mut stream: calimero_network::stream::Stream,
     ) -> eyre::Result<()> {
-        // TODO: implement catchup mechanism once storage is ready
+        let request = match stream.next().await {
+            Some(message) => match message {
+                Ok(message) => match serde_json::from_slice(&message.data)? {
+                    types::CatchupStreamMessage::Request(req) => req,
+                    message => {
+                        eyre::bail!("Unexpected message: {:?}", message)
+                    }
+                },
+                Err(err) => eyre::bail!(err),
+            },
+            None => {
+                eyre::bail!("Stream closed unexpectedly")
+            }
+        };
+
+        let handle = self.store.handle();
+
+        let meta_key = calimero_store::key::ContextMeta::new(request.context_id);
+        let Some(meta_value) = handle.get(&meta_key)? else {
+            let message = serde_json::to_vec(&types::CatchupError::ContextNotFound {
+                context_id: request.context_id,
+            })?;
+            stream
+                .send(calimero_network::stream::Message { data: message })
+                .await?;
+            return Ok(());
+        };
+
+        let mut hashes = VecDeque::new();
+        let mut key = calimero_store::key::ContextTransaction::new(
+            request.context_id,
+            meta_value.last_transaction_hash.into(),
+        );
+
+        let mut last_executed_transaction_hash_discovered = false;
+        while let Some(transaction) = handle.get(&key)? {
+            hashes.push_front(transaction.prior_hash);
+            if transaction.prior_hash == *request.last_executed_transaction_hash {
+                last_executed_transaction_hash_discovered = true;
+                break;
+            }
+
+            key = calimero_store::key::ContextTransaction::new(
+                request.context_id,
+                transaction.prior_hash.into(),
+            );
+        }
+
+        if !last_executed_transaction_hash_discovered {
+            let message = serde_json::to_vec(&types::CatchupError::TransactionNotFound {
+                transaction_hash: request.last_executed_transaction_hash,
+            })?;
+            stream
+                .send(calimero_network::stream::Message { data: message })
+                .await?;
+            return Ok(());
+        }
+
+        let mut batch_writer = catchup::CatchupBatchSender::new(request.batch_size, stream);
+
+        for hash in hashes {
+            let key = calimero_store::key::ContextTransaction::new(request.context_id, hash.into());
+            let Some(transaction) = handle.get(&key)? else {
+                error!(context_id=%request.context_id, ?hash, "Context transaction not found");
+                batch_writer
+                    .flush_with_error(&types::CatchupError::InternalError)
+                    .await?;
+                return Ok(());
+            };
+
+            batch_writer
+                .send(types::TransactionWithStatus {
+                    transaction_hash: hash.into(),
+                    transaction: calimero_primitives::transaction::Transaction {
+                        context_id: request.context_id,
+                        method: transaction.method.into(),
+                        payload: transaction.payload.into(),
+                        prior_hash: calimero_primitives::hash::Hash::from(transaction.prior_hash),
+                    },
+                    status: types::TransactionStatus::Executed,
+                })
+                .await?;
+        }
+
+        for (hash, entry) in self.tx_pool.iter() {
+            batch_writer
+                .send(types::TransactionWithStatus {
+                    transaction_hash: *hash,
+                    transaction: calimero_primitives::transaction::Transaction {
+                        context_id: request.context_id,
+                        method: entry.transaction.method.clone(),
+                        payload: entry.transaction.payload.clone(),
+                        prior_hash: calimero_primitives::hash::Hash::from(
+                            entry.transaction.prior_hash,
+                        ),
+                    },
+                    status: types::TransactionStatus::Executed,
+                })
+                .await?;
+        }
+
+        batch_writer.flush().await?;
+
         Ok(())
     }
 }

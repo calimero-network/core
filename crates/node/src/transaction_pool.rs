@@ -42,4 +42,10 @@ impl TransactionPool {
     ) -> Option<TransactionPoolEntry> {
         self.transactions.remove(hash)
     }
+
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&calimero_primitives::hash::Hash, &TransactionPoolEntry)> {
+        self.transactions.iter()
+    }
 }
