@@ -20,7 +20,7 @@ pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
     pub identity: identity::Keypair,
     pub node_type: calimero_node_primitives::NodeType,
-    pub application: calimero_application::config::ApplicationConfig,
+    pub application: calimero_context::config::ApplicationConfig,
     pub network: calimero_network::config::NetworkConfig,
     pub server: calimero_server::config::ServerConfig,
     pub store: calimero_store::config::StoreConfig,
@@ -31,7 +31,7 @@ pub struct Node {
     typ: calimero_node_primitives::NodeType,
     store: calimero_store::Store,
     tx_pool: transaction_pool::TransactionPool,
-    ctx_mgr: calimero_application::ContextManager,
+    ctx_mgr: calimero_context::ContextManager,
     network_client: calimero_network::client::NetworkClient,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
@@ -50,7 +50,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
-    let ctx_mgr = calimero_application::ContextManager::start(
+    let ctx_mgr = calimero_context::ContextManager::start(
         &config.application,
         store.clone(),
         network_client.clone(),
@@ -303,7 +303,7 @@ impl Node {
         config: &NodeConfig,
         network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-        ctx_mgr: calimero_application::ContextManager,
+        ctx_mgr: calimero_context::ContextManager,
         store: Store,
     ) -> Self {
         Self {

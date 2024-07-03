@@ -21,7 +21,7 @@ pub mod ws;
 pub async fn start(
     config: ServerConfig,
     server_sender: calimero_node_primitives::ServerSender,
-    ctx_mgr: calimero_application::ContextManager,
+    ctx_mgr: calimero_context::ContextManager,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     store: Store,
 ) -> eyre::Result<()> {

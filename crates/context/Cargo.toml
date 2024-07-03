@@ -1,5 +1,5 @@
 [package]
-name = "calimero-application" # todo! calimero-context
+name = "calimero-context"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true

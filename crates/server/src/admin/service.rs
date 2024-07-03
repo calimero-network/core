@@ -26,13 +26,13 @@ pub struct AdminConfig {
 pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
-    pub ctx_mgr: calimero_application::ContextManager,
+    pub ctx_mgr: calimero_context::ContextManager,
 }
 
 pub(crate) fn setup(
     config: &crate::config::ServerConfig,
     store: Store,
-    ctx_mgr: calimero_application::ContextManager,
+    ctx_mgr: calimero_context::ContextManager,
 ) -> eyre::Result<Option<(&'static str, Router)>> {
     match &config.admin {
         Some(config) if config.enabled => config,

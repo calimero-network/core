@@ -44,7 +44,7 @@ impl RunCommand {
             store: calimero_store::config::StoreConfig {
                 path: path.join(config.store.path),
             },
-            application: calimero_application::config::ApplicationConfig {
+            application: calimero_context::config::ApplicationConfig {
                 dir: path.join(config.application.path),
             },
             network: calimero_network::config::NetworkConfig {
