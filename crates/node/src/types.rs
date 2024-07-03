@@ -4,11 +4,7 @@ use serde::{Deserialize, Serialize};
 pub enum PeerAction {
     Transaction(calimero_primitives::transaction::Transaction),
     TransactionConfirmation(TransactionConfirmation),
-    CatchupRequest(CatchupRequest),
-    CatchupResponse(CatchupResponse),
 }
-
-pub type Signature = Vec<u8>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TransactionConfirmation {
@@ -20,26 +16,44 @@ pub struct TransactionConfirmation {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CatchupRequest {
-    pub context_id: calimero_primitives::context::ContextId,
-    pub last_executed_transaction_hash: calimero_primitives::hash::Hash,
+pub enum CatchupStreamMessage {
+    Request(CatchupRequest),
+    Response(CatchupResponse),
+    Error(CatchupError),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct TransactionWithConfirmation {
+pub struct CatchupRequest {
     pub context_id: calimero_primitives::context::ContextId,
-    pub transaction: calimero_primitives::transaction::Transaction,
-    pub confirmation: TransactionConfirmation,
+    pub last_executed_transaction_hash: calimero_primitives::hash::Hash,
+    pub batch_size: u8,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CatchupResponse {
-    pub context_id: calimero_primitives::context::ContextId,
-    pub transactions: Vec<TransactionWithConfirmation>,
+    pub transactions: Vec<TransactionWithStatus>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct SignedPeerAction {
-    pub action: PeerAction,
-    pub signature: Signature,
+#[derive(Debug, Serialize, Deserialize)]
+pub enum CatchupError {
+    ContextNotFound {
+        context_id: calimero_primitives::context::ContextId,
+    },
+    TransactionNotFound {
+        transaction_hash: calimero_primitives::hash::Hash,
+    },
+    InternalError,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionWithStatus {
+    pub transaction_hash: calimero_primitives::hash::Hash,
+    pub transaction: calimero_primitives::transaction::Transaction,
+    pub status: TransactionStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum TransactionStatus {
+    Pending,
+    Executed,
 }

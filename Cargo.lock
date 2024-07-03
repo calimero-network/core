@@ -879,6 +879,7 @@ dependencies = [
  "color-eyre",
  "dirs",
  "eyre",
+ "futures-util",
  "libp2p",
  "multiaddr",
  "owo-colors",
