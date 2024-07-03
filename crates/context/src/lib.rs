@@ -93,9 +93,7 @@ impl ContextManager {
 
         handle.delete(&key)?;
 
-        self.network_client
-            .unsubscribe(calimero_network::types::IdentTopic::new(context_id))
-            .await?;
+        self.unsubscribe(context_id).await?;
 
         Ok(true)
     }
@@ -151,12 +149,24 @@ impl ContextManager {
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> eyre::Result<()> {
-        let topic_hash = self
-            .network_client
+        self.network_client
             .subscribe(calimero_network::types::IdentTopic::new(context_id))
             .await?;
 
-        info!(%topic_hash, "Subscribed to context");
+        info!(%context_id, "Subscribed to context");
+
+        Ok(())
+    }
+
+    pub async fn unsubscribe(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<()> {
+        self.network_client
+            .unsubscribe(calimero_network::types::IdentTopic::new(context_id))
+            .await?;
+
+        info!(%context_id, "Unsubscribed from context");
 
         Ok(())
     }
