@@ -31,7 +31,7 @@ pub async fn get_context_handler(
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let context = state
-        .ctx_mgr
+        .ctx_manager
         .get_context(&context_id)
         .map_err(|err| parse_api_error(err).into_response());
 
@@ -122,7 +122,7 @@ pub async fn get_contexts_handler(
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let contexts = state
-        .ctx_mgr
+        .ctx_manager
         .get_contexts(None)
         .map_err(|err| parse_api_error(err));
 
@@ -155,7 +155,7 @@ pub async fn delete_context_handler(
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
-        .ctx_mgr
+        .ctx_manager
         .delete_context(&context_id)
         .await
         .map_err(|err| parse_api_error(err));
@@ -203,7 +203,7 @@ pub async fn create_context_handler(
 
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
-        .ctx_mgr
+        .ctx_manager
         .add_context(context.clone())
         .await
         .map_err(|err| parse_api_error(err));

@@ -11,7 +11,7 @@ pub async fn install_dev_application_handler(
     Json(req): Json<calimero_server_primitives::admin::InstallDevApplicationRequest>,
 ) -> impl IntoResponse {
     match state
-        .ctx_mgr
+        .ctx_manager
         .install_dev_application(req.application_id, &req.version, req.path)
         .await
     {

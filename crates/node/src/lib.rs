@@ -31,7 +31,7 @@ pub struct Node {
     typ: calimero_node_primitives::NodeType,
     store: calimero_store::Store,
     tx_pool: transaction_pool::TransactionPool,
-    ctx_mgr: calimero_context::ContextManager,
+    ctx_manager: calimero_context::ContextManager,
     network_client: calimero_network::client::NetworkClient,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
@@ -50,7 +50,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
-    let ctx_mgr = calimero_context::ContextManager::start(
+    let ctx_manager = calimero_context::ContextManager::start(
         &config.application,
         store.clone(),
         network_client.clone(),
@@ -61,7 +61,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         &config,
         network_client.clone(),
         node_events.clone(),
-        ctx_mgr.clone(),
+        ctx_manager.clone(),
         store.clone(),
     );
 
@@ -70,7 +70,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,
-        ctx_mgr,
+        ctx_manager,
         node_events,
         store,
     )) as BoxedFuture<eyre::Result<()>>;
@@ -125,7 +125,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let context_id = context_id.parse()?;
 
-                        let Ok(Some(context)) = node.ctx_mgr.get_context(&context_id) else {
+                        let Ok(Some(context)) = node.ctx_manager.get_context(&context_id) else {
                             println!("{IND} Context not found: {}", context_id);
                             return Ok(());
                         };
@@ -254,7 +254,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             if let Some(args) = args {
                 // TODO: implement print all and/or specific topic
                 let topic = TopicHash::from_raw(args);
-                if node.ctx_mgr.is_application_installed(
+                if node.ctx_manager.is_application_installed(
                     &calimero_primitives::application::ApplicationId(topic.clone().into_string()),
                 ) {
                     println!(
@@ -303,7 +303,7 @@ impl Node {
         config: &NodeConfig,
         network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-        ctx_mgr: calimero_context::ContextManager,
+        ctx_manager: calimero_context::ContextManager,
         store: Store,
     ) -> Self {
         Self {
@@ -311,7 +311,7 @@ impl Node {
             typ: config.node_type,
             store,
             tx_pool: transaction_pool::TransactionPool::default(),
-            ctx_mgr,
+            ctx_manager,
             network_client,
             node_events,
             // --
@@ -338,7 +338,7 @@ impl Node {
                     return Ok(());
                 };
 
-                let Some(context) = self.ctx_mgr.get_context(&context_id)? else {
+                let Some(context) = self.ctx_manager.get_context(&context_id)? else {
                     error!(
                         "observed subscription to unknown context: {:?}, ignoring..",
                         context_id
@@ -348,7 +348,7 @@ impl Node {
                 };
 
                 if self
-                    .ctx_mgr
+                    .ctx_manager
                     .is_application_installed(&context.application_id)
                 {
                     info!("{} joined the session.", their_peer_id.cyan());
@@ -449,7 +449,7 @@ impl Node {
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
         >,
     ) {
-        let Ok(Some(context)) = self.ctx_mgr.get_context(&context_id) else {
+        let Ok(Some(context)) = self.ctx_manager.get_context(&context_id) else {
             let _ =
                 outcome_sender.send(Err(calimero_node_primitives::CallError::ContextNotFound {
                     context_id,
@@ -502,7 +502,7 @@ impl Node {
         payload: Vec<u8>,
     ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::QueryCallError> {
         if !self
-            .ctx_mgr
+            .ctx_manager
             .is_application_installed(&context.application_id)
         {
             return Err(
@@ -534,7 +534,7 @@ impl Node {
         }
 
         if !self
-            .ctx_mgr
+            .ctx_manager
             .is_application_installed(&context.application_id)
         {
             return Err(
@@ -603,7 +603,7 @@ impl Node {
             return Ok(None);
         };
 
-        let Some(context) = self.ctx_mgr.get_context(&context_id)? else {
+        let Some(context) = self.ctx_manager.get_context(&context_id)? else {
             error!("Context not installed, but the transaction was in the pool.");
             return Ok(None);
         };
@@ -656,7 +656,7 @@ impl Node {
 
         let outcome = calimero_runtime::run(
             &self
-                .ctx_mgr
+                .ctx_manager
                 .load_application_blob(&context.application_id)?,
             &method,
             calimero_runtime::logic::VMContext { input: payload },

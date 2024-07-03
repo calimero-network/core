@@ -21,7 +21,7 @@ pub mod ws;
 pub async fn start(
     config: ServerConfig,
     server_sender: calimero_node_primitives::ServerSender,
-    ctx_mgr: calimero_context::ContextManager,
+    ctx_manager: calimero_context::ContextManager,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     store: Store,
 ) -> eyre::Result<()> {
@@ -86,7 +86,7 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = admin::service::setup(&config, store, ctx_mgr)? {
+        if let Some((api_path, router)) = admin::service::setup(&config, store, ctx_manager)? {
             app = app.nest(api_path, router);
             serviced = true;
         }
