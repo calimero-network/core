@@ -14,6 +14,7 @@ pub fn add_context(store: &mut Store, context: Context) -> eyre::Result<bool> {
         &key,
         &calimero_store::types::ContextMeta {
             application_id: context.application_id.0.into(),
+            last_transaction_hash: *calimero_primitives::hash::Hash::default().as_bytes(),
         },
     )?;
 

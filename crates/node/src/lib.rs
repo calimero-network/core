@@ -609,7 +609,7 @@ impl Node {
 
         let outcome = self
             .execute(
-                context,
+                context.clone(),
                 Some(hash),
                 transaction.method.clone(),
                 transaction.payload.clone(),
@@ -627,8 +627,11 @@ impl Node {
         };
         handle.put(&key, &value)?;
 
-        let key = types::LastTxEntry::new();
-        let value = calimero_store::entry::Json::new(hash);
+        let key = calimero_store::key::ContextMeta::new(context_id);
+        let value = calimero_store::types::ContextMeta {
+            application_id: context.application_id.0.into(),
+            last_transaction_hash: *hash.as_bytes(),
+        };
         handle.put(&key, &value)?;
 
         if let Some(sender) = outcome_sender {

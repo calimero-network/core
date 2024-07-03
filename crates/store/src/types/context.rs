@@ -11,6 +11,8 @@ use crate::types::PredefinedEntry;
 pub struct ContextMeta {
     // todo! make [u8; 32] when application_id<->meta is a separate record
     pub application_id: Box<str>,
+
+    pub last_transaction_hash: [u8; 32],
 }
 
 impl DataType<'_> for ContextMeta {
