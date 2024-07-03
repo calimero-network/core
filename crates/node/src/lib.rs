@@ -9,7 +9,6 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info};
 
-pub mod config;
 pub mod runtime_compat;
 pub mod transaction_pool;
 pub mod types;
