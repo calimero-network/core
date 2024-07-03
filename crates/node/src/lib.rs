@@ -803,11 +803,9 @@ impl Node {
                         context_id: request.context_id,
                         method: entry.transaction.method.clone(),
                         payload: entry.transaction.payload.clone(),
-                        prior_hash: calimero_primitives::hash::Hash::from(
-                            entry.transaction.prior_hash,
-                        ),
+                        prior_hash: entry.transaction.prior_hash,
                     },
-                    status: types::TransactionStatus::Executed,
+                    status: types::TransactionStatus::Pending,
                 })
                 .await?;
         }
