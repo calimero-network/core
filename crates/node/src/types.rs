@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use calimero_store::entry::{Entry, Json};
+use calimero_store::key::Generic;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PeerAction {
     Transaction(calimero_primitives::transaction::Transaction),
@@ -42,4 +45,25 @@ pub struct CatchupResponse {
 pub struct SignedPeerAction {
     pub action: PeerAction,
     pub signature: Signature,
+}
+
+pub(crate) struct LastTxEntry {
+    key: Generic,
+}
+
+impl Entry for LastTxEntry {
+    type Key = Generic;
+    type DataType<'a> = Json<calimero_primitives::hash::Hash>;
+
+    fn key(&self) -> &Self::Key {
+        &self.key
+    }
+}
+
+impl LastTxEntry {
+    pub(crate) fn new() -> Self {
+        Self {
+            key: Generic::new(*b"tx:calimero:node", [0; 32]),
+        }
+    }
 }

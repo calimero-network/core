@@ -616,6 +616,8 @@ impl Node {
             )
             .await?;
 
+        let mut handle = self.store.handle();
+
         let key = calimero_store::key::ContextTransaction::new(context_id, hash.into());
         let value = calimero_store::types::ContextTransaction {
             context_id: *context_id,
@@ -623,8 +625,10 @@ impl Node {
             payload: transaction.payload.into(),
             prior_hash: *transaction.prior_hash,
         };
+        handle.put(&key, &value)?;
 
-        let mut handle = self.store.handle();
+        let key = types::LastTxEntry::new();
+        let value = calimero_store::entry::Json::new(hash);
         handle.put(&key, &value)?;
 
         if let Some(sender) = outcome_sender {
