@@ -331,8 +331,9 @@ impl Node {
             } => {
                 let Ok(context_id) = topic_hash.as_str().parse() else {
                     error!(
-                        "observed subscription to non-context topic: {:?}, ignoring..",
-                        topic_hash
+                        %topic_hash,
+                        %their_peer_id,
+                        "observed subscription to non-context topic, ignoring.."
                     );
 
                     return Ok(());
@@ -340,8 +341,9 @@ impl Node {
 
                 let Some(context) = self.ctx_manager.get_context(&context_id)? else {
                     error!(
-                        "observed subscription to unknown context: {:?}, ignoring..",
-                        context_id
+                        %context_id,
+                        %their_peer_id,
+                        "observed subscription to unknown context, ignoring.."
                     );
 
                     return Ok(());
