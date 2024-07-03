@@ -58,7 +58,8 @@ impl Hash {
     fn from_str(s: &str) -> Result<Self, Option<bs58::decode::Error>> {
         let mut bytes = [0; BYTES_LEN];
         let mut bs58 = [0; MAX_STR_LEN];
-        (&mut bs58[..s.len()]).copy_from_slice(s.as_bytes());
+        let len = s.len().min(MAX_STR_LEN);
+        (&mut bs58[..len]).copy_from_slice(&s.as_bytes()[..len]);
         match bs58::decode(s).onto(&mut bytes) {
             Ok(len) if len == bytes.len() => Ok(Self {
                 bytes,
