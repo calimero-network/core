@@ -439,25 +439,6 @@ impl Node {
         Ok(())
     }
 
-    // fn get_context(
-    //     &self,
-    //     context_id: calimero_primitives::context::ContextId,
-    // ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
-    //     let key = calimero_store::key::ContextMeta::new(context_id);
-
-    //     let handle = self.store.handle();
-
-    //     let Some(context_meta) = handle.get(&key)? else {
-    //         return Ok(None);
-    //     };
-
-    //     Ok(Some(calimero_primitives::context::Context {
-    //         id: context_id,
-    //         // todo!
-    //         application_id: context_meta.application_id.into_string().into(),
-    //     }))
-    // }
-
     pub async fn handle_call(
         &mut self,
         context_id: calimero_primitives::context::ContextId,
