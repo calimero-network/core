@@ -77,7 +77,6 @@ impl PredefinedEntry for key::ContextIdentity {
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextTransaction {
-    pub context_id: [u8; 32],
     pub method: Box<str>,
     pub payload: Box<[u8]>,
     pub prior_hash: TransactionHash,
