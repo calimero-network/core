@@ -33,7 +33,6 @@ pub async fn get_context_handler(
     let context = state
         .ctx_mgr
         .get_context(&context_id)
-        .await
         .map_err(|err| parse_api_error(err).into_response());
 
     match context {
@@ -125,7 +124,6 @@ pub async fn get_contexts_handler(
     let contexts = state
         .ctx_mgr
         .get_contexts(None)
-        .await
         .map_err(|err| parse_api_error(err));
 
     return match contexts {

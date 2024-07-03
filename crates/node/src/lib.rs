@@ -125,7 +125,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let context_id = context_id.parse()?;
 
-                        let Ok(Some(context)) = node.get_context(context_id) else {
+                        let Ok(Some(context)) = node.ctx_mgr.get_context(&context_id) else {
                             println!("{IND} Context not found: {}", context_id);
                             return Ok(());
                         };
@@ -329,11 +329,28 @@ impl Node {
                 peer_id: their_peer_id,
                 topic: topic_hash,
             } => {
-                if self.ctx_mgr.is_application_installed(
-                    &calimero_primitives::application::ApplicationId(
-                        topic_hash.clone().into_string(),
-                    ),
-                ) {
+                let Ok(context_id) = topic_hash.as_str().parse() else {
+                    error!(
+                        "observed subscription to non-context topic: {:?}, ignoring..",
+                        topic_hash
+                    );
+
+                    return Ok(());
+                };
+
+                let Some(context) = self.ctx_mgr.get_context(&context_id)? else {
+                    error!(
+                        "observed subscription to unknown context: {:?}, ignoring..",
+                        context_id
+                    );
+
+                    return Ok(());
+                };
+
+                if self
+                    .ctx_mgr
+                    .is_application_installed(&context.application_id)
+                {
                     info!("{} joined the session.", their_peer_id.cyan());
                     let _ =
                         self.node_events
@@ -422,24 +439,24 @@ impl Node {
         Ok(())
     }
 
-    fn get_context(
-        &self,
-        context_id: calimero_primitives::context::ContextId,
-    ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
-        let key = calimero_store::key::ContextMeta::new(context_id);
+    // fn get_context(
+    //     &self,
+    //     context_id: calimero_primitives::context::ContextId,
+    // ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
+    //     let key = calimero_store::key::ContextMeta::new(context_id);
 
-        let handle = self.store.handle();
+    //     let handle = self.store.handle();
 
-        let Some(context_meta) = handle.get(&key)? else {
-            return Ok(None);
-        };
+    //     let Some(context_meta) = handle.get(&key)? else {
+    //         return Ok(None);
+    //     };
 
-        Ok(Some(calimero_primitives::context::Context {
-            id: context_id,
-            // todo!
-            application_id: context_meta.application_id.into_string().into(),
-        }))
-    }
+    //     Ok(Some(calimero_primitives::context::Context {
+    //         id: context_id,
+    //         // todo!
+    //         application_id: context_meta.application_id.into_string().into(),
+    //     }))
+    // }
 
     pub async fn handle_call(
         &mut self,
@@ -451,7 +468,7 @@ impl Node {
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
         >,
     ) {
-        let Ok(Some(context)) = self.get_context(context_id) else {
+        let Ok(Some(context)) = self.ctx_mgr.get_context(&context_id) else {
             let _ =
                 outcome_sender.send(Err(calimero_node_primitives::CallError::ContextNotFound {
                     context_id,
@@ -605,7 +622,7 @@ impl Node {
             return Ok(None);
         };
 
-        let Some(context) = self.get_context(context_id)? else {
+        let Some(context) = self.ctx_mgr.get_context(&context_id)? else {
             error!("Context not installed, but the transaction was in the pool.");
             return Ok(None);
         };

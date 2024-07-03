@@ -79,7 +79,7 @@ impl ContextManager {
         }))
     }
 
-    pub fn delete_context(
+    pub async fn delete_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> eyre::Result<bool> {
@@ -92,6 +92,10 @@ impl ContextManager {
         }
 
         handle.delete(&key)?;
+
+        self.network_client
+            .unsubscribe(calimero_network::types::IdentTopic::new(context_id))
+            .await?;
 
         Ok(true)
     }
