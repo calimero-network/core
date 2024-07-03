@@ -61,7 +61,7 @@ impl ContextManager {
         Ok(())
     }
 
-    pub async fn get_context(
+    pub fn get_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
@@ -79,7 +79,7 @@ impl ContextManager {
         }))
     }
 
-    pub async fn delete_context(
+    pub fn delete_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> eyre::Result<bool> {
@@ -96,7 +96,7 @@ impl ContextManager {
         Ok(true)
     }
 
-    pub async fn get_context_ids(
+    pub fn get_context_ids(
         &self,
         start: Option<calimero_primitives::context::ContextId>,
     ) -> eyre::Result<Vec<calimero_primitives::context::ContextId>> {
@@ -111,7 +111,7 @@ impl ContextManager {
         Ok(contexts.collect())
     }
 
-    pub async fn get_contexts(
+    pub fn get_contexts(
         &self,
         start: Option<calimero_primitives::context::ContextId>,
     ) -> eyre::Result<Vec<calimero_primitives::context::Context>> {
