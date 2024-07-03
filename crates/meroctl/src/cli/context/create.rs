@@ -55,8 +55,7 @@ struct DevArgs {
     #[clap(
         short,
         long,
-        help = "Path to use in dev mode (requires --dev and --version)",
-        required = true
+        help = "Path to use in dev mode (requires --dev and --version)"
     )]
     path: Utf8PathBuf,
 
