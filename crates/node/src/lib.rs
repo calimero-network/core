@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
-use calimero_store::{key, Store};
+use calimero_store::Store;
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
