@@ -17,45 +17,156 @@ use tracing::{error, info};
 pub mod config;
 
 #[derive(Clone)]
-pub struct ApplicationManager {
+pub struct ContextManager {
+    pub config: config::ApplicationConfig,
+    pub store: calimero_store::Store,
     pub network_client: NetworkClient,
-    pub application_dir: Utf8PathBuf,
 }
 
-pub async fn start_manager(
-    config: &config::ApplicationConfig,
-    network_client: NetworkClient,
-) -> eyre::Result<ApplicationManager> {
-    let application_manager = ApplicationManager::new(network_client, config.dir.clone());
-
-    application_manager.boot_installed_apps().await?;
-
-    Ok(application_manager)
-}
-
-impl ApplicationManager {
-    pub fn new(network_client: NetworkClient, application_dir: Utf8PathBuf) -> Self {
-        Self {
+impl ContextManager {
+    pub async fn start(
+        config: &config::ApplicationConfig,
+        store: calimero_store::Store,
+        network_client: NetworkClient,
+    ) -> eyre::Result<Self> {
+        let this = ContextManager {
+            config: config.clone(),
+            store,
             network_client,
-            application_dir,
-        }
+        };
+
+        this.boot().await?;
+
+        Ok(this)
     }
 
+    pub async fn add_context(
+        &self,
+        context: calimero_primitives::context::Context,
+    ) -> eyre::Result<()> {
+        // todo! ensure application is installed
+
+        let mut handle = self.store.handle();
+
+        handle.put(
+            &calimero_store::key::ContextMeta::new(context.id),
+            &calimero_store::types::ContextMeta {
+                application_id: context.application_id.0.into(),
+                last_transaction_hash: [0; 32],
+            },
+        )?;
+
+        self.subscribe(&context.id).await?;
+
+        Ok(())
+    }
+
+    pub async fn get_context(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
+        let handle = self.store.handle();
+
+        let key = calimero_store::key::ContextMeta::new(*context_id);
+
+        let Some(context) = handle.get(&key)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(calimero_primitives::context::Context {
+            id: *context_id,
+            application_id: context.application_id.into_string().into(),
+        }))
+    }
+
+    pub async fn delete_context(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<bool> {
+        let mut handle = self.store.handle();
+
+        let key = calimero_store::key::ContextMeta::new(*context_id);
+
+        if !handle.has(&key)? {
+            return Ok(false);
+        }
+
+        handle.delete(&key)?;
+
+        Ok(true)
+    }
+
+    pub async fn get_context_ids(
+        &self,
+        start: Option<calimero_primitives::context::ContextId>,
+    ) -> eyre::Result<Vec<calimero_primitives::context::ContextId>> {
+        let handle = self.store.handle();
+
+        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new(
+            start.map_or_else(|| [0; 32].into(), Into::into),
+        ))?;
+
+        let contexts = iter.keys().map(|key| key.context_id());
+
+        Ok(contexts.collect())
+    }
+
+    pub async fn get_contexts(
+        &self,
+        start: Option<calimero_primitives::context::ContextId>,
+    ) -> eyre::Result<Vec<calimero_primitives::context::Context>> {
+        let handle = self.store.handle();
+
+        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new(
+            start.map_or_else(|| [0; 32].into(), Into::into),
+        ))?;
+
+        let contexts = iter
+            .entries()
+            .map(|(k, v)| calimero_primitives::context::Context {
+                id: k.context_id(),
+                application_id: v.application_id.into_string().into(),
+            });
+
+        Ok(contexts.collect())
+    }
+
+    async fn boot(&self) -> eyre::Result<()> {
+        let handle = self.store.handle();
+
+        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?;
+
+        for key in iter.keys() {
+            self.subscribe(&key.context_id()).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn subscribe(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<()> {
+        let topic_hash = self
+            .network_client
+            .subscribe(calimero_network::types::IdentTopic::new(context_id))
+            .await?;
+
+        info!(%topic_hash, "Subscribed to context");
+
+        Ok(())
+    }
+
+    // todo! do this only when initializing contexts
+    // todo! start refining to blob API
     pub async fn install_application(
         &self,
         application_id: calimero_primitives::application::ApplicationId,
         version: &semver::Version,
     ) -> eyre::Result<()> {
         let release = self.get_release(&application_id, version).await?;
-        self.download_release(&application_id, &release, &self.application_dir)
-            .await?;
 
-        let topic_hash = self
-            .network_client
-            .subscribe(calimero_network::types::IdentTopic::new(application_id))
-            .await?;
-
-        info!(%topic_hash, "Subscribed to network topic");
+        self.download_release(&application_id, &release).await?;
 
         Ok(())
     }
@@ -66,7 +177,7 @@ impl ApplicationManager {
         version: &semver::Version,
         path: Utf8PathBuf,
     ) -> eyre::Result<()> {
-        self.link_release(&application_id, &self.application_dir, version, &path)?;
+        self.link_release(&application_id, version, &path)?;
 
         let topic_hash = self
             .network_client
@@ -80,11 +191,11 @@ impl ApplicationManager {
     pub async fn list_installed_applications(
         &self,
     ) -> eyre::Result<Vec<calimero_primitives::application::Application>> {
-        if !self.application_dir.exists() {
+        if !self.config.dir.exists() {
             return Ok(vec![]);
         }
 
-        let Ok(entries) = fs::read_dir(&self.application_dir) else {
+        let Ok(entries) = fs::read_dir(&self.config.dir) else {
             eyre::bail!("Failed to read application directory");
         };
 
@@ -123,35 +234,14 @@ impl ApplicationManager {
         Ok(fs::read(&path)?)
     }
 
-    async fn boot_installed_apps(&self) -> eyre::Result<()> {
-        let installed_applications = self.list_installed_applications().await?;
-
-        let subsribe_results = futures_util::future::join_all(
-            installed_applications.into_iter().map(|application| async {
-                self.network_client
-                    .subscribe(calimero_network::types::IdentTopic::new(application.id))
-                    .await
-            }),
-        )
-        .await;
-
-        for result in subsribe_results.into_iter() {
-            match result {
-                Ok(topic_hash) => {
-                    info!(%topic_hash, "Subscribed to network topic");
-                }
-                Err(err) => eyre::bail!("Failed to subscribe to network topic: {}", err),
-            }
-        }
-
-        return Ok(());
-    }
-
     async fn get_release(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
         version: &semver::Version,
     ) -> eyre::Result<calimero_primitives::application::Release> {
+        // todo! the node shouldn't know anything about where
+        // todo! apps are to be sourced from, keep it generic
+
         let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
         let request = methods::query::RpcQueryRequest {
             block_reference: BlockReference::Finality(Finality::Final),
@@ -170,22 +260,23 @@ impl ApplicationManager {
         };
 
         let response = client.call(request).await?;
-        if let QueryResponseKind::CallResult(result) = response.kind {
-            return Ok(serde_json::from_slice::<
-                calimero_primitives::application::Release,
-            >(&result.result)?);
-        } else {
+
+        let QueryResponseKind::CallResult(result) = response.kind else {
             eyre::bail!("Failed to fetch data from the rpc endpoint")
-        }
+        };
+
+        Ok(serde_json::from_slice(&result.result)?)
     }
 
     async fn download_release(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
         release: &calimero_primitives::application::Release,
-        dir: &camino::Utf8Path,
     ) -> eyre::Result<()> {
-        let base_path = format!("{}/{}/{}", dir, application_id, &release.version);
+        // todo! download to a tempdir
+        // todo! Blob API
+        let base_path = format!("{}/{}/{}", self.config.dir, application_id, release.version);
+
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
@@ -200,11 +291,12 @@ impl ApplicationManager {
         let result = hasher.finalize();
         let hash = format!("{:x}", result);
 
-        if let Err(e) = self.verify_release(&hash, &release.hash).await {
+        if hash != release.hash {
             if let Err(e) = std::fs::remove_file(&file_path) {
                 error!(%e, "Failed to delete file after failed verification");
             }
-            return Err(e.into());
+
+            eyre::bail!("Release hash does not match the hash of the downloaded file");
         }
 
         Ok(())
@@ -213,11 +305,10 @@ impl ApplicationManager {
     fn link_release(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
-        dir: &camino::Utf8Path,
         version: &semver::Version,
         link_path: &camino::Utf8Path,
     ) -> eyre::Result<()> {
-        let base_path = format!("{}/{}/{}", dir, application_id, version);
+        let base_path = format!("{}/{}/{}", self.config.dir, application_id, version);
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
@@ -233,20 +324,11 @@ impl ApplicationManager {
         Ok(())
     }
 
-    async fn verify_release(&self, hash: &str, release_hash: &str) -> eyre::Result<()> {
-        if hash != release_hash {
-            return Err(eyre::eyre!(
-                "Release hash does not match the hash of the downloaded file"
-            ));
-        }
-        Ok(())
-    }
-
     fn get_latest_application_info(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
     ) -> Option<(semver::Version, String)> {
-        let application_base_path = self.application_dir.join(application_id.to_string());
+        let application_base_path = self.config.dir.join(application_id.to_string());
 
         if let Ok(entries) = fs::read_dir(&application_base_path) {
             let mut versions_with_binary = entries

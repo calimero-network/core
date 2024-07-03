@@ -3,6 +3,7 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 
 #[derive(Eq, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
+// todo! change this, please
 pub struct ApplicationId(pub String);
 
 impl Display for ApplicationId {

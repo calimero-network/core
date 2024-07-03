@@ -29,6 +29,8 @@ pub fn get_context_client_key(
     store: &mut Store,
     context_id: &ContextId,
 ) -> eyre::Result<Vec<ClientKey>> {
+    // todo! use independent records for client keys
+
     let did = get_or_create_did(store)?;
     Ok(did
         .client_keys

@@ -1,5 +1,5 @@
 [package]
-name = "calimero-application"
+name = "calimero-application" # todo! calimero-context
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -22,3 +22,4 @@ tracing.workspace = true
 
 calimero-primitives = { path = "../primitives" }
 calimero-network = { path = "../network" }
+calimero-store = { path = "../store" }

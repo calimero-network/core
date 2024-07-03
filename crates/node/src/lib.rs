@@ -31,7 +31,7 @@ pub struct Node {
     typ: calimero_node_primitives::NodeType,
     store: calimero_store::Store,
     tx_pool: transaction_pool::TransactionPool,
-    application_manager: calimero_application::ApplicationManager,
+    ctx_mgr: calimero_application::ContextManager,
     network_client: calimero_network::client::NetworkClient,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
@@ -48,16 +48,20 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let application_manager =
-        calimero_application::start_manager(&config.application, network_client.clone()).await?;
-
     let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
+
+    let ctx_mgr = calimero_application::ContextManager::start(
+        &config.application,
+        store.clone(),
+        network_client.clone(),
+    )
+    .await?;
 
     let mut node = Node::new(
         &config,
         network_client.clone(),
         node_events.clone(),
-        application_manager.clone(),
+        ctx_mgr.clone(),
         store.clone(),
     );
 
@@ -66,7 +70,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,
-        application_manager,
+        ctx_mgr,
         node_events,
         store,
     )) as BoxedFuture<eyre::Result<()>>;
@@ -250,7 +254,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             if let Some(args) = args {
                 // TODO: implement print all and/or specific topic
                 let topic = TopicHash::from_raw(args);
-                if node.application_manager.is_application_installed(
+                if node.ctx_mgr.is_application_installed(
                     &calimero_primitives::application::ApplicationId(topic.clone().into_string()),
                 ) {
                     println!(
@@ -299,7 +303,7 @@ impl Node {
         config: &NodeConfig,
         network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-        application_manager: calimero_application::ApplicationManager,
+        ctx_mgr: calimero_application::ContextManager,
         store: Store,
     ) -> Self {
         Self {
@@ -307,7 +311,7 @@ impl Node {
             typ: config.node_type,
             store,
             tx_pool: transaction_pool::TransactionPool::default(),
-            application_manager,
+            ctx_mgr,
             network_client,
             node_events,
             // --
@@ -325,7 +329,7 @@ impl Node {
                 peer_id: their_peer_id,
                 topic: topic_hash,
             } => {
-                if self.application_manager.is_application_installed(
+                if self.ctx_mgr.is_application_installed(
                     &calimero_primitives::application::ApplicationId(
                         topic_hash.clone().into_string(),
                     ),
@@ -500,7 +504,7 @@ impl Node {
         payload: Vec<u8>,
     ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::QueryCallError> {
         if !self
-            .application_manager
+            .ctx_mgr
             .is_application_installed(&context.application_id)
         {
             return Err(
@@ -532,7 +536,7 @@ impl Node {
         }
 
         if !self
-            .application_manager
+            .ctx_mgr
             .is_application_installed(&context.application_id)
         {
             return Err(
@@ -617,13 +621,14 @@ impl Node {
 
         let mut handle = self.store.handle();
 
-        let key = calimero_store::key::ContextTransaction::new(context_id, hash.into());
-        let value = calimero_store::types::ContextTransaction {
-            method: transaction.method.into(),
-            payload: transaction.payload.into(),
-            prior_hash: *transaction.prior_hash,
-        };
-        handle.put(&key, &value)?;
+        handle.put(
+            &calimero_store::key::ContextTransaction::new(context_id, hash.into()),
+            &calimero_store::types::ContextTransaction {
+                method: transaction.method.into(),
+                payload: transaction.payload.into(),
+                prior_hash: *transaction.prior_hash,
+            },
+        )?;
 
         let key = calimero_store::key::ContextMeta::new(context_id);
         let value = calimero_store::types::ContextMeta {
@@ -653,7 +658,7 @@ impl Node {
 
         let outcome = calimero_runtime::run(
             &self
-                .application_manager
+                .ctx_mgr
                 .load_application_blob(&context.application_id)?,
             &method,
             calimero_runtime::logic::VMContext { input: payload },

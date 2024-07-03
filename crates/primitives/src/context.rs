@@ -45,6 +45,12 @@ impl From<ContextId> for String {
     }
 }
 
+impl From<&ContextId> for String {
+    fn from(id: &ContextId) -> Self {
+        id.as_str().to_string()
+    }
+}
+
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub struct InvalidContextId(HashError);

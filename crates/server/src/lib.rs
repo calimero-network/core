@@ -21,7 +21,7 @@ pub mod ws;
 pub async fn start(
     config: ServerConfig,
     server_sender: calimero_node_primitives::ServerSender,
-    application_manager: calimero_application::ApplicationManager,
+    ctx_mgr: calimero_application::ContextManager,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     store: Store,
 ) -> eyre::Result<()> {
@@ -86,9 +86,7 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) =
-            admin::service::setup(&config, store, application_manager)?
-        {
+        if let Some((api_path, router)) = admin::service::setup(&config, store, ctx_mgr)? {
             app = app.nest(api_path, router);
             serviced = true;
         }
@@ -104,7 +102,13 @@ pub async fn start(
         cors::CorsLayer::new()
             .allow_origin(cors::Any)
             .allow_headers(cors::Any)
-            .allow_methods([http::Method::POST, http::Method::GET, http::Method::DELETE, http::Method::PUT, http::Method::OPTIONS]),
+            .allow_methods([
+                http::Method::POST,
+                http::Method::GET,
+                http::Method::DELETE,
+                http::Method::PUT,
+                http::Method::OPTIONS,
+            ]),
     );
 
     let mut set = tokio::task::JoinSet::new();

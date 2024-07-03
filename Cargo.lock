@@ -814,6 +814,7 @@ version = "0.1.0"
 dependencies = [
  "calimero-network",
  "calimero-primitives",
+ "calimero-store",
  "camino",
  "eyre",
  "futures-util",

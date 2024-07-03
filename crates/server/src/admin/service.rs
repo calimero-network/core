@@ -26,13 +26,13 @@ pub struct AdminConfig {
 pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
-    pub application_manager: calimero_application::ApplicationManager,
+    pub ctx_mgr: calimero_application::ContextManager,
 }
 
 pub(crate) fn setup(
     config: &crate::config::ServerConfig,
     store: Store,
-    application_manager: calimero_application::ApplicationManager,
+    ctx_mgr: calimero_application::ContextManager,
 ) -> eyre::Result<Option<(&'static str, Router)>> {
     match &config.admin {
         Some(config) if config.enabled => config,
@@ -50,7 +50,7 @@ pub(crate) fn setup(
     let shared_state = Arc::new(AdminState {
         store: store.clone(),
         keypair: config.identity.clone(),
-        application_manager,
+        ctx_mgr,
     });
     let protected_router = Router::new()
         .route(
@@ -207,7 +207,7 @@ async fn install_application_handler(
     Json(req): Json<calimero_server_primitives::admin::InstallApplicationRequest>,
 ) -> impl IntoResponse {
     match state
-        .application_manager
+        .ctx_mgr
         .install_application(req.application, &req.version)
         .await
     {
@@ -227,18 +227,13 @@ struct ListApplicationsResponse {
 async fn list_applications_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    match state
-        .application_manager
-        .list_installed_applications()
-        .await
-    {
+    match state.ctx_mgr.list_installed_applications().await {
         Ok(applications) => ApiResponse {
             payload: ListApplicationsResponse {
                 data: ApplicationListResult { apps: applications },
             },
         }
         .into_response(),
-
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
 }

@@ -14,7 +14,6 @@ use tower_sessions::Session;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
 use crate::admin::storage::client_keys::get_context_client_key;
-use crate::admin::storage::context::{add_context, delete_context, get_context, get_contexts};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextObject {
@@ -31,13 +30,18 @@ pub async fn get_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let context_result = get_context(&mut state.store.clone(), &context_id)
+    let context = state
+        .ctx_mgr
+        .get_context(&context_id)
+        .await
         .map_err(|err| parse_api_error(err).into_response());
 
-    match context_result {
+    match context {
         Ok(ctx) => match ctx {
             Some(context) => ApiResponse {
-                payload: GetContextResponse { data: ContextObject { context } },
+                payload: GetContextResponse {
+                    data: ContextObject { context },
+                },
             }
             .into_response(),
             None => ApiError {
@@ -118,7 +122,12 @@ pub async fn get_contexts_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let contexts = get_contexts(&mut state.store.clone()).map_err(|err| parse_api_error(err));
+    let contexts = state
+        .ctx_mgr
+        .get_contexts(None)
+        .await
+        .map_err(|err| parse_api_error(err));
+
     return match contexts {
         Ok(contexts) => ApiResponse {
             payload: GetContextsResponse {
@@ -147,11 +156,17 @@ pub async fn delete_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let result =
-        delete_context(&mut state.store.clone(), &context_id).map_err(|err| parse_api_error(err));
+    let result = state
+        .ctx_mgr
+        .delete_context(&context_id)
+        .await
+        .map_err(|err| parse_api_error(err));
+
     return match result {
         Ok(result) => ApiResponse {
-            payload: DeleteContextResponse { data: DeletedContext { is_deleted: result } },
+            payload: DeleteContextResponse {
+                data: DeletedContext { is_deleted: result },
+            },
         }
         .into_response(),
         Err(err) => err.into_response(),
@@ -189,12 +204,17 @@ pub async fn create_context_handler(
     };
 
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let result =
-        add_context(&mut state.store.clone(), context.clone()).map_err(|err| parse_api_error(err));
+    let result = state
+        .ctx_mgr
+        .add_context(context.clone())
+        .await
+        .map_err(|err| parse_api_error(err));
 
     let response = match result {
         Ok(_) => ApiResponse {
-            payload: CreateContextResponse { data: ContextResponse { context } },
+            payload: CreateContextResponse {
+                data: ContextResponse { context },
+            },
         }
         .into_response(),
         Err(err) => err.into_response(),

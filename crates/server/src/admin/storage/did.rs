@@ -29,7 +29,6 @@ pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
         id: "did:cali".to_string(),
         root_keys: vec![],
         client_keys: vec![],
-        contexts: vec![],
     });
 
     let entry = DidEntry::new();
