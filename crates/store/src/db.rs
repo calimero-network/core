@@ -1,30 +1,34 @@
-pub mod rocksdb;
+use strum::{AsRefStr, EnumIter};
 
-pub type Key = Vec<u8>;
-pub type Value = Vec<u8>;
+use crate::config::StoreConfig;
+use crate::iter::Iter;
+use crate::slice::Slice;
+use crate::tx::Transaction;
 
-pub trait Database: Send + Sync {
-    fn get(&self, key: &Key) -> eyre::Result<Option<Value>>;
-    fn put(&self, key: &Key, value: Value) -> eyre::Result<()>;
-    fn apply(&self, tx: Transaction) -> eyre::Result<()>;
+// todo!
+// mod memory;
+mod rocksdb;
+
+pub use rocksdb::RocksDB;
+
+#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd, EnumIter, AsRefStr)]
+pub enum Column {
+    Identity,
+    State,
+    Transaction,
+    Generic,
 }
 
-#[derive(Default)]
-pub struct Transaction {
-    ops: Vec<Operation>,
-}
+pub trait Database: Send + Sync + 'static {
+    fn open(config: &StoreConfig) -> eyre::Result<Self>
+    where
+        Self: Sized;
 
-pub enum Operation {
-    Put { key: Key, value: Value },
-    Delete { key: Key },
-}
+    fn has(&self, col: Column, key: Slice) -> eyre::Result<bool>;
+    fn get(&self, col: Column, key: Slice) -> eyre::Result<Option<Slice>>;
+    fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()>;
+    fn delete(&self, col: Column, key: Slice) -> eyre::Result<()>;
+    fn iter(&self, col: Column, key: Slice) -> eyre::Result<Iter>;
 
-impl Transaction {
-    pub fn put(&mut self, key: Key, value: Value) {
-        self.ops.push(Operation::Put { key, value });
-    }
-
-    pub fn delete(&mut self, key: Key) {
-        self.ops.push(Operation::Delete { key });
-    }
+    fn apply(&self, tx: &Transaction) -> eyre::Result<()>;
 }

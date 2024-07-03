@@ -39,7 +39,7 @@ export type Account = AccountView & {
 
 interface NearLoginProps {
   rpcBaseUrl: string;
-  appId: string;
+  contextId?: string;
   successRedirect: () => void;
   cardBackgroundColor: string | undefined;
   nearTitleColor: string | undefined;
@@ -48,7 +48,7 @@ interface NearLoginProps {
 
 export const NearLogin: React.FC<NearLoginProps> = ({
   rpcBaseUrl,
-  appId,
+  contextId,
   successRedirect,
   cardBackgroundColor,
   nearTitleColor,
@@ -238,7 +238,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
         walletSignature: signature,
         payload: walletSignatureData.payload!,
         walletMetadata: walletMetadata,
-        contextId: appId,
+        contextId,
       };
 
       await apiClient
@@ -269,7 +269,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
   async function handleSignMessage() {
     const challengeResponseData: ResponseData<NodeChallenge> = await apiClient
       .node()
-      .requestChallenge(rpcBaseUrl, appId);
+      .requestChallenge(rpcBaseUrl, contextId);
     const { publicKey } = await getOrCreateKeypair();
 
     if (challengeResponseData.error) {
@@ -285,7 +285,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
     const nonce: Buffer = Buffer.from(challengeNonce, 'base64');
     const recipient = appName;
     const callbackUrl = window.location.href;
-    const applicationId = challengeResponseData.data?.applicationId ?? '';
+    const challengeContextId = challengeResponseData.data?.contextId ?? null;
     const nodeSignature = challengeResponseData.data?.nodeSignature ?? '';
     const timestamp =
       challengeResponseData.data?.timestamp ?? new Date().getTime();
@@ -300,7 +300,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
       publicKey: publicKey,
       nodeSignature,
       nonce: nonce.toString('base64'),
-      applicationId,
+      contextId: challengeContextId,
       timestamp,
       message,
     };
@@ -339,6 +339,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
           padding: '2.5rem',
           gap: '1rem',
           borderRadius: '0.5rem',
+          maxWidth: '400px',
         }}
       >
         <span
@@ -352,8 +353,20 @@ export const NearLogin: React.FC<NearLoginProps> = ({
             color: nearTitleColor ?? '#fff',
           }}
         >
-          NEAR
+          Login with NEAR
         </span>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'start',
+            alignItems: 'center',
+            fontSize: '14px',
+            color: '#778899',
+            whiteSpace: 'break-spaces'
+          }}
+        >
+          <span>Choose which account from your wallet you want to log in with</span>
+        </div>
         {account && (
           <div
             style={{

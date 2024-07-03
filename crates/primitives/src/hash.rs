@@ -1,14 +1,17 @@
 use std::fmt;
 use std::mem::MaybeUninit;
+use std::ops::Deref;
 use std::str::FromStr;
 
 use sha2::Digest;
+use thiserror::Error;
 
 const BYTES_LEN: usize = 32;
 const MAX_STR_LEN: usize = (BYTES_LEN + 1) * 4 / 3;
 
 #[derive(Copy, Clone)]
 pub struct Hash {
+    // todo! consider genericizing over a const N
     bytes: [u8; BYTES_LEN],
     bs58: MaybeUninit<(usize, [u8; MAX_STR_LEN])>,
 }
@@ -18,6 +21,7 @@ impl Hash {
         &self.bytes
     }
 
+    // todo! genericize over D: Digest
     pub fn hash(data: &[u8]) -> Self {
         Self {
             bytes: sha2::Sha256::digest(data).into(),
@@ -25,6 +29,7 @@ impl Hash {
         }
     }
 
+    // todo! genericize over D: Digest
     pub fn hash_json<T: serde::Serialize>(data: &T) -> serde_json::Result<Self> {
         let mut hasher = sha2::Sha256::default();
 
@@ -38,6 +43,8 @@ impl Hash {
 
     // todo! pub fn hash_borsh
 
+    // todo! using generic-array;
+    // todo! as_str(&self, buf: &mut [u8; N]) -> &str
     pub fn as_str(&self) -> &str {
         let (len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
 
@@ -60,6 +67,30 @@ impl Hash {
             Ok(_) => Err(None),
             Err(err) => Err(Some(err)),
         }
+    }
+}
+
+// todo! re-evaluate controlled construction
+impl From<[u8; BYTES_LEN]> for Hash {
+    fn from(bytes: [u8; BYTES_LEN]) -> Self {
+        Self {
+            bytes,
+            bs58: MaybeUninit::zeroed(),
+        }
+    }
+}
+
+impl From<Hash> for [u8; BYTES_LEN] {
+    fn from(hash: Hash) -> Self {
+        hash.bytes
+    }
+}
+
+impl Deref for Hash {
+    type Target = [u8; BYTES_LEN];
+
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
     }
 }
 
@@ -110,14 +141,23 @@ impl fmt::Debug for Hash {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("invalid hash length")]
+    InvalidLength,
+
+    #[error("invalid base58")]
+    DecodeError(#[from] bs58::decode::Error),
+}
+
 impl FromStr for Hash {
-    type Err = String; // todo! use a better-typed error
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match Self::from_str(s) {
             Ok(hash) => Ok(hash),
-            Err(None) => Err("invalid length".to_string()),
-            Err(Some(err)) => Err(err.to_string()),
+            Err(None) => Err(Error::InvalidLength),
+            Err(Some(err)) => Err(Error::DecodeError(err)),
         }
     }
 }

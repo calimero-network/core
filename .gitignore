@@ -1,7 +1,7 @@
 data/
+corpus/
 res/
 target/
-target
 .DS_Store
 .idea/
 .vscode/

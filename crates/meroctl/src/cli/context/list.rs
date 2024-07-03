@@ -1,4 +1,4 @@
-use calimero_primitives::identity::Context;
+use calimero_primitives::context::Context;
 use clap::Parser;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

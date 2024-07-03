@@ -1,5 +1,5 @@
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::identity::Context;
+use calimero_primitives::context::Context;
 use calimero_server_primitives::admin::{ApplicationListResult, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
 use clap::{Args, Parser};

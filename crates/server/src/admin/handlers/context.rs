@@ -3,7 +3,9 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::identity::{ClientKey, Context, ContextUser};
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::identity::{ClientKey, ContextUser};
 use calimero_server_primitives::admin::ContextStorage;
 use rand::RngCore;
 use reqwest::StatusCode;
@@ -25,11 +27,12 @@ pub struct GetContextResponse {
 }
 
 pub async fn get_context_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let context_result =
-        get_context(&state.store, &context_id).map_err(|err| parse_api_error(err).into_response());
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let context_result = get_context(&mut state.store.clone(), &context_id)
+        .map_err(|err| parse_api_error(err).into_response());
 
     match context_result {
         Ok(ctx) => match ctx {
@@ -59,10 +62,11 @@ pub struct GetContextClientKeysResponse {
 }
 
 pub async fn get_context_client_keys_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let client_keys_result = get_context_client_key(&state.store, &context_id)
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let client_keys_result = get_context_client_key(&mut state.store.clone(), &context_id)
         .map_err(|err| parse_api_error(err).into_response());
     match client_keys_result {
         Ok(client_keys) => ApiResponse {
@@ -113,7 +117,8 @@ pub struct GetContextsResponse {
 pub async fn get_contexts_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let contexts = get_contexts(&state.store).map_err(|err| parse_api_error(err));
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let contexts = get_contexts(&mut state.store.clone()).map_err(|err| parse_api_error(err));
     return match contexts {
         Ok(contexts) => ApiResponse {
             payload: GetContextsResponse {
@@ -137,11 +142,13 @@ pub struct DeleteContextResponse {
 }
 
 pub async fn delete_context_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<ContextId>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let result = delete_context(&state.store, &context_id).map_err(|err| parse_api_error(err));
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let result =
+        delete_context(&mut state.store.clone(), &context_id).map_err(|err| parse_api_error(err));
     return match result {
         Ok(result) => ApiResponse {
             payload: DeleteContextResponse { data: DeletedContext { is_deleted: result } },
@@ -153,7 +160,7 @@ pub async fn delete_context_handler(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
-    application_id: String,
+    application_id: ApplicationId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -176,12 +183,14 @@ pub async fn create_context_handler(
     let context_id = signing_key.verifying_key();
 
     let context = Context {
-        id: bs58::encode(&context_id).into_string(),
-        signing_key,
+        id: (*context_id.as_bytes()).into(),
+        // signing_key, // todo! move to the Identity column
         application_id: req.application_id,
     };
 
-    let result = add_context(&state.store, context.clone()).map_err(|err| parse_api_error(err));
+    // todo! experiment with Interior<Store>: WriteLayer<Interior>
+    let result =
+        add_context(&mut state.store.clone(), context.clone()).map_err(|err| parse_api_error(err));
 
     let response = match result {
         Ok(_) => ApiResponse {

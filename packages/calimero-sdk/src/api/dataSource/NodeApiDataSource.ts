@@ -21,12 +21,12 @@ export class NodeApiDataSource implements NodeApi {
 
   async requestChallenge(
     rpcBaseUrl: string,
-    applicationId: string,
+    contextId: string,
   ): ApiResponse<NodeChallenge> {
     return await this.client.post<NodeChallenge>(
       `${rpcBaseUrl}/admin-api/request-challenge`,
       {
-        applicationId: applicationId,
+        contextId,
       },
     );
   }
@@ -48,13 +48,13 @@ export class NodeApiDataSource implements NodeApi {
   async addRootKey(
     rootKeyRequest: RootKeyRequest,
     rpcBaseUrl: string,
-    applicationId: string,
+    contextId: string,
   ): ApiResponse<RootKeyResponse> {
     console.log('Send request to node with params', rootKeyRequest);
 
     const headers: Header | null = await createAuthHeader(
       JSON.stringify(rootKeyRequest),
-      applicationId,
+      contextId
     );
 
     return await this.client.post<LoginRequest>(

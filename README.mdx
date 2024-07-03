@@ -71,6 +71,86 @@ Calimero Network's story is one of relentless pursuit of a more private,
 efficient, and user-centric decentralized web, setting a new standard for what
 decentralized platforms can achieve.
 
+## Architecture
+
+```mermaid
+flowchart TD
+ subgraph DatastoreImpl["Implementations"]
+        rdb["RocksDB"]
+        mem["Memory"]
+        lvl["LevelDB"]
+        s3["S3"]
+  end
+ subgraph ctx["Context"]
+    direction LR
+        me["Metadata"]
+        st["State"]
+        id["Identities"]
+        tx["Transactions"]
+  end
+ subgraph kad["Kademlia"]
+        pe["Peers"]
+  end
+ subgraph net["Network"]
+    direction LR
+        kad
+  end
+ subgraph gen["Generic"]
+    direction LR
+        sc["Scope"]
+        fr["Fragment"]
+  end
+ subgraph DatastoreWrapper["Content"]
+        ctx
+        net
+        gen
+  end
+ subgraph Datastore["Data Store"]
+        DatastoreWrapper
+        DatastoreImpl
+  end
+ subgraph BlobstoreImpl["Implementations"]
+    direction LR
+        fs["File System"]
+        blobS3["S3"]
+  end
+ subgraph BlobstoreWrapper["Content"]
+    direction LR
+        apps["Applications"]
+        genData["Generic Data"]
+  end
+ subgraph Blobstore["Blob Store"]
+        BlobstoreWrapper
+        BlobstoreImpl
+  end
+ subgraph Server["Server"]
+    direction LR
+        jrpc["JSONRPC"]
+        ws["WebSocket"]
+        raw["Raw Sockets"]
+  end
+ subgraph libp2p["libp2p"]
+    direction LR
+        tcp["TCP::Raw"]
+        tcpws["TCP::WebSocket"]
+        udpqc["UDP::Quic"]
+        udpqcwt["UDP::Quic::WebTransport"]
+  end
+ subgraph Network["Network"]
+        libp2p
+  end
+    DatastoreWrapper --o DatastoreImpl
+    BlobstoreWrapper --o BlobstoreImpl
+    client["Client"] --> node["Node"]
+    applications["Apps"] --> capi["C-API"] & client & Server
+    capi --> client
+    cli["CLI"] --> Server & client & auth["Auth Gated Client"]
+    Server --> auth
+    auth --> did["DID"] & client
+    did --> gen
+    node --> Network & runtime["Runtime"] & net & ctx & Blobstore
+```
+
 ## Contributing
 
 Calimero is Open Source under the [Apache License 2.0](LICENSE), and is the

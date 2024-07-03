@@ -109,7 +109,7 @@ pub fn construct_node_challenge(
 ) -> Result<NodeChallengeMessage, ApiError> {
     Ok(NodeChallengeMessage {
         nonce: message.nonce.clone(),
-        application_id: message.application_id.clone(),
+        context_id: message.context_id.clone(),
         timestamp: message.timestamp,
     })
 }
@@ -153,9 +153,9 @@ pub fn is_older_than_15_minutes(timestamp: i64) -> bool {
 
 pub fn validate_root_key_exists(
     req: AddPublicKeyRequest,
-    store: &Store,
+    store: &mut Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    match get_root_key(&store, req.wallet_metadata.signing_key.clone()).map_err(|e| {
+    match get_root_key(store, req.wallet_metadata.signing_key.clone()).map_err(|e| {
         info!("Error getting root key: {}", e);
         ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,

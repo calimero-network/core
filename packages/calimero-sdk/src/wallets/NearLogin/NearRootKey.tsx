@@ -32,7 +32,7 @@ type Account = AccountView & {
 
 interface NearRootKeyProps {
   rpcBaseUrl: string;
-  appId: string;
+  contextId?: string;
   successRedirect: () => void;
   cardBackgroundColor: string | undefined;
   nearTitleColor: string | undefined;
@@ -41,7 +41,7 @@ interface NearRootKeyProps {
 
 export const NearRootKey: React.FC<NearRootKeyProps> = ({
   rpcBaseUrl,
-  appId,
+  contextId,
   successRedirect,
   cardBackgroundColor,
   nearTitleColor,
@@ -226,12 +226,12 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
         walletSignature: signature,
         payload: payload,
         walletMetadata: walletMetadata,
-        contextId: appId,
+        contextId: contextId,
       };
 
       await apiClient
         .node()
-        .addRootKey(rootKeyRequest, rpcBaseUrl, appId)
+        .addRootKey(rootKeyRequest, rpcBaseUrl, contextId)
         .then((result) => {
           console.log('result', result);
           if (result.error) {
@@ -255,7 +255,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
   async function handleSignMessage() {
     const challengeResponseData: ResponseData<NodeChallenge> = await apiClient
       .node()
-      .requestChallenge(rpcBaseUrl, appId);
+      .requestChallenge(rpcBaseUrl, contextId as string);
 
     if (challengeResponseData.error) {
       console.log('requestChallenge api error', challengeResponseData.error);
@@ -272,7 +272,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
     const nonce: Buffer = Buffer.from(challengeNonce, 'base64');
     const recipient = appName;
     const callbackUrl = window.location.href;
-    const applicationId = challengeResponseData.data?.applicationId ?? '';
+    const challengeContextId = challengeResponseData.data?.contextId ?? null;
     const nodeSignature = challengeResponseData.data?.nodeSignature ?? '';
     const timestamp =
       challengeResponseData.data?.timestamp ?? new Date().getTime();
@@ -287,7 +287,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
       publicKey: publicKey,
       nodeSignature,
       nonce: nonce.toString('base64'),
-      applicationId,
+      contextId: challengeContextId,
       timestamp,
       message,
     };
@@ -326,6 +326,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
           padding: '2.5rem',
           gap: '1rem',
           borderRadius: '0.5rem',
+          maxWidth: '400px',
         }}
       >
         <span
@@ -339,8 +340,21 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
             color: nearTitleColor ?? '#fff',
           }}
         >
-          NEAR
+          Add root key with NEAR
         </span>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'start',
+            alignItems: 'center',
+            fontSize: '14px',
+            color: '#778899',
+            whiteSpace: 'break-spaces'
+          }}
+        >
+          <span>Choose which account from your wallet you want to add a node root key for.
+          Each key, and therefore each account, can only be added once</span>
+        </div>
         {account && (
           <div
             style={{

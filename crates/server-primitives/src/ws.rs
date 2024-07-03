@@ -60,13 +60,13 @@ pub enum ServerResponseError {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscribeRequest {
-    pub application_ids: Vec<calimero_primitives::application::ApplicationId>,
+    pub context_ids: Vec<calimero_primitives::context::ContextId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscribeResponse {
-    pub application_ids: Vec<calimero_primitives::application::ApplicationId>,
+    pub context_ids: Vec<calimero_primitives::context::ContextId>,
 }
 // *************************************************************************
 
@@ -74,13 +74,13 @@ pub struct SubscribeResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeRequest {
-    pub application_ids: Vec<calimero_primitives::application::ApplicationId>,
+    pub context_ids: Vec<calimero_primitives::context::ContextId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeResponse {
-    pub application_ids: Vec<calimero_primitives::application::ApplicationId>,
+    pub context_ids: Vec<calimero_primitives::context::ContextId>,
 }
 // *************************************************************************
 
