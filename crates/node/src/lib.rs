@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
-use calimero_store::Store;
+use calimero_store::{key, Store};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::identity;
@@ -723,10 +723,27 @@ impl Node {
 
         let handle = self.store.handle();
 
-        let meta_key = calimero_store::key::ContextMeta::new(request.context_id);
-        let Some(meta_value) = handle.get(&meta_key)? else {
+        let Some(meta_value) =
+            handle.get(&calimero_store::key::ContextMeta::new(request.context_id))?
+        else {
             let message = serde_json::to_vec(&types::CatchupError::ContextNotFound {
                 context_id: request.context_id,
+            })?;
+            stream
+                .send(calimero_network::stream::Message { data: message })
+                .await?;
+            return Ok(());
+        };
+
+        if handle
+            .get(&calimero_store::key::ContextTransaction::new(
+                request.context_id,
+                request.last_executed_transaction_hash.into(),
+            ))?
+            .is_none()
+        {
+            let message = serde_json::to_vec(&types::CatchupError::TransactionNotFound {
+                transaction_hash: request.last_executed_transaction_hash,
             })?;
             stream
                 .send(calimero_network::stream::Message { data: message })
@@ -740,11 +757,9 @@ impl Node {
             meta_value.last_transaction_hash.into(),
         );
 
-        let mut last_executed_transaction_hash_discovered = false;
         while let Some(transaction) = handle.get(&key)? {
             hashes.push_front(transaction.prior_hash);
             if transaction.prior_hash == *request.last_executed_transaction_hash {
-                last_executed_transaction_hash_discovered = true;
                 break;
             }
 
@@ -752,16 +767,6 @@ impl Node {
                 request.context_id,
                 transaction.prior_hash.into(),
             );
-        }
-
-        if !last_executed_transaction_hash_discovered {
-            let message = serde_json::to_vec(&types::CatchupError::TransactionNotFound {
-                transaction_hash: request.last_executed_transaction_hash,
-            })?;
-            stream
-                .send(calimero_network::stream::Message { data: message })
-                .await?;
-            return Ok(());
         }
 
         let mut batch_writer = catchup::CatchupBatchSender::new(request.batch_size, stream);
