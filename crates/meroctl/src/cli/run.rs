@@ -1,7 +1,7 @@
-use calimero_node::config::ConfigFile;
 use clap::{Parser, ValueEnum};
 
 use crate::cli;
+use crate::config_file::ConfigFile;
 
 /// Run a node
 #[derive(Debug, Parser)]
@@ -29,21 +29,23 @@ impl From<NodeType> for calimero_node_primitives::NodeType {
 
 impl RunCommand {
     pub async fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
-        if !ConfigFile::exists(&root_args.home) {
-            eyre::bail!("chat node is not initialized in {:?}", root_args.home);
+        let path = root_args.home.join(root_args.node_name);
+
+        if !ConfigFile::exists(&path) {
+            eyre::bail!("Node is not initialized in {:?}", path);
         }
 
-        let config = ConfigFile::load(&root_args.home)?;
+        let config = ConfigFile::load(&path)?;
 
         calimero_node::start(calimero_node::NodeConfig {
-            home: root_args.home.clone(),
+            home: path.clone(),
             node_type: self.node_type.into(),
             identity: config.identity.clone(),
             store: calimero_store::config::StoreConfig {
-                path: root_args.home.join(config.store.path),
+                path: path.join(config.store.path),
             },
             application: calimero_application::config::ApplicationConfig {
-                dir: root_args.home.join(config.application.path),
+                dir: path.join(config.application.path),
             },
             network: calimero_network::config::NetworkConfig {
                 identity: config.identity.clone(),

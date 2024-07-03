@@ -99,6 +99,16 @@ pub(crate) fn setup(
             "/add-client-key",
             post(handlers::add_client_key::add_client_key_handler),
         )
+        .route(
+            "/dev/install-application",
+            post(handlers::applications::install_dev_application_handler),
+        )
+        .route(
+            "/dev/contexts",
+            get(handlers::context::get_contexts_handler)
+                .post(handlers::context::create_context_handler),
+        )
+        .route("/dev/applications", get(list_applications_handler))
         .layer(Extension(shared_state));
 
     let admin_router = Router::new()
