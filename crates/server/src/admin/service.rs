@@ -101,7 +101,7 @@ pub(crate) fn setup(
         )
         .route(
             "/dev/install-application",
-            post(handlers::install_dev_application::install_dev_application_handler),
+            post(handlers::applications::install_dev_application_handler),
         )
         .route(
             "/dev/contexts",

@@ -22,7 +22,12 @@ pub struct CreateContextRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateContextResponse {
-    data: Context,
+    data: ContextResponse,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ContextResponse {
+    context: Context,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,10 +36,9 @@ struct ListApplicationsResponse {
 }
 
 #[derive(Debug, Parser)]
-#[group(required = true)]
 pub struct CreateCommand {
     /// The application ID to attach to the context
-    #[clap(long, short = 'a', group = "mode", exclusive = true)]
+    #[clap(long, short = 'a', exclusive = true)]
     application_id: Option<String>,
 
     #[clap(flatten)]
@@ -42,7 +46,6 @@ pub struct CreateCommand {
 }
 
 #[derive(Debug, Args)]
-#[group(requires_all(&["dev", "path", "version"]))]
 struct DevArgs {
     /// Enable dev mode
     #[clap(long)]
@@ -52,7 +55,8 @@ struct DevArgs {
     #[clap(
         short,
         long,
-        help = "Path to use in dev mode (requires --dev and --version)"
+        help = "Path to use in dev mode (requires --dev and --version)",
+        required = true
     )]
     path: Utf8PathBuf,
 
@@ -60,7 +64,8 @@ struct DevArgs {
     #[clap(
         short,
         long,
-        help = "Version of the application (requires --dev and --path)"
+        help = "Version of the application (requires --dev and --path)",
+        default_value = "0.0.0"
     )]
     version: Version,
 }
@@ -116,8 +121,8 @@ async fn create_context(
         let context = context_response.data;
 
         println!("Context created successfully:");
-        println!("ID: {}", context.id);
-        println!("Application ID: {}", context.application_id);
+        println!("ID: {}", context.context.id);
+        println!("Application ID: {}", context.context.application_id);
     } else {
         let status = response.status();
         let error_text = response.text().await?;
