@@ -56,7 +56,8 @@ impl ApplicationManager {
             .await?;
 
         info!(%topic_hash, "Subscribed to network topic");
-        return Ok(());
+
+        Ok(())
     }
 
     pub async fn install_dev_application(
@@ -80,27 +81,28 @@ impl ApplicationManager {
         &self,
     ) -> eyre::Result<Vec<calimero_primitives::application::Application>> {
         if !self.application_dir.exists() {
-            return Ok(Vec::new());
+            return Ok(vec![]);
         }
 
-        if let Ok(entries) = fs::read_dir(&self.application_dir) {
-            let mut applications = Vec::new();
-
-            entries.filter_map(|entry| entry.ok()).for_each(|entry| {
-                if let Some(file_name) = entry.file_name().to_str() {
-                    let application_id = file_name.to_string().into();
-                    if let Some((version, _)) = self.get_latest_application_info(&application_id) {
-                        applications.push(calimero_primitives::application::Application {
-                            id: application_id,
-                            version,
-                        });
-                    }
-                }
-            });
-            return Ok(applications);
-        } else {
+        let Ok(entries) = fs::read_dir(&self.application_dir) else {
             eyre::bail!("Failed to read application directory");
-        }
+        };
+
+        let mut applications = vec![];
+
+        entries.filter_map(|entry| entry.ok()).for_each(|entry| {
+            if let Some(file_name) = entry.file_name().to_str() {
+                let application_id = file_name.to_string().into();
+                if let Some((version, _)) = self.get_latest_application_info(&application_id) {
+                    applications.push(calimero_primitives::application::Application {
+                        id: application_id,
+                        version,
+                    });
+                }
+            }
+        });
+
+        Ok(applications)
     }
 
     pub fn is_application_installed(
@@ -114,11 +116,11 @@ impl ApplicationManager {
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
     ) -> eyre::Result<Vec<u8>> {
-        if let Some((_, path)) = self.get_latest_application_info(application_id) {
-            Ok(fs::read(&path)?)
-        } else {
+        let Some((_, path)) = self.get_latest_application_info(application_id) else {
             eyre::bail!("failed to get application with id: {}", application_id)
-        }
+        };
+
+        Ok(fs::read(&path)?)
     }
 
     async fn boot_installed_apps(&self) -> eyre::Result<()> {
