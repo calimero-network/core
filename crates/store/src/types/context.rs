@@ -7,12 +7,14 @@ use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
+pub type Hash = [u8; 32];
+
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextMeta {
     // todo! make [u8; 32] when application_id<->meta is a separate record
     pub application_id: Box<str>,
 
-    pub last_transaction_hash: [u8; 32],
+    pub last_transaction_hash: Hash,
 }
 
 impl DataType<'_> for ContextMeta {
@@ -78,7 +80,7 @@ pub struct ContextTransaction {
     pub context_id: [u8; 32],
     pub method: Box<str>,
     pub payload: Box<[u8]>,
-    pub prior_hash: [u8; 32],
+    pub prior_hash: Hash,
 }
 
 impl DataType<'_> for ContextTransaction {
