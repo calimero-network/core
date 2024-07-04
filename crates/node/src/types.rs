@@ -43,7 +43,7 @@ pub struct CatchupResponse {
 }
 
 #[derive(Error, Debug, Serialize, Deserialize)]
-#[error("MutateError")]
+#[error("CatchupError")]
 pub enum CatchupError {
     ContextNotFound {
         context_id: calimero_primitives::context::ContextId,
