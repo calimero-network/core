@@ -189,7 +189,7 @@ impl ContextManager {
     // todo! start refining to blob API
     pub async fn install_application(
         &self,
-        application_id: calimero_primitives::application::ApplicationId,
+        application_id: &calimero_primitives::application::ApplicationId,
         // todo! permit None version for latest
         version: &semver::Version,
     ) -> eyre::Result<()> {
@@ -304,6 +304,7 @@ impl ContextManager {
     ) -> eyre::Result<()> {
         // todo! download to a tempdir
         // todo! Blob API
+        // todo! first check if the application is already installed
         let base_path = format!("{}/{}/{}", self.config.dir, application_id, release.version);
 
         fs::create_dir_all(&base_path)?;

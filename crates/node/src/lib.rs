@@ -362,10 +362,15 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id)) =
-                            args.and_then(|args| args.split_once(' '))
-                        else {
-                            println!("{IND} Usage: context create <context_id> <application_id>");
+                        let Some((context_id, application_id, version)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context = iter.next()?;
+                            let application = iter.next()?;
+                            let version = iter.next()?;
+
+                            Some((context, application, version))
+                        }) else {
+                            println!("{IND} Usage: context create <context_id> <application_id> <version>");
                             break 'done;
                         };
 
@@ -374,13 +379,24 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        let context = calimero_primitives::context::Context {
-                            id: context_id,
-                            application_id: application_id.to_owned().into(),
+                        let Ok(version) = version.parse() else {
+                            println!("{IND} Invalid version: {}", version);
+                            break 'done;
                         };
 
+                        let application_id = application_id.to_owned().into();
+
+                        println!("{IND} Downloading application..");
+
                         // todo! we should be able to install latest version
-                        // node.ctx_manager.install_application(application_id, version)
+                        node.ctx_manager
+                            .install_application(&application_id, &version)
+                            .await?;
+
+                        let context = calimero_primitives::context::Context {
+                            id: context_id,
+                            application_id,
+                        };
 
                         node.ctx_manager.add_context(context).await?;
 

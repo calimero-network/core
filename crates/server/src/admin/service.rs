@@ -208,7 +208,7 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application(req.application, &req.version)
+        .install_application(&req.application, &req.version)
         .await
     {
         Ok(()) => ApiResponse {
