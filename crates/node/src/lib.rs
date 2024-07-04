@@ -24,7 +24,7 @@ pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
     pub identity: identity::Keypair,
     pub node_type: calimero_node_primitives::NodeType,
-    pub application: calimero_application::config::ApplicationConfig,
+    pub application: calimero_context::config::ApplicationConfig,
     pub network: calimero_network::config::NetworkConfig,
     pub server: calimero_server::config::ServerConfig,
     pub store: calimero_store::config::StoreConfig,
@@ -35,7 +35,7 @@ pub struct Node {
     typ: calimero_node_primitives::NodeType,
     store: calimero_store::Store,
     tx_pool: transaction_pool::TransactionPool,
-    application_manager: calimero_application::ApplicationManager,
+    ctx_manager: calimero_context::ContextManager,
     network_client: calimero_network::client::NetworkClient,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
@@ -52,16 +52,20 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let application_manager =
-        calimero_application::start_manager(&config.application, network_client.clone()).await?;
-
     let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
+
+    let ctx_manager = calimero_context::ContextManager::start(
+        &config.application,
+        store.clone(),
+        network_client.clone(),
+    )
+    .await?;
 
     let mut node = Node::new(
         &config,
         network_client.clone(),
         node_events.clone(),
-        application_manager.clone(),
+        ctx_manager.clone(),
         store.clone(),
     );
 
@@ -70,7 +74,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,
-        application_manager,
+        ctx_manager,
         node_events,
         store,
     )) as BoxedFuture<eyre::Result<()>>;
@@ -125,7 +129,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let context_id = context_id.parse()?;
 
-                        let Ok(Some(context)) = node.get_context(context_id) else {
+                        let Ok(Some(context)) = node.ctx_manager.get_context(&context_id) else {
                             println!("{IND} Context not found: {}", context_id);
                             return Ok(());
                         };
@@ -254,7 +258,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             if let Some(args) = args {
                 // TODO: implement print all and/or specific topic
                 let topic = TopicHash::from_raw(args);
-                if node.application_manager.is_application_installed(
+                if node.ctx_manager.is_application_installed(
                     &calimero_primitives::application::ApplicationId(topic.clone().into_string()),
                 ) {
                     println!(
@@ -270,7 +274,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             // todo! test this
 
             println!(
-                "{c1:44}|{c2:44}|{c3}",
+                "{IND} {c1:44} | {c2:44} | {c3}",
                 c1 = "Context ID",
                 c2 = "State Key",
                 c3 = "Value"
@@ -283,15 +287,182 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             for (k, v) in &mut handle.iter(&key)?.entries() {
                 let (cx, state_key) = (k.context_id(), k.state_key());
                 let sk = calimero_primitives::hash::Hash::from(state_key);
-                let entry = format!("{c1:44}|{c2:44}|{c3:?}", c1 = cx, c2 = sk, c3 = v);
+                let entry = format!("{c1:44} | {c2:44}| {c3:?}", c1 = cx, c2 = sk, c3 = v.value);
                 for line in entry.lines() {
                     println!("{IND} {}", line.cyan());
                 }
             }
         }
+        "context" => 'done: {
+            'usage: {
+                let Some(args) = args else {
+                    break 'usage;
+                };
+
+                let (subcommand, args) = args
+                    .split_once(' ')
+                    .map_or_else(|| (args, None), |(a, b)| (a, Some(b)));
+
+                match subcommand {
+                    "ls" => {
+                        // todo! application ID shouldn't be hex anymore
+                        println!(
+                            "{IND} {c1:44} | {c2:64} | {c3}",
+                            c1 = "Context ID",
+                            c2 = "Application ID",
+                            c3 = "Last Transaction"
+                        );
+
+                        let handle = node.store.handle();
+
+                        for (k, v) in &mut handle
+                            .iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?
+                            .entries()
+                        {
+                            let (cx, app_id, last_tx) =
+                                (k.context_id(), v.application_id, v.last_transaction_hash);
+                            let entry = format!(
+                                "{c1:44} | {c2:64} | {c3}",
+                                c1 = cx,
+                                c2 = app_id,
+                                c3 = calimero_primitives::hash::Hash::from(last_tx)
+                            );
+                            for line in entry.lines() {
+                                println!("{IND} {}", line.cyan());
+                            }
+                        }
+                    }
+                    "join" => {
+                        let Some(context_id) = args else {
+                            println!("{IND} Usage: context join <context_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        node.ctx_manager.join_context(&context_id).await?;
+
+                        println!(
+                            "{IND} Joined context {}, waiting for catchup to complete..",
+                            context_id
+                        );
+                    }
+                    "leave" => {
+                        let Some(context_id) = args else {
+                            println!("{IND} Usage: context leave <context_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        node.ctx_manager.delete_context(&context_id).await?;
+
+                        println!("{IND} Left context {}", context_id);
+                    }
+                    "create" => {
+                        let Some((context_id, application_id, version)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context = iter.next()?;
+                            let application = iter.next()?;
+                            let version = iter.next()?;
+
+                            Some((context, application, version))
+                        }) else {
+                            println!("{IND} Usage: context create <context_id> <application_id> <version>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        let Ok(version) = version.parse() else {
+                            println!("{IND} Invalid version: {}", version);
+                            break 'done;
+                        };
+
+                        let application_id = application_id.to_owned().into();
+
+                        println!("{IND} Downloading application..");
+
+                        // todo! we should be able to install latest version
+                        node.ctx_manager
+                            .install_application(&application_id, &version)
+                            .await?;
+
+                        let context = calimero_primitives::context::Context {
+                            id: context_id,
+                            application_id,
+                        };
+
+                        node.ctx_manager.add_context(context).await?;
+
+                        println!("{IND} Created context {}", context_id);
+                    }
+                    "delete" => {
+                        let Some(context_id) = args else {
+                            println!("{IND} Usage: context delete <context_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        node.ctx_manager.delete_context(&context_id).await?;
+
+                        println!("{IND} Deleted context {}", context_id);
+                    }
+                    "state" => {
+                        let Some(context_id) = args else {
+                            println!("{IND} Usage: context state <context_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        let handle = node.store.handle();
+
+                        let key =
+                            calimero_store::key::ContextState::new(context_id, [0; 32].into());
+
+                        println!("{IND} {c1:44} | {c2:44}", c1 = "State Key", c2 = "Value");
+
+                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                            let entry = format!(
+                                "{c1:44} | {c2:?}",
+                                c1 = calimero_primitives::hash::Hash::from(k.state_key()),
+                                c2 = v.value,
+                            );
+                            for line in entry.lines() {
+                                println!("{IND} {}", line.cyan());
+                            }
+                        }
+                    }
+                    unknown => {
+                        println!("{IND} Unknown command: `{}`", unknown);
+                        break 'usage;
+                    }
+                }
+
+                break 'done;
+            };
+            println!("{IND} Usage: context [ls|join|leave|create|delete|state] [args]");
+        }
         unknown => {
             println!("{IND} Unknown command: `{}`", unknown);
-            println!("{IND} Usage: [call|peers|pool|gc|store] [args]")
+            println!("{IND} Usage: [call|peers|pool|gc|store|context] [args]")
         }
     }
 
@@ -303,7 +474,7 @@ impl Node {
         config: &NodeConfig,
         network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-        application_manager: calimero_application::ApplicationManager,
+        ctx_manager: calimero_context::ContextManager,
         store: Store,
     ) -> Self {
         Self {
@@ -311,7 +482,7 @@ impl Node {
             typ: config.node_type,
             store,
             tx_pool: transaction_pool::TransactionPool::default(),
-            application_manager,
+            ctx_manager,
             network_client,
             node_events,
             // --
@@ -329,11 +500,30 @@ impl Node {
                 peer_id: their_peer_id,
                 topic: topic_hash,
             } => {
-                if self.application_manager.is_application_installed(
-                    &calimero_primitives::application::ApplicationId(
-                        topic_hash.clone().into_string(),
-                    ),
-                ) {
+                let Ok(context_id) = topic_hash.as_str().parse() else {
+                    error!(
+                        %topic_hash,
+                        %their_peer_id,
+                        "observed subscription to non-context topic, ignoring.."
+                    );
+
+                    return Ok(());
+                };
+
+                let Some(context) = self.ctx_manager.get_context(&context_id)? else {
+                    error!(
+                        %context_id,
+                        %their_peer_id,
+                        "observed subscription to unknown context, ignoring.."
+                    );
+
+                    return Ok(());
+                };
+
+                if self
+                    .ctx_manager
+                    .is_application_installed(&context.application_id)
+                {
                     info!("{} joined the session.", their_peer_id.cyan());
                     let _ =
                         self.node_events
@@ -421,25 +611,6 @@ impl Node {
         Ok(())
     }
 
-    fn get_context(
-        &self,
-        context_id: calimero_primitives::context::ContextId,
-    ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
-        let key = calimero_store::key::ContextMeta::new(context_id);
-
-        let handle = self.store.handle();
-
-        let Some(context_meta) = handle.get(&key)? else {
-            return Ok(None);
-        };
-
-        Ok(Some(calimero_primitives::context::Context {
-            id: context_id,
-            // todo!
-            application_id: context_meta.application_id.into_string().into(),
-        }))
-    }
-
     pub async fn handle_call(
         &mut self,
         context_id: calimero_primitives::context::ContextId,
@@ -450,7 +621,7 @@ impl Node {
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
         >,
     ) {
-        let Ok(Some(context)) = self.get_context(context_id) else {
+        let Ok(Some(context)) = self.ctx_manager.get_context(&context_id) else {
             let _ =
                 outcome_sender.send(Err(calimero_node_primitives::CallError::ContextNotFound {
                     context_id,
@@ -503,7 +674,7 @@ impl Node {
         payload: Vec<u8>,
     ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::QueryCallError> {
         if !self
-            .application_manager
+            .ctx_manager
             .is_application_installed(&context.application_id)
         {
             return Err(
@@ -535,7 +706,7 @@ impl Node {
         }
 
         if !self
-            .application_manager
+            .ctx_manager
             .is_application_installed(&context.application_id)
         {
             return Err(
@@ -604,7 +775,7 @@ impl Node {
             return Ok(None);
         };
 
-        let Some(context) = self.get_context(context_id)? else {
+        let Some(context) = self.ctx_manager.get_context(&context_id)? else {
             error!("Context not installed, but the transaction was in the pool.");
             return Ok(None);
         };
@@ -620,13 +791,14 @@ impl Node {
 
         let mut handle = self.store.handle();
 
-        let key = calimero_store::key::ContextTransaction::new(context_id, hash.into());
-        let value = calimero_store::types::ContextTransaction {
-            method: transaction.method.into(),
-            payload: transaction.payload.into(),
-            prior_hash: *transaction.prior_hash,
-        };
-        handle.put(&key, &value)?;
+        handle.put(
+            &calimero_store::key::ContextTransaction::new(context_id, hash.into()),
+            &calimero_store::types::ContextTransaction {
+                method: transaction.method.into(),
+                payload: transaction.payload.into(),
+                prior_hash: *transaction.prior_hash,
+            },
+        )?;
 
         let key = calimero_store::key::ContextMeta::new(context_id);
         let value = calimero_store::types::ContextMeta {
@@ -656,7 +828,7 @@ impl Node {
 
         let outcome = calimero_runtime::run(
             &self
-                .application_manager
+                .ctx_manager
                 .load_application_blob(&context.application_id)?,
             &method,
             calimero_runtime::logic::VMContext { input: payload },

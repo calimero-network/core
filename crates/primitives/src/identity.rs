@@ -7,7 +7,6 @@ pub struct Did {
     pub id: String,
     pub root_keys: Vec<RootKey>,
     pub client_keys: Vec<ClientKey>,
-    pub contexts: Vec<ContextId>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -45,74 +44,6 @@ pub enum WalletType {
         chain_id: u64,
     },
 }
-
-// pub mod serde_signing_key {
-//     use std::fmt;
-
-//     use ed25519_dalek::SigningKey;
-//     use serde::de::{self, MapAccess, Visitor};
-//     use serde::ser::{SerializeMap, Serializer};
-//     use serde::Deserializer;
-
-//     pub fn serialize<S>(key: &SigningKey, serializer: S) -> Result<S::Ok, S::Error>
-//     where
-//         S: Serializer,
-//     {
-//         let mut map = serializer.serialize_map(Some(1))?;
-//         let key_bytes = key.to_bytes();
-//         let encoded_key = bs58::encode(key_bytes).into_string();
-//         map.serialize_entry("signingKey", &encoded_key)?;
-//         map.end()
-//     }
-
-//     pub fn deserialize<'de, D>(deserializer: D) -> Result<SigningKey, D::Error>
-//     where
-//         D: Deserializer<'de>,
-//     {
-//         struct SigningKeyVisitor;
-
-//         impl<'de> Visitor<'de> for SigningKeyVisitor {
-//             type Value = SigningKey;
-
-//             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-//                 formatter.write_str("a signing key")
-//             }
-
-//             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-//             where
-//                 A: MapAccess<'de>,
-//             {
-//                 let mut signing_key = None::<String>;
-
-//                 while let Some(key) = map.next_key::<String>()? {
-//                     match key.as_str() {
-//                         "signingKey" => signing_key = Some(map.next_value()?),
-//                         _ => {
-//                             let _ = map.next_value::<de::IgnoredAny>();
-//                         }
-//                     }
-//                 }
-
-//                 let signing_key =
-//                     signing_key.ok_or_else(|| de::Error::missing_field("signingKey"))?;
-//                 let decoded_key = bs58::decode(signing_key)
-//                     .into_vec()
-//                     .map_err(|_| de::Error::custom("invalid base58"))?;
-
-//                 let array: [u8; 32] = decoded_key
-//                     .as_slice()
-//                     .try_into()
-//                     .map_err(|_| de::Error::custom("invalid signing key"))?;
-
-//                 let signing_key = SigningKey::from_bytes(&array);
-
-//                 Ok(signing_key)
-//             }
-//         }
-
-//         deserializer.deserialize_struct("SigningKey", &["signingKey"], SigningKeyVisitor)
-//     }
-// }
 
 pub mod serde_identity {
     use std::fmt;

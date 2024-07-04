@@ -11,7 +11,7 @@ enum SliceInner<'a> {
     Any(Rc<dyn BufRef + 'a>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Slice<'a> {
     inner: SliceInner<'a>,
 }
@@ -145,6 +145,16 @@ impl<'a> Eq for Slice<'a> {}
 impl<'a> PartialEq for Slice<'a> {
     fn eq(&self, other: &Self) -> bool {
         self.as_ref() == other.as_ref()
+    }
+}
+
+impl<'a> fmt::Debug for Slice<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            f.debug_tuple("Slice").field(&self.inner).finish()
+        } else {
+            write!(f, "{:?}", self.as_ref())
+        }
     }
 }
 

@@ -25,7 +25,7 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
-calimero-application = { path = "../application" }
+calimero-context = { path = "../context" }
 calimero-identity = { path = "../identity" }
 calimero-network = { path = "../network" }
 calimero-node-primitives = { path = "../node-primitives" }

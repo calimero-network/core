@@ -29,9 +29,9 @@ toml_edit.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
+calimero-context = { path = "../context" }
 calimero-node = { path = "../node" }
 calimero-network = { path = "../network" }
-calimero-application = { path = "../application" }
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-primitives = { path = "../primitives" }
 calimero-server = { path = "../server", features = ["jsonrpc", "websocket", "admin"] }

@@ -30,7 +30,7 @@ tower-http = { workspace = true, features = ["cors", "fs"] }
 tower-sessions = { workspace = true, optional = true }
 tracing.workspace = true
 
-calimero-application = { path = "../application" }
+calimero-context = { path = "../context" }
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-identity = { path = "../identity" }
 calimero-primitives = { path = "../primitives" }
