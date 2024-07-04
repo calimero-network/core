@@ -1102,11 +1102,11 @@ impl Node {
                 types::CatchupStreamMessage::ResponseMeta(response) => match context {
                     Some(ref context) => {
                         if context.application_id != response.application_id {
-                            error!(
+                            eyre::bail!(
                                 "Application ID mismatch: expected {:?}, got {:?}",
-                                context.application_id, response.application_id
+                                context.application_id,
+                                response.application_id
                             );
-                            return Ok(None);
                         }
                     }
                     None => {
@@ -1124,8 +1124,7 @@ impl Node {
                     }
                 },
                 types::CatchupStreamMessage::Error(err) => {
-                    error!(?err, "Received error from peer");
-                    return Ok(None);
+                    eyre::bail!(err);
                 }
                 event => {
                     warn!(?event, "Unexpected event");

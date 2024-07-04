@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PeerAction {
@@ -41,7 +42,8 @@ pub struct CatchupResponse {
     pub transactions: Vec<TransactionWithStatus>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Error, Debug, Serialize, Deserialize)]
+#[error("MutateError")]
 pub enum CatchupError {
     ContextNotFound {
         context_id: calimero_primitives::context::ContextId,

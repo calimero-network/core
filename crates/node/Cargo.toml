@@ -20,6 +20,7 @@ owo-colors.workspace = true
 semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 toml.workspace = true
 tracing.workspace = true
