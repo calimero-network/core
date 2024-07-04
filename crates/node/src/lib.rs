@@ -10,7 +10,7 @@ use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub mod catchup;
 pub mod runtime_compat;
@@ -504,17 +504,7 @@ impl Node {
                     error!(
                         %topic_hash,
                         %their_peer_id,
-                        "observed subscription to non-context topic, ignoring.."
-                    );
-
-                    return Ok(());
-                };
-
-                let Some(context) = self.ctx_manager.get_context(&context_id)? else {
-                    error!(
-                        %context_id,
-                        %their_peer_id,
-                        "observed subscription to unknown context, ignoring.."
+                        "Failed to parse topic hash into context ID, ignoring.."
                     );
 
                     return Ok(());
@@ -522,23 +512,47 @@ impl Node {
 
                 if self
                     .ctx_manager
-                    .is_application_installed(&context.application_id)
+                    .is_context_pending_catchup(&context_id)
+                    .await
                 {
-                    info!("{} joined the session.", their_peer_id.cyan());
-                    let _ =
-                        self.node_events
-                            .send(calimero_primitives::events::NodeEvent::Application(
-                            calimero_primitives::events::ApplicationEvent {
-                                context_id: topic_hash.as_str().parse()?,
-                                payload:
-                                    calimero_primitives::events::ApplicationEventPayload::PeerJoined(
-                                        calimero_primitives::events::PeerJoinedPayload {
-                                            peer_id: their_peer_id,
-                                        },
-                                    ),
-                            },
-                        ));
+                    match self.typ {
+                        calimero_node_primitives::NodeType::Peer => {
+                            info!(%their_peer_id, "Attempting to perform catchup");
+
+                            match self.perform_catchup(context_id, their_peer_id).await {
+                                Ok(_) => {
+                                    self.ctx_manager
+                                        .clear_context_pending_catchup(&context_id)
+                                        .await;
+                                    info!(%their_peer_id, "Catchup successfully finished");
+                                }
+                                Err(err) => {
+                                    error!(%err, "Failed to perform catchup, will retry when another peer subscribes");
+                                }
+                            }
+                        }
+                        calimero_node_primitives::NodeType::Coordinator => {
+                            self.ctx_manager
+                                .clear_context_pending_catchup(&context_id)
+                                .await;
+                        }
+                    }
                 }
+
+                info!(%context_id, %their_peer_id, "Peer joined the session");
+                let _ = self
+                    .node_events
+                    .send(calimero_primitives::events::NodeEvent::Application(
+                        calimero_primitives::events::ApplicationEvent {
+                            context_id: topic_hash.as_str().parse()?,
+                            payload:
+                                calimero_primitives::events::ApplicationEventPayload::PeerJoined(
+                                    calimero_primitives::events::PeerJoinedPayload {
+                                        peer_id: their_peer_id,
+                                    },
+                                ),
+                        },
+                    ));
             }
             calimero_network::types::NetworkEvent::Message { message, .. } => {
                 let Some(source) = message.source else {
@@ -780,6 +794,21 @@ impl Node {
             return Ok(None);
         };
 
+        let outcome = self.execute_transaction(context, transaction, hash).await?;
+
+        if let Some(sender) = outcome_sender {
+            let _ = sender.send(outcome);
+        }
+
+        Ok(Some(()))
+    }
+
+    async fn execute_transaction(
+        &mut self,
+        context: calimero_primitives::context::Context,
+        transaction: calimero_primitives::transaction::Transaction,
+        hash: calimero_primitives::hash::Hash,
+    ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let outcome = self
             .execute(
                 context.clone(),
@@ -792,7 +821,7 @@ impl Node {
         let mut handle = self.store.handle();
 
         handle.put(
-            &calimero_store::key::ContextTransaction::new(context_id, hash.into()),
+            &calimero_store::key::ContextTransaction::new(context.id, hash.into()),
             &calimero_store::types::ContextTransaction {
                 method: transaction.method.into(),
                 payload: transaction.payload.into(),
@@ -800,18 +829,15 @@ impl Node {
             },
         )?;
 
-        let key = calimero_store::key::ContextMeta::new(context_id);
-        let value = calimero_store::types::ContextMeta {
-            application_id: context.application_id.0.into(),
-            last_transaction_hash: *hash.as_bytes(),
-        };
-        handle.put(&key, &value)?;
+        handle.put(
+            &calimero_store::key::ContextMeta::new(context.id),
+            &calimero_store::types::ContextMeta {
+                application_id: context.application_id.0.into(),
+                last_transaction_hash: *hash.as_bytes(),
+            },
+        )?;
 
-        if let Some(sender) = outcome_sender {
-            let _ = sender.send(outcome);
-        }
-
-        Ok(Some(()))
+        Ok(outcome)
     }
 
     async fn execute(
@@ -878,6 +904,7 @@ impl Node {
 
         Ok(outcome)
     }
+
     async fn handle_stream(
         &mut self,
         mut stream: calimero_network::stream::Stream,
@@ -922,6 +949,20 @@ impl Node {
                 .await?;
             return Ok(());
         };
+
+        let application_version = self.ctx_manager.get_application_latest_version(
+            &meta_value.application_id.clone().into_string().into(),
+        )?;
+
+        let message = serde_json::to_vec(&types::CatchupStreamMessage::ResponseMeta(
+            types::CatchupResponseMeta {
+                application_id: meta_value.application_id.into_string().into(),
+                version: application_version,
+            },
+        ))?;
+        stream
+            .send(calimero_network::stream::Message { data: message })
+            .await?;
 
         let mut hashes = VecDeque::new();
         let mut key = calimero_store::key::ContextTransaction::new(
@@ -985,6 +1026,113 @@ impl Node {
         batch_writer.flush().await?;
 
         Ok(())
+    }
+
+    async fn perform_catchup(
+        &mut self,
+        context_id: calimero_primitives::context::ContextId,
+        choosen_peer: libp2p::PeerId,
+    ) -> eyre::Result<Option<()>> {
+        let handle = self.store.handle();
+
+        let (mut context, request) =
+            match handle.get(&calimero_store::key::ContextMeta::new(context_id))? {
+                Some(meta) => (
+                    Some(calimero_primitives::context::Context {
+                        id: context_id,
+                        application_id: meta.application_id.into_string().into(),
+                    }),
+                    types::CatchupRequest {
+                        context_id,
+                        last_executed_transaction_hash: meta.last_transaction_hash.into(),
+                        batch_size: self.ctx_manager.config.cathup.batch_size,
+                    },
+                ),
+                None => (
+                    None,
+                    types::CatchupRequest {
+                        context_id,
+                        last_executed_transaction_hash: calimero_primitives::hash::Hash::default(),
+                        batch_size: 50,
+                    },
+                ),
+            };
+
+        let mut stream = self.network_client.open_stream(choosen_peer).await?;
+
+        let request = serde_json::to_vec(&types::CatchupStreamMessage::Request(request))?;
+
+        stream
+            .send(calimero_network::stream::Message { data: request })
+            .await?;
+
+        while let Some(message) = stream.next().await {
+            match serde_json::from_slice(&message?.data)? {
+                types::CatchupStreamMessage::Response(response) => {
+                    let Some(ref context) = context else {
+                        eyre::bail!("Received response with transactions before meta")
+                    };
+
+                    for transaction in response.transactions {
+                        match transaction.status {
+                            types::TransactionStatus::Pending => {
+                                self.tx_pool.insert(
+                                    choosen_peer,
+                                    calimero_primitives::transaction::Transaction {
+                                        context_id: context.id,
+                                        method: transaction.transaction.method,
+                                        payload: transaction.transaction.payload,
+                                        prior_hash: transaction.transaction.prior_hash,
+                                    },
+                                    None,
+                                )?;
+                            }
+                            types::TransactionStatus::Executed => {
+                                self.execute_transaction(
+                                    context.clone(),
+                                    transaction.transaction,
+                                    transaction.transaction_hash,
+                                )
+                                .await?;
+                            }
+                        }
+                    }
+                }
+                types::CatchupStreamMessage::ResponseMeta(response) => match context {
+                    Some(ref context) => {
+                        if context.application_id != response.application_id {
+                            error!(
+                                "Application ID mismatch: expected {:?}, got {:?}",
+                                context.application_id, response.application_id
+                            );
+                            return Ok(None);
+                        }
+                    }
+                    None => {
+                        self.ctx_manager
+                            .install_application(&response.application_id, &response.version)
+                            .await?;
+
+                        let context_ = calimero_primitives::context::Context {
+                            id: context_id,
+                            application_id: response.application_id,
+                        };
+
+                        self.ctx_manager.add_context(context_.clone()).await?;
+                        context = Some(context_);
+                    }
+                },
+                types::CatchupStreamMessage::Error(err) => {
+                    error!(?err, "Received error from peer");
+                    return Ok(None);
+                }
+                event => {
+                    warn!(?event, "Unexpected event");
+                }
+            }
+        }
+
+        return Ok(Some(()));
     }
 }
 

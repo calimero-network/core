@@ -1,9 +1,11 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_file as symlink;
+use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
@@ -12,6 +14,7 @@ use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
 use near_primitives::views::QueryRequest;
 use sha2::{Digest, Sha256};
+use tokio::sync::RwLock;
 use tracing::{error, info};
 
 pub mod config;
@@ -21,6 +24,12 @@ pub struct ContextManager {
     pub config: config::ApplicationConfig,
     pub store: calimero_store::Store,
     pub network_client: NetworkClient,
+    state: Arc<RwLock<State>>,
+}
+
+#[derive(Default)]
+struct State {
+    pending_catchups: HashSet<calimero_primitives::context::ContextId>,
 }
 
 impl ContextManager {
@@ -33,6 +42,7 @@ impl ContextManager {
             config: config.clone(),
             store,
             network_client,
+            state: Default::default(),
         };
 
         this.boot().await?;
@@ -43,15 +53,28 @@ impl ContextManager {
     pub async fn join_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<Option<()>> {
+        if self
+            .state
+            .read()
+            .await
+            .pending_catchups
+            .contains(&context_id)
+        {
+            return Ok(None);
+        }
+
+        self.state
+            .write()
+            .await
+            .pending_catchups
+            .insert(context_id.clone());
+
         self.subscribe(context_id).await?;
 
-        // todo! initiate catchup which would inform
-        // todo! us what application ID to download
+        info!(%context_id,  "Joined context with pending catchup");
 
-        info!(%context_id,  "Joined context");
-
-        Ok(())
+        Ok(Some(()))
     }
 
     pub async fn add_context(
@@ -147,42 +170,22 @@ impl ContextManager {
         Ok(contexts.collect())
     }
 
-    async fn boot(&self) -> eyre::Result<()> {
-        let handle = self.store.handle();
-
-        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?;
-
-        for key in iter.keys() {
-            self.subscribe(&key.context_id()).await?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn subscribe(
+    pub async fn is_context_pending_catchup(
         &self,
         context_id: &calimero_primitives::context::ContextId,
-    ) -> eyre::Result<()> {
-        self.network_client
-            .subscribe(calimero_network::types::IdentTopic::new(context_id))
-            .await?;
-
-        info!(%context_id, "Subscribed to context");
-
-        Ok(())
+    ) -> bool {
+        self.state
+            .read()
+            .await
+            .pending_catchups
+            .contains(context_id)
     }
 
-    pub async fn unsubscribe(
+    pub async fn clear_context_pending_catchup(
         &self,
         context_id: &calimero_primitives::context::ContextId,
-    ) -> eyre::Result<()> {
-        self.network_client
-            .unsubscribe(calimero_network::types::IdentTopic::new(context_id))
-            .await?;
-
-        info!(%context_id, "Unsubscribed from context");
-
-        Ok(())
+    ) -> bool {
+        self.state.write().await.pending_catchups.remove(context_id)
     }
 
     // todo! do this only when initializing contexts
@@ -261,6 +264,61 @@ impl ContextManager {
         };
 
         Ok(fs::read(&path)?)
+    }
+
+    pub fn get_application_latest_version(
+        &self,
+        application_id: &calimero_primitives::application::ApplicationId,
+    ) -> eyre::Result<semver::Version> {
+        let Some((version, _)) = self.get_latest_application_info(application_id) else {
+            eyre::bail!("failed to get application with id: {}", application_id)
+        };
+
+        Ok(version)
+    }
+
+    async fn boot(&self) -> eyre::Result<()> {
+        let handle = self.store.handle();
+
+        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?;
+
+        for key in iter.keys() {
+            self.state
+                .write()
+                .await
+                .pending_catchups
+                .insert(key.context_id().clone());
+
+            self.subscribe(&key.context_id()).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn subscribe(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<()> {
+        self.network_client
+            .subscribe(calimero_network::types::IdentTopic::new(context_id))
+            .await?;
+
+        info!(%context_id, "Subscribed to context");
+
+        Ok(())
+    }
+
+    async fn unsubscribe(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<()> {
+        self.network_client
+            .unsubscribe(calimero_network::types::IdentTopic::new(context_id))
+            .await?;
+
+        info!(%context_id, "Unsubscribed from context");
+
+        Ok(())
     }
 
     async fn get_release(

@@ -46,6 +46,9 @@ impl RunCommand {
             },
             application: calimero_context::config::ApplicationConfig {
                 dir: path.join(config.application.path),
+                cathup: calimero_context::config::CatchupConfig {
+                    batch_size: config.application.cathup.batch_size,
+                },
             },
             network: calimero_network::config::NetworkConfig {
                 identity: config.identity.clone(),

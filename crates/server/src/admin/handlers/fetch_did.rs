@@ -27,7 +27,9 @@ pub async fn fetch_did_handler(
     let did = get_or_create_did(&mut state.store.clone()).map_err(|err| parse_api_error(err));
     return match did {
         Ok(did) => ApiResponse {
-            payload: DidResponse { data: NodeDid { did } },
+            payload: DidResponse {
+                data: NodeDid { did },
+            },
         }
         .into_response(),
         Err(err) => err.into_response(),

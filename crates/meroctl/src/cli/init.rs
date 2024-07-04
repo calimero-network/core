@@ -8,7 +8,9 @@ use libp2p::identity;
 use multiaddr::Multiaddr;
 use tracing::{info, warn};
 
-use crate::config_file::{ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig};
+use crate::config_file::{
+    ApplicationConfig, CatchupConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig,
+};
 use crate::{cli, defaults};
 
 /// Initialize node configuration
@@ -130,6 +132,7 @@ impl InitCommand {
             },
             application: ApplicationConfig {
                 path: "apps".into(),
+                cathup: CatchupConfig { batch_size: 50 },
             },
             network: NetworkConfig {
                 swarm: SwarmConfig { listen },
