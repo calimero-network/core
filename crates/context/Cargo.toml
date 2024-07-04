@@ -14,7 +14,7 @@ near-jsonrpc-client.workspace = true
 near-jsonrpc-primitives.workspace = true
 near-primitives.workspace = true
 reqwest.workspace = true
-semver.workspace = true
+semver = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
