@@ -40,6 +40,20 @@ impl ContextManager {
         Ok(this)
     }
 
+    pub async fn join_context(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<()> {
+        self.subscribe(context_id).await?;
+
+        // todo! initiate catchup which would inform
+        // todo! us what application ID to download
+
+        info!(%context_id,  "Joined context");
+
+        Ok(())
+    }
+
     pub async fn add_context(
         &self,
         context: calimero_primitives::context::Context,
