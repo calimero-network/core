@@ -270,7 +270,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             // todo! test this
 
             println!(
-                "{c1:44}|{c2:44}|{c3}",
+                "{IND} {c1:44} | {c2:44} | {c3}",
                 c1 = "Context ID",
                 c2 = "State Key",
                 c3 = "Value"
@@ -283,15 +283,163 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             for (k, v) in &mut handle.iter(&key)?.entries() {
                 let (cx, state_key) = (k.context_id(), k.state_key());
                 let sk = calimero_primitives::hash::Hash::from(state_key);
-                let entry = format!("{c1:44}|{c2:44}|{c3:?}", c1 = cx, c2 = sk, c3 = v);
+                let entry = format!("{c1:44} | {c2:44}| {c3:?}", c1 = cx, c2 = sk, c3 = v.value);
                 for line in entry.lines() {
                     println!("{IND} {}", line.cyan());
                 }
             }
         }
+        "context" => 'done: {
+            'usage: {
+                let Some(args) = args else {
+                    break 'usage;
+                };
+
+                let (subcommand, args) = args
+                    .split_once(' ')
+                    .map_or_else(|| (args, None), |(a, b)| (a, Some(b)));
+
+                match subcommand {
+                    "ls" => {
+                        // todo! application ID shouldn't be hex anymore
+                        println!(
+                            "{IND} {c1:44} | {c2:64} | {c3}",
+                            c1 = "Context ID",
+                            c2 = "Application ID",
+                            c3 = "Last Transaction"
+                        );
+
+                        let handle = node.store.handle();
+
+                        for (k, v) in &mut handle
+                            .iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?
+                            .entries()
+                        {
+                            let (cx, app_id, last_tx) =
+                                (k.context_id(), v.application_id, v.last_transaction_hash);
+                            let entry = format!(
+                                "{c1:44} | {c2:64} | {c3}",
+                                c1 = cx,
+                                c2 = app_id,
+                                c3 = calimero_primitives::hash::Hash::from(last_tx)
+                            );
+                            for line in entry.lines() {
+                                println!("{IND} {}", line.cyan());
+                            }
+                        }
+                    }
+                    "join" => {
+                        let Some(context_id) = args else {
+                            println!("{IND} Usage: context join <context_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        node.ctx_manager.join_context(&context_id).await?;
+
+                        println!(
+                            "{IND} Joined context {}, waiting for catchup to complete..",
+                            context_id
+                        );
+                    }
+                    "leave" => {
+                        let Some(context_id) = args else {
+                            println!("{IND} Usage: context leave <context_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        node.ctx_manager.delete_context(&context_id).await?;
+
+                        println!("{IND} Left context {}", context_id);
+                    }
+                    "create" => {
+                        let Some((context_id, application_id)) =
+                            args.and_then(|args| args.split_once(' '))
+                        else {
+                            println!("{IND} Usage: context create <context_id> <application_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        let context = calimero_primitives::context::Context {
+                            id: context_id,
+                            application_id: application_id.to_owned().into(),
+                        };
+
+                        node.ctx_manager.add_context(context).await?;
+
+                        println!("{IND} Created context {}", context_id);
+                    }
+                    "delete" => {
+                        let Some(context_id) = args else {
+                            println!("{IND} Usage: context delete <context_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        node.ctx_manager.delete_context(&context_id).await?;
+
+                        println!("{IND} Deleted context {}", context_id);
+                    }
+                    "state" => {
+                        let Some(context_id) = args else {
+                            println!("{IND} Usage: context state <context_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        let handle = node.store.handle();
+
+                        let key =
+                            calimero_store::key::ContextState::new(context_id, [0; 32].into());
+
+                        println!("{IND} {c1:44} | {c2:44}", c1 = "State Key", c2 = "Value");
+
+                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                            let entry = format!(
+                                "{c1:44} | {c2:?}",
+                                c1 = calimero_primitives::hash::Hash::from(k.state_key()),
+                                c2 = v.value,
+                            );
+                            for line in entry.lines() {
+                                println!("{IND} {}", line.cyan());
+                            }
+                        }
+                    }
+                    unknown => {
+                        println!("{IND} Unknown command: `{}`", unknown);
+                        break 'usage;
+                    }
+                }
+
+                break 'done;
+            };
+            println!("{IND} Usage: context [ls|join|leave|create|delete|state] [args]");
+        }
         unknown => {
             println!("{IND} Unknown command: `{}`", unknown);
-            println!("{IND} Usage: [call|peers|pool|gc|store] [args]")
+            println!("{IND} Usage: [call|peers|pool|gc|store|context] [args]")
         }
     }
 
