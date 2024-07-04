@@ -379,6 +379,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             application_id: application_id.to_owned().into(),
                         };
 
+                        // todo! we should be able to install latest version
+                        // node.ctx_manager.install_application(application_id, version)
+
                         node.ctx_manager.add_context(context).await?;
 
                         println!("{IND} Created context {}", context_id);

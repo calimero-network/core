@@ -190,6 +190,7 @@ impl ContextManager {
     pub async fn install_application(
         &self,
         application_id: calimero_primitives::application::ApplicationId,
+        // todo! permit None version for latest
         version: &semver::Version,
     ) -> eyre::Result<()> {
         let release = self.get_release(&application_id, version).await?;
