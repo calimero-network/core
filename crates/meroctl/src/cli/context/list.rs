@@ -6,9 +6,15 @@ use serde::{Deserialize, Serialize};
 use crate::cli::context::common::multiaddr_to_url;
 use crate::cli::RootArgs;
 use crate::config_file::ConfigFile;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ContextList {
+    contexts: Vec<Context>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GetContextsResponse {
-    data: Vec<Context>,
+    data: ContextList,
 }
 
 #[derive(Debug, Parser)]
@@ -33,7 +39,7 @@ impl ListCommand {
 
         if response.status().is_success() {
             let api_response: GetContextsResponse = response.json().await?;
-            let contexts = api_response.data;
+            let contexts = api_response.data.contexts;
 
             for context in contexts {
                 println!("{}", context.id);
