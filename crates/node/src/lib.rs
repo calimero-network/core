@@ -38,7 +38,6 @@ pub struct Node {
     ctx_manager: calimero_context::ContextManager,
     network_client: calimero_network::client::NetworkClient,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-    catchup_config: calimero_network::config::CatchupConfig,
     // --
     nonce: u64,
     last_tx: calimero_primitives::hash::Hash,
@@ -486,7 +485,6 @@ impl Node {
             ctx_manager,
             network_client,
             node_events,
-            catchup_config: config.network.catchup.clone(),
             // --
             nonce: 0,
             last_tx: calimero_primitives::hash::Hash::default(),
@@ -1048,7 +1046,7 @@ impl Node {
                     types::CatchupRequest {
                         context_id,
                         last_executed_transaction_hash: meta.last_transaction_hash.into(),
-                        batch_size: self.catchup_config.batch_size,
+                        batch_size: self.network_client.catchup_config.batch_size,
                     },
                 ),
                 None => (
