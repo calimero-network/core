@@ -2,6 +2,9 @@
 
 set -o pipefail
 
+# Set default NODE_HOME 
+: ${NODE_HOME:="$HOME/.calimero"}
+
 # Check if an argument was provided
 if [ $# -eq 0 ]; then
   echo "Please provide the number of local nodes argument."
@@ -11,7 +14,7 @@ fi
 # Get the first command line argument
 N=$1
 
-cargo build --bin calimero-node
+cargo build --bin meroctl
 
 # Iterate in a loop N times
 for ((i = 1; i <= N; i++)); do
@@ -19,7 +22,7 @@ for ((i = 1; i <= N; i++)); do
   echo "\x1b[1;36m(i)\x1b[39m Initializing Node $i at \x1b[33m$node_home\x1b[0m"
   rm -rf "$node_home"
   mkdir -p "$node_home"
-  ./target/debug/calimero-node --home "$node_home" \
+  ./target/debug/meroctl --home "$NODE_HOME" --node-name "node$i" \
       init --swarm-port $((2427 + $i)) --server-port $((2527 + $i)) \
     | sed 's/^/ \x1b[1;36m|\x1b[0m  /'
   if [ $? -ne 0 ]; then

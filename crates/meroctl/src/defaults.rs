@@ -1,4 +1,4 @@
-pub(crate) const DEFAULT_CALIMERO_HOME: &str = "data";
+pub(crate) const DEFAULT_CALIMERO_HOME: &str = ".calimero";
 
 pub fn default_node_dir() -> camino::Utf8PathBuf {
     if let Some(home) = dirs::home_dir() {
