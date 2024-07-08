@@ -46,7 +46,7 @@ impl ContextManager {
     ) -> eyre::Result<()> {
         self.subscribe(context_id).await?;
 
-        info!(%context_id,  "Joined context with pending catchup");
+        info!(%context_id,  "Joined context");
 
         Ok(())
     }
