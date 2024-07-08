@@ -46,9 +46,6 @@ impl RunCommand {
             },
             application: calimero_context::config::ApplicationConfig {
                 dir: path.join(config.application.path),
-                catchup: calimero_context::config::CatchupConfig {
-                    batch_size: config.application.cathup.batch_size,
-                },
             },
             network: calimero_network::config::NetworkConfig {
                 identity: config.identity.clone(),
@@ -56,6 +53,7 @@ impl RunCommand {
                 swarm: config.network.swarm,
                 bootstrap: config.network.bootstrap,
                 discovery: config.network.discovery,
+                catchup: config.network.catchup,
             },
             server: calimero_server::config::ServerConfig {
                 listen: config.network.server.listen,

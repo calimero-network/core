@@ -33,6 +33,8 @@ pub struct NetworkConfig {
 
     #[serde(default)]
     pub discovery: calimero_network::config::DiscoveryConfig,
+
+    pub catchup: calimero_network::config::CatchupConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -57,12 +59,6 @@ pub struct StoreConfig {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApplicationConfig {
     pub path: camino::Utf8PathBuf,
-    pub cathup: CatchupConfig,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CatchupConfig {
-    pub batch_size: u8,
 }
 
 impl ConfigFile {
