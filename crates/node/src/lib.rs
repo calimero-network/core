@@ -258,15 +258,11 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             if let Some(args) = args {
                 // TODO: implement print all and/or specific topic
                 let topic = TopicHash::from_raw(args);
-                if node.ctx_manager.is_application_installed(
-                    &calimero_primitives::application::ApplicationId(topic.clone().into_string()),
-                ) {
-                    println!(
-                        "{IND} Peers (Session) for Topic {}: {:#?}",
-                        topic.clone(),
-                        node.network_client.mesh_peer_count(topic).await.cyan()
-                    );
-                }
+                println!(
+                    "{IND} Peers (Session) for Topic {}: {:#?}",
+                    topic.clone(),
+                    node.network_client.mesh_peer_count(topic).await.cyan()
+                );
             }
         }
         "store" => {
