@@ -29,6 +29,7 @@ pub struct NetworkConfig {
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
     pub discovery: DiscoveryConfig,
+    pub catchup: CatchupConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -115,6 +116,11 @@ impl Default for RendezvousConfig {
             discovery_interval: time::Duration::from_secs(90),
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CatchupConfig {
+    pub batch_size: u8,
 }
 
 fn serialize_rendezvous_namespace<S>(

@@ -38,6 +38,7 @@ pub struct Node {
     ctx_manager: calimero_context::ContextManager,
     network_client: calimero_network::client::NetworkClient,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+    catchup_config: calimero_network::config::CatchupConfig,
     // --
     nonce: u64,
     last_tx: calimero_primitives::hash::Hash,
@@ -485,6 +486,7 @@ impl Node {
             ctx_manager,
             network_client,
             node_events,
+            catchup_config: config.network.catchup.clone(),
             // --
             nonce: 0,
             last_tx: calimero_primitives::hash::Hash::default(),
@@ -517,10 +519,10 @@ impl Node {
                 {
                     match self.typ {
                         calimero_node_primitives::NodeType::Peer => {
+                            info!(%their_peer_id, "Attempting to perform catchup");
+
                             match self.perform_catchup(context_id, their_peer_id).await {
                                 Ok(_) => {
-                                    info!(%their_peer_id, "Attempting to perform catchup");
-
                                     self.ctx_manager
                                         .clear_context_pending_catchup(&context_id)
                                         .await;
@@ -1032,7 +1034,7 @@ impl Node {
     async fn perform_catchup(
         &mut self,
         context_id: calimero_primitives::context::ContextId,
-        choosen_peer: libp2p::PeerId,
+        chosen_peer: libp2p::PeerId,
     ) -> eyre::Result<Option<()>> {
         let handle = self.store.handle();
 
@@ -1046,7 +1048,7 @@ impl Node {
                     types::CatchupRequest {
                         context_id,
                         last_executed_transaction_hash: meta.last_transaction_hash.into(),
-                        batch_size: self.ctx_manager.config.cathup.batch_size,
+                        batch_size: self.catchup_config.batch_size,
                     },
                 ),
                 None => (
@@ -1059,7 +1061,7 @@ impl Node {
                 ),
             };
 
-        let mut stream = self.network_client.open_stream(choosen_peer).await?;
+        let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
         let request = serde_json::to_vec(&types::CatchupStreamMessage::Request(request))?;
 
@@ -1078,7 +1080,7 @@ impl Node {
                         match transaction.status {
                             types::TransactionStatus::Pending => {
                                 self.tx_pool.insert(
-                                    choosen_peer,
+                                    chosen_peer,
                                     calimero_primitives::transaction::Transaction {
                                         context_id: context.id,
                                         method: transaction.transaction.method,
@@ -1132,7 +1134,7 @@ impl Node {
             }
         }
 
-        return Ok(Some(()));
+        Ok(Some(()))
     }
 }
 
