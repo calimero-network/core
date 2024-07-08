@@ -510,50 +510,35 @@ impl Node {
                     return Ok(());
                 };
 
+                let Some(context) = self.ctx_manager.get_context(&context_id)? else {
+                    error!(
+                        %context_id,
+                        %their_peer_id,
+                        "Observed subscription to unknown context, ignoring.."
+                    );
+
+                    return Ok(());
+                };
+
                 if self
                     .ctx_manager
-                    .is_context_pending_catchup(&context_id)
-                    .await
+                    .is_application_installed(&context.application_id)
                 {
-                    match self.typ {
-                        calimero_node_primitives::NodeType::Peer => {
-                            info!(%their_peer_id, "Attempting to perform catchup");
-
-                            match self.perform_catchup(context_id, their_peer_id).await {
-                                Ok(_) => {
-                                    self.ctx_manager
-                                        .clear_context_pending_catchup(&context_id)
-                                        .await;
-
-                                    info!(%their_peer_id, "Catchup successfully finished");
-                                }
-                                Err(err) => {
-                                    error!(%err, "Failed to perform catchup, will retry when another peer subscribes");
-                                }
-                            }
-                        }
-                        calimero_node_primitives::NodeType::Coordinator => {
-                            self.ctx_manager
-                                .clear_context_pending_catchup(&context_id)
-                                .await;
-                        }
-                    }
+                    info!("{} joined the session.", their_peer_id.cyan());
+                    let _ =
+                        self.node_events
+                            .send(calimero_primitives::events::NodeEvent::Application(
+                            calimero_primitives::events::ApplicationEvent {
+                                context_id: topic_hash.as_str().parse()?,
+                                payload:
+                                    calimero_primitives::events::ApplicationEventPayload::PeerJoined(
+                                        calimero_primitives::events::PeerJoinedPayload {
+                                            peer_id: their_peer_id,
+                                        },
+                                    ),
+                            },
+                        ));
                 }
-
-                info!(%context_id, %their_peer_id, "Peer joined the session");
-                let _ = self
-                    .node_events
-                    .send(calimero_primitives::events::NodeEvent::Application(
-                        calimero_primitives::events::ApplicationEvent {
-                            context_id,
-                            payload:
-                                calimero_primitives::events::ApplicationEventPayload::PeerJoined(
-                                    calimero_primitives::events::PeerJoinedPayload {
-                                        peer_id: their_peer_id,
-                                    },
-                                ),
-                        },
-                    ));
             }
             calimero_network::types::NetworkEvent::Message { message, .. } => {
                 let Some(source) = message.source else {
@@ -561,6 +546,25 @@ impl Node {
                 };
                 match serde_json::from_slice(&message.data)? {
                     types::PeerAction::Transaction(transaction) => {
+                        let handle = self.store.handle();
+
+                        if handle
+                            .get(&calimero_store::key::ContextTransaction::new(
+                                transaction.context_id,
+                                transaction.prior_hash.into(),
+                            ))?
+                            .is_none()
+                        {
+                            info!(%source, "Attempting to perform catchup");
+
+                            if let Err(err) =
+                                self.perform_catchup(transaction.context_id, source).await
+                            {
+                                error!(%err, "Failed to perform catchup");
+                                return Ok(());
+                            };
+                        }
+
                         let transaction_hash =
                             self.tx_pool.insert(source, transaction.clone(), None)?;
 

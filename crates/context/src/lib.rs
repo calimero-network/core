@@ -1,11 +1,9 @@
-use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_file as symlink;
-use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
@@ -14,7 +12,6 @@ use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
 use near_primitives::views::QueryRequest;
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
 use tracing::{error, info};
 
 pub mod config;
@@ -24,12 +21,6 @@ pub struct ContextManager {
     pub config: config::ApplicationConfig,
     pub store: calimero_store::Store,
     pub network_client: NetworkClient,
-    state: Arc<RwLock<State>>,
-}
-
-#[derive(Default)]
-struct State {
-    pending_catchups: HashSet<calimero_primitives::context::ContextId>,
 }
 
 impl ContextManager {
@@ -42,7 +33,6 @@ impl ContextManager {
             config: config.clone(),
             store,
             network_client,
-            state: Default::default(),
         };
 
         this.boot().await?;
@@ -54,22 +44,6 @@ impl ContextManager {
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> eyre::Result<Option<()>> {
-        if self
-            .state
-            .read()
-            .await
-            .pending_catchups
-            .contains(&context_id)
-        {
-            return Ok(None);
-        }
-
-        self.state
-            .write()
-            .await
-            .pending_catchups
-            .insert(context_id.clone());
-
         self.subscribe(context_id).await?;
 
         info!(%context_id,  "Joined context with pending catchup");
@@ -170,24 +144,6 @@ impl ContextManager {
         Ok(contexts.collect())
     }
 
-    pub async fn is_context_pending_catchup(
-        &self,
-        context_id: &calimero_primitives::context::ContextId,
-    ) -> bool {
-        self.state
-            .read()
-            .await
-            .pending_catchups
-            .contains(context_id)
-    }
-
-    pub async fn clear_context_pending_catchup(
-        &self,
-        context_id: &calimero_primitives::context::ContextId,
-    ) -> bool {
-        self.state.write().await.pending_catchups.remove(context_id)
-    }
-
     // todo! do this only when initializing contexts
     // todo! start refining to blob API
     pub async fn install_application(
@@ -283,12 +239,6 @@ impl ContextManager {
         let mut iter = handle.iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?;
 
         for key in iter.keys() {
-            self.state
-                .write()
-                .await
-                .pending_catchups
-                .insert(key.context_id().clone());
-
             self.subscribe(&key.context_id()).await?;
         }
 
