@@ -43,12 +43,12 @@ impl ContextManager {
     pub async fn join_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
-    ) -> eyre::Result<Option<()>> {
+    ) -> eyre::Result<()> {
         self.subscribe(context_id).await?;
 
         info!(%context_id,  "Joined context with pending catchup");
 
-        Ok(Some(()))
+        Ok(())
     }
 
     pub async fn add_context(
