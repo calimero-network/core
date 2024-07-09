@@ -518,6 +518,35 @@ impl Node {
 
                 if self
                     .ctx_manager
+                    .is_context_pending_initial_catchup(&context_id)
+                    .await
+                {
+                    match self.typ {
+                        calimero_node_primitives::NodeType::Peer => {
+                            info!(%their_peer_id, "Attempting to perform catchup");
+
+                            match self.perform_catchup(context_id, their_peer_id).await {
+                                Ok(_) => {
+                                    self.ctx_manager
+                                        .clear_context_pending_initial_catchup(&context_id)
+                                        .await;
+                                    info!(%their_peer_id, "Catchup successfully finished");
+                                }
+                                Err(err) => {
+                                    error!(%err, "Failed to perform initial catchup, will retry when another peer subscribes");
+                                }
+                            }
+                        }
+                        calimero_node_primitives::NodeType::Coordinator => {
+                            self.ctx_manager
+                                .clear_context_pending_initial_catchup(&context_id)
+                                .await;
+                        }
+                    }
+                }
+
+                if self
+                    .ctx_manager
                     .is_application_installed(&context.application_id)
                 {
                     info!("{} joined the session.", their_peer_id.cyan());
