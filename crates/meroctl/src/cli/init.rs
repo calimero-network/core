@@ -152,6 +152,7 @@ impl InitCommand {
                     jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
                     websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
                 },
+                catchup: calimero_network::config::CatchupConfig { batch_size: 50 },
             },
         };
 

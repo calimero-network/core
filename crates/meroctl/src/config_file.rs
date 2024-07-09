@@ -33,6 +33,8 @@ pub struct NetworkConfig {
 
     #[serde(default)]
     pub discovery: calimero_network::config::DiscoveryConfig,
+
+    pub catchup: calimero_network::config::CatchupConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
