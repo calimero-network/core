@@ -523,17 +523,17 @@ impl Node {
                 {
                     match self.typ {
                         calimero_node_primitives::NodeType::Peer => {
-                            info!(%their_peer_id, "Attempting to perform catchup");
+                            info!(%their_peer_id, %context_id, "Attempting to perform initial catchup");
 
                             match self.perform_catchup(context_id, their_peer_id).await {
                                 Ok(_) => {
                                     self.ctx_manager
                                         .clear_context_pending_initial_catchup(&context_id)
                                         .await;
-                                    info!(%their_peer_id, "Catchup successfully finished");
+                                    info!(%their_peer_id, %context_id, "Catchup successfully finished");
                                 }
                                 Err(err) => {
-                                    error!(%err, "Failed to perform initial catchup, will retry when another peer subscribes");
+                                    error!(%err, %context_id, "Failed to perform initial catchup, will retry when another peer subscribes");
                                 }
                             }
                         }
