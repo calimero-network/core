@@ -33,12 +33,6 @@ pub struct CatchupRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CatchupResponseMeta {
-    pub application_id: calimero_primitives::application::ApplicationId,
-    pub version: semver::Version,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct CatchupApplicationChanged {
     pub application_id: calimero_primitives::application::ApplicationId,
     pub version: semver::Version,
