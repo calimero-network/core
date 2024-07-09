@@ -923,9 +923,11 @@ impl Node {
         let Some(ctx_meta) =
             handle.get(&calimero_store::key::ContextMeta::new(request.context_id))?
         else {
-            let message = serde_json::to_vec(&types::CatchupError::ContextNotFound {
-                context_id: request.context_id,
-            })?;
+            let message = serde_json::to_vec(&types::CatchupStreamMessage::Error(
+                types::CatchupError::ContextNotFound {
+                    context_id: request.context_id,
+                },
+            ))?;
             stream
                 .send(calimero_network::stream::Message { data: message })
                 .await?;
@@ -936,9 +938,11 @@ impl Node {
             request.context_id,
             request.last_executed_transaction_hash.into(),
         ))? {
-            let message = serde_json::to_vec(&types::CatchupError::TransactionNotFound {
-                transaction_hash: request.last_executed_transaction_hash,
-            })?;
+            let message = serde_json::to_vec(&types::CatchupStreamMessage::Error(
+                types::CatchupError::TransactionNotFound {
+                    transaction_hash: request.last_executed_transaction_hash,
+                },
+            ))?;
             stream
                 .send(calimero_network::stream::Message { data: message })
                 .await?;
@@ -995,7 +999,7 @@ impl Node {
             let Some(transaction) = handle.get(&key)? else {
                 error!(context_id=%request.context_id, ?hash, "Context transaction not found");
                 batch_writer
-                    .flush_with_error(&types::CatchupError::InternalError)
+                    .flush_with_error(types::CatchupError::InternalError)
                     .await?;
                 return Ok(());
             };
