@@ -548,13 +548,10 @@ impl Node {
                     types::PeerAction::Transaction(transaction) => {
                         let handle = self.store.handle();
 
-                        if handle
-                            .get(&calimero_store::key::ContextTransaction::new(
-                                transaction.context_id,
-                                transaction.prior_hash.into(),
-                            ))?
-                            .is_none()
-                        {
+                        if !handle.has(&calimero_store::key::ContextTransaction::new(
+                            transaction.context_id,
+                            transaction.prior_hash.into(),
+                        ))? {
                             info!(%source, "Attempting to perform catchup");
 
                             if let Err(err) =
@@ -939,13 +936,10 @@ impl Node {
             return Ok(());
         };
 
-        if handle
-            .get(&calimero_store::key::ContextTransaction::new(
-                request.context_id,
-                request.last_executed_transaction_hash.into(),
-            ))?
-            .is_none()
-        {
+        if !handle.has(&calimero_store::key::ContextTransaction::new(
+            request.context_id,
+            request.last_executed_transaction_hash.into(),
+        ))? {
             let message = serde_json::to_vec(&types::CatchupError::TransactionNotFound {
                 transaction_hash: request.last_executed_transaction_hash,
             })?;
@@ -955,13 +949,15 @@ impl Node {
             return Ok(());
         };
 
-        let application_version = self.ctx_manager.get_application_latest_version(
-            &meta_value.application_id.clone().into_string().into(),
-        )?;
+        let application_id = meta_value.application_id.clone().into_string().into();
+
+        let application_version = self
+            .ctx_manager
+            .get_application_latest_version(&application_id)?;
 
         let message = serde_json::to_vec(&types::CatchupStreamMessage::ResponseMeta(
             types::CatchupResponseMeta {
-                application_id: meta_value.application_id.into_string().into(),
+                application_id,
                 version: application_version,
             },
         ))?;
@@ -1037,7 +1033,7 @@ impl Node {
         &mut self,
         context_id: calimero_primitives::context::ContextId,
         chosen_peer: libp2p::PeerId,
-    ) -> eyre::Result<Option<()>> {
+    ) -> eyre::Result<()> {
         let handle = self.store.handle();
 
         let (mut context, request) =
@@ -1136,7 +1132,7 @@ impl Node {
             }
         }
 
-        Ok(Some(()))
+        Ok(())
     }
 }
 
