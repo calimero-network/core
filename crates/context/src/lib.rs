@@ -72,6 +72,26 @@ impl ContextManager {
         Ok(())
     }
 
+    pub async fn update_context_application_id(
+        &self,
+        context_id: calimero_primitives::context::ContextId,
+        application_id: calimero_primitives::application::ApplicationId,
+    ) -> eyre::Result<()> {
+        let mut handle = self.store.handle();
+
+        let key = calimero_store::key::ContextMeta::new(context_id);
+
+        let Some(mut value) = handle.get(&key)? else {
+            eyre::bail!("Context not found")
+        };
+
+        value.application_id = application_id.0.into();
+
+        handle.put(&key, &value)?;
+
+        Ok(())
+    }
+
     pub fn get_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,

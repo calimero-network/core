@@ -24,9 +24,10 @@ impl CatchupBatchSender {
         self.batch.push(tx_with_status);
 
         if self.batch.len() == self.batch_size as usize {
-            let message = types::CatchupStreamMessage::Response(types::CatchupResponse {
-                transactions: std::mem::take(&mut self.batch),
-            });
+            let message =
+                types::CatchupStreamMessage::TransactionsBatch(types::CatchupTransactionBatch {
+                    transactions: std::mem::take(&mut self.batch),
+                });
 
             let message = serde_json::to_vec(&message)?;
 
@@ -42,9 +43,10 @@ impl CatchupBatchSender {
 
     pub(crate) async fn flush(&mut self) -> eyre::Result<()> {
         if !self.batch.is_empty() {
-            let message = types::CatchupStreamMessage::Response(types::CatchupResponse {
-                transactions: std::mem::take(&mut self.batch),
-            });
+            let message =
+                types::CatchupStreamMessage::TransactionsBatch(types::CatchupTransactionBatch {
+                    transactions: std::mem::take(&mut self.batch),
+                });
 
             let message = serde_json::to_vec(&message)?;
 

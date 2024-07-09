@@ -19,14 +19,15 @@ pub struct TransactionConfirmation {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CatchupStreamMessage {
     Request(CatchupRequest),
-    ResponseMeta(CatchupResponseMeta),
-    Response(CatchupResponse),
+    ApplicationChanged(CatchupApplicationChanged),
+    TransactionsBatch(CatchupTransactionBatch),
     Error(CatchupError),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CatchupRequest {
     pub context_id: calimero_primitives::context::ContextId,
+    pub application_id: Option<calimero_primitives::application::ApplicationId>,
     pub last_executed_transaction_hash: calimero_primitives::hash::Hash,
     pub batch_size: u8,
 }
@@ -38,7 +39,13 @@ pub struct CatchupResponseMeta {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CatchupResponse {
+pub struct CatchupApplicationChanged {
+    pub application_id: calimero_primitives::application::ApplicationId,
+    pub version: semver::Version,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CatchupTransactionBatch {
     pub transactions: Vec<TransactionWithStatus>,
 }
 

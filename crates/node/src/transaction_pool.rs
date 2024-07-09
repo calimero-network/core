@@ -48,4 +48,8 @@ impl TransactionPool {
     ) -> impl Iterator<Item = (&calimero_primitives::hash::Hash, &TransactionPoolEntry)> {
         self.transactions.iter()
     }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.transactions.is_empty()
+    }
 }

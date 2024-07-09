@@ -924,7 +924,7 @@ impl Node {
 
         let handle = self.store.handle();
 
-        let Some(meta_value) =
+        let Some(ctx_meta) =
             handle.get(&calimero_store::key::ContextMeta::new(request.context_id))?
         else {
             let message = serde_json::to_vec(&types::CatchupError::ContextNotFound {
@@ -949,26 +949,35 @@ impl Node {
             return Ok(());
         };
 
-        let application_id = meta_value.application_id.clone().into_string().into();
+        let application_id = ctx_meta.application_id.clone().into_string().into();
 
-        let application_version = self
-            .ctx_manager
-            .get_application_latest_version(&application_id)?;
+        if request.application_id.is_none() || application_id == request.application_id.unwrap() {
+            let application_version = self
+                .ctx_manager
+                .get_application_latest_version(&application_id)?;
 
-        let message = serde_json::to_vec(&types::CatchupStreamMessage::ResponseMeta(
-            types::CatchupResponseMeta {
-                application_id,
-                version: application_version,
-            },
-        ))?;
-        stream
-            .send(calimero_network::stream::Message { data: message })
-            .await?;
+            let message = serde_json::to_vec(&types::CatchupStreamMessage::ApplicationChanged(
+                types::CatchupApplicationChanged {
+                    application_id,
+                    version: application_version,
+                },
+            ))?;
+
+            stream
+                .send(calimero_network::stream::Message { data: message })
+                .await?;
+        }
+
+        if ctx_meta.last_transaction_hash == *request.last_executed_transaction_hash
+            && self.tx_pool.is_empty()
+        {
+            return Ok(());
+        }
 
         let mut hashes = VecDeque::new();
         let mut key = calimero_store::key::ContextTransaction::new(
             request.context_id,
-            meta_value.last_transaction_hash.into(),
+            ctx_meta.last_transaction_hash.into(),
         );
 
         while let Some(transaction) = handle.get(&key)? {
@@ -1038,14 +1047,15 @@ impl Node {
 
         let (mut context, request) =
             match handle.get(&calimero_store::key::ContextMeta::new(context_id))? {
-                Some(meta) => (
+                Some(ctx_meta) => (
                     Some(calimero_primitives::context::Context {
                         id: context_id,
-                        application_id: meta.application_id.into_string().into(),
+                        application_id: ctx_meta.application_id.clone().into_string().into(),
                     }),
                     types::CatchupRequest {
                         context_id,
-                        last_executed_transaction_hash: meta.last_transaction_hash.into(),
+                        application_id: Some(ctx_meta.application_id.clone().into_string().into()),
+                        last_executed_transaction_hash: ctx_meta.last_transaction_hash.into(),
                         batch_size: self.network_client.catchup_config.batch_size,
                     },
                 ),
@@ -1053,8 +1063,9 @@ impl Node {
                     None,
                     types::CatchupRequest {
                         context_id,
+                        application_id: None,
                         last_executed_transaction_hash: calimero_primitives::hash::Hash::default(),
-                        batch_size: 50,
+                        batch_size: self.network_client.catchup_config.batch_size,
                     },
                 ),
             };
@@ -1069,9 +1080,9 @@ impl Node {
 
         while let Some(message) = stream.next().await {
             match serde_json::from_slice(&message?.data)? {
-                types::CatchupStreamMessage::Response(response) => {
+                types::CatchupStreamMessage::TransactionsBatch(response) => {
                     let Some(ref context) = context else {
-                        eyre::bail!("Received response with transactions before meta")
+                        eyre::bail!("Received transactions batch for uninitialized context");
                     };
 
                     for transaction in response.transactions {
@@ -1099,30 +1110,34 @@ impl Node {
                         }
                     }
                 }
-                types::CatchupStreamMessage::ResponseMeta(response) => match context {
-                    Some(ref context) => {
-                        if context.application_id != response.application_id {
-                            eyre::bail!(
-                                "Application ID mismatch: expected {:?}, got {:?}",
-                                context.application_id,
-                                response.application_id
-                            );
+                types::CatchupStreamMessage::ApplicationChanged(response) => {
+                    self.ctx_manager
+                        .install_application(&response.application_id, &response.version)
+                        .await?;
+
+                    match context {
+                        Some(ref mut context_inner) => {
+                            self.ctx_manager
+                                .update_context_application_id(
+                                    context_id,
+                                    response.application_id.clone(),
+                                )
+                                .await?;
+
+                            context_inner.application_id = response.application_id;
+                        }
+                        None => {
+                            let context_inner = calimero_primitives::context::Context {
+                                id: context_id,
+                                application_id: response.application_id,
+                            };
+
+                            self.ctx_manager.add_context(context_inner.clone()).await?;
+
+                            context = Some(context_inner);
                         }
                     }
-                    None => {
-                        self.ctx_manager
-                            .install_application(&response.application_id, &response.version)
-                            .await?;
-
-                        let context_ = calimero_primitives::context::Context {
-                            id: context_id,
-                            application_id: response.application_id,
-                        };
-
-                        self.ctx_manager.add_context(context_.clone()).await?;
-                        context = Some(context_);
-                    }
-                },
+                }
                 types::CatchupStreamMessage::Error(err) => {
                     eyre::bail!(err);
                 }
