@@ -10,7 +10,7 @@ use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub mod catchup;
 pub mod runtime_compat;
@@ -513,14 +513,14 @@ impl Node {
                 {
                     match self.typ {
                         calimero_node_primitives::NodeType::Peer => {
-                            info!(%their_peer_id, %context_id, "Attempting to perform initial catchup");
+                            info!(%context_id, %their_peer_id, "Attempting to perform initial catchup");
 
                             match self.perform_catchup(context_id, their_peer_id).await {
                                 Ok(_) => {
                                     self.ctx_manager
                                         .clear_context_pending_initial_catchup(&context_id)
                                         .await;
-                                    info!(%their_peer_id, %context_id, "Catchup successfully finished");
+                                    info!(%context_id, %their_peer_id, "Catchup successfully finished");
                                 }
                                 Err(err) => {
                                     error!(%err, %context_id, "Failed to perform initial catchup, will retry when another peer subscribes");
@@ -535,6 +535,15 @@ impl Node {
                     }
                 }
 
+                let Some(context) = self.ctx_manager.get_context(&context_id)? else {
+                    debug!(
+                        %context_id,
+                        %their_peer_id,
+                        "Observed subscription to unknown context, ignoring.."
+                    );
+                    return Ok(());
+                };
+
                 if self
                     .ctx_manager
                     .is_application_installed(&context.application_id)
@@ -544,7 +553,7 @@ impl Node {
                         self.node_events
                             .send(calimero_primitives::events::NodeEvent::Application(
                             calimero_primitives::events::ApplicationEvent {
-                                context_id: topic_hash.as_str().parse()?,
+                                context_id: context_id,
                                 payload:
                                     calimero_primitives::events::ApplicationEventPayload::PeerJoined(
                                         calimero_primitives::events::PeerJoinedPayload {
