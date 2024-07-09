@@ -506,16 +506,6 @@ impl Node {
                     return Ok(());
                 };
 
-                let Some(context) = self.ctx_manager.get_context(&context_id)? else {
-                    error!(
-                        %context_id,
-                        %their_peer_id,
-                        "Observed subscription to unknown context, ignoring.."
-                    );
-
-                    return Ok(());
-                };
-
                 if self
                     .ctx_manager
                     .is_context_pending_initial_catchup(&context_id)
