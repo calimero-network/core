@@ -553,7 +553,7 @@ impl Node {
                         self.node_events
                             .send(calimero_primitives::events::NodeEvent::Application(
                             calimero_primitives::events::ApplicationEvent {
-                                context_id: context_id,
+                                context_id,
                                 payload:
                                     calimero_primitives::events::ApplicationEventPayload::PeerJoined(
                                         calimero_primitives::events::PeerJoinedPayload {
