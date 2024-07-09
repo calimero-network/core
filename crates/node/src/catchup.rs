@@ -60,11 +60,11 @@ impl CatchupBatchSender {
 
     pub(crate) async fn flush_with_error(
         &mut self,
-        error: &types::CatchupError,
+        error: types::CatchupError,
     ) -> eyre::Result<()> {
         self.flush().await?;
 
-        let message = serde_json::to_vec(error)?;
+        let message = serde_json::to_vec(&types::CatchupStreamMessage::Error(error))?;
         self.stream
             .send(calimero_network::stream::Message { data: message })
             .await?;
