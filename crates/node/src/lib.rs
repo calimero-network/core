@@ -584,6 +584,10 @@ impl Node {
                                 error!(%err, "Failed to perform catchup");
                                 return Ok(());
                             };
+
+                            self.ctx_manager
+                                .clear_context_pending_initial_catchup(&transaction.context_id)
+                                .await;
                         }
 
                         let transaction_hash =
