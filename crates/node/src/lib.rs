@@ -10,7 +10,7 @@ use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub mod catchup;
 pub mod runtime_compat;
@@ -506,13 +506,33 @@ impl Node {
                     return Ok(());
                 };
 
+                if self
+                    .ctx_manager
+                    .is_context_pending_initial_catchup(&context_id)
+                    .await
+                {
+                    info!(%context_id, %their_peer_id, "Attempting to perform subscription triggered catchup");
+
+                    match self.perform_catchup(context_id, their_peer_id).await {
+                        Ok(_) => {
+                            self.ctx_manager
+                                .clear_context_pending_initial_catchup(&context_id)
+                                .await;
+                            info!(%context_id, %their_peer_id, "Subscription triggered catchup successfully finished");
+                        }
+                        Err(err) => {
+                            error!(?err, %context_id, %their_peer_id, "Failed to perform subscription triggered catchup");
+                            return Ok(());
+                        }
+                    }
+                }
+
                 let Some(context) = self.ctx_manager.get_context(&context_id)? else {
-                    error!(
+                    debug!(
                         %context_id,
                         %their_peer_id,
                         "Observed subscription to unknown context, ignoring.."
                     );
-
                     return Ok(());
                 };
 
@@ -525,7 +545,7 @@ impl Node {
                         self.node_events
                             .send(calimero_primitives::events::NodeEvent::Application(
                             calimero_primitives::events::ApplicationEvent {
-                                context_id: topic_hash.as_str().parse()?,
+                                context_id,
                                 payload:
                                     calimero_primitives::events::ApplicationEventPayload::PeerJoined(
                                         calimero_primitives::events::PeerJoinedPayload {
@@ -548,14 +568,19 @@ impl Node {
                             transaction.context_id,
                             transaction.prior_hash.into(),
                         ))? {
-                            info!(%source, "Attempting to perform catchup");
+                            info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
 
                             if let Err(err) =
                                 self.perform_catchup(transaction.context_id, source).await
                             {
-                                error!(%err, "Failed to perform catchup");
+                                error!(?err, context_id=%transaction.context_id, %source, "Failed to perform tx triggered catchup");
                                 return Ok(());
                             };
+                            info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
+
+                            self.ctx_manager
+                                .clear_context_pending_initial_catchup(&transaction.context_id)
+                                .await;
                         }
 
                         let transaction_hash =
@@ -1087,26 +1112,36 @@ impl Node {
 
                     for transaction in response.transactions {
                         match transaction.status {
-                            types::TransactionStatus::Pending => {
-                                self.tx_pool.insert(
-                                    chosen_peer,
-                                    calimero_primitives::transaction::Transaction {
-                                        context_id: context.id,
-                                        method: transaction.transaction.method,
-                                        payload: transaction.transaction.payload,
-                                        prior_hash: transaction.transaction.prior_hash,
-                                    },
-                                    None,
-                                )?;
-                            }
-                            types::TransactionStatus::Executed => {
-                                self.execute_transaction(
-                                    context.clone(),
-                                    transaction.transaction,
-                                    transaction.transaction_hash,
-                                )
-                                .await?;
-                            }
+                            types::TransactionStatus::Pending => match self.typ {
+                                calimero_node_primitives::NodeType::Peer => {
+                                    self.tx_pool.insert(
+                                        chosen_peer,
+                                        calimero_primitives::transaction::Transaction {
+                                            context_id: context.id,
+                                            method: transaction.transaction.method,
+                                            payload: transaction.transaction.payload,
+                                            prior_hash: transaction.transaction.prior_hash,
+                                        },
+                                        None,
+                                    )?;
+                                }
+                                calimero_node_primitives::NodeType::Coordinator => {
+                                    // todo! handle this with either Rejection or Confirmation
+                                }
+                            },
+                            types::TransactionStatus::Executed => match self.typ {
+                                calimero_node_primitives::NodeType::Peer => {
+                                    self.execute_transaction(
+                                        context.clone(),
+                                        transaction.transaction,
+                                        transaction.transaction_hash,
+                                    )
+                                    .await?;
+                                }
+                                calimero_node_primitives::NodeType::Coordinator => {
+                                    // todo! only persist transaction
+                                }
+                            },
                         }
                     }
                 }
