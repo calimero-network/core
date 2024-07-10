@@ -1,9 +1,11 @@
 use crate::entry::{DataType, Entry};
 use crate::key;
 
+mod application;
 mod context;
 mod generic;
 
+pub use apps::ApplicationMeta;
 pub use context::{
     ContextIdentity, ContextMeta, ContextState, ContextTransaction, TransactionHash,
 };

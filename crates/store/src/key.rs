@@ -6,10 +6,12 @@ use generic_array::{GenericArray, IntoArrayLength};
 use crate::db::Column;
 use crate::slice::Slice;
 
+mod application;
 mod component;
 mod context;
 mod generic;
 
+pub use application::ApplicationMeta;
 use component::KeyComponents;
 pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction};
 pub use generic::Generic;

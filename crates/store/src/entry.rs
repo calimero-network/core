@@ -14,6 +14,13 @@ pub trait Entry {
     type DataType<'a>: DataType<'a>;
 
     fn key(&self) -> &Self::Key;
+
+    // each entry should be able to define what
+    // happens when it's operated on wrt storage
+    // for example: to ref dec one of it's fields
+    // when it's changed, for example
+    // read old state, check if it's changed, decrement
+    // the referent entry
 }
 
 #[cfg(feature = "serde")]

@@ -47,7 +47,7 @@ impl FromKeyParts for ContextMeta {
 impl fmt::Debug for ContextMeta {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContextMeta")
-            .field("context_id", &self.context_id())
+            .field("id", &self.context_id())
             .finish()
     }
 }
