@@ -16,6 +16,7 @@ pub enum Column {
     Identity,
     State,
     Transaction,
+    Application,
     Generic,
 }
 
