@@ -511,17 +511,17 @@ impl Node {
                     .is_context_pending_initial_catchup(&context_id)
                     .await
                 {
-                    info!(%context_id, %their_peer_id, "Attempting to perform initial catchup");
+                    info!(%context_id, %their_peer_id, "Attempting to perform subscription triggered catchup");
 
                     match self.perform_catchup(context_id, their_peer_id).await {
                         Ok(_) => {
                             self.ctx_manager
                                 .clear_context_pending_initial_catchup(&context_id)
                                 .await;
-                            info!(%context_id, %their_peer_id, "Initial catchup successfully finished");
+                            info!(%context_id, %their_peer_id, "Subscription triggered catchup successfully finished");
                         }
                         Err(err) => {
-                            error!(?err, %context_id, %their_peer_id, "Failed to perform initial catchup");
+                            error!(?err, %context_id, %their_peer_id, "Failed to perform subscription triggered catchup");
                             return Ok(());
                         }
                     }
