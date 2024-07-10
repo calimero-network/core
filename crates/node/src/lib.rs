@@ -511,26 +511,18 @@ impl Node {
                     .is_context_pending_initial_catchup(&context_id)
                     .await
                 {
-                    match self.typ {
-                        calimero_node_primitives::NodeType::Peer => {
-                            info!(%context_id, %their_peer_id, "Attempting to perform initial catchup");
+                    info!(%context_id, %their_peer_id, "Attempting to perform initial catchup");
 
-                            match self.perform_catchup(context_id, their_peer_id).await {
-                                Ok(_) => {
-                                    self.ctx_manager
-                                        .clear_context_pending_initial_catchup(&context_id)
-                                        .await;
-                                    info!(%context_id, %their_peer_id, "Catchup successfully finished");
-                                }
-                                Err(err) => {
-                                    error!(%err, %context_id, "Failed to perform initial catchup, will retry when another peer subscribes");
-                                }
-                            }
-                        }
-                        calimero_node_primitives::NodeType::Coordinator => {
+                    match self.perform_catchup(context_id, their_peer_id).await {
+                        Ok(_) => {
                             self.ctx_manager
                                 .clear_context_pending_initial_catchup(&context_id)
                                 .await;
+                            info!(%context_id, %their_peer_id, "Initial catchup successfully finished");
+                        }
+                        Err(err) => {
+                            error!(?err, %context_id, %their_peer_id, "Failed to perform initial catchup");
+                            return Ok(());
                         }
                     }
                 }
@@ -576,14 +568,15 @@ impl Node {
                             transaction.context_id,
                             transaction.prior_hash.into(),
                         ))? {
-                            info!(%source, "Attempting to perform catchup");
+                            info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
 
                             if let Err(err) =
                                 self.perform_catchup(transaction.context_id, source).await
                             {
-                                error!(%err, "Failed to perform catchup");
+                                error!(?err, context_id=%transaction.context_id, %source, "Failed to perform tx triggered catchup");
                                 return Ok(());
                             };
+                            info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
 
                             self.ctx_manager
                                 .clear_context_pending_initial_catchup(&transaction.context_id)

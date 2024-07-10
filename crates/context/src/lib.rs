@@ -56,6 +56,12 @@ impl ContextManager {
         let mut iter = handle.iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?;
 
         for key in iter.keys() {
+            self.state
+                .write()
+                .await
+                .pending_initial_catchup
+                .insert(key.context_id());
+
             self.subscribe(&key.context_id()).await?;
         }
 
