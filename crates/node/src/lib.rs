@@ -496,100 +496,141 @@ impl Node {
                 peer_id: their_peer_id,
                 topic: topic_hash,
             } => {
-                let Ok(context_id) = topic_hash.as_str().parse() else {
-                    error!(
-                        %topic_hash,
-                        %their_peer_id,
-                        "Failed to parse topic hash into context ID, ignoring.."
-                    );
-
-                    return Ok(());
-                };
-
-                if self
-                    .ctx_manager
-                    .is_context_pending_initial_catchup(&context_id)
-                    .await
-                {
-                    info!(%context_id, %their_peer_id, "Attempting to perform subscription triggered catchup");
-
-                    match self.perform_catchup(context_id, their_peer_id).await {
-                        Ok(_) => {
-                            self.ctx_manager
-                                .clear_context_pending_initial_catchup(&context_id)
-                                .await;
-                            info!(%context_id, %their_peer_id, "Subscription triggered catchup successfully finished");
-                        }
-                        Err(err) => {
-                            error!(?err, %context_id, %their_peer_id, "Failed to perform subscription triggered catchup");
-                            return Ok(());
-                        }
-                    }
-                }
-
-                let Some(context) = self.ctx_manager.get_context(&context_id)? else {
-                    debug!(
-                        %context_id,
-                        %their_peer_id,
-                        "Observed subscription to unknown context, ignoring.."
-                    );
-                    return Ok(());
-                };
-
-                if self
-                    .ctx_manager
-                    .is_application_installed(&context.application_id)
-                {
-                    info!("{} joined the session.", their_peer_id.cyan());
-                    let _ =
-                        self.node_events
-                            .send(calimero_primitives::events::NodeEvent::Application(
-                            calimero_primitives::events::ApplicationEvent {
-                                context_id,
-                                payload:
-                                    calimero_primitives::events::ApplicationEventPayload::PeerJoined(
-                                        calimero_primitives::events::PeerJoinedPayload {
-                                            peer_id: their_peer_id,
-                                        },
-                                    ),
-                            },
-                        ));
+                if let Err(err) = self.handle_subscribed(their_peer_id, topic_hash).await {
+                    error!(?err, "Failed to handle subscribed event");
                 }
             }
             calimero_network::types::NetworkEvent::Message { message, .. } => {
-                let Some(source) = message.source else {
-                    return Ok(());
+                if let Err(err) = self.handle_message(message).await {
+                    error!(?err, "Failed to handle message event");
+                }
+            }
+            calimero_network::types::NetworkEvent::ListeningOn { address, .. } => {
+                info!("Listening on: {}", address);
+            }
+            calimero_network::types::NetworkEvent::StreamOpened { peer_id, stream } => {
+                info!("Stream opened from peer: {}", peer_id);
+
+                if let Err(err) = self.handle_opened_stream(stream).await {
+                    error!(?err, "Failed to handle stream");
+                }
+
+                info!("Stream closed from peer: {:?}", peer_id);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_subscribed(
+        &mut self,
+        their_peer_id: libp2p::PeerId,
+        topic_hash: libp2p::gossipsub::TopicHash,
+    ) -> eyre::Result<()> {
+        let Ok(context_id) = topic_hash.as_str().parse() else {
+            eyre::bail!(
+                "Failed to parse topic hash '{}' into context ID",
+                topic_hash
+            );
+        };
+
+        if self
+            .ctx_manager
+            .is_context_pending_initial_catchup(&context_id)
+            .await
+        {
+            info!(%context_id, %their_peer_id, "Attempting to perform subscription triggered catchup");
+
+            self.perform_catchup(context_id, their_peer_id).await?;
+
+            self.ctx_manager
+                .clear_context_pending_initial_catchup(&context_id)
+                .await;
+
+            info!(%context_id, %their_peer_id, "Subscription triggered catchup successfully finished");
+        }
+
+        let Some(context) = self.ctx_manager.get_context(&context_id)? else {
+            debug!(
+                %context_id,
+                %their_peer_id,
+                "Observed subscription to unknown context, ignoring.."
+            );
+            return Ok(());
+        };
+
+        if self
+            .ctx_manager
+            .is_application_installed(&context.application_id)
+        {
+            info!("{} joined the session.", their_peer_id.cyan());
+            let _ = self
+                .node_events
+                .send(calimero_primitives::events::NodeEvent::Application(
+                    calimero_primitives::events::ApplicationEvent {
+                        context_id,
+                        payload: calimero_primitives::events::ApplicationEventPayload::PeerJoined(
+                            calimero_primitives::events::PeerJoinedPayload {
+                                peer_id: their_peer_id,
+                            },
+                        ),
+                    },
+                ));
+        }
+
+        Ok(())
+    }
+
+    async fn handle_message(&mut self, message: libp2p::gossipsub::Message) -> eyre::Result<()> {
+        let Some(source) = message.source else {
+            return Ok(());
+        };
+
+        match serde_json::from_slice(&message.data)? {
+            types::PeerAction::Transaction(transaction) => {
+                let handle = self.store.handle();
+
+                if !handle.has(&calimero_store::key::ContextTransaction::new(
+                    transaction.context_id,
+                    transaction.prior_hash.into(),
+                ))? {
+                    info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
+
+                    self.perform_catchup(transaction.context_id, source).await?;
+
+                    self.ctx_manager
+                        .clear_context_pending_initial_catchup(&transaction.context_id)
+                        .await;
+
+                    info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
                 };
-                match serde_json::from_slice(&message.data)? {
-                    types::PeerAction::Transaction(transaction) => {
-                        let handle = self.store.handle();
 
-                        if !handle.has(&calimero_store::key::ContextTransaction::new(
+                let Some(ctx_meta) = handle.get(&calimero_store::key::ContextMeta::new(
+                    transaction.context_id,
+                ))?
+                else {
+                    eyre::bail!("Context '{}' not found", transaction.context_id);
+                };
+
+                let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
+
+                if self.typ.is_coordinator() {
+                    let Some(tx_entry) = self.tx_pool.remove(&transaction_hash) else {
+                        eyre::bail!("Failed to remove transaction from pool");
+                    };
+
+                    if ctx_meta.last_transaction_hash == *tx_entry.transaction.prior_hash {
+                        self.persist_transaction(
                             transaction.context_id,
-                            transaction.prior_hash.into(),
-                        ))? {
-                            info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
+                            ctx_meta.application_id.to_string().into(),
+                            tx_entry.transaction,
+                            transaction_hash,
+                        )?;
 
-                            if let Err(err) =
-                                self.perform_catchup(transaction.context_id, source).await
-                            {
-                                error!(?err, context_id=%transaction.context_id, %source, "Failed to perform tx triggered catchup");
-                                return Ok(());
-                            };
-                            info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
+                        self.nonce += 1;
 
-                            self.ctx_manager
-                                .clear_context_pending_initial_catchup(&transaction.context_id)
-                                .await;
-                        }
-
-                        let transaction_hash =
-                            self.tx_pool.insert(source, transaction.clone(), None)?;
-
-                        if self.typ.is_coordinator() {
-                            self.nonce += 1;
-
-                            self.push_action(
+                        if let Err(err) = self
+                            .push_action(
                                 transaction.context_id,
                                 types::PeerAction::TransactionConfirmation(
                                     types::TransactionConfirmation {
@@ -601,38 +642,37 @@ impl Node {
                                     },
                                 ),
                             )
-                            .await?;
-
-                            self.tx_pool.remove(&transaction_hash);
-                        }
-                    }
-                    types::PeerAction::TransactionConfirmation(confirmation) => {
-                        // todo! ensure this was only sent by a coordinator
-                        self.execute_in_pool(
-                            confirmation.context_id,
-                            confirmation.transaction_hash,
+                            .await
+                        {
+                            self.delete_transaction(transaction.context_id, transaction_hash)?;
+                            eyre::bail!("Failed to push confirmation action: {}", err);
+                        };
+                    } else {
+                        self.push_action(
+                            transaction.context_id,
+                            types::PeerAction::TransactionRejection(types::TransactionRejection {
+                                context_id: transaction.context_id,
+                                transaction_hash,
+                            }),
                         )
                         .await?;
                     }
                 }
             }
-            calimero_network::types::NetworkEvent::ListeningOn { address, .. } => {
-                info!("Listening on: {}", address);
+            types::PeerAction::TransactionConfirmation(confirmation) => {
+                // todo! ensure this was only sent by a coordinator
+                self.execute_in_pool(confirmation.context_id, confirmation.transaction_hash)
+                    .await?;
             }
-            calimero_network::types::NetworkEvent::StreamOpened { peer_id, stream } => {
-                info!("Stream opened from peer: {}", peer_id);
-                if let Err(err) = self.handle_stream(stream).await {
-                    error!(%err, "Failed to handle stream");
-                }
-
-                info!("Stream closed from peer: {:?}", peer_id);
+            types::PeerAction::TransactionRejection(rejection) => {
+                self.tx_pool.remove(&rejection.transaction_hash);
             }
         }
 
         Ok(())
     }
 
-    pub async fn push_action(
+    async fn push_action(
         &mut self,
         context_id: calimero_primitives::context::ContextId,
         action: types::PeerAction,
@@ -841,10 +881,22 @@ impl Node {
             )
             .await?;
 
+        self.persist_transaction(context.id, context.application_id, transaction, hash)?;
+
+        Ok(outcome)
+    }
+
+    fn persist_transaction(
+        &mut self,
+        context_id: calimero_primitives::context::ContextId,
+        application_id: calimero_primitives::application::ApplicationId,
+        transaction: calimero_primitives::transaction::Transaction,
+        hash: calimero_primitives::hash::Hash,
+    ) -> eyre::Result<()> {
         let mut handle = self.store.handle();
 
         handle.put(
-            &calimero_store::key::ContextTransaction::new(context.id, hash.into()),
+            &calimero_store::key::ContextTransaction::new(context_id, hash.into()),
             &calimero_store::types::ContextTransaction {
                 method: transaction.method.into(),
                 payload: transaction.payload.into(),
@@ -853,14 +905,29 @@ impl Node {
         )?;
 
         handle.put(
-            &calimero_store::key::ContextMeta::new(context.id),
+            &calimero_store::key::ContextMeta::new(context_id),
             &calimero_store::types::ContextMeta {
-                application_id: context.application_id.0.into(),
+                application_id: application_id.0.into(),
                 last_transaction_hash: *hash.as_bytes(),
             },
         )?;
 
-        Ok(outcome)
+        Ok(())
+    }
+
+    fn delete_transaction(
+        &mut self,
+        context_id: calimero_primitives::context::ContextId,
+        hash: calimero_primitives::hash::Hash,
+    ) -> eyre::Result<()> {
+        let mut handle = self.store.handle();
+
+        handle.delete(&calimero_store::key::ContextTransaction::new(
+            context_id,
+            hash.into(),
+        ))?;
+
+        Ok(())
     }
 
     async fn execute(
@@ -928,7 +995,7 @@ impl Node {
         Ok(outcome)
     }
 
-    async fn handle_stream(
+    async fn handle_opened_stream(
         &mut self,
         mut stream: calimero_network::stream::Stream,
     ) -> eyre::Result<()> {
@@ -1097,6 +1164,8 @@ impl Node {
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
+        let mut last_transaction_hash = request.last_executed_transaction_hash;
+
         let request = serde_json::to_vec(&types::CatchupStreamMessage::Request(request))?;
 
         stream
@@ -1110,36 +1179,105 @@ impl Node {
                         eyre::bail!("Received transactions batch for uninitialized context");
                     };
 
-                    for transaction in response.transactions {
-                        match transaction.status {
+                    for types::TransactionWithStatus {
+                        transaction_hash,
+                        transaction,
+                        status,
+                    } in response.transactions
+                    {
+                        let is_transaction_valid = last_transaction_hash == transaction.prior_hash;
+
+                        match status {
                             types::TransactionStatus::Pending => match self.typ {
                                 calimero_node_primitives::NodeType::Peer => {
-                                    self.tx_pool.insert(
-                                        chosen_peer,
-                                        calimero_primitives::transaction::Transaction {
-                                            context_id: context.id,
-                                            method: transaction.transaction.method,
-                                            payload: transaction.transaction.payload,
-                                            prior_hash: transaction.transaction.prior_hash,
-                                        },
-                                        None,
-                                    )?;
+                                    if is_transaction_valid {
+                                        self.tx_pool.insert(
+                                            chosen_peer,
+                                            calimero_primitives::transaction::Transaction {
+                                                context_id: context.id,
+                                                method: transaction.method,
+                                                payload: transaction.payload,
+                                                prior_hash: transaction.prior_hash,
+                                            },
+                                            None,
+                                        )?;
+
+                                        last_transaction_hash = transaction_hash;
+                                    }
                                 }
                                 calimero_node_primitives::NodeType::Coordinator => {
-                                    // todo! handle this with either Rejection or Confirmation
+                                    if is_transaction_valid {
+                                        self.persist_transaction(
+                                            transaction.context_id,
+                                            context.application_id.clone(),
+                                            transaction.clone(),
+                                            transaction_hash,
+                                        )?;
+
+                                        if let Err(err) = self
+                                            .push_action(
+                                                transaction.context_id,
+                                                types::PeerAction::TransactionConfirmation(
+                                                    types::TransactionConfirmation {
+                                                        context_id: transaction.context_id,
+                                                        nonce: self.nonce,
+                                                        transaction_hash,
+                                                        // todo! proper confirmation hash
+                                                        confirmation_hash: transaction_hash,
+                                                    },
+                                                ),
+                                            )
+                                            .await
+                                        {
+                                            self.delete_transaction(
+                                                transaction.context_id,
+                                                transaction_hash,
+                                            )?;
+                                            eyre::bail!(
+                                                "Failed to push confirmation action: {}",
+                                                err
+                                            );
+                                        };
+
+                                        last_transaction_hash = transaction_hash;
+                                    } else {
+                                        self.push_action(
+                                            transaction.context_id,
+                                            types::PeerAction::TransactionRejection(
+                                                types::TransactionRejection {
+                                                    context_id: transaction.context_id,
+                                                    transaction_hash,
+                                                },
+                                            ),
+                                        )
+                                        .await?;
+                                    }
                                 }
                             },
                             types::TransactionStatus::Executed => match self.typ {
                                 calimero_node_primitives::NodeType::Peer => {
-                                    self.execute_transaction(
-                                        context.clone(),
-                                        transaction.transaction,
-                                        transaction.transaction_hash,
-                                    )
-                                    .await?;
+                                    if is_transaction_valid {
+                                        self.execute_transaction(
+                                            context.clone(),
+                                            transaction,
+                                            transaction_hash,
+                                        )
+                                        .await?;
+
+                                        last_transaction_hash = transaction_hash;
+                                    }
                                 }
                                 calimero_node_primitives::NodeType::Coordinator => {
-                                    // todo! only persist transaction
+                                    if is_transaction_valid {
+                                        self.persist_transaction(
+                                            transaction.context_id,
+                                            context.application_id.clone(),
+                                            transaction.clone(),
+                                            transaction_hash,
+                                        )?;
+
+                                        last_transaction_hash = transaction_hash;
+                                    }
                                 }
                             },
                         }

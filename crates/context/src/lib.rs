@@ -174,13 +174,13 @@ impl ContextManager {
 
         let key = calimero_store::key::ContextMeta::new(*context_id);
 
-        let Some(context) = handle.get(&key)? else {
+        let Some(ctx_meta) = handle.get(&key)? else {
             return Ok(None);
         };
 
         Ok(Some(calimero_primitives::context::Context {
             id: *context_id,
-            application_id: context.application_id.into_string().into(),
+            application_id: ctx_meta.application_id.into_string().into(),
         }))
     }
 
