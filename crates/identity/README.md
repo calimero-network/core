@@ -1,4 +1,3 @@
-
 # Calimero Identity
 
 Decentralized identity, also referred to as self-sovereign identity, is an

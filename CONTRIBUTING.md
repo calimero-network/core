@@ -22,24 +22,24 @@ contribute.
 
 There are several ways you can contribute:
 
-  - Solve open [Issues][]
-  - Report bugs or suggest features
-  - Enhance the documentation
+- Solve open [Issues][]
+- Report bugs or suggest features
+- Enhance the documentation
 
 Contributions are managed via Issues and Pull Requests (PRs). Here are some
 general guidelines:
 
-  - Before creating a new Issue or PR, search for [existing ones][Issues].
+- Before creating a new Issue or PR, search for [existing ones][Issues].
 
-  - Contributions should focus on either functionality or style in the PR, not
-    both.
+- Contributions should focus on either functionality or style in the PR, not
+  both.
 
-  - If you encounter an error, provide context. Explain what you are trying to
-    do and how to reproduce the error.
+- If you encounter an error, provide context. Explain what you are trying to do
+  and how to reproduce the error.
 
-  - Follow the repository’s formatting guidelines.
+- Follow the repository’s formatting guidelines.
 
-  - Update the [README][] file if your changes affect it.
+- Update the [README][] file if your changes affect it.
 
 ## Issues
 
@@ -56,20 +56,19 @@ If someone is already working on an issue, they will either be officially
 assigned to it or have left a comment indicating they are working on it. If you
 would like to work on an issue, please follow these steps:
 
-  1. **Comment on the Issue**: Leave a comment on the issue expressing your
-     intention to work on it. For example, "I would like to work on this issue."
+1. **Comment on the Issue**: Leave a comment on the issue expressing your
+   intention to work on it. For example, "I would like to work on this issue."
 
-  2. **Wait for Confirmation**: A project maintainer will confirm your
-     assignment by officially assigning the issue to you or by acknowledging
-     your comment.
+2. **Wait for Confirmation**: A project maintainer will confirm your assignment
+   by officially assigning the issue to you or by acknowledging your comment.
 
-  3. **Start Working**: Once you have received confirmation, you can start
-     working on the issue.
+3. **Start Working**: Once you have received confirmation, you can start working
+   on the issue.
 
-  4. **Open a Pull Request**: When your work is ready, open a pull request (PR)
-     with your solution. Make sure to mention in the PR that you are working on
-     the issue by referencing the issue number in the PR description (e.g.,
-     "This PR addresses issue #123").
+4. **Open a Pull Request**: When your work is ready, open a pull request (PR)
+   with your solution. Make sure to mention in the PR that you are working on
+   the issue by referencing the issue number in the PR description (e.g., "This
+   PR addresses issue #123").
 
 By following this process, we can avoid duplication of efforts and ensure clear
 communication among all contributors.
@@ -80,9 +79,9 @@ If no related issue exists, you can create a new one.
 
 Here are some tips:
 
-  - Provide detailed context to make it clear for others.
-  - Include steps to reproduce the issue or the rationale for a new feature.
-  - Attach screenshots, videos, etc., if applicable.
+- Provide detailed context to make it clear for others.
+- Include steps to reproduce the issue or the rationale for a new feature.
+- Attach screenshots, videos, etc., if applicable.
 
 ## Pull Requests
 
@@ -90,39 +89,39 @@ Here are some tips:
 
 We use the ["fork-and-pull"][GitPR] Git workflow:
 
-  1. Fork the repository.
+1. Fork the repository.
 
-  2. Clone the project.
+2. Clone the project.
 
-  3. Create a new branch with a descriptive name.
+3. Create a new branch with a descriptive name.
 
-  4. Commit your changes to this new branch.
+4. Commit your changes to this new branch.
 
-  5. Push your changes to your fork.
+5. Push your changes to your fork.
 
-  6. Create a pull request from your fork to our repository. Use the `master`
-     branch as the base branch.
+6. Create a pull request from your fork to our repository. Use the `master`
+   branch as the base branch.
 
-  7. Tag a maintainer to review your PR.
+7. Tag a maintainer to review your PR.
 
 ### Tips for a Quality Pull Request
 
-  - Title your PR to clearly describe the work done.
+- Title your PR to clearly describe the work done.
 
-  - Structure the description for easy reading, using bullet points and
-    screenshots if necessary.
+- Structure the description for easy reading, using bullet points and
+  screenshots if necessary.
 
-  - Link to the related issue, if applicable.
+- Link to the related issue, if applicable.
 
-  - Write a concise commit message summarizing the work.
+- Write a concise commit message summarizing the work.
 
 ### After Submitting Your PR
 
-  - We might ask questions, request more details, or ask for changes before
-    merging your PR. This ensures clarity and smooth interaction.
+- We might ask questions, request more details, or ask for changes before
+  merging your PR. This ensures clarity and smooth interaction.
 
-  - As you update your PR, resolve each conversation.
+- As you update your PR, resolve each conversation.
 
-  - Once approved, we will "squash-and-merge" to keep the commit history clean.
+- Once approved, we will "squash-and-merge" to keep the commit history clean.
 
 Thank you for your contributions!
