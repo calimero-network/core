@@ -1112,26 +1112,36 @@ impl Node {
 
                     for transaction in response.transactions {
                         match transaction.status {
-                            types::TransactionStatus::Pending => {
-                                self.tx_pool.insert(
-                                    chosen_peer,
-                                    calimero_primitives::transaction::Transaction {
-                                        context_id: context.id,
-                                        method: transaction.transaction.method,
-                                        payload: transaction.transaction.payload,
-                                        prior_hash: transaction.transaction.prior_hash,
-                                    },
-                                    None,
-                                )?;
-                            }
-                            types::TransactionStatus::Executed => {
-                                self.execute_transaction(
-                                    context.clone(),
-                                    transaction.transaction,
-                                    transaction.transaction_hash,
-                                )
-                                .await?;
-                            }
+                            types::TransactionStatus::Pending => match self.typ {
+                                calimero_node_primitives::NodeType::Peer => {
+                                    self.tx_pool.insert(
+                                        chosen_peer,
+                                        calimero_primitives::transaction::Transaction {
+                                            context_id: context.id,
+                                            method: transaction.transaction.method,
+                                            payload: transaction.transaction.payload,
+                                            prior_hash: transaction.transaction.prior_hash,
+                                        },
+                                        None,
+                                    )?;
+                                }
+                                calimero_node_primitives::NodeType::Coordinator => {
+                                    // todo! handle this with either Rejection or Confirmation
+                                }
+                            },
+                            types::TransactionStatus::Executed => match self.typ {
+                                calimero_node_primitives::NodeType::Peer => {
+                                    self.execute_transaction(
+                                        context.clone(),
+                                        transaction.transaction,
+                                        transaction.transaction_hash,
+                                    )
+                                    .await?;
+                                }
+                                calimero_node_primitives::NodeType::Coordinator => {
+                                    // todo! only persist transaction
+                                }
+                            },
                         }
                     }
                 }
