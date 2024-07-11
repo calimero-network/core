@@ -661,11 +661,15 @@ impl Node {
             }
             types::PeerAction::TransactionConfirmation(confirmation) => {
                 // todo! ensure this was only sent by a coordinator
-                self.execute_in_pool(confirmation.context_id, confirmation.transaction_hash)
-                    .await?;
+                if let Err(err) = self.execute_in_pool(confirmation.transaction_hash).await {
+                    error!(%err, "Failed to execute transaction in pool");
+                };
             }
             types::PeerAction::TransactionRejection(rejection) => {
-                self.tx_pool.remove(&rejection.transaction_hash);
+                // todo! ensure this was only sent by a coordinator
+                if let Err(err) = self.reject_from_pool(rejection.transaction_hash).await {
+                    error!(%err, "Failed to reject transaction from pool");
+                };
             }
         }
 
@@ -840,7 +844,6 @@ impl Node {
 
     async fn execute_in_pool(
         &mut self,
-        context_id: calimero_primitives::context::ContextId,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<Option<()>> {
         let Some(transaction_pool::TransactionPoolEntry {
@@ -852,10 +855,22 @@ impl Node {
             return Ok(None);
         };
 
-        let Some(context) = self.ctx_manager.get_context(&context_id)? else {
-            error!("Context not installed, but the transaction was in the pool.");
-            return Ok(None);
+        let handle = self.store.handle();
+
+        let Some(ctx_meta) = handle.get(&calimero_store::key::ContextMeta::new(
+            transaction.context_id,
+        ))?
+        else {
+            eyre::bail!("Context '{}' not found", transaction.context_id);
         };
+        let context = calimero_primitives::context::Context {
+            id: transaction.context_id,
+            application_id: ctx_meta.application_id.to_string().into(),
+        };
+
+        if ctx_meta.last_transaction_hash != *transaction.prior_hash {
+            eyre::bail!("Context '{}' not found", transaction.context_id);
+        }
 
         let outcome = self.execute_transaction(context, transaction, hash).await?;
 
@@ -884,6 +899,25 @@ impl Node {
         self.persist_transaction(context, transaction, hash)?;
 
         Ok(outcome)
+    }
+
+    async fn reject_from_pool(
+        &mut self,
+        hash: calimero_primitives::hash::Hash,
+    ) -> eyre::Result<()> {
+        while let Some(transaction_pool::TransactionPoolEntry { transaction, .. }) =
+            self.tx_pool.remove(&self.last_tx)
+        {
+            self.last_tx = transaction.prior_hash;
+
+            // todo! implement and push rejection variant to outcome sender
+
+            if self.last_tx == hash {
+                break;
+            }
+        }
+
+        Ok(())
     }
 
     fn persist_transaction(
