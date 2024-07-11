@@ -550,7 +550,9 @@ impl Node {
             info!(%context_id, %their_peer_id, "Subscription triggered catchup successfully finished");
         }
 
-        let Some(context) = self.ctx_manager.get_context(&context_id)? else {
+        let handle = self.store.handle();
+
+        if !handle.has(&calimero_store::key::ContextMeta::new(context_id))? {
             debug!(
                 %context_id,
                 %their_peer_id,
@@ -559,24 +561,19 @@ impl Node {
             return Ok(());
         };
 
-        if self
-            .ctx_manager
-            .is_application_installed(&context.application_id)
-        {
-            info!("{} joined the session.", their_peer_id.cyan());
-            let _ = self
-                .node_events
-                .send(calimero_primitives::events::NodeEvent::Application(
-                    calimero_primitives::events::ApplicationEvent {
-                        context_id,
-                        payload: calimero_primitives::events::ApplicationEventPayload::PeerJoined(
-                            calimero_primitives::events::PeerJoinedPayload {
-                                peer_id: their_peer_id,
-                            },
-                        ),
-                    },
-                ));
-        }
+        info!("{} joined the session.", their_peer_id.cyan());
+        let _ = self
+            .node_events
+            .send(calimero_primitives::events::NodeEvent::Application(
+                calimero_primitives::events::ApplicationEvent {
+                    context_id,
+                    payload: calimero_primitives::events::ApplicationEventPayload::PeerJoined(
+                        calimero_primitives::events::PeerJoinedPayload {
+                            peer_id: their_peer_id,
+                        },
+                    ),
+                },
+            ));
 
         Ok(())
     }
