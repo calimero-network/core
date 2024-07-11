@@ -181,6 +181,7 @@ impl ContextManager {
         Ok(Some(calimero_primitives::context::Context {
             id: *context_id,
             application_id: ctx_meta.application_id.into_string().into(),
+            last_transaction_hash: ctx_meta.last_transaction_hash.into(),
         }))
     }
 
@@ -233,6 +234,7 @@ impl ContextManager {
             .map(|(k, v)| calimero_primitives::context::Context {
                 id: k.context_id(),
                 application_id: v.application_id.into_string().into(),
+                last_transaction_hash: v.last_transaction_hash.into(),
             });
 
         Ok(contexts.collect())

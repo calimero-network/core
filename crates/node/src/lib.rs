@@ -40,7 +40,7 @@ pub struct Node {
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
     nonce: u64,
-    last_transaction_hash: calimero_primitives::hash::Hash,
+    last_pool_transaction_hash: calimero_primitives::hash::Hash,
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
@@ -396,6 +396,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         let context = calimero_primitives::context::Context {
                             id: context_id,
                             application_id,
+                            last_transaction_hash: Default::default(),
                         };
 
                         node.ctx_manager.add_context(context).await?;
@@ -483,7 +484,7 @@ impl Node {
             node_events,
             // --
             nonce: 0,
-            last_transaction_hash: calimero_primitives::hash::Hash::default(),
+            last_pool_transaction_hash: calimero_primitives::hash::Hash::default(),
         }
     }
 
@@ -602,16 +603,8 @@ impl Node {
                     info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
                 };
 
-                let Some(ctx_meta) = handle.get(&calimero_store::key::ContextMeta::new(
-                    transaction.context_id,
-                ))?
-                else {
+                let Some(context) = self.ctx_manager.get_context(&transaction.context_id)? else {
                     eyre::bail!("Context '{}' not found", transaction.context_id);
-                };
-
-                let context = calimero_primitives::context::Context {
-                    id: transaction.context_id,
-                    application_id: ctx_meta.application_id.to_string().into(),
                 };
 
                 let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
@@ -622,7 +615,7 @@ impl Node {
                     };
 
                     self.validate_pending_transaction(
-                        ctx_meta.last_transaction_hash.into(),
+                        context.last_transaction_hash,
                         context,
                         pool_entry.transaction,
                         transaction_hash,
@@ -820,7 +813,7 @@ impl Node {
             context_id: context.id,
             method,
             payload,
-            prior_hash: self.last_transaction_hash,
+            prior_hash: self.last_pool_transaction_hash,
         };
 
         let tx_hash = match self
@@ -847,7 +840,7 @@ impl Node {
             return Err(calimero_node_primitives::MutateCallError::InternalError);
         }
 
-        self.last_transaction_hash = tx_hash;
+        self.last_pool_transaction_hash = tx_hash;
 
         Ok(tx_hash)
     }
@@ -865,20 +858,11 @@ impl Node {
             return Ok(None);
         };
 
-        let handle = self.store.handle();
-
-        let Some(ctx_meta) = handle.get(&calimero_store::key::ContextMeta::new(
-            transaction.context_id,
-        ))?
-        else {
+        let Some(context) = self.ctx_manager.get_context(&transaction.context_id)? else {
             eyre::bail!("Context '{}' not found", transaction.context_id);
         };
-        let context = calimero_primitives::context::Context {
-            id: transaction.context_id,
-            application_id: ctx_meta.application_id.to_string().into(),
-        };
 
-        if ctx_meta.last_transaction_hash != *transaction.prior_hash {
+        if context.last_transaction_hash != transaction.prior_hash {
             eyre::bail!("Context '{}' not found", transaction.context_id);
         }
 
@@ -916,13 +900,13 @@ impl Node {
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<()> {
         while let Some(transaction_pool::TransactionPoolEntry { transaction, .. }) =
-            self.tx_pool.remove(&self.last_transaction_hash)
+            self.tx_pool.remove(&self.last_pool_transaction_hash)
         {
-            self.last_transaction_hash = transaction.prior_hash;
+            self.last_pool_transaction_hash = transaction.prior_hash;
 
             // todo! implement and push rejection variant to outcome sender
 
-            if self.last_transaction_hash == hash {
+            if self.last_pool_transaction_hash == hash {
                 break;
             }
         }
@@ -1163,32 +1147,26 @@ impl Node {
         context_id: calimero_primitives::context::ContextId,
         chosen_peer: libp2p::PeerId,
     ) -> eyre::Result<()> {
-        let handle = self.store.handle();
-
-        let (mut context, request) =
-            match handle.get(&calimero_store::key::ContextMeta::new(context_id))? {
-                Some(ctx_meta) => (
-                    Some(calimero_primitives::context::Context {
-                        id: context_id,
-                        application_id: ctx_meta.application_id.clone().into_string().into(),
-                    }),
-                    types::CatchupRequest {
-                        context_id,
-                        application_id: Some(ctx_meta.application_id.clone().into_string().into()),
-                        last_executed_transaction_hash: ctx_meta.last_transaction_hash.into(),
-                        batch_size: self.network_client.catchup_config.batch_size,
-                    },
-                ),
-                None => (
-                    None,
-                    types::CatchupRequest {
-                        context_id,
-                        application_id: None,
-                        last_executed_transaction_hash: calimero_primitives::hash::Hash::default(),
-                        batch_size: self.network_client.catchup_config.batch_size,
-                    },
-                ),
-            };
+        let (mut context, request) = match self.ctx_manager.get_context(&context_id)? {
+            Some(context) => (
+                Some(context.clone()),
+                types::CatchupRequest {
+                    context_id,
+                    application_id: Some(context.application_id),
+                    last_executed_transaction_hash: context.last_transaction_hash,
+                    batch_size: self.network_client.catchup_config.batch_size,
+                },
+            ),
+            None => (
+                None,
+                types::CatchupRequest {
+                    context_id,
+                    application_id: None,
+                    last_executed_transaction_hash: calimero_primitives::hash::Hash::default(),
+                    batch_size: self.network_client.catchup_config.batch_size,
+                },
+            ),
+        };
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
@@ -1230,7 +1208,7 @@ impl Node {
                                         },
                                         None,
                                     )?;
-                                    self.last_transaction_hash = transaction_hash;
+                                    self.last_pool_transaction_hash = transaction_hash;
                                 }
                                 calimero_node_primitives::NodeType::Coordinator => {
                                     self.validate_pending_transaction(
@@ -1284,6 +1262,7 @@ impl Node {
                             let context_inner = calimero_primitives::context::Context {
                                 id: context_id,
                                 application_id: response.application_id,
+                                last_transaction_hash: Default::default(),
                             };
 
                             self.ctx_manager.add_context(context_inner.clone()).await?;
