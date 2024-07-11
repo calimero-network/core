@@ -22,7 +22,7 @@ pub fn verify_node_signature(
     payload: &Payload,
 ) -> Result<bool, ApiError> {
     match wallet_metadata.wallet_type {
-        WalletType::NEAR => {
+        WalletType::NEAR { .. } => {
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::NEAR(metadata) => metadata,
                 _ => {
