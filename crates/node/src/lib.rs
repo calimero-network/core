@@ -589,10 +589,12 @@ impl Node {
             types::PeerAction::Transaction(transaction) => {
                 let handle = self.store.handle();
 
-                if !handle.has(&calimero_store::key::ContextTransaction::new(
-                    transaction.context_id,
-                    transaction.prior_hash.into(),
-                ))? {
+                if transaction.prior_hash != Default::default()
+                    && !handle.has(&calimero_store::key::ContextTransaction::new(
+                        transaction.context_id,
+                        transaction.prior_hash.into(),
+                    ))?
+                {
                     info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
 
                     self.perform_catchup(transaction.context_id, source).await?;
@@ -1027,11 +1029,7 @@ impl Node {
             }
         };
 
-        let handle = self.store.handle();
-
-        let Some(ctx_meta) =
-            handle.get(&calimero_store::key::ContextMeta::new(request.context_id))?
-        else {
+        let Some(context) = self.ctx_manager.get_context(&request.context_id)? else {
             let message = serde_json::to_vec(&types::CatchupStreamMessage::Error(
                 types::CatchupError::ContextNotFound {
                     context_id: request.context_id,
@@ -1040,13 +1038,18 @@ impl Node {
             stream
                 .send(calimero_network::stream::Message { data: message })
                 .await?;
+
             return Ok(());
         };
 
-        if !handle.has(&calimero_store::key::ContextTransaction::new(
-            request.context_id,
-            request.last_executed_transaction_hash.into(),
-        ))? {
+        let handle = self.store.handle();
+
+        if request.last_executed_transaction_hash != Default::default()
+            && !handle.has(&calimero_store::key::ContextTransaction::new(
+                request.context_id,
+                request.last_executed_transaction_hash.into(),
+            ))?
+        {
             let message = serde_json::to_vec(&types::CatchupStreamMessage::Error(
                 types::CatchupError::TransactionNotFound {
                     transaction_hash: request.last_executed_transaction_hash,
@@ -1055,10 +1058,11 @@ impl Node {
             stream
                 .send(calimero_network::stream::Message { data: message })
                 .await?;
+
             return Ok(());
         };
 
-        let application_id = ctx_meta.application_id.clone().into_string().into();
+        let application_id = context.application_id.clone();
 
         if request.application_id.is_none() || application_id == request.application_id.unwrap() {
             let application_version = self
@@ -1071,34 +1075,49 @@ impl Node {
                     version: application_version,
                 },
             ))?;
-
             stream
                 .send(calimero_network::stream::Message { data: message })
                 .await?;
         }
 
-        if ctx_meta.last_transaction_hash == *request.last_executed_transaction_hash
+        if context.last_transaction_hash == request.last_executed_transaction_hash
             && self.tx_pool.is_empty()
         {
             return Ok(());
         }
 
         let mut hashes = VecDeque::new();
-        let mut key = calimero_store::key::ContextTransaction::new(
-            request.context_id,
-            ctx_meta.last_transaction_hash.into(),
-        );
 
-        while let Some(transaction) = handle.get(&key)? {
-            hashes.push_front(transaction.prior_hash);
-            if transaction.prior_hash == *request.last_executed_transaction_hash {
-                break;
-            }
+        let mut current_hash = context.last_transaction_hash;
 
-            key = calimero_store::key::ContextTransaction::new(
+        while current_hash != Default::default()
+            && current_hash != request.last_executed_transaction_hash
+        {
+            let key = calimero_store::key::ContextTransaction::new(
                 request.context_id,
-                transaction.prior_hash.into(),
+                current_hash.into(),
             );
+
+            let Some(transaction) = handle.get(&key)? else {
+                error!(
+                    context_id=%request.context_id,
+                    ?current_hash,
+                    "Context transaction not found, our transaction chain might be corrupted!!!"
+                );
+
+                let message = serde_json::to_vec(&types::CatchupStreamMessage::Error(
+                    types::CatchupError::InternalError,
+                ))?;
+                stream
+                    .send(calimero_network::stream::Message { data: message })
+                    .await?;
+
+                return Ok(());
+            };
+
+            hashes.push_front(transaction.prior_hash);
+
+            current_hash = transaction.prior_hash.into();
         }
 
         let mut batch_writer = catchup::CatchupBatchSender::new(request.batch_size, stream);
@@ -1106,7 +1125,11 @@ impl Node {
         for hash in hashes {
             let key = calimero_store::key::ContextTransaction::new(request.context_id, hash.into());
             let Some(transaction) = handle.get(&key)? else {
-                error!(context_id=%request.context_id, ?hash, "Context transaction not found");
+                error!(
+                    context_id=%request.context_id,
+                    ?hash,
+                    "Context transaction not found, our transaction chain might be corrupted!!!"
+                );
                 batch_writer
                     .flush_with_error(types::CatchupError::InternalError)
                     .await?;
