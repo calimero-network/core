@@ -40,7 +40,7 @@ pub struct Node {
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
     nonce: u64,
-    last_tx: calimero_primitives::hash::Hash,
+    last_transaction_hash: calimero_primitives::hash::Hash,
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
@@ -483,7 +483,7 @@ impl Node {
             node_events,
             // --
             nonce: 0,
-            last_tx: calimero_primitives::hash::Hash::default(),
+            last_transaction_hash: calimero_primitives::hash::Hash::default(),
         }
     }
 
@@ -620,43 +620,17 @@ impl Node {
                 let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
 
                 if self.typ.is_coordinator() {
-                    let Some(tx_entry) = self.tx_pool.remove(&transaction_hash) else {
+                    let Some(pool_entry) = self.tx_pool.remove(&transaction_hash) else {
                         eyre::bail!("Failed to remove transaction from pool");
                     };
 
-                    if ctx_meta.last_transaction_hash == *tx_entry.transaction.prior_hash {
-                        self.persist_transaction(context, tx_entry.transaction, transaction_hash)?;
-
-                        self.nonce += 1;
-
-                        if let Err(err) = self
-                            .push_action(
-                                transaction.context_id,
-                                types::PeerAction::TransactionConfirmation(
-                                    types::TransactionConfirmation {
-                                        context_id: transaction.context_id,
-                                        nonce: self.nonce,
-                                        transaction_hash,
-                                        // todo! proper confirmation hash
-                                        confirmation_hash: transaction_hash,
-                                    },
-                                ),
-                            )
-                            .await
-                        {
-                            self.delete_transaction(transaction.context_id, transaction_hash)?;
-                            eyre::bail!("Failed to push confirmation action: {}", err);
-                        };
-                    } else {
-                        self.push_action(
-                            transaction.context_id,
-                            types::PeerAction::TransactionRejection(types::TransactionRejection {
-                                context_id: transaction.context_id,
-                                transaction_hash,
-                            }),
-                        )
-                        .await?;
-                    }
+                    self.validate_pending_transaction(
+                        ctx_meta.last_transaction_hash.into(),
+                        context,
+                        pool_entry.transaction,
+                        transaction_hash,
+                    )
+                    .await?;
                 }
             }
             types::PeerAction::TransactionConfirmation(confirmation) => {
@@ -674,6 +648,45 @@ impl Node {
         }
 
         Ok(())
+    }
+
+    async fn validate_pending_transaction(
+        &mut self,
+        last_transaction_hash: calimero_primitives::hash::Hash,
+        context: calimero_primitives::context::Context,
+        transaction: calimero_primitives::transaction::Transaction,
+        transaction_hash: calimero_primitives::hash::Hash,
+    ) -> eyre::Result<bool> {
+        if last_transaction_hash == transaction.prior_hash {
+            self.nonce += 1;
+
+            self.push_action(
+                transaction.context_id,
+                types::PeerAction::TransactionConfirmation(types::TransactionConfirmation {
+                    context_id: transaction.context_id,
+                    nonce: self.nonce,
+                    transaction_hash,
+                    // todo! proper confirmation hash
+                    confirmation_hash: transaction_hash,
+                }),
+            )
+            .await?;
+
+            self.persist_transaction(context.clone(), transaction.clone(), transaction_hash)?;
+
+            Ok(true)
+        } else {
+            self.push_action(
+                transaction.context_id,
+                types::PeerAction::TransactionRejection(types::TransactionRejection {
+                    context_id: transaction.context_id,
+                    transaction_hash,
+                }),
+            )
+            .await?;
+
+            Ok(false)
+        }
     }
 
     async fn push_action(
@@ -810,7 +823,7 @@ impl Node {
             context_id: context.id,
             method,
             payload,
-            prior_hash: self.last_tx,
+            prior_hash: self.last_transaction_hash,
         };
 
         let tx_hash = match self
@@ -837,7 +850,7 @@ impl Node {
             return Err(calimero_node_primitives::MutateCallError::InternalError);
         }
 
-        self.last_tx = tx_hash;
+        self.last_transaction_hash = tx_hash;
 
         Ok(tx_hash)
     }
@@ -906,13 +919,13 @@ impl Node {
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<()> {
         while let Some(transaction_pool::TransactionPoolEntry { transaction, .. }) =
-            self.tx_pool.remove(&self.last_tx)
+            self.tx_pool.remove(&self.last_transaction_hash)
         {
-            self.last_tx = transaction.prior_hash;
+            self.last_transaction_hash = transaction.prior_hash;
 
             // todo! implement and push rejection variant to outcome sender
 
-            if self.last_tx == hash {
+            if self.last_transaction_hash == hash {
                 break;
             }
         }
@@ -944,21 +957,6 @@ impl Node {
                 last_transaction_hash: *hash.as_bytes(),
             },
         )?;
-
-        Ok(())
-    }
-
-    fn delete_transaction(
-        &mut self,
-        context_id: calimero_primitives::context::ContextId,
-        hash: calimero_primitives::hash::Hash,
-    ) -> eyre::Result<()> {
-        let mut handle = self.store.handle();
-
-        handle.delete(&calimero_store::key::ContextTransaction::new(
-            context_id,
-            hash.into(),
-        ))?;
 
         Ok(())
     }
@@ -1218,100 +1216,55 @@ impl Node {
                         status,
                     } in response.transactions
                     {
-                        let is_transaction_valid = last_transaction_hash == transaction.prior_hash;
+                        if last_transaction_hash != transaction.prior_hash {
+                            continue;
+                        };
 
                         match status {
                             types::TransactionStatus::Pending => match self.typ {
                                 calimero_node_primitives::NodeType::Peer => {
-                                    if is_transaction_valid {
-                                        self.tx_pool.insert(
-                                            chosen_peer,
-                                            calimero_primitives::transaction::Transaction {
-                                                context_id: context.id,
-                                                method: transaction.method,
-                                                payload: transaction.payload,
-                                                prior_hash: transaction.prior_hash,
-                                            },
-                                            None,
-                                        )?;
-
-                                        last_transaction_hash = transaction_hash;
-                                    }
+                                    self.tx_pool.insert(
+                                        chosen_peer,
+                                        calimero_primitives::transaction::Transaction {
+                                            context_id: context.id,
+                                            method: transaction.method,
+                                            payload: transaction.payload,
+                                            prior_hash: transaction.prior_hash,
+                                        },
+                                        None,
+                                    )?;
+                                    self.last_transaction_hash = transaction_hash;
                                 }
                                 calimero_node_primitives::NodeType::Coordinator => {
-                                    if is_transaction_valid {
-                                        self.persist_transaction(
-                                            context.clone(),
-                                            transaction.clone(),
-                                            transaction_hash,
-                                        )?;
-
-                                        if let Err(err) = self
-                                            .push_action(
-                                                transaction.context_id,
-                                                types::PeerAction::TransactionConfirmation(
-                                                    types::TransactionConfirmation {
-                                                        context_id: transaction.context_id,
-                                                        nonce: self.nonce,
-                                                        transaction_hash,
-                                                        // todo! proper confirmation hash
-                                                        confirmation_hash: transaction_hash,
-                                                    },
-                                                ),
-                                            )
-                                            .await
-                                        {
-                                            self.delete_transaction(
-                                                transaction.context_id,
-                                                transaction_hash,
-                                            )?;
-                                            eyre::bail!(
-                                                "Failed to push confirmation action: {}",
-                                                err
-                                            );
-                                        };
-
-                                        last_transaction_hash = transaction_hash;
-                                    } else {
-                                        self.push_action(
-                                            transaction.context_id,
-                                            types::PeerAction::TransactionRejection(
-                                                types::TransactionRejection {
-                                                    context_id: transaction.context_id,
-                                                    transaction_hash,
-                                                },
-                                            ),
-                                        )
-                                        .await?;
-                                    }
+                                    self.validate_pending_transaction(
+                                        last_transaction_hash,
+                                        context.clone(),
+                                        transaction,
+                                        transaction_hash,
+                                    )
+                                    .await?;
                                 }
                             },
                             types::TransactionStatus::Executed => match self.typ {
                                 calimero_node_primitives::NodeType::Peer => {
-                                    if is_transaction_valid {
-                                        self.execute_transaction(
-                                            context.clone(),
-                                            transaction,
-                                            transaction_hash,
-                                        )
-                                        .await?;
-
-                                        last_transaction_hash = transaction_hash;
-                                    }
+                                    self.execute_transaction(
+                                        context.clone(),
+                                        transaction,
+                                        transaction_hash,
+                                    )
+                                    .await?;
                                 }
                                 calimero_node_primitives::NodeType::Coordinator => {
-                                    if is_transaction_valid {
-                                        self.persist_transaction(
-                                            context.clone(),
-                                            transaction.clone(),
-                                            transaction_hash,
-                                        )?;
-
-                                        last_transaction_hash = transaction_hash;
-                                    }
+                                    self.persist_transaction(
+                                        context.clone(),
+                                        transaction.clone(),
+                                        transaction_hash,
+                                    )?;
                                 }
                             },
                         }
+
+                        last_transaction_hash = transaction_hash;
                     }
                 }
                 types::CatchupStreamMessage::ApplicationChanged(response) => {
