@@ -153,33 +153,55 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Scheduled Transaction! {:?}", tx_hash);
 
                         tokio::spawn(async move {
-                            if let Ok(outcome) = outcome_receiver.await {
+                            if let Ok(outcome_result) = outcome_receiver.await {
                                 println!("{IND} {:?}", tx_hash);
-                                match outcome.returns {
-                                    Ok(result) => match result {
-                                        Some(result) => {
-                                            println!("{IND}   Return Value:");
-                                            let result = if let Ok(value) =
-                                                serde_json::from_slice::<serde_json::Value>(&result)
-                                            {
-                                                format!(
-                                                    "(json): {}",
-                                                    format!("{:#}", value)
-                                                        .lines()
-                                                        .map(|line| line.cyan().to_string())
-                                                        .collect::<Vec<_>>()
-                                                        .join("\n")
-                                                )
-                                            } else {
-                                                format!("(raw): {:?}", result.cyan())
-                                            };
 
-                                            for line in result.lines() {
-                                                println!("{IND}     > {}", line);
+                                match outcome_result {
+                                    Ok(outcome) => {
+                                        match outcome.returns {
+                                            Ok(result) => match result {
+                                                Some(result) => {
+                                                    println!("{IND}   Return Value:");
+                                                    let result = if let Ok(value) =
+                                                        serde_json::from_slice::<serde_json::Value>(
+                                                            &result,
+                                                        ) {
+                                                        format!(
+                                                            "(json): {}",
+                                                            format!("{:#}", value)
+                                                                .lines()
+                                                                .map(|line| line.cyan().to_string())
+                                                                .collect::<Vec<_>>()
+                                                                .join("\n")
+                                                        )
+                                                    } else {
+                                                        format!("(raw): {:?}", result.cyan())
+                                                    };
+
+                                                    for line in result.lines() {
+                                                        println!("{IND}     > {}", line);
+                                                    }
+                                                }
+                                                None => println!("{IND}   (No return value)"),
+                                            },
+                                            Err(err) => {
+                                                let err = format!("{:#?}", err);
+
+                                                println!("{IND}   Error:");
+                                                for line in err.lines() {
+                                                    println!("{IND}     > {}", line.yellow());
+                                                }
                                             }
                                         }
-                                        None => println!("{IND}   (No return value)"),
-                                    },
+
+                                        if !outcome.logs.is_empty() {
+                                            println!("{IND}   Logs:");
+
+                                            for log in outcome.logs {
+                                                println!("{IND}     > {}", log.cyan());
+                                            }
+                                        }
+                                    }
                                     Err(err) => {
                                         let err = format!("{:#?}", err);
 
@@ -187,14 +209,6 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                         for line in err.lines() {
                                             println!("{IND}     > {}", line.yellow());
                                         }
-                                    }
-                                }
-
-                                if !outcome.logs.is_empty() {
-                                    println!("{IND}   Logs:");
-
-                                    for log in outcome.logs {
-                                        println!("{IND}     > {}", log.cyan());
                                     }
                                 }
                             }
@@ -628,9 +642,23 @@ impl Node {
             }
             types::PeerAction::TransactionConfirmation(confirmation) => {
                 // todo! ensure this was only sent by a coordinator
-                if let Err(err) = self.execute_in_pool(confirmation.transaction_hash).await {
-                    error!(%err, "Failed to execute transaction in pool");
+
+                let Some(transaction_pool::TransactionPoolEntry {
+                    transaction,
+                    outcome_sender,
+                    ..
+                }) = self.tx_pool.remove(&confirmation.transaction_hash)
+                else {
+                    return Ok(());
                 };
+
+                let outcome_result = self
+                    .execute_in_context(confirmation.transaction_hash, transaction)
+                    .await;
+
+                if let Some(outcome_sender) = outcome_sender {
+                    let _ = outcome_sender.send(outcome_result);
+                }
             }
             types::PeerAction::TransactionRejection(rejection) => {
                 // todo! ensure this was only sent by a coordinator
@@ -730,7 +758,16 @@ impl Node {
             tokio::spawn(async move {
                 match inner_outcome_receiver.await {
                     Ok(outcome) => {
-                        let _ = outcome_sender.send(Ok(outcome));
+                        match outcome {
+                            Ok(outcome) => {
+                                let _ = outcome_sender.send(Ok(outcome));
+                            }
+                            Err(err) => {
+                                let _ = outcome_sender
+                                    .send(Err(calimero_node_primitives::CallError::Mutate(err)));
+                            }
+                        }
+                        // let _ = outcome_sender.send(Ok(outcome));
                     }
                     Err(err) => {
                         error!("Failed to receive inner outcome of a transaction: {}", err);
@@ -784,7 +821,9 @@ impl Node {
         context: calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
-        outcome_sender: oneshot::Sender<calimero_runtime::logic::Outcome>,
+        outcome_sender: oneshot::Sender<
+            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError>,
+        >,
     ) -> Result<calimero_primitives::hash::Hash, calimero_node_primitives::MutateCallError> {
         if self.typ.is_coordinator() {
             return Err(calimero_node_primitives::MutateCallError::InvalidNodeType {
@@ -848,38 +887,41 @@ impl Node {
         Ok(tx_hash)
     }
 
-    async fn execute_in_pool(
+    async fn execute_in_context(
         &mut self,
-        hash: calimero_primitives::hash::Hash,
-    ) -> eyre::Result<Option<()>> {
-        let Some(transaction_pool::TransactionPoolEntry {
-            transaction,
-            outcome_sender,
-            ..
-        }) = self.tx_pool.remove(&hash)
+        transaction_hash: calimero_primitives::hash::Hash,
+        transaction: calimero_primitives::transaction::Transaction,
+    ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError> {
+        let Some(context) = self
+            .ctx_manager
+            .get_context(&transaction.context_id)
+            .map_err(|e| {
+                error!(%e, "Failed to get context");
+                calimero_node_primitives::MutateCallError::InternalError
+            })?
         else {
-            return Ok(None);
-        };
-
-        let Some(context) = self.ctx_manager.get_context(&transaction.context_id)? else {
-            eyre::bail!("Context '{}' not found", transaction.context_id);
+            error!(%transaction.context_id, "Context not found");
+            return Err(calimero_node_primitives::MutateCallError::InternalError);
         };
 
         if context.last_transaction_hash != transaction.prior_hash {
-            eyre::bail!(
-                "Transaction '{}' doesn't build on prior hash '{}",
-                hash,
-                transaction.prior_hash
+            error!(
+                %transaction_hash,
+                prior_hash=%transaction.prior_hash,
+                "Transaction from the pool doesn't build on last executed transaction",
             );
+            return Err(calimero_node_primitives::MutateCallError::TransactionRejected);
         }
 
-        let outcome = self.execute_transaction(context, transaction, hash).await?;
+        let outcome = self
+            .execute_transaction(context, transaction, transaction_hash)
+            .await
+            .map_err(|e| {
+                error!(%e, "Failed to execute transaction");
+                calimero_node_primitives::MutateCallError::ExecutionError
+            })?;
 
-        if let Some(sender) = outcome_sender {
-            let _ = sender.send(outcome);
-        }
-
-        Ok(Some(()))
+        Ok(outcome)
     }
 
     async fn execute_transaction(
@@ -906,15 +948,18 @@ impl Node {
         &mut self,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<()> {
-        while let Some(transaction_pool::TransactionPoolEntry { transaction, .. }) =
-            self.tx_pool.remove(&self.last_pending_transaction_hash)
+        if let Some(transaction_pool::TransactionPoolEntry {
+            transaction,
+            outcome_sender,
+            ..
+        }) = self.tx_pool.remove(&hash)
         {
             self.last_pending_transaction_hash = transaction.prior_hash;
 
-            // todo! implement and push rejection variant to outcome sender
-
-            if self.last_pending_transaction_hash == hash {
-                break;
+            if let Some(sender) = outcome_sender {
+                let _ = sender.send(Err(
+                    calimero_node_primitives::MutateCallError::TransactionRejected,
+                ));
             }
         }
 
