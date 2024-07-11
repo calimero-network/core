@@ -34,15 +34,26 @@ pub struct ContextUser {
     pub joined_at: u64,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Serialize, Clone, Copy)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 #[serde(tag = "type")]
 pub enum WalletType {
-    NEAR,
+    NEAR {
+        network_id: NearNetworkId,
+    },
     ETH {
         #[serde(rename = "chainId")]
         chain_id: u64,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NearNetworkId {
+    Mainnet,
+    Testnet,
+    #[serde(untagged)]
+    Custom(String),
 }
 
 pub mod serde_identity {
