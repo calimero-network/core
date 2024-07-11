@@ -40,7 +40,7 @@ pub struct Node {
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
     nonce: u64,
-    last_pool_transaction_hash: calimero_primitives::hash::Hash,
+    last_pending_transaction_hash: calimero_primitives::hash::Hash,
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
@@ -484,7 +484,7 @@ impl Node {
             node_events,
             // --
             nonce: 0,
-            last_pool_transaction_hash: calimero_primitives::hash::Hash::default(),
+            last_pending_transaction_hash: calimero_primitives::hash::Hash::default(),
         }
     }
 
@@ -581,6 +581,7 @@ impl Node {
 
     async fn handle_message(&mut self, message: libp2p::gossipsub::Message) -> eyre::Result<()> {
         let Some(source) = message.source else {
+            warn!(?message, "Received message without source");
             return Ok(());
         };
 
@@ -813,7 +814,7 @@ impl Node {
             context_id: context.id,
             method,
             payload,
-            prior_hash: self.last_pool_transaction_hash,
+            prior_hash: self.last_pending_transaction_hash,
         };
 
         let tx_hash = match self
@@ -840,7 +841,7 @@ impl Node {
             return Err(calimero_node_primitives::MutateCallError::InternalError);
         }
 
-        self.last_pool_transaction_hash = tx_hash;
+        self.last_pending_transaction_hash = tx_hash;
 
         Ok(tx_hash)
     }
@@ -863,7 +864,11 @@ impl Node {
         };
 
         if context.last_transaction_hash != transaction.prior_hash {
-            eyre::bail!("Context '{}' not found", transaction.context_id);
+            eyre::bail!(
+                "Transaction '{}' doesn't build on prior hash '{}",
+                hash,
+                transaction.prior_hash
+            );
         }
 
         let outcome = self.execute_transaction(context, transaction, hash).await?;
@@ -900,13 +905,13 @@ impl Node {
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<()> {
         while let Some(transaction_pool::TransactionPoolEntry { transaction, .. }) =
-            self.tx_pool.remove(&self.last_pool_transaction_hash)
+            self.tx_pool.remove(&self.last_pending_transaction_hash)
         {
-            self.last_pool_transaction_hash = transaction.prior_hash;
+            self.last_pending_transaction_hash = transaction.prior_hash;
 
             // todo! implement and push rejection variant to outcome sender
 
-            if self.last_pool_transaction_hash == hash {
+            if self.last_pending_transaction_hash == hash {
                 break;
             }
         }
@@ -1208,7 +1213,7 @@ impl Node {
                                         },
                                         None,
                                     )?;
-                                    self.last_pool_transaction_hash = transaction_hash;
+                                    self.last_pending_transaction_hash = transaction_hash;
                                 }
                                 calimero_node_primitives::NodeType::Coordinator => {
                                     self.validate_pending_transaction(

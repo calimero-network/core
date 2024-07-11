@@ -108,7 +108,7 @@ impl ContextManager {
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
                 application_id: context.application_id.0.into(),
-                last_transaction_hash: calimero_store::types::TransactionHash::default(),
+                last_transaction_hash: context.last_transaction_hash.into(),
             },
         )?;
 
