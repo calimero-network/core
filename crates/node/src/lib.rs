@@ -40,7 +40,6 @@ pub struct Node {
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
     nonce: u64,
-    last_pending_transaction_hash: calimero_primitives::hash::Hash,
 }
 
 pub async fn start(config: NodeConfig) -> eyre::Result<()> {
@@ -498,7 +497,6 @@ impl Node {
             node_events,
             // --
             nonce: 0,
-            last_pending_transaction_hash: calimero_primitives::hash::Hash::default(),
         }
     }
 
@@ -855,7 +853,7 @@ impl Node {
             context_id: context.id,
             method,
             payload,
-            prior_hash: self.last_pending_transaction_hash,
+            prior_hash: context.last_transaction_hash,
         };
 
         let tx_hash = match self
@@ -881,8 +879,6 @@ impl Node {
             error!(%err, "Failed to push transaction over the network.");
             return Err(calimero_node_primitives::MutateCallError::InternalError);
         }
-
-        self.last_pending_transaction_hash = tx_hash;
 
         Ok(tx_hash)
     }
@@ -947,23 +943,20 @@ impl Node {
     async fn reject_from_pool(
         &mut self,
         hash: calimero_primitives::hash::Hash,
-    ) -> eyre::Result<()> {
-        if let Some(transaction_pool::TransactionPoolEntry {
-            transaction,
-            outcome_sender,
-            ..
-        }) = self.tx_pool.remove(&hash)
-        {
-            self.last_pending_transaction_hash = transaction.prior_hash;
+    ) -> eyre::Result<Option<()>> {
+        let Some(transaction_pool::TransactionPoolEntry { outcome_sender, .. }) =
+            self.tx_pool.remove(&hash)
+        else {
+            return Ok(None);
+        };
 
-            if let Some(sender) = outcome_sender {
-                let _ = sender.send(Err(
-                    calimero_node_primitives::MutateCallError::TransactionRejected,
-                ));
-            }
+        if let Some(sender) = outcome_sender {
+            let _ = sender.send(Err(
+                calimero_node_primitives::MutateCallError::TransactionRejected,
+            ));
         }
 
-        Ok(())
+        Ok(Some(()))
     }
 
     fn persist_transaction(
@@ -1281,7 +1274,6 @@ impl Node {
                                         },
                                         None,
                                     )?;
-                                    self.last_pending_transaction_hash = transaction_hash;
                                 }
                                 calimero_node_primitives::NodeType::Coordinator => {
                                     self.validate_pending_transaction(
