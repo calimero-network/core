@@ -612,6 +612,11 @@ impl Node {
                     eyre::bail!("Context '{}' not found", transaction.context_id);
                 };
 
+                let context = calimero_primitives::context::Context {
+                    id: transaction.context_id,
+                    application_id: ctx_meta.application_id.to_string().into(),
+                };
+
                 let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
 
                 if self.typ.is_coordinator() {
@@ -620,12 +625,7 @@ impl Node {
                     };
 
                     if ctx_meta.last_transaction_hash == *tx_entry.transaction.prior_hash {
-                        self.persist_transaction(
-                            transaction.context_id,
-                            ctx_meta.application_id.to_string().into(),
-                            tx_entry.transaction,
-                            transaction_hash,
-                        )?;
+                        self.persist_transaction(context, tx_entry.transaction, transaction_hash)?;
 
                         self.nonce += 1;
 
@@ -881,22 +881,21 @@ impl Node {
             )
             .await?;
 
-        self.persist_transaction(context.id, context.application_id, transaction, hash)?;
+        self.persist_transaction(context, transaction, hash)?;
 
         Ok(outcome)
     }
 
     fn persist_transaction(
         &mut self,
-        context_id: calimero_primitives::context::ContextId,
-        application_id: calimero_primitives::application::ApplicationId,
+        context: calimero_primitives::context::Context,
         transaction: calimero_primitives::transaction::Transaction,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<()> {
         let mut handle = self.store.handle();
 
         handle.put(
-            &calimero_store::key::ContextTransaction::new(context_id, hash.into()),
+            &calimero_store::key::ContextTransaction::new(context.id, hash.into()),
             &calimero_store::types::ContextTransaction {
                 method: transaction.method.into(),
                 payload: transaction.payload.into(),
@@ -905,9 +904,9 @@ impl Node {
         )?;
 
         handle.put(
-            &calimero_store::key::ContextMeta::new(context_id),
+            &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
-                application_id: application_id.0.into(),
+                application_id: context.application_id.0.into(),
                 last_transaction_hash: *hash.as_bytes(),
             },
         )?;
@@ -1208,8 +1207,7 @@ impl Node {
                                 calimero_node_primitives::NodeType::Coordinator => {
                                     if is_transaction_valid {
                                         self.persist_transaction(
-                                            transaction.context_id,
-                                            context.application_id.clone(),
+                                            context.clone(),
                                             transaction.clone(),
                                             transaction_hash,
                                         )?;
@@ -1270,8 +1268,7 @@ impl Node {
                                 calimero_node_primitives::NodeType::Coordinator => {
                                     if is_transaction_valid {
                                         self.persist_transaction(
-                                            transaction.context_id,
-                                            context.application_id.clone(),
+                                            context.clone(),
                                             transaction.clone(),
                                             transaction_hash,
                                         )?;

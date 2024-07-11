@@ -18,12 +18,6 @@ pub struct TransactionConfirmation {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct TransactionWithConfirmation {
-    pub transaction: calimero_primitives::transaction::Transaction,
-    pub confirmation: TransactionConfirmation,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct TransactionRejection {
     pub context_id: calimero_primitives::context::ContextId,
     pub transaction_hash: calimero_primitives::hash::Hash,
@@ -73,12 +67,6 @@ pub struct TransactionWithStatus {
     pub transaction_hash: calimero_primitives::hash::Hash,
     pub transaction: calimero_primitives::transaction::Transaction,
     pub status: TransactionStatus,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum CatchupTransaction {
-    Pending(calimero_primitives::transaction::Transaction),
-    Executed(TransactionWithConfirmation),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
