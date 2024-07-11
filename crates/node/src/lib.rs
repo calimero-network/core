@@ -396,7 +396,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         let context = calimero_primitives::context::Context {
                             id: context_id,
                             application_id,
-                            last_transaction_hash: Default::default(),
+                            last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
                         node.ctx_manager.add_context(context).await?;
@@ -589,7 +589,7 @@ impl Node {
             types::PeerAction::Transaction(transaction) => {
                 let handle = self.store.handle();
 
-                if transaction.prior_hash != Default::default()
+                if transaction.prior_hash != calimero_primitives::hash::Hash::default()
                     && !handle.has(&calimero_store::key::ContextTransaction::new(
                         transaction.context_id,
                         transaction.prior_hash.into(),
@@ -1044,7 +1044,7 @@ impl Node {
 
         let handle = self.store.handle();
 
-        if request.last_executed_transaction_hash != Default::default()
+        if request.last_executed_transaction_hash != calimero_primitives::hash::Hash::default()
             && !handle.has(&calimero_store::key::ContextTransaction::new(
                 request.context_id,
                 request.last_executed_transaction_hash.into(),
@@ -1090,7 +1090,7 @@ impl Node {
 
         let mut current_hash = context.last_transaction_hash;
 
-        while current_hash != Default::default()
+        while current_hash != calimero_primitives::hash::Hash::default()
             && current_hash != request.last_executed_transaction_hash
         {
             let key = calimero_store::key::ContextTransaction::new(
@@ -1290,7 +1290,7 @@ impl Node {
                             let context_inner = calimero_primitives::context::Context {
                                 id: context_id,
                                 application_id: response.application_id,
-                                last_transaction_hash: Default::default(),
+                                last_transaction_hash: calimero_primitives::hash::Hash::default(),
                             };
 
                             self.ctx_manager.add_context(context_inner.clone()).await?;
