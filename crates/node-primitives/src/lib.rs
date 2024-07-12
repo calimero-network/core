@@ -58,6 +58,5 @@ pub enum MutateCallError {
     },
     NoConnectedPeers,
     TransactionRejected,
-    ExecutionError,
     InternalError,
 }

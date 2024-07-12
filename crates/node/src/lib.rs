@@ -902,9 +902,10 @@ impl Node {
 
         if context.last_transaction_hash != transaction.prior_hash {
             error!(
+                context_id=%transaction.context_id,
                 %transaction_hash,
                 prior_hash=%transaction.prior_hash,
-                "Transaction from the pool doesn't build on last executed transaction",
+                "Transaction from the pool doesn't build on last transaction",
             );
             return Err(calimero_node_primitives::MutateCallError::TransactionRejected);
         }
@@ -914,7 +915,7 @@ impl Node {
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute transaction");
-                calimero_node_primitives::MutateCallError::ExecutionError
+                calimero_node_primitives::MutateCallError::InternalError
             })?;
 
         Ok(outcome)
