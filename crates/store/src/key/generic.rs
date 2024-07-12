@@ -21,6 +21,10 @@ impl KeyComponent for Fragment {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct Generic(Key<(Scope, Fragment)>);
 
 impl Generic {
