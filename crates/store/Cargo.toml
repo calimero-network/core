@@ -7,7 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-borsh = { workspace = true, features = ["derive"] }
+borsh = { workspace = true, optional = true }
 camino.workspace = true
 eyre.workspace = true
 generic-array.workspace = true
@@ -20,4 +20,6 @@ thiserror.workspace = true
 calimero-primitives = { path = "../primitives" }
 
 [features]
+borsh = ["borsh/derive"]
 serde = ["dep:serde", "dep:serde_json"]
+datatypes = ["borsh"]

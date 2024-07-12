@@ -122,3 +122,26 @@ pub trait FromKeyParts: AsKeyParts {
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error>;
 }
+
+#[cfg(feature = "borsh")]
+const _: () = {
+    use std::io;
+
+    use borsh::{BorshDeserialize, BorshSerialize};
+
+    impl<T: KeyComponents> BorshSerialize for Key<T> {
+        fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+            writer.write_all(&self.0)
+        }
+    }
+
+    impl<T: KeyComponents> BorshDeserialize for Key<T> {
+        fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+            let mut key = GenericArray::default();
+
+            reader.read_exact(&mut key)?;
+
+            Ok(Self(key))
+        }
+    }
+};

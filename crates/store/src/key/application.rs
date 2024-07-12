@@ -13,6 +13,10 @@ impl KeyComponent for ApplicationId {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ApplicationMeta(Key<ApplicationId>);
 
 impl ApplicationMeta {

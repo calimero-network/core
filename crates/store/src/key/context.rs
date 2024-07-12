@@ -16,6 +16,10 @@ impl KeyComponent for ContextId {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ContextMeta(Key<ContextId>);
 
 impl ContextMeta {
@@ -59,6 +63,10 @@ impl KeyComponent for PublicKey {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ContextIdentity(Key<(ContextId, PublicKey)>);
 
 impl ContextIdentity {
@@ -117,6 +125,10 @@ impl KeyComponent for StateKey {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ContextState(Key<(ContextId, StateKey)>);
 
 impl ContextState {
@@ -173,6 +185,10 @@ impl KeyComponent for TransactionId {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ContextTransaction(Key<(ContextId, TransactionId)>);
 
 impl ContextTransaction {

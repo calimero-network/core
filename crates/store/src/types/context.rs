@@ -2,7 +2,7 @@ use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::entry::DataType;
+use crate::entry::{Borsh, DataType, View};
 use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
@@ -17,20 +17,8 @@ pub struct ContextMeta {
     pub last_transaction_hash: TransactionHash,
 }
 
-impl DataType<'_> for ContextMeta {
-    type Error = io::Error;
-
-    fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
-        borsh::from_slice(&slice)
-    }
-
-    fn as_slice(&self) -> Result<Slice, Self::Error> {
-        borsh::to_vec(self).map(Into::into)
-    }
-}
-
 impl PredefinedEntry for key::ContextMeta {
-    type DataType<'a> = ContextMeta;
+    type DataType<'a> = View<ContextMeta, Borsh>;
 }
 
 #[derive(Eq, Clone, Debug, PartialEq)]
@@ -59,20 +47,8 @@ pub struct ContextIdentity {
     pub private_key: Option<[u8; 32]>,
 }
 
-impl DataType<'_> for ContextIdentity {
-    type Error = io::Error;
-
-    fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
-        borsh::from_slice(&slice)
-    }
-
-    fn as_slice(&self) -> Result<Slice, Self::Error> {
-        borsh::to_vec(self).map(Into::into)
-    }
-}
-
 impl PredefinedEntry for key::ContextIdentity {
-    type DataType<'a> = ContextIdentity;
+    type DataType<'a> = View<ContextIdentity, Borsh>;
 }
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
@@ -82,18 +58,6 @@ pub struct ContextTransaction {
     pub prior_hash: TransactionHash,
 }
 
-impl DataType<'_> for ContextTransaction {
-    type Error = io::Error;
-
-    fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
-        borsh::from_slice(&slice)
-    }
-
-    fn as_slice(&self) -> Result<Slice, Self::Error> {
-        borsh::to_vec(self).map(Into::into)
-    }
-}
-
 impl PredefinedEntry for key::ContextTransaction {
-    type DataType<'a> = ContextTransaction;
+    type DataType<'a> = View<ContextTransaction, Borsh>;
 }

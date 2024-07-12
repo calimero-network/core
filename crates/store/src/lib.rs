@@ -9,6 +9,7 @@ pub mod key;
 pub mod layer;
 pub mod slice;
 mod tx;
+#[cfg(feature = "datatypes")]
 pub mod types;
 
 use handle::StoreHandle;
