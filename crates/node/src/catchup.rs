@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use futures_util::{SinkExt, StreamExt};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::{types, Node};
 
@@ -82,20 +82,27 @@ impl Node {
 
         let mut hashes = VecDeque::new();
 
-        let mut current_hash = context.last_transaction_hash;
+        let mut last_transaction_hash = context.last_transaction_hash;
 
-        while current_hash != calimero_primitives::hash::Hash::default()
-            && current_hash != request.last_executed_transaction_hash
+        info!(
+            "Current hash: {:?}, requested hash: {:?}, default hash: {:?}",
+            last_transaction_hash,
+            request.last_executed_transaction_hash,
+            calimero_primitives::hash::Hash::default()
+        );
+
+        while last_transaction_hash != calimero_primitives::hash::Hash::default()
+            && last_transaction_hash != request.last_executed_transaction_hash
         {
             let key = calimero_store::key::ContextTransaction::new(
                 request.context_id,
-                current_hash.into(),
+                last_transaction_hash.into(),
             );
 
             let Some(transaction) = handle.get(&key)? else {
                 error!(
                     context_id=%request.context_id,
-                    ?current_hash,
+                    %last_transaction_hash,
                     "Context transaction not found, our transaction chain might be corrupted!!!"
                 );
 
@@ -109,9 +116,9 @@ impl Node {
                 return Ok(());
             };
 
-            hashes.push_front(transaction.prior_hash);
+            hashes.push_front(last_transaction_hash);
 
-            current_hash = transaction.prior_hash.into();
+            last_transaction_hash = transaction.prior_hash.into();
         }
 
         let mut batch_writer = batch::CatchupBatchSender::new(request.batch_size, stream);
@@ -129,6 +136,12 @@ impl Node {
                     .await?;
                 return Ok(());
             };
+
+            info!(
+                context_id=%request.context_id,
+                ?hash,
+                "Sending transaction"
+            );
 
             batch_writer
                 .send(types::TransactionWithStatus {
@@ -192,119 +205,167 @@ impl Node {
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
-        let mut last_transaction_hash = request.last_executed_transaction_hash;
-
-        let request = serde_json::to_vec(&types::CatchupStreamMessage::Request(request))?;
+        let data = serde_json::to_vec(&types::CatchupStreamMessage::Request(request))?;
 
         stream
-            .send(calimero_network::stream::Message { data: request })
+            .send(calimero_network::stream::Message { data })
             .await?;
 
-        while let Some(message) = stream.next().await {
-            match serde_json::from_slice(&message?.data)? {
-                types::CatchupStreamMessage::TransactionsBatch(response) => {
-                    let Some(ref context) = context else {
-                        eyre::bail!("Received transactions batch for uninitialized context");
-                    };
+        loop {
+            let message = tokio::time::timeout(
+                self.network_client.catchup_config.receive_timeout.into(),
+                stream.next(),
+            )
+            .await;
 
-                    for types::TransactionWithStatus {
-                        transaction_hash,
-                        transaction,
-                        status,
-                    } in response.transactions
-                    {
-                        if last_transaction_hash != transaction.prior_hash {
-                            eyre::bail!(
-                                "Transaction '{}' from the catchup batch doesn't build on last transaction '{}'",
-                                transaction_hash,
-                                transaction.prior_hash,
-                            );
-                        };
-
-                        match status {
-                            types::TransactionStatus::Pending => match self.typ {
-                                calimero_node_primitives::NodeType::Peer => {
-                                    self.tx_pool.insert(
-                                        chosen_peer,
-                                        calimero_primitives::transaction::Transaction {
-                                            context_id: context.id,
-                                            method: transaction.method,
-                                            payload: transaction.payload,
-                                            prior_hash: transaction.prior_hash,
-                                        },
-                                        None,
-                                    )?;
-                                }
-                                calimero_node_primitives::NodeType::Coordinator => {
-                                    self.validate_pending_transaction(
-                                        last_transaction_hash,
-                                        context.clone(),
-                                        transaction,
-                                        transaction_hash,
-                                    )
-                                    .await?;
-                                }
-                            },
-                            types::TransactionStatus::Executed => match self.typ {
-                                calimero_node_primitives::NodeType::Peer => {
-                                    self.execute_transaction(
-                                        context.clone(),
-                                        transaction,
-                                        transaction_hash,
-                                    )
-                                    .await?;
-                                }
-                                calimero_node_primitives::NodeType::Coordinator => {
-                                    self.persist_transaction(
-                                        context.clone(),
-                                        transaction.clone(),
-                                        transaction_hash,
-                                    )?;
-                                }
-                            },
-                        }
-
-                        last_transaction_hash = transaction_hash;
+            match message {
+                Ok(message) => match message {
+                    Some(message) => {
+                        context = self
+                            .handle_catchup_message(
+                                context_id,
+                                chosen_peer,
+                                context,
+                                serde_json::from_slice(&message?.data)?,
+                            )
+                            .await?;
                     }
-                }
-                types::CatchupStreamMessage::ApplicationChanged(response) => {
-                    self.ctx_manager
-                        .install_application(&response.application_id, &response.version)
-                        .await?;
-
-                    match context {
-                        Some(ref mut context_inner) => {
-                            self.ctx_manager
-                                .update_context_application_id(
-                                    context_id,
-                                    response.application_id.clone(),
-                                )
-                                .await?;
-
-                            context_inner.application_id = response.application_id;
-                        }
-                        None => {
-                            let context_inner = calimero_primitives::context::Context {
-                                id: context_id,
-                                application_id: response.application_id,
-                                last_transaction_hash: calimero_primitives::hash::Hash::default(),
-                            };
-
-                            self.ctx_manager.add_context(context_inner.clone()).await?;
-
-                            context = Some(context_inner);
-                        }
-                    }
-                }
-                types::CatchupStreamMessage::Error(err) => {
-                    eyre::bail!(err);
-                }
-                event => {
-                    warn!(?event, "Unexpected event");
+                    None => break,
+                },
+                Err(err) => {
+                    eyre::bail!("Timeout while waiting for catchup message: {:?}", err);
                 }
             }
         }
 
         Ok(())
+    }
+
+    async fn handle_catchup_message(
+        &mut self,
+        context_id: calimero_primitives::context::ContextId,
+        chosen_peer: libp2p::PeerId,
+        mut context: Option<calimero_primitives::context::Context>,
+        message: types::CatchupStreamMessage,
+    ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
+        match message {
+            types::CatchupStreamMessage::TransactionsBatch(response) => {
+                let Some(ref mut context_inner) = context else {
+                    eyre::bail!("Received transactions batch for uninitialized context");
+                };
+
+                for types::TransactionWithStatus {
+                    transaction_hash,
+                    transaction,
+                    status,
+                } in response.transactions
+                {
+                    info!(
+                        context_id=%context_inner.id,
+                        %transaction_hash,
+                        prior_hash=%transaction.prior_hash,
+                        %context_inner.last_transaction_hash,
+                        ?status,
+                        "Processing transaction"
+                    );
+
+                    if context_inner.last_transaction_hash != transaction.prior_hash {
+                        eyre::bail!(
+                            "Transaction '{}' from the catchup batch doesn't build on last transaction '{}'",
+                            transaction_hash,
+                            context_inner.last_transaction_hash,
+                        );
+                    };
+
+                    match status {
+                        types::TransactionStatus::Pending => match self.typ {
+                            calimero_node_primitives::NodeType::Peer => {
+                                self.tx_pool.insert(
+                                    chosen_peer,
+                                    calimero_primitives::transaction::Transaction {
+                                        context_id: context_inner.id,
+                                        method: transaction.method,
+                                        payload: transaction.payload,
+                                        prior_hash: transaction.prior_hash,
+                                    },
+                                    None,
+                                )?;
+                            }
+                            calimero_node_primitives::NodeType::Coordinator => {
+                                self.validate_pending_transaction(
+                                    context_inner.last_transaction_hash,
+                                    context_inner.clone(),
+                                    transaction,
+                                    transaction_hash,
+                                )
+                                .await?;
+                            }
+                        },
+                        types::TransactionStatus::Executed => match self.typ {
+                            calimero_node_primitives::NodeType::Peer => {
+                                self.execute_transaction(
+                                    context_inner.clone(),
+                                    transaction,
+                                    transaction_hash,
+                                )
+                                .await?;
+                            }
+                            calimero_node_primitives::NodeType::Coordinator => {
+                                self.persist_transaction(
+                                    context_inner.clone(),
+                                    transaction.clone(),
+                                    transaction_hash,
+                                )?;
+                            }
+                        },
+                    }
+
+                    context_inner.last_transaction_hash = transaction_hash;
+                }
+            }
+            types::CatchupStreamMessage::ApplicationChanged(response) => {
+                if !self
+                    .ctx_manager
+                    .is_application_installed(&response.application_id)
+                {
+                    self.ctx_manager
+                        .install_application(&response.application_id, &response.version)
+                        .await?;
+                }
+
+                match context {
+                    Some(ref mut context_inner) => {
+                        self.ctx_manager
+                            .update_context_application_id(
+                                context_inner.id,
+                                response.application_id.clone(),
+                            )
+                            .await?;
+
+                        context_inner.application_id = response.application_id;
+                    }
+                    None => {
+                        let context_inner = calimero_primitives::context::Context {
+                            id: context_id,
+                            application_id: response.application_id,
+                            last_transaction_hash: calimero_primitives::hash::Hash::default(),
+                        };
+
+                        self.ctx_manager.add_context(context_inner.clone()).await?;
+
+                        context = Some(context_inner);
+                    }
+                }
+            }
+            types::CatchupStreamMessage::Error(err) => {
+                error!(?err, "Received error during catchup");
+                eyre::bail!(err);
+            }
+            event => {
+                warn!(?event, "Unexpected event");
+            }
+        }
+
+        Ok(context)
     }
 }

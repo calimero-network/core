@@ -51,14 +51,16 @@ pub struct CatchupTransactionBatch {
 }
 
 #[derive(Error, Debug, Serialize, Deserialize)]
-#[error("CatchupError")]
 pub enum CatchupError {
+    #[error("context `{context_id:?}` not found")]
     ContextNotFound {
         context_id: calimero_primitives::context::ContextId,
     },
+    #[error("transaction `{transaction_hash:?}` not found")]
     TransactionNotFound {
         transaction_hash: calimero_primitives::hash::Hash,
     },
+    #[error("internal error")]
     InternalError,
 }
 

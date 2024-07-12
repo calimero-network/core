@@ -428,6 +428,37 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         println!("{IND} Deleted context {}", context_id);
                     }
+                    "transactions" => {
+                        let Some(context_id) = args else {
+                            println!("{IND} Usage: context transactions <context_id>");
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        let handle = node.store.handle();
+
+                        let key = calimero_store::key::ContextTransaction::new(
+                            context_id,
+                            [0; 32].into(),
+                        );
+
+                        println!("{IND} {c1:44} | {c2:44}", c1 = "Hash", c2 = "Prior Hash");
+
+                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                            let entry = format!(
+                                "{c1:44} | {c2:?}",
+                                c1 = calimero_primitives::hash::Hash::from(k.transaction_id()),
+                                c2 = calimero_primitives::hash::Hash::from(v.prior_hash),
+                            );
+                            for line in entry.lines() {
+                                println!("{IND} {}", line.cyan());
+                            }
+                        }
+                    }
                     "state" => {
                         let Some(context_id) = args else {
                             println!("{IND} Usage: context state <context_id>");
@@ -544,21 +575,25 @@ impl Node {
             );
         };
 
-        if self
-            .ctx_manager
-            .is_context_pending_initial_catchup(&context_id)
-            .await
-        {
-            info!(%context_id, %their_peer_id, "Attempting to perform subscription triggered catchup");
+        // Too much errors due to concurrent tries to catchup, e.g.
+        // 2024-07-12T16:29:36.373857Z ERROR calimero_node: Failed to handle subscribed event err=
+        // 0: Timeout while waiting for catchup message: Elapsed(())
 
-            self.perform_catchup(context_id, their_peer_id).await?;
+        // if self
+        //     .ctx_manager
+        //     .is_context_pending_initial_catchup(&context_id)
+        //     .await
+        // {
+        //     info!(%context_id, %their_peer_id, "Attempting to perform subscription triggered catchup");
 
-            self.ctx_manager
-                .clear_context_pending_initial_catchup(&context_id)
-                .await;
+        //     self.perform_catchup(context_id, their_peer_id).await?;
 
-            info!(%context_id, %their_peer_id, "Subscription triggered catchup successfully finished");
-        }
+        //     self.ctx_manager
+        //         .clear_context_pending_initial_catchup(&context_id)
+        //         .await;
+
+        //     info!(%context_id, %their_peer_id, "Subscription triggered catchup successfully finished");
+        // }
 
         let handle = self.store.handle();
 
@@ -596,13 +631,26 @@ impl Node {
 
         match serde_json::from_slice(&message.data)? {
             types::PeerAction::Transaction(transaction) => {
+                debug!(?transaction, %source, "Received transaction");
+
                 let handle = self.store.handle();
 
-                if transaction.prior_hash != calimero_primitives::hash::Hash::default()
-                    && !handle.has(&calimero_store::key::ContextTransaction::new(
-                        transaction.context_id,
-                        transaction.prior_hash.into(),
-                    ))?
+                let meta_key = calimero_store::key::ContextMeta::new(transaction.context_id);
+                let transaction_key = calimero_store::key::ContextTransaction::new(
+                    transaction.context_id,
+                    transaction.prior_hash.into(),
+                );
+
+                info!(
+                    "{} {:?} {:?}",
+                    "Checking if transaction is already known",
+                    handle.has(&transaction_key)?,
+                    handle.has(&meta_key)?,
+                );
+
+                if (transaction.prior_hash != calimero_primitives::hash::Hash::default()
+                    && !handle.has(&transaction_key)?)
+                    || !handle.has(&meta_key)?
                 {
                     info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
 
@@ -636,6 +684,7 @@ impl Node {
                 }
             }
             types::PeerAction::TransactionConfirmation(confirmation) => {
+                debug!(?confirmation, %source, "Received transaction confirmation");
                 // todo! ensure this was only sent by a coordinator
 
                 let Some(transaction_pool::TransactionPoolEntry {
@@ -656,10 +705,22 @@ impl Node {
                 }
             }
             types::PeerAction::TransactionRejection(rejection) => {
+                debug!(?rejection, %source, "Received transaction rejection");
                 // todo! ensure this was only sent by a coordinator
+
                 if let Err(err) = self.reject_from_pool(rejection.transaction_hash).await {
                     error!(%err, "Failed to reject transaction from pool");
                 };
+
+                info!(context_id=%rejection.context_id, %source, "Attempting to perform rejection triggered catchup");
+
+                self.perform_catchup(rejection.context_id, source).await?;
+
+                self.ctx_manager
+                    .clear_context_pending_initial_catchup(&rejection.context_id)
+                    .await;
+
+                info!(context_id=%rejection.context_id, %source, "Rejection triggered catchup successfully finished");
             }
         }
 
@@ -715,8 +776,7 @@ impl Node {
                 TopicHash::from_raw(context_id),
                 serde_json::to_vec(&action)?,
             )
-            .await
-            .expect("Failed to publish message.");
+            .await?;
 
         Ok(())
     }
@@ -752,18 +812,15 @@ impl Node {
 
             tokio::spawn(async move {
                 match inner_outcome_receiver.await {
-                    Ok(outcome) => {
-                        match outcome {
-                            Ok(outcome) => {
-                                let _ = outcome_sender.send(Ok(outcome));
-                            }
-                            Err(err) => {
-                                let _ = outcome_sender
-                                    .send(Err(calimero_node_primitives::CallError::Mutate(err)));
-                            }
+                    Ok(outcome) => match outcome {
+                        Ok(outcome) => {
+                            let _ = outcome_sender.send(Ok(outcome));
                         }
-                        // let _ = outcome_sender.send(Ok(outcome));
-                    }
+                        Err(err) => {
+                            let _ = outcome_sender
+                                .send(Err(calimero_node_primitives::CallError::Mutate(err)));
+                        }
+                    },
                     Err(err) => {
                         error!("Failed to receive inner outcome of a transaction: {}", err);
                         let _ =

@@ -168,7 +168,7 @@ async fn link_local_app(
 
     let install_request = InstallDevApplicationRequest {
         application_id: ApplicationId(application_id.clone()),
-        version: version,
+        version,
         path,
     };
 
@@ -190,7 +190,7 @@ async fn link_local_app(
 
     info!("Application installed successfully.");
 
-    create_context(base_multiaddr, application_id, &client).await?;
+    // create_context(base_multiaddr, application_id, &client).await?;
 
     Ok(())
 }
