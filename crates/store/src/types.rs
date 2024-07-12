@@ -5,7 +5,7 @@ mod application;
 mod context;
 mod generic;
 
-pub use apps::ApplicationMeta;
+pub use application::ApplicationMeta;
 pub use context::{
     ContextIdentity, ContextMeta, ContextState, ContextTransaction, TransactionHash,
 };
