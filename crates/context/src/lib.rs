@@ -208,12 +208,6 @@ impl ContextManager {
     ) -> eyre::Result<()> {
         self.link_release(&application_id, version, &path)?;
 
-        let topic_hash = self
-            .network_client
-            .subscribe(calimero_network::types::IdentTopic::new(application_id))
-            .await?;
-
-        info!(%topic_hash, "Subscribed to network topic");
         Ok(())
     }
 

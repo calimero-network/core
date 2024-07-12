@@ -1,21 +1,10 @@
-use calimero_primitives::context::Context;
+use calimero_server_primitives::admin::GetContextsResponse;
 use clap::Parser;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 
 use crate::cli::context::common::multiaddr_to_url;
 use crate::cli::RootArgs;
 use crate::config_file::ConfigFile;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ContextList {
-    contexts: Vec<Context>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GetContextsResponse {
-    data: ContextList,
-}
 
 #[derive(Debug, Parser)]
 pub struct ListCommand {}

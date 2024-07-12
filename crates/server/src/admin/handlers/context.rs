@@ -6,7 +6,10 @@ use axum::{Extension, Json};
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::identity::{ClientKey, ContextUser};
-use calimero_server_primitives::admin::ContextStorage;
+use calimero_server_primitives::admin::{
+    ContextList, ContextResponse, ContextStorage, CreateContextRequest, CreateContextResponse,
+    GetContextsResponse,
+};
 use rand::RngCore;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -107,16 +110,6 @@ pub async fn get_context_users_handler(
     .into_response()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ContextList {
-    contexts: Vec<Context>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GetContextsResponse {
-    data: ContextList,
-}
-
 pub async fn get_contexts_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
@@ -169,21 +162,6 @@ pub async fn delete_context_handler(
         .into_response(),
         Err(err) => err.into_response(),
     };
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateContextRequest {
-    application_id: ApplicationId,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ContextResponse {
-    context: Context,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateContextResponse {
-    data: ContextResponse,
 }
 
 pub async fn create_context_handler(

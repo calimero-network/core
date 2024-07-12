@@ -1,3 +1,5 @@
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::Context;
 use calimero_primitives::identity::WalletType;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,16 @@ pub struct InstallDevApplicationRequest {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ApplicationListResult {
     pub apps: Vec<calimero_primitives::application::Application>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListApplicationsResponse {
+    pub data: ApplicationListResult,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InstallApplicationResponse {
+    pub data: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,4 +124,30 @@ pub struct NodeChallengeMessage {
 #[serde(rename_all = "camelCase")]
 pub struct ContextStorage {
     pub size_in_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ContextList {
+    pub contexts: Vec<Context>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetContextsResponse {
+    pub data: ContextList,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateContextRequest {
+    pub application_id: ApplicationId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ContextResponse {
+    pub context: Context,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateContextResponse {
+    pub data: ContextResponse,
 }
