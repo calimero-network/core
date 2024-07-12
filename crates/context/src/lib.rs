@@ -108,7 +108,7 @@ impl ContextManager {
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
                 application_id: context.application_id.0.into(),
-                last_transaction_hash: calimero_store::types::TransactionHash::default(),
+                last_transaction_hash: context.last_transaction_hash.into(),
             },
         )?;
 
@@ -174,13 +174,14 @@ impl ContextManager {
 
         let key = calimero_store::key::ContextMeta::new(*context_id);
 
-        let Some(context) = handle.get(&key)? else {
+        let Some(ctx_meta) = handle.get(&key)? else {
             return Ok(None);
         };
 
         Ok(Some(calimero_primitives::context::Context {
             id: *context_id,
-            application_id: context.application_id.into_string().into(),
+            application_id: ctx_meta.application_id.into_string().into(),
+            last_transaction_hash: ctx_meta.last_transaction_hash.into(),
         }))
     }
 
@@ -233,6 +234,7 @@ impl ContextManager {
             .map(|(k, v)| calimero_primitives::context::Context {
                 id: k.context_id(),
                 application_id: v.application_id.into_string().into(),
+                last_transaction_hash: v.last_transaction_hash.into(),
             });
 
         Ok(contexts.collect())

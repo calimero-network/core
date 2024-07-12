@@ -6,7 +6,11 @@ use tokio::sync::oneshot;
 pub struct TransactionPoolEntry {
     pub sender: calimero_network::types::PeerId,
     pub transaction: calimero_primitives::transaction::Transaction,
-    pub outcome_sender: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
+    pub outcome_sender: Option<
+        oneshot::Sender<
+            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError>,
+        >,
+    >,
 }
 
 #[derive(Debug, Default)]
@@ -19,7 +23,11 @@ impl TransactionPool {
         &mut self,
         sender: calimero_network::types::PeerId,
         transaction: calimero_primitives::transaction::Transaction,
-        outcome_sender: Option<oneshot::Sender<calimero_runtime::logic::Outcome>>,
+        outcome_sender: Option<
+            oneshot::Sender<
+                Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError>,
+            >,
+        >,
     ) -> eyre::Result<calimero_primitives::hash::Hash> {
         let transaction_hash = calimero_primitives::hash::Hash::hash_json(&transaction)
             .expect("Failed to hash transaction. This is a bug and should be reported.");

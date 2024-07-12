@@ -57,5 +57,6 @@ pub enum MutateCallError {
         application_id: calimero_primitives::application::ApplicationId,
     },
     NoConnectedPeers,
+    TransactionRejected,
     InternalError,
 }
