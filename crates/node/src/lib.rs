@@ -1258,7 +1258,11 @@ impl Node {
                     } in response.transactions
                     {
                         if last_transaction_hash != transaction.prior_hash {
-                            continue;
+                            eyre::bail!(
+                                "Transaction '{}' from the catchup batch doesn't build on last transaction '{}'",
+                                transaction_hash,
+                                transaction.prior_hash,
+                            );
                         };
 
                         match status {
