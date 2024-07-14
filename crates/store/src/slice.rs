@@ -95,18 +95,10 @@ impl<'a> AsRef<[u8]> for Slice<'a> {
     }
 }
 
-impl<'a, T: AsRef<[u8]>> From<&'a T> for Slice<'a> {
+impl<'a, T: AsRef<[u8]> + ?Sized> From<&'a T> for Slice<'a> {
     fn from(inner: &'a T) -> Self {
         Self {
             inner: SliceInner::Ref(inner.as_ref()),
-        }
-    }
-}
-
-impl<'a> From<&'a [u8]> for Slice<'a> {
-    fn from(inner: &'a [u8]) -> Self {
-        Self {
-            inner: SliceInner::Ref(inner),
         }
     }
 }
