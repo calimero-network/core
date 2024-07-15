@@ -643,10 +643,10 @@ impl Node {
 
                 let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
 
-                if (transaction.prior_hash != calimero_primitives::hash::Hash::default()
-                    && !handle.has(&prior_transaction_key)?
-                    && !self.typ.is_coordinator())
-                    || !handle.has(&ctx_meta_key)?
+                if !handle.has(&ctx_meta_key)?
+                    || (transaction.prior_hash != calimero_primitives::hash::Hash::default()
+                        && !handle.has(&prior_transaction_key)?
+                        && !self.typ.is_coordinator())
                 {
                     info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
 
