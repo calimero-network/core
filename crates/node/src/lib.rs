@@ -902,29 +902,23 @@ impl Node {
             prior_hash: context.last_transaction_hash,
         };
 
-        let tx_hash = match self
-            .tx_pool
-            .insert(self.id, transaction.clone(), Some(outcome_sender))
-        {
-            Ok(tx_hash) => tx_hash,
-            Err(err) => {
-                error!(%err, "Failed to insert transaction into the pool.");
-                return Err(calimero_node_primitives::MutateCallError::InternalError);
-            }
-        };
-
-        if let Err(err) = self
-            .push_action(context.id, types::PeerAction::Transaction(transaction))
-            .await
-        {
-            if self.tx_pool.remove(&tx_hash).is_none() {
-                error!("Failed to remove just inserted transaction from the pool. This is a bug and should be reported.");
-                return Err(calimero_node_primitives::MutateCallError::InternalError);
-            }
-
+        self.push_action(
+            context.id,
+            types::PeerAction::Transaction(transaction.clone()),
+        )
+        .await
+        .map_err(|err| {
             error!(%err, "Failed to push transaction over the network.");
-            return Err(calimero_node_primitives::MutateCallError::InternalError);
-        }
+            calimero_node_primitives::MutateCallError::InternalError
+        })?;
+
+        let tx_hash = self
+            .tx_pool
+            .insert(self.id, transaction, Some(outcome_sender))
+            .map_err(|err| {
+                error!(%err, "Failed to insert transaction into the pool.");
+                calimero_node_primitives::MutateCallError::InternalError
+            })?;
 
         Ok(tx_hash)
     }
