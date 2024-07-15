@@ -65,7 +65,10 @@ impl Node {
 
         let application_id = context.application_id.clone();
 
-        if request.application_id.is_none() || application_id != request.application_id.unwrap() {
+        if request
+            .application_id
+            .map_or(false, |id| id != application_id)
+        {
             let application_version = self
                 .ctx_manager
                 .get_application_latest_version(&application_id)?;
