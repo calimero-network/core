@@ -23,7 +23,7 @@ The state of a context is a key-value store, where the key is a 32-byte identifi
 
 ## State mutations
 
-A state mutation is an operation that changes the state of the context. As of the time of writing, state mutations are represented as transactions that define the application method to be called, and it's input (arguments). The method is called on the application, which is a WebAssembly module, and the output is the new state of the context. We make no assumptions about the application, nor it's inputs and outputs, as long as clients of each context agree on the schema & serialization method.
+A state mutation is an operation that changes the state of the context. As of the time of writing, state mutations are represented as transactions that define the application method to be called, and it's input (arguments). We make no assumptions about the application, nor it's inputs and outputs, as long as it's clients agree on the schema & serialization method.
 
 All members of the context, following the reception of a transaction, will execute the transaction on their local copy of the state to advance it to the new state.
 
