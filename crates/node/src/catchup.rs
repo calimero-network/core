@@ -38,10 +38,8 @@ impl Node {
         };
 
         info!(
-            context_id=%context.id,
-            application_id=%context.application_id,
+            request=?request,
             last_transaction_hash=%context.last_transaction_hash,
-            request_transactions_hash=%request.last_executed_transaction_hash,
             "Processing catchup request for context",
         );
 
@@ -67,7 +65,7 @@ impl Node {
 
         let application_id = context.application_id.clone();
 
-        if request.application_id.is_none() || application_id == request.application_id.unwrap() {
+        if request.application_id.is_none() || application_id != request.application_id.unwrap() {
             let application_version = self
                 .ctx_manager
                 .get_application_latest_version(&application_id)?;
