@@ -641,6 +641,8 @@ impl Node {
                     transaction.prior_hash.into(),
                 );
 
+                let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
+
                 if (transaction.prior_hash != calimero_primitives::hash::Hash::default()
                     && !handle.has(&prior_transaction_key)?
                     && !self.typ.is_coordinator())
@@ -660,8 +662,6 @@ impl Node {
                 let Some(context) = self.ctx_manager.get_context(&transaction.context_id)? else {
                     eyre::bail!("Context '{}' not found", transaction.context_id);
                 };
-
-                let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
 
                 if self.typ.is_coordinator() {
                     let Some(pool_entry) = self.tx_pool.remove(&transaction_hash) else {
