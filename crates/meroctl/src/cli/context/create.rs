@@ -168,7 +168,7 @@ async fn link_local_app(
 
     let install_request = InstallDevApplicationRequest {
         application_id: ApplicationId(application_id.clone()),
-        version: version,
+        version,
         path,
     };
 

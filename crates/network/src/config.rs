@@ -121,6 +121,7 @@ impl Default for RendezvousConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatchupConfig {
     pub batch_size: u8,
+    pub receive_timeout: time::Duration,
 }
 
 fn serialize_rendezvous_namespace<S>(

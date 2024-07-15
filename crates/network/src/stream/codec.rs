@@ -16,15 +16,24 @@ pub enum CodecError {
 }
 
 #[derive(Debug)]
-pub(crate) struct MessageJsonCodec;
+pub(crate) struct MessageJsonCodec {
+    length_codec: LengthDelimitedCodec,
+}
+
+impl MessageJsonCodec {
+    pub fn new() -> Self {
+        Self {
+            length_codec: LengthDelimitedCodec::new(),
+        }
+    }
+}
 
 impl Decoder for MessageJsonCodec {
     type Item = Message;
     type Error = CodecError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let mut length_codec = LengthDelimitedCodec::new();
-        let Some(frame) = length_codec.decode(src)? else {
+        let Some(frame) = self.length_codec.decode(src)? else {
             return Ok(None);
         };
 
@@ -38,10 +47,9 @@ impl Encoder<Message> for MessageJsonCodec {
     type Error = CodecError;
 
     fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let mut length_codec = LengthDelimitedCodec::new();
         let json = serde_json::to_vec(&item).map_err(CodecError::SerDe)?;
 
-        length_codec
+        self.length_codec
             .encode(Bytes::from(json), dst)
             .map_err(CodecError::StdIo)
     }
@@ -65,7 +73,7 @@ mod tests {
         };
 
         let mut buffer = BytesMut::new();
-        let mut codec = MessageJsonCodec;
+        let mut codec = MessageJsonCodec::new();
         codec.encode(request.clone(), &mut buffer).unwrap();
         codec.encode(response.clone(), &mut buffer).unwrap();
 
@@ -86,12 +94,12 @@ mod tests {
         };
 
         let mut buffer = BytesMut::new();
-        let mut codec = MessageJsonCodec;
+        let mut codec = MessageJsonCodec::new();
         codec.encode(request.clone(), &mut buffer).unwrap();
         codec.encode(response.clone(), &mut buffer).unwrap();
 
         let mut stream = Builder::new().read(&buffer.freeze()).build();
-        let mut framed = FramedRead::new(&mut stream, MessageJsonCodec);
+        let mut framed = FramedRead::new(&mut stream, MessageJsonCodec::new());
 
         let decoded_request = framed.next().await.unwrap().unwrap();
         assert_eq!(decoded_request, request);

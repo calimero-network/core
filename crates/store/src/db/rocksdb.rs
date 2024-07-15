@@ -39,7 +39,8 @@ impl Database for RocksDB {
     fn has(&self, col: Column, key: Slice) -> eyre::Result<bool> {
         let cf_handle = self.try_cf_handle(&col)?;
 
-        let exists = self.db.key_may_exist_cf(cf_handle, key.as_ref());
+        let exists = self.db.key_may_exist_cf(cf_handle, key.as_ref())
+            && self.get(col, key).map(|value| value.is_some())?;
 
         Ok(exists)
     }
