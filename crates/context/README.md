@@ -21,6 +21,20 @@ Application authors can define gated behaviour for administrative operations, bu
 
 The state of a context is a key-value store, where the key is a 32-byte identifier and the value is a byte array. The state is synchronized across all members of the context, and all state mutations are broadcasted to all members.
 
+## State mutations
+
+A state mutation is a transaction that changes the state of the context. As of the time of writing, state mutations are represented as transactions that define the application method to be called, and it's input (arguments). The method is called on the application, which is a WebAssembly module, and the output is the new state of the context. We make no assumptions about the application, nor it's inputs and outputs, as long as clients of each context agree on the schema & serialization method.
+
+All members of the context, following the reception of a transaction, will execute the transaction on their local copy of the state to advance it to the new state.
+
+The unfortunate downside of this approach is that we're unnecessarily executing the same transaction on all nodes without using that information to achieve trustless consensus. We're currently working on a solution to this problem, which reimagines consensus.
+
+## Consensus
+
+As of the time of writing, we're using a simple consensus mechanism, where all members of the context must agree on the order of transactions. This is achieved by broadcasting transactions to all members, who queue them up in a pool, waiting for a confirmation from an elected coordinator. This coordinator is responsible for ordering transactions, which ensures that all members of the context eventually reach the same state.
+
+The coordinator also stores the transaction history, and so, can reject transactions that have already been processed as well as ones that don't reference the latest state.
+
 ## Context membership
 
 The membership of a context is a list of member identifiers. Each member is identified by a 32-byte key, which represents the public key of the member.
