@@ -450,7 +450,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         for (k, v) in &mut handle.iter(&key)?.entries() {
                             let entry = format!(
-                                "{c1:44} | {c2:?}",
+                                "{c1:44} | {c2}",
                                 c1 = calimero_primitives::hash::Hash::from(k.transaction_id()),
                                 c2 = calimero_primitives::hash::Hash::from(v.prior_hash),
                             );

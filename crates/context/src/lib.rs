@@ -383,7 +383,7 @@ impl ContextManager {
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
         release: &calimero_primitives::application::Release,
-    ) -> eyre::Result<Option<()>> {
+    ) -> eyre::Result<bool> {
         // todo! download to a tempdir
         // todo! Blob API
         let base_path = format!("{}/{}/{}", self.config.dir, application_id, release.version);
@@ -391,7 +391,7 @@ impl ContextManager {
 
         let file_path = format!("{}/binary.wasm", base_path);
         if fs::metadata(&file_path).is_ok() {
-            return Ok(None);
+            return Ok(false);
         }
 
         let mut file = File::create(&file_path)?;
@@ -413,7 +413,7 @@ impl ContextManager {
             eyre::bail!("Release hash does not match the hash of the downloaded file");
         }
 
-        Ok(Some(()))
+        Ok(true)
     }
 
     fn link_release(
@@ -421,13 +421,13 @@ impl ContextManager {
         application_id: &calimero_primitives::application::ApplicationId,
         version: &semver::Version,
         link_path: &camino::Utf8Path,
-    ) -> eyre::Result<Option<()>> {
+    ) -> eyre::Result<bool> {
         let base_path = format!("{}/{}/{}", self.config.dir, application_id, version);
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
         if fs::metadata(&file_path).is_ok() {
-            return Ok(None);
+            return Ok(false);
         }
 
         info!("Application file saved at: {}", file_path);
@@ -440,7 +440,7 @@ impl ContextManager {
             application_id, file_path
         );
 
-        Ok(Some(()))
+        Ok(true)
     }
 
     fn get_latest_application_info(
