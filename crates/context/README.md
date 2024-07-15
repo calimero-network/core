@@ -9,19 +9,19 @@ All operations within a context performed by members will be broadcasted to all 
 - State mutations
 - Membership changes (invitation, leaving, kickouts)
 
-## Context lifecycle
+## Context Lifecycle
 
 Following the creation of a context, the only member is the creator. The creator can invite other members to join the context, and members can leave the context at any time.
 
-## Administrative operations
+## Administrative Operations
 
 Application authors can define gated behaviour for administrative operations, but by default all members have the same rights. Which, depending on the application, can be an undesirable behaviour.
 
-## Context state
+## Context State
 
 The state of a context is a key-value store, where the key is a 32-byte identifier and the value is a byte array. The state is synchronized across all members of the context, and all state mutations are broadcasted to all members.
 
-## State mutations
+## State Mutations
 
 A state mutation is an operation that changes the state of the context. As of the time of writing, state mutations are represented as transactions that define the application method to be called, and it's input (arguments). We make no assumptions about the application, nor it's inputs and outputs, as long as it's clients agree on the schema & serialization method.
 
@@ -35,7 +35,7 @@ As of the time of writing, we're using a simple consensus mechanism, where all m
 
 The coordinator also stores the transaction history, and so, can reject transactions that have already been processed as well as ones that don't reference the latest state.
 
-## Context membership
+## Context Membership
 
 The membership of a context is a list of member identifiers. Each member is identified by a 32-byte key, which represents the public key of the member.
 
@@ -51,10 +51,10 @@ Bob wants to leave a context. He broadcasts a leave request to all members of th
 
 As of the time of writing, all messages are sent in plaintext. But we're currently working on encrypting all messages using distinct, yet, deterministic keys by employing the double-ratchet algorithm, which provides forward secrecy, and post-compromise security. We'll revise this document once this, among other features, is implemented.
 
-## Application upgrade
+## Application Upgrade
 
 As noted [above](#administrative-operations), application authors can define gated behaviour for administrative operations. This includes the ability to upgrade the application. Subsequent transactions made by members from the old version of the application will be rejected by the new version.
 
-## Context deletion
+## Context Deletion
 
 There's no way to "delete a context" for all members outside of the scope of all members leaving it.
