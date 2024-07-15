@@ -37,6 +37,14 @@ impl Node {
             return Ok(());
         };
 
+        info!(
+            context_id=%context.id,
+            application_id=%context.application_id,
+            last_transaction_hash=%context.last_transaction_hash,
+            request_transactions_hash=%request.last_executed_transaction_hash,
+            "Processing catchup request for context",
+        );
+
         let handle = self.store.handle();
 
         if request.last_executed_transaction_hash != calimero_primitives::hash::Hash::default()
@@ -84,13 +92,6 @@ impl Node {
         let mut hashes = VecDeque::new();
 
         let mut last_transaction_hash = context.last_transaction_hash;
-
-        info!(
-            "Current hash: {:?}, requested hash: {:?}, default hash: {:?}",
-            last_transaction_hash,
-            request.last_executed_transaction_hash,
-            calimero_primitives::hash::Hash::default()
-        );
 
         while last_transaction_hash != calimero_primitives::hash::Hash::default()
             && last_transaction_hash != request.last_executed_transaction_hash
