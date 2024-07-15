@@ -100,7 +100,9 @@ impl ContextManager {
         &self,
         context: calimero_primitives::context::Context,
     ) -> eyre::Result<()> {
-        // todo! ensure application is installed
+        if !self.is_application_installed(&context.application_id) {
+            eyre::bail!("Application is not installed on node.")
+        }
 
         let mut handle = self.store.handle();
 
@@ -388,9 +390,9 @@ impl ContextManager {
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
-        // if fs::metadata(&file_path).is_ok() {
-        //     return Ok(None);
-        // }
+        if fs::metadata(&file_path).is_ok() {
+            return Ok(None);
+        }
 
         let mut file = File::create(&file_path)?;
 
