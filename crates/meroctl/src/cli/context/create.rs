@@ -190,7 +190,7 @@ async fn link_local_app(
 
     info!("Application installed successfully.");
 
-    // create_context(base_multiaddr, application_id, &client).await?;
+    create_context(base_multiaddr, application_id, &client).await?;
 
     Ok(())
 }

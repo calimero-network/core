@@ -153,7 +153,7 @@ impl InitCommand {
                     websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
                 },
                 catchup: calimero_network::config::CatchupConfig {
-                    batch_size: 2,
+                    batch_size: 50,
                     receive_timeout: std::time::Duration::from_secs(2),
                 },
             },
