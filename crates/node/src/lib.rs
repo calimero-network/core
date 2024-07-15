@@ -635,22 +635,16 @@ impl Node {
 
                 let handle = self.store.handle();
 
-                let meta_key = calimero_store::key::ContextMeta::new(transaction.context_id);
-                let transaction_key = calimero_store::key::ContextTransaction::new(
+                let ctx_meta_key = calimero_store::key::ContextMeta::new(transaction.context_id);
+                let prior_transaction_key = calimero_store::key::ContextTransaction::new(
                     transaction.context_id,
                     transaction.prior_hash.into(),
                 );
 
-                info!(
-                    "{} {:?} {:?}",
-                    "Checking if transaction is already known",
-                    handle.has(&transaction_key)?,
-                    handle.has(&meta_key)?,
-                );
-
                 if (transaction.prior_hash != calimero_primitives::hash::Hash::default()
-                    && !handle.has(&transaction_key)?)
-                    || !handle.has(&meta_key)?
+                    && !handle.has(&prior_transaction_key)?
+                    && !self.typ.is_coordinator())
+                    || !handle.has(&ctx_meta_key)?
                 {
                     info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
 
@@ -675,7 +669,6 @@ impl Node {
                     };
 
                     self.validate_pending_transaction(
-                        context.last_transaction_hash,
                         context,
                         pool_entry.transaction,
                         transaction_hash,
@@ -729,12 +722,11 @@ impl Node {
 
     async fn validate_pending_transaction(
         &mut self,
-        last_transaction_hash: calimero_primitives::hash::Hash,
         context: calimero_primitives::context::Context,
         transaction: calimero_primitives::transaction::Transaction,
         transaction_hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<bool> {
-        if last_transaction_hash == transaction.prior_hash {
+        if context.last_transaction_hash == transaction.prior_hash {
             self.nonce += 1;
 
             self.push_action(
