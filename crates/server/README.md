@@ -1,30 +1,30 @@
-# Calimero Admin
+# Calimero Server
 
 - [Introduction](#introduction)
-    - [Admin API](#1-admin-api)
-    - [Admin JSON rpc](#2-admin-json-rpc)
-    - [Admin Websocket](#3-admin-websocket)
-- [Calimero Admin Workflows](#calimero-admin-workflows)
+    - [Admin API](#1admin-api)
+    - [JSON rpc](#2json-rpc)
+    - [Websocket](#3websocket)
+- [Calimero Server Workflows](#calimero-server-workflows)
     - [Admin API Workflow](#workflow-for-admin-dashboard)
-    - [Admin JSON rpc Workflow](#workflow-for-p2p-web-applications-and-admin-json-rpc)
-    - [Admin Websocket Workflow](#workflow-for-p2p-web-application-and-admin-websocket)
+    - [JSON rpc Workflow](#workflow-for-p2p-web-applications-and-json-rpc)
+    - [Websocket Workflow](#workflow-for-p2p-web-application-and-websocket)
 - [Admin API endpoints](#admin-api-endpoints)
     - [Protected Routes](#protected-routes)
     - [Unprotected Routes](#unprotected-routes)
-- [Admin JSON rpc endpoints](#admin-json-rpc-endpoints)
-- [Admin Websocket endpoints](#admin-websocket-endpoints)
+- [JSON rpc endpoints](#json-rpc-endpoints)
+- [Websocket endpoints](#websocket-endpoints)
 - [Examples](#examples)
 
 ## Introduction
 
-The Calimero Admin is a server component of the Calimero Node that has crucial part in
+The Calimero Server is a server component of the Calimero Node that has crucial part in
 managing the Calimero Admin Dashboard and the P2P Applications built for Calimero Nodes.
 
-Calimero Admin Server component is split into 3 parts:
+Calimero Server component is split into 3 parts:
 
 ### 1. Admin API
 
-The Admin API component of the Calimero Admin server connects web applications with the node and its functionalities. It is primarily utilized by the Admin Dashboard to query and manage various aspects of the node, including:
+The Admin API component of the Calimero Server connects web applications with the node and its functionalities. It is primarily utilized by the Admin Dashboard to query and manage various aspects of the node, including:
 
  - Identity information
  - Root keys
@@ -43,9 +43,9 @@ The Admin API component of the Calimero Admin server connects web applications w
 
 **Integration with Web Applications**: The authentication mechanism is also used by web applications designed to interact with P2P applications installed on the node, ensuring secure and authenticated access.
 
-### 2. Admin JSON rpc
+### 2. JSON rpc
 
-The Admin JSON-RPC component of the Calimero Admin server facilitates communication between the front-end web applications of P2P systems and the application binaries (contexts) running on Calimero nodes. This allows seamless interaction and data management for applications.
+The JSON-RPC component of the Calimero Server facilitates communication between the front-end web applications of P2P systems and the application binaries (contexts) running on Calimero nodes. This allows seamless interaction and data management for applications.
 
 The JSON-RPC interface provides two primary methods:
 
@@ -58,12 +58,12 @@ The `Query` method retrieves data from the applications running on the Calimero 
 #### Mutate Method
 The `Mutate` method allows modification of the application's data. For example, in the Only Peers forum application, users can create new posts or comments. The Mutate method updates the application's storage with these new entries, facilitating dynamic content creation and interaction within the application.
 
-The Admin JSON-RPC component is crucial for enabling interactive and real-time data management between P2P application front-ends and the back-end contexts running on Calimero nodes.
+The JSON-RPC component is crucial for enabling interactive and real-time data management between P2P application front-ends and the back-end contexts running on Calimero nodes.
 
-### 3. Admin Websocket
+### 3. Websocket
 
-The Admin WebSocket is used for subscribing to and unsubscribing from certain contexts within the Calimero Admin server. Defined handlers manage subscription states for WebSocket connections, allowing clients to receive updates about specific contexts they are interested in.
-WebSocket handlers are essential for managing real-time, context-specific subscriptions within the Calimero Admin server. They allow clients to dynamically subscribe to and unsubscribe from updates about various application contexts, enhancing the interactivity and responsiveness of the P2P application.
+The WebSocket is used for subscribing to and unsubscribing from certain contexts within the Calimero server. Defined handlers manage subscription states for WebSocket connections, allowing clients to receive updates about specific contexts they are interested in.
+WebSocket handlers are essential for managing real-time, context-specific subscriptions within the Calimero server. They allow clients to dynamically subscribe to and unsubscribe from updates about various application contexts, enhancing the interactivity and responsiveness of the P2P application.
 
 
 #### Subscription Handling:
@@ -74,7 +74,7 @@ Websocket handles requests to subscribe to specific contexts and send responses 
 
 Websocket handle requests to unsubscribe from specific contexts and send responses back to the client with the unsubscribed context IDs.
 
-## Calimero Admin Workflows
+## Calimero Server Workflows
 
 ### Workflow for Admin Dashboard
 
@@ -86,37 +86,37 @@ flowchart TD
     B -->|Node Communication| D[Node]
     D -->|Response| B
 
-    subgraph Admin Server
+    subgraph Server
         B
     end
 ```
 
-### Workflow for P2P Web applications and Admin JSON rpc
+### Workflow for P2P Web applications and JSON rpc
 
 ```mermaid
 flowchart TD
     A[P2P Web Application] -->|HTTP Auth Request| B[Admin API]
     B -->|Auth Response| A
-    A -->|JSON-RPC Query/Mutate| C[Admin JSON rpc]
+    A -->|JSON-RPC Query/Mutate| C[JSON rpc]
     C -->|Query/Mutate| D[Node]
     D -->|Response| C
     C -->|Response| A
 
-    subgraph Admin Server
+    subgraph Server
         B
         C
     end
 ```
 
-### Workflow for P2P Web application and Admin Websocket
+### Workflow for P2P Web application and Websocket
 ```mermaid
 flowchart TD
-    A[Admin Dashboard] -->|HTTP Subscribe/Unsubscribe Requests| B[Admin Websocket]
+    A[Admin Dashboard] -->|HTTP Subscribe/Unsubscribe Requests| B[Websocket]
     B -->|HTTP Websocket Responses| A
     B -->|Subscribe / Unsubscribe| D[Node]
     D -->|Response| B
 
-    subgraph Admin Server
+    subgraph Server
         B
     end
 ```
@@ -229,7 +229,7 @@ These routes do not require authentication.
  - **Description**: Lists all development applications.
 
 
-## Admin JSON rpc endpoints
+## JSON rpc endpoints
 
 The JSON-RPC server endpoints are structured to handle various request types and are configured based on a JSON-RPC configuration that determines if the server is enabled
 
@@ -242,9 +242,9 @@ The JSON-RPC server endpoints are structured to handle various request types and
 - **Description**: Handles incoming JSON-RPC requests, which can be `query` or `mutate` requests, processes them, and returns the appropriate response.
 
 
-## Admin Websocket endpoints
+## Websocket endpoints
 
-The Admin WebSocket, accessible at /ws, allows clients to dynamically subscribe to and unsubscribe from real-time updates about specific contexts within the Calimero Admin server.
+The WebSocket, accessible at /ws, allows clients to dynamically subscribe to and unsubscribe from real-time updates about specific contexts within the Calimero Server.
 
 **1. Handle WebSocket Request**
 
@@ -254,5 +254,5 @@ The Admin WebSocket, accessible at /ws, allows clients to dynamically subscribe 
 
 
 ## Examples
-Examples of admin usage can be found within the [Admin Dashboard](https://github.com/calimero-network/admin-dashboard) and the [Only Peers example](https://github.com/calimero-network/only-peers-client
+Examples of Admin Server usage can be found within the [Admin Dashboard](https://github.com/calimero-network/admin-dashboard) and the [Only Peers example](https://github.com/calimero-network/only-peers-client
 ) application.
