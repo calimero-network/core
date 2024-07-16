@@ -8,6 +8,12 @@
     - [Admin API Workflow](#workflow-for-admin-dashboard)
     - [Admin JSON rpc Workflow](#workflow-for-p2p-web-applications-and-admin-json-rpc)
     - [Admin Websocket Workflow](#workflow-for-p2p-web-application-and-admin-websocket)
+- [Admin API endpoints](#admin-api-endpoints)
+    - [Protected Routes](#protected-routes)
+    - [Unprotected Routes](#unprotected-routes)
+- [Admin JSON rpc endpoints](#admin-json-rpc-endpoints)
+- [Admin Websocket endpoints](#admin-websocket-endpoints)
+- [Examples](#examples)
 
 ## Introduction
 
@@ -114,3 +120,139 @@ flowchart TD
         B
     end
 ```
+
+## Admin API endpoints
+
+The Admin API endpoints are split into protected and unprotected routes, where protected routes require authentication.
+
+**Base path**: `/admin-api`
+
+### Protected Routes
+
+These routes require authentication and are protected by the AuthSignatureLayer.
+
+**1. Create Root Key**
+
+ - **Path**: `/root-key`
+ - **Method**: `POST`
+ - **Description**: Creates a new root key in the node.
+
+**2. Install Application**
+
+ - **Path**: `/install-application`
+ - **Method**: `POST`
+ - **Description**: Installs a new application in the node.
+
+**3. List Applications**
+ - **Path**: `/applications`
+ - **Method**: `GET`
+ - **Description**: Lists all installed applications in the node.
+
+**4. Fetch DID**
+ - **Path**: `/did`
+ - **Method**: `GET`
+ - **Description**: Fetches the DID (Decentralized Identifier) of the node.
+
+**5. Create Context**
+ - **Path**: `/contexts`
+ - **Method**: `POST`
+ - **Description**: Creates a new context.
+
+**6. Delete Context**
+ - **Path**: `/contexts/:context_id`
+ - **Method**: `DELETE`
+ - **Description**: Deletes a specific context by ID.
+
+**7. Get Context**
+ - **Path**: `/contexts/:context_id`
+ - **Method**: `GET`
+ - **Description**: Retrieves details of a specific context by ID.
+
+**8. Get Context Users**
+ - **Path**: `/contexts/:context_id/users`
+ - **Method**: `GET`
+ - **Description**: Lists users associated with a specific context.
+
+**9. Get Context Client Keys**
+ - **Path**: `/contexts/:context_id/client-keys`
+ - **Method**: `GET`
+ - **Description**: Lists client keys for a specific context.
+
+**10. Get Context Storage**
+ - **Path**: `/contexts/:context_id/storage`
+ - **Method**: `GET`
+ - **Description**: Retrieves storage information for a specific context.
+
+**11. List Contexts**
+ - **Path**: `/contexts`
+ - **Method**: `GET`
+ - **Description**: Lists all contexts.
+
+**12. Delete Auth Keys**
+ - **Path**: `/identity/keys`
+ - **Method**: `DELETE`
+ - **Description**: Deletes authentication keys.
+ 
+
+### Unprotected Routes
+These routes do not require authentication.
+
+**1. Health Check**
+ - **Path**: `/health`
+ - **Method**: `GET`
+ - **Description**: Checks the health of the API.
+
+**2. Request Challenge**
+ - **Path**: `/request-challenge`
+ - **Method**: `POST`
+ - **Description**: Requests a challenge for authentication.
+
+**3. Add Client Key**
+ - **Path**: `/add-client-key`
+ - **Method**: `POST`
+ - **Description**: Adds a new client key.
+
+**4. Install Dev Application**
+ - **Path**: `/dev/install-application`
+ - **Method**: `POST`
+ - **Description**: Installs a development application.
+
+**5. Manage Dev Contexts**
+ - **Path**: `/dev/contexts`
+ - Methods: `GET`, `POST`
+ - **Description**: Lists (`GET`) and creates (`POST`) development contexts.
+
+**6. List Dev Applications**
+
+ - **Path**: `/dev/applications`
+ - **Method**: `GET`
+ - **Description**: Lists all development applications.
+
+
+## Admin JSON rpc endpoints
+
+The JSON-RPC server endpoints are structured to handle various request types and are configured based on a JSON-RPC configuration that determines if the server is enabled
+
+**Base path**: `/jsonrpc`
+
+**1. Handle JSON-RPC Request**
+
+- **Path**: `/jsonrpc`
+- **Method**: `POST`
+- **Description**: Handles incoming JSON-RPC requests, which can be `query` or `mutate` requests, processes them, and returns the appropriate response.
+
+
+## Admin Websocket endpoints
+
+The Admin WebSocket, accessible at /ws, allows clients to dynamically subscribe to and unsubscribe from real-time updates about specific contexts within the Calimero Admin server.
+
+**1. Handle WebSocket Request**
+
+ - **Path**: `/ws`
+ - **Method**: `GET`
+ - **Description**: Handles incoming WebSocket requests, which can be subscribe or unsubscribe requests, processes them, and returns the appropriate response.
+
+
+## Examples
+Examples of admin usage can be found within the [Admin Dashboard](https://github.com/calimero-network/admin-dashboard) and the [Only Peers example](https://github.com/calimero-network/only-peers-client
+) application.
