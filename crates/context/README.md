@@ -29,12 +29,6 @@ All members of the context, following the reception of a transaction, will execu
 
 The unfortunate downside of this approach is that we're unnecessarily executing the same transaction on all nodes without using that information to achieve trustless consensus. We're currently working on a solution to this problem, which reimagines consensus.
 
-## Consensus
-
-As of the time of writing, we're using a simple consensus mechanism, where all members of the context must agree on the order of transactions. This is achieved by broadcasting transactions to all members, who queue them up in a pool, waiting for a confirmation from an elected coordinator. This coordinator is responsible for ordering transactions, which ensures that all members of the context eventually reach the same state.
-
-The coordinator also stores the transaction history, and so, can reject transactions that have already been processed as well as ones that don't reference the latest state.
-
 ## Context Membership
 
 The membership of a context is a list of member identifiers. Each member is identified by a 32-byte key, which represents the public key of the member.
