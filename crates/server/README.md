@@ -82,7 +82,6 @@ Websocket handle requests to unsubscribe from specific contexts and send respons
 flowchart TD
     A[Admin Dashboard] -->|HTTP Requests| B[Admin API]
     B -->|HTTP Responses| A
-    B -->|Query/Mutate| C[RocksDB]
     B -->|Node Communication| D[Node]
     D -->|Response| B
 
