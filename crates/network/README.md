@@ -1,16 +1,49 @@
 # Calimero networking
 
+- [Calimero networking](#calimero-networking)
+  - [Introduction](#introduction)
+  - [Core Components](#core-components)
+    - [EventLoop](#eventloop)
+      - [Main Loop](#main-loop)
+    - [Swarm](#swarm)
+    - [Identity and Peer ID](#identity-and-peer-id)
+    - [Runtime](#runtime)
+    - [Transport Protocols](#transport-protocols)
+  - [Behaviour and Protocols](#behaviour-and-protocols)
+    - [Discovery Protocols](#discovery-protocols)
+      - [Kademlia DHT](#kademlia-dht)
+      - [mDNS](#mdns)
+      - [Rendezvous](#rendezvous)
+    - [Data Exchange Protocols](#data-exchange-protocols)
+      - [Gossipsub](#gossipsub)
+    - [Connectivity Protocols](#connectivity-protocols)
+      - [Relay](#relay)
+      - [DCUtR (Direct Connection Upgrade through Relay)](#dcutr-direct-connection-upgrade-through-relay)
+    - [Meta Protocols](#meta-protocols)
+      - [Identify](#identify)
+      - [Ping](#ping)
+    - [Custom Protocol](#custom-protocol)
+      - [Stream](#stream)
+  - [Discovery](#discovery)
+    - [Client (`NetworkClient` struct)](#client-networkclient-struct)
+    - [NetworkEvents](#networkevents)
+  - [Conectivity flow](#conectivity-flow)
+      - [Key Points in the Connectivity Flow](#key-points-in-the-connectivity-flow)
+  - [](#)
+    - [NAT Traversal Techniques](#nat-traversal-techniques)
+
 ## Introduction
 
 The Networking crate is a robust peer-to-peer networking solution built on top of libp2p. It provides a comprehensive set of tools and abstractions for creating decentralized applications with efficient peer discovery, connection management, and custom protocol implementations.
 
 Key features of this crate include:
 
+- Data exchange capabilities between peers:
+  - Topic-based publish/subscribe for multi-peer communication (GossipSub)
+  - Direct peer-to-peer data exchange using a custom stream protocol
 - Peer discovery through multiple mechanisms (mDNS, Kademlia DHT, Rendezvous)
 - NAT traversal capabilities using relay and hole punching techniques
-- Custom stream protocol for application-specific communications
 - Event-driven architecture for handling network events and commands
-- Integration with various libp2p protocols (Identify, Ping, Gossipsub, etc.)
 
 ## Core Components
 
@@ -38,7 +71,7 @@ Each of the events has it's own handler function.
 
 ### Swarm
 
-The Swarm is a central construct in libp2p, providing a view of the network from the perspective of a single node. It manages connections, protocols, and peer interactions.   In our implementation, the Swarm is defined as:
+The Swarm is a central construct in libp2p, providing a view of the network from the perspective of a single node. It manages connections, protocols, and peer interactions. In our implementation, the Swarm is defined as:
 
  ```rust
   Swarm<Behaviour>
@@ -46,7 +79,7 @@ The Swarm is a central construct in libp2p, providing a view of the network from
 
 Where  `Behaviour`  is a custom type that implements the  `NetworkBehaviour`  trait. This allows us to define specific network behaviors tailored to our application's needs.
 
-The Swarm in libp2p combines a `Transport` (how to send/receive data) with a `NetworkBehaviour` (what to do with the connections).
+The `Swarm` in libp2p combines a `Transport` (how to send/receive data) with a `NetworkBehaviour` (what to do with the connections).
 
 ### Identity and Peer ID
 
