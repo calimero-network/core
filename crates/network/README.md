@@ -24,11 +24,9 @@
     - [Meta Protocols](#meta-protocols)
       - [Identify](#identify)
       - [Ping](#ping)
-  - [Discovery](#discovery)
+  - [Discovery and connectivity flow](#discovery-and-connectivity-flow)
     - [Client (`NetworkClient` struct)](#client-networkclient-struct)
     - [NetworkEvents](#networkevents)
-  - [Conectivity flow](#conectivity-flow)
-      - [Key Points in the Connectivity Flow](#key-points-in-the-connectivity-flow)
   - [](#)
     - [NAT Traversal Techniques](#nat-traversal-techniques)
 
@@ -53,24 +51,16 @@ The `EventLoop` is the central component of the networking crate, responsible fo
 
 ```mermaid
 graph TD
-
-A[Node Initialization] --> B[Listen on addresses]
-
-A --> C[EventLoop Start]
-
-C -->|Continuous| D[Process Events]
-
-subgraph " "
-
-D --> N[Swarm Events]
-
-D --> O[Incoming Streams]
-
-D --> P[Client Commands]
-
-D --> Q[Periodic Rendezvous Discoveries]
-
-end
+    A[Node Initialization] --> B[Listen on addresses]
+    A --> C[EventLoop Start]
+    C -->|Continuous| D[Process Events]
+ 
+    subgraph " "
+        D --> N[Swarm Events]
+        D --> O[Incoming Streams]
+        D --> P[Client Commands]
+        D --> Q[Periodic Rendezvous Discoveries]
+    end
 ```
 
 #### Main Loop
@@ -90,20 +80,6 @@ The EventLoop's main loop uses the `tokio::select!` macro that allows waiting on
    Regular attempts to discover new peers through the Rendezvous protocol. This helps maintain and expand the node's network of peers.
 
 Each of the events has it's own handler function.
-
-```mermaid
-graph TD
-    A[Node Initialization] --> B[Listen on addresses]
-    A --> C[EventLoop Start]
-    C -->|Continuous| D[Process Events]
- 
-    subgraph " "
-        D --> N[Swarm Events]
-        D --> O[Incoming Streams]
-        D --> P[Client Commands]
-        D --> Q[Periodic Rendezvous Discoveries]
-    end
-````
 
 ### Swarm
 
@@ -277,7 +253,7 @@ Both Relay and DCUtR work together to improve connectivity in challenging networ
 
 - Purpose: Liveness check and latency measurements
 
-## Discovery
+## Discovery and connectivity flow
 
 Our network employs a multi-faceted approach to peer discovery and connectivity, leveraging several protocols to ensure robust and efficient networking:
 
@@ -308,45 +284,18 @@ Our network employs a multi-faceted approach to peer discovery and connectivity,
    - Currently utilize a single namespace for Rendezvous operations
    - Future consideration: Implement context-specific namespaces for more granular peer discovery
 
+7. **Relay Setup**:
+   - Upon discovery of relay-capable peers:
+     - Set up relay reservations
+     - Improve connectivity for peers behind NATs
+   - Enable communication between peers that can't directly connect
 
-### Client (`NetworkClient` struct)
-
-The NetworkClient serves as the primary interface for other parts of the application to interact with the networking functionality. It provides a clean, easy-to-use API for performing various network operations without directly interacting with the internals of the EventLoop or libp2p.
-
-Key features of the NetworkClient include:
-
-- Simplified methods for common network operations (e.g., listening, dialing, subscribing to topics)
-- Abstraction of the underlying network complexity
-- Asynchronous operation support
-
-The NetworkClient extensively uses oneshot channels for most of its methods. This involves:
-
-1. Creating a new oneshot channel for each operation
-2. Sending a command through an mpsc channel to the EventLoop, including the sender half of the oneshot channel
-3. Awaiting on the receiver half of the oneshot channel for the result
-
-This approach allows for efficient, non-blocking network operations.
-
-### NetworkEvents
-
-The networking crate defines a set of custom NetworkEvents that are emitted to the consumer of the network. These events are distinct from the internal libp2p events and provide high-level information about significant network occurrences.
-
-Key characteristics of NetworkEvents:
-
-- They represent network activities relevant to the application layer
-- They abstract away the complexities of low-level libp2p events
-- They are designed to be easily consumable by other parts of the application
-
-The main types of NetworkEvents include:
-
-1. **ListeningOn**: Emitted when the node starts listening on a new address
-2. **Subscribed**: Indicates successful subscription to a topic
-3. **Message**: Represents a received message on a subscribed topic
-4. **StreamOpened**: Signifies the opening of a new stream with a peer
-
-These events allow the application to react to important network state changes and incoming data without needing to understand the underlying libp2p implementation.
-
-## Conectivity flow
+8. **Continuous Event Processing**:
+   - Utilize EventLoop for ongoing network maintenance:
+     - Process Swarm events
+     - Handle incoming streams
+     - Execute user commands
+     - Perform periodic discoveries
 
 ```mermaid
 sequenceDiagram
@@ -407,16 +356,43 @@ sequenceDiagram
     deactivate Handle
 ```
 
-#### Key Points in the Connectivity Flow
 
-1. **Bootstrap**: The node initially connects to Calimero boot nodes using a custom Calimero KAD protocol, providing entry points to the network.
-2. **Local Discovery**: The node uses mDNS to discover peers on the local network, enabling quick connections to nearby nodes.
-3. **Connection Establishment**: The node attempts to establish connections with discovered peers, using direct dial for mDNS-discovered peers to ensure connectivity with all local nodes.
-4. **Identify Protocol**: During connection establishment, an Identify protocol exchange occurs, allowing the node to learn about the capabilities and supported protocols of its peers.
-5. **Kademlia DHT**: The node integrates with the Kademlia Distributed Hash Table, enhancing its ability to discover and connect with peers across the wider network.
-6. **Rendezvous Discovery**: The node utilizes Rendezvous points for discovering peers beyond the local network, especially useful for NAT traversal.
-7. **Relay Setup**: As the node discovers relay-capable peers, it sets up relay reservations to improve connectivity, particularly for peers behind NATs
-8. **Continuous Event Processing**: The EventLoop continuously processes various events (Swarm events, incoming streams, commands, and periodic discoveries) that influence and refine the connectivity state.
+### Client (`NetworkClient` struct)
+
+The NetworkClient serves as the primary interface for other parts of the application to interact with the networking functionality. It provides a clean, easy-to-use API for performing various network operations without directly interacting with the internals of the EventLoop or libp2p.
+
+Key features of the NetworkClient include:
+
+- Simplified methods for common network operations (e.g., listening, dialing, subscribing to topics)
+- Abstraction of the underlying network complexity
+- Asynchronous operation support
+
+The NetworkClient extensively uses oneshot channels for most of its methods. This involves:
+
+1. Creating a new oneshot channel for each operation
+2. Sending a command through an mpsc channel to the EventLoop, including the sender half of the oneshot channel
+3. Awaiting on the receiver half of the oneshot channel for the result
+
+This approach allows for efficient, non-blocking network operations.
+
+### NetworkEvents
+
+The networking crate defines a set of custom NetworkEvents that are emitted to the consumer of the network. These events are distinct from the internal libp2p events and provide high-level information about significant network occurrences.
+
+Key characteristics of NetworkEvents:
+
+- They represent network activities relevant to the application layer
+- They abstract away the complexities of low-level libp2p events
+- They are designed to be easily consumable by other parts of the application
+
+The main types of NetworkEvents include:
+
+1. **ListeningOn**: Emitted when the node starts listening on a new address
+2. **Subscribed**: Indicates successful subscription to a topic
+3. **Message**: Represents a received message on a subscribed topic
+4. **StreamOpened**: Signifies the opening of a new stream with a peer
+
+These events allow the application to react to important network state changes and incoming data without needing to understand the underlying libp2p implementation.
 
 ##
 
