@@ -137,7 +137,7 @@ impl EventLoop {
 
     // Updates rendezvous registration on the remote rendezvous peer.
     // If there are no external addresses for the node, the registration is considered successful.
-    // This function expectes that the relay peer is already connected.
+    // This function expectes that the rendezvous peer is already connected.
     pub(crate) fn update_rendezvous_registration(&mut self, peer_id: &PeerId) -> eyre::Result<()> {
         if let Err(err) = self.swarm.behaviour_mut().rendezvous.register(
             self.discovery.rendezvous_config.namespace.clone(),
