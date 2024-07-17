@@ -145,7 +145,9 @@ impl EventLoop {
             None,
         ) {
             match err {
-                libp2p::rendezvous::client::RegisterError::NoExternalAddresses => {}
+                libp2p::rendezvous::client::RegisterError::NoExternalAddresses => {
+                    return Ok(());
+                }
                 err => eyre::bail!(err),
             }
         }
@@ -154,6 +156,7 @@ impl EventLoop {
             %peer_id, rendezvous_namespace=%(self.discovery.rendezvous_config.namespace),
             "Sent register request to rendezvous node"
         );
+
         Ok(())
     }
 
