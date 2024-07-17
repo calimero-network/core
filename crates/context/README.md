@@ -7,7 +7,6 @@
   - [Invitations](#invitations)
   - [Leaving](#leaving)
 - [Encryption](#encryption)
-- [Application Upgrade](#application-upgrade)
 - [Context Deletion](#context-deletion)
 
 A context in Calimero is an instance of a deployed application where members share a synchronized state.
@@ -34,8 +33,6 @@ The unfortunate downside of this approach is that we're unnecessarily executing 
 
 ## Context Membership
 
-This is not implemented at this time.
-
 ### Invitations
 
 Alice wants to invite Bob to join the context. Alice shares the context ID with Bob. Bob can now make a catchup request, which will be responded to by Alice. Eventually, Bob receives all transactions required to make up the complete state, at which point he is considered a full member of the context and can proceed to make mutations.
@@ -47,10 +44,6 @@ Bob wants to leave a context. He deletes the context from his local storage and 
 ## Encryption
 
 As of the time of writing, all messages are sent in plaintext. But we're currently working on encrypting all messages using distinct, yet, deterministic keys by employing the double-ratchet algorithm, which provides forward secrecy, and post-compromise security. We'll revise this document once this, among other features, is implemented.
-
-## Application Upgrade
-
-This is not implemented at this time.
 
 ## Context Deletion
 
