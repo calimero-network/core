@@ -34,7 +34,7 @@ The unfortunate downside of this approach is that we're unnecessarily executing 
 
 ## Context Membership
 
-The membership of a context is a list of member identifiers. Each member is identified by a 32-byte key, which represents the public key of the member.
+This is not implemented at this time.
 
 ### Invitations
 
