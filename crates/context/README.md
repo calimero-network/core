@@ -1,7 +1,6 @@
 # Calimero Contexts
 
 - [Context Lifecycle](#context-lifecycle)
-- [Administrative Operations](#administrative-operations)
 - [Context State](#context-state)
 - [State Mutations](#state-mutations)
 - [Context Membership](#context-membership)
@@ -15,22 +14,15 @@ A context in Calimero is an instance of a deployed application where members sha
 
 A context is identified by a 32-byte key, which is randomly generated when the context is created. As of now, the key is not necessarily cryptographically secure, nor is it a dependency of cryptographic operations, but it is unique enough to mitigate collisions. Worth noting that this is likely to change in the future.
 
-All operations within a context performed by members will be broadcasted to all other members. This includes:
-
-- State mutations
-- Membership changes (invitation, leaving, kickouts)
+All state mutations within a context performed by members will be broadcasted to all other members.
 
 ## Context Lifecycle
 
 Following the creation of a context, the only member is the creator. The creator can invite other members to join the context, and members can leave the context at any time.
 
-## Administrative Operations
-
-Application authors can define gated behaviour for administrative operations, but by default all members have the same rights. Which, depending on the application, can be an undesirable behaviour.
-
 ## Context State
 
-The state of a context is a key-value store, where the key is a 32-byte identifier and the value is a byte array. The state is synchronized across all members of the context, and all state mutations are broadcasted to all members.
+The state of a context is a key-value store, where the key is a 32-byte identifier and the value is a byte array. The state is synchronized across all members of the context, since all state mutations are broadcasted to all members.
 
 ## State Mutations
 
@@ -46,11 +38,11 @@ The membership of a context is a list of member identifiers. Each member is iden
 
 ### Invitations
 
-Bob wants to join a context. He shares his public key with Alice, who is already a member of the context. Alice then broadcasts an invitation to all members of the context, which is made up of Bob's public key. Following this invitation, Alice shares the context ID with Bob. At this point, Bob can make a catchup request, which will be responded to by any member of the context who has some of the state and now knows about Bob. Eventually, Bob receives all transactions required to make up the complete state, at which point he is considered a full member of the context. And can proceed to make mutations.
+Alice wants to invite Bob to join the context. Alice shares the context ID with Bob. Bob can now make a catchup request, which will be responded to by Alice. Eventually, Bob receives all transactions required to make up the complete state, at which point he is considered a full member of the context and can proceed to make mutations.
 
 ### Leaving
 
-Bob wants to leave a context. He broadcasts a leave request to all members of the context, which is made up of his public key. Following this request, Bob is removed from the membership list, and all members will stop broadcasting state mutations to Bob.
+Bob wants to leave a context. He deletes the context from his local storage and no longer tracks the state of the context although the context still exists and other members can continue to make mutations. Bob is no longer considered a member of the context.
 
 ## Encryption
 
@@ -58,8 +50,8 @@ As of the time of writing, all messages are sent in plaintext. But we're current
 
 ## Application Upgrade
 
-As noted [above](#administrative-operations), application authors can define gated behaviour for administrative operations. This includes the ability to upgrade the application. Subsequent transactions made by members from the old version of the application will be rejected by the new version.
+This is not implemented at this time.
 
 ## Context Deletion
 
-There's no way to "delete a context" for all members outside of the scope of all members leaving it.
+There's no way to "delete a context" for all members outside of the scope of all members [leaving it](#leaving).
