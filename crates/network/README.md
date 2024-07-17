@@ -27,8 +27,7 @@
   - [Discovery and connectivity flow](#discovery-and-connectivity-flow)
     - [Client (`NetworkClient` struct)](#client-networkclient-struct)
     - [NetworkEvents](#networkevents)
-  - [](#)
-    - [NAT Traversal Techniques](#nat-traversal-techniques)
+  - [NAT Traversal Techniques](#nat-traversal-techniques)
 
 ## Introduction
 
@@ -388,9 +387,7 @@ The main types of NetworkEvents include:
 3. **Message**: Represents a received message on a subscribed topic
 4. **StreamOpened**: Signifies the opening of a new stream with a peer
 
-##
-
-### NAT Traversal Techniques
+## NAT Traversal Techniques
 
 One of the common techniques used for NAT traversal in P2P networks is **Hole
 Punching**. This technique allows two peers, each behind a NAT, to establish a
