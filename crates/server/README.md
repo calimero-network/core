@@ -1,30 +1,29 @@
-# Calimero Server
+# Node Server
 
 - [Introduction](#introduction)
     - [Admin API](#1admin-api)
     - [JSON rpc](#2json-rpc)
     - [Websocket](#3websocket)
-- [Calimero Server Workflows](#calimero-server-workflows)
+- [Node Server Workflows](#node-server-workflows)
     - [Admin API Workflow](#workflow-for-admin-dashboard)
     - [JSON rpc Workflow](#workflow-for-p2p-web-applications-and-json-rpc)
     - [Websocket Workflow](#workflow-for-p2p-web-application-and-websocket)
 - [Admin API endpoints](#admin-api-endpoints)
     - [Protected Routes](#protected-routes)
     - [Unprotected Routes](#unprotected-routes)
-- [JSON rpc endpoints](#json-rpc-endpoints)
+- [JSON rpc endpoint](#json-rpc-endpoint)
 - [Websocket endpoints](#websocket-endpoints)
 - [Examples](#examples)
 
 ## Introduction
 
-The Calimero Server is a server component of the Calimero Node that has crucial part in
-managing the Calimero Admin Dashboard and the P2P Applications built for Calimero Nodes.
+Node server is a component in node that facilitates node administration and enables communication with the logic of application (loaded wasm) in participating contexts.
 
-Calimero Server component is split into 3 parts:
+Node Server component is split into 3 parts:
 
 ### 1. Admin API
 
-The Admin API component of the Calimero Server connects web applications with the node and its functionalities. It is primarily utilized by the Admin Dashboard to query and manage various aspects of the node, including:
+The Admin API component of the Node Server exposes API for connection with the node and its functionalities. It is primarily utilized by the Admin Dashboard to query and manage various aspects of the node, including:
 
  - Identity information
  - Root keys
@@ -45,7 +44,7 @@ The Admin API component of the Calimero Server connects web applications with th
 
 ### 2. JSON rpc
 
-The JSON-RPC component of the Calimero Server facilitates communication between the front-end web applications of P2P systems and the application binaries (contexts) running on Calimero nodes. This allows seamless interaction and data management for applications.
+The JSON-RPC component of the Node Server facilitates communication between the front-end web applications of P2P systems and the application binaries (contexts) running on node. This allows seamless interaction and data management for applications.
 
 The JSON-RPC interface provides two primary methods:
 
@@ -53,17 +52,15 @@ The JSON-RPC interface provides two primary methods:
 - Mutate
 
 #### Query Method
-The `Query` method retrieves data from the applications running on the Calimero nodes. For instance, in the Only Peers forum application, posts and comments stored in the application's storage can be queried using the JSON-RPC interface. This enables users to fetch and display content from the forum.
+The `Query` method retrieves data from the applications running on the node. For instance, in the Only Peers forum application, posts and comments stored in the application's storage can be queried using the JSON-RPC interface. This enables users to fetch and display content from the forum.
 
 #### Mutate Method
 The `Mutate` method allows modification of the application's data. For example, in the Only Peers forum application, users can create new posts or comments. The Mutate method updates the application's storage with these new entries, facilitating dynamic content creation and interaction within the application.
 
-The JSON-RPC component is crucial for enabling interactive and real-time data management between P2P application front-ends and the back-end contexts running on Calimero nodes.
-
 ### 3. Websocket
 
-The WebSocket is used for subscribing to and unsubscribing from certain contexts within the Calimero server. Defined handlers manage subscription states for WebSocket connections, allowing clients to receive updates about specific contexts they are interested in.
-WebSocket handlers are essential for managing real-time, context-specific subscriptions within the Calimero server. They allow clients to dynamically subscribe to and unsubscribe from updates about various application contexts, enhancing the interactivity and responsiveness of the P2P application.
+The WebSocket is used for subscribing to and unsubscribing from certain contexts within the Node Server. Defined handlers manage subscription states for WebSocket connections, allowing clients to receive updates about specific contexts they are interested in.
+WebSocket handlers are essential for managing real-time, context-specific subscriptions within the Node Server. They allow clients to dynamically subscribe to and unsubscribe from updates about various application contexts, enhancing the interactivity and responsiveness of the P2P application.
 
 
 #### Subscription Handling:
@@ -74,7 +71,7 @@ Websocket handles requests to subscribe to specific contexts and send responses 
 
 Websocket handle requests to unsubscribe from specific contexts and send responses back to the client with the unsubscribed context IDs.
 
-## Calimero Server Workflows
+## Node Server Workflows
 
 ### Workflow for Admin Dashboard
 
@@ -128,7 +125,15 @@ The Admin API endpoints are split into protected and unprotected routes, where p
 
 ### Protected Routes
 
-These routes require authentication and are protected by the AuthSignatureLayer.
+These routes require authentication using auth headers.
+Auth headers are generated using `createAuthHeader` function from the `calimero sdk` library.
+
+Parts of the Auth Headers
+ 1. `wallet_type`: Specifies the type of wallet used (e.g., NEAR).
+ 2. `signing_key`: Encoded public key used for signing the request.
+ 3. `signature`: Encoded signature generated from the payload hash.
+ 4. `challenge`: Encoded hash of the payload, serving as a challenge.
+ 5. `context_id`: Optional context identifier for additional request context.
 
 **1. Create Root Key**
 
@@ -190,7 +195,7 @@ These routes require authentication and are protected by the AuthSignatureLayer.
 **12. Delete Auth Keys**
  - **Path**: `/identity/keys`
  - **Method**: `DELETE`
- - **Description**: Deletes authentication keys.
+ - **Description**: Deletes all root and client keys.
  
 
 ### Unprotected Routes
@@ -228,9 +233,9 @@ These routes do not require authentication.
  - **Description**: Lists all development applications.
 
 
-## JSON rpc endpoints
+## JSON rpc endpoint
 
-The JSON-RPC server endpoints are structured to handle various request types and are configured based on a JSON-RPC configuration that determines if the server is enabled
+The JSON-RPC server endpoint is structured to handle various request types.
 
 **Base path**: `/jsonrpc`
 
@@ -243,7 +248,7 @@ The JSON-RPC server endpoints are structured to handle various request types and
 
 ## Websocket endpoints
 
-The WebSocket, accessible at /ws, allows clients to dynamically subscribe to and unsubscribe from real-time updates about specific contexts within the Calimero Server.
+The WebSocket, accessible at /ws, allows clients to dynamically subscribe to and unsubscribe from real-time updates about specific contexts within the Node Server.
 
 **1. Handle WebSocket Request**
 
@@ -253,5 +258,5 @@ The WebSocket, accessible at /ws, allows clients to dynamically subscribe to and
 
 
 ## Examples
-Examples of Admin Server usage can be found within the [Admin Dashboard](https://github.com/calimero-network/admin-dashboard) and the [Only Peers example](https://github.com/calimero-network/only-peers-client
-) application.
+Examples of Node Server usage can be found within the [Admin Dashboard](https://github.com/calimero-network/admin-dashboard) and the [Only Peers example](https://github.com/calimero-network/only-peers-client
+) application. All communication with the node is exposed through `calimero sdk` library.
