@@ -228,9 +228,6 @@ The custom stream protocol allows for tailored communication patterns specific t
 
 - Purpose: Facilitates the establishment of direct connections between peers initially connected via a relay
 - Components:
-  - DCUtR Server:
-    - Coordinates the hole-punching process between clients
-    - Provides necessary information for clients to attempt direct connections
   - DCUtR Client:
     - Initiates and participates in the hole-punching process
     - Attempts to establish direct connections with other peers using information provided by the DCUtR server
@@ -356,7 +353,6 @@ sequenceDiagram
     deactivate Handle
 ```
 
-
 ### Client (`NetworkClient` struct)
 
 The NetworkClient serves as the primary interface for other parts of the application to interact with the networking functionality. It provides a clean, easy-to-use API for performing various network operations without directly interacting with the internals of the EventLoop or libp2p.
@@ -391,8 +387,6 @@ The main types of NetworkEvents include:
 2. **Subscribed**: Indicates successful subscription to a topic
 3. **Message**: Represents a received message on a subscribed topic
 4. **StreamOpened**: Signifies the opening of a new stream with a peer
-
-These events allow the application to react to important network state changes and incoming data without needing to understand the underlying libp2p implementation.
 
 ##
 
