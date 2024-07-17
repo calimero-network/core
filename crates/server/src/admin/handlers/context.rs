@@ -3,13 +3,6 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::{Context, ContextId};
-use calimero_primitives::identity::{ClientKey, ContextUser};
-use calimero_server_primitives::admin::{
-    ContextList, ContextResponse, ContextStorage, CreateContextRequest, CreateContextResponse,
-    GetContextsResponse,
-};
 use rand::RngCore;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -20,7 +13,7 @@ use crate::admin::storage::client_keys::get_context_client_key;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextObject {
-    context: Context,
+    context: calimero_primitives::context::Context,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,7 +22,7 @@ pub struct GetContextResponse {
 }
 
 pub async fn get_context_handler(
-    Path(context_id): Path<ContextId>,
+    Path(context_id): Path<calimero_primitives::context::ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
@@ -59,7 +52,7 @@ pub async fn get_context_handler(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientKeys {
-    client_keys: Vec<ClientKey>,
+    client_keys: Vec<calimero_primitives::identity::ClientKey>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -68,7 +61,7 @@ pub struct GetContextClientKeysResponse {
 }
 
 pub async fn get_context_client_keys_handler(
-    Path(context_id): Path<ContextId>,
+    Path(context_id): Path<calimero_primitives::context::ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
@@ -88,7 +81,7 @@ pub async fn get_context_client_keys_handler(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextUsers {
-    context_users: Vec<ContextUser>,
+    context_users: Vec<calimero_primitives::identity::ContextUser>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -121,8 +114,8 @@ pub async fn get_contexts_handler(
 
     return match contexts {
         Ok(contexts) => ApiResponse {
-            payload: GetContextsResponse {
-                data: ContextList { contexts },
+            payload: calimero_server_primitives::admin::GetContextsResponse {
+                data: calimero_server_primitives::admin::ContextList { contexts },
             },
         }
         .into_response(),
@@ -142,7 +135,7 @@ pub struct DeleteContextResponse {
 }
 
 pub async fn delete_context_handler(
-    Path(context_id): Path<ContextId>,
+    Path(context_id): Path<calimero_primitives::context::ContextId>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
@@ -166,14 +159,14 @@ pub async fn delete_context_handler(
 
 pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<CreateContextRequest>,
+    Json(req): Json<calimero_server_primitives::admin::CreateContextRequest>,
 ) -> impl IntoResponse {
     let mut seed = [0; 32];
     rand::thread_rng().fill_bytes(&mut seed);
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&mut seed);
     let context_id = signing_key.verifying_key();
 
-    let context = Context {
+    let context = calimero_primitives::context::Context {
         id: (*context_id.as_bytes()).into(),
         // signing_key, // todo! move to the Identity column
         application_id: req.application_id,
@@ -188,8 +181,8 @@ pub async fn create_context_handler(
 
     let response = match result {
         Ok(_) => ApiResponse {
-            payload: CreateContextResponse {
-                data: ContextResponse { context },
+            payload: calimero_server_primitives::admin::CreateContextResponse {
+                data: calimero_server_primitives::admin::ContextResponse { context },
             },
         }
         .into_response(),
@@ -201,7 +194,7 @@ pub async fn create_context_handler(
 
 #[derive(Debug, Serialize)]
 struct GetContextStorageResponse {
-    data: ContextStorage,
+    data: calimero_server_primitives::admin::ContextStorage,
 }
 
 pub async fn get_context_storage_handler(
@@ -210,7 +203,7 @@ pub async fn get_context_storage_handler(
 ) -> impl IntoResponse {
     ApiResponse {
         payload: GetContextStorageResponse {
-            data: ContextStorage { size_in_bytes: 0 },
+            data: calimero_server_primitives::admin::ContextStorage { size_in_bytes: 0 },
         },
     }
     .into_response()

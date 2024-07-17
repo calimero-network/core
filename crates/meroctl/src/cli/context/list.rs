@@ -1,4 +1,3 @@
-use calimero_server_primitives::admin::GetContextsResponse;
 use clap::Parser;
 use reqwest::Client;
 
@@ -27,7 +26,8 @@ impl ListCommand {
         let response = client.get(url).send().await?;
 
         if response.status().is_success() {
-            let api_response: GetContextsResponse = response.json().await?;
+            let api_response: calimero_server_primitives::admin::GetContextsResponse =
+                response.json().await?;
             let contexts = api_response.data.contexts;
 
             for context in contexts {

@@ -1,6 +1,3 @@
-use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::Context;
-use calimero_primitives::identity::WalletType;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -64,7 +61,7 @@ pub struct SignatureMessage {
 #[serde(rename_all = "camelCase")]
 pub struct WalletMetadata {
     #[serde(rename = "wallet")]
-    pub wallet_type: WalletType,
+    pub wallet_type: calimero_primitives::identity::WalletType,
     pub signing_key: String,
 }
 
@@ -128,7 +125,7 @@ pub struct ContextStorage {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextList {
-    pub contexts: Vec<Context>,
+    pub contexts: Vec<calimero_primitives::context::Context>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -139,12 +136,12 @@ pub struct GetContextsResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
-    pub application_id: ApplicationId,
+    pub application_id: calimero_primitives::application::ApplicationId,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextResponse {
-    pub context: Context,
+    pub context: calimero_primitives::context::Context,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
