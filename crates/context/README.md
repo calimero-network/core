@@ -12,7 +12,7 @@
 
 A context in Calimero is an instance of a deployed application where members share a synchronized state.
 
-A context is identified by a 32-byte key, which is randomly generated when the context is created. As of now, the key is not necessarily cryptographically secure, nor is it a dependency of cryptographic operations, but it is unique enough to mitigate collisions. Worth noting that this is likely to change in the future.
+Contexts are identified by a 32-byte key, which is randomly determined when each context is created. As of now, this key is not necessarily cryptographically secure, nor is it a dependency of cryptographic operations, but it is unique enough to mitigate collisions. Worth noting that this is likely to change in the future.
 
 All state mutations within a context performed by members will be broadcasted to all other members.
 
