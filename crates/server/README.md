@@ -62,7 +62,6 @@ The `Mutate` method allows modification of the application's data. For example, 
 The WebSocket is used for subscribing to and unsubscribing from certain contexts within the Node Server. Defined handlers manage subscription states for WebSocket connections, allowing clients to receive updates about specific contexts they are interested in.
 WebSocket handlers are essential for managing real-time, context-specific subscriptions within the Node Server. They allow clients to dynamically subscribe to and unsubscribe from updates about various application contexts, enhancing the interactivity and responsiveness of the P2P application.
 
-
 #### Subscription Handling:
 
 Websocket handles requests to subscribe to specific contexts and send responses back to the client with the subscribed context IDs.
