@@ -7,6 +7,7 @@
       - [Main Loop](#main-loop)
     - [Swarm](#swarm)
     - [Identity and Peer ID](#identity-and-peer-id)
+    - [Addressing with MultiAddr](#addressing-with-multiaddr)
     - [Runtime](#runtime)
     - [Transport Protocols](#transport-protocols)
   - [Behaviour and Protocols](#behaviour-and-protocols)
@@ -16,14 +17,13 @@
       - [Rendezvous](#rendezvous)
     - [Data Exchange Protocols](#data-exchange-protocols)
       - [Gossipsub](#gossipsub)
+      - [Stream](#stream)
     - [Connectivity Protocols](#connectivity-protocols)
       - [Relay](#relay)
       - [DCUtR (Direct Connection Upgrade through Relay)](#dcutr-direct-connection-upgrade-through-relay)
     - [Meta Protocols](#meta-protocols)
       - [Identify](#identify)
       - [Ping](#ping)
-    - [Custom Protocol](#custom-protocol)
-      - [Stream](#stream)
   - [Discovery](#discovery)
     - [Client (`NetworkClient` struct)](#client-networkclient-struct)
     - [NetworkEvents](#networkevents)
@@ -49,7 +49,29 @@ Key features of this crate include:
 
 ### EventLoop
 
-The EventLoop is the central component of the networking crate, responsible for managing the network's event-driven operations. It's implemented as a struct containing several important fields, including the `swarm`, which is the main libp2p construct for managing network connections and protocols.
+The `EventLoop` is the central component of the networking crate, responsible for managing the network's event-driven operations. It's implemented as a struct containing several important fields, including the `swarm`, which is the main libp2p construct for managing network connections and protocols.
+
+```mermaid
+graph TD
+
+A[Node Initialization] --> B[Listen on addresses]
+
+A --> C[EventLoop Start]
+
+C -->|Continuous| D[Process Events]
+
+subgraph " "
+
+D --> N[Swarm Events]
+
+D --> O[Incoming Streams]
+
+D --> P[Client Commands]
+
+D --> Q[Periodic Rendezvous Discoveries]
+
+end
+```
 
 #### Main Loop
 
@@ -68,6 +90,20 @@ The EventLoop's main loop uses the `tokio::select!` macro that allows waiting on
    Regular attempts to discover new peers through the Rendezvous protocol. This helps maintain and expand the node's network of peers.
 
 Each of the events has it's own handler function.
+
+```mermaid
+graph TD
+    A[Node Initialization] --> B[Listen on addresses]
+    A --> C[EventLoop Start]
+    C -->|Continuous| D[Process Events]
+ 
+    subgraph " "
+        D --> N[Swarm Events]
+        D --> O[Incoming Streams]
+        D --> P[Client Commands]
+        D --> Q[Periodic Rendezvous Discoveries]
+    end
+````
 
 ### Swarm
 
@@ -88,6 +124,26 @@ Identity in libp2p is crucial for unique node identification and secure communic
     /ip4/192.0.2.0/tcp/443/p2p/QmcEPrat8ShnCph8WjkREzt5CPXF2RwhYxYBALDcLC1iV6
 The Peer ID (after `/p2p/`) enables connections to persist even if IP addresses change, enhancing network resilience.
 
+### Addressing with MultiAddr
+
+Flexible networks need flexible addressing systems. libp2p uses `multiaddress` (often abbreviated `multiaddr`), a convention for encoding multiple layers of addressing information into a single "future-proof" path structure.
+Key points about multiaddrs:
+
+1. They encode common transport and overlay protocols in a human-readable and machine-optimized format.
+2. They allow combining multiple layers of addressing information.
+
+For example:
+
+- `/ip4/192.0.2.0/udp/1234` specifies an IPv4 address and UDP port.
+- `/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N` uniquely identifies a libp2p node.
+
+Combining location and identity information:
+`/ip4/198.51.100.0/tcp/4242/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N`
+
+This multiaddr includes both the node's network location (IP and port) and its identity (Peer ID).
+Multiaddrs can also represent complex routing scenarios, like circuit relay:
+`/ip4/198.51.100.0/tcp/4242/p2p/QmRelay/p2p-circuit/p2p/QmRelayedPeer`
+
 ### Runtime
 
 This networking crate utilizes Tokio as its asynchronous runtime, leveraging its efficient task scheduler and I/O operations to handle concurrent network activities and event processing.
@@ -99,7 +155,14 @@ The networking crate supports multiple transport protocols to ensure wide compat
 - TCP: Reliable, connection-oriented protocol for general-purpose communication.
 - QUIC: A modern, multiplexed transport built on UDP, offering improved performance and security.
 
-These protocols are configured with encryption (TLS for QUIC, Noise for TCP) and multiplexing (QUIC's native multiplexing, Yamux for TCP) to ensure secure and efficient data transfer.
+These protocols are configured as follows:
+
+- TCP:
+  - Encryption: TLS (Transport Layer Security), with Noise protocol as a fallback
+  - Multiplexing: Yamux
+- QUIC:
+  - Encryption: TLS (built into the QUIC protocol)
+  - Multiplexing: Native (part of the QUIC protocol)
 
 ## Behaviour and Protocols
 
@@ -131,6 +194,14 @@ This custom Kademlia setup provides full control over the peer discovery process
 - Key Events:
   - `Discovered`: Peers found through the rendezvous server
   - `RegisterFailed`/`DiscoverFailed`: Issues with rendezvous operations
+- Namespace Usage:
+  - Current Implementation:
+    - Uses a single, global namespace defined in the configuration (currently `/calimero/devnet/global`)
+    - All peers in the network register and discover using this shared namespace
+  - Future Plan:
+    - Namespace will be set to match the `context_id`
+    - This change will allow for more granular peer discovery based on specific contexts or networks
+    - Peers will be able to register and discover others within the same context, improving network segmentation and efficiency
 
 ### Data Exchange Protocols
 
@@ -141,41 +212,19 @@ This custom Kademlia setup provides full control over the peer discovery process
 - Key Events:
   - `Message`: New message received on a subscribed topic
   - `Subscribed`: Successfully subscribed to a topic
-
-### Connectivity Protocols
-
-#### Relay
-
-- Purpose: Enables communication between peers that can't directly connect
-
-#### DCUtR (Direct Connection Upgrade through Relay)
-
-- Purpose: Helps establish direct connections between peers initially connected via a relay
-
-### Meta Protocols
-
-#### Identify
-
-- Purpose: Exchange of node metadata and supported protocols
-- Key Events:
-  - `Received`: Received identify information from a peer
-
-#### Ping
-
-- Purpose: Keep-alive and latency measurements
-
-### Custom Protocol
-
+  
 #### Stream
 
-- Purpose: Application-specific data exchange
+- Purpose: Efficient peer-to-peer exchange of large amounts of data
 - Implementation: Uses a custom `MessageJsonCodec` for serialization/deserialization
 - Features:
   - Bidirectional communication between peers
   - Message Structure: The protocol uses a custom `Message` struct defined as
   
  ```rust
-  pub  struct  Message  { pub data:  Vec<u8> }
+pub struct Message {
+  pub data: Vec<u8>,
+}
 ```
 
 This flexible structure allows for sending arbitrary data between peers.
@@ -185,25 +234,80 @@ This flexible structure allows for sending arbitrary data between peers.
 
 The custom stream protocol allows for tailored communication patterns specific to our application needs, complementing the standardized libp2p protocols.
 
+### Connectivity Protocols
+
+#### Relay
+
+- Purpose: Enables communication between peers that can't directly connect due to NAT or firewall restrictions
+- Components:
+  - Relay Server:
+    - Acts as an intermediary for peers behind NATs
+    - Forwards traffic between peers that can't directly connect
+    - Helps coordinate hole-punching attempts
+  - Relay Client:
+    - Connects to relay servers to establish indirect connections with other peers
+    - Requests relay services when direct connections are not possible
+
+#### DCUtR (Direct Connection Upgrade through Relay)
+
+- Purpose: Facilitates the establishment of direct connections between peers initially connected via a relay
+- Components:
+  - DCUtR Server:
+    - Coordinates the hole-punching process between clients
+    - Provides necessary information for clients to attempt direct connections
+  - DCUtR Client:
+    - Initiates and participates in the hole-punching process
+    - Attempts to establish direct connections with other peers using information provided by the DCUtR server
+
+Both Relay and DCUtR work together to improve connectivity in challenging network environments:
+
+1. Peers initially connect through a relay server
+2. The DCUtR protocol then attempts to establish a direct connection
+3. If successful, peers can communicate directly, reducing latency and load on the relay server
+
+### Meta Protocols
+
+#### Identify
+
+- Purpose: Exchange of peer metadata and supported protocols
+- Key Events:
+  - `Received`: Received identify information from a peer
+
+#### Ping
+
+- Purpose: Liveness check and latency measurements
+
 ## Discovery
 
-We combine multiple protocols in order to improve our connectivity.
+Our network employs a multi-faceted approach to peer discovery and connectivity, leveraging several protocols to ensure robust and efficient networking:
 
-- At the begging we dial Calimero boot nodes (which speak Calimero KAD protocol) and we start discovering peers on local network with mDNS.
+1. **Initial Bootstrapping**:
+   - Dial Calimero boot nodes using the Calimero KAD protocol
+   - Initiate local peer discovery using mDNS
 
-- During identify exchange (which occurs for every established connection) we record protocols which other peer supports.
+2. **Protocol Identification**:
+   - During the Identify exchange for each new connection, record the protocols supported by the peer
 
-- For discovered peers with mDNS we perform direct dial (because we want to be connected to all local peers).
+3. **Connection Strategies**:
+   - For peers discovered via mDNS: Perform direct dial to ensure connectivity with all local peers
+   - For peers discovered via Rendezvous: Dial only if not already connected, avoiding redundant connections
 
-- For discovered peers with rendezvous we perform dial only if peer is not already connected (this means that it most likely already discovered and dialed due to mDNS event).
+4. **Discovery State Management**:
+   - Maintain a custom discovery state alongside libp2p's network state
+   - Track multiaddresses for all connected peers and peers of interest
+   - Retain peer information indefinitely to facilitate future reconnections
 
-Beside network state by lip2p (more in `self.swarm.network_info()`) we also have our discovery state.
+5. **Connectivity Enhancements**:
+   - Upon discovering relay nodes: Attempt to make relay reservations to enable hole punching
+   - Upon discovering Rendezvous nodes:
+     - Register our external addresses
+     - Initiate peer discovery
+     - Periodically perform discovery against all known Rendezvous nodes
 
-We keep track of multiaddrs for all connected peers and peers of interest (which are never removed from state so we can reconnect to them when needed).
+6. **Rendezvous Namespace**:
+   - Currently utilize a single namespace for Rendezvous operations
+   - Future consideration: Implement context-specific namespaces for more granular peer discovery
 
-To improve connectivity, as we discover relay nodes we attempt to make a relay reservation (so other peers can hole punch us).
-
-To improve connectivity, as we discover rendezvous nodes we attempt to register our external addrs (relayed addrs) and we attempt to discover other peers. Additionally, we periodically perform discovery against all discovered rendezvous nodes. At the moment we use single namespace for the rendezvous (check config), but we could use contexId for namespace.
 
 ### Client (`NetworkClient` struct)
 
@@ -215,7 +319,7 @@ Key features of the NetworkClient include:
 - Abstraction of the underlying network complexity
 - Asynchronous operation support
 
-The NetworkClient extensively uses the oneshot pattern for most of its methods. This pattern involves:
+The NetworkClient extensively uses oneshot channels for most of its methods. This involves:
 
 1. Creating a new oneshot channel for each operation
 2. Sending a command through an mpsc channel to the EventLoop, including the sender half of the oneshot channel
@@ -245,50 +349,62 @@ These events allow the application to react to important network state changes a
 ## Conectivity flow
 
 ```mermaid
-graph TD
-    A[Node Initialization] --> B[Bootstrap with Calimero Boot Nodes]
-    A --> C[EventLoop Start]
-    C -->|Continuous| D[Process Events]
-    B --> E[Local Network Discovery mDNS]
-    E --> F[Connection Establishment]
-    F --> G[Identify Protocol Exchange]
-    G --> H[Kademlia DHT Integration]
-    H --> I[Rendezvous Discovery]
-    I --> J[Relay Setup]
-
-    
-    subgraph " "
-        D --> N[Swarm Events]
-        D --> O[Incoming Streams]
-        D --> P[Client Channel]
-        D --> Q[Periodic Rendezvous Discoveries]
+sequenceDiagram
+    Swarm->>Handle:Event [mDNS Discovered]
+    activate Handle
+    loop For non relayed addresses
+        Handle->>Swarm:Dial
     end
-```
-
-```mermaid
-graph TD
-    A[Node Initialization] --> B[Bootstrap with Calimero Boot Nodes]
-    A --> C[EventLoop Start]
-    C -->|Continuous| D[Process Events]
-    B --> E[Local Network Discovery mDNS]
-    E --> F[Connection Establishment]
-    F --> G[Identify Protocol Exchange]
-    G --> H[Kademlia DHT Integration]
-    H --> I[Rendezvous Discovery]
-    I --> J[Relay Setup]
+    deactivate Handle
     
-    D -->|Influences| F
-    D -->|Influences| G
-    D -->|Influences| H
-    D -->|Influences| I
-    D -->|Influences| J
+    Swarm->>Handle:Event [Dialing]
+    Swarm->>+Handle:Event [Connection Established]
+    Handle->>-Discovery State:Update peer addresses
     
-    subgraph " "
-        D --> K[Swarm Events]
-        D --> L[Incoming Streams]
-        D --> M[Command Channel]
-        D --> N[Periodic Rendezvous Discoveries]
+    Swarm->>Handle:Event [Identify Received]
+    activate Handle
+    Handle->>Discovery State:Update peer protocols
+    opt If relay server
+        opt If reservation required
+        Handle->>Swarm:Request reservation
+        Handle->>Discovery State:Update reservation status
+        end
     end
+    opt If rendezvous server
+        opt If discovery required
+        Handle->>Swarm:Request rendezvous discovery
+        end
+        opt If registration required
+        Handle->>Swarm:Request rendezvous registration
+        end
+    end
+    deactivate Handle
+    Swarm->>Handle:Event [External Addr Confirmed]
+    activate Handle
+    Handle->>+Discovery State:Get rendezvous peers
+    Discovery State-->>-Handle:Peers
+    loop For selected peers
+        Handle->>Swarm:Request rendezvous registration
+    end
+    deactivate Handle
+    Swarm->>+Handle:Event [Listening On]
+    Handle->>-Network Events:Push ListeningOn
+    Swarm->>Handle:Event [Relay Reservation Req Accepted]
+    Swarm->>Handle:Event [Rendezvous Discoverd]
+    activate Handle
+    Handle->>Discovery State:Update rendezvous cookie
+    loop For registrations
+        opt If not connected
+        Handle->>Swarm:Dial
+        end
+    end
+    deactivate Handle
+    Swarm->>Handle:Event [Rendezvous Registered]
+    activate Handle
+    opt If discovery required
+    Handle->>Swarm:Request rendezvous discovery
+    end
+    deactivate Handle
 ```
 
 #### Key Points in the Connectivity Flow
