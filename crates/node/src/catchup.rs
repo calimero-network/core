@@ -67,7 +67,7 @@ impl Node {
 
         if request
             .application_id
-            .map_or(false, |id| id != application_id)
+            .map_or(true, |id| id != application_id)
         {
             let application_version = self
                 .ctx_manager
