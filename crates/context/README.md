@@ -11,7 +11,7 @@
 - [Application Upgrade](#application-upgrade)
 - [Context Deletion](#context-deletion)
 
-A context in Calimero is an instance of a deployed application members of which share a synchronized state.
+A context in Calimero is an instance of a deployed application where members share a synchronized state.
 
 A context is identified by a 32-byte key, which is randomly generated when the context is created. As of now, the key is not necessarily cryptographically secure, nor is it a dependency of cryptographic operations, but it is unique enough to mitigate collisions. Worth noting that this is likely to change in the future.
 
