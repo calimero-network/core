@@ -81,6 +81,10 @@ pub(crate) fn setup(
             "/contexts/:context_id/storage",
             get(handlers::context::get_context_storage_handler),
         )
+        .route(
+            "/contexts/:context_id/join",
+            post(handlers::context::join_context_handler),
+        )
         .route("/contexts", get(handlers::context::get_contexts_handler))
         .route(
             "/identity/keys",
