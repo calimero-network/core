@@ -7,6 +7,9 @@ use tokio::sync::broadcast;
 use tower_http::cors;
 use tracing::warn;
 
+use axum_server::tls_rustls::RustlsConfig;
+pub mod certificates;
+
 #[cfg(feature = "admin")]
 pub mod admin;
 pub mod config;
@@ -108,14 +111,42 @@ pub async fn start(
                 http::Method::DELETE,
                 http::Method::PUT,
                 http::Method::OPTIONS,
-            ]),
+            ])
+            .allow_private_network(true)
     );
+    // Check if the certificate exists and if they contain the current local IP address
+    certificates::check_for_certificate()?;
+
+    // Get the certificate directory and the paths to the certificate and private key
+    let certificate_dir = certificates::get_certificate_dir();
+    let cert_path = certificate_dir.join("cert.pem");
+    let key_path = certificate_dir.join("key.pem");
+
+    // Configure certificate and private key used by https
+    let rustls_config = match RustlsConfig::from_pem_file(cert_path, key_path).await {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to load TLS configuration: {:?}", e);
+            return Err(e.into());
+        }
+    };
 
     let mut set = tokio::task::JoinSet::new();
 
     for listener in listeners {
+        let rustls_config = rustls_config.clone();
         let app = app.clone();
-        set.spawn(async { axum::serve(listener, app).await });
+        let addr = listener.local_addr().unwrap();
+        set.spawn(async move {
+            if let Err(e) = axum_server::bind_rustls(addr, rustls_config)
+                .serve(app.into_make_service())
+                .await
+            {
+                eprintln!("Server error: {:?}", e);
+                return Err(e);
+            }
+            Ok::<(), std::io::Error>(())
+        });
     }
 
     while let Some(result) = set.join_next().await {

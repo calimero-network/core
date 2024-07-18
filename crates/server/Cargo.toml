@@ -29,6 +29,10 @@ tower.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs"] }
 tower-sessions = { workspace = true, optional = true }
 tracing.workspace = true
+axum-server = { version = "0.6", features = ["tls-rustls"] }
+local-ip-address = "0.6.1"
+rcgen = "0.13.1"
+x509-parser = "0.16.0"
 
 calimero-context = { path = "../context" }
 calimero-node-primitives = { path = "../node-primitives" }
