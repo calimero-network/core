@@ -1,4 +1,4 @@
-use tracing::{error, info};
+use tracing::error;
 
 use super::*;
 
