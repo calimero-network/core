@@ -43,7 +43,7 @@ The Admin API component of the Node Server exposes API for connection with the n
 
 ### 2. JSON rpc
 
-The JSON-RPC component of the Node Server facilitates communication between the clients and the application binaries (contexts) running on node. This allows seamless interaction and data management for applications.
+The JSON-RPC component of the Node Server facilitates communication between the clients and the context. This allows seamless interaction and data management for applications.
 
 The JSON-RPC interface provides two primary methods:
 
@@ -85,7 +85,7 @@ Parts of the Auth Headers
  2. `signing_key`: Encoded public key used for signing the request.
  3. `signature`: Encoded signature generated from the payload hash.
  4. `challenge`: Encoded hash of the payload, serving as a challenge.
- 5. `context_id`: Optional context identifier for additional request context.
+ 5. `context_id`: Context identifier for additional request context. Optional for Admin Dashboard but mandatory for applications.
 
 **1. Create Root Key**
 
