@@ -85,16 +85,16 @@ sequenceDiagram
     participant Admin API
     participant Node
     
-    User->>Admin Dashboard: login
-    Admin Dashboard->>Admin API: API call to request-challenge endpoint
-    Admin API-->>Admin Dashboard: Return challenge object
-    Admin Dashboard->>Crypto Wallet: Request to sign received challenge
+    User->>Admin Dashboard / Application: login
+    Admin Dashboard / Application->>Admin API: API call to request-challenge endpoint
+    Admin API-->>Admin Dashboard / Application: Return challenge object
+    Admin Dashboard / Application->>Crypto Wallet: Request to sign received challenge
     Crypto Wallet-->>User: Request to sign challenge
     User->>Crypto Wallet: Sign challenge
     Crypto Wallet-->>Crypto Wallet: Sign challenge
-    Crypto Wallet-->>Admin Dashboard: Signed challenge
-    Admin Dashboard-->>Admin Dashboard: Create auth headers
-    Admin Dashboard->>Admin API: call add-client-key endpoint with signed challenge + auth header
+    Crypto Wallet-->>Admin Dashboard / Application: Signed challenge
+    Admin Dashboard / Application-->>Admin Dashboard / Application: Create auth headers
+    Admin Dashboard / Application->>Admin API: call add-client-key endpoint with signed challenge + auth header
     Admin API->>Admin API: Verify auth headers    
     Admin API->>Admin API: Verify signature
     Admin API->>Node: Check if any root key are stored
@@ -104,8 +104,8 @@ sequenceDiagram
         Admin API->>Node: Save client key
     end
     Node->>Admin API: Key Stored response
-    Admin API->>Admin Dashboard: Login successful response
-    Admin Dashboard-->>Admin Dashboard: Authorise user
+    Admin API->>Admin Dashboard / Application: Login successful response
+    Admin Dashboard / Application-->>Admin Dashboard / Application: Authorise user
 ```
 
 ## Admin API endpoints
