@@ -103,16 +103,6 @@ pub async fn get_context_users_handler(
     .into_response()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ContextList {
-    contexts: Vec<calimero_primitives::context::Context>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GetContextsResponse {
-    data: ContextList,
-}
-
 pub async fn get_contexts_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
@@ -124,8 +114,8 @@ pub async fn get_contexts_handler(
 
     return match contexts {
         Ok(contexts) => ApiResponse {
-            payload: GetContextsResponse {
-                data: ContextList { contexts },
+            payload: calimero_server_primitives::admin::GetContextsResponse {
+                data: calimero_server_primitives::admin::ContextList { contexts },
             },
         }
         .into_response(),
@@ -166,25 +156,10 @@ pub async fn delete_context_handler(
         Err(err) => err.into_response(),
     };
 }
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateContextRequest {
-    application_id: calimero_primitives::application::ApplicationId,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ContextResponse {
-    context: calimero_primitives::context::Context,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateContextResponse {
-    data: ContextResponse,
-}
 
 pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<CreateContextRequest>,
+    Json(req): Json<calimero_server_primitives::admin::CreateContextRequest>,
 ) -> impl IntoResponse {
     let mut seed = [0; 32];
     rand::thread_rng().fill_bytes(&mut seed);
@@ -207,8 +182,8 @@ pub async fn create_context_handler(
 
     let response = match result {
         Ok(_) => ApiResponse {
-            payload: CreateContextResponse {
-                data: ContextResponse { context },
+            payload: calimero_server_primitives::admin::CreateContextResponse {
+                data: calimero_server_primitives::admin::ContextResponse { context },
             },
         }
         .into_response(),

@@ -1,21 +1,9 @@
-use calimero_primitives::context::Context;
 use clap::Parser;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 
 use crate::cli::context::common::multiaddr_to_url;
 use crate::cli::RootArgs;
 use crate::config_file::ConfigFile;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ContextList {
-    contexts: Vec<Context>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GetContextsResponse {
-    data: ContextList,
-}
 
 #[derive(Debug, Parser)]
 pub struct ListCommand {}
@@ -38,7 +26,8 @@ impl ListCommand {
         let response = client.get(url).send().await?;
 
         if response.status().is_success() {
-            let api_response: GetContextsResponse = response.json().await?;
+            let api_response: calimero_server_primitives::admin::GetContextsResponse =
+                response.json().await?;
             let contexts = api_response.data.contexts;
 
             for context in contexts {

@@ -1,39 +1,14 @@
-use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::Context;
-use calimero_server_primitives::admin::{ApplicationListResult, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
 use clap::{Args, Parser};
 use libp2p::Multiaddr;
 use reqwest::Client;
 use semver::Version;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::cli::context::common::multiaddr_to_url;
 use crate::cli::RootArgs;
 use crate::config_file::ConfigFile;
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateContextRequest {
-    application_id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateContextResponse {
-    data: ContextResponse,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ContextResponse {
-    context: Context,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ListApplicationsResponse {
-    data: ApplicationListResult,
-}
 
 #[derive(Debug, Parser)]
 pub struct CreateCommand {
@@ -111,12 +86,15 @@ async fn create_context(
     }
 
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
-    let request = CreateContextRequest { application_id };
+    let request = calimero_server_primitives::admin::CreateContextRequest {
+        application_id: calimero_primitives::application::ApplicationId(application_id),
+    };
 
     let response = client.post(url).json(&request).send().await?;
 
     if response.status().is_success() {
-        let context_response: CreateContextResponse = response.json().await?;
+        let context_response: calimero_server_primitives::admin::CreateContextResponse =
+            response.json().await?;
         let context = context_response.data;
 
         println!("Context created successfully:");
@@ -146,7 +124,8 @@ async fn app_installed(
         eyre::bail!("Request failed with status: {}", response.status())
     }
 
-    let api_response: ListApplicationsResponse = response.json().await?;
+    let api_response: calimero_server_primitives::admin::ListApplicationsResponse =
+        response.json().await?;
     let app_list = api_response.data.apps;
     let is_installed = app_list.iter().any(|app| app.id.as_ref() == application_id);
 
@@ -166,9 +145,9 @@ async fn link_local_app(
     hasher.update(id.as_bytes());
     let application_id = hex::encode(hasher.finalize());
 
-    let install_request = InstallDevApplicationRequest {
-        application_id: ApplicationId(application_id.clone()),
-        version,
+    let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
+        application_id: calimero_primitives::application::ApplicationId(application_id.clone()),
+        version: version,
         path,
     };
 
