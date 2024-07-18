@@ -2,6 +2,8 @@ use libp2p::mdns;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
+use crate::discovery;
+
 use super::{EventHandler, EventLoop, RelayedMultiaddr};
 
 impl EventHandler<mdns::Event> for EventLoop {
@@ -16,6 +18,11 @@ impl EventHandler<mdns::Event> for EventLoop {
                         // /ip4/192.168.1.4/udp/4001/quic-v1/p2p/12D3KooWRnt7EmBwrNALhAXAgM151MdH7Ka9tvYS91ZUqnqwpjVg/p2p-circuit/p2p/12D3KooWSUpChB4mHmZNwVV26at6ZsRo25hNBHJRmPa8zfCeT41Y
                         continue;
                     }
+
+                    self.discovery.state.add_peer_discovery_mechanism(
+                        &peer_id,
+                        discovery::state::PeerDiscoveryMechanism::Mdns,
+                    );
 
                     debug!(%peer_id, %addr, "Attempting to dial discovered peer via mdns");
 
