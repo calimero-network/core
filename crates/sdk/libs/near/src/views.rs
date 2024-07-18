@@ -1,8 +1,7 @@
-use serde_with::DisplayFromStr;
 use std::sync::Arc;
 
 use serde_with::base64::Base64;
-use serde_with::serde_as;
+use serde_with::{serde_as, DisplayFromStr};
 
 use crate::types::{AccountId, Balance, BlockHeight, BlockId, Nonce, StorageUsage};
 

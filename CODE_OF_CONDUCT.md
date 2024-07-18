@@ -16,32 +16,32 @@ personal appearance, race, religion, or sexual identity and orientation.
 Examples of behavior that contributes to creating a positive environment
 include:
 
-  - Demonstrating empathy and kindness toward other people
+- Demonstrating empathy and kindness toward other people
 
-  - Being respectful of differing opinions, viewpoints, and experiences
+- Being respectful of differing opinions, viewpoints, and experiences
 
-  - Giving and gracefully accepting constructive feedback
+- Giving and gracefully accepting constructive feedback
 
-  - Accepting responsibility and apologizing to those affected by our mistakes,
-    and learning from the experience
+- Accepting responsibility and apologizing to those affected by our mistakes,
+  and learning from the experience
 
-  - Focusing on what is best not just for us as individuals, but for the overall
-    community
+- Focusing on what is best not just for us as individuals, but for the overall
+  community
 
 Examples of unacceptable behavior by participants include:
 
-  - The use of sexualized language or imagery and unwelcome sexual attention or
-    advances
+- The use of sexualized language or imagery and unwelcome sexual attention or
+  advances
 
-  - Trolling, insulting/derogatory comments, and personal or political attacks
+- Trolling, insulting/derogatory comments, and personal or political attacks
 
-  - Public or private harassment
+- Public or private harassment
 
-  - Publishing others' private information, such as a physical or email address,
-    without explicit permission
+- Publishing others' private information, such as a physical or email address,
+  without explicit permission
 
-  - Other conduct which could reasonably be considered inappropriate in a
-    professional setting
+- Other conduct which could reasonably be considered inappropriate in a
+  professional setting
 
 ## Our Responsibilities
 
@@ -120,8 +120,8 @@ community.
 
 ## Attribution
 
-This Code of Conduct is adapted from the [Contributor Covenant][],
-version 2.1, available at [v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct.html).
+This Code of Conduct is adapted from the [Contributor Covenant][], version 2.1, available
+at [v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct.html).
 
 Community Impact Guidelines were inspired by Mozilla's code of conduct
 enforcement ladder.
@@ -130,5 +130,6 @@ For answers to common questions about this code of conduct, see the FAQ at
 [FAQ](https://www.contributor-covenant.org/faq). Translations are available at
 [translations](https://www.contributor-covenant.org/translations).
 
-For more information contact [info@calimero.network](mailto:info@calimero.network)
-with any additional questions or comments.
+For more information contact
+[info@calimero.network](mailto:info@calimero.network) with any additional
+questions or comments.

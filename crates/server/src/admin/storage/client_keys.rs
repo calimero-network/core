@@ -1,4 +1,5 @@
-use calimero_primitives::{context::ContextId, identity::ClientKey};
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::ClientKey;
 use calimero_store::Store;
 
 use super::did::{get_or_create_did, update_did};

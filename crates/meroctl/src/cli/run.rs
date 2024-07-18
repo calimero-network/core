@@ -53,6 +53,7 @@ impl RunCommand {
                 swarm: config.network.swarm,
                 bootstrap: config.network.bootstrap,
                 discovery: config.network.discovery,
+                catchup: config.network.catchup,
             },
             server: calimero_server::config::ServerConfig {
                 listen: config.network.server.listen,

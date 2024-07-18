@@ -170,6 +170,7 @@ pub async fn create_context_handler(
         id: (*context_id.as_bytes()).into(),
         // signing_key, // todo! move to the Identity column
         application_id: req.application_id,
+        last_transaction_hash: Default::default(),
     };
 
     // todo! experiment with Interior<Store>: WriteLayer<Interior>

@@ -155,13 +155,16 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .into_vec()
         .map_err(|_| UnauthorizedError::new("Invalid base58 challenge"))?;
 
-    let context_id = headers
-        .get("context_id")
-        .map_or(Ok(None), |header_value| {
-            header_value.to_str()
-                .map_err(|_| UnauthorizedError::new("Invalid context_id string"))
-                .and_then(|s| s.parse().map_err(|_| UnauthorizedError::new("Invalid context_id")).map(Some))
-        })?;
+    let context_id = headers.get("context_id").map_or(Ok(None), |header_value| {
+        header_value
+            .to_str()
+            .map_err(|_| UnauthorizedError::new("Invalid context_id string"))
+            .and_then(|s| {
+                s.parse()
+                    .map_err(|_| UnauthorizedError::new("Invalid context_id"))
+                    .map(Some)
+            })
+    })?;
 
     let auth = AuthHeaders {
         wallet_type,

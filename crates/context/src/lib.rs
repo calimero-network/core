@@ -1,9 +1,11 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_file as symlink;
+use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
@@ -12,6 +14,7 @@ use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
 use near_primitives::views::QueryRequest;
 use sha2::{Digest, Sha256};
+use tokio::sync::RwLock;
 use tracing::{error, info};
 
 pub mod config;
@@ -21,6 +24,12 @@ pub struct ContextManager {
     pub config: config::ApplicationConfig,
     pub store: calimero_store::Store,
     pub network_client: NetworkClient,
+    state: Arc<RwLock<State>>,
+}
+
+#[derive(Default)]
+struct State {
+    pending_initial_catchup: HashSet<calimero_primitives::context::ContextId>,
 }
 
 impl ContextManager {
@@ -33,6 +42,7 @@ impl ContextManager {
             config: config.clone(),
             store,
             network_client,
+            state: Default::default(),
         };
 
         this.boot().await?;
@@ -40,25 +50,59 @@ impl ContextManager {
         Ok(this)
     }
 
-    pub async fn join_context(
-        &self,
-        context_id: &calimero_primitives::context::ContextId,
-    ) -> eyre::Result<()> {
-        self.subscribe(context_id).await?;
+    async fn boot(&self) -> eyre::Result<()> {
+        let handle = self.store.handle();
 
-        // todo! initiate catchup which would inform
-        // todo! us what application ID to download
+        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?;
 
-        info!(%context_id,  "Joined context");
+        for key in iter.keys() {
+            self.state
+                .write()
+                .await
+                .pending_initial_catchup
+                .insert(key.context_id());
+
+            self.subscribe(&key.context_id()).await?;
+        }
 
         Ok(())
     }
 
+    async fn subscribe(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<()> {
+        self.network_client
+            .subscribe(calimero_network::types::IdentTopic::new(context_id))
+            .await?;
+
+        info!(%context_id, "Subscribed to context");
+
+        Ok(())
+    }
+
+    async fn unsubscribe(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<()> {
+        self.network_client
+            .unsubscribe(calimero_network::types::IdentTopic::new(context_id))
+            .await?;
+
+        info!(%context_id, "Unsubscribed from context");
+
+        Ok(())
+    }
+}
+
+impl ContextManager {
     pub async fn add_context(
         &self,
         context: calimero_primitives::context::Context,
     ) -> eyre::Result<()> {
-        // todo! ensure application is installed
+        if !self.is_application_installed(&context.application_id) {
+            eyre::bail!("Application is not installed on node.")
+        }
 
         let mut handle = self.store.handle();
 
@@ -66,13 +110,62 @@ impl ContextManager {
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
                 application_id: context.application_id.0.into(),
-                last_transaction_hash: calimero_store::types::TransactionHash::default(),
+                last_transaction_hash: context.last_transaction_hash.into(),
             },
         )?;
 
         self.subscribe(&context.id).await?;
 
         Ok(())
+    }
+
+    pub async fn join_context(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> eyre::Result<Option<()>> {
+        if self
+            .state
+            .read()
+            .await
+            .pending_initial_catchup
+            .contains(&context_id)
+        {
+            return Ok(None);
+        }
+
+        self.state
+            .write()
+            .await
+            .pending_initial_catchup
+            .insert(*context_id);
+
+        self.subscribe(context_id).await?;
+
+        info!(%context_id,  "Joined context with pending initial catchup");
+
+        Ok(Some(()))
+    }
+
+    pub async fn is_context_pending_initial_catchup(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> bool {
+        self.state
+            .read()
+            .await
+            .pending_initial_catchup
+            .contains(context_id)
+    }
+
+    pub async fn clear_context_pending_initial_catchup(
+        &self,
+        context_id: &calimero_primitives::context::ContextId,
+    ) -> bool {
+        self.state
+            .write()
+            .await
+            .pending_initial_catchup
+            .remove(context_id)
     }
 
     pub fn get_context(
@@ -83,13 +176,14 @@ impl ContextManager {
 
         let key = calimero_store::key::ContextMeta::new(*context_id);
 
-        let Some(context) = handle.get(&key)? else {
+        let Some(ctx_meta) = handle.get(&key)? else {
             return Ok(None);
         };
 
         Ok(Some(calimero_primitives::context::Context {
             id: *context_id,
-            application_id: context.application_id.into_string().into(),
+            application_id: ctx_meta.application_id.into_string().into(),
+            last_transaction_hash: ctx_meta.last_transaction_hash.into(),
         }))
     }
 
@@ -142,47 +236,10 @@ impl ContextManager {
             .map(|(k, v)| calimero_primitives::context::Context {
                 id: k.context_id(),
                 application_id: v.application_id.into_string().into(),
+                last_transaction_hash: v.last_transaction_hash.into(),
             });
 
         Ok(contexts.collect())
-    }
-
-    async fn boot(&self) -> eyre::Result<()> {
-        let handle = self.store.handle();
-
-        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?;
-
-        for key in iter.keys() {
-            self.subscribe(&key.context_id()).await?;
-        }
-
-        Ok(())
-    }
-
-    pub async fn subscribe(
-        &self,
-        context_id: &calimero_primitives::context::ContextId,
-    ) -> eyre::Result<()> {
-        self.network_client
-            .subscribe(calimero_network::types::IdentTopic::new(context_id))
-            .await?;
-
-        info!(%context_id, "Subscribed to context");
-
-        Ok(())
-    }
-
-    pub async fn unsubscribe(
-        &self,
-        context_id: &calimero_primitives::context::ContextId,
-    ) -> eyre::Result<()> {
-        self.network_client
-            .unsubscribe(calimero_network::types::IdentTopic::new(context_id))
-            .await?;
-
-        info!(%context_id, "Unsubscribed from context");
-
-        Ok(())
     }
 
     // todo! do this only when initializing contexts
@@ -207,6 +264,26 @@ impl ContextManager {
         path: Utf8PathBuf,
     ) -> eyre::Result<()> {
         self.link_release(&application_id, version, &path)?;
+
+        Ok(())
+    }
+
+    pub async fn update_context_application_id(
+        &self,
+        context_id: calimero_primitives::context::ContextId,
+        application_id: calimero_primitives::application::ApplicationId,
+    ) -> eyre::Result<()> {
+        let mut handle = self.store.handle();
+
+        let key = calimero_store::key::ContextMeta::new(context_id);
+
+        let Some(mut value) = handle.get(&key)? else {
+            eyre::bail!("Context not found")
+        };
+
+        value.application_id = application_id.0.into();
+
+        handle.put(&key, &value)?;
 
         Ok(())
     }
@@ -257,6 +334,17 @@ impl ContextManager {
         Ok(fs::read(&path)?)
     }
 
+    pub fn get_application_latest_version(
+        &self,
+        application_id: &calimero_primitives::application::ApplicationId,
+    ) -> eyre::Result<semver::Version> {
+        let Some((version, _)) = self.get_latest_application_info(application_id) else {
+            eyre::bail!("failed to get application with id: {}", application_id)
+        };
+
+        Ok(version)
+    }
+
     async fn get_release(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
@@ -295,15 +383,17 @@ impl ContextManager {
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
         release: &calimero_primitives::application::Release,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<bool> {
         // todo! download to a tempdir
         // todo! Blob API
-        // todo! first check if the application is already installed
         let base_path = format!("{}/{}/{}", self.config.dir, application_id, release.version);
-
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
+        if fs::metadata(&file_path).is_ok() {
+            return Ok(false);
+        }
+
         let mut file = File::create(&file_path)?;
 
         let mut response = reqwest::Client::new().get(&release.path).send().await?;
@@ -323,7 +413,7 @@ impl ContextManager {
             eyre::bail!("Release hash does not match the hash of the downloaded file");
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn link_release(
@@ -331,21 +421,26 @@ impl ContextManager {
         application_id: &calimero_primitives::application::ApplicationId,
         version: &semver::Version,
         link_path: &camino::Utf8Path,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<bool> {
         let base_path = format!("{}/{}/{}", self.config.dir, application_id, version);
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
+        if fs::metadata(&file_path).is_ok() {
+            return Ok(false);
+        }
+
         info!("Application file saved at: {}", file_path);
         if let Err(err) = symlink(link_path, &file_path) {
             eyre::bail!("Symlinking failed: {}", err);
         }
+
         info!(
             "Application {} linked to node\nPath to linked file at {}",
             application_id, file_path
         );
 
-        Ok(())
+        Ok(true)
     }
 
     fn get_latest_application_info(

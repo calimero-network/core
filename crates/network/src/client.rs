@@ -3,10 +3,11 @@ use std::collections::HashSet;
 use libp2p::{gossipsub, Multiaddr, PeerId};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{stream, Command};
+use crate::{config, stream, Command};
 
 #[derive(Clone)]
 pub struct NetworkClient {
+    pub catchup_config: config::CatchupConfig,
     pub(crate) sender: mpsc::Sender<Command>,
 }
 

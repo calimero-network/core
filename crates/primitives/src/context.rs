@@ -68,4 +68,5 @@ impl FromStr for ContextId {
 pub struct Context {
     pub id: ContextId,
     pub application_id: ApplicationId,
+    pub last_transaction_hash: Hash,
 }

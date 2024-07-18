@@ -1,6 +1,6 @@
 export type ResponseData<D> =
   | {
-      data: D | null;
+      data: D;
       error?: null;
     }
   | {
