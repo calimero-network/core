@@ -665,7 +665,7 @@ impl Node {
 
                 if self.typ.is_coordinator() {
                     let Some(pool_entry) = self.tx_pool.remove(&transaction_hash) else {
-                        eyre::bail!("Failed to remove transaction from pool");
+                        return Ok(());
                     };
 
                     self.validate_pending_transaction(
