@@ -4,6 +4,8 @@
     - [Admin API](#1admin-api)
     - [JSON rpc](#2json-rpc)
     - [Websocket](#3websocket)
+- [Node Server Workflows](#node-server-workflows)
+    - [Admin Dashboard login workflow](#admin-dashboard-login-workflow)
 - [Admin API endpoints](#admin-api-endpoints)
     - [Protected Routes](#protected-routes)
     - [Unprotected Routes](#unprotected-routes)
@@ -68,6 +70,43 @@ Websocket handles requests to subscribe to specific contexts and send responses 
 #### Unsubscription Handling:
 
 Websocket handle requests to unsubscribe from specific contexts and send responses back to the client with the unsubscribed context IDs.
+
+## Node Server Workflows
+
+### Admin Dashboard login workflow
+
+```mermaid
+sequenceDiagram
+    title Admin Dashboard Login Workflow
+    
+    participant User
+    participant Admin Dashboard
+    participant Crypto Wallet
+    participant Admin API
+    participant Node
+    
+    User->>Admin Dashboard: login
+    Admin Dashboard->>Admin API: API call to request-challenge endpoint
+    Admin API-->>Admin Dashboard: Return challenge object
+    Admin Dashboard->>Crypto Wallet: Request to sign received challenge
+    Crypto Wallet-->>User: Request to sign challenge
+    User->>Crypto Wallet: Sign challenge
+    Crypto Wallet-->>Crypto Wallet: Sign challenge
+    Crypto Wallet-->>Admin Dashboard: Signed challenge
+    Admin Dashboard-->>Admin Dashboard: Create auth headers
+    Admin Dashboard->>Admin API: call add-client-key endpoint with signed challenge + auth header
+    Admin API->>Admin API: Verify auth headers    
+    Admin API->>Admin API: Verify signature
+    Admin API->>Node: Check if any root key are stored
+    alt No root keys are stored 
+        Admin API->>Node: Save root key
+    else Root key exists
+        Admin API->>Node: Save client key
+    end
+    Node->>Admin API: Key Stored response
+    Admin API->>Admin Dashboard: Login successful response
+    Admin Dashboard-->>Admin Dashboard: Authorise user
+```
 
 ## Admin API endpoints
 
