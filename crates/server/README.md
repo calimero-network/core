@@ -5,7 +5,9 @@
     - [JSON rpc](#2json-rpc)
     - [Websocket](#3websocket)
 - [Node Server Workflows](#node-server-workflows)
-    - [Client login workflow](#client-login-workflow)
+    - [Client Login Workflow](#client-login-workflow)
+    - [JSON rpc Workflow](#json-rpc-workflow)
+    - [Websocket Workflow](#websocket-workflow)
 - [Admin API endpoints](#admin-api-endpoints)
     - [Protected Routes](#protected-routes)
     - [Unprotected Routes](#unprotected-routes)
@@ -73,7 +75,7 @@ Websocket handle requests to unsubscribe from specific contexts and send respons
 
 ## Node Server Workflows
 
-### Client login workflow
+### Client Login Workflow
 
 ```mermaid
 sequenceDiagram
@@ -128,6 +130,21 @@ sequenceDiagram
     JSON RPC-->>Client: Response for request
 ```
 
+### Websocket Workflow
+
+```mermaid
+sequenceDiagram
+    title WebSocket Subscription Workflow
+    
+    participant Client
+    participant WebSocket
+    participant Node
+    
+    Client->>WebSocket: Subscribe/Unsubscribe request
+    WebSocket->>Node: Handle subscribe/unsubscribe
+    Node-->>WebSocket: Subscription response
+    WebSocket-->>Client: Subscription messages (context application updates)
+```
 
 ## Admin API endpoints
 
