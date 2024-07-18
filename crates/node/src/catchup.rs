@@ -292,6 +292,8 @@ impl Node {
                                     transaction_hash,
                                 )
                                 .await?;
+
+                                self.tx_pool.remove(&transaction_hash);
                             }
                         },
                         types::TransactionStatus::Executed => match self.typ {
