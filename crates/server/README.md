@@ -47,15 +47,15 @@ The Admin API component of the Node Server exposes API for connection with the n
 
 ### 2. JSON rpc
 
-The JSON-RPC component of the Node Server facilitates communication between the clients and the context. This allows seamless interaction and data management for applications.
+The JSON rpc component of the Node Server facilitates communication between the clients and the context. This allows seamless interaction and data management for applications.
 
-The JSON-RPC interface provides two primary methods:
+The JSON rpc interface provides two primary methods:
 
 - Query
 - Mutate
 
 #### Query Method
-The `Query` method retrieves data from the application in participating context. For instance, in the Only Peers forum application, posts and comments stored in the application's storage can be queried using the JSON-RPC interface. This enables users to fetch and display content from the forum.
+The `Query` method retrieves data from the application in participating context. For instance, in the Only Peers forum application, posts and comments stored in the application's storage can be queried using the JSON rpc interface. This enables users to fetch and display content from the forum.
 
 #### Mutate Method
 The `Mutate` method allows modification of the application's data in participating context. For example, in the Only Peers forum application, users can create new posts or comments. The Mutate method updates the application's storage with these new entries, facilitating dynamic content creation and interaction within the application.
@@ -110,24 +110,24 @@ sequenceDiagram
     Admin Dashboard / Application-->>Admin Dashboard / Application: Authorise user
 ```
 
-### JSON RPC Workflow
+### JSON rpc Workflow
 
 ```mermaid
 sequenceDiagram
-    title JSON RPC Workflow
+    title JSON rpc Workflow
 
     participant User
     participant Client
-    participant JSON RPC
+    participant JSON rpc
     participant Node
 
     User->>Client: Query/Mutate action
-    Client->>JSON RPC: Request (query/mutate)
-    JSON RPC-->>JSON RPC: Processes request
-    JSON RPC->>Node: Request for JSON rpc action
+    Client->>JSON rpc: Request (query/mutate)
+    JSON rpc-->>JSON rpc: Processes request
+    JSON rpc->>Node: Request for JSON rpc action
     Node->>Node: Perform action (query/mutate)
-    Node-->>JSON RPC: Response
-    JSON RPC-->>Client: Response for request
+    Node-->>JSON rpc: Response
+    JSON rpc-->>Client: Response for request
 ```
 
 ### Websocket Workflow
@@ -264,15 +264,15 @@ These routes do not require authentication.
 
 ## JSON rpc endpoint
 
-The JSON-RPC server endpoint is structured to handle various request types.
+The JSON-rpc server endpoint is structured to handle various request types.
 
 **Base path**: `/jsonrpc`
 
-**1. Handle JSON-RPC Request**
+**1. Handle JSON-rpc Request**
 
 - **Path**: `/jsonrpc`
 - **Method**: `POST`
-- **Description**: Handles incoming JSON-RPC requests, which can be `query` or `mutate` requests, processes them, and returns the appropriate response.
+- **Description**: Handles incoming JSON-rpc requests, which can be `query` or `mutate` requests, processes them, and returns the appropriate response.
 
 
 ## Websocket endpoints
