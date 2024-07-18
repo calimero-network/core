@@ -4,10 +4,6 @@
     - [Admin API](#1admin-api)
     - [JSON rpc](#2json-rpc)
     - [Websocket](#3websocket)
-- [Node Server Workflows](#node-server-workflows)
-    - [Admin API Workflow](#workflow-for-admin-dashboard)
-    - [JSON rpc Workflow](#workflow-for-p2p-web-applications-and-json-rpc)
-    - [Websocket Workflow](#workflow-for-p2p-web-application-and-websocket)
 - [Admin API endpoints](#admin-api-endpoints)
     - [Protected Routes](#protected-routes)
     - [Unprotected Routes](#unprotected-routes)
@@ -17,9 +13,12 @@
 
 ## Introduction
 
-Node server is a component in node that facilitates node administration and enables communication with the logic of application (loaded wasm) in participating contexts.
+Node Server is a component in node that facilitates node administration and enables communication with the logic of an application (loaded wasm) in participating contexts.
 
 Node Server component is split into 3 parts:
+ 1. [Admin API](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/admin/service.rs)
+ 2. [JSON rpc](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/jsonrpc.rs)
+ 3. [Websocket](https://github.com/calimero-network/core/blob/feat-admin_api_docs/crates/server/src/ws.rs)
 
 ### 1. Admin API
 
@@ -34,17 +33,17 @@ The Admin API component of the Node Server exposes API for connection with the n
 
 **Data Querying**: The Admin API allows the Admin Dashboard to fetch important data from the node, such as identity details, root and client keys, and information about installed and active applications.
 
-**Application Management**: The API provides functionalities to install new applications and start contexts. This enables administrators to dynamically manage the software running on the node.
+**Application Management**: The API provides functionalities for managing applications and contexts, allowing for the installation and uninstallation of applications and starting contexts.
 
 **Key Management**: Administrators can manage root and client keys through the API, ensuring secure access and control over the node.
 
 **Authentication**: The Admin API facilitates user authentication via selected wallets, currently supporting MetaMask and NEAR networks. Authentication details will be explained in later sections.
 
-**Integration with Web Applications**: The authentication mechanism is also used by web applications designed to interact with P2P applications installed on the node, ensuring secure and authenticated access.
+**Integration with Web Applications**: The authentication mechanism is also used by web applications designed for applications (loaded wasm) in participating context, ensuring secure and authenticated access.
 
 ### 2. JSON rpc
 
-The JSON-RPC component of the Node Server facilitates communication between the front-end web applications of P2P systems and the application binaries (contexts) running on node. This allows seamless interaction and data management for applications.
+The JSON-RPC component of the Node Server facilitates communication between the clients and the application binaries (contexts) running on node. This allows seamless interaction and data management for applications.
 
 The JSON-RPC interface provides two primary methods:
 
@@ -52,15 +51,15 @@ The JSON-RPC interface provides two primary methods:
 - Mutate
 
 #### Query Method
-The `Query` method retrieves data from the applications running on the node. For instance, in the Only Peers forum application, posts and comments stored in the application's storage can be queried using the JSON-RPC interface. This enables users to fetch and display content from the forum.
+The `Query` method retrieves data from the application in participating context. For instance, in the Only Peers forum application, posts and comments stored in the application's storage can be queried using the JSON-RPC interface. This enables users to fetch and display content from the forum.
 
 #### Mutate Method
-The `Mutate` method allows modification of the application's data. For example, in the Only Peers forum application, users can create new posts or comments. The Mutate method updates the application's storage with these new entries, facilitating dynamic content creation and interaction within the application.
+The `Mutate` method allows modification of the application's data in participating context. For example, in the Only Peers forum application, users can create new posts or comments. The Mutate method updates the application's storage with these new entries, facilitating dynamic content creation and interaction within the application.
 
 ### 3. Websocket
 
-The WebSocket is used for subscribing to and unsubscribing from certain contexts within the Node Server. Defined handlers manage subscription states for WebSocket connections, allowing clients to receive updates about specific contexts they are interested in.
-WebSocket handlers are essential for managing real-time, context-specific subscriptions within the Node Server. They allow clients to dynamically subscribe to and unsubscribe from updates about various application contexts, enhancing the interactivity and responsiveness of the P2P application.
+The WebSocket is used for subscribing to and unsubscribing from certain context running in the Node Server. Defined handlers manage subscription states for WebSocket connections, allowing clients to receive updates about specific contexts they are interested in.
+WebSocket handlers are essential for managing real-time subscriptions within the Node Server. They allow clients to dynamically subscribe to and unsubscribe from updates about various application contexts.
 
 #### Subscription Handling:
 
@@ -69,52 +68,6 @@ Websocket handles requests to subscribe to specific contexts and send responses 
 #### Unsubscription Handling:
 
 Websocket handle requests to unsubscribe from specific contexts and send responses back to the client with the unsubscribed context IDs.
-
-## Node Server Workflows
-
-### Workflow for Admin Dashboard
-
-```mermaid
-flowchart TD
-    A[Admin Dashboard] -->|HTTP Requests| B[Admin API]
-    B -->|HTTP Responses| A
-    B -->|Node Communication| D[Node]
-    D -->|Response| B
-
-    subgraph Server
-        B
-    end
-```
-
-### Workflow for P2P Web applications and JSON rpc
-
-```mermaid
-flowchart TD
-    A[P2P Web Application] -->|HTTP Auth Request| B[Admin API]
-    B -->|Auth Response| A
-    A -->|JSON-RPC Query/Mutate| C[JSON rpc]
-    C -->|Query/Mutate| D[Node]
-    D -->|Response| C
-    C -->|Response| A
-
-    subgraph Server
-        B
-        C
-    end
-```
-
-### Workflow for P2P Web application and Websocket
-```mermaid
-flowchart TD
-    A[Admin Dashboard] -->|HTTP Subscribe/Unsubscribe Requests| B[Websocket]
-    B -->|HTTP Websocket Responses| A
-    B -->|Subscribe / Unsubscribe| D[Node]
-    D -->|Response| B
-
-    subgraph Server
-        B
-    end
-```
 
 ## Admin API endpoints
 
@@ -258,4 +211,4 @@ The WebSocket, accessible at /ws, allows clients to dynamically subscribe to and
 
 ## Examples
 Examples of Node Server usage can be found within the [Admin Dashboard](https://github.com/calimero-network/admin-dashboard) and the [Only Peers example](https://github.com/calimero-network/only-peers-client
-) application. All communication with the node is exposed through `calimero sdk` library.
+) application. All communication with the node is exposed through [calimero sdk](https://github.com/calimero-network/core/tree/feat-admin_api_docs/packages/calimero-sdk) library.
