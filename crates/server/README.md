@@ -1,9 +1,9 @@
 # Node Server
 
 - [Introduction](#introduction)
-    - [Admin API](#1admin-api)
-    - [JSON rpc](#2json-rpc)
-    - [Websocket](#3websocket)
+    - [Admin API](#1-admin-api)
+    - [JSON rpc](#2-json-rpc)
+    - [Websocket](#3-websocket)
 - [Node Server Workflows](#node-server-workflows)
     - [Client Login Workflow](#client-login-workflow)
     - [JSON rpc Workflow](#json-rpc-workflow)
