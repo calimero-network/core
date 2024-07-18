@@ -108,6 +108,27 @@ sequenceDiagram
     Admin Dashboard / Application-->>Admin Dashboard / Application: Authorise user
 ```
 
+### JSON RPC Workflow
+
+```mermaid
+sequenceDiagram
+    title JSON RPC Workflow
+
+    participant User
+    participant Client
+    participant JSON RPC
+    participant Node
+
+    User->>Client: Query/Mutate action
+    Client->>JSON RPC: Request (query/mutate)
+    JSON RPC-->>JSON RPC: Processes request
+    JSON RPC->>Node: Request for JSON rpc action
+    Node->>Node: Perform action (query/mutate)
+    Node-->>JSON RPC: Response
+    JSON RPC-->>Client: Response for request
+```
+
+
 ## Admin API endpoints
 
 The Admin API endpoints are split into protected and unprotected routes, where protected routes require authentication.
