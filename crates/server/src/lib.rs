@@ -1,13 +1,12 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::{http, Router};
+use axum_server::tls_rustls::RustlsConfig;
 use calimero_store::Store;
 use config::ServerConfig;
 use tokio::sync::broadcast;
 use tower_http::cors;
 use tracing::warn;
-
-use axum_server::tls_rustls::RustlsConfig;
 pub mod certificates;
 
 #[cfg(feature = "admin")]
@@ -112,18 +111,13 @@ pub async fn start(
                 http::Method::PUT,
                 http::Method::OPTIONS,
             ])
-            .allow_private_network(true)
+            .allow_private_network(true),
     );
     // Check if the certificate exists and if they contain the current local IP address
-    certificates::check_for_certificate()?;
-
-    // Get the certificate directory and the paths to the certificate and private key
-    let certificate_dir = certificates::get_certificate_dir();
-    let cert_path = certificate_dir.join("cert.pem");
-    let key_path = certificate_dir.join("key.pem");
+    let (cert_pem, key_pem) = certificates::get_certificate().await?;
 
     // Configure certificate and private key used by https
-    let rustls_config = match RustlsConfig::from_pem_file(cert_path, key_path).await {
+    let rustls_config = match RustlsConfig::from_pem(cert_pem, key_pem).await {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Failed to load TLS configuration: {:?}", e);
@@ -138,7 +132,7 @@ pub async fn start(
         let app = app.clone();
         let addr = listener.local_addr().unwrap();
         set.spawn(async move {
-            if let Err(e) = axum_server::bind_rustls(addr, rustls_config)
+            if let Err(e) = axum_server_dual_protocol::bind_dual_protocol(addr, rustls_config)
                 .serve(app.into_make_service())
                 .await
             {
