@@ -20,16 +20,16 @@ pub enum Column {
     Generic,
 }
 
-pub trait Database: Send + Sync + 'static {
+pub trait Database<'a>: Send + Sync {
     fn open(config: &StoreConfig) -> eyre::Result<Self>
     where
         Self: Sized;
 
-    fn has(&self, col: Column, key: Slice) -> eyre::Result<bool>;
-    fn get(&self, col: Column, key: Slice) -> eyre::Result<Option<Slice>>;
-    fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()>;
-    fn delete(&self, col: Column, key: Slice) -> eyre::Result<()>;
-    fn iter(&self, col: Column, key: Slice) -> eyre::Result<Iter>;
+    fn has(&self, col: Column, key: Slice<'a>) -> eyre::Result<bool>;
+    fn get(&self, col: Column, key: Slice<'a>) -> eyre::Result<Option<Slice>>;
+    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()>;
+    fn delete(&self, col: Column, key: Slice<'a>) -> eyre::Result<()>;
+    fn iter(&self, col: Column, key: Slice<'a>) -> eyre::Result<Iter>;
 
-    fn apply(&self, tx: &Transaction) -> eyre::Result<()>;
+    fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()>;
 }

@@ -4,12 +4,15 @@ use std::ops::Deref;
 use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
-pub trait DataType<'a>: Sized {
+mod private {
+    pub trait Sealed {}
+}
+
+pub trait DataType<'a>: Sized + private::Sealed {
     type Error;
 
-    // todo! change to &'a [u8]
+    fn to_slice(&self) -> Result<Slice, Self::Error>;
     fn from_slice(slice: Slice<'a>) -> Result<Self, Self::Error>;
-    fn as_slice(&'a self) -> Result<Slice<'a>, Self::Error>;
 }
 
 pub trait Entry {
@@ -26,32 +29,34 @@ pub trait Entry {
     // the referent entry
 }
 
-pub struct View<T, C> {
+pub struct Value<T, C> {
     inner: T,
     _priv: PhantomData<C>,
 }
 
-pub trait Codec<T> {
+pub trait Codec<'a, T> {
     type Error;
 
-    fn encode<'a>(value: &'a T) -> Result<Slice<'a>, Self::Error>;
-    fn decode(bytes: &[u8]) -> Result<T, Self::Error>;
+    fn encode(value: &T) -> Result<Slice, Self::Error>;
+    fn decode(bytes: Slice<'a>) -> Result<T, Self::Error>;
 }
 
-impl<T, C: Codec<T>> View<T, C> {
-    pub fn new(value: T) -> Self {
-        Self {
-            inner: value,
-            _priv: PhantomData,
-        }
-    }
-
+impl<T, C> Value<T, C> {
     pub fn value(self) -> T {
         self.inner
     }
 }
 
-impl<T, C> Deref for View<T, C> {
+impl<'a, T, C: Codec<'a, T>> From<T> for Value<T, C> {
+    fn from(value: T) -> Self {
+        Self {
+            inner: value,
+            _priv: PhantomData,
+        }
+    }
+}
+
+impl<T, C> Deref for Value<T, C> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -59,15 +64,33 @@ impl<T, C> Deref for View<T, C> {
     }
 }
 
-impl<'a, T, C: Codec<T>> DataType<'a> for View<T, C> {
+impl<T, C> private::Sealed for Value<T, C> {}
+impl<'a, T, C: Codec<'a, T>> DataType<'a> for Value<T, C> {
     type Error = C::Error;
 
-    fn from_slice(slice: Slice<'_>) -> Result<Self, Self::Error> {
-        Ok(Self::new(C::decode(&slice)?))
+    fn to_slice(&self) -> Result<Slice, Self::Error> {
+        C::encode(&self.inner).map(Into::into)
     }
 
-    fn as_slice(&'a self) -> Result<Slice<'a>, Self::Error> {
-        C::encode(&self.inner).map(Into::into)
+    fn from_slice(slice: Slice<'a>) -> Result<Self, Self::Error> {
+        Ok(Self::from(C::decode(slice)?))
+    }
+}
+
+pub enum Identity {}
+
+impl<'a, T, E> Codec<'a, T> for Identity
+where
+    T: AsRef<[u8]> + TryFrom<Slice<'a>, Error = E> + 'a,
+{
+    type Error = E;
+
+    fn encode(value: &T) -> Result<Slice, Self::Error> {
+        Ok(value.into())
+    }
+
+    fn decode(bytes: Slice<'a>) -> Result<T, Self::Error> {
+        bytes.try_into()
     }
 }
 
@@ -75,19 +98,18 @@ impl<'a, T, C: Codec<T>> DataType<'a> for View<T, C> {
 pub enum Json {}
 
 #[cfg(feature = "serde")]
-impl<T> Codec<T> for Json
+impl<'a, T> Codec<'a, T> for Json
 where
-    // todo! investigate Deserialize<'a> when DataType<'a>::from_slice(&'a [u8]) is implemented
     T: serde::Serialize + serde::de::DeserializeOwned,
 {
     type Error = serde_json::Error;
 
-    fn encode<'a>(value: &'a T) -> Result<Slice<'a>, Self::Error> {
-        serde_json::to_vec(&value).map(Into::into)
+    fn encode(value: &T) -> Result<Slice, Self::Error> {
+        serde_json::to_vec(value).map(Into::into)
     }
 
-    fn decode(bytes: &[u8]) -> Result<T, Self::Error> {
-        serde_json::from_slice(bytes)
+    fn decode(bytes: Slice<'a>) -> Result<T, Self::Error> {
+        serde_json::from_slice(&bytes)
     }
 }
 
@@ -95,17 +117,17 @@ where
 pub enum Borsh {}
 
 #[cfg(feature = "borsh")]
-impl<T> Codec<T> for Borsh
+impl<'a, T> Codec<'a, T> for Borsh
 where
     T: borsh::BorshSerialize + borsh::BorshDeserialize,
 {
     type Error = std::io::Error;
 
-    fn encode<'a>(value: &'a T) -> Result<Slice<'a>, Self::Error> {
+    fn encode(value: &T) -> Result<Slice, Self::Error> {
         borsh::to_vec(&value).map(Into::into)
     }
 
-    fn decode(bytes: &[u8]) -> Result<T, Self::Error> {
-        borsh::from_slice(bytes)
+    fn decode(bytes: Slice<'a>) -> Result<T, Self::Error> {
+        borsh::from_slice(&bytes)
     }
 }

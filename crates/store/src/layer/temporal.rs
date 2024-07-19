@@ -4,14 +4,14 @@ use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
 use crate::tx::{Operation, Transaction};
 
-pub struct Temporal<'base, 'key, 'value, L> {
+pub struct Temporal<'base, 'entry, L> {
     inner: &'base mut L,
-    shadow: Transaction<'key, 'value>,
+    shadow: Transaction<'entry>,
 }
 
-impl<'base, 'key, 'value, L> Temporal<'base, 'key, 'value, L>
+impl<'base, 'entry, L> Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'key, 'value>,
+    L: WriteLayer<'entry>,
 {
     pub fn new(layer: &'base mut L) -> Self {
         Self {
@@ -21,18 +21,18 @@ where
     }
 }
 
-impl<'base, 'key, 'value, L> Layer for Temporal<'base, 'key, 'value, L>
+impl<'base, 'entry, L> Layer for Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'key, 'value>,
+    L: WriteLayer<'entry>,
 {
     type Base = L;
 }
 
-impl<'base, 'key, 'value, L> ReadLayer<'key> for Temporal<'base, 'key, 'value, L>
+impl<'base, 'entry, L> ReadLayer<'entry> for Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'key, 'value>,
+    L: WriteLayer<'entry>,
 {
-    fn has(&self, key: &'key impl AsKeyParts) -> eyre::Result<bool> {
+    fn has(&self, key: &'entry impl AsKeyParts) -> eyre::Result<bool> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(false),
             Some(Operation::Put { .. }) => Ok(true),
@@ -40,7 +40,7 @@ where
         }
     }
 
-    fn get(&self, key: &'key impl AsKeyParts) -> eyre::Result<Option<Slice>> {
+    fn get(&self, key: &'entry impl AsKeyParts) -> eyre::Result<Option<Slice>> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(None),
             Some(Operation::Put { value }) => Ok(Some(value.into())),
@@ -50,7 +50,7 @@ where
 
     fn iter<K: AsKeyParts + FromKeyParts>(
         &self,
-        start: &'key K,
+        start: &'entry K,
     ) -> eyre::Result<Iter<Structured<K>>> {
         let inner = self.inner.iter(start)?;
         let shadow = self.shadow.iter_range(start);
@@ -59,23 +59,23 @@ where
     }
 }
 
-impl<'base, 'key, 'value, L> WriteLayer<'key, 'value> for Temporal<'base, 'key, 'value, L>
+impl<'base, 'entry, L> WriteLayer<'entry> for Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'key, 'value>,
+    L: WriteLayer<'entry>,
 {
-    fn put(&mut self, key: &'key impl AsKeyParts, value: Slice<'value>) -> eyre::Result<()> {
+    fn put(&mut self, key: &'entry impl AsKeyParts, value: Slice<'entry>) -> eyre::Result<()> {
         self.shadow.put(key, value);
 
         Ok(())
     }
 
-    fn delete(&mut self, key: &'key impl AsKeyParts) -> eyre::Result<()> {
+    fn delete(&mut self, key: &'entry impl AsKeyParts) -> eyre::Result<()> {
         self.shadow.delete(key);
 
         Ok(())
     }
 
-    fn apply(&mut self, tx: &Transaction<'key, 'value>) -> eyre::Result<()> {
+    fn apply(&mut self, tx: &Transaction<'entry>) -> eyre::Result<()> {
         self.shadow.merge(tx);
 
         Ok(())
