@@ -53,11 +53,11 @@ impl<L: Layer> LayerExt for L {
     }
 }
 
-impl Layer for Store<'_> {
+impl<'db, 'a> Layer for Store<'db, 'a> {
     type Base = Self;
 }
 
-impl<'a> ReadLayer<'a> for Store<'a> {
+impl<'db, 'a> ReadLayer<'a> for Store<'db, 'a> {
     fn has(&self, key: &'a impl AsKeyParts) -> eyre::Result<bool> {
         let (col, key) = key.parts();
 
@@ -80,7 +80,7 @@ impl<'a> ReadLayer<'a> for Store<'a> {
     }
 }
 
-impl<'a> WriteLayer<'a> for Store<'a> {
+impl<'db, 'a> WriteLayer<'a> for Store<'db, 'a> {
     fn put(&mut self, key: &'a impl AsKeyParts, value: Slice<'a>) -> eyre::Result<()> {
         let (col, key) = key.parts();
 

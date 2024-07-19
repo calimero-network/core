@@ -1,6 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::entry::{Borsh, View};
+use crate::entry::{Borsh, Value};
 use crate::key;
 use crate::types::PredefinedEntry;
 

@@ -1,6 +1,4 @@
-use std::convert::Infallible;
-
-use crate::entry::DataType;
+use crate::entry::{Identity, Value};
 use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
