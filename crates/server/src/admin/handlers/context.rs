@@ -8,7 +8,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -208,4 +208,28 @@ pub async fn get_context_storage_handler(
         },
     }
     .into_response()
+}
+
+#[derive(Debug, Serialize)]
+struct JoinContextResponse {
+    data: Empty,
+}
+
+pub async fn join_context_handler(
+    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    let result = state
+        .ctx_manager
+        .join_context(&context_id)
+        .await
+        .map_err(|err| parse_api_error(err));
+
+    return match result {
+        Ok(_) => ApiResponse {
+            payload: JoinContextResponse { data: Empty {} },
+        }
+        .into_response(),
+        Err(err) => err.into_response(),
+    };
 }
