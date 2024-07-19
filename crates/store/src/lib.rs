@@ -12,21 +12,28 @@ mod tx;
 #[cfg(feature = "datatypes")]
 pub mod types;
 
-use handle::StoreHandle;
+use handle::Handle;
 
-#[derive(Clone)]
-pub struct Store {
-    db: Arc<dyn db::Database>,
+pub struct Store<'db, 'a> {
+    db: Arc<dyn db::Database<'a> + 'db>,
 }
 
-impl Store {
-    pub fn open<T: db::Database>(config: &config::StoreConfig) -> eyre::Result<Self> {
+impl Clone for Store<'_, '_> {
+    fn clone(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+        }
+    }
+}
+
+impl<'db, 'a> Store<'db, 'a> {
+    pub fn open<T: db::Database<'a> + 'db>(config: &config::StoreConfig) -> eyre::Result<Self> {
         let db = T::open(&config)?;
 
-        Ok(Self { db: Arc::new(db) })
+        Ok(Store { db: Arc::new(db) })
     }
 
-    pub fn handle(&self) -> StoreHandle {
-        StoreHandle::new(self.clone())
+    pub fn handle(&self) -> Handle<Self> {
+        Handle::new(self.clone())
     }
 }
