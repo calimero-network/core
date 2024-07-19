@@ -6,8 +6,8 @@ use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
 #[derive(Default)]
-pub struct Transaction<'k, 'v> {
-    ops: btree_map::BTreeMap<Entry<'k>, Operation<'v>>,
+pub struct Transaction<'a> {
+    ops: btree_map::BTreeMap<Entry<'a>, Operation<'a>>,
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
@@ -42,20 +42,20 @@ pub enum Operation<'a> {
     Delete,
 }
 
-impl<'k, 'v> Transaction<'k, 'v> {
-    pub fn get(&self, key: &'k impl AsKeyParts) -> Option<&Operation> {
+impl<'a> Transaction<'a> {
+    pub fn get(&self, key: &'a impl AsKeyParts) -> Option<&Operation> {
         self.ops.get(&key.into())
     }
 
-    pub fn put(&mut self, key: &'k impl AsKeyParts, value: Slice<'v>) {
+    pub fn put(&mut self, key: &'a impl AsKeyParts, value: Slice<'a>) {
         self.ops.insert(key.into(), Operation::Put { value });
     }
 
-    pub fn delete(&mut self, key: &'k impl AsKeyParts) {
+    pub fn delete(&mut self, key: &'a impl AsKeyParts) {
         self.ops.insert(key.into(), Operation::Delete);
     }
 
-    pub fn merge(&mut self, other: &Transaction<'k, 'v>) {
+    pub fn merge(&mut self, other: &Transaction<'a>) {
         for (entry, op) in other.iter() {
             self.ops.insert(
                 *entry,
@@ -69,13 +69,13 @@ impl<'k, 'v> Transaction<'k, 'v> {
         }
     }
 
-    pub fn iter(&self) -> Iter<'_, 'k, 'v> {
+    pub fn iter(&self) -> Iter<'_, 'a> {
         Iter {
             inner: self.ops.iter(),
         }
     }
 
-    pub fn iter_range(&self, start: &'k impl AsKeyParts) -> IterRange<'_, 'k, 'v> {
+    pub fn iter_range(&self, start: &'a impl AsKeyParts) -> IterRange<'_, 'a> {
         let start = Entry::from(start);
 
         IterRange {
@@ -86,33 +86,33 @@ impl<'k, 'v> Transaction<'k, 'v> {
     }
 }
 
-pub struct Iter<'a, 'k, 'v> {
-    inner: btree_map::Iter<'a, Entry<'k>, Operation<'v>>,
+pub struct Iter<'this, 'a> {
+    inner: btree_map::Iter<'this, Entry<'a>, Operation<'a>>,
 }
 
-impl<'a, 'k, 'v> Iterator for Iter<'a, 'k, 'v> {
-    type Item = (&'a Entry<'k>, &'a Operation<'v>);
+impl<'this, 'a> Iterator for Iter<'this, 'a> {
+    type Item = (&'this Entry<'a>, &'this Operation<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
     }
 }
 
-pub struct IterRange<'a, 'k, 'v> {
+pub struct IterRange<'this, 'a> {
     col: Column,
-    value: Option<&'a Slice<'v>>,
-    inner: btree_map::Range<'a, Entry<'k>, Operation<'v>>,
+    value: Option<&'this Slice<'a>>,
+    inner: btree_map::Range<'this, Entry<'a>, Operation<'a>>,
 }
 
-impl<'a, 'k, 'v> Iterator for IterRange<'a, 'k, 'v> {
-    type Item = (&'a Entry<'k>, &'a Operation<'v>);
+impl<'this, 'a> Iterator for IterRange<'this, 'a> {
+    type Item = (&'this Entry<'a>, &'this Operation<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next()
     }
 }
 
-impl<'a, 'k, 'v> DBIter for IterRange<'a, 'k, 'v> {
+impl<'a, 'k> DBIter for IterRange<'a, 'k> {
     fn next(&mut self) -> eyre::Result<Option<Slice>> {
         loop {
             let Some((entry, op)) = self.inner.next() else {

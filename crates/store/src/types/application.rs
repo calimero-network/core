@@ -30,5 +30,5 @@ pub enum Scheme {
 }
 
 impl PredefinedEntry for key::ApplicationMeta {
-    type DataType<'a> = View<ApplicationMeta, Borsh>;
+    type DataType<'a> = Value<ApplicationMeta, Borsh>;
 }

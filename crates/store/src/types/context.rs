@@ -1,8 +1,6 @@
-use std::io;
-
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::entry::{Borsh, DataType, View};
+use crate::entry::{Borsh, Identity, Value};
 use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
@@ -18,7 +16,7 @@ pub struct ContextMeta {
 }
 
 impl PredefinedEntry for key::ContextMeta {
-    type DataType<'a> = View<ContextMeta, Borsh>;
+    type DataType<'a> = Value<ContextMeta, Borsh>;
 }
 
 #[derive(Eq, Clone, Debug, PartialEq)]
@@ -26,20 +24,20 @@ pub struct ContextState<'a> {
     pub value: Slice<'a>,
 }
 
-impl<'a> DataType<'a> for ContextState<'a> {
-    type Error = io::Error;
+impl PredefinedEntry for key::ContextState {
+    type DataType<'a> = Value<ContextState<'a>, Identity>;
+}
 
-    fn from_slice(slice: Slice<'a>) -> Result<Self, Self::Error> {
-        Ok(Self { value: slice })
-    }
-
-    fn as_slice(&'a self) -> Result<Slice<'a>, Self::Error> {
-        Ok(self.value.as_ref().into())
+impl<'a> From<Slice<'a>> for ContextState<'a> {
+    fn from(value: Slice<'a>) -> Self {
+        Self { value }
     }
 }
 
-impl PredefinedEntry for key::ContextState {
-    type DataType<'a> = ContextState<'a>;
+impl<'a> AsRef<[u8]> for ContextState<'a> {
+    fn as_ref(&self) -> &[u8] {
+        self.value.as_ref()
+    }
 }
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
@@ -48,7 +46,7 @@ pub struct ContextIdentity {
 }
 
 impl PredefinedEntry for key::ContextIdentity {
-    type DataType<'a> = View<ContextIdentity, Borsh>;
+    type DataType<'a> = Value<ContextIdentity, Borsh>;
 }
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
@@ -59,5 +57,5 @@ pub struct ContextTransaction {
 }
 
 impl PredefinedEntry for key::ContextTransaction {
-    type DataType<'a> = View<ContextTransaction, Borsh>;
+    type DataType<'a> = Value<ContextTransaction, Borsh>;
 }

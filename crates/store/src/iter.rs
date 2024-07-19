@@ -51,7 +51,7 @@ impl<'a, V> Iter<'a, Unstructured, V> {
 }
 
 impl<'a, K> Iter<'a, K, Unstructured> {
-    pub fn structured_value<V: DataType<'a>>(self) -> Iter<'a, K, Structured<V>> {
+    pub fn structured_value<'b, V: DataType<'b>>(self) -> Iter<'a, K, Structured<V>> {
         Iter {
             inner: self.inner,
             _priv: PhantomData,
