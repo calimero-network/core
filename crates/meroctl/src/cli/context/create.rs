@@ -1,5 +1,7 @@
 use camino::Utf8PathBuf;
+use chrono::Utc;
 use clap::{Args, Parser};
+use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
 use semver::Version;
@@ -66,11 +68,20 @@ impl CreateCommand {
             CreateCommand {
                 application_id: Some(app_id),
                 dev_args: None,
-            } => create_context(multiaddr, app_id, &client).await,
+            } => create_context(multiaddr, app_id, &client, config.identity).await,
             CreateCommand {
                 application_id: None,
                 dev_args: Some(dev_args),
-            } => link_local_app(multiaddr, dev_args.path, dev_args.version, &client).await,
+            } => {
+                link_local_app(
+                    multiaddr,
+                    dev_args.path,
+                    dev_args.version,
+                    &client,
+                    config.identity,
+                )
+                .await
+            }
             _ => eyre::bail!("Invalid command configuration"),
         }
     }
@@ -80,8 +91,9 @@ async fn create_context(
     base_multiaddr: &Multiaddr,
     application_id: String,
     client: &Client,
+    keypair: Keypair,
 ) -> eyre::Result<()> {
-    if !app_installed(&base_multiaddr, &application_id, client).await? {
+    if !app_installed(&base_multiaddr, &application_id, client, &keypair).await? {
         eyre::bail!("Application is not installed on node.")
     }
 
@@ -90,7 +102,16 @@ async fn create_context(
         application_id: calimero_primitives::application::ApplicationId(application_id),
     };
 
-    let response = client.post(url).json(&request).send().await?;
+    let timestamp = Utc::now().timestamp().to_string();
+    let signature = keypair.sign(timestamp.as_bytes())?;
+
+    let response = client
+        .post(url)
+        .header("X-Signature", hex::encode(signature))
+        .header("X-Timestamp", timestamp)
+        .json(&request)
+        .send()
+        .await?;
 
     if response.status().is_success() {
         let context_response: calimero_server_primitives::admin::CreateContextResponse =
@@ -116,9 +137,19 @@ async fn app_installed(
     base_multiaddr: &Multiaddr,
     application_id: &String,
     client: &Client,
+    keypair: &Keypair,
 ) -> eyre::Result<bool> {
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/applications")?;
-    let response = client.get(url).send().await?;
+
+    let timestamp = Utc::now().timestamp().to_string();
+    let signature = keypair.sign(timestamp.as_bytes())?;
+
+    let response = client
+        .get(url)
+        .header("X-Signature", hex::encode(signature))
+        .header("X-Timestamp", timestamp)
+        .send()
+        .await?;
 
     if !response.status().is_success() {
         eyre::bail!("Request failed with status: {}", response.status())
@@ -137,29 +168,35 @@ async fn link_local_app(
     path: Utf8PathBuf,
     version: Version,
     client: &Client,
+    keypair: Keypair,
 ) -> eyre::Result<()> {
-    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
+    let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
     let id = format!("{}:{}", version, path);
     let mut hasher = Sha256::new();
     hasher.update(id.as_bytes());
     let application_id = hex::encode(hasher.finalize());
 
-    let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
+    let request = calimero_server_primitives::admin::InstallDevApplicationRequest {
         application_id: calimero_primitives::application::ApplicationId(application_id.clone()),
         version: version,
         path,
     };
 
-    let install_response = client
-        .post(install_url)
-        .json(&install_request)
+    let timestamp = Utc::now().timestamp().to_string();
+    let signature = keypair.sign(timestamp.as_bytes())?;
+
+    let response = client
+        .post(url)
+        .header("X-Signature", hex::encode(signature))
+        .header("X-Timestamp", timestamp)
+        .json(&request)
         .send()
         .await?;
 
-    if !install_response.status().is_success() {
-        let status = install_response.status();
-        let error_text = install_response.text().await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response.text().await?;
         eyre::bail!(
             "Application installation failed with status: {}. Error: {}",
             status,
@@ -169,7 +206,7 @@ async fn link_local_app(
 
     info!("Application installed successfully.");
 
-    create_context(base_multiaddr, application_id, &client).await?;
+    create_context(base_multiaddr, application_id, &client, keypair).await?;
 
     Ok(())
 }

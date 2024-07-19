@@ -88,15 +88,16 @@ pub(crate) fn setup(
             "/identity/keys",
             delete(handlers::root_keys::delete_auth_keys_handler),
         )
-        .layer(middleware::auth::AuthSignatureLayer::new(store))
-        .layer(Extension(shared_state.clone()));
+        .route_layer(middleware::auth::AuthSignatureLayer::new(store));
 
     let unprotected_router = Router::new()
         .route("/health", get(health_check_handler))
         .route(
             "/request-challenge",
             post(handlers::challenge::request_challenge_handler),
-        )
+        );
+
+    let dev_router = Router::new()
         .route(
             "/add-client-key",
             post(handlers::add_client_key::add_client_key_handler),
@@ -111,11 +112,15 @@ pub(crate) fn setup(
                 .post(handlers::context::create_context_handler),
         )
         .route("/dev/applications", get(list_applications_handler))
-        .layer(Extension(shared_state));
+        .route_layer(axum::middleware::from_fn(
+            middleware::dev_auth::dev_mode_auth,
+        ));
 
     let admin_router = Router::new()
-        .nest("/", unprotected_router)
-        .nest("/", protected_router)
+        .merge(unprotected_router)
+        .merge(protected_router)
+        .merge(dev_router)
+        .layer(Extension(shared_state.clone()))
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
