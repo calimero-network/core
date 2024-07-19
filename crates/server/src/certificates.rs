@@ -1,4 +1,4 @@
-use std::fs;
+use tokio::fs;
 use std::path::{Path, PathBuf};
 
 use local_ip_address::local_ip;
@@ -14,7 +14,7 @@ pub async fn get_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
 
     // Ensure paths exist
     if !cert_path.exists() || !key_path.exists() {
-        let (cert_pem, key_pem) = generate_certificate()?;
+        let (cert_pem, key_pem) = generate_certificate().await?;
         write_out_instructions();
         return Ok((cert_pem, key_pem));
     }
@@ -25,7 +25,7 @@ pub async fn get_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     Ok((cert_pem, key_pem))
 }
 
-fn generate_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+async fn generate_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     // Get the local IP address
     let local_ip = local_ip()?;
 
@@ -53,7 +53,7 @@ fn generate_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     let certificate_dir = get_certificate_dir();
     let key_file_path = certificate_dir.join("key.pem");
     let key_pair = if key_file_path.exists() {
-        let key_pem = fs::read_to_string(key_file_path)?;
+        let key_pem = fs::read_to_string(key_file_path).await?;
         rcgen::KeyPair::from_pem(&key_pem)?
     } else {
         rcgen::KeyPair::generate().unwrap()
@@ -71,16 +71,16 @@ fn generate_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     let key_file_path = certificate_dir.join("key.pem");
 
     // Save the certificate and key to files
-    fs::write(cert_file_path, cert_pem.clone())?;
-    fs::write(key_file_path, key_pem.clone())?;
+    fs::write(cert_file_path, cert_pem.clone()).await?;
+    fs::write(key_file_path, key_pem.clone()).await?;
 
     Ok((cert_pem.as_bytes().to_vec(), key_pem.as_bytes().to_vec()))
 }
 
-fn delete_certificate() -> eyre::Result<()> {
+async fn delete_certificate() -> eyre::Result<()> {
     let certificate_dir = get_certificate_dir();
     let cert_path = certificate_dir.join("cert.pem");
-    fs::remove_file(cert_path)?;
+    fs::remove_file(cert_path).await?;
 
     Ok(())
 }
@@ -90,7 +90,7 @@ async fn check_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     let cert_file = certificate_dir.join("cert.pem");
     let key_file = certificate_dir.join("key.pem");
     // Read the certificate file
-    let cert_pem = fs::read_to_string(cert_file.clone())?;
+    let cert_pem = fs::read_to_string(cert_file.clone()).await?;
     let (_, pem) = parse_x509_pem(cert_pem.as_bytes())?;
     let x509_cert = pem.parse_x509()?;
 
@@ -123,12 +123,12 @@ async fn check_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     }
 
     if !ip_found {
-        delete_certificate()?;
-        return Ok(generate_certificate()?);
+        delete_certificate().await?;
+        return Ok(generate_certificate().await?);
     }
 
-    let cert_pem = tokio::fs::read(&cert_file).await?;
-    let key_pem = tokio::fs::read(&key_file).await?;
+    let cert_pem = fs::read(&cert_file).await?;
+    let key_pem = fs::read(&key_file).await?;
     Ok((cert_pem, key_pem))
 }
 
