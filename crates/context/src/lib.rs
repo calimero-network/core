@@ -100,7 +100,9 @@ impl ContextManager {
         &self,
         context: calimero_primitives::context::Context,
     ) -> eyre::Result<()> {
-        // todo! ensure application is installed
+        if !self.is_application_installed(&context.application_id) {
+            eyre::bail!("Application is not installed on node.")
+        }
 
         let mut handle = self.store.handle();
 
@@ -108,7 +110,7 @@ impl ContextManager {
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
                 application_id: context.application_id.0.into(),
-                last_transaction_hash: calimero_store::types::TransactionHash::default(),
+                last_transaction_hash: context.last_transaction_hash.into(),
             },
         )?;
 
@@ -174,13 +176,14 @@ impl ContextManager {
 
         let key = calimero_store::key::ContextMeta::new(*context_id);
 
-        let Some(context) = handle.get(&key)? else {
+        let Some(ctx_meta) = handle.get(&key)? else {
             return Ok(None);
         };
 
         Ok(Some(calimero_primitives::context::Context {
             id: *context_id,
-            application_id: context.application_id.into_string().into(),
+            application_id: ctx_meta.application_id.into_string().into(),
+            last_transaction_hash: ctx_meta.last_transaction_hash.into(),
         }))
     }
 
@@ -233,6 +236,7 @@ impl ContextManager {
             .map(|(k, v)| calimero_primitives::context::Context {
                 id: k.context_id(),
                 application_id: v.application_id.into_string().into(),
+                last_transaction_hash: v.last_transaction_hash.into(),
             });
 
         Ok(contexts.collect())
@@ -261,12 +265,6 @@ impl ContextManager {
     ) -> eyre::Result<()> {
         self.link_release(&application_id, version, &path)?;
 
-        let topic_hash = self
-            .network_client
-            .subscribe(calimero_network::types::IdentTopic::new(application_id))
-            .await?;
-
-        info!(%topic_hash, "Subscribed to network topic");
         Ok(())
     }
 
@@ -385,15 +383,17 @@ impl ContextManager {
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
         release: &calimero_primitives::application::Release,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<bool> {
         // todo! download to a tempdir
         // todo! Blob API
-        // todo! first check if the application is already installed
         let base_path = format!("{}/{}/{}", self.config.dir, application_id, release.version);
-
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
+        if fs::metadata(&file_path).is_ok() {
+            return Ok(false);
+        }
+
         let mut file = File::create(&file_path)?;
 
         let mut response = reqwest::Client::new().get(&release.path).send().await?;
@@ -413,7 +413,7 @@ impl ContextManager {
             eyre::bail!("Release hash does not match the hash of the downloaded file");
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn link_release(
@@ -421,21 +421,26 @@ impl ContextManager {
         application_id: &calimero_primitives::application::ApplicationId,
         version: &semver::Version,
         link_path: &camino::Utf8Path,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<bool> {
         let base_path = format!("{}/{}/{}", self.config.dir, application_id, version);
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
+        if fs::metadata(&file_path).is_ok() {
+            return Ok(false);
+        }
+
         info!("Application file saved at: {}", file_path);
         if let Err(err) = symlink(link_path, &file_path) {
             eyre::bail!("Symlinking failed: {}", err);
         }
+
         info!(
             "Application {} linked to node\nPath to linked file at {}",
             application_id, file_path
         );
 
-        Ok(())
+        Ok(true)
     }
 
     fn get_latest_application_info(

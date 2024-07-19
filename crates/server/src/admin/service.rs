@@ -6,7 +6,9 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
-use calimero_server_primitives::admin::ApplicationListResult;
+use calimero_server_primitives::admin::{
+    ApplicationListResult, InstallApplicationResponse, ListApplicationsResponse,
+};
 use calimero_store::Store;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
@@ -197,11 +199,6 @@ async fn health_check_handler() -> impl IntoResponse {
     .into_response()
 }
 
-#[derive(Debug, Serialize)]
-struct InstallApplicationResponse {
-    data: bool,
-}
-
 async fn install_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<calimero_server_primitives::admin::InstallApplicationRequest>,
@@ -217,11 +214,6 @@ async fn install_application_handler(
         .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     }
-}
-
-#[derive(Debug, Serialize)]
-struct ListApplicationsResponse {
-    data: ApplicationListResult,
 }
 
 async fn list_applications_handler(
