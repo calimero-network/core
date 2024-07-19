@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{btree_map, BTreeMap, BTreeSet, HashSet};
 use std::time;
 
 use libp2p::{rendezvous, Multiaddr, PeerId, StreamProtocol};
@@ -8,23 +8,11 @@ use libp2p::{rendezvous, Multiaddr, PeerId, StreamProtocol};
 const RENDEZVOUS_PROTOCOL_NAME: libp2p::StreamProtocol =
     libp2p::StreamProtocol::new("/rendezvous/1.0.0");
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct DiscoveryState {
     peers: BTreeMap<PeerId, PeerInfo>,
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
-    pending_addr_changes: bool,
-}
-
-impl Default for DiscoveryState {
-    fn default() -> Self {
-        DiscoveryState {
-            peers: Default::default(),
-            relay_index: Default::default(),
-            rendezvous_index: Default::default(),
-            pending_addr_changes: false,
-        }
-    }
 }
 
 impl DiscoveryState {
@@ -46,18 +34,83 @@ impl DiscoveryState {
         protocols.iter().for_each(|protocol| {
             if protocol == &libp2p::relay::HOP_PROTOCOL_NAME {
                 self.relay_index.insert(*peer_id);
-                self.peers.entry(*peer_id).or_default().relay = Some(PeerRelayInfo {
-                    reservation_status: Default::default(),
-                });
+
+                match self.peers.entry(*peer_id) {
+                    btree_map::Entry::Occupied(mut entry) => {
+                        if entry.get().relay.is_none() {
+                            entry.get_mut().relay = Some(Default::default());
+                        }
+                    }
+                    btree_map::Entry::Vacant(entry) => {
+                        entry.insert(PeerInfo {
+                            addrs: Default::default(),
+                            discoveries: Default::default(),
+                            relay: Some(Default::default()),
+                            rendezvous: None,
+                        });
+                    }
+                };
             }
             if protocol == &RENDEZVOUS_PROTOCOL_NAME {
                 self.rendezvous_index.insert(*peer_id);
-                self.peers.entry(*peer_id).or_default().rendezvous = Some(PeerRendezvousInfo {
-                    cookie: None,
-                    last_discovery_at: None,
-                });
+
+                match self.peers.entry(*peer_id) {
+                    btree_map::Entry::Occupied(mut entry) => {
+                        if entry.get().rendezvous.is_none() {
+                            entry.get_mut().rendezvous = Some(Default::default());
+                        }
+                    }
+                    btree_map::Entry::Vacant(entry) => {
+                        entry.insert(PeerInfo {
+                            addrs: Default::default(),
+                            discoveries: Default::default(),
+                            relay: None,
+                            rendezvous: Some(Default::default()),
+                        });
+                    }
+                };
             }
         });
+    }
+
+    pub(crate) fn is_peer_discovered_via(
+        &self,
+        peer_id: &PeerId,
+        mechanism: PeerDiscoveryMechanism,
+    ) -> bool {
+        match self.peers.get(peer_id) {
+            Some(info) => {
+                if info.discoveries.contains(&mechanism) {
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn add_peer_discovery_mechanism(
+        &mut self,
+        peer_id: &PeerId,
+        mechanism: PeerDiscoveryMechanism,
+    ) {
+        match self.peers.entry(*peer_id) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                entry.get_mut().add_discovery_mechanism(mechanism);
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let mut discoveries = HashSet::new();
+                discoveries.insert(mechanism);
+
+                entry.insert(PeerInfo {
+                    addrs: Default::default(),
+                    discoveries,
+                    relay: None,
+                    rendezvous: None,
+                });
+            }
+        }
     }
 
     pub(crate) fn update_rendezvous_cookie(
@@ -67,12 +120,7 @@ impl DiscoveryState {
     ) {
         self.peers
             .entry(*rendezvous_peer)
-            .and_modify(|info| info.update_rendezvous_cookie(cookie.clone()))
-            .or_default()
-            .rendezvous = Some(PeerRendezvousInfo {
-            cookie: Some(cookie.clone()),
-            last_discovery_at: None,
-        });
+            .and_modify(|info| info.update_rendezvous_cookie(cookie.clone()));
     }
 
     pub(crate) fn update_relay_reservation_status(
@@ -82,11 +130,17 @@ impl DiscoveryState {
     ) {
         self.peers
             .entry(*relay_peer)
-            .and_modify(|info| info.update_relay_reservation_status(status))
-            .or_default()
-            .relay = Some(PeerRelayInfo {
-            reservation_status: status,
-        });
+            .and_modify(|info| info.update_relay_reservation_status(status));
+    }
+
+    pub(crate) fn update_rendezvous_registration_status(
+        &mut self,
+        rendezvous_peer: &PeerId,
+        status: RendezvousRegistrationStatus,
+    ) {
+        self.peers
+            .entry(*rendezvous_peer)
+            .and_modify(|info| info.update_rendezvous_registartion_status(status));
     }
 
     pub(crate) fn get_peer_info(&self, peer_id: &PeerId) -> Option<&PeerInfo> {
@@ -104,23 +158,12 @@ impl DiscoveryState {
     pub(crate) fn is_peer_rendezvous(&self, peer_id: &PeerId) -> bool {
         self.rendezvous_index.contains(peer_id)
     }
-
-    pub(crate) fn pending_addr_changes(&self) -> bool {
-        self.pending_addr_changes
-    }
-
-    pub(crate) fn set_pending_addr_changes(&mut self) {
-        self.pending_addr_changes = true;
-    }
-
-    pub(crate) fn clear_pending_addr_changes(&mut self) {
-        self.pending_addr_changes = false;
-    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PeerInfo {
     addrs: HashSet<Multiaddr>,
+    discoveries: HashSet<PeerDiscoveryMechanism>,
     relay: Option<PeerRelayInfo>,
     rendezvous: Option<PeerRendezvousInfo>,
 }
@@ -146,12 +189,40 @@ impl PeerInfo {
         }
     }
 
-    pub(crate) fn relay(&self) -> Option<&PeerRelayInfo> {
-        self.relay.as_ref()
+    pub(crate) fn is_relay_reservation_required(&self) -> bool {
+        self.relay
+            .as_ref()
+            .map_or(true, |info| match info.reservation_status() {
+                RelayReservationStatus::Discovered => true,
+                RelayReservationStatus::Expired => true,
+                _ => false,
+            })
+    }
+
+    pub(crate) fn is_rendezvous_discover_throttled(&self, rpm: f32) -> bool {
+        self.rendezvous.as_ref().map_or(false, |info| {
+            info.last_discovery_at().map_or(false, |instant| {
+                instant.elapsed() > time::Duration::from_secs_f32(60.0 / rpm)
+            })
+        })
+    }
+
+    pub(crate) fn is_rendezvous_registration_required(&self) -> bool {
+        self.rendezvous
+            .as_ref()
+            .map_or(true, |info| match info.registration_status() {
+                RendezvousRegistrationStatus::Discovered => true,
+                RendezvousRegistrationStatus::Expired => true,
+                _ => false,
+            })
     }
 
     pub(crate) fn rendezvous(&self) -> Option<&PeerRendezvousInfo> {
         self.rendezvous.as_ref()
+    }
+
+    fn add_discovery_mechanism(&mut self, mechanism: PeerDiscoveryMechanism) {
+        self.discoveries.insert(mechanism);
     }
 
     fn update_rendezvous_cookie(&mut self, cookie: rendezvous::Cookie) {
@@ -161,10 +232,22 @@ impl PeerInfo {
     }
 
     fn update_relay_reservation_status(&mut self, status: RelayReservationStatus) {
-        if let Some(ref mut relay_info) = self.relay {
-            relay_info.update_reservation_status(status);
+        if let Some(ref mut info) = self.relay {
+            info.update_reservation_status(status);
         }
     }
+
+    fn update_rendezvous_registartion_status(&mut self, status: RendezvousRegistrationStatus) {
+        if let Some(ref mut info) = self.rendezvous {
+            info.update_registration_status(status);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub(crate) enum PeerDiscoveryMechanism {
+    Mdns,
+    Rendezvous,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -191,10 +274,20 @@ pub(crate) enum RelayReservationStatus {
     Expired,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct PeerRendezvousInfo {
     cookie: Option<rendezvous::Cookie>,
     last_discovery_at: Option<time::Instant>,
+    registration_status: RendezvousRegistrationStatus,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum RendezvousRegistrationStatus {
+    #[default]
+    Discovered,
+    Requested,
+    Registered,
+    Expired,
 }
 
 impl PeerRendezvousInfo {
@@ -209,5 +302,13 @@ impl PeerRendezvousInfo {
     fn update_cookie(&mut self, cookie: rendezvous::Cookie) {
         self.cookie = Some(cookie);
         self.last_discovery_at = Some(time::Instant::now());
+    }
+
+    pub(crate) fn registration_status(&self) -> RendezvousRegistrationStatus {
+        self.registration_status
+    }
+
+    fn update_registration_status(&mut self, status: RendezvousRegistrationStatus) {
+        self.registration_status = status;
     }
 }
