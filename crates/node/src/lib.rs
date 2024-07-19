@@ -2,7 +2,7 @@ use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
-use libp2p::gossipsub::TopicHash;
+use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
@@ -76,6 +76,19 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     )) as BoxedFuture<eyre::Result<()>>;
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+
+    match network_client
+        .subscribe(IdentTopic::new(
+            "9df3h13HTCTgEoEnX77VaSoWrVkNxFiQmtuVGLorjycX".to_string(),
+        ))
+        .await
+    {
+        Ok(_) => info!("Subscribed to meta topic"),
+        Err(err) => {
+            error!("{}: {:?}", "Error subscribing to meta topic", err);
+            eyre::bail!("Failed to subscribe to meta topic: {:?}", err)
+        }
+    };
 
     loop {
         tokio::select! {
