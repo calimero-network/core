@@ -26,6 +26,14 @@ struct DevArgs {
     #[clap(long)]
     dev: bool,
 
+    /// Create context with app instalation
+    #[clap(
+        short,
+        long,
+        help = "If present, while linking a local app, a context will be started (requires --dev and --version)"
+    )]
+    context: bool,
+
     /// Path to use in dev mode
     #[clap(
         short,
@@ -70,7 +78,16 @@ impl CreateCommand {
             CreateCommand {
                 application_id: None,
                 dev_args: Some(dev_args),
-            } => link_local_app(multiaddr, dev_args.path, dev_args.version, &client).await,
+            } => {
+                link_local_app(
+                    multiaddr,
+                    dev_args.path,
+                    dev_args.version,
+                    &client,
+                    dev_args.context,
+                )
+                .await
+            }
             _ => eyre::bail!("Invalid command configuration"),
         }
     }
@@ -137,6 +154,7 @@ async fn link_local_app(
     path: Utf8PathBuf,
     version: Version,
     client: &Client,
+    context_bool: bool,
 ) -> eyre::Result<()> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
@@ -169,7 +187,9 @@ async fn link_local_app(
 
     info!("Application installed successfully.");
 
-    create_context(base_multiaddr, application_id, &client).await?;
+    if context_bool {
+        create_context(base_multiaddr, application_id, &client).await?;
+    }
 
     Ok(())
 }
