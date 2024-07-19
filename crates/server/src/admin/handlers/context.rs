@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -216,20 +217,31 @@ struct JoinContextResponse {
 }
 
 pub async fn join_context_handler(
-    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Path(context_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
+    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
+        Ok(context_id) => context_id,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid context id".into(),
+            }
+            .into_response();
+        }
+    };
+
     let result = state
         .ctx_manager
-        .join_context(&context_id)
+        .join_context(&context_id_result)
         .await
         .map_err(|err| parse_api_error(err));
 
-    return match result {
+    match result {
         Ok(_) => ApiResponse {
             payload: JoinContextResponse { data: Empty {} },
         }
         .into_response(),
         Err(err) => err.into_response(),
-    };
+    }
 }
