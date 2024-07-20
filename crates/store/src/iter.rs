@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use calimero_primitives::reflect::Reflect;
 
-use crate::entry::DataType;
+use crate::entry::Codec;
 use crate::key::{FromKeyParts, Key as KeyCore}; // rename key here to KeyBuf
 use crate::slice::Slice;
 
@@ -51,7 +51,7 @@ impl<'a, V> Iter<'a, Unstructured, V> {
 }
 
 impl<'a, K> Iter<'a, K, Unstructured> {
-    pub fn structured_value<'b, V: DataType<'b>>(self) -> Iter<'a, K, Structured<V>> {
+    pub fn structured_value<'b, V, C: Codec<'b, V>>(self) -> Iter<'a, K, Structured<(V, C)>> {
         Iter {
             inner: self.inner,
             _priv: PhantomData,
@@ -158,12 +158,12 @@ impl<'a, K: FromKeyParts> TryIntoKey<'a> for Structured<K> {
     }
 }
 
-impl<'a, V: DataType<'a>> TryIntoValue<'a> for Structured<V> {
+impl<'a, V, C: Codec<'a, V>> TryIntoValue<'a> for Structured<(V, C)> {
     type Value = V;
-    type Error = Error<V::Error>;
+    type Error = Error<C::Error>;
 
     fn try_into_value(value: Value<'a>) -> Result<Self::Value, Self::Error> {
-        V::from_slice(value).map_err(Error::Structured)
+        C::decode(value).map_err(Error::Structured)
     }
 }
 

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::entry::{DataType, Entry};
+use crate::entry::{Codec, Entry};
 use crate::iter::{Iter, Structured};
 use crate::key::FromKeyParts;
 use crate::layer::{Layer, ReadLayer, WriteLayer};
@@ -27,42 +27,45 @@ pub enum Error<E> {
     CodecError(E),
 }
 
-type EntryError<'a, E> = Error<<<E as Entry>::DataType<'a> as DataType<'a>>::Error>;
+type EntryError<'a, E> =
+    Error<<<E as Entry>::Codec as Codec<'a, <E as Entry>::DataType<'a>>>::Error>;
 
 impl<'a, L: ReadLayer<'a>> Handle<L> {
-    pub fn has<E: Entry>(&self, entry: &'a E) -> Result<bool, EntryError<E>> {
+    pub fn has<E: Entry>(&'a self, entry: &'a E) -> Result<bool, EntryError<E>> {
         Ok(self.inner.has(entry.key())?)
     }
 
-    pub fn get<E: Entry>(&self, entry: &'a E) -> Result<Option<E::DataType<'_>>, EntryError<E>> {
+    pub fn get<E: Entry>(&'a self, entry: &'a E) -> Result<Option<E::DataType<'_>>, EntryError<E>> {
         match self.inner.get(entry.key())? {
-            Some(value) => Ok(Some(
-                E::DataType::from_slice(value).map_err(Error::CodecError)?,
-            )),
+            Some(value) => Ok(Some(E::Codec::decode(value).map_err(Error::CodecError)?)),
             None => Ok(None),
         }
     }
 
     pub fn iter<E: Entry<Key: FromKeyParts>>(
-        &self,
+        &'a self,
         start: &'a E,
-    ) -> Result<Iter<Structured<E::Key>, Structured<E::DataType<'_>>>, EntryError<E>> {
+    ) -> Result<Iter<Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>, EntryError<E>>
+    {
         Ok(self.inner.iter(start.key())?.structured_value())
     }
 }
 
 impl<'a, L: WriteLayer<'a>> Handle<L> {
     pub fn put<'b, E: Entry>(
-        &'b mut self,
+        &'a mut self,
         entry: &'a E,
         value: &'a E::DataType<'b>,
-    ) -> Result<(), EntryError<E>> {
+    ) -> Result<(), EntryError<'b, E>> {
         self.inner
-            .put(entry.key(), value.to_slice().map_err(Error::CodecError)?)
+            .put(
+                entry.key(),
+                E::Codec::encode(value).map_err(Error::CodecError)?,
+            )
             .map_err(Error::LayerError)
     }
 
-    pub fn delete<E: Entry>(&mut self, entry: &'a E) -> Result<(), EntryError<E>> {
+    pub fn delete<E: Entry>(&'a mut self, entry: &'a E) -> Result<(), EntryError<E>> {
         self.inner.delete(entry.key()).map_err(Error::LayerError)
     }
 }

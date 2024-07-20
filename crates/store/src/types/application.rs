@@ -1,6 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::entry::{Borsh, Value};
+use crate::entry::Borsh;
 use crate::key;
 use crate::types::PredefinedEntry;
 
@@ -30,5 +30,6 @@ pub enum Scheme {
 }
 
 impl PredefinedEntry for key::ApplicationMeta {
-    type DataType<'a> = Value<ApplicationMeta, Borsh>;
+    type Codec = Borsh;
+    type DataType<'a> = ApplicationMeta;
 }

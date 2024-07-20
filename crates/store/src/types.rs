@@ -1,4 +1,4 @@
-use crate::entry::{DataType, Entry};
+use crate::entry::{Codec, Entry};
 use crate::key;
 
 mod application;
@@ -12,11 +12,13 @@ pub use context::{
 pub use generic::GenericData;
 
 pub trait PredefinedEntry: key::AsKeyParts {
-    type DataType<'a>: DataType<'a>;
+    type Codec: for<'a> Codec<'a, Self::DataType<'a>>;
+    type DataType<'a>;
 }
 
 impl<T: PredefinedEntry> Entry for T {
     type Key = T;
+    type Codec = T::Codec;
     type DataType<'a> = T::DataType<'a>;
 
     fn key(&self) -> &Self::Key {

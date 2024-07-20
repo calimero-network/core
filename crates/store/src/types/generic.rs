@@ -1,4 +1,4 @@
-use crate::entry::{Identity, Value};
+use crate::entry::Identity;
 use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
@@ -9,7 +9,8 @@ pub struct GenericData<'a> {
 }
 
 impl PredefinedEntry for key::Generic {
-    type DataType<'a> = Value<GenericData<'a>, Identity>;
+    type Codec = Identity;
+    type DataType<'a> = GenericData<'a>;
 }
 
 impl<'a> From<Slice<'a>> for GenericData<'a> {

@@ -1,6 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::entry::{Borsh, Identity, Value};
+use crate::entry::{Borsh, Identity};
 use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
@@ -16,7 +16,8 @@ pub struct ContextMeta {
 }
 
 impl PredefinedEntry for key::ContextMeta {
-    type DataType<'a> = Value<ContextMeta, Borsh>;
+    type Codec = Borsh;
+    type DataType<'a> = ContextMeta;
 }
 
 #[derive(Eq, Clone, Debug, PartialEq)]
@@ -25,7 +26,8 @@ pub struct ContextState<'a> {
 }
 
 impl PredefinedEntry for key::ContextState {
-    type DataType<'a> = Value<ContextState<'a>, Identity>;
+    type Codec = Identity;
+    type DataType<'a> = ContextState<'a>;
 }
 
 impl<'a> From<Slice<'a>> for ContextState<'a> {
@@ -46,7 +48,8 @@ pub struct ContextIdentity {
 }
 
 impl PredefinedEntry for key::ContextIdentity {
-    type DataType<'a> = Value<ContextIdentity, Borsh>;
+    type Codec = Borsh;
+    type DataType<'a> = ContextIdentity;
 }
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
@@ -57,5 +60,6 @@ pub struct ContextTransaction {
 }
 
 impl PredefinedEntry for key::ContextTransaction {
-    type DataType<'a> = Value<ContextTransaction, Borsh>;
+    type Codec = Borsh;
+    type DataType<'a> = ContextTransaction;
 }
