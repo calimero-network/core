@@ -1,4 +1,5 @@
 use calimero_primitives::events::OutcomeEvent;
+use calimero_primitives::hash;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
@@ -385,15 +386,17 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version)) = args.and_then(|args| {
+                        let Some((context_id, application_id, version, path, hash)) = args.and_then(|args| {
                             let mut iter = args.split(' ');
                             let context = iter.next()?;
                             let application = iter.next()?;
                             let version = iter.next()?;
+                            let path = iter.next()?;
+                            let hash= iter.next()?;
 
-                            Some((context, application, version))
+                            Some((context, application, version, path, hash))
                         }) else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version>");
+                            println!("{IND} Usage: context create <context_id> <application_id> <version> <path> <hash>");
                             break 'done;
                         };
 
@@ -413,7 +416,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         // todo! we should be able to install latest version
                         node.ctx_manager
-                            .install_application(&application_id, &version)
+                            .install_application(&application_id, &version, &path, &hash)
                             .await?;
 
                         let context = calimero_primitives::context::Context {

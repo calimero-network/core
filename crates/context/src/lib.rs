@@ -249,10 +249,10 @@ impl ContextManager {
         application_id: &calimero_primitives::application::ApplicationId,
         // todo! permit None version for latest
         version: &semver::Version,
+        path: &str,
+        hash: &str,
     ) -> eyre::Result<()> {
-        let release = self.get_release(&application_id, version).await?;
-
-        self.download_release(&application_id, &release).await?;
+        self.download_and_install_release(&application_id, &version, &path, &hash).await?;
 
         Ok(())
     }
@@ -345,48 +345,16 @@ impl ContextManager {
         Ok(version)
     }
 
-    async fn get_release(
+    async fn download_and_install_release(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
         version: &semver::Version,
-    ) -> eyre::Result<calimero_primitives::application::Release> {
-        // todo! the node shouldn't know anything about where
-        // todo! apps are to be sourced from, keep it generic
-
-        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
-        let request = methods::query::RpcQueryRequest {
-            block_reference: BlockReference::Finality(Finality::Final),
-            request: QueryRequest::CallFunction {
-                account_id: "calimero-package-manager.testnet".parse()?,
-                method_name: "get_release".to_string(),
-                args: FunctionArgs::from(
-                    serde_json::json!({
-                        "id": application_id,
-                        "version": version.to_string()
-                    })
-                    .to_string()
-                    .into_bytes(),
-                ),
-            },
-        };
-
-        let response = client.call(request).await?;
-
-        let QueryResponseKind::CallResult(result) = response.kind else {
-            eyre::bail!("Failed to fetch data from the rpc endpoint")
-        };
-
-        Ok(serde_json::from_slice(&result.result)?)
-    }
-
-    async fn download_release(
-        &self,
-        application_id: &calimero_primitives::application::ApplicationId,
-        release: &calimero_primitives::application::Release,
+        path: &str,
+        hash: &str,
     ) -> eyre::Result<bool> {
         // todo! download to a tempdir
         // todo! Blob API
-        let base_path = format!("{}/{}/{}", self.config.dir, application_id, release.version);
+        let base_path = format!("{}/{}/{}", self.config.dir, application_id, version);
         fs::create_dir_all(&base_path)?;
 
         let file_path = format!("{}/binary.wasm", base_path);
@@ -396,16 +364,16 @@ impl ContextManager {
 
         let mut file = File::create(&file_path)?;
 
-        let mut response = reqwest::Client::new().get(&release.path).send().await?;
+        let mut response = reqwest::Client::new().get(path.to_string()).send().await?;
         let mut hasher = Sha256::new();
         while let Some(chunk) = response.chunk().await? {
             hasher.update(&chunk);
             file.write_all(&chunk)?;
         }
         let result = hasher.finalize();
-        let hash = format!("{:x}", result);
+        let blob_hash = format!("{:x}", result);
 
-        if hash != release.hash {
+        if blob_hash.as_str() != hash {
             if let Err(e) = std::fs::remove_file(&file_path) {
                 error!(%e, "Failed to delete file after failed verification");
             }
