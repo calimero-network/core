@@ -1,8 +1,8 @@
-use tokio::fs;
 use std::path::{Path, PathBuf};
 
 use local_ip_address::local_ip;
 use rcgen::{CertificateParams, DnType};
+use tokio::fs;
 use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{parse_x509_pem, ParsedExtension};
 
@@ -135,7 +135,7 @@ async fn check_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
 fn write_out_instructions() {
     println!("*******************************************************************************");
     println!("To install the generated self-signed SSL certificate, follow the steps in our documentation:");
-    println!("https://https://calimero-network.github.io/getting-started/setup");
+    println!("https://calimero-network.github.io/getting-started/setup");
     println!("*******************************************************************************");
 }
 
