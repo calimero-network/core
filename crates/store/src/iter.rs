@@ -35,11 +35,17 @@ impl<'a, K, V> Iter<'a, K, V> {
     }
 
     pub fn keys(&mut self) -> IterKeys<'_, 'a, K, V> {
-        IterKeys { iter: self }
+        IterKeys {
+            done: false,
+            iter: self,
+        }
     }
 
     pub fn entries(&mut self) -> IterEntries<'_, 'a, K, V> {
-        IterEntries { iter: self }
+        IterEntries {
+            done: false,
+            iter: self,
+        }
     }
 }
 
