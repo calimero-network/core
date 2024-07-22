@@ -24,7 +24,7 @@ pub trait ReadLayer<'r>: Layer {
 }
 
 pub trait WriteLayer<'w>: Layer {
-    fn put(&'w mut self, key: &'w impl AsKeyParts, value: Slice<'w>) -> eyre::Result<()>;
+    fn put(&mut self, key: &'w impl AsKeyParts, value: Slice<'w>) -> eyre::Result<()>;
     fn delete(&mut self, key: &'w impl AsKeyParts) -> eyre::Result<()>;
     fn apply(&mut self, tx: &Transaction<'w>) -> eyre::Result<()>;
 
@@ -59,7 +59,7 @@ impl Layer for Store<'_, '_> {
     type Base = Self;
 }
 
-impl<'db, 'a> ReadLayer<'db> for Store<'db, 'a> {
+impl<'db, 'a> ReadLayer<'a> for Store<'db, 'a> {
     fn has(&self, key: &impl AsKeyParts) -> eyre::Result<bool> {
         let (col, key) = key.parts();
 
@@ -72,7 +72,10 @@ impl<'db, 'a> ReadLayer<'db> for Store<'db, 'a> {
         self.db.get(col, key.as_slice())
     }
 
-    fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &K) -> eyre::Result<Iter<Structured<K>>> {
+    fn iter<K: AsKeyParts + FromKeyParts>(
+        &self,
+        start: &'a K,
+    ) -> eyre::Result<Iter<Structured<K>>> {
         let (col, key) = start.parts();
 
         Ok(self.db.iter(col, key.as_slice())?.structured_key())
