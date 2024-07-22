@@ -133,7 +133,7 @@ mod tests {
 
     use super::RocksDB;
     use crate::config::StoreConfig;
-    use crate::db::Column;
+    use crate::db::{Column, Database};
     use crate::slice::Slice;
 
     #[test]
@@ -161,6 +161,24 @@ mod tests {
             }
         }
 
-        db.get(Column::Identity, (&[]).into()).unwrap();
+        assert_eq!(None, db.get(Column::Identity, (&[]).into()).unwrap());
+
+        let mut iter = db.iter(Column::Identity, (&[]).into()).unwrap();
+
+        let mut entries = iter.entries();
+
+        for b1 in 0..10 {
+            for b2 in 0..10 {
+                let bytes = [b1, b2];
+
+                let key = Slice::from(&bytes[..]);
+                let value = Slice::from(&bytes[..]);
+
+                let (k, v) = entries.next().unwrap();
+
+                assert_eq!(k, key);
+                assert_eq!(v, value);
+            }
+        }
     }
 }
