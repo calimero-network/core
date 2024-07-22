@@ -24,7 +24,7 @@ impl RocksDB {
     }
 }
 
-impl<'a> Database<'a> for RocksDB {
+impl Database<'_> for RocksDB {
     fn open(config: &StoreConfig) -> eyre::Result<Self> {
         let mut options = rocksdb::Options::default();
 
@@ -36,7 +36,7 @@ impl<'a> Database<'a> for RocksDB {
         })
     }
 
-    fn has(&self, col: Column, key: Slice<'a>) -> eyre::Result<bool> {
+    fn has(&self, col: Column, key: Slice) -> eyre::Result<bool> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         let exists = self.db.key_may_exist_cf(cf_handle, key.as_ref())
@@ -45,7 +45,7 @@ impl<'a> Database<'a> for RocksDB {
         Ok(exists)
     }
 
-    fn get(&self, col: Column, key: Slice<'a>) -> eyre::Result<Option<Slice>> {
+    fn get(&self, col: Column, key: Slice) -> eyre::Result<Option<Slice>> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         let value = self.db.get_pinned_cf(cf_handle, key.as_ref())?;
@@ -53,7 +53,7 @@ impl<'a> Database<'a> for RocksDB {
         Ok(value.map(Slice::from_owned))
     }
 
-    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
+    fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         self.db.put_cf(cf_handle, key.as_ref(), value.as_ref())?;
@@ -61,7 +61,7 @@ impl<'a> Database<'a> for RocksDB {
         Ok(())
     }
 
-    fn delete(&self, col: Column, key: Slice<'a>) -> eyre::Result<()> {
+    fn delete(&self, col: Column, key: Slice) -> eyre::Result<()> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         self.db.delete_cf(cf_handle, key.as_ref())?;
@@ -69,7 +69,7 @@ impl<'a> Database<'a> for RocksDB {
         Ok(())
     }
 
-    fn iter(&self, col: Column, key: Slice<'a>) -> eyre::Result<Iter> {
+    fn iter(&self, col: Column, key: Slice) -> eyre::Result<Iter> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         Ok(Iter::new(DBIterator {
@@ -78,7 +78,7 @@ impl<'a> Database<'a> for RocksDB {
         }))
     }
 
-    fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()> {
+    fn apply(&self, tx: &Transaction) -> eyre::Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
 
         let mut unknown_cfs = vec![];
