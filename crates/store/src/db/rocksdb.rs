@@ -126,3 +126,41 @@ impl<'a, 'k> DBIter for DBIterator<'a, 'k> {
         self.iter.value().map(Into::into)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use tempdir::TempDir;
+
+    use super::RocksDB;
+    use crate::config::StoreConfig;
+    use crate::db::Column;
+    use crate::slice::Slice;
+
+    #[test]
+    fn test_rocksdb() {
+        let dir = TempDir::new("_calimero_store_rocks").unwrap();
+
+        let config = StoreConfig {
+            path: dir.path().to_owned().try_into().unwrap(),
+        };
+
+        let db = RocksDB::open(&config).unwrap();
+
+        for b1 in 0..10 {
+            for b2 in 0..10 {
+                let bytes = [b1, b2];
+
+                let key = Slice::from(&bytes[..]);
+                let value = Slice::from(&bytes[..]);
+
+                db.put(Column::Identity, (&key).into(), (&value).into())
+                    .unwrap();
+
+                assert!(db.has(Column::Identity, (&key).into()).unwrap());
+                assert_eq!(db.get(Column::Identity, key).unwrap().unwrap(), value);
+            }
+        }
+
+        db.get(Column::Identity, (&[]).into()).unwrap();
+    }
+}
