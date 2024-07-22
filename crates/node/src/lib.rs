@@ -79,7 +79,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     match network_client
         .subscribe(IdentTopic::new(
-            "9df3h13HTCTgEoEnX77VaSoWrVkNxFiQmtuVGLorjycX".to_string(),
+            "meta_topic".to_string(),
         ))
         .await
     {
@@ -582,10 +582,11 @@ impl Node {
         topic_hash: libp2p::gossipsub::TopicHash,
     ) -> eyre::Result<()> {
         let Ok(context_id) = topic_hash.as_str().parse() else {
-            eyre::bail!(
-                "Failed to parse topic hash '{}' into context ID",
-                topic_hash
-            );
+            // eyre::bail!(
+            //     "Failed to parse topic hash '{}' into context ID",
+            //     topic_hash
+            // );
+            return Ok(());
         };
 
         // Too much errors due to concurrent tries to catchup, e.g.
