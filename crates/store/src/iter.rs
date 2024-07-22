@@ -115,11 +115,10 @@ impl<'a, 'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'a
     type Item = (K::Key, V::Value);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key = 'key: {
+        let key = 'found: {
             if !self.iter.done {
                 if let Some(Some(key)) = self.iter.inner.next().ok() {
-                    // safety: key only needs to live as long as the iterator, not it's reference
-                    break 'key (unsafe { std::mem::transmute(key) });
+                    break 'found key;
                 }
 
                 self.iter.done = true;
@@ -127,6 +126,9 @@ impl<'a, 'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'a
 
             return None;
         };
+
+        // safety: key only needs to live as long as the iterator, not it's reference
+        let key = unsafe { std::mem::transmute(key) };
 
         let value = {
             let value = self.iter.inner.read()?;
