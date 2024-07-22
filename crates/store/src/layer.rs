@@ -14,17 +14,19 @@ pub trait Layer {
     type Base: Layer;
 }
 
-pub trait ReadLayer<'a>: Layer {
-    fn has(&self, key: &'a impl AsKeyParts) -> eyre::Result<bool>;
-    fn get(&self, key: &'a impl AsKeyParts) -> eyre::Result<Option<Slice>>;
-    fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &'a K)
-        -> eyre::Result<Iter<Structured<K>>>;
+pub trait ReadLayer<'r>: Layer {
+    fn has(&'r self, key: &'r impl AsKeyParts) -> eyre::Result<bool>;
+    fn get(&'r self, key: &'r impl AsKeyParts) -> eyre::Result<Option<Slice<'r>>>;
+    fn iter<K: AsKeyParts + FromKeyParts>(
+        &'r self,
+        start: &'r K,
+    ) -> eyre::Result<Iter<Structured<K>>>;
 }
 
-pub trait WriteLayer<'a>: ReadLayer<'a> {
-    fn put(&mut self, key: &'a impl AsKeyParts, value: Slice<'a>) -> eyre::Result<()>;
-    fn delete(&mut self, key: &'a impl AsKeyParts) -> eyre::Result<()>;
-    fn apply(&mut self, tx: &Transaction<'a>) -> eyre::Result<()>;
+pub trait WriteLayer<'w>: Layer {
+    fn put(&'w mut self, key: &'w impl AsKeyParts, value: Slice<'w>) -> eyre::Result<()>;
+    fn delete(&mut self, key: &'w impl AsKeyParts) -> eyre::Result<()>;
+    fn apply(&mut self, tx: &Transaction<'w>) -> eyre::Result<()>;
 
     fn commit(self) -> eyre::Result<()>;
 }
@@ -32,14 +34,14 @@ pub trait WriteLayer<'a>: ReadLayer<'a> {
 pub trait LayerExt: Sized {
     fn handle(self) -> Handle<Self>;
 
-    fn temporal<'a>(&mut self) -> temporal::Temporal<'_, 'a, Self>
+    fn temporal<'entry>(&mut self) -> temporal::Temporal<'_, 'entry, Self>
     where
-        Self: WriteLayer<'a>,
+        Self: WriteLayer<'entry>,
     {
         temporal::Temporal::new(self)
     }
 
-    fn read_only<'a>(&'a self) -> read_only::ReadOnly<'a, Self>
+    fn read_only<'a>(&self) -> read_only::ReadOnly<'_, Self>
     where
         Self: ReadLayer<'a>,
     {
@@ -53,27 +55,24 @@ impl<L: Layer> LayerExt for L {
     }
 }
 
-impl<'db, 'a> Layer for Store<'db, 'a> {
+impl Layer for Store<'_, '_> {
     type Base = Self;
 }
 
-impl<'db, 'a> ReadLayer<'a> for Store<'db, 'a> {
-    fn has(&self, key: &'a impl AsKeyParts) -> eyre::Result<bool> {
+impl<'db, 'a> ReadLayer<'db> for Store<'db, 'a> {
+    fn has(&self, key: &impl AsKeyParts) -> eyre::Result<bool> {
         let (col, key) = key.parts();
 
         self.db.has(col, key.as_slice())
     }
 
-    fn get(&self, key: &'a impl AsKeyParts) -> eyre::Result<Option<Slice>> {
+    fn get(&self, key: &impl AsKeyParts) -> eyre::Result<Option<Slice>> {
         let (col, key) = key.parts();
 
         self.db.get(col, key.as_slice())
     }
 
-    fn iter<K: AsKeyParts + FromKeyParts>(
-        &self,
-        start: &'a K,
-    ) -> eyre::Result<Iter<Structured<K>>> {
+    fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &K) -> eyre::Result<Iter<Structured<K>>> {
         let (col, key) = start.parts();
 
         Ok(self.db.iter(col, key.as_slice())?.structured_key())
