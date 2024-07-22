@@ -84,6 +84,7 @@ impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
 }
 
 pub struct IterKeys<'a, 'b, K, V> {
+    done: bool,
     iter: &'a mut Iter<'b, K, V>,
 }
 
@@ -91,16 +92,22 @@ impl<'a, 'b, K: TryIntoKey<'b>, V> Iterator for IterKeys<'a, 'b, K, V> {
     type Item = K::Key;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key = self.iter.inner.next().ok()??;
+        if !self.iter.done {
+            if let Some(Some(key)) = self.iter.inner.next().ok() {
+                // safety: key only needs to live as long as the iterator, not it's reference
+                let key = unsafe { std::mem::transmute(key) };
 
-        // safety: key only needs to live as long as the iterator, not it's reference
-        let key = unsafe { std::mem::transmute(key) };
+                return K::try_into_key(key).ok();
+            }
+        }
 
-        Some(K::try_into_key(key).ok()?)
+        self.iter.done = true;
+        None
     }
 }
 
 pub struct IterEntries<'a, 'b, K, V> {
+    done: bool,
     iter: &'a mut Iter<'b, K, V>,
 }
 
@@ -108,11 +115,17 @@ impl<'a, 'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'a
     type Item = (K::Key, V::Value);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key = {
-            let key = self.iter.inner.next().ok()??;
+        let key = 'key: {
+            if !self.iter.done {
+                if let Some(Some(key)) = self.iter.inner.next().ok() {
+                    // safety: key only needs to live as long as the iterator, not it's reference
+                    break 'key (unsafe { std::mem::transmute(key) });
+                }
 
-            // safety: key only needs to live as long as the iterator, not it's reference
-            unsafe { std::mem::transmute(key) }
+                self.iter.done = true;
+            }
+
+            return None;
         };
 
         let value = {
