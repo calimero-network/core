@@ -9,6 +9,7 @@ use crate::slice::Slice;
 
 #[derive(Debug)]
 pub struct Iter<'a, K = Unstructured, V = Unstructured> {
+    done: bool,
     inner: Box<dyn DBIter + 'a>,
     _priv: PhantomData<(K, V)>,
 }
@@ -27,6 +28,7 @@ impl<'a> fmt::Debug for dyn DBIter + 'a {
 impl<'a, K, V> Iter<'a, K, V> {
     pub fn new<T: DBIter + 'a>(inner: T) -> Self {
         Self {
+            done: false,
             inner: Box::new(inner),
             _priv: PhantomData,
         }
@@ -44,6 +46,7 @@ impl<'a, K, V> Iter<'a, K, V> {
 impl<'a, V> Iter<'a, Unstructured, V> {
     pub fn structured_key<K: FromKeyParts>(self) -> Iter<'a, Structured<K>, V> {
         Iter {
+            done: self.done,
             inner: self.inner,
             _priv: PhantomData,
         }
@@ -53,6 +56,7 @@ impl<'a, V> Iter<'a, Unstructured, V> {
 impl<'a, K> Iter<'a, K, Unstructured> {
     pub fn structured_value<'b, V, C: Codec<'b, V>>(self) -> Iter<'a, K, Structured<(V, C)>> {
         Iter {
+            done: self.done,
             inner: self.inner,
             _priv: PhantomData,
         }
@@ -64,7 +68,14 @@ type Value<'a> = Slice<'a>;
 
 impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
     fn next(&mut self) -> eyre::Result<Option<Key>> {
-        self.inner.next()
+        if !self.done {
+            if let Some(key) = self.inner.next()? {
+                return Ok(Some(key));
+            };
+        }
+
+        self.done = true;
+        Ok(None)
     }
 
     fn read(&self) -> Option<Value> {
