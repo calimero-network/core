@@ -23,16 +23,16 @@ where
 
 impl<'base, 'entry, L> Layer for Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'entry>,
+    L: Layer,
 {
     type Base = L;
 }
 
-impl<'base, 'entry, L> ReadLayer<'entry> for Temporal<'base, 'entry, L>
+impl<'base, 'entry, L> ReadLayer<'base> for Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'entry>,
+    L: ReadLayer<'base>,
 {
-    fn has(&self, key: &'entry impl AsKeyParts) -> eyre::Result<bool> {
+    fn has(&'base self, key: &'base impl AsKeyParts) -> eyre::Result<bool> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(false),
             Some(Operation::Put { .. }) => Ok(true),
@@ -40,7 +40,7 @@ where
         }
     }
 
-    fn get(&self, key: &'entry impl AsKeyParts) -> eyre::Result<Option<Slice>> {
+    fn get(&'base self, key: &'base impl AsKeyParts) -> eyre::Result<Option<Slice<'base>>> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(None),
             Some(Operation::Put { value }) => Ok(Some(value.into())),
@@ -49,8 +49,8 @@ where
     }
 
     fn iter<K: AsKeyParts + FromKeyParts>(
-        &self,
-        start: &'entry K,
+        &'base self,
+        start: &'base K,
     ) -> eyre::Result<Iter<Structured<K>>> {
         let inner = self.inner.iter(start)?;
         let shadow = self.shadow.iter_range(start);

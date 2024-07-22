@@ -25,11 +25,11 @@ pub trait Database<'a>: Send + Sync {
     where
         Self: Sized;
 
-    fn has(&self, col: Column, key: Slice<'a>) -> eyre::Result<bool>;
-    fn get(&self, col: Column, key: Slice<'a>) -> eyre::Result<Option<Slice>>;
+    fn has(&self, col: Column, key: Slice) -> eyre::Result<bool>;
+    fn get(&self, col: Column, key: Slice) -> eyre::Result<Option<Slice>>;
     fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()>;
-    fn delete(&self, col: Column, key: Slice<'a>) -> eyre::Result<()>;
-    fn iter(&self, col: Column, key: Slice<'a>) -> eyre::Result<Iter>;
+    fn delete(&self, col: Column, key: Slice) -> eyre::Result<()>;
+    fn iter(&self, col: Column, key: Slice) -> eyre::Result<Iter>;
 
     fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()>;
 }
