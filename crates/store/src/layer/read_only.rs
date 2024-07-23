@@ -24,18 +24,15 @@ impl<'base, 'r, L> ReadLayer<'r> for ReadOnly<'r, L>
 where
     L: ReadLayer<'r>,
 {
-    fn has(&self, key: &'r impl AsKeyParts) -> eyre::Result<bool> {
+    fn has<K: AsKeyParts>(&self, key: &'r K) -> eyre::Result<bool> {
         self.inner.has(key)
     }
 
-    fn get(&self, key: &'r impl AsKeyParts) -> eyre::Result<Option<Slice>> {
+    fn get<K: AsKeyParts>(&self, key: &'r K) -> eyre::Result<Option<Slice>> {
         self.inner.get(key)
     }
 
-    fn iter<K: AsKeyParts + FromKeyParts>(
-        &self,
-        start: &'r K,
-    ) -> eyre::Result<Iter<Structured<K>>> {
-        self.inner.iter(start)
+    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<Structured<K>>> {
+        self.inner.iter()
     }
 }

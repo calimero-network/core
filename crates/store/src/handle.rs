@@ -44,10 +44,9 @@ impl<'a, L: ReadLayer<'a>> Handle<L> {
 
     pub fn iter<E: Entry<Key: FromKeyParts>>(
         &'a self,
-        start: &'a E,
     ) -> Result<Iter<Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>, EntryError<E>>
     {
-        Ok(self.inner.iter(start.key())?.structured_value())
+        Ok(self.inner.iter()?.structured_value())
     }
 }
 

@@ -52,8 +52,12 @@ impl Generic {
 impl AsKeyParts for Generic {
     type Components = (Scope, Fragment);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Generic, &self.0)
+    fn column() -> Column {
+        Column::Generic
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
     }
 }
 

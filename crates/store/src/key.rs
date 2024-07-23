@@ -114,7 +114,8 @@ pub trait AsKeyParts: Copy {
     // KeyParts is Sealed so far as KeyComponents stays private
     type Components: KeyComponents;
 
-    fn parts(&self) -> (Column, &Key<Self::Components>);
+    fn column() -> Column;
+    fn as_key(&self) -> &Key<Self::Components>;
 }
 
 pub trait FromKeyParts: AsKeyParts {

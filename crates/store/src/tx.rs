@@ -26,13 +26,11 @@ impl<'a> Entry<'a> {
     }
 }
 
-impl<'a, T: AsKeyParts> From<&'a T> for Entry<'a> {
-    fn from(key: &'a T) -> Self {
-        let (column, key) = key.parts();
-
+impl<'a, K: AsKeyParts> From<&'a K> for Entry<'a> {
+    fn from(key: &'a K) -> Self {
         Self {
-            column,
-            key: key.as_bytes(),
+            column: K::column(),
+            key: key.as_key().as_bytes(),
         }
     }
 }

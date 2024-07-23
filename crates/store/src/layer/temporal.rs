@@ -1,4 +1,4 @@
-use crate::iter::{Iter, IterPair, Structured};
+use crate::iter::{Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
 use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
@@ -32,7 +32,7 @@ impl<'base, 'entry, L> ReadLayer<'base> for Temporal<'base, 'entry, L>
 where
     L: ReadLayer<'base>,
 {
-    fn has(&'base self, key: &'base impl AsKeyParts) -> eyre::Result<bool> {
+    fn has<K: AsKeyParts>(&'base self, key: &'base K) -> eyre::Result<bool> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(false),
             Some(Operation::Put { .. }) => Ok(true),
@@ -40,7 +40,7 @@ where
         }
     }
 
-    fn get(&'base self, key: &'base impl AsKeyParts) -> eyre::Result<Option<Slice<'base>>> {
+    fn get<K: AsKeyParts>(&'base self, key: &'base K) -> eyre::Result<Option<Slice<'base>>> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(None),
             Some(Operation::Put { value }) => Ok(Some(value.into())),
@@ -48,14 +48,12 @@ where
         }
     }
 
-    fn iter<K: AsKeyParts + FromKeyParts>(
-        &'base self,
-        start: &'base K,
-    ) -> eyre::Result<Iter<Structured<K>>> {
-        let inner = self.inner.iter(start)?;
-        let shadow = self.shadow.iter_range(start);
+    fn iter<K: FromKeyParts>(&'base self) -> eyre::Result<Iter<Structured<K>>> {
+        todo!()
+        // let inner = self.inner.iter()?;
+        // let shadow = self.shadow.iter_range(start);
 
-        Ok(Iter::new(IterPair(inner, shadow)))
+        // Ok(Iter::new(IterPair(inner, shadow))) // todo! this is wrong
     }
 }
 
@@ -63,13 +61,13 @@ impl<'base, 'entry, L> WriteLayer<'entry> for Temporal<'base, 'entry, L>
 where
     L: WriteLayer<'entry>,
 {
-    fn put(&mut self, key: &'entry impl AsKeyParts, value: Slice<'entry>) -> eyre::Result<()> {
+    fn put<K: AsKeyParts>(&mut self, key: &'entry K, value: Slice<'entry>) -> eyre::Result<()> {
         self.shadow.put(key, value);
 
         Ok(())
     }
 
-    fn delete(&mut self, key: &'entry impl AsKeyParts) -> eyre::Result<()> {
+    fn delete<K: AsKeyParts>(&mut self, key: &'entry K) -> eyre::Result<()> {
         self.shadow.delete(key);
 
         Ok(())

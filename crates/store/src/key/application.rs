@@ -33,8 +33,12 @@ impl ApplicationMeta {
 impl AsKeyParts for ApplicationMeta {
     type Components = (ApplicationId,);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Application, (&self.0).into())
+    fn column() -> Column {
+        Column::Application
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
     }
 }
 
