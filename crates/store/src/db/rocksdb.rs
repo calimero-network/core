@@ -53,7 +53,7 @@ impl Database<'_> for RocksDB {
         Ok(value.map(Slice::from_owned))
     }
 
-    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
+    fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         self.db.put_cf(cf_handle, key.as_ref(), value.as_ref())?;
