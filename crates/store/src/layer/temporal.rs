@@ -87,9 +87,6 @@ where
     }
 }
 
-// todo! impl calimero_runtime_primitives::Storage for Temporal
-// todo!      to get rid of the TemporalRuntimeStore in node
-
 struct TemporalIterator<'a, 'b, K> {
     inner: Iter<'a, Structured<K>>,
     shadow: &'a Transaction<'b>,
