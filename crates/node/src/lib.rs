@@ -398,7 +398,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                 Some((context, application, version, path, hash))
                             })
                         else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version> <path> <hash>");
+                            println!("{IND} Usage: context create <context_id> <application_id> <version> <path>");
                             break 'done;
                         };
 
