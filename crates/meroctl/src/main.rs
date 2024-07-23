@@ -3,6 +3,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
+mod common;
 mod config_file;
 mod defaults;
 

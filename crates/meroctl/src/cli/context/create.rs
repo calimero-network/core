@@ -6,8 +6,8 @@ use semver::Version;
 use sha2::{Digest, Sha256};
 use tracing::info;
 
-use crate::cli::context::common::multiaddr_to_url;
 use crate::cli::RootArgs;
+use crate::common::multiaddr_to_url;
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]

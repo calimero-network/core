@@ -3,7 +3,6 @@ use const_format::concatcp;
 
 use crate::cli::RootArgs;
 
-mod common;
 mod create;
 mod list;
 

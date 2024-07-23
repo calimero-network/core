@@ -3,6 +3,7 @@ use const_format::concatcp;
 
 use crate::defaults;
 
+mod app;
 mod config;
 mod context;
 mod init;
@@ -46,6 +47,7 @@ pub enum SubCommands {
     #[command(alias = "up")]
     Run(run::RunCommand),
     Context(context::ContextCommand),
+    App(app::AppCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -67,6 +69,7 @@ impl RootCommand {
             SubCommands::Config(config) => config.run(self.args),
             SubCommands::Run(run) => run.run(self.args).await,
             SubCommands::Context(context) => context.run(self.args).await,
+            SubCommands::App(application) => application.run(self.args).await,
         }
     }
 }
