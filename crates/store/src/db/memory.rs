@@ -306,7 +306,7 @@ where
                 Operation::Put { value } => {
                     db.insert(
                         entry.column(),
-                        T::key_from_slice(entry.key().into()),
+                        T::key_from_slice(entry.key().to_owned().into()),
                         T::value_from_slice(value.clone()),
                     )?;
                 }
