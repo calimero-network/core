@@ -347,7 +347,7 @@ impl Node {
                     .is_application_installed(&change.application_id)
                 {
                     self.ctx_manager
-                        .install_application(&change.application_id, &change.version, &change.path, &change.hash)
+                        .install_application(&change.application_id, &change.version, &change.path, Some(change.hash.as_str()))
                         .await?;
                 }
 

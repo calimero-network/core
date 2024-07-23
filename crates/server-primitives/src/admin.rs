@@ -7,7 +7,7 @@ pub struct InstallApplicationRequest {
     pub application: calimero_primitives::application::ApplicationId, // TODO: rename to application_id
     pub version: semver::Version,
     pub path: String,
-    pub hash: String,
+    pub hash: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

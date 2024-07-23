@@ -416,7 +416,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         // todo! we should be able to install latest version
                         node.ctx_manager
-                            .install_application(&application_id, &version, &path, &hash)
+                            .install_application(&application_id, &version, &path, Some(hash))
                             .await?;
 
                         let context = calimero_primitives::context::Context {

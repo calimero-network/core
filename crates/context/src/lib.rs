@@ -250,9 +250,9 @@ impl ContextManager {
         // todo! permit None version for latest
         version: &semver::Version,
         path: &str,
-        hash: &str,
+        hash: Option<&str>,
     ) -> eyre::Result<()> {
-        self.download_and_install_release(&application_id, &version, &path, &hash).await?;
+        self.download_and_install_release(&application_id, &version, &path, hash).await?;
 
         Ok(())
     }
@@ -350,7 +350,7 @@ impl ContextManager {
         application_id: &calimero_primitives::application::ApplicationId,
         version: &semver::Version,
         path: &str,
-        hash: &str,
+        hash: Option<&str>,
     ) -> eyre::Result<bool> {
         // todo! download to a tempdir
         // todo! Blob API
@@ -373,12 +373,14 @@ impl ContextManager {
         let result = hasher.finalize();
         let blob_hash = format!("{:x}", result);
 
-        if blob_hash.as_str() != hash {
-            if let Err(e) = std::fs::remove_file(&file_path) {
-                error!(%e, "Failed to delete file after failed verification");
-            }
+        if let Some(hash) = hash {
+            if blob_hash.as_str() != hash {
+                if let Err(e) = std::fs::remove_file(&file_path) {
+                    error!(%e, "Failed to delete file after failed verification");
+                }
 
-            eyre::bail!("Release hash does not match the hash of the downloaded file");
+                eyre::bail!("Release hash does not match the hash of the downloaded file");
+            }
         }
 
         Ok(true)
