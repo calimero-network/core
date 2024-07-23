@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use calimero_primitives::reflect::Reflect;
 
 use crate::entry::Codec;
-use crate::key::{FromKeyParts, Key as KeyCore}; // rename key here to KeyBuf
+use crate::key::{FromKeyParts, Key as KeyCore};
 use crate::slice::Slice;
 
 #[derive(Debug)]
@@ -15,8 +15,9 @@ pub struct Iter<'a, K = Unstructured, V = Unstructured> {
 }
 
 pub trait DBIter {
+    fn seek(&mut self, key: Key) -> eyre::Result<()>;
     fn next(&mut self) -> eyre::Result<Option<Key>>;
-    fn read(&self) -> Option<Value>;
+    fn read(&self) -> eyre::Result<Value>;
 }
 
 impl<'a> fmt::Debug for dyn DBIter + 'a {
@@ -73,6 +74,10 @@ type Key<'a> = Slice<'a>;
 type Value<'a> = Slice<'a>;
 
 impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
+    fn seek(&mut self, key: Key) -> eyre::Result<()> {
+        self.inner.seek(key)
+    }
+
     fn next(&mut self) -> eyre::Result<Option<Key>> {
         if !self.done {
             if let Some(key) = self.inner.next()? {
@@ -84,7 +89,7 @@ impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
         Ok(None)
     }
 
-    fn read(&self) -> Option<Value> {
+    fn read(&self) -> eyre::Result<Value> {
         self.inner.read()
     }
 }
@@ -94,16 +99,23 @@ pub struct IterKeys<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
 }
 
-impl<'a, 'b, K: TryIntoKey<'b>, V> Iterator for IterKeys<'a, 'b, K, V> {
-    type Item = K::Key;
+impl<'a, 'b, K: TryIntoKey<'b>, V> Iterator for IterKeys<'a, 'b, K, V>
+where
+    eyre::Report: From<K::Error>,
+{
+    type Item = eyre::Result<K::Key>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if !self.iter.done {
-            if let Some(Some(key)) = self.iter.inner.next().ok() {
-                // safety: key only needs to live as long as the iterator, not it's reference
-                let key = unsafe { std::mem::transmute(key) };
+            match self.iter.inner.next() {
+                Ok(Some(key)) => {
+                    // safety: key only needs to live as long as the iterator, not it's reference
+                    let key = unsafe { std::mem::transmute(key) };
 
-                return K::try_into_key(key).ok();
+                    return Some(K::try_into_key(key).map_err(Into::into));
+                }
+                Err(e) => return Some(Err(e)),
+                _ => {}
             }
         }
 
@@ -117,33 +129,53 @@ pub struct IterEntries<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
 }
 
-impl<'a, 'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'a, 'b, K, V> {
-    type Item = (K::Key, V::Value);
+impl<'a, 'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'a, 'b, K, V>
+where
+    eyre::Report: From<K::Error> + From<V::Error>,
+{
+    type Item = eyre::Result<(K::Key, V::Value)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key = 'found: {
-            if !self.iter.done {
-                if let Some(Some(key)) = self.iter.inner.next().ok() {
-                    break 'found key;
+        let key = {
+            let key = 'found: {
+                if !self.iter.done {
+                    match self.iter.inner.next() {
+                        Ok(Some(key)) => break 'found key,
+                        Err(e) => return Some(Err(e)),
+                        _ => {}
+                    }
+
+                    self.iter.done = true;
                 }
 
-                self.iter.done = true;
+                return None;
+            };
+
+            // safety: key only needs to live as long as the iterator, not it's reference
+            let key = unsafe { std::mem::transmute(key) };
+
+            match K::try_into_key(key).map_err(Into::into) {
+                Ok(key) => key,
+                Err(err) => return Some(Err(err)),
             }
-
-            return None;
         };
-
-        // safety: key only needs to live as long as the iterator, not it's reference
-        let key = unsafe { std::mem::transmute(key) };
 
         let value = {
-            let value = self.iter.inner.read()?;
+            let value = match self.iter.inner.read() {
+                Ok(value) => value,
+                Err(value) => return Some(Err(value)),
+            };
 
             // safety: value only needs to live as long as the iterator, not it's reference
-            unsafe { std::mem::transmute(value) }
+            let value = unsafe { std::mem::transmute(value) };
+
+            match V::try_into_value(value).map_err(Into::into) {
+                Ok(value) => value,
+                Err(err) => return Some(Err(err)),
+            }
         };
 
-        Some((K::try_into_key(key).ok()?, V::try_into_value(value).ok()?))
+        Some(Ok((key, value)))
     }
 }
 
@@ -202,7 +234,7 @@ impl<'a, V, C: Codec<'a, V>> TryIntoValue<'a> for Structured<(V, C)> {
 impl private::Sealed for Unstructured {}
 impl<'a> TryIntoKey<'a> for Unstructured {
     type Key = Key<'a>;
-    type Error = ();
+    type Error = std::convert::Infallible;
 
     fn try_into_key(key: Key<'a>) -> Result<Self::Key, Self::Error> {
         Ok(key)
@@ -211,7 +243,7 @@ impl<'a> TryIntoKey<'a> for Unstructured {
 
 impl<'a> TryIntoValue<'a> for Unstructured {
     type Value = Value<'a>;
-    type Error = ();
+    type Error = std::convert::Infallible;
 
     fn try_into_value(value: Value<'a>) -> Result<Self::Value, Self::Error> {
         Ok(value)
