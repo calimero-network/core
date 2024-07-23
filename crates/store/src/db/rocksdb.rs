@@ -53,7 +53,7 @@ impl Database<'_> for RocksDB {
         Ok(value.map(Slice::from_owned))
     }
 
-    fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()> {
+    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         self.db.put_cf(cf_handle, key.as_ref(), value.as_ref())?;
@@ -69,12 +69,11 @@ impl Database<'_> for RocksDB {
         Ok(())
     }
 
-    fn iter(&self, col: Column, key: Slice) -> eyre::Result<Iter> {
+    fn iter(&self, col: Column) -> eyre::Result<Iter> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         Ok(Iter::new(DBIterator {
             iter: self.db.raw_iterator_cf(cf_handle),
-            seek: Some(key.into_boxed().into()),
         }))
     }
 
@@ -106,24 +105,29 @@ impl Database<'_> for RocksDB {
     }
 }
 
-pub struct DBIterator<'a, 'k> {
-    seek: Option<Slice<'k>>,
+pub struct DBIterator<'a> {
     iter: rocksdb::DBRawIterator<'a>,
 }
 
-impl<'a, 'k> DBIter for DBIterator<'a, 'k> {
+impl<'a> DBIter for DBIterator<'a> {
+    fn seek(&mut self, key: Slice) -> eyre::Result<()> {
+        self.iter.seek(key);
+
+        Ok(())
+    }
+
     fn next(&mut self) -> eyre::Result<Option<Slice>> {
-        if let Some(seek) = self.seek.take() {
-            self.iter.seek(seek);
-        } else {
-            self.iter.next();
-        }
+        self.iter.next();
 
         Ok(self.iter.key().map(Into::into))
     }
 
-    fn read(&self) -> Option<Slice> {
-        self.iter.value().map(Into::into)
+    fn read(&self) -> eyre::Result<Slice> {
+        let Some(value) = self.iter.value() else {
+            eyre::bail!("missing value for iterator entry {:?}", self.iter.key());
+        };
+
+        Ok(value.into())
     }
 }
 
@@ -134,6 +138,7 @@ mod tests {
     use super::RocksDB;
     use crate::config::StoreConfig;
     use crate::db::{Column, Database};
+    use crate::iter::DBIter;
     use crate::slice::Slice;
 
     #[test]
@@ -163,7 +168,9 @@ mod tests {
 
         assert_eq!(None, db.get(Column::Identity, (&[]).into()).unwrap());
 
-        let mut iter = db.iter(Column::Identity, (&[]).into()).unwrap();
+        let mut iter = db.iter(Column::Identity).unwrap();
+
+        iter.seek((&[]).into());
 
         let mut entries = iter.entries();
 
@@ -174,7 +181,7 @@ mod tests {
                 let key = Slice::from(&bytes[..]);
                 let value = Slice::from(&bytes[..]);
 
-                let (k, v) = entries.next().unwrap();
+                let (k, v) = entries.next().unwrap().unwrap();
 
                 assert_eq!(k, key);
                 assert_eq!(v, value);
