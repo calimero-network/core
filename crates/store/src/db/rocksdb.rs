@@ -138,7 +138,6 @@ mod tests {
     use super::RocksDB;
     use crate::config::StoreConfig;
     use crate::db::{Column, Database};
-    use crate::iter::DBIter;
     use crate::slice::Slice;
 
     #[test]
