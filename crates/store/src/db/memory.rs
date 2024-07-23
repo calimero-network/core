@@ -320,7 +320,7 @@ where
     }
 }
 
-pub struct InMemoryIter<'a, T: RefBy<'a>> {
+struct InMemoryIter<'a, T: RefBy<'a>> {
     arena: DBArena<T::Value>,
     column: Option<BTreeMap<T::Key, Arc<thunderdome::Index>>>,
     state: Option<State<'a, T::Key, T::Value>>,
@@ -442,7 +442,7 @@ mod tests {
 
         let mut iter = db.iter(Column::Identity).unwrap();
 
-        iter.seek((&[]).into());
+        iter.seek((&[]).into()).unwrap();
 
         let mut entries = iter.entries();
 
@@ -491,7 +491,7 @@ mod tests {
 
         let mut iter = db.iter(Column::Identity).unwrap();
 
-        iter.seek((&[]).into());
+        iter.seek((&[]).into()).unwrap();
 
         let mut entries = iter.entries();
 
