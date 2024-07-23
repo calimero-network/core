@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::{btree_map, BTreeMap};
+use std::ops::Bound;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::config::StoreConfig;
@@ -235,7 +236,7 @@ impl<'a, T: RefBy<'a>> InMemoryDB<'a, T> {
 
 impl<'a, T: RefBy<'a>> Database<'a> for InMemoryDB<'a, T>
 where
-    T::Key: Ord + Clone + Borrow<[u8]> + Borrow<Slice<'a>> + 'a,
+    T::Key: Ord + Clone + Borrow<[u8]>,
 {
     fn open(_config: &StoreConfig) -> eyre::Result<Self> {
         Ok(Self {
@@ -277,15 +278,18 @@ where
         Ok(())
     }
 
-    fn iter(&self, col: Column, key: Slice<'a>) -> eyre::Result<Iter> {
+    fn iter(&self, col: Column) -> eyre::Result<Iter> {
         let db = self.db()?;
 
-        Ok(Iter::new(InMemoryIter {
+        let x = InMemoryIter {
             arena: db.arena.clone(),
             column: db.links.get(&col).cloned(),
-            state: State::Seek { key: Some(key) },
-            _marker: std::marker::PhantomData::<T>,
-        }))
+            state: None,
+            key_to_slice: T::key_to_slice,
+            value_to_slice: T::value_to_slice,
+        };
+
+        Ok(Iter::new(x))
     }
 
     fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()> {
@@ -311,24 +315,20 @@ where
     }
 }
 
-pub struct InMemoryIter<'a, 'b, T: RefBy<'a>> {
-    arena: DBArena<T::Value>,
-    column: Option<BTreeMap<T::Key, Arc<thunderdome::Index>>>,
-    state: State<'a, 'b, T::Key, T::Value>,
-    _marker: std::marker::PhantomData<T>,
+pub struct InMemoryIter<'a, K, V> {
+    arena: DBArena<V>,
+    column: Option<BTreeMap<K, Arc<thunderdome::Index>>>,
+    state: Option<State<'a, K, V>>,
+    key_to_slice: fn(&K) -> Slice<'_>,
+    value_to_slice: fn(&V) -> Slice<'_>,
 }
 
-enum State<'a, 'b, K, V> {
-    Seek {
-        key: Option<Slice<'b>>,
-    },
-    Iter {
-        range: btree_map::Range<'a, K, Arc<thunderdome::Index>>,
-        value: Option<Arc<V>>,
-    },
+struct State<'a, K, V> {
+    range: btree_map::Range<'a, K, Arc<thunderdome::Index>>,
+    value: Option<Arc<V>>,
 }
 
-impl<'a, 'b, T: RefBy<'a>> Drop for InMemoryIter<'a, 'b, T> {
+impl<'a, K, V> Drop for InMemoryIter<'a, K, V> {
     fn drop(&mut self) {
         let Some(column) = self.column.as_ref() else {
             return;
@@ -344,51 +344,62 @@ impl<'a, 'b, T: RefBy<'a>> Drop for InMemoryIter<'a, 'b, T> {
     }
 }
 
-impl<'a, 'b, T: RefBy<'a, Key: Ord>> DBIter for InMemoryIter<'a, 'b, T>
+impl<'a, K, V> DBIter for InMemoryIter<'a, K, V>
 where
-    T::Key: Ord + Borrow<Slice<'b>>,
+    K: Ord + Borrow<[u8]>,
 {
-    fn next(&mut self) -> eyre::Result<Option<Slice>> {
-        loop {
-            match &mut self.state {
-                State::Seek { key } => {
-                    let Some(column) = self.column.as_ref() else {
-                        return Ok(None);
-                    };
+    fn seek(&mut self, key: Slice) -> eyre::Result<()> {
+        let Some(column) = self.column.as_ref() else {
+            return Ok(());
+        };
 
-                    let key = key.take().expect("inconsistent state");
+        let range = column.range((Bound::Included(key.as_ref()), Bound::Unbounded));
 
-                    let range = column.range(key..);
+        self.state = Some(State {
+            // safety: range lives as long as self
+            range: unsafe { std::mem::transmute(range) },
+            value: None,
+        });
 
-                    // safety: range lives as long as self
-                    let range = unsafe { std::mem::transmute(range) };
-
-                    self.state = State::Iter { range, value: None };
-                }
-                State::Iter { range, value } => {
-                    let Some((key, idx)) = range.next() else {
-                        return Ok(None);
-                    };
-
-                    let arena = self.arena.read()?;
-
-                    let Some(value_) = arena.get(**idx) else {
-                        panic!("inconsistent state, index points to non-existent value");
-                    };
-
-                    *value = Some(value_.clone());
-
-                    return Ok(Some(T::key_to_slice(&key)));
-                }
-            }
-        }
+        Ok(())
     }
 
-    fn read(&self) -> Option<Slice> {
-        match &self.state {
-            State::Iter { value, .. } => value.as_ref().map(|v| T::value_to_slice(v)),
-            _ => None,
-        }
+    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+        let Some(column) = self.column.as_ref() else {
+            return Ok(None);
+        };
+
+        let state = self.state.get_or_insert_with(|| State {
+            // safety: range lives as long as self
+            range: unsafe { std::mem::transmute(column.range(..)) },
+            value: None,
+        });
+
+        let Some((key, idx)) = state.range.next() else {
+            return Ok(None);
+        };
+
+        let arena = self.arena.read()?;
+
+        let value = arena
+            .get(**idx)
+            .expect("inconsistent state, index points to non-existent value");
+
+        state.value = Some(value.clone());
+
+        Ok(Some((self.key_to_slice)(&key)))
+    }
+
+    fn read(&self) -> eyre::Result<Slice> {
+        let Some(state) = &self.state else {
+            eyre::bail!("attempted to read from unadvanced iterator");
+        };
+
+        let Some(value) = &state.value else {
+            eyre::bail!("missing value in iterator state");
+        };
+
+        Ok((self.value_to_slice)(value))
     }
 }
 
@@ -396,6 +407,7 @@ where
 mod tests {
     use super::InMemoryDB;
     use crate::db::{Column, Database};
+    use crate::iter::DBIter;
     use crate::slice::Slice;
 
     #[test]
@@ -426,7 +438,9 @@ mod tests {
 
         assert_eq!(None, db.get(Column::Identity, (&[]).into()).unwrap());
 
-        let mut iter = db.iter(Column::Identity, (&[]).into()).unwrap();
+        let mut iter = db.iter(Column::Identity).unwrap();
+
+        iter.seek((&[]).into());
 
         let mut entries = iter.entries();
 
@@ -437,7 +451,7 @@ mod tests {
                 let key = Slice::from(&bytes[..]);
                 let value = Slice::from(&bytes[..]);
 
-                let (k, v) = entries.next().unwrap();
+                let (k, v) = entries.next().unwrap().unwrap();
 
                 assert_eq!(k, key);
                 assert_eq!(v, value);
@@ -473,7 +487,9 @@ mod tests {
 
         assert_eq!(None, db.get(Column::Identity, (&[]).into()).unwrap());
 
-        let mut iter = db.iter(Column::Identity, (&[]).into()).unwrap();
+        let mut iter = db.iter(Column::Identity).unwrap();
+
+        iter.seek((&[]).into());
 
         let mut entries = iter.entries();
 
@@ -484,7 +500,7 @@ mod tests {
                 let key = Slice::from(&bytes[..]);
                 let value = Slice::from(&bytes[..]);
 
-                let (k, v) = entries.next().unwrap();
+                let (k, v) = entries.next().unwrap().unwrap();
 
                 assert_eq!(k, key);
                 assert_eq!(v, value);
