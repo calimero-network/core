@@ -13,6 +13,7 @@ pub use rocksdb::RocksDB;
 
 #[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd, EnumIter, AsRefStr)]
 pub enum Column {
+    Meta,
     Identity,
     State,
     Transaction,

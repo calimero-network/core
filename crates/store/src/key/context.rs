@@ -36,7 +36,7 @@ impl AsKeyParts for ContextMeta {
     type Components = (ContextId,);
 
     fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Identity, (&self.0).into())
+        (Column::Meta, (&self.0).into())
     }
 }
 
