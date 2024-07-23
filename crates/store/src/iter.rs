@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use calimero_primitives::reflect::Reflect;
 
 use crate::entry::Codec;
-use crate::key::{FromKeyParts, Key as KeyCore};
+use crate::key::{AsKeyParts, FromKeyParts, Key as KeyCore};
 use crate::slice::Slice;
 
 #[derive(Debug)]
@@ -197,9 +197,7 @@ pub struct Structured<K> {
     _priv: PhantomData<K>,
 }
 
-pub struct Unstructured {
-    _priv: (),
-}
+pub enum Unstructured {}
 
 mod private {
     pub trait Sealed {}
