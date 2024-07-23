@@ -1,13 +1,59 @@
-use std::collections::btree_map;
+use std::collections::{btree_map, BTreeMap};
 
 use crate::db::Column;
-use crate::iter::DBIter;
 use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
 #[derive(Default)]
 pub struct Transaction<'a> {
-    ops: btree_map::BTreeMap<Entry<'a>, Operation<'a>>,
+    cols: BTreeMap<Column, BTreeMap<Slice<'a>, Operation<'a>>>,
+}
+
+#[derive(Clone)]
+pub enum Operation<'a> {
+    Put { value: Slice<'a> },
+    Delete,
+}
+
+impl<'a> Transaction<'a> {
+    pub fn get<K: AsKeyParts>(&self, key: &'a K) -> Option<&Operation> {
+        self.cols
+            .get(&K::column())
+            .and_then(|ops| ops.get(key.as_key().as_bytes()))
+    }
+
+    pub fn put<K: AsKeyParts>(&mut self, key: &'a K, value: Slice<'a>) {
+        self.cols
+            .entry(K::column())
+            .or_default()
+            .insert(key.as_key().as_slice(), Operation::Put { value });
+    }
+
+    pub fn delete<K: AsKeyParts>(&mut self, key: &'a K) {
+        self.cols
+            .entry(K::column())
+            .or_default()
+            .insert(key.as_key().as_slice(), Operation::Delete);
+    }
+
+    pub fn merge(&mut self, other: &Transaction<'a>) {
+        for (entry, op) in other.iter() {
+            self.cols.entry(entry.column).or_default().insert(
+                match op {
+                    Operation::Put { value } => value.clone(),
+                    Operation::Delete => unreachable!(),
+                },
+                op.clone(),
+            );
+        }
+    }
+
+    pub fn iter(&self) -> Iter<'_, 'a> {
+        Iter {
+            iter: self.cols.iter(),
+            cursor: None,
+        }
+    }
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
@@ -26,111 +72,39 @@ impl<'a> Entry<'a> {
     }
 }
 
-impl<'a, K: AsKeyParts> From<&'a K> for Entry<'a> {
-    fn from(key: &'a K) -> Self {
-        Self {
-            column: K::column(),
-            key: key.as_key().as_bytes(),
-        }
-    }
-}
-
-pub enum Operation<'a> {
-    Put { value: Slice<'a> },
-    Delete,
-}
-
-impl<'a> Transaction<'a> {
-    pub fn get(&self, key: &'a impl AsKeyParts) -> Option<&Operation> {
-        self.ops.get(&key.into())
-    }
-
-    pub fn put(&mut self, key: &'a impl AsKeyParts, value: Slice<'a>) {
-        self.ops.insert(key.into(), Operation::Put { value });
-    }
-
-    pub fn delete(&mut self, key: &'a impl AsKeyParts) {
-        self.ops.insert(key.into(), Operation::Delete);
-    }
-
-    pub fn merge(&mut self, other: &Transaction<'a>) {
-        for (entry, op) in other.iter() {
-            self.ops.insert(
-                *entry,
-                match op {
-                    Operation::Put { value } => Operation::Put {
-                        value: value.clone(),
-                    },
-                    Operation::Delete => Operation::Delete,
-                },
-            );
-        }
-    }
-
-    pub fn iter(&self) -> Iter<'_, 'a> {
-        Iter {
-            inner: self.ops.iter(),
-        }
-    }
-
-    pub fn iter_range(&self, start: &'a impl AsKeyParts) -> IterRange<'_, 'a> {
-        let start = Entry::from(start);
-
-        IterRange {
-            col: start.column,
-            value: None,
-            inner: self.ops.range(start..),
-        }
-    }
-}
-
 pub struct Iter<'this, 'a> {
-    inner: btree_map::Iter<'this, Entry<'a>, Operation<'a>>,
+    iter: btree_map::Iter<'this, Column, BTreeMap<Slice<'a>, Operation<'a>>>,
+    cursor: Option<IterCursor<'this, 'a>>,
+}
+
+struct IterCursor<'this, 'a> {
+    column: Column,
+    iter: btree_map::Iter<'this, Slice<'a>, Operation<'a>>,
 }
 
 impl<'this, 'a> Iterator for Iter<'this, 'a> {
-    type Item = (&'this Entry<'a>, &'this Operation<'a>);
+    type Item = (Entry<'this>, &'this Operation<'a>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-    }
-}
-
-pub struct IterRange<'this, 'a> {
-    col: Column,
-    value: Option<&'this Slice<'a>>,
-    inner: btree_map::Range<'this, Entry<'a>, Operation<'a>>,
-}
-
-impl<'this, 'a> Iterator for IterRange<'this, 'a> {
-    type Item = (&'this Entry<'a>, &'this Operation<'a>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next()
-    }
-}
-
-impl<'a, 'k> DBIter for IterRange<'a, 'k> {
-    fn next(&mut self) -> eyre::Result<Option<Slice>> {
         loop {
-            let Some((entry, op)) = self.inner.next() else {
-                return Ok(None);
-            };
-
-            if entry.column() != self.col {
-                continue;
+            if let Some(cursor) = self.cursor.as_mut() {
+                if let Some((key, op)) = cursor.iter.next() {
+                    return Some((
+                        Entry {
+                            column: cursor.column,
+                            key: key.as_ref(),
+                        },
+                        op,
+                    ));
+                }
             }
 
-            match op {
-                Operation::Delete => eyre::bail!("delete operation"),
-                Operation::Put { value } => self.value = Some(value),
-            };
+            let (column, col_iter) = self.iter.next()?;
 
-            return Ok(Some(entry.key().into()));
+            self.cursor = Some(IterCursor {
+                column: *column,
+                iter: col_iter.iter(),
+            });
         }
-    }
-
-    fn read(&self) -> Option<Slice> {
-        self.value.map(Into::into)
     }
 }
