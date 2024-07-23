@@ -105,7 +105,7 @@ impl Database<'_> for RocksDB {
     }
 }
 
-pub struct DBIterator<'a> {
+struct DBIterator<'a> {
     iter: rocksdb::DBRawIterator<'a>,
 }
 
@@ -169,7 +169,7 @@ mod tests {
 
         let mut iter = db.iter(Column::Identity).unwrap();
 
-        iter.seek((&[]).into());
+        iter.seek((&[]).into()).unwrap();
 
         let mut entries = iter.entries();
 
