@@ -252,7 +252,8 @@ impl ContextManager {
         path: &str,
         hash: Option<&str>,
     ) -> eyre::Result<()> {
-        self.download_and_install_release(&application_id, &version, &path, hash).await?;
+        self.download_and_install_release(&application_id, &version, &path, hash)
+            .await?;
 
         Ok(())
     }

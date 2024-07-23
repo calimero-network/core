@@ -386,16 +386,18 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version, path, hash)) = args.and_then(|args| {
-                            let mut iter = args.split(' ');
-                            let context = iter.next()?;
-                            let application = iter.next()?;
-                            let version = iter.next()?;
-                            let path = iter.next()?;
-                            let hash= iter.next()?;
+                        let Some((context_id, application_id, version, path, hash)) = args
+                            .and_then(|args| {
+                                let mut iter = args.split(' ');
+                                let context = iter.next()?;
+                                let application = iter.next()?;
+                                let version = iter.next()?;
+                                let path = iter.next()?;
+                                let hash = iter.next()?;
 
-                            Some((context, application, version, path, hash))
-                        }) else {
+                                Some((context, application, version, path, hash))
+                            })
+                        else {
                             println!("{IND} Usage: context create <context_id> <application_id> <version> <path> <hash>");
                             break 'done;
                         };

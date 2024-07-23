@@ -209,7 +209,12 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application(&req.application, &req.version, &req.path, req.hash.as_deref())
+        .install_application(
+            &req.application,
+            &req.version,
+            &req.path,
+            req.hash.as_deref(),
+        )
         .await
     {
         Ok(()) => ApiResponse {

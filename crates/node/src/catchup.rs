@@ -64,19 +64,18 @@ impl Node {
         };
 
         let application_id = context.application_id.clone();
-        
+
         let path = if let Some(path) = request.path {
             path
         } else {
             eyre::bail!("Path is missing in the request")
         };
-        
+
         let hash = if let Some(hash) = request.hash {
             hash
         } else {
             eyre::bail!("Hash is missing in the request")
         };
-
 
         if request
             .application_id
@@ -347,7 +346,12 @@ impl Node {
                     .is_application_installed(&change.application_id)
                 {
                     self.ctx_manager
-                        .install_application(&change.application_id, &change.version, &change.path, Some(change.hash.as_str()))
+                        .install_application(
+                            &change.application_id,
+                            &change.version,
+                            &change.path,
+                            Some(change.hash.as_str()),
+                        )
                         .await?;
                 }
 
