@@ -35,8 +35,12 @@ impl ContextMeta {
 impl AsKeyParts for ContextMeta {
     type Components = (ContextId,);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Meta, (&self.0).into())
+    fn column() -> Column {
+        Column::Meta
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
     }
 }
 
@@ -96,8 +100,12 @@ impl ContextIdentity {
 impl AsKeyParts for ContextIdentity {
     type Components = (ContextId, PublicKey);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Identity, (&self.0).into())
+    fn column() -> Column {
+        Column::Identity
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
     }
 }
 
@@ -156,8 +164,12 @@ impl ContextState {
 impl AsKeyParts for ContextState {
     type Components = (ContextId, StateKey);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::State, (&self.0).into())
+    fn column() -> Column {
+        Column::State
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
     }
 }
 
@@ -221,8 +233,12 @@ impl ContextTransaction {
 impl AsKeyParts for ContextTransaction {
     type Components = (ContextId, TransactionId);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Transaction, &self.0)
+    fn column() -> Column {
+        Column::Transaction
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
     }
 }
 
