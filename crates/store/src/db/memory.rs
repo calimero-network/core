@@ -410,7 +410,6 @@ where
 mod tests {
     use super::InMemoryDB;
     use crate::db::{Column, Database};
-    use crate::iter::DBIter;
     use crate::slice::Slice;
 
     #[test]

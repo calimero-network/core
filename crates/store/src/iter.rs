@@ -51,6 +51,20 @@ impl<'a, K, V> Iter<'a, K, V> {
 }
 
 impl<'a, V> Iter<'a, Unstructured, V> {
+    pub fn seek(&mut self, key: Key) -> eyre::Result<()> {
+        self.inner.seek(key)
+    }
+}
+
+impl<'a, K: AsKeyParts, V> Iter<'a, Structured<K>, V> {
+    pub fn seek(&mut self, key: K) -> eyre::Result<()> {
+        let (_, key) = key.parts();
+
+        self.inner.seek(key.as_slice())
+    }
+}
+
+impl<'a, V> Iter<'a, Unstructured, V> {
     pub fn structured_key<K: FromKeyParts>(self) -> Iter<'a, Structured<K>, V> {
         Iter {
             done: self.done,
