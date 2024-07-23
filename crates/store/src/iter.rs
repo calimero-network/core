@@ -218,22 +218,72 @@ impl<'a> TryIntoValue<'a> for Unstructured {
     }
 }
 
-pub struct IterPair<A, B>(pub A, pub B);
+enum FusedIter<I> {
+    Active(I),
+    Interregnum,
+    Expended(I),
+}
+
+impl<I: DBIter> FusedIter<I> {
+    fn seek(&mut self, key: Key) -> eyre::Result<()> {
+        if let FusedIter::Active(iter) = self {
+            iter.seek(key)?;
+        }
+
+        Ok(())
+    }
+
+    fn next(&mut self) -> eyre::Result<Option<Key>> {
+        let this = unsafe { &mut *(self as *mut Self) };
+
+        if let FusedIter::Active(iter) = this {
+            if let Some(key) = iter.next()? {
+                return Ok(Some(key));
+            }
+
+            match std::mem::replace(self, FusedIter::Interregnum) {
+                FusedIter::Active(iter) => *self = FusedIter::Expended(iter),
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn read(&self) -> eyre::Result<Option<Value>> {
+        if let FusedIter::Active(iter) = self {
+            return iter.read().map(Some);
+        }
+
+        Ok(None)
+    }
+}
+
+pub struct IterPair<A, B>(FusedIter<A>, B);
 
 impl<A, B> DBIter for IterPair<A, B>
 where
     A: DBIter,
     B: DBIter,
 {
-    fn next(&mut self) -> eyre::Result<Option<Key>> {
-        let Some(key) = self.0.next()? else {
-            return self.1.next();
-        };
-
-        Ok(Some(key))
+    fn seek(&mut self, key: Key) -> eyre::Result<()> {
+        self.0.seek(key.as_ref().into())?;
+        self.1.seek(key)
     }
 
-    fn read(&self) -> Option<Value> {
-        self.0.read().or_else(|| self.1.read())
+    fn next(&mut self) -> eyre::Result<Option<Key>> {
+        if let Some(key) = self.0.next()? {
+            return Ok(Some(key));
+        }
+
+        self.1.next()
+    }
+
+    fn read(&self) -> eyre::Result<Value> {
+        if let Some(value) = self.0.read()? {
+            return Ok(value);
+        }
+
+        self.1.read()
     }
 }
