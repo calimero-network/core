@@ -364,7 +364,7 @@ impl ContextManager {
 
         let mut file = File::create(&file_path)?;
 
-        let mut response = reqwest::Client::new().get(path.to_string()).send().await?;
+        let mut response = reqwest::Client::new().get(path).send().await?;
         let mut hasher = Sha256::new();
         while let Some(chunk) = response.chunk().await? {
             hasher.update(&chunk);
