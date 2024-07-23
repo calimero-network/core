@@ -303,6 +303,12 @@ impl<I: DBIter> FusedIter<I> {
 
 pub struct IterPair<A, B>(FusedIter<A>, B);
 
+impl<A, B> IterPair<A, B> {
+    pub fn new(iter: A, other: B) -> Self {
+        Self(FusedIter::Active(iter), other)
+    }
+}
+
 impl<A, B> DBIter for IterPair<A, B>
 where
     A: DBIter,
