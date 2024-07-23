@@ -32,5 +32,7 @@ pub trait Database<'a>: Send + Sync {
     fn delete(&self, col: Column, key: Slice) -> eyre::Result<()>;
     fn iter(&self, col: Column) -> eyre::Result<Iter>;
 
+    // todo! redesign this, each DB should return a transaction
+    // todo! modelled similar to Iter - {put, delete, clear}
     fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()>;
 }
