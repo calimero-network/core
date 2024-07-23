@@ -236,7 +236,16 @@ impl<'a, T: RefBy<'a>> InMemoryDB<'a, T> {
 
 impl<'a, T: RefBy<'a>> Database<'a> for InMemoryDB<'a, T>
 where
-    T::Key: Ord + Clone + Borrow<[u8]>,
+    T::Key: Ord
+        + Clone
+        + Borrow<[u8]>
+        //vv\
+        + 'a,
+    //  ~~^^~ this piece is weird, we don't need it for InMemoryIter, but Rust requires it, why?
+    //        the same doesn't apply for T::Value, even though they're both used in the same way
+    //        taking the {key,value}_to_slice fn pointers address this issue (as in b667c5a (PR #519))
+    //        but I'll like to understand why it's happening in the first place, I'll leave it in
+    //        until there's an observable issue
 {
     fn open(_config: &StoreConfig) -> eyre::Result<Self> {
         Ok(Self {
@@ -281,15 +290,11 @@ where
     fn iter(&self, col: Column) -> eyre::Result<Iter> {
         let db = self.db()?;
 
-        let x = InMemoryIter {
+        Ok(Iter::new(InMemoryIter::<T> {
             arena: db.arena.clone(),
             column: db.links.get(&col).cloned(),
             state: None,
-            key_to_slice: T::key_to_slice,
-            value_to_slice: T::value_to_slice,
-        };
-
-        Ok(Iter::new(x))
+        }))
     }
 
     fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()> {
@@ -315,12 +320,10 @@ where
     }
 }
 
-pub struct InMemoryIter<'a, K, V> {
-    arena: DBArena<V>,
-    column: Option<BTreeMap<K, Arc<thunderdome::Index>>>,
-    state: Option<State<'a, K, V>>,
-    key_to_slice: fn(&K) -> Slice<'_>,
-    value_to_slice: fn(&V) -> Slice<'_>,
+pub struct InMemoryIter<'a, T: RefBy<'a>> {
+    arena: DBArena<T::Value>,
+    column: Option<BTreeMap<T::Key, Arc<thunderdome::Index>>>,
+    state: Option<State<'a, T::Key, T::Value>>,
 }
 
 struct State<'a, K, V> {
@@ -328,7 +331,7 @@ struct State<'a, K, V> {
     value: Option<Arc<V>>,
 }
 
-impl<'a, K, V> Drop for InMemoryIter<'a, K, V> {
+impl<'a, T: RefBy<'a>> Drop for InMemoryIter<'a, T> {
     fn drop(&mut self) {
         let Some(column) = self.column.as_ref() else {
             return;
@@ -344,9 +347,9 @@ impl<'a, K, V> Drop for InMemoryIter<'a, K, V> {
     }
 }
 
-impl<'a, K, V> DBIter for InMemoryIter<'a, K, V>
+impl<'a, T: RefBy<'a>> DBIter for InMemoryIter<'a, T>
 where
-    K: Ord + Borrow<[u8]>,
+    T::Key: Ord + Borrow<[u8]>,
 {
     fn seek(&mut self, key: Slice) -> eyre::Result<()> {
         let Some(column) = self.column.as_ref() else {
@@ -387,7 +390,7 @@ where
 
         state.value = Some(value.clone());
 
-        Ok(Some((self.key_to_slice)(&key)))
+        Ok(Some(T::key_to_slice(key)))
     }
 
     fn read(&self) -> eyre::Result<Slice> {
@@ -399,7 +402,7 @@ where
             eyre::bail!("missing value in iterator state");
         };
 
-        Ok((self.value_to_slice)(value))
+        Ok(T::value_to_slice(value))
     }
 }
 
