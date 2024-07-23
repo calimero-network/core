@@ -1,3 +1,4 @@
+use method::InitMethod;
 use quote::{quote, ToTokens};
 
 use crate::macros::infallible;
@@ -9,18 +10,17 @@ mod ty;
 mod utils;
 
 pub struct LogicImpl<'a> {
-    #[allow(dead_code)]
-    type_: syn::Path,
     methods: Vec<method::PublicLogicMethod<'a>>,
     orig: &'a syn::ItemImpl,
+    init_method: InitMethod<'a>,
 }
 
 impl<'a> ToTokens for LogicImpl<'a> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let LogicImpl {
-            type_: _,
             orig,
             methods,
+            init_method,
             ..
         } = self;
 
@@ -28,6 +28,8 @@ impl<'a> ToTokens for LogicImpl<'a> {
             #orig
 
             #(#methods)*
+
+            #init_method
         }
         .to_tokens(tokens)
     }
@@ -35,6 +37,7 @@ impl<'a> ToTokens for LogicImpl<'a> {
 
 pub struct LogicImplInput<'a> {
     pub item: &'a syn::ItemImpl,
+    pub init_method: &'a syn::ImplItemFn,
 }
 
 impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
@@ -107,15 +110,44 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         let type_ = infallible!({ syn::parse2(sanitizer.to_token_stream()) });
 
         let mut methods = vec![];
+
+        // Process the init method
+        let init_method = match method::LogicMethod::try_from(method::LogicMethodImplInput {
+            type_: &type_,
+            item: input.init_method,
+        }) {
+            Ok(method::LogicMethod::Init(method)) => method,
+            _ => {
+                errors.subsume(syn::Error::new_spanned(
+                    input.init_method,
+                    "The #[app::init] method is not properly defined",
+                ));
+                return Err(errors);
+            }
+        };
+
+        // Process other methods
         for item in &input.item.items {
             if let syn::ImplItem::Fn(method) = item {
-                match method::LogicMethod::try_from(method::LogicMethodImplInput {
-                    type_: &type_,
-                    item: method,
+                if !method.attrs.iter().any(|attr| {
+                    attr.path().segments.len() == 2
+                        && attr.path().segments[0].ident == "app"
+                        && attr.path().segments[1].ident == "init"
                 }) {
-                    Ok(method::LogicMethod::Private) => {}
-                    Ok(method::LogicMethod::Public(method)) => methods.push(method),
-                    Err(err) => errors.combine(err),
+                    match method::LogicMethod::try_from(method::LogicMethodImplInput {
+                        type_: &type_,
+                        item: method,
+                    }) {
+                        Ok(method::LogicMethod::Public(method)) => methods.push(method),
+                        Ok(method::LogicMethod::Private) => {}
+                        Ok(method::LogicMethod::Init(_)) => {
+                            errors.subsume(syn::Error::new_spanned(
+                                method,
+                                "Only one #[app::init] method can be defined",
+                            ));
+                        }
+                        Err(err) => errors.combine(err),
+                    }
                 }
             }
         }
@@ -123,9 +155,9 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         errors.check()?;
 
         Ok(Self {
-            type_,
             methods,
             orig: input.item,
+            init_method,
         })
     }
 }

@@ -6,6 +6,7 @@ use crate::{errors, reserved};
 pub enum LogicMethod<'a> {
     Public(PublicLogicMethod<'a>),
     Private,
+    Init(InitMethod<'a>),
 }
 
 pub struct PublicLogicMethod<'a> {
@@ -17,6 +18,51 @@ pub struct PublicLogicMethod<'a> {
     ret: Option<ty::LogicTy>,
 
     has_refs: bool,
+}
+
+pub struct InitMethod<'a> {
+    self_: syn::Path,
+    name: &'a syn::Ident,
+    args: Vec<arg::LogicArgTyped<'a>>,
+}
+
+impl<'a> ToTokens for LogicMethod<'a> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self {
+            LogicMethod::Public(method) => method.to_tokens(tokens),
+            LogicMethod::Private => {}
+            LogicMethod::Init(method) => method.to_tokens(tokens),
+        }
+    }
+}
+
+impl<'a> ToTokens for InitMethod<'a> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        let self_ = &self.self_;
+        let name = &self.name;
+        let args = &self.args;
+
+        let arg_idents = args.iter().map(|arg| &*arg.ident).collect::<Vec<_>>();
+        let arg_types = args.iter().map(|arg| &arg.ty).collect::<Vec<_>>();
+
+        quote! {
+            #[cfg(target_arch = "wasm32")]
+            #[no_mangle]
+            pub extern "C" fn init() {
+                ::calimero_sdk::env::setup_panic_hook();
+
+                ::calimero_sdk::event::register::<#self_>();
+
+                let input = ::calimero_sdk::env::input().expect("Init parameters are required");
+                let (#(#arg_idents),*): (#(#arg_types),*) = ::calimero_sdk::serde_json::from_slice(&input)
+                    .expect("Failed to deserialize init parameters");
+
+                let state: #self_ = #self_::#name(#(#arg_idents),*);
+                ::calimero_sdk::env::state_write(&state);
+            }
+        }
+        .to_tokens(tokens)
+    }
 }
 
 impl<'a> ToTokens for PublicLogicMethod<'a> {
@@ -146,6 +192,39 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         }
 
         let mut errors = errors::Errors::new(input.item);
+
+        // Check if this is an init method
+        if input.item.attrs.iter().any(|attr| {
+            attr.path().segments.len() == 2
+                && attr.path().segments[0].ident == "app"
+                && attr.path().segments[1].ident == "init"
+        }) {
+            // Process init method
+            let mut args = vec![];
+            for arg in &input.item.sig.inputs {
+                match arg::LogicArg::try_from(arg::LogicArgInput {
+                    type_: input.type_,
+                    arg,
+                }) {
+                    Ok(arg::LogicArg::Typed(arg)) => args.push(arg),
+                    Ok(arg::LogicArg::Receiver(_)) => {
+                        errors.subsume(syn::Error::new_spanned(
+                            arg,
+                            "Init method should not have a receiver",
+                        ));
+                    }
+                    Err(err) => errors.combine(err),
+                }
+            }
+
+            errors.check()?;
+
+            return Ok(LogicMethod::Init(InitMethod {
+                self_: input.type_.clone(),
+                name: &input.item.sig.ident,
+                args,
+            }));
+        }
 
         if let Some(abi) = &input.item.sig.abi {
             errors.subsume(syn::Error::new_spanned(
