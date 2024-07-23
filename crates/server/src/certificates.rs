@@ -1,31 +1,23 @@
-use std::path::{Path, PathBuf};
+use std::str::from_utf8;
 
+use calimero_store::Store;
 use local_ip_address::local_ip;
 use rcgen::{CertificateParams, DnType};
-use tokio::fs;
 use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{parse_x509_pem, ParsedExtension};
 
-pub async fn get_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
-    // Get the path to the certificate and key files
-    let certificate_dir = get_certificate_dir();
-    let cert_path = certificate_dir.join("cert.pem");
-    let key_path = certificate_dir.join("key.pem");
+use crate::admin::storage::ssl::{get_ssl, insert_or_update_ssl, SSLCert};
 
-    // Ensure paths exist
-    if !cert_path.exists() || !key_path.exists() {
-        let (cert_pem, key_pem) = generate_certificate().await?;
-        write_out_instructions();
-        return Ok((cert_pem, key_pem));
-    }
-
-    // Check if a certificate contains local IP address
-    let (cert_pem, key_pem) = check_certificate().await?;
+pub async fn get_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+    let certificate = match get_ssl(store.clone())? {
+        Some(cert) => check_certificate(store.clone(), cert).await?,
+        None => generate_certificate(store.clone()).await?,
+    };
     write_out_instructions();
-    Ok((cert_pem, key_pem))
+    Ok(certificate)
 }
 
-async fn generate_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+async fn generate_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     // Get the local IP address
     let local_ip = local_ip()?;
 
@@ -49,49 +41,28 @@ async fn generate_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
         .distinguished_name
         .push(DnType::CommonName, certificate_name);
 
-    // Load keypair if it exists or generate a new one
-    let certificate_dir = get_certificate_dir();
-    let key_file_path = certificate_dir.join("key.pem");
-    let key_pair = if key_file_path.exists() {
-        let key_pem = fs::read_to_string(key_file_path).await?;
-        rcgen::KeyPair::from_pem(&key_pem)?
-    } else {
-        rcgen::KeyPair::generate().unwrap()
+    let key_pair = match get_ssl(store.clone())? {
+        Some(ssl) => {
+            let key = from_utf8(ssl.key())?;
+            rcgen::KeyPair::from_pem(key)?
+        }
+        None => rcgen::KeyPair::generate()?,
     };
 
     // Generate the certificate with the customized parameters
-    let cert = CertificateParams::self_signed(params, &key_pair).unwrap();
-
+    let cert = CertificateParams::self_signed(params, &key_pair)?;
     // Serialize the certificate and private key to PEM format
-    let cert_pem = cert.pem();
-    let key_pem = key_pair.serialize_pem();
+    let cert_pem = cert.pem().into_bytes();
+    let key_pem = key_pair.serialize_pem().into_bytes();
 
-    // Get the path to the certificate and key files
-    let cert_file_path = certificate_dir.join("cert.pem");
-    let key_file_path = certificate_dir.join("key.pem");
+    insert_or_update_ssl(store.clone(), &cert_pem, &key_pem)?;
 
-    // Save the certificate and key to files
-    fs::write(cert_file_path, cert_pem.clone()).await?;
-    fs::write(key_file_path, key_pem.clone()).await?;
-
-    Ok((cert_pem.as_bytes().to_vec(), key_pem.as_bytes().to_vec()))
+    Ok((cert_pem, key_pem))
 }
 
-async fn delete_certificate() -> eyre::Result<()> {
-    let certificate_dir = get_certificate_dir();
-    let cert_path = certificate_dir.join("cert.pem");
-    fs::remove_file(cert_path).await?;
-
-    Ok(())
-}
-
-async fn check_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
-    let certificate_dir = get_certificate_dir();
-    let cert_file = certificate_dir.join("cert.pem");
-    let key_file = certificate_dir.join("key.pem");
-    // Read the certificate file
-    let cert_pem = fs::read_to_string(cert_file.clone()).await?;
-    let (_, pem) = parse_x509_pem(cert_pem.as_bytes())?;
+async fn check_certificate(store: Store, cert: SSLCert) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+    let (cert_pem, key_pem) = (cert.cert(), cert.key());
+    let (_, pem) = parse_x509_pem(cert_pem)?;
     let x509_cert = pem.parse_x509()?;
 
     // Get the local IP address
@@ -123,13 +94,9 @@ async fn check_certificate() -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     }
 
     if !ip_found {
-        delete_certificate().await?;
-        return Ok(generate_certificate().await?);
+        return Ok(generate_certificate(store.clone()).await?);
     }
-
-    let cert_pem = fs::read(&cert_file).await?;
-    let key_pem = fs::read(&key_file).await?;
-    Ok((cert_pem, key_pem))
+    Ok((cert_pem.clone(), key_pem.clone()))
 }
 
 fn write_out_instructions() {
@@ -137,19 +104,4 @@ fn write_out_instructions() {
     println!("To install the generated self-signed SSL certificate, follow the steps in our documentation:");
     println!("https://calimero-network.github.io/getting-started/setup");
     println!("*******************************************************************************");
-}
-
-pub fn get_certificate_dir() -> PathBuf {
-    // Convert the current file path to a PathBuf
-    let current_file_path = Path::new(file!());
-    // Get the directory containing the current file
-    let parent_dir = current_file_path
-        .parent()
-        .expect("Failed to get parent directory");
-    // Get the grandparent directory
-    let server_dir = parent_dir.parent().expect("Failed to get parent directory");
-    // Get certificates directory
-    let certificate_dir = server_dir.join("certificates");
-
-    certificate_dir
 }

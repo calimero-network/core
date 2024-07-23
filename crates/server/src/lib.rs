@@ -89,7 +89,9 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = admin::service::setup(&config, store, ctx_manager)? {
+        if let Some((api_path, router)) =
+            admin::service::setup(&config, store.clone(), ctx_manager)?
+        {
             app = app.nest(api_path, router);
             serviced = true;
         }
@@ -115,7 +117,7 @@ pub async fn start(
             .allow_private_network(true),
     );
     // Check if the certificate exists and if they contain the current local IP address
-    let (cert_pem, key_pem) = certificates::get_certificate().await?;
+    let (cert_pem, key_pem) = certificates::get_certificate(store.clone()).await?;
 
     // Configure certificate and private key used by https
     let rustls_config = match RustlsConfig::from_pem(cert_pem, key_pem).await {
