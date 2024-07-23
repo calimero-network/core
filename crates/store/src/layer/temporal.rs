@@ -1,4 +1,4 @@
-use crate::iter::{Iter, Structured};
+use crate::iter::{DBIter, Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
 use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
@@ -49,11 +49,12 @@ where
     }
 
     fn iter<K: FromKeyParts>(&'base self) -> eyre::Result<Iter<Structured<K>>> {
-        todo!()
-        // let inner = self.inner.iter()?;
-        // let shadow = self.shadow.iter_range(start);
+        // todo! track lifetimes
 
-        // Ok(Iter::new(IterPair(inner, shadow))) // todo! this is wrong
+        Ok(Iter::new(TemporalIterator {
+            inner: self.inner.iter::<K>()?,
+            shadow: &self.shadow,
+        }))
     }
 }
 
@@ -88,3 +89,35 @@ where
 
 // todo! impl calimero_runtime_primitives::Storage for Temporal
 // todo!      to get rid of the TemporalRuntimeStore in node
+
+struct TemporalIterator<'a, 'b, K> {
+    inner: Iter<'a, Structured<K>>,
+    shadow: &'a Transaction<'b>,
+}
+
+impl<'a, 'b, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, 'b, K> {
+    fn seek(&mut self, key: Slice) -> eyre::Result<()> {
+        DBIter::seek(&mut self.inner, key)
+    }
+
+    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+        loop {
+            // safety: Slice doesn't mutably borrow self
+            let other = unsafe { &mut *(&mut self.inner as *mut Iter<'a, Structured<K>>) };
+
+            let Some(key) = other.next()? else {
+                return Ok(None);
+            };
+
+            match self.shadow.raw_get(K::column(), &key) {
+                Some(Operation::Put { value }) => return Ok(Some(value.as_ref().into())),
+                Some(Operation::Delete) => continue,
+                None => return Ok(Some(key)),
+            }
+        }
+    }
+
+    fn read(&self) -> eyre::Result<Slice> {
+        self.inner.read()
+    }
+}
