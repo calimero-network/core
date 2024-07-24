@@ -1,5 +1,4 @@
 use calimero_primitives::events::OutcomeEvent;
-use calimero_primitives::hash;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;

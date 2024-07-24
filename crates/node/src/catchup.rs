@@ -65,15 +65,11 @@ impl Node {
 
         let application_id = context.application_id.clone();
 
-        let path = if let Some(path) = request.path {
-            path
-        } else {
+        let Some(url) = request.url else {
             eyre::bail!("Path is missing in the request")
         };
 
-        let hash = if let Some(hash) = request.hash {
-            hash
-        } else {
+        let Some(hash) = request.hash else {
             eyre::bail!("Hash is missing in the request")
         };
 
