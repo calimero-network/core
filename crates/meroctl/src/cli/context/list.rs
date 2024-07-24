@@ -1,3 +1,4 @@
+use chrono::Utc;
 use clap::Parser;
 use reqwest::Client;
 
@@ -23,13 +24,22 @@ impl ListCommand {
 
         let url = multiaddr_to_url(multiaddr, "admin-api/dev/contexts")?;
         let client = Client::new();
-        let response = client.get(url).send().await?;
+        let keypair = config.identity;
+
+        let timestamp = Utc::now().timestamp().to_string();
+        let signature = keypair.sign(timestamp.as_bytes())?;
+
+        let response = client
+            .get(url)
+            .header("X-Signature", hex::encode(signature))
+            .header("X-Timestamp", timestamp)
+            .send()
+            .await?;
 
         if response.status().is_success() {
             let api_response: calimero_server_primitives::admin::GetContextsResponse =
                 response.json().await?;
             let contexts = api_response.data.contexts;
-
             for context in contexts {
                 println!("{}", context.id);
             }
