@@ -1,13 +1,12 @@
 use camino::Utf8PathBuf;
-use clap::{Args, Parser};
+use clap::Parser;
 use libp2p::Multiaddr;
 use reqwest::Client;
-use semver::Version;
 use sha2::{Digest, Sha256};
 use tracing::info;
 
-use crate::cli::context::common::multiaddr_to_url;
 use crate::cli::RootArgs;
+use crate::common::multiaddr_to_url;
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -16,32 +15,9 @@ pub struct CreateCommand {
     #[clap(long, short = 'a', exclusive = true)]
     application_id: Option<String>,
 
-    #[clap(flatten)]
-    dev_args: Option<DevArgs>,
-}
-
-#[derive(Debug, Args)]
-struct DevArgs {
-    /// Enable dev mode
-    #[clap(long)]
-    dev: bool,
-
-    /// Path to use in dev mode
-    #[clap(
-        short,
-        long,
-        help = "Path to use in dev mode (requires --dev and --version)"
-    )]
-    path: Utf8PathBuf,
-
-    /// Version of the application
-    #[clap(
-        short,
-        long,
-        help = "Version of the application (requires --dev and --path)",
-        default_value = "0.0.0"
-    )]
-    version: Version,
+    /// Path to the application file to watch and install locally
+    #[clap(long, short = 'w', exclusive = true)]
+    watch: Option<Utf8PathBuf>,
 }
 
 impl CreateCommand {
@@ -65,12 +41,12 @@ impl CreateCommand {
         match self {
             CreateCommand {
                 application_id: Some(app_id),
-                dev_args: None,
+                watch: None,
             } => create_context(multiaddr, app_id, &client).await,
             CreateCommand {
                 application_id: None,
-                dev_args: Some(dev_args),
-            } => link_local_app(multiaddr, dev_args.path, dev_args.version, &client).await,
+                watch: Some(watch_path),
+            } => install_and_create_context(multiaddr, watch_path, &client).await,
             _ => eyre::bail!("Invalid command configuration"),
         }
     }
@@ -95,11 +71,10 @@ async fn create_context(
     if response.status().is_success() {
         let context_response: calimero_server_primitives::admin::CreateContextResponse =
             response.json().await?;
-        let context = context_response.data;
+        let context = context_response.data.context;
 
         println!("Context created successfully:");
-        println!("ID: {}", context.context.id);
-        println!("Application ID: {}", context.context.application_id);
+        println!("Context ID: {}", context.id);
     } else {
         let status = response.status();
         let error_text = response.text().await?;
@@ -132,23 +107,22 @@ async fn app_installed(
     Ok(is_installed)
 }
 
-async fn link_local_app(
+async fn install_and_create_context(
     base_multiaddr: &Multiaddr,
     path: Utf8PathBuf,
-    version: Version,
     client: &Client,
 ) -> eyre::Result<()> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
-    let id = format!("{}:{}", version, path);
+    let id = format!("{}:{}", "0.0.0", path); // Using a default version
     let mut hasher = Sha256::new();
     hasher.update(id.as_bytes());
     let application_id = hex::encode(hasher.finalize());
 
     let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
         application_id: calimero_primitives::application::ApplicationId(application_id.clone()),
-        version: version,
-        path,
+        version: semver::Version::new(0, 0, 0),
+        path: path.clone(),
     };
 
     let install_response = client
@@ -169,7 +143,7 @@ async fn link_local_app(
 
     info!("Application installed successfully.");
 
-    create_context(base_multiaddr, application_id, &client).await?;
+    create_context(base_multiaddr, application_id, client).await?;
 
     Ok(())
 }
