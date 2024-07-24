@@ -107,7 +107,7 @@ async fn app_installed(
     Ok(is_installed)
 }
 
-async fn link_local_app(
+async fn install_and_create_context(
     base_multiaddr: &Multiaddr,
     path: Utf8PathBuf,
     client: &Client,

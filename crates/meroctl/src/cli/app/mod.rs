@@ -8,7 +8,7 @@ mod list;
 #[derive(Parser, Debug)]
 pub struct AppCommand {
     #[command(subcommand)]
-    pub subcommand: AppSubcommands,
+    pub subcommand: AppSubCommands,
 }
 
 #[derive(Debug, Subcommand)]
@@ -19,7 +19,7 @@ pub enum AppSubCommands {
 }
 
 impl AppCommand {
-    pub fn run(self, args: RootArgs) -> eyre::Result<()> {
+    pub async fn run(self, args: RootArgs) -> eyre::Result<()> {
         match self.subcommand {
             AppSubCommands::Install(install) => install.run(args).await,
             AppSubCommands::List(list) => list.run(args).await,

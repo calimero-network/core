@@ -1,9 +1,5 @@
-use camino::Utf8PathBuf;
-use clap::{Args, Parser};
-use libp2p::Multiaddr;
+use clap::Parser;
 use reqwest::Client;
-use semver::Version;
-use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::cli::RootArgs;
