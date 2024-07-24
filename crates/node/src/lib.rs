@@ -385,19 +385,19 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version, path, hash)) = args
+                        let Some((context_id, application_id, version, url, hash)) = args
                             .and_then(|args| {
                                 let mut iter = args.split(' ');
                                 let context = iter.next()?;
                                 let application = iter.next()?;
                                 let version = iter.next()?;
-                                let path = iter.next()?;
+                                let url = iter.next()?;
                                 let hash = iter.next()?;
 
-                                Some((context, application, version, path, hash))
+                                Some((context, application, version, url, hash))
                             })
                         else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version> <path>");
+                            println!("{IND} Usage: context create <context_id> <application_id> <version> <url>");
                             break 'done;
                         };
 
@@ -417,7 +417,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         // todo! we should be able to install latest version
                         node.ctx_manager
-                            .install_application(&application_id, &version, &path, Some(hash))
+                            .install_application(&application_id, &version, &url, Some(hash))
                             .await?;
 
                         let context = calimero_primitives::context::Context {
