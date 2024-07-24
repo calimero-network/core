@@ -89,7 +89,7 @@ impl Node {
                 types::CatchupApplicationChanged {
                     application_id,
                     version: application_version,
-                    path,
+                    url,
                     hash,
                 },
             ))?;
@@ -201,7 +201,7 @@ impl Node {
                     application_id: Some(context.application_id),
                     last_executed_transaction_hash: context.last_transaction_hash,
                     batch_size: self.network_client.catchup_config.batch_size,
-                    path: None,
+                    url: None,
                     hash: None,
                 },
             ),
@@ -212,7 +212,7 @@ impl Node {
                     application_id: None,
                     last_executed_transaction_hash: calimero_primitives::hash::Hash::default(),
                     batch_size: self.network_client.catchup_config.batch_size,
-                    path: None,
+                    url: None,
                     hash: None,
                 },
             ),
@@ -349,7 +349,7 @@ impl Node {
                         .install_application(
                             &change.application_id,
                             &change.version,
-                            &change.path,
+                            &change.url,
                             Some(change.hash.as_str()),
                         )
                         .await?;

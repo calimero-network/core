@@ -212,7 +212,7 @@ async fn install_application_handler(
         .install_application(
             &req.application,
             &req.version,
-            &req.path,
+            &req.url,
             req.hash.as_deref(),
         )
         .await

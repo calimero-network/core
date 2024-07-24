@@ -250,10 +250,10 @@ impl ContextManager {
         // todo! permit None version for latest
         version: &semver::Version,
          // represents the url path to the release binary (e.g. ipfs path)
-        path: &str,
+         url: &str,
         hash: Option<&str>,
     ) -> eyre::Result<()> {
-        self.download_and_install_release(&application_id, &version, &path, hash)
+        self.download_and_install_release(&application_id, &version, &url, hash)
             .await?;
 
         Ok(())
@@ -352,7 +352,7 @@ impl ContextManager {
         application_id: &calimero_primitives::application::ApplicationId,
         version: &semver::Version,
         // represents the url path to the release binary (e.g. ipfs path)
-        path: &str,
+        url: &str,
         hash: Option<&str>,
     ) -> eyre::Result<bool> {
         // todo! download to a tempdir
@@ -367,7 +367,7 @@ impl ContextManager {
 
         let mut file = File::create(&file_path)?;
 
-        let mut response = reqwest::Client::new().get(path).send().await?;
+        let mut response = reqwest::Client::new().get(url).send().await?;
         let mut hasher = Sha256::new();
         while let Some(chunk) = response.chunk().await? {
             hasher.update(&chunk);
