@@ -4,6 +4,7 @@ use const_format::concatcp;
 use crate::cli::RootArgs;
 
 mod create;
+mod join;
 mod list;
 
 pub const EXAMPLES: &str = r#"
@@ -33,6 +34,7 @@ pub enum ContextSubCommands {
     #[command(alias = "ls")]
     List(list::ListCommand),
     Create(create::CreateCommand),
+    Join(join::JoinCommand),
 }
 
 impl ContextCommand {
@@ -40,6 +42,7 @@ impl ContextCommand {
         match self.subcommand {
             ContextSubCommands::List(list) => list.run(args).await,
             ContextSubCommands::Create(create) => create.run(args).await,
+            ContextSubCommands::Join(join) => join.run(args).await,
         }
     }
 }
