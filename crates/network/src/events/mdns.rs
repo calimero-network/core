@@ -2,9 +2,8 @@ use libp2p::mdns;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
-use crate::discovery;
-
 use super::{EventHandler, EventLoop, RelayedMultiaddr};
+use crate::discovery;
 
 impl EventHandler<mdns::Event> for EventLoop {
     async fn handle(&mut self, event: mdns::Event) {
