@@ -47,6 +47,7 @@ impl OnlyPeers {
     pub fn init() -> OnlyPeers {
         OnlyPeers::default()
     }
+
     pub fn post(&self, id: usize) -> Option<&Post> {
         env::log(&format!("Getting post with id: {:?}", id));
 

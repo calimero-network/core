@@ -15,6 +15,7 @@ impl GenExt {
     pub fn init() -> GenExt {
         GenExt
     }
+
     pub fn view_account(&mut self, account_id: &str, block_height: u64) -> String {
         let client = Client::testnet();
         let request = RpcQueryRequest {

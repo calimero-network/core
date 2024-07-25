@@ -6,12 +6,12 @@ pub trait AppState: Default + BorshSerialize + BorshDeserialize + AppStateInit {
     type Event<'a>: AppEvent + 'a;
 }
 
-pub trait Identity<This> {}
+pub trait Identity<This = Self> {}
 
-impl<T> Identity<T> for T {}
+impl<T: AppState> Identity<T> for T {}
 
 #[diagnostic::on_unimplemented(
-    message = "The type `{Self}` doesn't have an `#[app::init]` method",
+    message = "no method named `#[app::init]` found for type `{Self}`",
     label = "add an `#[app::init]` method to this type"
 )]
 pub trait AppStateInit: Sized {

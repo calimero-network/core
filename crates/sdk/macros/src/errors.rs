@@ -70,6 +70,8 @@ pub enum ParseError<'a> {
     NoComplexVisibility,
     #[error("explicit ABIs are not supported")]
     NoExplicitAbi,
+    #[error("argument to `#[app::init]` method can't be `self` or `mut self`")]
+    SelfNotPermitted,
 }
 
 impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {
