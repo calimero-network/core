@@ -26,33 +26,7 @@ pub fn logic(args: TokenStream, input: TokenStream) -> TokenStream {
     let _args = parse_macro_input!({ input } => args as items::Empty);
     let block = parse_macro_input!(input as syn::ItemImpl);
 
-    // Find the #[app::init] method
-    let init_method = match block.items.iter().find_map(|item| {
-        if let syn::ImplItem::Fn(method) = item {
-            if method.attrs.iter().any(is_app_init_attr) {
-                Some(method)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }) {
-        Some(method) => method,
-        None => {
-            return syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "An #[app::init] method is required",
-            )
-            .to_compile_error()
-            .into()
-        }
-    };
-
-    let tokens = match logic::LogicImpl::try_from(logic::LogicImplInput {
-        item: &block,
-        init_method,
-    }) {
+    let tokens = match logic::LogicImpl::try_from(logic::LogicImplInput { item: &block }) {
         Ok(data) => data.to_token_stream(),
         Err(err) => err.to_compile_error(),
     };
@@ -107,9 +81,4 @@ pub fn emit(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::Expr);
 
     quote!(::calimero_sdk::event::emit(#input)).into()
-}
-
-fn is_app_init_attr(attr: &syn::Attribute) -> bool {
-    let segments = &attr.path().segments;
-    segments.len() == 2 && segments[0].ident == "app" && segments[1].ident == "init"
 }

@@ -2,7 +2,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::event::AppEvent;
 
-pub trait AppState: Default + BorshSerialize + BorshDeserialize + AppStateInit {
+pub trait AppState: Default + BorshSerialize + BorshDeserialize //+ AppStateInit
+{
     type Event<'a>: AppEvent + 'a;
 }
 
