@@ -43,6 +43,10 @@ pub enum Event<'a> {
 
 #[app::logic]
 impl OnlyPeers {
+    #[app::init]
+    pub fn init() -> OnlyPeers {
+        OnlyPeers::default()
+    }
     pub fn post(&self, id: usize) -> Option<&Post> {
         env::log(&format!("Getting post with id: {:?}", id));
 

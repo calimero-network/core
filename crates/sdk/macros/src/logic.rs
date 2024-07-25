@@ -9,6 +9,8 @@ mod ty;
 mod utils;
 
 pub struct LogicImpl<'a> {
+    #[allow(dead_code)]
+    type_: syn::Path,
     methods: Vec<method::PublicLogicMethod<'a>>,
     orig: &'a syn::ItemImpl,
 }
@@ -21,7 +23,6 @@ impl<'a> ToTokens for LogicImpl<'a> {
             #orig
 
             #(#methods)*
-
         }
         .to_tokens(tokens)
     }
@@ -115,22 +116,10 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             }
         }
 
-        if !methods.iter().any(|method| {
-            method.attrs.iter().any(|attr| {
-                attr.path().segments.len() == 2
-                    && attr.path().segments[0].ident == "app"
-                    && attr.path().segments[1].ident == "init"
-            })
-        }) {
-            errors.subsume(syn::Error::new_spanned(
-                input.item,
-                "The #[app::init] method is not properly defined",
-            ));
-        }
-
         errors.check()?;
 
         Ok(Self {
+            type_,
             methods,
             orig: input.item,
         })

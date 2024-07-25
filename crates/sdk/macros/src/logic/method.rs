@@ -8,6 +8,10 @@ pub enum LogicMethod<'a> {
     Private,
 }
 
+pub enum Modifer {
+    Init(),
+}
+
 pub struct PublicLogicMethod<'a> {
     self_: syn::Path,
 
@@ -18,51 +22,35 @@ pub struct PublicLogicMethod<'a> {
 
     has_refs: bool,
 
-    pub(crate) attrs: &'a Vec<syn::Attribute>,
+    modifiers: Vec<Modifer>,
 }
 
 impl<'a> ToTokens for LogicMethod<'a> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
             LogicMethod::Public(method) => method.to_tokens(tokens),
-            LogicMethod::Private => {} 
+            LogicMethod::Private => {}
         }
     }
 }
-
 
 impl<'a> ToTokens for PublicLogicMethod<'a> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let self_ = &self.self_;
         let name = &self.name;
         let args = &self.args;
+        let modifiers = &self.modifiers;
+        let ret = &self.ret;
 
         let arg_idents = args.iter().map(|arg| &*arg.ident).collect::<Vec<_>>();
-        let arg_types = args.iter().map(|arg| &arg.ty).collect::<Vec<_>>();
 
-        if self.attrs.iter().any(|attr| {
-            attr.path().segments.len() == 2
-                && attr.path().segments[0].ident == "app"
-                && attr.path().segments[1].ident == "init"
-        }) {
-            return quote! {
-                #[cfg(target_arch = "wasm32")]
-                #[no_mangle]
-                pub extern "C" fn init() {
-                    
-                    ::calimero_sdk::env::setup_panic_hook();
-
-                    ::calimero_sdk::event::register::<#self_>();
-
-                    let input = ::calimero_sdk::env::input().expect("Init parameters are required");
-                    let (#(#arg_idents),*): (#(#arg_types),*) = ::calimero_sdk::serde_json::from_slice(&input)
-                        .expect("Failed to deserialize init parameters");
-
-                    let state: #self_ = #self_::#name(#(#arg_idents),*);
-                    ::calimero_sdk::env::state_write(&state);
-                        }
-                }.to_tokens(tokens)
-        }
+        let init_method = if modifiers.is_empty() {
+            false
+        } else {
+            modifiers
+                .iter()
+                .any(|modifier| matches!(modifier, Modifer::Init()))
+        };
 
         let input = if args.is_empty() {
             quote! {}
@@ -101,55 +89,66 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         };
 
         let (def, mut call) = match &self.self_type {
-            Some(type_) => {
-                let def = match type_ {
-                    arg::SelfType::Mutable => quote! {
-                        let mut app: #self_ = match ::calimero_sdk::env::state_read(){
-                            Some(app) => app,
-                            None => ::calimero_sdk::env::panic_str(&format!(
-                                "Failed to read app state. App state was not initialized"
-                            )),
-                        };
-                    },
-                    arg::SelfType::Immutable | arg::SelfType::Owned => quote! {
-                        let Some(app) = ::calimero_sdk::env::state_read::<#self_>() else {
-                            ::calimero_sdk::env::panic_str("Failed to read app state.")
-                        };
-                    },
-                };
-
-                (def, quote! { app.#name(#(#arg_idents),*); })
-            }
-            None => (quote! {}, quote! { <#self_>::#name(#(#arg_idents),*); }),
+            Some(_type_) => (
+                quote! {
+                    let Some(app) = ::calimero_sdk::env::state_read::<#self_>() else {
+                        ::calimero_sdk::env::panic_str("Failed to read app state.")
+                    };
+                },
+                quote! { app.#name(#(#arg_idents),*); },
+            ),
+            None => (
+                match init_method {
+                    true => quote! {let app: #self_ = },
+                    false => quote! {},
+                },
+                quote! { <#self_>::#name(#(#arg_idents),*); },
+            ),
         };
 
         if let Some(_) = &self.ret {
-            call = quote! {
-                let output = #call;
-
-                let output = {
-                    #[allow(unused_imports)]
-                    use ::calimero_sdk::__private::IntoResult;
-                    match ::calimero_sdk::__private::WrappedReturn::new(output)
-                        .into_result()
-                        .to_json()
-                    {
-                        Ok(output) => output,
-                        Err(err) => ::calimero_sdk::env::panic_str(
-                            &format!("Failed to serialize output to JSON: {:?}", err)
-                        ),
-                    }
+            //only when it's not init
+            if !init_method {
+                call = quote! {
+                    let output = #call;
+                    let output = {
+                        #[allow(unused_imports)]
+                        use ::calimero_sdk::__private::IntoResult;
+                        match ::calimero_sdk::__private::WrappedReturn::new(output)
+                            .into_result()
+                            .to_json()
+                        {
+                            Ok(output) => output,
+                            Err(err) => ::calimero_sdk::env::panic_str(
+                                &format!("Failed to serialize output to JSON: {:?}", err)
+                            ),
+                        }
+                    };
+                    ::calimero_sdk::env::value_return(output);
                 };
-
-                ::calimero_sdk::env::value_return(output);
-            };
+            }
         }
 
-        let state_finalizer = match &self.self_type {
-            Some(arg::SelfType::Mutable) => quote! {
-                ::calimero_sdk::env::state_write(&app);
-            },
-            _ => quote! {},
+        let state_finalizer = {
+            if init_method == true || matches!(&self.self_type, Some(arg::SelfType::Mutable)) {
+                quote! {
+                    ::calimero_sdk::env::state_write(&app);
+                }
+            } else {
+                quote! {}
+            }
+        };
+
+        let init_impl = {
+            if init_method {
+                quote! {
+                    impl ::calimero_sdk::state::AppStateInit for #self_ {
+                        type Return = #ret;
+                    }
+                }
+            } else {
+                quote! {}
+            }
         };
 
         quote! {
@@ -168,6 +167,7 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
 
                 #state_finalizer
             }
+            #init_impl
         }
         .to_tokens(tokens)
     }
@@ -257,9 +257,24 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             }
         }
 
-        errors.check()?;
+        let mut modifiers = vec![];
 
-        let attrs = &input.item.attrs;
+        for attr in &input.item.attrs {
+            if attr.path().segments.len() == 2
+                && attr.path().segments[0].ident == "app"
+                && attr.path().segments[1].ident == "init"
+            {
+                if let Some(_self_type) = &self_type {
+                    errors.subsume(syn::Error::new_spanned(
+                        input.item,
+                        "The argument to #[app::init] method can't be self or mut self",
+                    ));
+                }
+                modifiers.push(Modifer::Init())
+            }
+        }
+
+        errors.check()?;
 
         Ok(LogicMethod::Public(PublicLogicMethod {
             name: &input.item.sig.ident,
@@ -268,7 +283,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             args,
             ret,
             has_refs,
-            attrs,
+            modifiers,
         }))
     }
 }
