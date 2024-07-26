@@ -1,5 +1,6 @@
 use std::num::NonZeroU64;
 
+use calimero_sdk::sys::RegisterId;
 use ouroboros::self_referencing;
 use serde::Serialize;
 
@@ -48,10 +49,16 @@ pub struct VMLogic<'a> {
     returns: Option<Result<Vec<u8>, Vec<u8>>>,
     logs: Vec<String>,
     events: Vec<Event>,
+    identity: String,
 }
 
 impl<'a> VMLogic<'a> {
-    pub fn new(storage: &'a mut dyn Storage, context: VMContext, limits: &'a VMLimits) -> Self {
+    pub fn new(
+        storage: &'a mut dyn Storage,
+        context: VMContext,
+        limits: &'a VMLimits,
+        identity: String,
+    ) -> Self {
         VMLogic {
             storage,
             memory: None,
@@ -61,6 +68,7 @@ impl<'a> VMLogic<'a> {
             returns: None,
             logs: vec![],
             events: vec![],
+            identity,
         }
     }
 
@@ -79,6 +87,22 @@ impl<'a> VMLogic<'a> {
             memory_builder: |store| memory.view(store),
         }
         .build()
+    }
+
+    pub fn handle_get_executor_identity(&mut self, register_id: RegisterId) -> Result<()> {
+        let identity = self.identity.clone();
+        self.write_to_register(register_id, identity.as_bytes())
+    }
+
+    pub fn handle_sign_message(&mut self, _message: &[u8], _register_id: RegisterId) -> Result<()> {
+        // Note: VMLogic itself shouldn't perform signing. This should be handled at
+        // a higher level. Here, we'll just return an error.
+        Err(VMLogicError::HostError(HostError::InvalidOperation))
+    }
+
+    pub fn write_to_register(&mut self, register_id: RegisterId, data: &[u8]) -> Result<()> {
+        self.registers
+            .set(self.limits, register_id.as_usize() as u64, data)
     }
 }
 

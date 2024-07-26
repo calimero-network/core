@@ -9,6 +9,10 @@ impl RegisterId {
     pub const fn new(value: usize) -> Self {
         Self(PtrSizedInt::new(value))
     }
+
+    pub fn as_usize(&self) -> usize {
+        self.0.as_usize()
+    }
 }
 
 impl From<usize> for RegisterId {

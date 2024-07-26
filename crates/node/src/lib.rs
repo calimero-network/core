@@ -1,12 +1,15 @@
+use std::sync::Arc;
+
+use calimero_identity::IdentityHandler;
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
-use libp2p::identity;
+use libp2p::identity as p2p_identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tracing::{debug, error, info, warn};
 
 pub mod catchup;
@@ -19,7 +22,7 @@ type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
 #[derive(Debug)]
 pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
-    pub identity: identity::Keypair,
+    pub identity: p2p_identity::Keypair,
     pub node_type: calimero_node_primitives::NodeType,
     pub application: calimero_context::config::ApplicationConfig,
     pub network: calimero_network::config::NetworkConfig,
@@ -37,16 +40,18 @@ pub struct Node {
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
     nonce: u64,
+    identity_handler: IdentityHandler,
 }
 
-pub async fn start(config: NodeConfig) -> eyre::Result<()> {
+pub async fn start(config: NodeConfig, identity_handler: IdentityHandler) -> eyre::Result<()> {
     let peer_id = config.identity.public().to_peer_id();
 
     info!("Peer ID: {}", peer_id);
 
     let (node_events, _) = broadcast::channel(32);
 
-    let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
+    let (network_client, mut network_events) =
+        calimero_network::run(&config.network, identity_handler).await?;
 
     let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
@@ -524,11 +529,15 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 impl Node {
     pub fn new(
         config: &NodeConfig,
-        network_client: calimero_network::client::NetworkClient,
+        mut network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
         ctx_manager: calimero_context::ContextManager,
         store: Store,
     ) -> Self {
+        let identity_handler = IdentityHandler::from(&config.identity);
+
+        network_client.set_identity_handler(Arc::new(RwLock::new(identity_handler.clone())));
+
         Self {
             id: config.identity.public().to_peer_id(),
             typ: config.node_type,
@@ -539,6 +548,7 @@ impl Node {
             node_events,
             // --
             nonce: 0,
+            identity_handler,
         }
     }
 
@@ -1043,7 +1053,7 @@ impl Node {
         Ok(())
     }
 
-    async fn execute(
+    pub async fn execute(
         &mut self,
         context: calimero_primitives::context::Context,
         hash: Option<calimero_primitives::hash::Hash>,
@@ -1063,6 +1073,7 @@ impl Node {
             calimero_runtime::logic::VMContext { input: payload },
             &mut storage,
             &get_runtime_limits()?,
+            self.identity_handler.get_executor_identity(),
         )?;
 
         if let Some(hash) = hash {

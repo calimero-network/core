@@ -835,6 +835,7 @@ name = "calimero-identity"
 version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
+ "calimero-primitives",
  "eyre",
  "hex",
  "libp2p",
@@ -846,6 +847,7 @@ name = "calimero-network"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "calimero-identity",
  "calimero-node-primitives",
  "calimero-primitives",
  "eyre",
@@ -928,6 +930,8 @@ version = "0.1.0"
 dependencies = [
  "assert-json-diff",
  "borsh 1.4.0",
+ "calimero-identity",
+ "calimero-sdk",
  "clap 4.5.4",
  "eyre",
  "fragile",
@@ -3960,6 +3964,7 @@ name = "meroctl"
 version = "0.1.0"
 dependencies = [
  "calimero-context",
+ "calimero-identity",
  "calimero-network",
  "calimero-node",
  "calimero-node-primitives",

@@ -1,6 +1,8 @@
 use std::collections::hash_map::{self, HashMap};
 use std::collections::HashSet;
+use std::sync::Arc;
 
+use calimero_identity::IdentityHandler;
 use libp2p::futures::prelude::*;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
@@ -8,7 +10,7 @@ use libp2p::{
     dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, yamux, PeerId,
 };
 use multiaddr::Multiaddr;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, trace, warn};
 
 pub mod client;
@@ -40,10 +42,11 @@ struct Behaviour {
 
 pub async fn run(
     config: &NetworkConfig,
+    identity_handler: IdentityHandler,
 ) -> eyre::Result<(NetworkClient, mpsc::Receiver<types::NetworkEvent>)> {
     let peer_id = config.identity.public().to_peer_id();
 
-    let (client, event_receiver, event_loop) = init(peer_id, config).await?;
+    let (client, event_receiver, event_loop) = init(peer_id, config, identity_handler).await?;
 
     tokio::spawn(event_loop.run());
 
@@ -59,6 +62,7 @@ pub async fn run(
 async fn init(
     peer_id: PeerId,
     config: &NetworkConfig,
+    identity_handler: IdentityHandler,
 ) -> eyre::Result<(
     NetworkClient,
     mpsc::Receiver<types::NetworkEvent>,
@@ -153,6 +157,7 @@ async fn init(
     let client = NetworkClient {
         catchup_config: config.catchup.clone(),
         sender: command_sender,
+        identity_handler: Some(Arc::new(RwLock::new(identity_handler))),
     };
 
     let discovery = discovery::Discovery::new(&config.discovery.rendezvous);
@@ -163,12 +168,13 @@ async fn init(
         command_receiver,
         event_sender,
         discovery,
+        Arc::clone(client.identity_handler.as_ref().unwrap()),
     );
 
     Ok((client, event_receiver, event_loop))
 }
 
-pub(crate) struct EventLoop {
+pub struct EventLoop {
     swarm: Swarm<Behaviour>,
     incoming_streams: libp2p_stream::IncomingStreams,
     command_receiver: mpsc::Receiver<Command>,
@@ -178,6 +184,7 @@ pub(crate) struct EventLoop {
     pending_bootstrap: HashMap<kad::QueryId, oneshot::Sender<eyre::Result<Option<()>>>>,
     pending_start_providing: HashMap<kad::QueryId, oneshot::Sender<()>>,
     pending_get_providers: HashMap<kad::QueryId, oneshot::Sender<HashSet<PeerId>>>,
+    identity_handler: Arc<RwLock<IdentityHandler>>,
 }
 
 impl EventLoop {
@@ -187,6 +194,7 @@ impl EventLoop {
         command_receiver: mpsc::Receiver<Command>,
         event_sender: mpsc::Sender<types::NetworkEvent>,
         discovery: discovery::Discovery,
+        identity_handler: Arc<RwLock<IdentityHandler>>,
     ) -> Self {
         Self {
             swarm,
@@ -198,6 +206,7 @@ impl EventLoop {
             pending_bootstrap: Default::default(),
             pending_start_providing: Default::default(),
             pending_get_providers: Default::default(),
+            identity_handler,
         }
     }
 
@@ -338,6 +347,14 @@ impl EventLoop {
                 self.pending_get_providers.insert(query_id, sender);
             }
         }
+    }
+
+    pub async fn get_executor_identity(&self) -> String {
+        self.identity_handler.write().await.get_executor_identity()
+    }
+
+    pub async fn sign_message(&self, message: &[u8]) -> Vec<u8> {
+        self.identity_handler.write().await.sign_message(message)
     }
 }
 
