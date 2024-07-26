@@ -15,7 +15,7 @@ pub struct Iter<'a, K = Unstructured, V = Unstructured> {
 }
 
 pub trait DBIter {
-    fn seek(&mut self, key: Key) -> eyre::Result<()>;
+    fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>>;
     fn next(&mut self) -> eyre::Result<Option<Key>>;
     fn read(&self) -> eyre::Result<Value>;
 }
@@ -86,7 +86,7 @@ type Key<'a> = Slice<'a>;
 type Value<'a> = Slice<'a>;
 
 impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
-    fn seek(&mut self, key: Key) -> eyre::Result<()> {
+    fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>> {
         self.inner.seek(key)
     }
 
@@ -94,7 +94,7 @@ impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
         if !self.done {
             if let Some(key) = self.inner.next()? {
                 return Ok(Some(key));
-            };
+            }
         }
 
         self.done = true;
@@ -127,11 +127,10 @@ where
                     return Some(K::try_into_key(key).map_err(Into::into));
                 }
                 Err(e) => return Some(Err(e)),
-                _ => {}
+                Ok(None) => self.iter.done = true,
             }
         }
 
-        self.iter.done = true;
         None
     }
 }
@@ -267,12 +266,12 @@ enum FusedIter<I> {
 }
 
 impl<I: DBIter> FusedIter<I> {
-    fn seek(&mut self, key: Key) -> eyre::Result<()> {
+    fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>> {
         if let FusedIter::Active(iter) = self {
-            iter.seek(key)?;
+            return iter.seek(key);
         }
 
-        Ok(())
+        Ok(None)
     }
 
     fn next(&mut self) -> eyre::Result<Option<Key>> {
@@ -314,8 +313,11 @@ where
     A: DBIter,
     B: DBIter,
 {
-    fn seek(&mut self, key: Key) -> eyre::Result<()> {
-        self.0.seek(key.as_ref().into())?;
+    fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>> {
+        if let Some(key) = self.0.seek(key.as_ref().into())? {
+            return Ok(Some(key));
+        }
+
         self.1.seek(key)
     }
 
