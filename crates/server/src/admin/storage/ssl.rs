@@ -59,7 +59,7 @@ pub fn get_ssl(store: Store) -> eyre::Result<Option<SSLCert>> {
     let handle = store.handle();
 
     match handle.get(&entry) {
-        Ok(Some(ssl_document)) => Ok(Some(ssl_document.value().clone())),
+        Ok(Some(ssl_document)) => Ok(Some(ssl_document.value())),
         Ok(None) => Ok(None),
         Err(e) => Err(e.into()),
     }
