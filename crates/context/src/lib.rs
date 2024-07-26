@@ -8,7 +8,9 @@ use std::os::windows::fs::symlink_file as symlink;
 use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
+use calimero_store::entry::DataType;
 use camino::Utf8PathBuf;
+use near_primitives::borsh;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tracing::{error, info};
@@ -95,6 +97,7 @@ impl ContextManager {
     pub async fn add_context(
         &self,
         context: calimero_primitives::context::Context,
+        initial_identity: calimero_primitives::identity::ContextIdentity,
     ) -> eyre::Result<()> {
         if !self.is_application_installed(&context.application_id) {
             eyre::bail!("Application is not installed on node.")
@@ -102,12 +105,27 @@ impl ContextManager {
 
         let mut handle = self.store.handle();
 
+        // Store ContextMeta
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
                 application_id: context.application_id.0.into(),
                 last_transaction_hash: context.last_transaction_hash.into(),
             },
+        )?;
+
+        const CONTEXT_IDENTITIES_SCOPE: [u8; 16] = *b"0000000000000000";
+
+        // Store ContextIdentities separately
+        let identities_key =
+            calimero_store::key::Generic::new(CONTEXT_IDENTITIES_SCOPE, *context.id);
+        let identities = calimero_primitives::identity::ContextIdentities {
+            identities: vec![initial_identity],
+        };
+        let serialized = borsh::to_vec(&identities)?;
+        handle.put(
+            &identities_key,
+            &calimero_store::types::GenericData::from_slice(serialized.into())?,
         )?;
 
         self.subscribe(&context.id).await?;

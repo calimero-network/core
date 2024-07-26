@@ -19,6 +19,7 @@ pub type Result<T, E = errors::VMLogicError> = std::result::Result<T, E>;
 
 pub struct VMContext {
     pub input: Vec<u8>,
+    pub executor_public_key: [u8; 32],
 }
 
 pub struct VMLimits {
@@ -49,16 +50,10 @@ pub struct VMLogic<'a> {
     returns: Option<Result<Vec<u8>, Vec<u8>>>,
     logs: Vec<String>,
     events: Vec<Event>,
-    identity: String,
 }
 
 impl<'a> VMLogic<'a> {
-    pub fn new(
-        storage: &'a mut dyn Storage,
-        context: VMContext,
-        limits: &'a VMLimits,
-        identity: String,
-    ) -> Self {
+    pub fn new(storage: &'a mut dyn Storage, context: VMContext, limits: &'a VMLimits) -> Self {
         VMLogic {
             storage,
             memory: None,
@@ -68,7 +63,6 @@ impl<'a> VMLogic<'a> {
             returns: None,
             logs: vec![],
             events: vec![],
-            identity,
         }
     }
 
@@ -89,15 +83,9 @@ impl<'a> VMLogic<'a> {
         .build()
     }
 
-    pub fn handle_get_executor_identity(&mut self, register_id: RegisterId) -> Result<()> {
-        let identity = self.identity.clone();
-        self.write_to_register(register_id, identity.as_bytes())
-    }
-
-    pub fn handle_sign_message(&mut self, _message: &[u8], _register_id: RegisterId) -> Result<()> {
-        // Note: VMLogic itself shouldn't perform signing. This should be handled at
-        // a higher level. Here, we'll just return an error.
-        Err(VMLogicError::HostError(HostError::InvalidOperation))
+    pub fn get_executor_public_key(&mut self, register_id: u64) -> Result<()> {
+        self.registers
+            .set(self.limits, register_id, *&self.context.executor_public_key)
     }
 
     pub fn write_to_register(&mut self, register_id: RegisterId, data: &[u8]) -> Result<()> {

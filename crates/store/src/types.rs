@@ -4,9 +4,7 @@ use crate::key;
 mod context;
 mod generic;
 
-pub use context::{
-    ContextIdentity, ContextMeta, ContextState, ContextTransaction, TransactionHash,
-};
+pub use context::{ContextMeta, ContextState, ContextTransaction, TransactionHash};
 pub use generic::GenericData;
 
 pub trait PredefinedEntry: key::AsKeyParts {

@@ -869,6 +869,7 @@ dependencies = [
 name = "calimero-node"
 version = "0.1.0"
 dependencies = [
+ "borsh 1.4.0",
  "bs58 0.5.1",
  "calimero-context",
  "calimero-identity",
@@ -913,6 +914,7 @@ dependencies = [
 name = "calimero-primitives"
 version = "0.1.0"
 dependencies = [
+ "borsh 1.4.0",
  "bs58 0.5.1",
  "ed25519-dalek",
  "hex",

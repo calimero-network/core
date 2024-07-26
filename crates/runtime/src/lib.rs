@@ -1,5 +1,3 @@
-use calimero_identity::IdentityHandler;
-use calimero_sdk::sys::RegisterId;
 use wasmer::{Instance, Module, NativeEngineExt, Store};
 
 mod constraint;
@@ -20,7 +18,6 @@ pub fn run(
     context: logic::VMContext,
     storage: &mut dyn store::Storage,
     limits: &logic::VMLimits,
-    identity: String,
 ) -> Result<logic::Outcome> {
     // todo! calculate storage key for cached precompiled
     // todo! module, execute that, instead of recompiling
@@ -30,7 +27,7 @@ pub fn run(
 
     let mut store = Store::new(engine);
 
-    let mut logic = logic::VMLogic::new(storage, context, limits, identity);
+    let mut logic = logic::VMLogic::new(storage, context, limits);
 
     // todo! apply a prepare step
     // todo! - parse the wasm blob, validate and apply transformations
@@ -85,23 +82,4 @@ pub fn run(
     }
 
     Ok(logic.finish(None))
-}
-
-pub fn handle_get_executor_identity(
-    vm: &mut VMLogic,
-    identity_handler: &IdentityHandler,
-    register_id: RegisterId,
-) -> Result<(), VMLogicError> {
-    let identity = identity_handler.get_executor_identity();
-    vm.write_to_register(register_id, identity.as_bytes())
-}
-
-pub fn handle_sign_message(
-    vm: &mut VMLogic,
-    identity_handler: &mut IdentityHandler,
-    message: &[u8],
-    register_id: RegisterId,
-) -> Result<(), VMLogicError> {
-    let signature = identity_handler.sign_message(message);
-    vm.write_to_register(register_id, &signature)
 }

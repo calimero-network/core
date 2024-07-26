@@ -1,6 +1,18 @@
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
+
+#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct ContextIdentity {
+    pub public_key: [u8; 32],
+    pub private_key: Option<[u8; 32]>,
+}
+
+#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct ContextIdentities {
+    pub identities: Vec<ContextIdentity>,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Did {

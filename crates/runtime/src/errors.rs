@@ -55,8 +55,6 @@ pub enum HostError {
     InvalidRegisterId { id: u64 },
     #[error("invalid memory access")]
     InvalidMemoryAccess,
-    #[error("invalid operation")]
-    InvalidOperation,
     #[error(
         "{} panicked: {message}{}",
         match .context {

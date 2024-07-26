@@ -1,9 +1,7 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 
-use calimero_identity::IdentityHandler;
 use libp2p::{gossipsub, Multiaddr, PeerId};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{config, stream, Command};
 
@@ -11,7 +9,6 @@ use crate::{config, stream, Command};
 pub struct NetworkClient {
     pub catchup_config: config::CatchupConfig,
     pub(crate) sender: mpsc::Sender<Command>,
-    pub identity_handler: Option<Arc<RwLock<IdentityHandler>>>,
 }
 
 impl NetworkClient {
@@ -150,9 +147,5 @@ impl NetworkClient {
             .expect("Command receiver not to be dropped.");
 
         receiver.await.expect("Sender not to be dropped.")
-    }
-
-    pub fn set_identity_handler(&mut self, handler: Arc<RwLock<IdentityHandler>>) {
-        self.identity_handler = Some(handler);
     }
 }

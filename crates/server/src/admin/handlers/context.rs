@@ -174,10 +174,15 @@ pub async fn create_context_handler(
         last_transaction_hash: Default::default(),
     };
 
+    let initial_identity = calimero_primitives::identity::ContextIdentity {
+        public_key: *context_id.as_bytes(),
+        private_key: Some(*signing_key.as_bytes()),
+    };
+
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
         .ctx_manager
-        .add_context(context.clone())
+        .add_context(context.clone(), initial_identity)
         .await
         .map_err(|err| parse_api_error(err));
 

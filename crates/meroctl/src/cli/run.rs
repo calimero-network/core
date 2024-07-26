@@ -38,35 +38,32 @@ impl RunCommand {
 
         let config = ConfigFile::load(&path)?;
 
-        calimero_node::start(
-            calimero_node::NodeConfig {
-                home: path.clone(),
-                node_type: self.node_type.into(),
-                identity: config.identity.clone(),
-                store: calimero_store::config::StoreConfig {
-                    path: path.join(config.store.path),
-                },
-                application: calimero_context::config::ApplicationConfig {
-                    dir: path.join(config.application.path),
-                },
-                network: calimero_network::config::NetworkConfig {
-                    identity: config.identity.clone(),
-                    node_type: self.node_type.into(),
-                    swarm: config.network.swarm,
-                    bootstrap: config.network.bootstrap,
-                    discovery: config.network.discovery,
-                    catchup: config.network.catchup,
-                },
-                server: calimero_server::config::ServerConfig {
-                    listen: config.network.server.listen,
-                    identity: config.identity.clone(),
-                    admin: config.network.server.admin,
-                    jsonrpc: config.network.server.jsonrpc,
-                    websocket: config.network.server.websocket,
-                },
+        calimero_node::start(calimero_node::NodeConfig {
+            home: path.clone(),
+            node_type: self.node_type.into(),
+            identity: config.identity.clone(),
+            store: calimero_store::config::StoreConfig {
+                path: path.join(config.store.path),
             },
-            IdentityHandler::from(config.identity),
-        )
+            application: calimero_context::config::ApplicationConfig {
+                dir: path.join(config.application.path),
+            },
+            network: calimero_network::config::NetworkConfig {
+                identity: config.identity.clone(),
+                node_type: self.node_type.into(),
+                swarm: config.network.swarm,
+                bootstrap: config.network.bootstrap,
+                discovery: config.network.discovery,
+                catchup: config.network.catchup,
+            },
+            server: calimero_server::config::ServerConfig {
+                listen: config.network.server.listen,
+                identity: config.identity.clone(),
+                admin: config.network.server.admin,
+                jsonrpc: config.network.server.jsonrpc,
+                websocket: config.network.server.websocket,
+            },
+        })
         .await
     }
 }

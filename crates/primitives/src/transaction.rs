@@ -9,4 +9,5 @@ pub struct Transaction {
     pub method: String,
     pub payload: Vec<u8>,
     pub prior_hash: Hash,
+    pub executor_public_key: [u8; 32],
 }

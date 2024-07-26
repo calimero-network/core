@@ -1,15 +1,15 @@
-use std::sync::Arc;
-
-use calimero_identity::IdentityHandler;
+use bs58;
 use calimero_primitives::events::OutcomeEvent;
+use calimero_primitives::identity::{ContextIdentities, ContextIdentity};
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
+use calimero_store::entry::DataType;
 use calimero_store::Store;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::identity as p2p_identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
-use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 pub mod catchup;
@@ -40,18 +40,16 @@ pub struct Node {
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
     // --
     nonce: u64,
-    identity_handler: IdentityHandler,
 }
 
-pub async fn start(config: NodeConfig, identity_handler: IdentityHandler) -> eyre::Result<()> {
+pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let peer_id = config.identity.public().to_peer_id();
 
     info!("Peer ID: {}", peer_id);
 
     let (node_events, _) = broadcast::channel(32);
 
-    let (network_client, mut network_events) =
-        calimero_network::run(&config.network, identity_handler).await?;
+    let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
     let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
@@ -111,8 +109,8 @@ pub async fn start(config: NodeConfig, identity_handler: IdentityHandler) -> eyr
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((context_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
-                node.handle_call(context_id, method, payload, write, outcome_sender).await;
+            Some((context_id, method, payload, write, executor_public_key, outcome_sender)) = server_receiver.recv() => {
+                node.handle_call(context_id, method, payload, write, executor_public_key, outcome_sender).await;
             }
         }
     }
@@ -132,8 +130,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     // TODO: should be replaced with RPC endpoints
     match command {
         "call" => {
-            if let Some((context_id, args)) = args.and_then(|args| args.split_once(' ')) {
-                let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
+            if let Some((context_id, rest)) = args.and_then(|args| args.split_once(' ')) {
+                let (method, rest) = rest.split_once(' ').unwrap_or((rest, "{}"));
+                let (payload, executor_key) = rest.split_once(' ').unwrap_or((rest, ""));
 
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
@@ -146,11 +145,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             return Ok(());
                         };
 
+                        // Parse the executor's public key if provided, or use a default
+                        let executor_public_key = if !executor_key.is_empty() {
+                            bs58::decode(executor_key)
+                                .into_vec()
+                                .map_err(|_| eyre::eyre!("Invalid executor public key"))?
+                                .try_into()
+                                .map_err(|_| eyre::eyre!("Executor public key must be 32 bytes"))?
+                        } else {
+                            // Use a default key or generate a temporary one
+                            // TODO: This is just a placeholder, it needs appropriate logic
+                            [0u8; 32]
+                        };
+
                         let tx_hash = match node
                             .call_mutate(
                                 context,
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
+                                executor_public_key,
                                 outcome_sender,
                             )
                             .await
@@ -428,7 +441,15 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
-                        node.ctx_manager.add_context(context).await?;
+                        node.ctx_manager
+                            .add_context(
+                                context,
+                                ContextIdentity {
+                                    public_key: *context_id,
+                                    private_key: None,
+                                },
+                            )
+                            .await?;
 
                         println!("{IND} Created context {}", context_id);
                     }
@@ -529,15 +550,11 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 impl Node {
     pub fn new(
         config: &NodeConfig,
-        mut network_client: calimero_network::client::NetworkClient,
+        network_client: calimero_network::client::NetworkClient,
         node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
         ctx_manager: calimero_context::ContextManager,
         store: Store,
     ) -> Self {
-        let identity_handler = IdentityHandler::from(&config.identity);
-
-        network_client.set_identity_handler(Arc::new(RwLock::new(identity_handler.clone())));
-
         Self {
             id: config.identity.public().to_peer_id(),
             typ: config.node_type,
@@ -548,7 +565,6 @@ impl Node {
             node_events,
             // --
             nonce: 0,
-            identity_handler,
         }
     }
 
@@ -804,6 +820,7 @@ impl Node {
         method: String,
         payload: Vec<u8>,
         write: bool,
+        executor_public_key: [u8; 32],
         outcome_sender: oneshot::Sender<
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
         >,
@@ -820,7 +837,13 @@ impl Node {
             let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
 
             if let Err(err) = self
-                .call_mutate(context, method, payload, inner_outcome_sender)
+                .call_mutate(
+                    context,
+                    method,
+                    payload,
+                    executor_public_key,
+                    inner_outcome_sender,
+                )
                 .await
             {
                 let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(err)));
@@ -848,7 +871,10 @@ impl Node {
                 }
             });
         } else {
-            match self.call_query(context, method, payload).await {
+            match self
+                .call_query(context, method, payload, executor_public_key)
+                .await
+            {
                 Ok(outcome) => {
                     let _ = outcome_sender.send(Ok(outcome));
                 }
@@ -865,6 +891,7 @@ impl Node {
         context: calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
+        executor_public_key: [u8; 32],
     ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::QueryCallError> {
         if !self
             .ctx_manager
@@ -877,7 +904,7 @@ impl Node {
             );
         }
 
-        self.execute(context, None, method, payload)
+        self.execute(context, None, method, payload, executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e,"Failed to execute query call.");
@@ -890,6 +917,7 @@ impl Node {
         context: calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
+        executor_public_key: [u8; 32],
         outcome_sender: oneshot::Sender<
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError>,
         >,
@@ -925,6 +953,7 @@ impl Node {
             method,
             payload,
             prior_hash: context.last_transaction_hash,
+            executor_public_key,
         };
 
         self.push_action(
@@ -998,6 +1027,7 @@ impl Node {
                 Some(hash),
                 transaction.method.clone(),
                 transaction.payload.clone(),
+                transaction.executor_public_key,
             )
             .await?;
 
@@ -1032,6 +1062,9 @@ impl Node {
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<()> {
         let mut handle = self.store.handle();
+        let executor_public_key = self
+            .derive_executor_public_key(&context.id, &transaction.executor_public_key)
+            .map_err(|e| eyre::eyre!("Failed to derive executor public key: {}", e))?;
 
         handle.put(
             &calimero_store::key::ContextTransaction::new(context.id, hash.into()),
@@ -1039,6 +1072,7 @@ impl Node {
                 method: transaction.method.into(),
                 payload: transaction.payload.into(),
                 prior_hash: *transaction.prior_hash,
+                executor_public_key,
             },
         )?;
 
@@ -1050,6 +1084,34 @@ impl Node {
             },
         )?;
 
+        let identities_key = calimero_store::key::Generic::new([0; 16], *context.id);
+        let mut identities = handle
+            .get(&identities_key)?
+            .map(|data: calimero_store::types::GenericData| {
+                borsh::from_slice::<ContextIdentities>(&data.as_slice()?)?
+            })
+            .unwrap_or_else(|| ContextIdentities {
+                identities: Vec::new(),
+            });
+
+        if !identities
+            .identities
+            .iter()
+            .any(|id| id.public_key == executor_public_key)
+        {
+            identities.identities.push(ContextIdentity {
+                public_key: executor_public_key,
+                private_key: None,
+            });
+
+            // Store updated ContextIdentities
+            let serialized = borsh::to_vec(&identities)?;
+            handle.put(
+                &identities_key,
+                &calimero_store::types::GenericData::from_slice(serialized.into())?,
+            )?;
+        }
+
         Ok(())
     }
 
@@ -1059,6 +1121,7 @@ impl Node {
         hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
+        executor_public_key: [u8; 32],
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let mut storage = match hash {
             Some(_) => runtime_compat::RuntimeCompatStore::temporal(&mut self.store, context.id),
@@ -1070,10 +1133,12 @@ impl Node {
                 .ctx_manager
                 .load_application_blob(&context.application_id)?,
             &method,
-            calimero_runtime::logic::VMContext { input: payload },
+            calimero_runtime::logic::VMContext {
+                input: payload,
+                executor_public_key,
+            },
             &mut storage,
             &get_runtime_limits()?,
-            self.identity_handler.get_executor_identity(),
         )?;
 
         if let Some(hash) = hash {

@@ -25,6 +25,7 @@ async fn handle(
         request.method,
         args,
         false,
+        request.executor_public_key,
     )
     .await
     {

@@ -1,44 +1,36 @@
-use calimero_primitives::identity::Did;
-use libp2p::identity::Keypair;
+use std::collections::HashMap;
 
-#[derive(Clone, Debug)]
+use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::ContextIdentity;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IdentityHandler {
-    node_identity: Did,
+    context_identities: HashMap<ContextId, ContextIdentity>,
 }
 
 impl IdentityHandler {
-    pub fn new(node_identity: Did) -> Self {
-        Self { node_identity }
+    pub fn new() -> Self {
+        Self {
+            context_identities: HashMap::new(),
+        }
     }
 
-    pub fn get_executor_identity(&self) -> String {
-        self.node_identity.id.clone()
+    pub fn add_context_identity(
+        &mut self,
+        context_id: ContextId,
+        public_key: [u8; 32],
+        private_key: Option<[u8; 32]>,
+    ) {
+        self.context_identities.insert(
+            context_id,
+            ContextIdentity {
+                public_key,
+                private_key,
+            },
+        );
     }
 
-    pub fn sign_message(&mut self, message: &[u8]) -> Vec<u8> {
-        let mut bytes = self.node_identity.root_keys[0]
-            .clone()
-            .signing_key
-            .into_bytes();
-        let byte_slice: &mut [u8] = &mut bytes;
-        let keypair = Keypair::ed25519_from_bytes(byte_slice).unwrap();
-        keypair.sign(message).unwrap()
-    }
-}
-
-impl From<&Keypair> for IdentityHandler {
-    fn from(keypair: &Keypair) -> Self {
-        let did = Did {
-            id: keypair.public().to_peer_id().to_base58(),
-            root_keys: vec![],
-            client_keys: vec![],
-        };
-        Self::new(did)
-    }
-}
-
-impl From<Keypair> for IdentityHandler {
-    fn from(keypair: Keypair) -> Self {
-        (&keypair).into()
+    pub fn get_context_identity(&self, context_id: &ContextId) -> Option<&ContextIdentity> {
+        self.context_identities.get(context_id)
     }
 }
