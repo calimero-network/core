@@ -249,8 +249,8 @@ impl ContextManager {
         application_id: &calimero_primitives::application::ApplicationId,
         // todo! permit None version for latest
         version: &semver::Version,
-         // represents the url path to the release binary (e.g. ipfs path)
-         url: &str,
+        // represents the url path to the release binary (e.g. ipfs path)
+        url: &str,
         hash: Option<&str>,
     ) -> eyre::Result<()> {
         self.download_and_install_release(&application_id, &version, &url, hash)

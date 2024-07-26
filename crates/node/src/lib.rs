@@ -78,9 +78,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
     match network_client
-        .subscribe(IdentTopic::new(
-            "meta_topic".to_string(),
-        ))
+        .subscribe(IdentTopic::new("meta_topic".to_string()))
         .await
     {
         Ok(_) => info!("Subscribed to meta topic"),
@@ -385,8 +383,8 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version, url)) = args
-                            .and_then(|args| {
+                        let Some((context_id, application_id, version, url)) =
+                            args.and_then(|args| {
                                 let mut iter = args.split(' ');
                                 let context = iter.next()?;
                                 let application = iter.next()?;
