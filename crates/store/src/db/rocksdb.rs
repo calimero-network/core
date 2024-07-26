@@ -110,10 +110,10 @@ struct DBIterator<'a> {
 }
 
 impl<'a> DBIter for DBIterator<'a> {
-    fn seek(&mut self, key: Slice) -> eyre::Result<()> {
+    fn seek(&mut self, key: Slice) -> eyre::Result<Option<Slice>> {
         self.iter.seek(key);
 
-        Ok(())
+        Ok(self.iter.key().map(Into::into))
     }
 
     fn next(&mut self) -> eyre::Result<Option<Slice>> {
