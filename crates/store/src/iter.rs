@@ -51,14 +51,49 @@ impl<'a, K, V> Iter<'a, K, V> {
 }
 
 impl<'a, V> Iter<'a, Unstructured, V> {
-    pub fn seek(&mut self, key: Key) -> eyre::Result<()> {
+    pub fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>> {
         self.inner.seek(key)
+    }
+
+    pub fn next(&mut self) -> eyre::Result<Option<Key>> {
+        self.inner.next()
     }
 }
 
-impl<'a, K: AsKeyParts, V> Iter<'a, Structured<K>, V> {
-    pub fn seek(&mut self, key: K) -> eyre::Result<()> {
-        self.inner.seek(key.as_key().as_slice())
+impl<'a, K: FromKeyParts, V> Iter<'a, Structured<K>, V>
+where
+    eyre::Report: From<Error<K::Error>>,
+{
+    pub fn seek(&mut self, key: K) -> eyre::Result<Option<K>> {
+        let Some(key) = self.inner.seek(key.as_key().as_slice())? else {
+            return Ok(None);
+        };
+
+        Ok(Some(Structured::<K>::try_into_key(key)?))
+    }
+
+    pub fn next(&mut self) -> eyre::Result<Option<K>> {
+        let Some(key) = self.inner.next()? else {
+            return Ok(None);
+        };
+
+        Ok(Some(Structured::<K>::try_into_key(key)?))
+    }
+}
+
+impl<'a, K> Iter<'a, K, Unstructured> {
+    pub fn read(&self) -> eyre::Result<Value> {
+        self.inner.read()
+    }
+}
+
+impl<'a, K, V, C> Iter<'a, K, Structured<(V, C)>>
+where
+    C: Codec<'a, V>,
+    eyre::Report: From<Error<C::Error>>,
+{
+    pub fn read(&'a self) -> eyre::Result<V> {
+        Structured::<(V, C)>::try_into_value(self.inner.read()?).map_err(Into::into)
     }
 }
 
@@ -214,8 +249,11 @@ pub trait TryIntoValue<'a>: private::Sealed {
     fn try_into_value(key: Value<'a>) -> Result<Self::Value, Self::Error>;
 }
 
+#[derive(Debug, Error)]
 pub enum Error<E> {
+    #[error("size mismatch")]
     SizeMismatch,
+    #[error(transparent)]
     Structured(E),
 }
 
