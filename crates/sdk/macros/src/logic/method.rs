@@ -174,11 +174,33 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
     type Error = errors::Errors<'a, syn::ImplItemFn>;
 
     fn try_from(input: LogicMethodImplInput<'a, 'b>) -> Result<Self, Self::Error> {
-        if !matches!(input.item.vis, syn::Visibility::Public(_)) {
-            return Ok(Self::Private);
+        let mut errors = errors::Errors::new(input.item);
+
+        let mut modifiers = vec![];
+        let mut is_init = false;
+
+        for attr in &input.item.attrs {
+            if attr.path().segments.len() == 2
+                && attr.path().segments[0].ident == "app"
+                && attr.path().segments[1].ident == "init"
+            {
+                modifiers.push(Modifer::Init);
+                is_init = true;
+            }
         }
 
-        let mut errors = errors::Errors::new(input.item);
+        match (&input.item.vis, is_init) {
+            (syn::Visibility::Public(_), _) => {}
+            (_, true) => {
+                errors.subsume(syn::Error::new_spanned(
+                    &input.item.vis,
+                    errors::ParseError::NoPrivateInit,
+                ));
+            }
+            (_, false) => {
+                return Ok(Self::Private);
+            }
+        }
 
         if let Some(abi) = &input.item.sig.abi {
             errors.subsume(syn::Error::new_spanned(
@@ -237,6 +259,20 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             }
         }
 
+        let name = &input.item.sig.ident;
+
+        match (is_init, &self_type, name.to_string().as_str()) {
+            (true, Some(_), _) => errors.subsume(syn::Error::new_spanned(
+                input.item,
+                errors::ParseError::NoSelfReceiverAtInit,
+            )),
+            (false, _, "init") => errors.subsume(syn::Error::new_spanned(
+                input.item,
+                errors::ParseError::InitMethodWithoutNoInitAttribute,
+            )),
+            _ => {}
+        }
+
         let mut ret = None;
         if let syn::ReturnType::Type(_, ret_type) = &input.item.sig.output {
             match ty::LogicTy::try_from(ty::LogicTyInput {
@@ -248,28 +284,10 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             }
         }
 
-        let mut modifiers = vec![];
-
-        for attr in &input.item.attrs {
-            if attr.path().segments.len() == 2
-                && attr.path().segments[0].ident == "app"
-                && attr.path().segments[1].ident == "init"
-            {
-                if let Some(_self_type) = &self_type {
-                    errors.subsume(syn::Error::new_spanned(
-                        input.item,
-                        errors::ParseError::SelfNotPermitted,
-                    ));
-                }
-
-                modifiers.push(Modifer::Init)
-            }
-        }
-
         errors.check()?;
 
         Ok(LogicMethod::Public(PublicLogicMethod {
-            name: &input.item.sig.ident,
+            name,
             self_: input.type_.clone(),
             self_type,
             args,
