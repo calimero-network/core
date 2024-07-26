@@ -9,66 +9,8 @@ use crate::iter::{DBIter, Iter};
 use crate::slice::Slice;
 use crate::tx::{Operation, Transaction};
 
-pub trait RefBy<'a> {
-    type Key;
-    type Value;
-
-    fn key_from_slice(key: Slice<'a>) -> Self::Key;
-    fn value_from_slice(value: Slice<'a>) -> Self::Value;
-
-    fn key_to_slice(key: &Self::Key) -> Slice;
-    fn value_to_slice(key: &Self::Value) -> Slice;
-}
-
-pub struct Ref<'a> {
-    _marker: std::marker::PhantomData<&'a ()>,
-}
-
-pub enum Owned {}
-
-impl<'a> RefBy<'a> for Ref<'a> {
-    type Key = Slice<'a>;
-    type Value = Slice<'a>;
-
-    fn key_from_slice(key: Slice<'a>) -> Self::Key {
-        key
-    }
-
-    fn value_from_slice(value: Slice<'a>) -> Self::Value {
-        value
-    }
-
-    fn key_to_slice(key: &Self::Key) -> Slice {
-        key.into()
-    }
-
-    fn value_to_slice(value: &Self::Value) -> Slice {
-        value.into()
-    }
-}
-
-impl<'a> RefBy<'a> for Owned {
-    type Key = Slice<'static>;
-    type Value = Slice<'static>;
-
-    fn key_from_slice(key: Slice<'a>) -> Self::Key {
-        key.into_boxed().into()
-    }
-
-    fn value_from_slice(value: Slice<'a>) -> Self::Value {
-        value.into_boxed().into()
-    }
-
-    fn key_to_slice(key: &Self::Key) -> Slice {
-        key.into()
-    }
-
-    fn value_to_slice(value: &Self::Value) -> Slice {
-        value.into()
-    }
-}
-
 struct DBArena<V> {
+    // todo! Slice::clone points to the same object, can save one allocation here
     inner: Arc<RwLock<thunderdome::Arena<Arc<V>>>>,
 }
 
@@ -107,16 +49,7 @@ struct InMemoryDBInner<K, V> {
     links: BTreeMap<Column, BTreeMap<K, Arc<thunderdome::Index>>>,
 }
 
-impl<K: Clone, V> Clone for InMemoryDBInner<K, V> {
-    fn clone(&self) -> Self {
-        Self {
-            arena: self.arena.clone(),
-            links: self.links.clone(),
-        }
-    }
-}
-
-impl<K: Ord + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
+impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
     fn get(&self, col: Column, key: &[u8]) -> eyre::Result<Option<Arc<V>>> {
         let Some(column) = self.links.get(&col) else {
             return Ok(None);
@@ -166,95 +99,160 @@ impl<K: Ord + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
 
         Ok(())
     }
-}
 
-pub struct PinnedValue<'this, 'a, T: RefBy<'a>> {
-    _ref: Arc<T::Value>,
-    data: Slice<'this>,
-}
-
-impl<'this, 'a, T: RefBy<'a>> PinnedValue<'this, 'a, T> {
-    fn new(_ref: Arc<T::Value>) -> Self {
-        let data = T::value_to_slice(&_ref);
-
-        // safety: data lives as long as _ref
-        let data = unsafe { std::mem::transmute(data) };
-
-        Self { _ref, data }
-    }
-}
-
-impl<'a, T: RefBy<'a>> AsRef<[u8]> for PinnedValue<'_, 'a, T> {
-    fn as_ref(&self) -> &[u8] {
-        self.data.as_ref()
-    }
-}
-
-pub struct InMemoryDB<'a, T: RefBy<'a>> {
-    inner: Arc<RwLock<InMemoryDBInner<T::Key, T::Value>>>,
-    _marker: std::marker::PhantomData<T>,
-}
-
-unsafe impl<'a, T: RefBy<'a>> Sync for InMemoryDB<'a, T> {}
-unsafe impl<'a, T: RefBy<'a>> Send for InMemoryDB<'a, T> {}
-
-impl<'a> InMemoryDB<'a, Owned> {
-    pub fn referenced() -> InMemoryDB<'a, Ref<'a>> {
-        InMemoryDB {
-            inner: Arc::new(RwLock::new(InMemoryDBInner {
-                arena: DBArena::default(),
-                links: BTreeMap::new(),
-            })),
-            _marker: std::marker::PhantomData,
-        }
-    }
-
-    pub fn owned() -> InMemoryDB<'a, Owned> {
-        InMemoryDB {
-            inner: Arc::new(RwLock::new(InMemoryDBInner {
-                arena: DBArena::default(),
-                links: BTreeMap::new(),
-            })),
-            _marker: std::marker::PhantomData,
+    fn iter<'a>(&self, col: Column) -> InMemoryIterInner<'a, K, V> {
+        InMemoryIterInner {
+            arena: self.arena.clone(),
+            column: self.links.get(&col).cloned(),
+            state: None,
         }
     }
 }
 
-impl<'a, T: RefBy<'a>> InMemoryDB<'a, T> {
+mod private {
+    /// Safety to ensure all casts are valid
+    pub trait CastsTo<This> {}
+}
+
+use private::CastsTo;
+
+impl<'a, 'b> CastsTo<Slice<'a>> for Slice<'b> {}
+
+pub trait InMemoryDBImpl<'a> {
+    type Key: AsRef<[u8]> + CastsTo<Slice<'a>>;
+    type Value: CastsTo<Slice<'a>>;
+
+    fn db(&self) -> &RwLock<InMemoryDBInner<Self::Key, Self::Value>>;
+
+    fn key_from_slice(slice: Slice<'a>) -> Self::Key;
+    fn value_from_slice(slice: Slice<'a>) -> Self::Value;
+}
+
+pub struct Ref<'a> {
+    inner: Arc<RwLock<InMemoryDBInner<Slice<'a>, Slice<'a>>>>,
+}
+
+impl<'a> InMemoryDBImpl<'a> for Ref<'a> {
+    type Key = Slice<'a>;
+    type Value = Slice<'a>;
+
+    fn db(&self) -> &RwLock<InMemoryDBInner<Self::Key, Self::Value>> {
+        &self.inner
+    }
+
+    fn key_from_slice(slice: Slice<'a>) -> Self::Key {
+        slice
+    }
+
+    fn value_from_slice(slice: Slice<'a>) -> Self::Value {
+        slice
+    }
+}
+
+pub struct Owned {
+    inner: Arc<RwLock<InMemoryDBInner<Slice<'static>, Slice<'static>>>>,
+}
+
+impl<'a> InMemoryDBImpl<'a> for Owned {
+    type Key = Slice<'static>;
+    type Value = Slice<'static>;
+
+    fn db(&self) -> &RwLock<InMemoryDBInner<Self::Key, Self::Value>> {
+        &self.inner
+    }
+
+    fn key_from_slice(slice: Slice<'a>) -> Self::Key {
+        slice.into_boxed().into()
+    }
+
+    fn value_from_slice(slice: Slice<'a>) -> Self::Value {
+        slice.into_boxed().into()
+    }
+}
+
+pub struct InMemoryDB<T> {
+    inner: T,
+}
+
+// todo! vvvvv remove this once miraclx/slice/multi-thread-capable is merged in
+unsafe impl<T> Sync for InMemoryDB<T> {}
+unsafe impl<T> Send for InMemoryDB<T> {}
+// todo! ^^^^^ remove this once miraclx/slice/multi-thread-capable is merged in
+
+impl InMemoryDB<()> {
+    pub fn referenced<'a>() -> InMemoryDB<Ref<'a>> {
+        InMemoryDB {
+            inner: Ref {
+                inner: Arc::new(RwLock::new(InMemoryDBInner {
+                    arena: DBArena::default(),
+                    links: BTreeMap::new(),
+                })),
+            },
+        }
+    }
+
+    pub fn owned() -> InMemoryDB<Owned> {
+        InMemoryDB {
+            inner: Owned {
+                inner: Arc::new(RwLock::new(InMemoryDBInner {
+                    arena: DBArena::default(),
+                    links: BTreeMap::new(),
+                })),
+            },
+        }
+    }
+}
+
+impl<'a, T: InMemoryDBImpl<'a>> InMemoryDB<T> {
     fn db(&self) -> eyre::Result<RwLockReadGuard<InMemoryDBInner<T::Key, T::Value>>> {
         self.inner
+            .db()
             .read()
             .map_err(|_| eyre::eyre!("failed to acquire read lock on db"))
     }
 
     fn db_mut(&self) -> eyre::Result<RwLockWriteGuard<InMemoryDBInner<T::Key, T::Value>>> {
         self.inner
+            .db()
             .write()
             .map_err(|_| eyre::eyre!("failed to acquire write lock on db"))
     }
 }
 
-impl<'a, T: RefBy<'a>> Database<'a> for InMemoryDB<'a, T>
+struct ArcSlice<'this> {
+    inner: Arc<Slice<'this>>,
+}
+
+impl<'this> ArcSlice<'this> {
+    fn new<'a, T: CastsTo<Slice<'a>>>(value: Arc<T>) -> Self {
+        Self {
+            inner: unsafe { std::mem::transmute(value) },
+        }
+    }
+}
+
+impl<'this> AsRef<[u8]> for ArcSlice<'this> {
+    fn as_ref(&self) -> &[u8] {
+        &self.inner
+    }
+}
+
+impl<'a, T: InMemoryDBImpl<'a>> Database<'a> for InMemoryDB<T>
 where
     T::Key: Ord
         + Clone
         + Borrow<[u8]>
         //vv\
         + 'a,
-    //  ~~^^~ this piece is weird, we don't need it for InMemoryIter, but Rust requires it, why?
-    //        the same doesn't apply for T::Value, even though they're both used in the same way
-    //        taking the {key,value}_to_slice fn pointers address this issue (as in b667c5a (PR #519))
-    //        but I'll like to understand why it's happening in the first place, I'll leave it in
-    //        until there's an observable issue
+    //  ~~^^~ this piece is weird, we don't exactly "need" it for InMemoryIter
+    //        but Rust forces it on us since it specifies a constraint of `CastsTo<Slice<'a>>`
+    //        The same doesn't apply for T::Value, even though they're both used in the same way.
+    //        Dropping that constraint fixes this requirement, but it exists as to guard against improper use
+    //        but I'll like to understand why it's happening in the first place, I'll leave it in until there's
+    //        an observable issue
 {
     fn open(_config: &StoreConfig) -> eyre::Result<Self> {
-        Ok(Self {
-            inner: Arc::new(RwLock::new(InMemoryDBInner {
-                arena: DBArena::default(),
-                links: BTreeMap::new(),
-            })),
-            _marker: std::marker::PhantomData,
-        })
+        todo!("phase this out, please. it's not even worth writing an accomodation for")
     }
 
     fn has(&self, col: Column, key: Slice) -> eyre::Result<bool> {
@@ -268,7 +266,7 @@ where
             return Ok(None);
         };
 
-        Ok(Some(Slice::from_owned(PinnedValue::<T>::new(value))))
+        Ok(Some(Slice::from_owned(ArcSlice::new(value))))
     }
 
     fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
@@ -290,14 +288,10 @@ where
     fn iter(&self, col: Column) -> eyre::Result<Iter> {
         let db = self.db()?;
 
-        Ok(Iter::new(InMemoryIter::<T> {
-            arena: db.arena.clone(),
-            column: db.links.get(&col).cloned(),
-            state: None,
-        }))
+        Ok(Iter::new(InMemoryDBIter::new(db.iter(col))))
     }
 
-    fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()> {
+    fn apply(&self, tx: &Transaction) -> eyre::Result<()> {
         let mut db = self.db_mut()?;
 
         for (entry, op) in tx.iter() {
@@ -307,7 +301,7 @@ where
                     db.insert(
                         entry.column(),
                         T::key_from_slice(entry.key().to_owned().into()),
-                        T::value_from_slice(value.clone()),
+                        T::value_from_slice(value.as_ref().to_owned().into()),
                     )?;
                 }
                 Operation::Delete => {
@@ -320,10 +314,10 @@ where
     }
 }
 
-struct InMemoryIter<'a, T: RefBy<'a>> {
-    arena: DBArena<T::Value>,
-    column: Option<BTreeMap<T::Key, Arc<thunderdome::Index>>>,
-    state: Option<State<'a, T::Key, T::Value>>,
+struct InMemoryIterInner<'a, K: Ord, V> {
+    arena: DBArena<V>,
+    column: Option<BTreeMap<K, Arc<thunderdome::Index>>>,
+    state: Option<State<'a, K, V>>,
 }
 
 struct State<'a, K, V> {
@@ -331,29 +325,29 @@ struct State<'a, K, V> {
     value: Option<Arc<V>>,
 }
 
-impl<'a, T: RefBy<'a>> Drop for InMemoryIter<'a, T> {
+impl<'a, K: Ord, V> Drop for InMemoryIterInner<'a, K, V> {
     fn drop(&mut self) {
-        let Some(column) = self.column.as_ref() else {
+        let Some(column) = self.column.as_mut() else {
             return;
         };
 
-        for idx in column.values() {
-            if Arc::strong_count(idx) == 1 {
+        while let Some((_, idx)) = column.pop_first() {
+            if Arc::strong_count(&idx) == 1 {
                 if let Ok(mut value) = self.arena.write() {
-                    value.remove(**idx);
+                    value.remove(*idx);
                 }
             }
         }
     }
 }
 
-impl<'a, T: RefBy<'a>> DBIter for InMemoryIter<'a, T>
+impl<'a, K, V> InMemoryIterInner<'a, K, V>
 where
-    T::Key: Ord + Borrow<[u8]>,
+    K: Ord + Borrow<[u8]>,
 {
-    fn seek(&mut self, key: Slice) -> eyre::Result<()> {
+    fn seek(&mut self, key: &[u8]) -> eyre::Result<Option<&K>> {
         let Some(column) = self.column.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
 
         let range = column.range((Bound::Included(key.as_ref()), Bound::Unbounded));
@@ -364,10 +358,10 @@ where
             value: None,
         });
 
-        Ok(())
+        self.next()
     }
 
-    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+    fn next(&mut self) -> eyre::Result<Option<&K>> {
         let Some(column) = self.column.as_ref() else {
             return Ok(None);
         };
@@ -390,10 +384,10 @@ where
 
         state.value = Some(value.clone());
 
-        Ok(Some(T::key_to_slice(key)))
+        Ok(Some(key))
     }
 
-    fn read(&self) -> eyre::Result<Slice> {
+    fn read(&self) -> eyre::Result<&V> {
         let Some(state) = &self.state else {
             eyre::bail!("attempted to read from unadvanced iterator");
         };
@@ -402,7 +396,43 @@ where
             eyre::bail!("missing value in iterator state");
         };
 
-        Ok(T::value_to_slice(value))
+        Ok(value)
+    }
+}
+
+struct InMemoryDBIter<'this> {
+    inner: InMemoryIterInner<'this, Slice<'this>, Slice<'this>>,
+}
+
+impl<'this> InMemoryDBIter<'this> {
+    fn new<'a, K, V>(inner: InMemoryIterInner<'a, K, V>) -> Self
+    where
+        K: Ord + CastsTo<Slice<'a>>,
+        V: CastsTo<Slice<'a>>,
+    {
+        unsafe { std::mem::transmute(inner) }
+    }
+}
+
+impl<'this> DBIter for InMemoryDBIter<'this> {
+    fn seek(&mut self, key: Slice) -> eyre::Result<Option<Slice>> {
+        let Some(key) = self.inner.seek(&key)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(key.into()))
+    }
+
+    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+        let Some(key) = self.inner.next()? else {
+            return Ok(None);
+        };
+
+        Ok(Some(key.into()))
+    }
+
+    fn read(&self) -> eyre::Result<Slice> {
+        self.inner.read().map(Into::into)
     }
 }
 
@@ -423,15 +453,8 @@ mod tests {
                 let key = Slice::from(&bytes[..]);
                 let value = Slice::from(&bytes[..]);
 
-                // todo! this should work, investigate why it doesn't
-                // db.put(Column::Identity, (&key).into(), (&value).into())
-                //     .unwrap();
-                db.put(
-                    Column::Identity,
-                    key.clone().into_boxed().into(),
-                    value.clone().into_boxed().into(),
-                )
-                .unwrap();
+                db.put(Column::Identity, (&key).into(), (&value).into())
+                    .unwrap();
 
                 assert!(db.has(Column::Identity, (&key).into()).unwrap());
                 assert_eq!(db.get(Column::Identity, key).unwrap().unwrap(), value);
@@ -472,9 +495,6 @@ mod tests {
                 let key = Slice::from(&bytes[..]);
                 let value = Slice::from(&bytes[..]);
 
-                // todo! this should work, investigate why it doesn't
-                // db.put(Column::Identity, (&key).into(), (&value).into())
-                //     .unwrap();
                 db.put(
                     Column::Identity,
                     key.clone().into_boxed().into(),
