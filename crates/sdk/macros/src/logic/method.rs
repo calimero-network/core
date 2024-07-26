@@ -261,14 +261,18 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
 
         let name = &input.item.sig.ident;
 
-        match (is_init, &self_type, name.to_string().as_str()) {
-            (true, Some(_), _) => errors.subsume(syn::Error::new_spanned(
+        match (is_init, &self_type) {
+            (true, Some(_)) => errors.subsume(syn::Error::new_spanned(
                 input.item,
                 errors::ParseError::NoSelfReceiverAtInit,
             )),
-            (false, _, "init") => errors.subsume(syn::Error::new_spanned(
+            (true, None) if name != "init" => errors.subsume(syn::Error::new_spanned(
                 input.item,
-                errors::ParseError::InitMethodWithoutNoInitAttribute,
+                errors::ParseError::AppInitMethodNotNamedInit,
+            )),
+            (false, _) if name == "init" => errors.subsume(syn::Error::new_spanned(
+                input.item,
+                errors::ParseError::InitMethodWithoutInitAttribute,
             )),
             _ => {}
         }

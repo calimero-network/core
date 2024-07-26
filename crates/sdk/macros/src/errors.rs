@@ -75,7 +75,9 @@ pub enum ParseError<'a> {
     #[error("an initializer method, by definition, has to be public")]
     NoPrivateInit,
     #[error("method named `init` must be annotated with `#[app::init]`")]
-    InitMethodWithoutNoInitAttribute,
+    InitMethodWithoutInitAttribute,
+    #[error("method annotated with `#[app::init]` must be named `init`")]
+    AppInitMethodNotNamedInit,
 }
 
 impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {
