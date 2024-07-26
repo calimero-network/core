@@ -9,10 +9,6 @@ use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
-use near_jsonrpc_client::{methods, JsonRpcClient};
-use near_jsonrpc_primitives::types::query::QueryResponseKind;
-use near_primitives::types::{BlockReference, Finality, FunctionArgs};
-use near_primitives::views::QueryRequest;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tracing::{error, info};
