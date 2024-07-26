@@ -114,6 +114,10 @@ pub(crate) fn setup(
             get(handlers::context::get_contexts_handler)
                 .post(handlers::context::create_context_handler),
         )
+        .route(
+            "/dev/contexts/:context_id/join",
+            post(handlers::context::join_context_handler),
+        )
         .route("/dev/applications", get(list_applications_handler))
         .layer(Extension(shared_state));
 
@@ -209,7 +213,12 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application(&req.application, &req.version)
+        .install_application(
+            &req.application,
+            &req.version,
+            &req.url,
+            req.hash.as_deref(),
+        )
         .await
     {
         Ok(()) => ApiResponse {

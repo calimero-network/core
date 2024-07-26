@@ -2,7 +2,7 @@ use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
-use libp2p::gossipsub::TopicHash;
+use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
@@ -76,6 +76,19 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     )) as BoxedFuture<eyre::Result<()>>;
 
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+
+    match network_client
+        .subscribe(IdentTopic::new(
+            "meta_topic".to_string(),
+        ))
+        .await
+    {
+        Ok(_) => info!("Subscribed to meta topic"),
+        Err(err) => {
+            error!("{}: {:?}", "Error subscribing to meta topic", err);
+            eyre::bail!("Failed to subscribe to meta topic: {:?}", err)
+        }
+    };
 
     loop {
         tokio::select! {
@@ -372,15 +385,18 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version)) = args.and_then(|args| {
-                            let mut iter = args.split(' ');
-                            let context = iter.next()?;
-                            let application = iter.next()?;
-                            let version = iter.next()?;
+                        let Some((context_id, application_id, version, url)) = args
+                            .and_then(|args| {
+                                let mut iter = args.split(' ');
+                                let context = iter.next()?;
+                                let application = iter.next()?;
+                                let version = iter.next()?;
+                                let url = iter.next()?;
 
-                            Some((context, application, version))
-                        }) else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version>");
+                                Some((context, application, version, url))
+                            })
+                        else {
+                            println!("{IND} Usage: context create <context_id> <application_id> <version> <url>");
                             break 'done;
                         };
 
@@ -400,7 +416,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         // todo! we should be able to install latest version
                         node.ctx_manager
-                            .install_application(&application_id, &version)
+                            .install_application(&application_id, &version, &url, None)
                             .await?;
 
                         let context = calimero_primitives::context::Context {
@@ -569,10 +585,11 @@ impl Node {
         topic_hash: libp2p::gossipsub::TopicHash,
     ) -> eyre::Result<()> {
         let Ok(context_id) = topic_hash.as_str().parse() else {
-            eyre::bail!(
-                "Failed to parse topic hash '{}' into context ID",
-                topic_hash
-            );
+            // eyre::bail!(
+            //     "Failed to parse topic hash '{}' into context ID",
+            //     topic_hash
+            // );
+            return Ok(());
         };
 
         // Too much errors due to concurrent tries to catchup, e.g.

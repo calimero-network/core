@@ -65,6 +65,14 @@ impl Node {
 
         let application_id = context.application_id.clone();
 
+        let Some(url) = request.url else {
+            eyre::bail!("Path is missing in the request")
+        };
+
+        let Some(hash) = request.hash else {
+            eyre::bail!("Hash is missing in the request")
+        };
+
         if request
             .application_id
             .map_or(true, |id| id != application_id)
@@ -77,6 +85,8 @@ impl Node {
                 types::CatchupApplicationChanged {
                     application_id,
                     version: application_version,
+                    url,
+                    hash,
                 },
             ))?;
             stream
@@ -187,6 +197,8 @@ impl Node {
                     application_id: Some(context.application_id),
                     last_executed_transaction_hash: context.last_transaction_hash,
                     batch_size: self.network_client.catchup_config.batch_size,
+                    url: None,
+                    hash: None,
                 },
             ),
             None => (
@@ -196,6 +208,8 @@ impl Node {
                     application_id: None,
                     last_executed_transaction_hash: calimero_primitives::hash::Hash::default(),
                     batch_size: self.network_client.catchup_config.batch_size,
+                    url: None,
+                    hash: None,
                 },
             ),
         };
@@ -328,7 +342,12 @@ impl Node {
                     .is_application_installed(&change.application_id)
                 {
                     self.ctx_manager
-                        .install_application(&change.application_id, &change.version)
+                        .install_application(
+                            &change.application_id,
+                            &change.version,
+                            &change.url,
+                            Some(change.hash.as_str()),
+                        )
                         .await?;
                 }
 
