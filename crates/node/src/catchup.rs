@@ -1,7 +1,5 @@
 use std::collections::VecDeque;
 
-use calimero_primitives::identity::ContextIdentity;
-use calimero_store::entry::DataType;
 use futures_util::{SinkExt, StreamExt};
 use tracing::{error, info, warn};
 
@@ -18,27 +16,19 @@ impl Node {
     ) -> eyre::Result<[u8; 32]> {
         let handle = self.store.handle();
 
-        const CONTEXT_IDENTITIES_SCOPE: [u8; 16] = *b"0000000000000000";
+        // Retrieve ContextIdentity
+        let identity_key =
+            calimero_store::key::ContextIdentity::new(*context_id, *executor_public_key);
+        let identity: calimero_primitives::identity::ContextIdentity =
+            handle.get(&identity_key)?.ok_or_else(|| {
+                eyre::eyre!(
+                    "ContextIdentity not found for context {} and public key {:?}",
+                    context_id,
+                    executor_public_key
+                )
+            })?;
 
-        // Retrieve ContextIdentities
-        let identities_key =
-            calimero_store::key::Generic::new(CONTEXT_IDENTITIES_SCOPE, **context_id);
-        let identities: calimero_primitives::identity::ContextIdentities = handle
-            .get(&identities_key)?
-            .map(|data: calimero_store::types::GenericData| {
-                borsh::from_slice(&data.as_slice()?)
-                    .map_err(|e| eyre::eyre!("Failed to deserialize ContextIdentities: {}", e))
-            })
-            .transpose()?
-            .ok_or_else(|| eyre::eyre!("ContextIdentities not found for context {}", context_id))?;
-
-        // Find the matching public key
-        identities
-            .identities
-            .iter()
-            .find(|identity| &identity.public_key == executor_public_key)
-            .map(|identity| identity.public_key)
-            .ok_or_else(|| eyre::eyre!("Executor public key not found in context identities"))
+        Ok(identity.public_key)
     }
 
     pub(crate) async fn handle_opened_stream(
@@ -428,7 +418,7 @@ impl Node {
                         };
 
                         // We don't have the private key during catchup
-                        let initial_identity = ContextIdentity {
+                        let initial_identity = calimero_primitives::identity::ContextIdentity {
                             public_key: *context_id,
                             private_key: None,
                         };

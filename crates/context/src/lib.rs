@@ -8,9 +8,7 @@ use std::os::windows::fs::symlink_file as symlink;
 use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
-use calimero_store::entry::DataType;
 use camino::Utf8PathBuf;
-use near_primitives::borsh;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tracing::{error, info};
@@ -114,19 +112,10 @@ impl ContextManager {
             },
         )?;
 
-        const CONTEXT_IDENTITIES_SCOPE: [u8; 16] = *b"0000000000000000";
-
         // Store ContextIdentities separately
-        let identities_key =
-            calimero_store::key::Generic::new(CONTEXT_IDENTITIES_SCOPE, *context.id);
-        let identities = calimero_primitives::identity::ContextIdentities {
-            identities: vec![initial_identity],
-        };
-        let serialized = borsh::to_vec(&identities)?;
-        handle.put(
-            &identities_key,
-            &calimero_store::types::GenericData::from_slice(serialized.into())?,
-        )?;
+        let identity_key =
+            calimero_store::key::ContextIdentity::new(context.id, initial_identity.public_key);
+        handle.put(&identity_key, &initial_identity)?;
 
         self.subscribe(&context.id).await?;
 

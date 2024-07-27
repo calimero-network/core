@@ -1,4 +1,3 @@
-use calimero_identity::IdentityHandler;
 use clap::{Parser, ValueEnum};
 
 use crate::cli;

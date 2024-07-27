@@ -1,9 +1,7 @@
 use bs58;
 use calimero_primitives::events::OutcomeEvent;
-use calimero_primitives::identity::{ContextIdentities, ContextIdentity};
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
-use calimero_store::entry::DataType;
 use calimero_store::Store;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::identity as p2p_identity;
@@ -444,7 +442,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         node.ctx_manager
                             .add_context(
                                 context,
-                                ContextIdentity {
+                                calimero_primitives::identity::ContextIdentity {
                                     public_key: *context_id,
                                     private_key: None,
                                 },
@@ -1084,33 +1082,13 @@ impl Node {
             },
         )?;
 
-        let identities_key = calimero_store::key::Generic::new([0; 16], *context.id);
-        let mut identities = handle
-            .get(&identities_key)?
-            .map(|data: calimero_store::types::GenericData| {
-                borsh::from_slice::<ContextIdentities>(&data.as_slice()?)?
-            })
-            .unwrap_or_else(|| ContextIdentities {
-                identities: Vec::new(),
-            });
-
-        if !identities
-            .identities
-            .iter()
-            .any(|id| id.public_key == executor_public_key)
-        {
-            identities.identities.push(ContextIdentity {
-                public_key: executor_public_key,
-                private_key: None,
-            });
-
-            // Store updated ContextIdentities
-            let serialized = borsh::to_vec(&identities)?;
-            handle.put(
-                &identities_key,
-                &calimero_store::types::GenericData::from_slice(serialized.into())?,
-            )?;
-        }
+        let identity_key =
+            calimero_store::key::ContextIdentity::new(context.id, transaction.executor_public_key);
+        let identity = calimero_primitives::identity::ContextIdentity {
+            public_key: transaction.executor_public_key,
+            private_key: None, // We don't have the private key here
+        };
+        handle.put(&identity_key, &identity)?;
 
         Ok(())
     }
