@@ -217,7 +217,7 @@ impl EventLoop {
                     let Some(c) = command else { break };
                     self.handle_command(c).await;
                 }
-                _ = rendezvous_discover_tick.tick() => self.handle_rendezvous_discoveries().await,
+                _ = rendezvous_discover_tick.tick() => self.broadcast_rendezvous_discoveries().await,
             }
         }
     }

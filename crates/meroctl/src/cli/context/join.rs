@@ -1,14 +1,18 @@
 use clap::Parser;
 use reqwest::Client;
+use tracing::info;
 
 use crate::cli::RootArgs;
 use crate::common::multiaddr_to_url;
 use crate::config_file::ConfigFile;
 
-#[derive(Debug, Parser)]
-pub struct ListCommand {}
+#[derive(Parser, Debug)]
+pub struct JoinCommand {
+    #[clap(long, short)]
+    context_id: String,
+}
 
-impl ListCommand {
+impl JoinCommand {
     pub async fn run(self, root_args: RootArgs) -> eyre::Result<()> {
         let path = root_args.home.join(&root_args.node_name);
         if !ConfigFile::exists(&path) {
@@ -21,21 +25,18 @@ impl ListCommand {
             eyre::bail!("No address.")
         };
 
-        let url = multiaddr_to_url(multiaddr, "admin-api/dev/contexts")?;
+        let url = multiaddr_to_url(
+            multiaddr,
+            &format!("/dev/contexts/{}/join", self.context_id),
+        )?;
         let client = Client::new();
-        let response = client.get(url).send().await?;
+        let response = client.post(url).send().await?;
 
         if !response.status().is_success() {
             eyre::bail!("Request failed with status: {}", response.status())
         }
 
-        let api_response: calimero_server_primitives::admin::GetContextsResponse =
-            response.json().await?;
-        let contexts = api_response.data.contexts;
-
-        for context in contexts {
-            println!("{}", context.id);
-        }
+        info!("Context {} sucesfully joined", self.context_id);
 
         Ok(())
     }

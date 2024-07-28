@@ -47,7 +47,18 @@ impl EventLoop {
                     error!("Failed to send listening on event: {:?}", err);
                 }
             }
-            SwarmEvent::IncomingConnection { .. } => {}
+            SwarmEvent::IncomingConnection {
+                connection_id,
+                local_addr,
+                send_back_addr,
+            } => {
+                debug!(
+                    ?connection_id,
+                    ?local_addr,
+                    ?send_back_addr,
+                    "Incoming connection"
+                );
+            }
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
@@ -73,12 +84,22 @@ impl EventLoop {
                 cause,
             } => {
                 debug!(
-                    "Connection closed: {} {:?} {:?} {} {:?}",
-                    peer_id, connection_id, endpoint, num_established, cause
+                    is_connected=%self.swarm.is_connected(&peer_id),
+                    %peer_id,
+                    ?connection_id,
+                    ?endpoint,
+                    %num_established,
+                    ?cause,
+                    "Connection closed",
                 );
+
                 if !self.swarm.is_connected(&peer_id)
                     && !self.discovery.state.is_peer_relay(&peer_id)
                     && !self.discovery.state.is_peer_rendezvous(&peer_id)
+                    && !self.discovery.state.is_peer_discovered_via(
+                        &peer_id,
+                        discovery::state::PeerDiscoveryMechanism::Mdns,
+                    )
                 {
                     self.discovery.state.remove_peer(&peer_id);
                 }
@@ -119,7 +140,7 @@ impl EventLoop {
                         &relayed_addr.relay_peer,
                         discovery::state::RelayReservationStatus::Accepted,
                     );
-                    self.discovery.state.set_pending_addr_changes();
+
                     if let Err(err) = self.broadcast_rendezvous_registrations() {
                         error!(%err, "Failed to handle rendezvous register");
                     };
@@ -133,7 +154,6 @@ impl EventLoop {
                         discovery::state::RelayReservationStatus::Expired,
                     );
 
-                    self.discovery.state.set_pending_addr_changes();
                     if let Err(err) = self.broadcast_rendezvous_registrations() {
                         error!(%err, "Failed to handle rendezvous register");
                     };

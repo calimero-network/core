@@ -70,6 +70,14 @@ pub enum ParseError<'a> {
     NoComplexVisibility,
     #[error("explicit ABIs are not supported")]
     NoExplicitAbi,
+    #[error("an initializer, by definition, has no `self` to reference")]
+    NoSelfReceiverAtInit,
+    #[error("an initializer method, by definition, has to be public")]
+    NoPrivateInit,
+    #[error("method named `init` must be annotated with `#[app::init]`")]
+    InitMethodWithoutInitAttribute,
+    #[error("method annotated with `#[app::init]` must be named `init`")]
+    AppInitMethodNotNamedInit,
 }
 
 impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {

@@ -21,7 +21,7 @@ impl ListCommand {
             eyre::bail!("No address.")
         };
 
-        let url = multiaddr_to_url(multiaddr, "admin-api/dev/contexts")?;
+        let url = multiaddr_to_url(multiaddr, "admin-api/dev/applications")?;
         let client = Client::new();
         let response = client.get(url).send().await?;
 
@@ -29,12 +29,12 @@ impl ListCommand {
             eyre::bail!("Request failed with status: {}", response.status())
         }
 
-        let api_response: calimero_server_primitives::admin::GetContextsResponse =
+        let api_response: calimero_server_primitives::admin::ListApplicationsResponse =
             response.json().await?;
-        let contexts = api_response.data.contexts;
+        let app_list = api_response.data.apps;
 
-        for context in contexts {
-            println!("{}", context.id);
+        for app in app_list {
+            println!("{}", app.id);
         }
 
         Ok(())

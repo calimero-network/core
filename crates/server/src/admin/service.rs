@@ -83,6 +83,10 @@ pub(crate) fn setup(
             "/contexts/:context_id/storage",
             get(handlers::context::get_context_storage_handler),
         )
+        .route(
+            "/contexts/:context_id/join",
+            post(handlers::context::join_context_handler),
+        )
         .route("/contexts", get(handlers::context::get_contexts_handler))
         .route(
             "/identity/keys",
@@ -109,6 +113,10 @@ pub(crate) fn setup(
             "/dev/contexts",
             get(handlers::context::get_contexts_handler)
                 .post(handlers::context::create_context_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/join",
+            post(handlers::context::join_context_handler),
         )
         .route("/dev/applications", get(list_applications_handler))
         .layer(Extension(shared_state));
@@ -205,7 +213,12 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application(&req.application, &req.version)
+        .install_application(
+            &req.application,
+            &req.version,
+            &req.url,
+            req.hash.as_deref(),
+        )
         .await
     {
         Ok(()) => ApiResponse {

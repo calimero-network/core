@@ -20,6 +20,11 @@ pub enum Event<'a> {
 
 #[app::logic]
 impl KvStore {
+    #[app::init]
+    pub fn init() -> KvStore {
+        KvStore::default()
+    }
+
     pub fn set(&mut self, key: String, value: String) {
         env::log(&format!("Setting key: {:?} to value: {:?}", key, value));
 
