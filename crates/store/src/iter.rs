@@ -2,9 +2,10 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use calimero_primitives::reflect::Reflect;
+use thiserror::Error;
 
 use crate::entry::Codec;
-use crate::key::{AsKeyParts, FromKeyParts, Key as KeyCore};
+use crate::key::{FromKeyParts, Key as KeyCore};
 use crate::slice::Slice;
 
 #[derive(Debug)]
