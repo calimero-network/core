@@ -1,8 +1,9 @@
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::str;
 use std::sync::Arc;
 
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
@@ -17,6 +18,7 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::handlers;
+use super::storage::ssl::get_ssl;
 use crate::middleware;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -97,6 +99,7 @@ pub(crate) fn setup(
 
     let unprotected_router = Router::new()
         .route("/health", get(health_check_handler))
+        .route("/certificate", get(certificate_handler))
         .route(
             "/request-challenge",
             post(handlers::challenge::request_challenge_handler),
@@ -240,5 +243,48 @@ async fn list_applications_handler(
         }
         .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
+    let certificate = match get_ssl(state.store.clone()) {
+        Ok(Some(cert)) => Some(cert),
+        Ok(None) => None,
+        Err(err) => {
+            eprintln!("Failed to get the certificate: {}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to get the certificate",
+            )
+                .into_response();
+        }
+    };
+
+    if let Some(certificate) = certificate {
+        // Generate the file content
+        let file_content = match str::from_utf8(&certificate.cert()) {
+            Ok(content) => content.to_string(),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to read certificate content",
+                )
+                    .into_response()
+            }
+        };
+        let file_name = "cert.pem";
+
+        // Create headers for file download
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file_name)).unwrap(),
+        );
+
+        // Create the response with the file content and headers
+        (headers, file_content).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "Certificate not found").into_response()
     }
 }
