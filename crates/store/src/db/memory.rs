@@ -467,21 +467,28 @@ mod tests {
 
         let mut iter = db.iter(Column::Identity).unwrap();
 
-        iter.seek((&[]).into()).unwrap();
+        let mut key = Some(iter.seek((&[]).into()).unwrap().unwrap().into_boxed());
+        let mut value = Some(iter.read().unwrap().clone().into_boxed());
 
         let mut entries = iter.entries();
 
         for b1 in 0..10 {
             for b2 in 0..10 {
+                let (k, v) = entries
+                    .next()
+                    .transpose()
+                    .unwrap()
+                    .map_or_else(Default::default, |(k, v)| {
+                        (Some(k.into_boxed()), Some(v.into_boxed()))
+                    });
+
+                let last_key = std::mem::replace(&mut key, k).unwrap();
+                let last_value = std::mem::replace(&mut value, v).unwrap();
+
                 let bytes = [b1, b2];
 
-                let key = Slice::from(&bytes[..]);
-                let value = Slice::from(&bytes[..]);
-
-                let (k, v) = entries.next().unwrap().unwrap();
-
-                assert_eq!(k, key);
-                assert_eq!(v, value);
+                assert_eq!(bytes, &*last_key);
+                assert_eq!(bytes, &*last_value);
             }
         }
     }
@@ -513,21 +520,28 @@ mod tests {
 
         let mut iter = db.iter(Column::Identity).unwrap();
 
-        iter.seek((&[]).into()).unwrap();
+        let mut key = Some(iter.seek((&[]).into()).unwrap().unwrap().into_boxed());
+        let mut value = Some(iter.read().unwrap().clone().into_boxed());
 
         let mut entries = iter.entries();
 
         for b1 in 0..10 {
             for b2 in 0..10 {
+                let (k, v) = entries
+                    .next()
+                    .transpose()
+                    .unwrap()
+                    .map_or_else(Default::default, |(k, v)| {
+                        (Some(k.into_boxed()), Some(v.into_boxed()))
+                    });
+
+                let last_key = std::mem::replace(&mut key, k).unwrap();
+                let last_value = std::mem::replace(&mut value, v).unwrap();
+
                 let bytes = [b1, b2];
 
-                let key = Slice::from(&bytes[..]);
-                let value = Slice::from(&bytes[..]);
-
-                let (k, v) = entries.next().unwrap().unwrap();
-
-                assert_eq!(k, key);
-                assert_eq!(v, value);
+                assert_eq!(bytes, &*last_key);
+                assert_eq!(bytes, &*last_value);
             }
         }
     }
