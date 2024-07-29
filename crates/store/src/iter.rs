@@ -8,14 +8,20 @@ use crate::entry::Codec;
 use crate::key::{FromKeyParts, Key as KeyCore};
 use crate::slice::Slice;
 
-#[derive(Debug)]
 pub struct Iter<'a, K = Unstructured, V = Unstructured> {
     done: bool,
     inner: Box<dyn DBIter + 'a>,
     _priv: PhantomData<(K, V)>,
 }
 
+impl<'a, K, V> fmt::Debug for Iter<'a, K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Iter").field(&self.inner).finish()
+    }
+}
+
 pub trait DBIter {
+    // todo! indicate somehow that Key<'a> doesn't contain mutable references to &'a mut self
     fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>>;
     fn next(&mut self) -> eyre::Result<Option<Key>>;
     fn read(&self) -> eyre::Result<Value>;
