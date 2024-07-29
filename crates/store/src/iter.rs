@@ -43,17 +43,11 @@ impl<'a, K, V> Iter<'a, K, V> {
     }
 
     pub fn keys(&mut self) -> IterKeys<'_, 'a, K, V> {
-        IterKeys {
-            done: false,
-            iter: self,
-        }
+        IterKeys { iter: self }
     }
 
     pub fn entries(&mut self) -> IterEntries<'_, 'a, K, V> {
-        IterEntries {
-            done: false,
-            iter: self,
-        }
+        IterEntries { iter: self }
     }
 }
 
@@ -149,7 +143,6 @@ impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
 }
 
 pub struct IterKeys<'a, 'b, K, V> {
-    done: bool,
     iter: &'a mut Iter<'b, K, V>,
 }
 
@@ -178,7 +171,6 @@ where
 }
 
 pub struct IterEntries<'a, 'b, K, V> {
-    done: bool,
     iter: &'a mut Iter<'b, K, V>,
 }
 
