@@ -3,16 +3,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
 
-#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct ContextIdentity {
-    pub public_key: [u8; 32],
+#[derive(Eq, Clone, Debug, PartialEq)]
+pub struct KeyPair {
+    pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
 }
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
-pub struct ContextIdentities {
-    pub identities: Vec<ContextIdentity>,
-}
+// This could use a Hash, but we need to be able to serialize the PublicKey and
+// create::hash::Hash does not currently implement Borsh.
+pub struct PublicKey(pub [u8; 32]);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Did {

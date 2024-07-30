@@ -4,6 +4,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use calimero_primitives::identity::{KeyPair, PublicKey};
 use rand::RngCore;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -174,8 +175,8 @@ pub async fn create_context_handler(
         last_transaction_hash: Default::default(),
     };
 
-    let initial_identity = calimero_primitives::identity::ContextIdentity {
-        public_key: *context_id.as_bytes(),
+    let initial_identity = KeyPair {
+        public_key: PublicKey(*context_id.as_bytes()),
         private_key: Some(*signing_key.as_bytes()),
     };
 

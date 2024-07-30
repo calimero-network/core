@@ -1,7 +1,7 @@
 use std::io;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::ContextIdentity;
+use calimero_primitives::identity::{KeyPair, PublicKey};
 
 use crate::entry::DataType;
 use crate::key;
@@ -54,6 +54,12 @@ impl PredefinedEntry for key::ContextState {
     type DataType<'a> = ContextState<'a>;
 }
 
+#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct ContextIdentity {
+    pub public_key: PublicKey,
+    pub private_key: Option<[u8; 32]>,
+}
+
 impl DataType<'_> for ContextIdentity {
     type Error = io::Error;
 
@@ -63,6 +69,24 @@ impl DataType<'_> for ContextIdentity {
 
     fn as_slice(&self) -> Result<Slice, Self::Error> {
         borsh::to_vec(self).map(Into::into)
+    }
+}
+
+impl From<KeyPair> for ContextIdentity {
+    fn from(id: KeyPair) -> Self {
+        Self {
+            public_key: id.public_key,
+            private_key: id.private_key,
+        }
+    }
+}
+
+impl From<ContextIdentity> for KeyPair {
+    fn from(id: ContextIdentity) -> Self {
+        Self {
+            public_key: id.public_key,
+            private_key: id.private_key,
+        }
     }
 }
 

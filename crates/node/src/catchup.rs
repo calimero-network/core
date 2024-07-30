@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use calimero_primitives::identity::{KeyPair, PublicKey};
 use futures_util::{SinkExt, StreamExt};
 use tracing::{error, info, warn};
 
@@ -9,28 +10,6 @@ use crate::{types, Node};
 mod batch;
 
 impl Node {
-    pub fn derive_executor_public_key(
-        &self,
-        context_id: &calimero_primitives::context::ContextId,
-        executor_public_key: &[u8; 32],
-    ) -> eyre::Result<[u8; 32]> {
-        let handle = self.store.handle();
-
-        // Retrieve ContextIdentity
-        let identity_key =
-            calimero_store::key::ContextIdentity::new(*context_id, *executor_public_key);
-        let identity: calimero_primitives::identity::ContextIdentity =
-            handle.get(&identity_key)?.ok_or_else(|| {
-                eyre::eyre!(
-                    "ContextIdentity not found for context {} and public key {:?}",
-                    context_id,
-                    executor_public_key
-                )
-            })?;
-
-        Ok(identity.public_key)
-    }
-
     pub(crate) async fn handle_opened_stream(
         &mut self,
         mut stream: calimero_network::stream::Stream,
@@ -180,14 +159,7 @@ impl Node {
                         method: transaction.method.into(),
                         payload: transaction.payload.into(),
                         prior_hash: calimero_primitives::hash::Hash::from(transaction.prior_hash),
-                        executor_public_key: self
-                            .derive_executor_public_key(
-                                &request.context_id,
-                                &transaction.executor_public_key,
-                            )
-                            .map_err(|e| {
-                                eyre::eyre!("Failed to derive executor public key: {}", e)
-                            })?,
+                        executor_public_key: transaction.executor_public_key,
                     },
                     status: types::TransactionStatus::Executed,
                 })
@@ -203,14 +175,7 @@ impl Node {
                         method: transaction.method.clone(),
                         payload: transaction.payload.clone(),
                         prior_hash: transaction.prior_hash,
-                        executor_public_key: self
-                            .derive_executor_public_key(
-                                &request.context_id,
-                                &transaction.executor_public_key,
-                            )
-                            .map_err(|e| {
-                                eyre::eyre!("Failed to derive executor public key: {}", e)
-                            })?,
+                        executor_public_key: transaction.executor_public_key,
                     },
                     status: types::TransactionStatus::Pending,
                 })
@@ -326,15 +291,6 @@ impl Node {
                     match status {
                         types::TransactionStatus::Pending => match self.typ {
                             calimero_node_primitives::NodeType::Peer => {
-                                let executor_public_key = self
-                                    .derive_executor_public_key(
-                                        &context_.id,
-                                        &transaction.executor_public_key,
-                                    )
-                                    .map_err(|e| {
-                                        eyre::eyre!("Failed to derive executor public key: {}", e)
-                                    })?;
-
                                 self.tx_pool.insert(
                                     chosen_peer,
                                     calimero_primitives::transaction::Transaction {
@@ -342,7 +298,7 @@ impl Node {
                                         method: transaction.method,
                                         payload: transaction.payload,
                                         prior_hash: transaction.prior_hash,
-                                        executor_public_key,
+                                        executor_public_key: transaction.executor_public_key,
                                     },
                                     None,
                                 )?;
@@ -417,9 +373,9 @@ impl Node {
                             last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
-                        // We don't have the private key during catchup
-                        let initial_identity = calimero_primitives::identity::ContextIdentity {
-                            public_key: *context_id,
+                        // We don't have the identity during catchup
+                        let initial_identity = KeyPair {
+                            public_key: PublicKey(*context_id),
                             private_key: None,
                         };
 
