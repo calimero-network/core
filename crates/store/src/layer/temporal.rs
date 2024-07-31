@@ -1,4 +1,4 @@
-use crate::iter::{DBIter, FusedIter, Iter, Structured};
+use crate::iter::{DBIter, Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
 use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
@@ -50,9 +50,9 @@ where
 
     fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<Structured<K>>> {
         Ok(Iter::new(TemporalIterator {
-            inner: FusedIter::new(self.inner.iter::<K>()?),
+            inner: self.inner.iter::<K>()?,
             shadow: &self.shadow,
-            range: None,
+            shadow_iter: None,
             value: None,
         }))
     }
@@ -88,44 +88,50 @@ where
 }
 
 struct TemporalIterator<'a, 'b, K> {
-    inner: FusedIter<Iter<'a, Structured<K>>>,
+    inner: Iter<'a, Structured<K>>,
     shadow: &'a Transaction<'b>,
-    range: Option<tx::Iter<'a, 'b>>,
+    shadow_iter: Option<tx::ColRange<'a, 'b>>,
     value: Option<Slice<'a>>,
 }
 
 impl<'a, 'b, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, 'b, K> {
     fn seek(&mut self, key: Slice) -> eyre::Result<Option<Slice>> {
+        self.shadow_iter = Some(self.shadow.col_iter(K::column(), Some(&key)));
         self.inner.seek(key)
     }
 
     fn next(&mut self) -> eyre::Result<Option<Slice>> {
+        self.value = None;
+
         loop {
-            self.value = None;
-
             // safety: Slice doesn't mutably borrow self
-            let other =
-                unsafe { &mut *(&mut self.inner as *mut FusedIter<Iter<'a, Structured<K>>>) };
+            let other = unsafe { &mut *(&mut self.inner as *mut Iter<'a, Structured<K>>) };
 
-            if let Some(key) = other.next()? {
-                match self.shadow.raw_get(K::column(), &key) {
-                    Some(Operation::Delete) => continue,
-                    Some(Operation::Put { value }) => self.value = Some(value.into()),
-                    None => {}
-                }
+            let Some(key) = other.next()? else {
+                break;
+            };
 
-                return Ok(Some(key));
+            match self.shadow.raw_get(K::column(), &key) {
+                Some(Operation::Delete) => continue,
+                Some(Operation::Put { value }) => self.value = Some(value.into()),
+                None => {}
             }
 
-            let shadow_iter = self.range.get_or_insert_with(|| self.shadow.iter());
+            return Ok(Some(key));
+        }
 
-            if let Some((entry, op)) = shadow_iter.next() {
+        let shadow_iter = self
+            .shadow_iter
+            .get_or_insert_with(|| self.shadow.col_iter(K::column(), None));
+
+        loop {
+            if let Some((key, op)) = shadow_iter.next() {
                 match op {
                     Operation::Delete => continue,
                     Operation::Put { value } => self.value = Some(value.into()),
                 }
 
-                return Ok(Some(entry.key().into()));
+                return Ok(Some(key.into()));
             }
 
             return Ok(None);
@@ -137,10 +143,6 @@ impl<'a, 'b, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, 'b, K
             return Ok(value.into());
         };
 
-        let Some(value) = self.inner.read()? else {
-            eyre::bail!("missing value for iterator entry");
-        };
-
-        Ok(value)
+        self.inner.read()
     }
 }
