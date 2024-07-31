@@ -135,8 +135,8 @@ impl<'a> From<Slice<'a>> for Box<[u8]> {
 }
 
 impl<'a> Eq for Slice<'a> {}
-impl<'a, 'b> PartialEq<Slice<'b>> for Slice<'a> {
-    fn eq(&self, other: &Slice<'b>) -> bool {
+impl<'a, T: AsRef<[u8]> + ?Sized> PartialEq<T> for Slice<'a> {
+    fn eq(&self, other: &T) -> bool {
         self.as_ref() == other.as_ref()
     }
 }
