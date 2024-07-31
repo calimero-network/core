@@ -30,12 +30,12 @@ pub enum Error<E> {
 type EntryError<'a, E> =
     Error<<<E as Entry>::Codec as Codec<'a, <E as Entry>::DataType<'a>>>::Error>;
 
-impl<'a, L: ReadLayer<'a>> Handle<L> {
-    pub fn has<E: Entry>(&'a self, entry: &'a E) -> Result<bool, EntryError<E>> {
+impl<L: ReadLayer> Handle<L> {
+    pub fn has<E: Entry>(&self, entry: &E) -> Result<bool, EntryError<E>> {
         Ok(self.inner.has(entry.key())?)
     }
 
-    pub fn get<E: Entry>(&'a self, entry: &'a E) -> Result<Option<E::DataType<'_>>, EntryError<E>> {
+    pub fn get<E: Entry>(&self, entry: &E) -> Result<Option<E::DataType<'_>>, EntryError<E>> {
         match self.inner.get(entry.key())? {
             Some(value) => Ok(Some(E::Codec::decode(value).map_err(Error::CodecError)?)),
             None => Ok(None),
@@ -43,7 +43,7 @@ impl<'a, L: ReadLayer<'a>> Handle<L> {
     }
 
     pub fn iter<E: Entry<Key: FromKeyParts>>(
-        &'a self,
+        &self,
     ) -> Result<Iter<Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>, EntryError<E>>
     {
         Ok(self.inner.iter()?.structured_value())
