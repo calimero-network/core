@@ -1,4 +1,5 @@
 use std::collections::{btree_map, BTreeMap};
+use std::ops::Bound;
 
 use crate::db::Column;
 use crate::key::AsKeyParts;
@@ -16,7 +17,11 @@ pub enum Operation<'a> {
 }
 
 impl<'a> Transaction<'a> {
-    pub fn get<K: AsKeyParts>(&self, key: &'a K) -> Option<&Operation> {
+    pub(crate) fn raw_get(&self, column: Column, key: &[u8]) -> Option<&Operation> {
+        self.cols.get(&column).and_then(|ops| ops.get(key))
+    }
+
+    pub fn get<K: AsKeyParts>(&self, key: &K) -> Option<&Operation> {
         self.cols
             .get(&K::column())
             .and_then(|ops| ops.get(key.as_key().as_bytes()))
@@ -53,6 +58,29 @@ impl<'a> Transaction<'a> {
             iter: self.cols.iter(),
             cursor: None,
         }
+    }
+
+    pub(crate) fn col_iter(&self, col: Column, start: Option<&[u8]>) -> ColRange<'_, 'a> {
+        ColRange {
+            iter: self.cols.get(&col).map(|col| {
+                col.range::<[u8], _>((
+                    start.map_or_else(|| Bound::Unbounded, Bound::Included),
+                    Bound::Unbounded,
+                ))
+            }),
+        }
+    }
+}
+
+pub(crate) struct ColRange<'this, 'a> {
+    iter: Option<btree_map::Range<'this, Slice<'a>, Operation<'a>>>,
+}
+
+impl<'this, 'a> Iterator for ColRange<'this, 'a> {
+    type Item = (Slice<'this>, &'this Operation<'a>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.as_mut()?.next().map(|(k, v)| (k.into(), v))
     }
 }
 
