@@ -77,13 +77,25 @@ fn rocks_store() {
 
         assert_eq!(
             Some((key1, b"Hello, World".into())),
-            keys.next().transpose().unwrap()
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
         );
         assert_eq!(
             Some((key2, b"Another Value".into())),
-            keys.next().transpose().unwrap()
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
         );
-        assert_eq!(None, keys.next().transpose().unwrap());
+        assert_eq!(
+            None,
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
+        );
     }
 
     let public_key1 = [0u8; 32];
@@ -196,13 +208,25 @@ fn temporal_store() {
 
         assert_eq!(
             Some((key1, b"Hello, World".into())),
-            keys.next().transpose().unwrap()
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
         );
         assert_eq!(
             Some((key2, b"Another Value".into())),
-            keys.next().transpose().unwrap()
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
         );
-        assert_eq!(None, keys.next().transpose().unwrap());
+        assert_eq!(
+            None,
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
+        );
     }
 
     let public_key1 = [0u8; 32];

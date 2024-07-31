@@ -178,15 +178,15 @@ impl<'a, 'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'a
 where
     eyre::Report: From<K::Error> + From<V::Error>,
 {
-    type Item = eyre::Result<(K::Key, V::Value)>;
+    type Item = (eyre::Result<K::Key>, eyre::Result<V::Value>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let key = {
+        let key = 'key: {
             let key = 'found: {
                 if !self.iter.done {
                     match self.iter.inner.next() {
                         Ok(Some(key)) => break 'found key,
-                        Err(e) => return Some(Err(e)),
+                        Err(e) => break 'key Err(e),
                         _ => {}
                     }
 
@@ -199,28 +199,22 @@ where
             // safety: key only needs to live as long as the iterator, not it's reference
             let key = unsafe { std::mem::transmute(key) };
 
-            match K::try_into_key(key).map_err(Into::into) {
-                Ok(key) => key,
-                Err(err) => return Some(Err(err)),
-            }
+            K::try_into_key(key).map_err(Into::into)
         };
 
-        let value = {
+        let value = 'value: {
             let value = match self.iter.inner.read() {
                 Ok(value) => value,
-                Err(value) => return Some(Err(value)),
+                Err(value) => break 'value Err(value),
             };
 
             // safety: value only needs to live as long as the iterator, not it's reference
             let value = unsafe { std::mem::transmute(value) };
 
-            match V::try_into_value(value).map_err(Into::into) {
-                Ok(value) => value,
-                Err(err) => return Some(Err(err)),
-            }
+            V::try_into_value(value).map_err(Into::into)
         };
 
-        Some(Ok((key, value)))
+        Some((key, value))
     }
 }
 
