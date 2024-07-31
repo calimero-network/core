@@ -31,11 +31,12 @@ fn expected_boolean<T>(e: u32) -> T {
     panic_str(&format!("Expected 0|1. Got {e}"));
 }
 
-pub fn get_executor_identity() -> String {
+pub fn get_executor_identity() -> [u8; 32] {
     unsafe { sys::get_executor_identity(DATA_REGISTER) };
     read_register(DATA_REGISTER)
-        .map(|data| String::from_utf8(data).expect("Invalid UTF-8"))
-        .unwrap_or_default()
+        .expect("Must have executor identity.")
+        .try_into()
+        .expect("Wrong executor identity length.")
 }
 
 pub fn sign_message(message: &[u8]) -> Vec<u8> {

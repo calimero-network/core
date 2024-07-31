@@ -144,7 +144,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             return Ok(());
                         };
 
-                        // Parse the executor's public key if provided, or use a default
+                        // Parse the executor's public key if provided
                         let executor_public_key = if !executor_key.is_empty() {
                             bs58::decode(executor_key)
                                 .into_vec()
@@ -152,9 +152,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                 .try_into()
                                 .map_err(|_| eyre::eyre!("Executor public key must be 32 bytes"))?
                         } else {
-                            // Use a default key or generate a temporary one
-                            // TODO: This is just a placeholder, it needs appropriate logic
-                            [0u8; 32]
+                            return Err(eyre::eyre!("Executor public key is required"));
                         };
 
                         let tx_hash = match node
@@ -243,7 +241,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     }
                 }
             } else {
-                println!("{IND} Usage: call <Method> <JSON Payload>");
+                println!(
+                    "{IND} Usage: call <Context ID> <Method> <JSON Payload> [Executor Public Key]"
+                );
             }
         }
         "gc" => {

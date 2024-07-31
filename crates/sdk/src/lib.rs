@@ -4,7 +4,7 @@ pub mod env;
 pub mod event;
 mod returns;
 pub mod state;
-pub mod sys;
+mod sys;
 
 pub mod app {
     pub use calimero_sdk_macros::{destroy, emit, event, logic, state};
