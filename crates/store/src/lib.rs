@@ -14,11 +14,11 @@ pub mod types;
 
 use handle::Handle;
 
-pub struct Store<'db, 'a> {
-    db: Arc<dyn db::Database<'a> + 'db>,
+pub struct Store<'db> {
+    db: Arc<dyn for<'a> db::Database<'a> + 'db>,
 }
 
-impl Clone for Store<'_, '_> {
+impl Clone for Store<'_> {
     fn clone(&self) -> Self {
         Self {
             db: self.db.clone(),
@@ -26,8 +26,10 @@ impl Clone for Store<'_, '_> {
     }
 }
 
-impl<'db, 'a> Store<'db, 'a> {
-    pub fn open<T: db::Database<'a> + 'db>(config: &config::StoreConfig) -> eyre::Result<Self> {
+impl<'db> Store<'db> {
+    pub fn open<T: for<'a> db::Database<'a> + 'db>(
+        config: &config::StoreConfig,
+    ) -> eyre::Result<Self> {
         let db = T::open(&config)?;
 
         Ok(Store { db: Arc::new(db) })
