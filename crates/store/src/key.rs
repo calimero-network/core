@@ -110,7 +110,7 @@ where
     }
 }
 
-pub trait AsKeyParts: Copy {
+pub trait AsKeyParts: Copy + 'static {
     // KeyParts is Sealed so far as KeyComponents stays private
     type Components: KeyComponents;
 
