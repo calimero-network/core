@@ -9,10 +9,6 @@ use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
-use near_jsonrpc_client::{methods, JsonRpcClient};
-use near_jsonrpc_primitives::types::query::QueryResponseKind;
-use near_primitives::types::{BlockReference, Finality, FunctionArgs};
-use near_primitives::views::QueryRequest;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tracing::{error, info};
@@ -53,9 +49,11 @@ impl ContextManager {
     async fn boot(&self) -> eyre::Result<()> {
         let handle = self.store.handle();
 
-        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?;
+        let mut iter = handle.iter::<calimero_store::key::ContextMeta>()?;
 
         for key in iter.keys() {
+            let key = key?;
+
             self.state
                 .write()
                 .await
@@ -212,13 +210,21 @@ impl ContextManager {
     ) -> eyre::Result<Vec<calimero_primitives::context::ContextId>> {
         let handle = self.store.handle();
 
-        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new(
-            start.map_or_else(|| [0; 32].into(), Into::into),
-        ))?;
+        let mut iter = handle.iter::<calimero_store::key::ContextMeta>()?;
 
-        let contexts = iter.keys().map(|key| key.context_id());
+        let mut ids = vec![];
 
-        Ok(contexts.collect())
+        if let Some(start) = start {
+            if let Some(key) = iter.seek(calimero_store::key::ContextMeta::new(start))? {
+                ids.push(key.context_id());
+            }
+        }
+
+        for key in iter.keys() {
+            ids.push(key?.context_id());
+        }
+
+        Ok(ids)
     }
 
     pub fn get_contexts(
@@ -227,19 +233,33 @@ impl ContextManager {
     ) -> eyre::Result<Vec<calimero_primitives::context::Context>> {
         let handle = self.store.handle();
 
-        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new(
-            start.map_or_else(|| [0; 32].into(), Into::into),
-        ))?;
+        let mut iter = handle.iter::<calimero_store::key::ContextMeta>()?;
 
-        let contexts = iter
-            .entries()
-            .map(|(k, v)| calimero_primitives::context::Context {
+        let mut contexts = vec![];
+
+        if let Some(start) = start {
+            // todo! Iter shouldn't behave like DBIter, first next should return sought element
+            if let Some(key) = iter.seek(calimero_store::key::ContextMeta::new(start))? {
+                let value: calimero_store::types::ContextMeta = iter.read()?;
+
+                contexts.push(calimero_primitives::context::Context {
+                    id: key.context_id(),
+                    application_id: value.application_id.into_string().into(),
+                    last_transaction_hash: value.last_transaction_hash.into(),
+                });
+            }
+        }
+
+        for (k, v) in iter.entries() {
+            let (k, v) = (k?, v?);
+            contexts.push(calimero_primitives::context::Context {
                 id: k.context_id(),
                 application_id: v.application_id.into_string().into(),
                 last_transaction_hash: v.last_transaction_hash.into(),
             });
+        }
 
-        Ok(contexts.collect())
+        Ok(contexts)
     }
 
     // todo! do this only when initializing contexts
@@ -249,8 +269,8 @@ impl ContextManager {
         application_id: &calimero_primitives::application::ApplicationId,
         // todo! permit None version for latest
         version: &semver::Version,
-         // represents the url path to the release binary (e.g. ipfs path)
-         url: &str,
+        // represents the url path to the release binary (e.g. ipfs path)
+        url: &str,
         hash: Option<&str>,
     ) -> eyre::Result<()> {
         self.download_and_install_release(&application_id, &version, &url, hash)
