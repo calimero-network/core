@@ -28,17 +28,17 @@ pub trait WriteLayer<'a>: Layer {
     fn commit(self) -> eyre::Result<()>;
 }
 
-pub trait LayerExt: Sized {
+pub trait LayerExt: Layer + Sized {
     fn handle(self) -> Handle<Self>;
 
-    fn temporal<'a>(&'a mut self) -> temporal::Temporal<'_, 'a, Self>
+    fn temporal<'a>(&mut self) -> temporal::Temporal<'_, 'a, Self>
     where
         Self: WriteLayer<'a>,
     {
         temporal::Temporal::new(self)
     }
 
-    fn read_only<'a>(&self) -> read_only::ReadOnly<'_, Self>
+    fn read_only(&self) -> read_only::ReadOnly<'_, Self>
     where
         Self: ReadLayer,
     {
