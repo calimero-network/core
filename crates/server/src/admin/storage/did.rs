@@ -9,7 +9,8 @@ struct DidEntry {
 
 impl Entry for DidEntry {
     type Key = Generic;
-    type DataType<'a> = Json<Did>;
+    type Codec = Json;
+    type DataType<'a> = Did;
 
     fn key(&self) -> &Self::Key {
         &self.key
@@ -25,11 +26,11 @@ impl DidEntry {
 }
 
 pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
-    let did_document = Json::new(Did {
+    let did_document = Did {
         id: "did:cali".to_string(),
         root_keys: vec![],
         client_keys: vec![],
-    });
+    };
 
     let entry = DidEntry::new();
 
@@ -37,7 +38,7 @@ pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
 
     handle.put(&entry, &did_document)?;
 
-    Ok(did_document.value())
+    Ok(did_document)
 }
 
 pub fn get_or_create_did(store: &mut Store) -> eyre::Result<Did> {
@@ -49,17 +50,15 @@ pub fn get_or_create_did(store: &mut Store) -> eyre::Result<Did> {
         return create_did(store);
     };
 
-    Ok(did_document.value())
+    Ok(did_document)
 }
 
 pub fn update_did(store: &mut Store, did: Did) -> eyre::Result<()> {
     let entry = DidEntry::new();
 
-    let did_document = Json::new(did);
-
     let mut handle = store.handle();
 
-    handle.put(&entry, &did_document)?;
+    handle.put(&entry, &did)?;
 
     Ok(())
 }

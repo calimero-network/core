@@ -78,9 +78,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
     match network_client
-        .subscribe(IdentTopic::new(
-            "meta_topic".to_string(),
-        ))
+        .subscribe(IdentTopic::new("meta_topic"))
         .await
     {
         Ok(_) => info!("Subscribed to meta topic"),
@@ -299,11 +297,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 c3 = "Value"
             );
 
-            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32].into());
-
             let handle = node.store.handle();
 
-            for (k, v) in &mut handle.iter(&key)?.entries() {
+            for (k, v) in handle
+                .iter::<calimero_store::key::ContextState>()?
+                .entries()
+            {
+                let (k, v) = (k?, v?);
                 let (cx, state_key) = (k.context_id(), k.state_key());
                 let sk = calimero_primitives::hash::Hash::from(state_key);
                 let entry = format!("{c1:44} | {c2:44}| {c3:?}", c1 = cx, c2 = sk, c3 = v.value);
@@ -334,10 +334,8 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        for (k, v) in &mut handle
-                            .iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?
-                            .entries()
-                        {
+                        for (k, v) in handle.iter::<calimero_store::key::ContextMeta>()?.entries() {
+                            let (k, v) = (k?, v?);
                             let (cx, app_id, last_tx) =
                                 (k.context_id(), v.application_id, v.last_transaction_hash);
                             let entry = format!(
@@ -385,8 +383,8 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version, url)) = args
-                            .and_then(|args| {
+                        let Some((context_id, application_id, version, url)) =
+                            args.and_then(|args| {
                                 let mut iter = args.split(' ');
                                 let context = iter.next()?;
                                 let application = iter.next()?;
@@ -457,14 +455,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        let key = calimero_store::key::ContextTransaction::new(
-                            context_id,
-                            [0; 32].into(),
-                        );
+                        let mut iter = handle.iter::<calimero_store::key::ContextTransaction>()?;
+
+                        let first = 'first: {
+                            let Some(k) = iter
+                                .seek(calimero_store::key::ContextTransaction::new(
+                                    context_id, [0; 32],
+                                ))
+                                .transpose()
+                            else {
+                                break 'first None;
+                            };
+
+                            Some((k, iter.read()))
+                        };
 
                         println!("{IND} {c1:44} | {c2:44}", c1 = "Hash", c2 = "Prior Hash");
 
-                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                        for (k, v) in first.into_iter().chain(iter.entries()) {
+                            let (k, v) = (k?, v?);
                             let entry = format!(
                                 "{c1:44} | {c2}",
                                 c1 = calimero_primitives::hash::Hash::from(k.transaction_id()),
@@ -488,12 +497,29 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        let key =
-                            calimero_store::key::ContextState::new(context_id, [0; 32].into());
-
                         println!("{IND} {c1:44} | {c2:44}", c1 = "State Key", c2 = "Value");
 
-                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                        let mut iter = handle.iter::<calimero_store::key::ContextState>()?;
+
+                        // let first = 'first: {
+                        //     let Some(k) = iter
+                        //         .seek(calimero_store::key::ContextState::new(context_id, [0; 32]))
+                        //         .transpose()
+                        //     else {
+                        //         break 'first None;
+                        //     };
+
+                        //     Some((k, iter.read()))
+                        //                   ^^^^~ ContextState<'a> lends the `iter`, while `.entries()` attempts to mutate it
+                        // };
+
+                        for (k, v) in iter.entries() {
+                            let (k, v) = (k?, v?);
+                            if k.context_id() != context_id {
+                                // todo! revisit this when DBIter::seek no longer returns
+                                // todo! the sought item, you have to call next(), read()
+                                continue;
+                            }
                             let entry = format!(
                                 "{c1:44} | {c2:?}",
                                 c1 = calimero_primitives::hash::Hash::from(k.state_key()),

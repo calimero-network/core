@@ -6,7 +6,7 @@ use serde_json::Value;
 pub struct InstallApplicationRequest {
     pub application: calimero_primitives::application::ApplicationId, // TODO: rename to application_id
     pub version: semver::Version,
-    pub url: String,  // represents the url path to the release binary (e.g. ipfs path)
+    pub url: String, // represents the url path to the release binary (e.g. ipfs path)
     pub hash: Option<String>,
 }
 
