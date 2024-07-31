@@ -7,9 +7,9 @@ pub struct ReadOnly<'base, L> {
     inner: &'base L,
 }
 
-impl<'base, 'r, L> ReadOnly<'base, L>
+impl<'base, L> ReadOnly<'base, L>
 where
-    L: ReadLayer<'r>,
+    L: ReadLayer,
 {
     pub fn new(layer: &'base L) -> Self {
         Self { inner: layer }
@@ -20,15 +20,15 @@ impl<'base, L: Layer> Layer for ReadOnly<'base, L> {
     type Base = L;
 }
 
-impl<'base, 'r, L> ReadLayer<'r> for ReadOnly<'r, L>
+impl<'base, L> ReadLayer for ReadOnly<'base, L>
 where
-    L: ReadLayer<'r>,
+    L: ReadLayer,
 {
-    fn has<K: AsKeyParts>(&self, key: &'r K) -> eyre::Result<bool> {
+    fn has<K: AsKeyParts>(&self, key: &K) -> eyre::Result<bool> {
         self.inner.has(key)
     }
 
-    fn get<K: AsKeyParts>(&self, key: &'r K) -> eyre::Result<Option<Slice>> {
+    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice>> {
         self.inner.get(key)
     }
 
