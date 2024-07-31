@@ -115,19 +115,9 @@ impl<'this> AsRef<[u8]> for ArcSlice<'this> {
     }
 }
 
-impl<'a, T: InMemoryDBImpl<'a>> Database<'a> for InMemoryDB<T>
+impl<'a, T: InMemoryDBImpl<'a> + 'static> Database<'a> for InMemoryDB<T>
 where
-    T::Key: Ord
-        + Clone
-        + Borrow<[u8]>
-        //vv\
-        + 'a,
-    //  ~~^^~ this piece is weird, we don't exactly "need" it for InMemoryIter
-    //        but Rust forces it on us since it specifies a constraint of `CastsTo<Slice<'a>>`
-    //        The same doesn't apply for T::Value, even though they're both used in the same way.
-    //        Dropping that constraint fixes this requirement, but it exists as to guard against improper use
-    //        but I'll like to understand why it's happening in the first place, I'll leave it in until there's
-    //        an observable issue
+    T::Key: Ord + Clone + Borrow<[u8]>,
 {
     fn open(_config: &StoreConfig) -> eyre::Result<Self> {
         todo!("phase this out, please. it's not even worth writing an accomodation for")
