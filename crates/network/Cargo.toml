@@ -37,7 +37,6 @@ tokio.workspace = true
 tokio-util = { workspace = true, features = ["codec", "compat"] }
 tracing.workspace = true
 
-calimero-identity = { path = "../identity" }
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-primitives = { path = "../primitives" }
 

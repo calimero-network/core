@@ -39,11 +39,6 @@ pub fn get_executor_identity() -> [u8; 32] {
         .expect("Wrong executor identity length.")
 }
 
-pub fn sign_message(message: &[u8]) -> Vec<u8> {
-    unsafe { sys::sign_message(sys::Buffer::from(message), DATA_REGISTER) };
-    read_register(DATA_REGISTER).unwrap_or_default()
-}
-
 pub fn setup_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let message = match info.payload().downcast_ref::<&'static str>() {

@@ -1,6 +1,5 @@
 use std::num::NonZeroU64;
 
-use calimero_sdk::sys::RegisterId;
 use ouroboros::self_referencing;
 use serde::Serialize;
 
@@ -81,16 +80,6 @@ impl<'a> VMLogic<'a> {
             memory_builder: |store| memory.view(store),
         }
         .build()
-    }
-
-    pub fn get_executor_public_key(&mut self, register_id: u64) -> Result<()> {
-        self.registers
-            .set(self.limits, register_id, *&self.context.executor_public_key)
-    }
-
-    pub fn write_to_register(&mut self, register_id: RegisterId, data: &[u8]) -> Result<()> {
-        self.registers
-            .set(self.limits, register_id.as_usize() as u64, data)
     }
 }
 

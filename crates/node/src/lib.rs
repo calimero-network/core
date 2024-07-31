@@ -1,4 +1,3 @@
-use bs58;
 use calimero_primitives::events::OutcomeEvent;
 use calimero_primitives::identity::{KeyPair, PublicKey};
 use calimero_runtime::logic::VMLimits;

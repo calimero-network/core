@@ -28,7 +28,6 @@ wasm_imports! {
             register_id: RegisterId
         ) -> Bool;
         fn get_executor_identity(register_id: RegisterId);
-        fn sign_message(message: Buffer, register_id: RegisterId);
     }
 }
 

@@ -8,8 +8,6 @@ pub mod store;
 
 pub use constraint::Constraint;
 
-use crate::logic::{VMLogic, VMLogicError};
-
 pub type Result<T, E = errors::VMRuntimeError> = std::result::Result<T, E>;
 
 pub fn run(
