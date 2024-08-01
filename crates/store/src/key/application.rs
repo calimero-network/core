@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::fmt;
 
 use generic_array::typenum::U32;

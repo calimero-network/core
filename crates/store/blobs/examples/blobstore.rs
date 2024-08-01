@@ -1,6 +1,5 @@
 use calimero_blobstore::{BlobManager, FileSystem};
 use futures_util::TryStreamExt;
-use tokio::fs;
 use tokio::io::{self, AsyncWriteExt};
 
 const DATA_DIR: &'static str = "blob-tests/data";
