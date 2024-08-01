@@ -9,8 +9,7 @@ pub type TransactionHash = [u8; 32];
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextMeta {
-    // todo! make [u8; 32] when application_id<->meta is a separate record
-    pub application_id: Box<str>,
+    pub application: key::ApplicationMeta,
 
     pub last_transaction_hash: TransactionHash,
 }

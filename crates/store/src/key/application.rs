@@ -20,13 +20,13 @@ impl KeyComponent for ApplicationId {
 pub struct ApplicationMeta(Key<ApplicationId>);
 
 impl ApplicationMeta {
-    pub fn new(id: [u8; 32]) -> Self {
-        Self(Key(id.into()))
+    pub fn new(application_id: calimero_primitives::application::ApplicationId) -> Self {
+        Self(Key((*application_id).into()))
     }
 
     // todo! define a primitive ApplicationId
-    pub fn application_id(&self) -> [u8; 32] {
-        *AsRef::<[_; 32]>::as_ref(&self.0)
+    pub fn application_id(&self) -> calimero_primitives::application::ApplicationId {
+        (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
     }
 }
 

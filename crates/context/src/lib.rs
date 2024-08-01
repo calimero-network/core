@@ -107,7 +107,7 @@ impl ContextManager {
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
-                application_id: context.application_id.0.into(),
+                application: calimero_store::key::ApplicationMeta::new(context.application_id),
                 last_transaction_hash: context.last_transaction_hash.into(),
             },
         )?;
@@ -180,7 +180,7 @@ impl ContextManager {
 
         Ok(Some(calimero_primitives::context::Context {
             id: *context_id,
-            application_id: ctx_meta.application_id.into_string().into(),
+            application_id: ctx_meta.application.application_id(),
             last_transaction_hash: ctx_meta.last_transaction_hash.into(),
         }))
     }
@@ -244,7 +244,7 @@ impl ContextManager {
 
                 contexts.push(calimero_primitives::context::Context {
                     id: key.context_id(),
-                    application_id: value.application_id.into_string().into(),
+                    application_id: value.application.application_id(),
                     last_transaction_hash: value.last_transaction_hash.into(),
                 });
             }
@@ -254,7 +254,7 @@ impl ContextManager {
             let (k, v) = (k?, v?);
             contexts.push(calimero_primitives::context::Context {
                 id: k.context_id(),
-                application_id: v.application_id.into_string().into(),
+                application_id: v.application.application_id(),
                 last_transaction_hash: v.last_transaction_hash.into(),
             });
         }
@@ -303,7 +303,7 @@ impl ContextManager {
             eyre::bail!("Context not found")
         };
 
-        value.application_id = application_id.0.into();
+        value.application = calimero_store::key::ApplicationMeta::new(application_id);
 
         handle.put(&key, &value)?;
 
@@ -313,27 +313,20 @@ impl ContextManager {
     pub async fn list_installed_applications(
         &self,
     ) -> eyre::Result<Vec<calimero_primitives::application::Application>> {
-        if !self.config.dir.exists() {
-            return Ok(vec![]);
-        }
+        let handle = self.store.handle();
 
-        let Ok(entries) = fs::read_dir(&self.config.dir) else {
-            eyre::bail!("Failed to read application directory");
-        };
+        let mut iter = handle.iter::<calimero_store::key::ApplicationMeta>()?;
 
         let mut applications = vec![];
 
-        entries.filter_map(|entry| entry.ok()).for_each(|entry| {
-            if let Some(file_name) = entry.file_name().to_str() {
-                let application_id = file_name.to_string().into();
-                if let Some((version, _)) = self.get_latest_application_info(&application_id) {
-                    applications.push(calimero_primitives::application::Application {
-                        id: application_id,
-                        version,
-                    });
-                }
-            }
-        });
+        for (id, app) in iter.entries() {
+            let (id, app) = (id?, app?);
+
+            applications.push(calimero_primitives::application::Application {
+                id: id.application_id(),
+                version: semver::Version::new(0, 0, 0), // todo! this entry is no longer valid
+            })
+        }
 
         Ok(applications)
     }
