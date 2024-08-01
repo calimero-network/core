@@ -1033,6 +1033,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-blobstore"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "calimero-primitives",
+ "calimero-store",
+ "camino",
+ "eyre",
+ "futures-util",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tokio-util 0.7.11",
+]
+
+[[package]]
 name = "calimero-context"
 version = "0.1.0"
 dependencies = [

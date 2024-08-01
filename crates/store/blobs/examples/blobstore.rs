@@ -1,0 +1,51 @@
+use calimero_blobstore::{BlobManager, FileSystem};
+use futures_util::TryStreamExt;
+use tokio::fs;
+use tokio::io::{self, AsyncWriteExt};
+
+const DATA_DIR: &'static str = "blob-tests/data";
+const BLOB_DIR: &'static str = "blob-tests/blob";
+
+#[tokio::main]
+async fn main() -> eyre::Result<()> {
+    for dir in [DATA_DIR, BLOB_DIR] {
+        fs::create_dir_all(dir).await?;
+    }
+
+    let config = calimero_store::config::StoreConfig {
+        path: DATA_DIR.into(),
+    };
+
+    let data_store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config)?;
+
+    let blob_store = FileSystem::new(BLOB_DIR.into());
+
+    let blob_mgr = BlobManager::new(data_store, blob_store);
+
+    let mut args = std::env::args().skip(1);
+
+    match args.next() {
+        Some(hash) => match blob_mgr.get(hash.parse()?).await? {
+            Some(mut blob) => {
+                let mut stdout = io::stdout();
+
+                while let Some(chunk) = blob.try_next().await? {
+                    stdout.write_all(&chunk).await?;
+                }
+            }
+            None => {
+                eprintln!("Blob does not exist");
+                std::process::exit(1);
+            }
+        },
+        None => {
+            let stdin = io::stdin();
+
+            let stdin = tokio_util::io::ReaderStream::new(stdin);
+
+            println!("{}", blob_mgr.put(stdin).await?);
+        }
+    }
+
+    Ok(())
+}

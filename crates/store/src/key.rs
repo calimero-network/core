@@ -7,11 +7,13 @@ use crate::db::Column;
 use crate::slice::Slice;
 
 mod application;
+mod blobs;
 mod component;
 mod context;
 mod generic;
 
 pub use application::ApplicationMeta;
+pub use blobs::BlobMeta;
 use component::KeyComponents;
 pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction};
 pub use generic::Generic;
