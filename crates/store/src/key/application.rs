@@ -43,7 +43,7 @@ impl AsKeyParts for ApplicationMeta {
 }
 
 impl FromKeyParts for ApplicationMeta {
-    type Error = ();
+    type Error = Infallible;
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
         Ok(Self(*<&_>::from(&parts)))
