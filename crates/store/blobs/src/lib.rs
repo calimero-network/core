@@ -181,10 +181,12 @@ pub struct FileSystem {
 // }
 
 impl FileSystem {
-    pub async fn new(root: camino::Utf8PathBuf) -> eyre::Result<Self> {
+    pub async fn new(root: &camino::Utf8Path) -> eyre::Result<Self> {
         fs::create_dir_all(&root).await?;
 
-        Ok(Self { root })
+        Ok(Self {
+            root: root.to_owned(),
+        })
     }
 
     fn path(&self, id: BlobId) -> camino::Utf8PathBuf {
