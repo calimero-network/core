@@ -27,6 +27,7 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 calimero-context = { path = "../context" }
+calimero-blobstore = { path = "../store/blobs" }
 calimero-identity = { path = "../identity" }
 calimero-network = { path = "../network" }
 calimero-node-primitives = { path = "../node-primitives" }
