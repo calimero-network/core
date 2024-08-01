@@ -8,17 +8,13 @@ const BLOB_DIR: &'static str = "blob-tests/blob";
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    for dir in [DATA_DIR, BLOB_DIR] {
-        fs::create_dir_all(dir).await?;
-    }
-
     let config = calimero_store::config::StoreConfig {
         path: DATA_DIR.into(),
     };
 
     let data_store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config)?;
 
-    let blob_store = FileSystem::new(BLOB_DIR.into());
+    let blob_store = FileSystem::new(BLOB_DIR.into()).await?;
 
     let blob_mgr = BlobManager::new(data_store, blob_store);
 
