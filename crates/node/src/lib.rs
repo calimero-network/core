@@ -241,7 +241,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 }
             } else {
                 println!(
-                    "{IND} Usage: call <Context ID> <Method> <JSON Payload> [Executor Public Key]"
+                    "{IND} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
                 );
             }
         }
@@ -366,8 +366,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         }
                     }
                     "join" => {
-                        let Some(context_id) = args else {
-                            println!("{IND} Usage: context join <context_id>");
+                        let Some((context_id, private_key)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context = iter.next()?;
+                            let private_key = iter.next()?;
+
+                            Some((context, private_key))
+                        }) else {
+                            println!("{IND} Usage: context join <context_id> <private_key>");
                             break 'done;
                         };
 
@@ -376,7 +382,26 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        node.ctx_manager.join_context(&context_id).await?;
+                        // Parse the private key
+                        let private_key = bs58::decode(private_key)
+                            .into_vec()
+                            .map_err(|_| eyre::eyre!("Invalid private key"))?;
+                        let private_key: [u8; 32] = private_key
+                            .try_into()
+                            .map_err(|_| eyre::eyre!("Private key must be 32 bytes"))?;
+
+                        // Generate the public key from the private key
+                        let public_key = PublicKey::derive_from_private_key(&private_key);
+
+                        // Create the KeyPair
+                        let initial_identity = KeyPair {
+                            public_key,
+                            private_key: Some(private_key),
+                        };
+
+                        node.ctx_manager
+                            .join_context(&context_id, initial_identity)
+                            .await?;
 
                         println!(
                             "{IND} Joined context {}, waiting for catchup to complete..",
@@ -399,18 +424,19 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version, url)) =
-                            args.and_then(|args| {
+                        let Some((context_id, application_id, version, url, private_key)) = args
+                            .and_then(|args| {
                                 let mut iter = args.split(' ');
                                 let context = iter.next()?;
                                 let application = iter.next()?;
                                 let version = iter.next()?;
                                 let url = iter.next()?;
+                                let private_key = iter.next()?;
 
-                                Some((context, application, version, url))
+                                Some((context, application, version, url, private_key))
                             })
                         else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version> <url>");
+                            println!("{IND} Usage: context create <context_id> <application_id> <version> <url> <private_key>");
                             break 'done;
                         };
 
@@ -425,6 +451,23 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let application_id = application_id.to_owned().into();
+
+                        // Parse the private key
+                        let private_key = bs58::decode(private_key)
+                            .into_vec()
+                            .map_err(|_| eyre::eyre!("Invalid private key"))?;
+                        let private_key: [u8; 32] = private_key
+                            .try_into()
+                            .map_err(|_| eyre::eyre!("Private key must be 32 bytes"))?;
+
+                        // Generate the public key from the private key
+                        let public_key = PublicKey::derive_from_private_key(&private_key);
+
+                        // Create the KeyPair
+                        let initial_identity = KeyPair {
+                            public_key,
+                            private_key: Some(private_key),
+                        };
 
                         println!("{IND} Downloading application..");
 
@@ -441,13 +484,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         // We don't have the identity at this point
                         node.ctx_manager
-                            .add_context(
-                                context,
-                                KeyPair {
-                                    public_key: PublicKey(*context_id),
-                                    private_key: None,
-                                },
-                            )
+                            .add_context(context, initial_identity)
                             .await?;
 
                         println!("{IND} Created context {}", context_id);
@@ -670,6 +707,11 @@ impl Node {
         };
 
         match serde_json::from_slice(&message.data)? {
+            types::PeerAction::SharePublicKey(public_key) => {
+                // Handle the shared public key
+                // TODO: Should we store it? Use it for verification?
+                info!("Received public key: {:?}", public_key);
+            }
             types::PeerAction::Transaction(transaction) => {
                 debug!(?transaction, %source, "Received transaction");
 

@@ -81,6 +81,11 @@ impl<'a> VMLogic<'a> {
         }
         .build()
     }
+
+    pub fn get_executor_identity(&mut self, register_id: u64) -> Result<()> {
+        self.registers
+            .set(self.limits, register_id, self.context.executor_public_key)
+    }
 }
 
 #[derive(Debug, Serialize)]

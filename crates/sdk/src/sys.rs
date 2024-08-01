@@ -12,6 +12,7 @@ wasm_imports! {
         fn register_len(register_id: RegisterId) -> PtrSizedInt;
         fn read_register(register_id: RegisterId, buf: BufferMut) -> Bool;
         // --
+        fn get_executor_identity(register_id: RegisterId);
         fn input(register_id: RegisterId);
         fn value_return(value: ValueReturn);
         fn log_utf8(msg: Buffer);
@@ -27,7 +28,6 @@ wasm_imports! {
             body: Buffer,
             register_id: RegisterId
         ) -> Bool;
-        fn get_executor_identity(register_id: RegisterId);
     }
 }
 
