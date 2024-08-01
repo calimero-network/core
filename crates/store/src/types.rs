@@ -2,10 +2,12 @@ use crate::entry::{Codec, Entry};
 use crate::key;
 
 mod application;
+mod blobs;
 mod context;
 mod generic;
 
 pub use application::ApplicationMeta;
+pub use blobs::BlobMeta;
 pub use context::{
     ContextIdentity, ContextMeta, ContextState, ContextTransaction, TransactionHash,
 };

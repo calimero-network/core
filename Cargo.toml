@@ -22,6 +22,7 @@ members = [
   "./crates/server",
   "./crates/server-primitives",
   "./crates/store",
+  "./crates/store/blobs",
 
   "./apps/kv-store",
   "./apps/only-peers",
@@ -32,6 +33,7 @@ members = [
 
 [workspace.dependencies]
 assert-json-diff = "2.0.2"
+async-stream = "0.3.5"
 axum = "0.7.4"
 base64 = "0.22.0"
 borsh = "1.3.1"
