@@ -336,8 +336,11 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         for (k, v) in handle.iter::<calimero_store::key::ContextMeta>()?.entries() {
                             let (k, v) = (k?, v?);
-                            let (cx, app_id, last_tx) =
-                                (k.context_id(), v.application_id, v.last_transaction_hash);
+                            let (cx, app_id, last_tx) = (
+                                k.context_id(),
+                                v.application.application_id(),
+                                v.last_transaction_hash,
+                            );
                             let entry = format!(
                                 "{c1:44} | {c2:64} | {c3}",
                                 c1 = cx,
@@ -408,7 +411,10 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        let application_id = application_id.to_owned().into();
+                        let Ok(application_id) = application_id.parse() else {
+                            println!("{IND} Invalid Application ID: {}", application_id);
+                            break 'done;
+                        };
 
                         println!("{IND} Downloading application..");
 
@@ -1063,7 +1069,7 @@ impl Node {
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
-                application_id: context.application_id.0.into(),
+                application: calimero_store::key::ApplicationMeta::new(context.application_id),
                 last_transaction_hash: *hash.as_bytes(),
             },
         )?;
