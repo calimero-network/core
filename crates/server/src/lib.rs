@@ -1,11 +1,14 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::{http, Router};
+use axum_server::tls_rustls::RustlsConfig;
 use calimero_store::Store;
 use config::ServerConfig;
 use tokio::sync::broadcast;
 use tower_http::cors;
 use tracing::warn;
+
+pub mod certificates;
 
 #[cfg(feature = "admin")]
 pub mod admin;
@@ -86,7 +89,9 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = admin::service::setup(&config, store, ctx_manager)? {
+        if let Some((api_path, router)) =
+            admin::service::setup(&config, store.clone(), ctx_manager)?
+        {
             app = app.nest(api_path, router);
             serviced = true;
         }
@@ -108,14 +113,37 @@ pub async fn start(
                 http::Method::DELETE,
                 http::Method::PUT,
                 http::Method::OPTIONS,
-            ]),
+            ])
+            .allow_private_network(true),
     );
+    // Check if the certificate exists and if they contain the current local IP address
+    let (cert_pem, key_pem) = certificates::get_certificate(store.clone()).await?;
+
+    // Configure certificate and private key used by https
+    let rustls_config = match RustlsConfig::from_pem(cert_pem, key_pem).await {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to load TLS configuration: {:?}", e);
+            return Err(e.into());
+        }
+    };
 
     let mut set = tokio::task::JoinSet::new();
 
     for listener in listeners {
+        let rustls_config = rustls_config.clone();
         let app = app.clone();
-        set.spawn(async { axum::serve(listener, app).await });
+        let addr = listener.local_addr().unwrap();
+        set.spawn(async move {
+            if let Err(e) = axum_server_dual_protocol::bind_dual_protocol(addr, rustls_config)
+                .serve(app.into_make_service())
+                .await
+            {
+                eprintln!("Server error: {:?}", e);
+                return Err(e);
+            }
+            Ok::<(), std::io::Error>(())
+        });
     }
 
     while let Some(result) = set.join_next().await {

@@ -96,6 +96,11 @@ ureq = "2.9.7"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
 web3 = "0.19.0"
+local-ip-address = "0.6.1"
+rcgen = "0.13.1"
+x509-parser = "0.16.0"
+axum-server = { version = "0.6", features = ["tls-rustls"] }
+axum-server-dual-protocol = "0.6.0"
 
 [profile.app-release]
 inherits = "release"
