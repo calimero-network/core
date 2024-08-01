@@ -914,6 +914,7 @@ dependencies = [
 name = "calimero-context"
 version = "0.1.0"
 dependencies = [
+ "calimero-blobstore",
  "calimero-network",
  "calimero-primitives",
  "calimero-store",
@@ -970,6 +971,7 @@ name = "calimero-node"
 version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
+ "calimero-blobstore",
  "calimero-context",
  "calimero-identity",
  "calimero-network",
