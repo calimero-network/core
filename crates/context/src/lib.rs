@@ -403,6 +403,8 @@ impl ContextManager {
         // todo! once `blob_manager::get` -> Blob{size}:Stream
         let mut buf = vec![];
 
+        // todo! guard against loading excessively large blobs into memory
+
         while let Some(chunk) = stream.try_next().await? {
             buf.extend_from_slice(&chunk);
         }

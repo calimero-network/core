@@ -163,6 +163,7 @@ impl Stream for Blob {
 }
 
 trait BlobRepository {
+    #[allow(dead_code)]
     async fn has(&self, id: BlobId) -> eyre::Result<bool>;
     async fn get(&self, id: BlobId) -> eyre::Result<Option<Box<[u8]>>>;
     async fn put(&self, id: BlobId, data: &[u8]) -> eyre::Result<()>;
