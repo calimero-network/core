@@ -258,7 +258,7 @@ impl ContextManager {
         Ok(contexts)
     }
 
-    pub async fn update_application_id(
+    pub fn update_application_id(
         &self,
         context_id: calimero_primitives::context::ContextId,
         application_id: calimero_primitives::application::ApplicationId,
@@ -281,7 +281,7 @@ impl ContextManager {
 
 // vv~ these would be more appropriate in an ApplicationManager
 impl ContextManager {
-    async fn install_application(
+    fn install_application(
         &self,
         blob_id: calimero_primitives::blobs::BlobId,
         source: http::Uri,
@@ -324,7 +324,6 @@ impl ContextManager {
         };
 
         self.install_application(blob_id, uri.as_str().parse()?, version)
-            .await
     }
 
     pub async fn install_application_from_url(
@@ -342,10 +341,10 @@ impl ContextManager {
 
         // todo! if blob hash doesn't match, remove it
 
-        self.install_application(blob_id, uri, version).await
+        self.install_application(blob_id, uri, version)
     }
 
-    pub async fn list_installed_applications(
+    pub fn list_installed_applications(
         &self,
     ) -> eyre::Result<Vec<calimero_primitives::application::Application>> {
         let handle = self.store.handle();

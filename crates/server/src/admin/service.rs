@@ -233,7 +233,7 @@ async fn install_application_handler(
 async fn list_applications_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    match state.ctx_manager.list_installed_applications().await {
+    match state.ctx_manager.list_installed_applications() {
         Ok(applications) => ApiResponse {
             payload: ListApplicationsResponse {
                 data: ApplicationListResult { apps: applications },
