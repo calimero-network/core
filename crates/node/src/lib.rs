@@ -889,6 +889,7 @@ impl Node {
         if !self
             .ctx_manager
             .is_application_installed(&context.application_id)
+            .unwrap_or_default()
         {
             return Err(
                 calimero_node_primitives::QueryCallError::ApplicationNotInstalled {
@@ -923,6 +924,7 @@ impl Node {
         if !self
             .ctx_manager
             .is_application_installed(&context.application_id)
+            .unwrap_or_default()
         {
             return Err(
                 calimero_node_primitives::MutateCallError::ApplicationNotInstalled {
