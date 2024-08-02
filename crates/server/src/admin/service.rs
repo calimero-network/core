@@ -114,6 +114,10 @@ pub(crate) fn setup(
             post(handlers::applications::install_dev_application_handler),
         )
         .route(
+            "/dev/application/:application_id",
+            get(handlers::applications::get_application),
+        )
+        .route(
             "/dev/contexts",
             get(handlers::context::get_contexts_handler)
                 .post(handlers::context::create_context_handler),
@@ -121,6 +125,10 @@ pub(crate) fn setup(
         .route(
             "/dev/contexts/:context_id/join",
             post(handlers::context::join_context_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/application",
+            post(handlers::context::update_application_id),
         )
         .route("/dev/applications", get(list_applications_handler))
         .layer(Extension(shared_state));

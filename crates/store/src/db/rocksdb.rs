@@ -72,9 +72,11 @@ impl Database<'_> for RocksDB {
     fn iter(&self, col: Column) -> eyre::Result<Iter> {
         let cf_handle = self.try_cf_handle(&col)?;
 
-        Ok(Iter::new(DBIterator {
-            iter: self.db.raw_iterator_cf(cf_handle),
-        }))
+        let mut iter = self.db.raw_iterator_cf(cf_handle);
+
+        iter.seek_to_first();
+
+        Ok(Iter::new(DBIterator { iter }))
     }
 
     fn apply(&self, tx: &Transaction) -> eyre::Result<()> {

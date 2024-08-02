@@ -35,6 +35,16 @@ pub struct ApplicationInstallResult {
     pub application_id: calimero_primitives::application::ApplicationId,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetApplicationResponse {
+    pub data: GetApplicationResult,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetApplicationResult {
+    pub application: Option<calimero_primitives::application::Application>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddPublicKeyRequest {
@@ -152,4 +162,10 @@ pub struct ContextResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateContextResponse {
     pub data: ContextResponse,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateContextApplicationRequest {
+    pub application_id: calimero_primitives::application::ApplicationId,
 }

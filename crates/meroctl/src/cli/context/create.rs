@@ -1,8 +1,9 @@
 use camino::Utf8PathBuf;
 use clap::Parser;
 use libp2p::Multiaddr;
+use notify::Watcher;
 use reqwest::Client;
-use tracing::info;
+use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
 use crate::common::multiaddr_to_url;
@@ -41,13 +42,25 @@ impl CreateCommand {
             CreateCommand {
                 application_id: Some(app_id),
                 watch: None,
-            } => create_context(multiaddr, app_id, &client).await,
+            } => {
+                create_context(multiaddr, app_id, &client).await?;
+            }
             CreateCommand {
                 application_id: None,
-                watch: Some(watch_path),
-            } => install_and_create_context(multiaddr, watch_path, &client).await,
+                watch: Some(path),
+            } => {
+                let path = path.canonicalize_utf8()?;
+
+                let application_id = install_app(multiaddr, path.clone(), &client).await?;
+
+                let context_id = create_context(multiaddr, application_id, &client).await?;
+
+                watch_app_and_update_context(multiaddr, context_id, path, &client).await?;
+            }
             _ => eyre::bail!("Invalid command configuration"),
         }
+
+        Ok(())
     }
 }
 
@@ -55,7 +68,7 @@ async fn create_context(
     base_multiaddr: &Multiaddr,
     application_id: calimero_primitives::application::ApplicationId,
     client: &Client,
-) -> eyre::Result<()> {
+) -> eyre::Result<calimero_primitives::context::ContextId> {
     if !app_installed(&base_multiaddr, &application_id, client).await? {
         eyre::bail!("Application is not installed on node.")
     }
@@ -70,18 +83,104 @@ async fn create_context(
             response.json().await?;
         let context = context_response.data.context;
 
-        println!("Context created successfully:");
-        println!("Context ID: {}", context.id);
-    } else {
-        let status = response.status();
-        let error_text = response.text().await?;
-        eyre::bail!(
-            "Request failed with status: {}. Error: {}",
-            status,
-            error_text
+        println!("Context `\x1b[36m{}\x1b[0m` created!", context.id);
+
+        println!(
+            "Context{{\x1b[36m{}\x1b[0m}} -> Application{{\x1b[36m{}\x1b[0m}}",
+            context.id, context.application_id
         );
+
+        return Ok(context.id);
     }
+
+    let status = response.status();
+    let error_text = response.text().await?;
+
+    eyre::bail!(
+        "Request failed with status: {}. Error: {}",
+        status,
+        error_text
+    );
+}
+
+async fn watch_app_and_update_context(
+    base_multiaddr: &Multiaddr,
+    context_id: calimero_primitives::context::ContextId,
+    path: Utf8PathBuf,
+    client: &Client,
+) -> eyre::Result<()> {
+    let (tx, mut rx) = mpsc::channel(1);
+
+    let handle = tokio::runtime::Handle::current();
+    let mut watcher = notify::recommended_watcher(move |evt| {
+        handle.block_on(async {
+            let _ = tx.send(evt).await;
+        })
+    })?;
+
+    watcher.watch(path.as_std_path(), notify::RecursiveMode::NonRecursive)?;
+
+    println!("(i) Watching for changes to \"\x1b[36m{}\x1b[0m\"", path);
+
+    while let Some(event) = rx.recv().await {
+        let event = match event {
+            Ok(event) => event,
+            Err(err) => {
+                eprintln!("\x1b[1mERROR\x1b[0m: {:?}", err);
+                continue;
+            }
+        };
+
+        match event.kind {
+            notify::EventKind::Modify(notify::event::ModifyKind::Data(_)) => {}
+            notify::EventKind::Remove(_) => {
+                eprintln!("\x1b[33mWARN\x1b[0m: file removed, ignoring..");
+                continue;
+            }
+            _ => continue,
+        }
+
+        let application_id = install_app(base_multiaddr, path.clone(), &client).await?;
+
+        update_context_application(base_multiaddr, context_id, application_id, client).await?;
+    }
+
     Ok(())
+}
+
+async fn update_context_application(
+    base_multiaddr: &Multiaddr,
+    context_id: calimero_primitives::context::ContextId,
+    application_id: calimero_primitives::application::ApplicationId,
+    client: &Client,
+) -> eyre::Result<()> {
+    let url = multiaddr_to_url(
+        base_multiaddr,
+        &format!("admin-api/dev/contexts/{}/application", context_id),
+    )?;
+
+    let request =
+        calimero_server_primitives::admin::UpdateContextApplicationRequest { application_id };
+
+    let response = client.post(url).json(&request).send().await?;
+
+    if response.status().is_success() {
+        println!(
+            "Context{{\x1b[36m{}\x1b[0m}} -> Application{{\x1b[36m{}\x1b[0m}}",
+            context_id, application_id
+        );
+
+        return Ok(());
+    }
+
+    let status = response.status();
+    let error_text = response.text().await?;
+
+    eyre::bail!(
+        "Request failed with status: {}. Error: {}",
+        status,
+        error_text
+    );
 }
 
 async fn app_installed(
@@ -89,26 +188,27 @@ async fn app_installed(
     application_id: &calimero_primitives::application::ApplicationId,
     client: &Client,
 ) -> eyre::Result<bool> {
-    let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/applications")?;
+    let url = multiaddr_to_url(
+        base_multiaddr,
+        &format!("admin-api/dev/application/{}", application_id),
+    )?;
     let response = client.get(url).send().await?;
 
     if !response.status().is_success() {
         eyre::bail!("Request failed with status: {}", response.status())
     }
 
-    let api_response: calimero_server_primitives::admin::ListApplicationsResponse =
+    let api_response: calimero_server_primitives::admin::GetApplicationResponse =
         response.json().await?;
-    let app_list = api_response.data.apps;
-    let is_installed = app_list.iter().any(|app| &app.id == application_id);
 
-    Ok(is_installed)
+    Ok(api_response.data.application.is_some())
 }
 
-async fn install_and_create_context(
+async fn install_app(
     base_multiaddr: &Multiaddr,
     path: Utf8PathBuf,
     client: &Client,
-) -> eyre::Result<()> {
+) -> eyre::Result<calimero_primitives::application::ApplicationId> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
     let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
@@ -136,9 +236,10 @@ async fn install_and_create_context(
         .json::<calimero_server_primitives::admin::InstallApplicationResponse>()
         .await?;
 
-    info!("Application installed successfully.");
+    println!(
+        "Application `\x1b[36m{}\x1b[0m` installed!",
+        response.data.application_id
+    );
 
-    create_context(base_multiaddr, response.data.application_id, client).await?;
-
-    Ok(())
+    Ok(response.data.application_id)
 }

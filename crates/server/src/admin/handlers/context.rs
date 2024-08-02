@@ -1,4 +1,3 @@
-use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -217,29 +216,42 @@ struct JoinContextResponse {
 }
 
 pub async fn join_context_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<calimero_primitives::context::ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
-        Ok(context_id) => context_id,
-        Err(_) => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid context id".into(),
-            }
-            .into_response();
-        }
-    };
-
     let result = state
         .ctx_manager
-        .join_context(&context_id_result)
+        .join_context(&context_id)
         .await
         .map_err(|err| parse_api_error(err));
 
     match result {
         Ok(_) => ApiResponse {
             payload: JoinContextResponse { data: Empty {} },
+        }
+        .into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateApplicationIdResponse {
+    data: Empty,
+}
+
+pub async fn update_application_id(
+    Extension(state): Extension<Arc<AdminState>>,
+    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Json(req): Json<calimero_server_primitives::admin::UpdateContextApplicationRequest>,
+) -> impl IntoResponse {
+    let result = state
+        .ctx_manager
+        .update_application_id(context_id, req.application_id)
+        .map_err(|err| parse_api_error(err));
+
+    match result {
+        Ok(_) => ApiResponse {
+            payload: UpdateApplicationIdResponse { data: Empty {} },
         }
         .into_response(),
         Err(err) => err.into_response(),
