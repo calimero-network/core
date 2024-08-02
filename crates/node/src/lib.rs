@@ -317,6 +317,73 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 }
             }
         }
+        "application" => 'done: {
+            'usage: {
+                let Some(args) = args else {
+                    break 'usage;
+                };
+
+                let (subcommand, args) = args
+                    .split_once(' ')
+                    .map_or_else(|| (args, None), |(a, b)| (a, Some(b)));
+
+                match subcommand {
+                    "install" => {
+                        let Some(url) = args else {
+                            println!("{IND} Usage: application install <url>");
+                            break 'done;
+                        };
+
+                        let Ok(url) = url.parse() else {
+                            println!("{IND} Invalid URL: {}", url);
+                            break 'done;
+                        };
+
+                        println!("{IND} Downloading application..");
+
+                        let application_id = node
+                            .ctx_manager
+                            .install_application_from_url(url, None)
+                            .await?;
+
+                        println!("{IND} Installed application: {}", application_id);
+                    }
+                    "ls" => {
+                        println!(
+                            "{IND} {c1:44} | {c2:44} | {c3:12} | {c4}",
+                            c1 = "Application ID",
+                            c2 = "Blob ID",
+                            c3 = "Version",
+                            c4 = "Source"
+                        );
+
+                        for application in node.ctx_manager.list_installed_applications()? {
+                            let entry = format!(
+                                "{c1:44} | {c2:44} | {c3:>12} | {c4}",
+                                c1 = application.id,
+                                c2 = application.blob,
+                                c3 = application
+                                    .version
+                                    .map(|ver| ver.to_string())
+                                    .unwrap_or_default(),
+                                c4 = application.source
+                            );
+                            for line in entry.lines() {
+                                println!("{IND} {}", line.cyan());
+                            }
+                        }
+                    }
+                    // todo! a "show" subcommand should help keep "ls" compact
+                    unknown => {
+                        println!("{IND} Unknown command: `{}`", unknown);
+                        break 'usage;
+                    }
+                }
+
+                break 'done;
+            }
+            println!("{IND} Usage: application [ls|install]");
+        }
         "context" => 'done: {
             'usage: {
                 let Some(args) = args else {
