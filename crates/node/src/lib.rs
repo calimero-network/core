@@ -50,9 +50,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
-    let ctx_manager = calimero_context::ContextManager::start(
-        &config.application,
+    let blob_manager = calimero_blobstore::BlobManager::new(
         store.clone(),
+        calimero_blobstore::FileSystem::new(&config.application.dir).await?,
+    );
+
+    let ctx_manager = calimero_context::ContextManager::start(
+        store.clone(),
+        blob_manager,
         network_client.clone(),
     )
     .await?;
@@ -386,18 +391,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version, url)) =
-                            args.and_then(|args| {
-                                let mut iter = args.split(' ');
-                                let context = iter.next()?;
-                                let application = iter.next()?;
-                                let version = iter.next()?;
-                                let url = iter.next()?;
+                        let Some((context_id, url)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context = iter.next()?;
+                            let url = iter.next()?;
 
-                                Some((context, application, version, url))
-                            })
-                        else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version> <url>");
+                            Some((context, url))
+                        }) else {
+                            println!("{IND} Usage: context create <context_id> <url>");
                             break 'done;
                         };
 
@@ -406,21 +407,16 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        let Ok(version) = version.parse() else {
-                            println!("{IND} Invalid version: {}", version);
-                            break 'done;
-                        };
-
-                        let Ok(application_id) = application_id.parse() else {
-                            println!("{IND} Invalid Application ID: {}", application_id);
+                        let Ok(url) = url.parse() else {
+                            println!("{IND} Invalid URL: {}", url);
                             break 'done;
                         };
 
                         println!("{IND} Downloading application..");
 
-                        // todo! we should be able to install latest version
-                        node.ctx_manager
-                            .install_application(&application_id, &version, &url, None)
+                        let application_id = node
+                            .ctx_manager
+                            .install_application_from_url(url, None)
                             .await?;
 
                         let context = calimero_primitives::context::Context {
@@ -1089,10 +1085,19 @@ impl Node {
             None => runtime_compat::RuntimeCompatStore::read_only(&self.store, context.id),
         };
 
+        let Some(blob) = self
+            .ctx_manager
+            .load_application_blob(&context.application_id)
+            .await?
+        else {
+            eyre::bail!(
+                "fatal error: missing blob for application `{}`",
+                context.application_id
+            );
+        };
+
         let outcome = calimero_runtime::run(
-            &self
-                .ctx_manager
-                .load_application_blob(&context.application_id)?,
+            &blob,
             &method,
             calimero_runtime::logic::VMContext { input: payload },
             &mut storage,
