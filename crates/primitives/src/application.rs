@@ -1,5 +1,6 @@
+use std::fmt;
 use std::ops::Deref;
-use std::{fmt, str::FromStr};
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
