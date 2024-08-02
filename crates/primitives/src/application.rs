@@ -63,12 +63,40 @@ impl FromStr for ApplicationId {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ApplicationSource(#[serde(with = "http_serde::uri")] http::Uri);
+
+impl FromStr for ApplicationSource {
+    type Err = http::uri::InvalidUri;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self)
+    }
+}
+
+impl From<http::Uri> for ApplicationSource {
+    fn from(value: http::Uri) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ApplicationSource> for http::Uri {
+    fn from(value: ApplicationSource) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for ApplicationSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Application {
     pub id: ApplicationId,
     pub blob: BlobId,
     pub version: Option<semver::Version>,
-    #[serde(with = "http_serde::option::uri")]
-    pub source: Option<http::Uri>,
+    pub source: ApplicationSource,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

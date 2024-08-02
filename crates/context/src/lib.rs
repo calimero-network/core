@@ -284,7 +284,7 @@ impl ContextManager {
     fn install_application(
         &self,
         blob_id: calimero_primitives::blobs::BlobId,
-        source: http::Uri,
+        source: calimero_primitives::application::ApplicationSource,
         version: Option<semver::Version>,
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
         let application = calimero_store::types::ApplicationMeta {
@@ -380,10 +380,34 @@ impl ContextManager {
         };
 
         if !handle.has(&application.blob)? {
-            eyre::bail!("fatal: application points to danling blob");
+            eyre::bail!(
+                "fatal: application `{}` points to danling blob `{}`",
+                application_id,
+                application.blob.blob_id()
+            );
         }
 
         Ok(true)
+    }
+
+    pub fn get_application(
+        &self,
+        application_id: &calimero_primitives::application::ApplicationId,
+    ) -> eyre::Result<Option<calimero_primitives::application::Application>> {
+        let handle = self.store.handle();
+
+        let Some(application) =
+            handle.get(&calimero_store::key::ApplicationMeta::new(*application_id))?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(calimero_primitives::application::Application {
+            id: *application_id,
+            blob: application.blob.blob_id(),
+            version: application.version.as_deref().map(str::parse).transpose()?,
+            source: application.source.parse()?,
+        }))
     }
 
     pub async fn load_application_blob(
