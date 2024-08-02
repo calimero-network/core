@@ -63,23 +63,23 @@ impl FromStr for ApplicationId {
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct ApplicationSource(#[serde(with = "http_serde::uri")] http::Uri);
+pub struct ApplicationSource(url::Url);
 
 impl FromStr for ApplicationSource {
-    type Err = http::uri::InvalidUri;
+    type Err = url::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.parse().map(Self)
     }
 }
 
-impl From<http::Uri> for ApplicationSource {
-    fn from(value: http::Uri) -> Self {
+impl From<url::Url> for ApplicationSource {
+    fn from(value: url::Url) -> Self {
         Self(value)
     }
 }
 
-impl From<ApplicationSource> for http::Uri {
+impl From<ApplicationSource> for url::Url {
     fn from(value: ApplicationSource) -> Self {
         value.0
     }

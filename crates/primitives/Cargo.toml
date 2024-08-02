@@ -10,14 +10,13 @@ license.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"], optional = true }
 ed25519-dalek.workspace = true
-http.workspace = true
-http-serde.workspace = true
 libp2p-identity = { workspace = true, features = ["peerid", "serde"] }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+url = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 hex.workspace = true
