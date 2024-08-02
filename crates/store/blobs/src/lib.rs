@@ -59,7 +59,6 @@ impl BlobManager {
                     self.data_store.handle().put(
                         &calimero_store::key::BlobMeta::new(id),
                         &calimero_store::types::BlobMeta {
-                            refs: 0,
                             size: 0,
                             links: Vec::new().into_boxed_slice(),
                         },
@@ -94,7 +93,6 @@ impl BlobManager {
         self.data_store.handle().put(
             &calimero_store::key::BlobMeta::new(id),
             &calimero_store::types::BlobMeta {
-                refs: 0,
                 size: 0,
                 links: links.into_boxed_slice(),
             },

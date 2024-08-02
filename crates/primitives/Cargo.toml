@@ -8,7 +8,10 @@ license.workspace = true
 
 [dependencies]
 bs58.workspace = true
+borsh = { workspace = true, features = ["derive"], optional = true }
 ed25519-dalek.workspace = true
+http.workspace = true
+http-serde.workspace = true
 libp2p-identity = { workspace = true, features = ["peerid", "serde"] }
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }

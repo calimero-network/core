@@ -4,6 +4,7 @@ use std::{fmt, str::FromStr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::blobs::BlobId;
 use crate::hash::{Error as HashError, Hash};
 
 #[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -64,7 +65,10 @@ impl FromStr for ApplicationId {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Application {
     pub id: ApplicationId,
-    pub version: semver::Version,
+    pub blob: BlobId,
+    pub version: Option<semver::Version>,
+    #[serde(with = "http_serde::option::uri")]
+    pub source: Option<http::Uri>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
