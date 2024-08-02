@@ -396,9 +396,8 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                 match subcommand {
                     "ls" => {
-                        // todo! application ID shouldn't be hex anymore
                         println!(
-                            "{IND} {c1:44} | {c2:64} | {c3}",
+                            "{IND} {c1:44} | {c2:44} | {c3}",
                             c1 = "Context ID",
                             c2 = "Application ID",
                             c3 = "Last Transaction"
@@ -414,7 +413,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                 v.last_transaction_hash,
                             );
                             let entry = format!(
-                                "{c1:44} | {c2:64} | {c3}",
+                                "{c1:44} | {c2:44} | {c3}",
                                 c1 = cx,
                                 c2 = app_id,
                                 c3 = calimero_primitives::hash::Hash::from(last_tx)
@@ -611,7 +610,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         }
         unknown => {
             println!("{IND} Unknown command: `{}`", unknown);
-            println!("{IND} Usage: [call|peers|pool|gc|store|context] [args]")
+            println!("{IND} Usage: [call|peers|pool|gc|store|context|application] [args]")
         }
     }
 
