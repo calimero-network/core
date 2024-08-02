@@ -16,12 +16,12 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 strum = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
-thunderdome = "0.6.1"
+thunderdome.workspace = true
 
 calimero-primitives = { path = "../primitives" }
 
 [dev-dependencies]
-tempdir = "0.3.7"
+tempdir.workspace = true
 
 [features]
 borsh = ["borsh/derive"]
