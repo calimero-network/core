@@ -457,14 +457,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, url)) = args.and_then(|args| {
+                        let Some((context_id, application_id)) = args.and_then(|args| {
                             let mut iter = args.split(' ');
                             let context = iter.next()?;
-                            let url = iter.next()?;
+                            let application_id = iter.next()?;
 
-                            Some((context, url))
+                            Some((context, application_id))
                         }) else {
-                            println!("{IND} Usage: context create <context_id> <url>");
+                            println!("{IND} Usage: context create <context_id> <application_id>");
                             break 'done;
                         };
 
@@ -473,17 +473,10 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        let Ok(url) = url.parse() else {
-                            println!("{IND} Invalid URL: {}", url);
+                        let Ok(application_id) = application_id.parse() else {
+                            println!("{IND} Invalid application ID: {}", application_id);
                             break 'done;
                         };
-
-                        println!("{IND} Downloading application..");
-
-                        let application_id = node
-                            .ctx_manager
-                            .install_application_from_url(url, None)
-                            .await?;
 
                         let context = calimero_primitives::context::Context {
                             id: context_id,
