@@ -25,7 +25,6 @@ impl ApplicationMeta {
         Self(Key((*application_id).into()))
     }
 
-    // todo! define a primitive ApplicationId
     pub fn application_id(&self) -> calimero_primitives::application::ApplicationId {
         (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
     }
