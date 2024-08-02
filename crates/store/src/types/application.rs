@@ -10,7 +10,7 @@ pub struct ApplicationMeta {
     // pub refs: usize,
     pub blob: key::BlobMeta,
     pub version: Option<Box<str>>,
-    pub source: Option<Box<str>>,
+    pub source: Box<str>,
 }
 
 impl PredefinedEntry for key::ApplicationMeta {
