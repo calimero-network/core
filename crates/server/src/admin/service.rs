@@ -8,7 +8,8 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use calimero_server_primitives::admin::{
-    ApplicationListResult, InstallApplicationResponse, ListApplicationsResponse,
+    ApplicationInstallResult, ApplicationListResult, InstallApplicationResponse,
+    ListApplicationsResponse,
 };
 use calimero_store::Store;
 use libp2p::identity::Keypair;
@@ -216,16 +217,13 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application(
-            &req.application,
-            &req.version,
-            &req.url,
-            req.hash.as_deref(),
-        )
+        .install_application_from_url(req.url, req.version /*, req.hash */)
         .await
     {
-        Ok(()) => ApiResponse {
-            payload: InstallApplicationResponse { data: true },
+        Ok(application_id) => ApiResponse {
+            payload: InstallApplicationResponse {
+                data: ApplicationInstallResult { application_id },
+            },
         }
         .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),

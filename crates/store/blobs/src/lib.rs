@@ -95,10 +95,11 @@ impl BlobManager {
             &calimero_store::types::BlobMeta {
                 size: 0,
                 links: links.into_boxed_slice(),
+                // todo! hash of the blob data
             },
         )?;
 
-        Ok(id)
+        Ok(id) // todo!: Ok((id, Blob { size, hash }::{fn stream()}))
     }
 }
 

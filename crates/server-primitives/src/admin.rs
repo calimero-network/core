@@ -4,17 +4,15 @@ use serde_json::Value;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct InstallApplicationRequest {
-    pub application: calimero_primitives::application::ApplicationId, // TODO: rename to application_id
-    pub version: semver::Version,
-    pub url: String, // represents the url path to the release binary (e.g. ipfs path)
-    pub hash: Option<String>,
+    pub url: url::Url,
+    pub version: Option<semver::Version>,
+    pub hash: calimero_primitives::hash::Hash,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct InstallDevApplicationRequest {
-    pub application_id: calimero_primitives::application::ApplicationId,
-    pub version: semver::Version,
     pub path: Utf8PathBuf,
+    pub version: Option<semver::Version>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -29,7 +27,12 @@ pub struct ListApplicationsResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallApplicationResponse {
-    pub data: bool,
+    pub data: ApplicationInstallResult,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApplicationInstallResult {
+    pub application_id: calimero_primitives::application::ApplicationId,
 }
 
 #[derive(Debug, Deserialize)]

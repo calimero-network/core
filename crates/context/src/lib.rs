@@ -331,12 +331,16 @@ impl ContextManager {
         &self,
         url: Url,
         version: Option<semver::Version>,
+        // hash: calimero_primitives::hash::Hash,
+        // todo! BlobMgr should return hash of content
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
         let uri = url.as_str().parse()?;
 
         let response = reqwest::Client::new().get(url).send().await?;
 
         let blob_id = self.blob_manager.put(response.bytes_stream()).await?;
+
+        // todo! if blob hash doesn't match, remove it
 
         self.install_application(blob_id, uri, version).await
     }
