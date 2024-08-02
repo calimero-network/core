@@ -10,18 +10,15 @@ license.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
 futures-util.workspace = true
-near-jsonrpc-client.workspace = true
-near-jsonrpc-primitives.workspace = true
-near-primitives.workspace = true
+http.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 semver.workspace = true
 serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "macros"] }
+tokio-util.workspace = true
 tracing.workspace = true
 
 calimero-blobstore = { path = "../store/blobs" }
-calimero-primitives = { path = "../primitives" }
+calimero-primitives = { path = "../primitives", features = ["borsh"] }
 calimero-network = { path = "../network" }
 calimero-store = { path = "../store", features = ["datatypes"] }
