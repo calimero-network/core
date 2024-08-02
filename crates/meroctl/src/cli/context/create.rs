@@ -2,7 +2,6 @@ use camino::Utf8PathBuf;
 use clap::Parser;
 use libp2p::Multiaddr;
 use reqwest::Client;
-use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::cli::RootArgs;
@@ -13,7 +12,7 @@ use crate::config_file::ConfigFile;
 pub struct CreateCommand {
     /// The application ID to attach to the context
     #[clap(long, short = 'a', exclusive = true)]
-    application_id: Option<String>,
+    application_id: Option<calimero_primitives::application::ApplicationId>,
 
     /// Path to the application file to watch and install locally
     #[clap(long, short = 'w', exclusive = true)]
@@ -54,7 +53,7 @@ impl CreateCommand {
 
 async fn create_context(
     base_multiaddr: &Multiaddr,
-    application_id: String,
+    application_id: calimero_primitives::application::ApplicationId,
     client: &Client,
 ) -> eyre::Result<()> {
     if !app_installed(&base_multiaddr, &application_id, client).await? {
@@ -62,9 +61,7 @@ async fn create_context(
     }
 
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
-    let request = calimero_server_primitives::admin::CreateContextRequest {
-        application_id: calimero_primitives::application::ApplicationId(application_id),
-    };
+    let request = calimero_server_primitives::admin::CreateContextRequest { application_id };
 
     let response = client.post(url).json(&request).send().await?;
 
@@ -89,7 +86,7 @@ async fn create_context(
 
 async fn app_installed(
     base_multiaddr: &Multiaddr,
-    application_id: &String,
+    application_id: &calimero_primitives::application::ApplicationId,
     client: &Client,
 ) -> eyre::Result<bool> {
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/applications")?;
@@ -102,7 +99,7 @@ async fn app_installed(
     let api_response: calimero_server_primitives::admin::ListApplicationsResponse =
         response.json().await?;
     let app_list = api_response.data.apps;
-    let is_installed = app_list.iter().any(|app| app.id.as_ref() == application_id);
+    let is_installed = app_list.iter().any(|app| &app.id == application_id);
 
     Ok(is_installed)
 }
@@ -114,15 +111,9 @@ async fn install_and_create_context(
 ) -> eyre::Result<()> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
-    let id = format!("{}:{}", "0.0.0", path); // Using a default version
-    let mut hasher = Sha256::new();
-    hasher.update(id.as_bytes());
-    let application_id = hex::encode(hasher.finalize());
-
     let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
-        application_id: calimero_primitives::application::ApplicationId(application_id.clone()),
-        version: semver::Version::new(0, 0, 0),
-        path: path.clone(),
+        version: None,
+        path,
     };
 
     let install_response = client
@@ -141,9 +132,13 @@ async fn install_and_create_context(
         )
     }
 
+    let response = install_response
+        .json::<calimero_server_primitives::admin::InstallApplicationResponse>()
+        .await?;
+
     info!("Application installed successfully.");
 
-    create_context(base_multiaddr, application_id, client).await?;
+    create_context(base_multiaddr, response.data.application_id, client).await?;
 
     Ok(())
 }
