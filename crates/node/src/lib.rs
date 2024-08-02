@@ -329,22 +329,50 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                 match subcommand {
                     "install" => {
-                        let Some(url) = args else {
-                            println!("{IND} Usage: application install <url>");
+                        let Some((type_, resource, version)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let type_ = iter.next()?;
+                            let resource = iter.next()?;
+                            let version = iter.next();
+
+                            Some((type_, resource, version))
+                        }) else {
+                            println!(
+                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [version]"
+                            );
                             break 'done;
                         };
 
-                        let Ok(url) = url.parse() else {
-                            println!("{IND} Invalid URL: {}", url);
+                        let Ok(version) = version.map(|v| v.parse()).transpose() else {
+                            println!("{IND} Invalid version: {:?}", version);
                             break 'done;
                         };
 
-                        println!("{IND} Downloading application..");
+                        let application_id = match type_ {
+                            "url" => {
+                                let Ok(url) = resource.parse() else {
+                                    println!("{IND} Invalid URL: {}", resource);
+                                    break 'done;
+                                };
 
-                        let application_id = node
-                            .ctx_manager
-                            .install_application_from_url(url, None)
-                            .await?;
+                                println!("{IND} Downloading application..");
+
+                                node.ctx_manager
+                                    .install_application_from_url(url, version)
+                                    .await?
+                            }
+                            "file" => {
+                                let path = camino::Utf8PathBuf::from(resource);
+
+                                node.ctx_manager
+                                    .install_application_from_path(path, version)
+                                    .await?
+                            }
+                            unknown => {
+                                println!("{IND} Unknown resource type: `{}`", unknown);
+                                break 'done;
+                            }
+                        };
 
                         println!("{IND} Installed application: {}", application_id);
                     }
