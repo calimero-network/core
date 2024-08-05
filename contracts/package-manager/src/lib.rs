@@ -1,6 +1,6 @@
-use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::store::UnorderedMap;
+use near_sdk::store::iterable_map::IterableMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
 
 #[derive(BorshStorageKey, BorshSerialize)]
@@ -16,8 +16,8 @@ pub enum StorageKeys {
 #[derive(BorshDeserialize, BorshSerialize)]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct PackageManager {
-    pub packages: UnorderedMap<String, Package>,
-    pub releases: UnorderedMap<String, UnorderedMap<String, Release>>,
+    pub packages: IterableMap<String, Package>,
+    pub releases: IterableMap<String, IterableMap<String, Release>>,
 }
 
 //  TODO: add multiple owners
@@ -48,8 +48,8 @@ pub struct Release {
 impl Default for PackageManager {
     fn default() -> Self {
         Self {
-            packages: UnorderedMap::new(StorageKeys::Packages),
-            releases: UnorderedMap::new(StorageKeys::Releases),
+            packages: IterableMap::new(StorageKeys::Packages),
+            releases: IterableMap::new(StorageKeys::Releases),
         }
     }
 }
@@ -127,7 +127,7 @@ impl PackageManager {
         self.releases
             .entry(id_hash.clone())
             .or_insert_with(|| {
-                UnorderedMap::new(StorageKeys::Release {
+                IterableMap::new(StorageKeys::Release {
                     package: id_hash.clone(),
                 })
             })
