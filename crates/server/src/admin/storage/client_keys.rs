@@ -45,8 +45,7 @@ pub fn exists_client_key(store: &mut Store, client_key: &ClientKey) -> eyre::Res
     Ok(did
         .client_keys
         .into_iter()
-        .find(|k| k.signing_key == client_key.signing_key)
-        .is_some())
+        .any(|k| k.signing_key == client_key.signing_key))
 }
 
 pub fn remove_client_key(store: &mut Store, client_key: &ClientKey) -> eyre::Result<()> {

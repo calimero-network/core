@@ -171,7 +171,7 @@ impl<'a, T> Errors<'a, T> {
 
     pub fn check(self) -> Result<(), Self> {
         let inner = self.inner_ref().errors.is_some();
-        inner.then(|| ()).map_or(Ok(()), |_| Err(self))
+        inner.then_some(()).map_or(Ok(()), |_| Err(self))
     }
 
     // panics if this instance has already been consumed or "taken"
@@ -179,7 +179,7 @@ impl<'a, T> Errors<'a, T> {
         self.inner().errors
     }
 
-    pub fn to_compile_error(self) -> proc_macro2::TokenStream
+    pub fn to_compile_error(&self) -> proc_macro2::TokenStream
     where
         T: ToTokens,
     {

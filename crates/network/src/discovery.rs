@@ -51,10 +51,8 @@ impl EventLoop {
                         error!(%err, "Failed to dial rendezvous peer");
                     }
                 }
-            } else {
-                if let Err(err) = self.rendezvous_discover(&peer_id) {
-                    error!(%err, "Failed to perform rendezvous discover");
-                }
+            } else if let Err(err) = self.rendezvous_discover(&peer_id) {
+                error!(%err, "Failed to perform rendezvous discover");
             }
         }
     }
@@ -121,10 +119,8 @@ impl EventLoop {
                         error!(%err, "Failed to dial relay peer");
                     }
                 }
-            } else {
-                if let Err(err) = self.rendezvous_register(&peer_id) {
-                    error!(%err, "Failed to update rendezvous registration");
-                }
+            } else if let Err(err) = self.rendezvous_register(&peer_id) {
+                error!(%err, "Failed to update rendezvous registration");
             }
         }
 
@@ -166,7 +162,7 @@ impl EventLoop {
         );
 
         self.discovery.state.update_rendezvous_registration_status(
-            &rendezvous_peer,
+            rendezvous_peer,
             state::RendezvousRegistrationStatus::Requested,
         );
 
@@ -199,7 +195,7 @@ impl EventLoop {
         let relayed_addr = match preferred_addr
             .clone()
             .with(multiaddr::Protocol::P2pCircuit)
-            .with_p2p(self.swarm.local_peer_id().clone())
+            .with_p2p(*self.swarm.local_peer_id())
         {
             Ok(addr) => addr,
             Err(err) => {
@@ -211,7 +207,7 @@ impl EventLoop {
 
         self.discovery
             .state
-            .update_relay_reservation_status(&relay_peer, state::RelayReservationStatus::Requested);
+            .update_relay_reservation_status(relay_peer, state::RelayReservationStatus::Requested);
 
         Ok(())
     }

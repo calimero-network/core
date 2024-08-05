@@ -66,7 +66,7 @@ pub async fn add_client_key_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(intermediate_req): Json<IntermediateAddPublicKeyRequest>,
 ) -> impl IntoResponse {
-    let response = transform_request(intermediate_req)
+    transform_request(intermediate_req)
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
         .and_then(|req| check_root_key(req, &mut state.store.clone()))
         .and_then(|req| validate_challenge(req, &state.keypair))
@@ -81,9 +81,7 @@ pub async fn add_client_key_handler(
                 }
                 .into_response()
             },
-        );
-
-    response
+        )
 }
 
 pub fn store_client_key(
@@ -94,9 +92,9 @@ pub fn store_client_key(
         wallet_type: WalletType::NEAR,
         signing_key: req.payload.message.public_key.clone(),
         created_at: Utc::now().timestamp_millis() as u64,
-        context_id: req.context_id.clone(),
+        context_id: req.context_id,
     };
-    add_client_key(store, client_key).map_err(|e| parse_api_error(e))?;
+    add_client_key(store, client_key).map_err(parse_api_error)?;
     info!("Client key stored successfully.");
     Ok(req)
 }
@@ -105,7 +103,7 @@ fn check_root_key(
     req: AddPublicKeyRequest,
     store: &mut Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    let root_keys = exists_root_keys(store).map_err(|e| parse_api_error(e))?;
+    let root_keys = exists_root_keys(store).map_err(parse_api_error)?;
     if !root_keys {
         //first login so store root key as well
         store_root_key(

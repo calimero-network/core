@@ -76,11 +76,9 @@ impl PackageManager {
     }
 
     fn calculate_id_hash(name: &str) -> String {
-        let author = env::signer_account_id();
-        let id = format!("{}:{}", name, author);
-        let hash_bytes = env::sha256(id.as_bytes());
-        let hash_string = hex::encode(hash_bytes);
-        return hash_string;
+        hex::encode(env::sha256(
+            format!("{}:{}", name, env::signer_account_id()).as_bytes(),
+        ))
     }
 
     pub fn add_release(
@@ -106,8 +104,8 @@ impl PackageManager {
 
         // Check if the last release version exists and is less than the current version
         if let Some(last_version) = last_release_version {
-            let last_version = semver::Version::parse(&last_version)
-                .expect("Failed to parse last release version");
+            let last_version =
+                semver::Version::parse(last_version).expect("Failed to parse last release version");
             let current_version =
                 semver::Version::parse(&version).expect("Failed to parse current version");
             if current_version <= last_version {

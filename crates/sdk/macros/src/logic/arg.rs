@@ -85,7 +85,7 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
 
                 let ty = match ty::LogicTy::try_from(ty::LogicTyInput {
                     type_: input.type_,
-                    ty: &*typed.ty,
+                    ty: &typed.ty,
                 }) {
                     Ok(ty) => ty,
                     Err(err) => {

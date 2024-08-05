@@ -22,7 +22,7 @@ impl Hash {
     }
 
     // todo! genericize over D: Digest
-    pub fn hash(data: &[u8]) -> Self {
+    pub fn new(data: &[u8]) -> Self {
         Self {
             bytes: sha2::Sha256::digest(data).into(),
             bs58: MaybeUninit::zeroed(),
@@ -59,7 +59,7 @@ impl Hash {
         let mut bytes = [0; BYTES_LEN];
         let mut bs58 = [0; MAX_STR_LEN];
         let len = s.len().min(MAX_STR_LEN);
-        (&mut bs58[..len]).copy_from_slice(&s.as_bytes()[..len]);
+        bs58[..len].copy_from_slice(&s.as_bytes()[..len]);
         match bs58::decode(s).onto(&mut bytes) {
             Ok(len) if len == bytes.len() => Ok(Self {
                 bytes,
@@ -120,7 +120,7 @@ impl Eq for Hash {}
 
 impl PartialOrd for Hash {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.bytes.partial_cmp(&other.bytes)
+        Some(self.cmp(other))
     }
 }
 
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_hash_43() {
-        let hash = Hash::hash(b"Hello, World");
+        let hash = Hash::new(b"Hello, World");
 
         assert_eq!(
             hex::encode(hash.as_bytes()),
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_hash_44() {
-        let hash = Hash::hash(b"Hello World");
+        let hash = Hash::new(b"Hello World");
 
         assert_eq!(
             hex::encode(hash.as_bytes()),
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_serde() {
-        let hash = Hash::hash(b"Hello World");
+        let hash = Hash::new(b"Hello World");
 
         assert_eq!(
             serde_json::to_string(&hash).unwrap(),

@@ -47,7 +47,7 @@ impl KvStore {
     }
 
     pub fn entries(&self) -> &HashMap<String, String> {
-        env::log(&format!("Getting all entries"));
+        env::log("Getting all entries");
 
         &self.items
     }

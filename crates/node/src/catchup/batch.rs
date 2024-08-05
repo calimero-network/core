@@ -5,11 +5,11 @@ use crate::types;
 pub(crate) struct CatchupBatchSender {
     batch_size: u8,
     batch: Vec<types::TransactionWithStatus>,
-    stream: calimero_network::stream::Stream,
+    stream: Box<calimero_network::stream::Stream>,
 }
 
 impl CatchupBatchSender {
-    pub(crate) fn new(batch_size: u8, stream: calimero_network::stream::Stream) -> Self {
+    pub(crate) fn new(batch_size: u8, stream: Box<calimero_network::stream::Stream>) -> Self {
         Self {
             batch_size,
             batch: Vec::with_capacity(batch_size as usize),

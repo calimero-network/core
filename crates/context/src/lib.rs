@@ -124,7 +124,7 @@ impl ContextManager {
             .read()
             .await
             .pending_initial_catchup
-            .contains(&context_id)
+            .contains(context_id)
         {
             return Ok(None);
         }
@@ -249,7 +249,7 @@ impl ContextManager {
         url: &str,
         hash: Option<&str>,
     ) -> eyre::Result<()> {
-        self.download_and_install_release(&application_id, &version, &url, hash)
+        self.download_and_install_release(application_id, version, url, hash)
             .await?;
 
         Ok(())
@@ -436,12 +436,8 @@ impl ContextManager {
             versions_with_binary.sort_by(|a, b| b.0.cmp(&a.0));
 
             let version_with_binary = versions_with_binary.first();
-            let version = match version_with_binary {
-                Some((version, path)) => {
-                    Some((version.clone(), path.to_string_lossy().into_owned()))
-                }
-                None => None,
-            };
+            let version = version_with_binary
+                .map(|(version, path)| (version.clone(), path.to_string_lossy().into_owned()));
             version
         } else {
             None

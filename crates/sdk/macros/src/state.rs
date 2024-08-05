@@ -83,7 +83,7 @@ impl syn::parse::Parse for MaybeBoundEvent {
 
                 if bounds.lifetimes.is_empty() {
                     errors.subsume(syn::Error::new_spanned(
-                        &bounds.gt_token,
+                        bounds.gt_token,
                         "non-empty lifetime bounds expected",
                     ));
 
@@ -221,7 +221,7 @@ impl Parse for StateArgs {
                 "emits" => {
                     if input.is_empty() {
                         return Err(syn::Error::new_spanned(
-                            &eq,
+                            eq,
                             "expected an event type after `=`",
                         ));
                     }
@@ -262,7 +262,7 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
 
         if ident == &*reserved::idents::input() {
             errors.subsume(syn::Error::new_spanned(
-                &ident,
+                ident,
                 errors::ParseError::UseOfReservedIdent,
             ));
         }

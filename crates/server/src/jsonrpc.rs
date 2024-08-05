@@ -138,6 +138,7 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
 
 #[derive(Debug, Error)]
 #[error("CallError")]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum CallError {
     UpstreamCallError(calimero_node_primitives::CallError),
     UpstreamFunctionCallError(String), // TODO use FunctionCallError from runtime-primitives once they are migrated
