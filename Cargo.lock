@@ -1074,6 +1074,7 @@ name = "calimero-identity"
 version = "0.1.0"
 dependencies = [
  "bs58 0.5.1",
+ "calimero-primitives",
  "eyre",
  "hex 0.4.3",
  "libp2p",
@@ -1150,6 +1151,7 @@ dependencies = [
 name = "calimero-primitives"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "bs58 0.5.1",
  "ed25519-dalek",
  "hex 0.4.3",
@@ -4579,6 +4581,7 @@ name = "meroctl"
 version = "0.1.0"
 dependencies = [
  "calimero-context",
+ "calimero-identity",
  "calimero-network",
  "calimero-node",
  "calimero-node-primitives",

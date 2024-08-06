@@ -22,6 +22,7 @@ pub type ServerSender = mpsc::Sender<(
     String,
     Vec<u8>,
     bool,
+    [u8; 32],
     oneshot::Sender<Result<calimero_runtime::logic::Outcome, CallError>>,
 )>;
 

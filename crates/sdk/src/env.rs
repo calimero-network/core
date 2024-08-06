@@ -31,6 +31,11 @@ fn expected_boolean<T>(e: u32) -> T {
     panic_str(&format!("Expected 0|1. Got {e}"));
 }
 
+pub fn get_executor_identity() -> [u8; 32] {
+    unsafe { sys::get_executor_identity(DATA_REGISTER) };
+    read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
+}
+
 pub fn setup_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let message = match info.payload().downcast_ref::<&'static str>() {
@@ -86,6 +91,26 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
 
     if !succeed {
         panic_str("Buffer is too small.");
+    }
+
+    Some(buffer)
+}
+
+#[inline]
+fn read_register_sized<const N: usize>(register_id: sys::RegisterId) -> Option<[u8; N]> {
+    let len = register_len(register_id)?;
+    let buffer = [0; N];
+    let succeed: bool = unsafe {
+        sys::read_register(register_id, sys::BufferMut::new(buffer))
+            .try_into()
+            .unwrap_or_else(expected_boolean)
+    };
+
+    if !succeed {
+        panic_str(&format!(
+            "register content length ({}) does not match buffer length ({})",
+            len, N
+        ));
     }
 
     Some(buffer)

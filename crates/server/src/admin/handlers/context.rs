@@ -4,7 +4,10 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use rand::RngCore;
+use calimero_primitives::identity::{KeyPair, PublicKey};
+use ed25519_dalek::{SigningKey, VerifyingKey};
+use rand::rngs::StdRng;
+use rand::{RngCore, SeedableRng};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
@@ -162,29 +165,48 @@ pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<calimero_server_primitives::admin::CreateContextRequest>,
 ) -> impl IntoResponse {
-    let mut seed = [0; 32];
-    rand::thread_rng().fill_bytes(&mut seed);
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let context_id = signing_key.verifying_key();
+    // Create a Send-able RNG
+    let mut rng = StdRng::from_entropy();
+
+    // Generate a key pair for the context ID
+    let mut context_seed = [0u8; 32];
+    rng.fill_bytes(&mut context_seed);
+    let context_signing_key = SigningKey::from_bytes(&context_seed);
+    let context_verifying_key = VerifyingKey::from(&context_signing_key);
+    let context_id =
+        calimero_primitives::context::ContextId::from(*context_verifying_key.as_bytes());
+
+    // Generate a separate key pair for the member's identity
+    let mut member_seed = [0u8; 32];
+    rng.fill_bytes(&mut member_seed);
+    let member_signing_key = SigningKey::from_bytes(&member_seed);
+    let member_verifying_key = VerifyingKey::from(&member_signing_key);
 
     let context = calimero_primitives::context::Context {
-        id: (*context_id.as_bytes()).into(),
-        // signing_key, // todo! move to the Identity column
+        id: context_id,
         application_id: req.application_id,
         last_transaction_hash: Default::default(),
+    };
+
+    let initial_identity = KeyPair {
+        public_key: PublicKey(*member_verifying_key.as_bytes()),
+        private_key: Some(*member_signing_key.as_bytes()),
     };
 
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
         .ctx_manager
-        .add_context(context.clone())
+        .add_context(context.clone(), initial_identity)
         .await
         .map_err(parse_api_error);
 
     match result {
         Ok(_) => ApiResponse {
             payload: calimero_server_primitives::admin::CreateContextResponse {
-                data: calimero_server_primitives::admin::ContextResponse { context },
+                data: calimero_server_primitives::admin::ContextResponse {
+                    context,
+                    member_public_key: (*member_verifying_key.as_bytes()).into(),
+                },
             },
         }
         .into_response(),
@@ -209,6 +231,12 @@ pub async fn get_context_storage_handler(
     .into_response()
 }
 
+#[derive(Deserialize)]
+pub struct JoinContextRequest {
+    pub public_key: PublicKey,
+    pub private_key: [u8; 32],
+}
+
 #[derive(Debug, Serialize)]
 struct JoinContextResponse {
     data: Empty,
@@ -217,6 +245,7 @@ struct JoinContextResponse {
 pub async fn join_context_handler(
     Path(context_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
+    Json(request): Json<JoinContextRequest>,
 ) -> impl IntoResponse {
     let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
         Ok(context_id) => context_id,
@@ -229,9 +258,15 @@ pub async fn join_context_handler(
         }
     };
 
+    // Create a KeyPair from the provided public and private keys
+    let initial_identity = KeyPair {
+        public_key: request.public_key,
+        private_key: Some(request.private_key),
+    };
+
     let result = state
         .ctx_manager
-        .join_context(&context_id_result)
+        .join_context(&context_id_result, initial_identity)
         .await
         .map_err(parse_api_error);
 

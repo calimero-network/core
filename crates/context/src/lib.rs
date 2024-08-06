@@ -8,6 +8,7 @@ use std::os::windows::fs::symlink_file as symlink;
 use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
+use calimero_primitives::identity::KeyPair;
 use camino::Utf8PathBuf;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
@@ -95,6 +96,7 @@ impl ContextManager {
     pub async fn add_context(
         &self,
         context: calimero_primitives::context::Context,
+        initial_identity: KeyPair,
     ) -> eyre::Result<()> {
         if !self.is_application_installed(&context.application_id) {
             eyre::bail!("Application is not installed on node.")
@@ -102,6 +104,7 @@ impl ContextManager {
 
         let mut handle = self.store.handle();
 
+        // Store ContextMeta
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
@@ -109,6 +112,14 @@ impl ContextManager {
                 last_transaction_hash: context.last_transaction_hash.into(),
             },
         )?;
+
+        // Store ContextIdentity
+        let identity_key = calimero_store::key::ContextIdentity::new(
+            context.id,
+            initial_identity.public_key.clone(),
+        );
+        let context_identity: calimero_store::types::ContextIdentity = initial_identity.into();
+        handle.put(&identity_key, &context_identity)?;
 
         self.subscribe(&context.id).await?;
 
@@ -118,6 +129,7 @@ impl ContextManager {
     pub async fn join_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
+        initial_identity: KeyPair,
     ) -> eyre::Result<Option<()>> {
         if self
             .state
@@ -128,6 +140,15 @@ impl ContextManager {
         {
             return Ok(None);
         }
+
+        let mut handle = self.store.handle();
+
+        // Store ContextIdentity
+        let identity_key = calimero_store::key::ContextIdentity::new(
+            *context_id,
+            initial_identity.public_key.clone(),
+        );
+        handle.put(&identity_key, &initial_identity.into())?;
 
         self.state
             .write()

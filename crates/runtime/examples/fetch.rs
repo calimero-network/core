@@ -26,6 +26,7 @@ fn main() -> eyre::Result<()> {
             "block_height": 167345193,
             "account_id": "nearkat.testnet",
         }))?,
+        executor_public_key: [0; 32],
     };
     let get_outcome = run(file, "view_account", cx, &mut storage, &limits)?;
     let returns = String::from_utf8(get_outcome.returns.unwrap().unwrap()).unwrap();
