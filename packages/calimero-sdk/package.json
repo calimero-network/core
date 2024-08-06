@@ -1,6 +1,6 @@
 {
   "name": "@calimero-is-near/calimero-p2p-sdk",
-  "version": "0.0.27",
+  "version": "0.0.28",
   "description": "Javascript library to interact with Calimero P2P node",
   "type": "module",
   "main": "lib/index.js",

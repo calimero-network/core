@@ -25,10 +25,12 @@ pub fn logic(args: TokenStream, input: TokenStream) -> TokenStream {
     reserved::init();
     let _args = parse_macro_input!({ input } => args as items::Empty);
     let block = parse_macro_input!(input as syn::ItemImpl);
+
     let tokens = match logic::LogicImpl::try_from(logic::LogicImplInput { item: &block }) {
         Ok(data) => data.to_token_stream(),
         Err(err) => err.to_compile_error(),
     };
+
     tokens.into()
 }
 
@@ -48,6 +50,12 @@ pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     tokens.into()
+}
+
+#[proc_macro_attribute]
+pub fn init(_args: TokenStream, input: TokenStream) -> TokenStream {
+    // this is a no-op, the attribute is just a marker
+    input
 }
 
 #[proc_macro_attribute]

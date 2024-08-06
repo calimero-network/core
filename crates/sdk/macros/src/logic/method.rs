@@ -8,6 +8,10 @@ pub enum LogicMethod<'a> {
     Private,
 }
 
+pub enum Modifer {
+    Init,
+}
+
 pub struct PublicLogicMethod<'a> {
     self_: syn::Path,
 
@@ -17,6 +21,17 @@ pub struct PublicLogicMethod<'a> {
     ret: Option<ty::LogicTy>,
 
     has_refs: bool,
+
+    modifiers: Vec<Modifer>,
+}
+
+impl<'a> ToTokens for LogicMethod<'a> {
+    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+        match self {
+            LogicMethod::Public(method) => method.to_tokens(tokens),
+            LogicMethod::Private => {}
+        }
+    }
 }
 
 impl<'a> ToTokens for PublicLogicMethod<'a> {
@@ -24,8 +39,14 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         let self_ = &self.self_;
         let name = &self.name;
         let args = &self.args;
+        let modifiers = &self.modifiers;
+        let ret = &self.ret;
 
         let arg_idents = args.iter().map(|arg| &*arg.ident).collect::<Vec<_>>();
+
+        let init_method = modifiers
+            .iter()
+            .any(|modifier| matches!(modifier, Modifer::Init));
 
         let input = if args.is_empty() {
             quote! {}
@@ -64,27 +85,27 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         };
 
         let (def, mut call) = match &self.self_type {
-            Some(type_) => {
-                let def = match type_ {
-                    arg::SelfType::Mutable => quote! {
-                        let mut app: #self_ = ::calimero_sdk::env::state_read().unwrap_or_default();
-                    },
-                    arg::SelfType::Immutable | arg::SelfType::Owned => quote! {
-                        let Some(app) = ::calimero_sdk::env::state_read::<#self_>() else {
-                            ::calimero_sdk::env::panic_str("Failed to read app state.")
-                        };
-                    },
-                };
-
-                (def, quote! { app.#name(#(#arg_idents),*); })
-            }
-            None => (quote! {}, quote! { <#self_>::#name(#(#arg_idents),*); }),
+            Some(_type_) => (
+                quote! {
+                    let Some(app) = ::calimero_sdk::env::state_read::<#self_>() else {
+                        ::calimero_sdk::env::panic_str("Failed to read app state.")
+                    };
+                },
+                quote! { app.#name(#(#arg_idents),*); },
+            ),
+            None => (
+                match init_method {
+                    true => quote! {let app: #self_ = },
+                    false => quote! {},
+                },
+                quote! { <#self_>::#name(#(#arg_idents),*); },
+            ),
         };
 
-        if let Some(_) = &self.ret {
+        if let (Some(_), false) = (&self.ret, init_method) {
+            //only when it's not init
             call = quote! {
                 let output = #call;
-
                 let output = {
                     #[allow(unused_imports)]
                     use ::calimero_sdk::__private::IntoResult;
@@ -98,16 +119,25 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
                         ),
                     }
                 };
-
                 ::calimero_sdk::env::value_return(output);
             };
         }
 
-        let state_finalizer = match &self.self_type {
-            Some(arg::SelfType::Mutable) => quote! {
+        let state_finalizer = match (&self.self_type, init_method) {
+            (Some(arg::SelfType::Mutable), _) | (_, true) => quote! {
                 ::calimero_sdk::env::state_write(&app);
             },
             _ => quote! {},
+        };
+
+        let init_impl = if init_method {
+            quote! {
+                impl ::calimero_sdk::state::AppStateInit for #self_ {
+                    type Return = #ret;
+                }
+            }
+        } else {
+            quote! {}
         };
 
         quote! {
@@ -126,6 +156,9 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
 
                 #state_finalizer
             }
+
+            #init_impl
+
         }
         .to_tokens(tokens)
     }
@@ -141,11 +174,33 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
     type Error = errors::Errors<'a, syn::ImplItemFn>;
 
     fn try_from(input: LogicMethodImplInput<'a, 'b>) -> Result<Self, Self::Error> {
-        if !matches!(input.item.vis, syn::Visibility::Public(_)) {
-            return Ok(Self::Private);
+        let mut errors = errors::Errors::new(input.item);
+
+        let mut modifiers = vec![];
+        let mut is_init = false;
+
+        for attr in &input.item.attrs {
+            if attr.path().segments.len() == 2
+                && attr.path().segments[0].ident == "app"
+                && attr.path().segments[1].ident == "init"
+            {
+                modifiers.push(Modifer::Init);
+                is_init = true;
+            }
         }
 
-        let mut errors = errors::Errors::new(input.item);
+        match (&input.item.vis, is_init) {
+            (syn::Visibility::Public(_), _) => {}
+            (_, true) => {
+                errors.subsume(syn::Error::new_spanned(
+                    &input.item.vis,
+                    errors::ParseError::NoPrivateInit,
+                ));
+            }
+            (_, false) => {
+                return Ok(Self::Private);
+            }
+        }
 
         if let Some(abi) = &input.item.sig.abi {
             errors.subsume(syn::Error::new_spanned(
@@ -204,6 +259,24 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
             }
         }
 
+        let name = &input.item.sig.ident;
+
+        match (is_init, &self_type) {
+            (true, Some(_)) => errors.subsume(syn::Error::new_spanned(
+                input.item,
+                errors::ParseError::NoSelfReceiverAtInit,
+            )),
+            (true, None) if name != "init" => errors.subsume(syn::Error::new_spanned(
+                input.item,
+                errors::ParseError::AppInitMethodNotNamedInit,
+            )),
+            (false, _) if name == "init" => errors.subsume(syn::Error::new_spanned(
+                input.item,
+                errors::ParseError::InitMethodWithoutInitAttribute,
+            )),
+            _ => {}
+        }
+
         let mut ret = None;
         if let syn::ReturnType::Type(_, ret_type) = &input.item.sig.output {
             match ty::LogicTy::try_from(ty::LogicTyInput {
@@ -218,12 +291,13 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         errors.check()?;
 
         Ok(LogicMethod::Public(PublicLogicMethod {
-            name: &input.item.sig.ident,
+            name,
             self_: input.type_.clone(),
             self_type,
             args,
             ret,
             has_refs,
+            modifiers,
         }))
     }
 }
