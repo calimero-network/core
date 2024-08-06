@@ -54,7 +54,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             ));
         }
 
-        if let Some(_) = &input.item.trait_ {
+        if input.item.trait_.is_some() {
             return Err(errors.finish(syn::Error::new_spanned(
                 input.item,
                 errors::ParseError::NoTraitSupport,

@@ -42,7 +42,7 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         let modifiers = &self.modifiers;
         let ret = &self.ret;
 
-        let arg_idents = args.iter().map(|arg| &*arg.ident).collect::<Vec<_>>();
+        let arg_idents = args.iter().map(|arg| arg.ident).collect::<Vec<_>>();
 
         let init_method = modifiers
             .iter()
@@ -281,7 +281,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         if let syn::ReturnType::Type(_, ret_type) = &input.item.sig.output {
             match ty::LogicTy::try_from(ty::LogicTyInput {
                 type_: input.type_,
-                ty: &*ret_type,
+                ty: ret_type,
             }) {
                 Ok(ty) => ret = Some(ty),
                 Err(err) => errors.combine(err),

@@ -83,9 +83,9 @@ impl<'a, 'b, K: TryIntoKey<'b>, V> Iterator for IterKeys<'a, 'b, K, V> {
         let key = self.iter.inner.next().ok()??;
 
         // safety: key only needs to live as long as the iterator, not it's reference
-        let key = unsafe { std::mem::transmute(key) };
+        let key = unsafe { std::mem::transmute::<Slice<'_>, Slice<'_>>(key) };
 
-        Some(K::try_into_key(key).ok()?)
+        K::try_into_key(key).ok()
     }
 }
 
@@ -101,14 +101,14 @@ impl<'a, 'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'a
             let key = self.iter.inner.next().ok()??;
 
             // safety: key only needs to live as long as the iterator, not it's reference
-            unsafe { std::mem::transmute(key) }
+            unsafe { std::mem::transmute::<Slice<'_>, Slice<'_>>(key) }
         };
 
         let value = {
             let value = self.iter.inner.read()?;
 
             // safety: value only needs to live as long as the iterator, not it's reference
-            unsafe { std::mem::transmute(value) }
+            unsafe { std::mem::transmute::<Slice<'_>, Slice<'_>>(value) }
         };
 
         Some((K::try_into_key(key).ok()?, V::try_into_value(value).ok()?))

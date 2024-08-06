@@ -20,7 +20,7 @@ pub struct Store {
 
 impl Store {
     pub fn open<T: db::Database>(config: &config::StoreConfig) -> eyre::Result<Self> {
-        let db = T::open(&config)?;
+        let db = T::open(config)?;
 
         Ok(Self { db: Arc::new(db) })
     }

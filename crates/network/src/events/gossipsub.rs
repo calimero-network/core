@@ -23,10 +23,11 @@ impl EventHandler<gossipsub::Event> for EventLoop {
                 }
             }
             gossipsub::Event::Subscribed { peer_id, topic } => {
-                if let Err(_) = self
+                if (self
                     .event_sender
                     .send(types::NetworkEvent::Subscribed { peer_id, topic })
-                    .await
+                    .await)
+                    .is_err()
                 {
                     error!("Failed to send subscribed event");
                 }

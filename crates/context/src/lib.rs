@@ -9,10 +9,6 @@ use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
 use camino::Utf8PathBuf;
-use near_jsonrpc_client::{methods, JsonRpcClient};
-use near_jsonrpc_primitives::types::query::QueryResponseKind;
-use near_primitives::types::{BlockReference, Finality, FunctionArgs};
-use near_primitives::views::QueryRequest;
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tracing::{error, info};
@@ -128,7 +124,7 @@ impl ContextManager {
             .read()
             .await
             .pending_initial_catchup
-            .contains(&context_id)
+            .contains(context_id)
         {
             return Ok(None);
         }
@@ -249,11 +245,11 @@ impl ContextManager {
         application_id: &calimero_primitives::application::ApplicationId,
         // todo! permit None version for latest
         version: &semver::Version,
-         // represents the url path to the release binary (e.g. ipfs path)
-         url: &str,
+        // represents the url path to the release binary (e.g. ipfs path)
+        url: &str,
         hash: Option<&str>,
     ) -> eyre::Result<()> {
-        self.download_and_install_release(&application_id, &version, &url, hash)
+        self.download_and_install_release(application_id, version, url, hash)
             .await?;
 
         Ok(())
@@ -440,12 +436,8 @@ impl ContextManager {
             versions_with_binary.sort_by(|a, b| b.0.cmp(&a.0));
 
             let version_with_binary = versions_with_binary.first();
-            let version = match version_with_binary {
-                Some((version, path)) => {
-                    Some((version.clone(), path.to_string_lossy().into_owned()))
-                }
-                None => None,
-            };
+            let version = version_with_binary
+                .map(|(version, path)| (version.clone(), path.to_string_lossy().into_owned()));
             version
         } else {
             None

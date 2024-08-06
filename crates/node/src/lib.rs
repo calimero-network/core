@@ -78,9 +78,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
     match network_client
-        .subscribe(IdentTopic::new(
-            "meta_topic".to_string(),
-        ))
+        .subscribe(IdentTopic::new("meta_topic".to_string()))
         .await
     {
         Ok(_) => info!("Subscribed to meta topic"),
@@ -130,7 +128,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     match command {
         "call" => {
             if let Some((context_id, args)) = args.and_then(|args| args.split_once(' ')) {
-                let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
+                let (method, payload) = args.split_once(' ').unwrap_or((args, "{}"));
 
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
@@ -293,13 +291,12 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             // todo! test this
 
             println!(
-                "{IND} {c1:44} | {c2:44} | {c3}",
+                "{IND} {c1:44} | {c2:44} | Value",
                 c1 = "Context ID",
                 c2 = "State Key",
-                c3 = "Value"
             );
 
-            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32].into());
+            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32]);
 
             let handle = node.store.handle();
 
@@ -326,10 +323,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     "ls" => {
                         // todo! application ID shouldn't be hex anymore
                         println!(
-                            "{IND} {c1:44} | {c2:64} | {c3}",
+                            "{IND} {c1:44} | {c2:64} | Last Transaction",
                             c1 = "Context ID",
                             c2 = "Application ID",
-                            c3 = "Last Transaction"
                         );
 
                         let handle = node.store.handle();
@@ -385,8 +381,8 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version, url)) = args
-                            .and_then(|args| {
+                        let Some((context_id, application_id, version, url)) =
+                            args.and_then(|args| {
                                 let mut iter = args.split(' ');
                                 let context = iter.next()?;
                                 let application = iter.next()?;
@@ -416,7 +412,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         // todo! we should be able to install latest version
                         node.ctx_manager
-                            .install_application(&application_id, &version, &url, None)
+                            .install_application(&application_id, &version, url, None)
                             .await?;
 
                         let context = calimero_primitives::context::Context {
@@ -457,10 +453,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        let key = calimero_store::key::ContextTransaction::new(
-                            context_id,
-                            [0; 32].into(),
-                        );
+                        let key = calimero_store::key::ContextTransaction::new(context_id, [0; 32]);
 
                         println!("{IND} {c1:44} | {c2:44}", c1 = "Hash", c2 = "Prior Hash");
 
@@ -488,8 +481,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        let key =
-                            calimero_store::key::ContextState::new(context_id, [0; 32].into());
+                        let key = calimero_store::key::ContextState::new(context_id, [0; 32]);
 
                         println!("{IND} {c1:44} | {c2:44}", c1 = "State Key", c2 = "Value");
 

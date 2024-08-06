@@ -19,7 +19,7 @@ where
     E: Serialize,
 {
     #[inline]
-    pub fn to_json(self) -> serde_json::Result<Result<Vec<u8>, Vec<u8>>> {
+    pub fn to_json(&self) -> serde_json::Result<Result<Vec<u8>, Vec<u8>>> {
         Ok(match self {
             ReturnsResult(Ok(ok)) => Ok(serde_json::to_vec(&ok)?),
             ReturnsResult(Err(err)) => Err(serde_json::to_vec(&err)?),

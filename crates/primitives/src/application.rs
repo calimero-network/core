@@ -18,9 +18,9 @@ impl From<String> for ApplicationId {
     }
 }
 
-impl Into<String> for ApplicationId {
-    fn into(self) -> String {
-        self.0
+impl From<ApplicationId> for String {
+    fn from(id: ApplicationId) -> Self {
+        id.0
     }
 }
 

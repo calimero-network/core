@@ -79,13 +79,7 @@ impl DiscoveryState {
         mechanism: PeerDiscoveryMechanism,
     ) -> bool {
         match self.peers.get(peer_id) {
-            Some(info) => {
-                if info.discoveries.contains(&mechanism) {
-                    true
-                } else {
-                    false
-                }
-            }
+            Some(info) => info.discoveries.contains(&mechanism),
             None => false,
         }
     }
@@ -190,13 +184,12 @@ impl PeerInfo {
     }
 
     pub(crate) fn is_relay_reservation_required(&self) -> bool {
-        self.relay
-            .as_ref()
-            .map_or(true, |info| match info.reservation_status() {
-                RelayReservationStatus::Discovered => true,
-                RelayReservationStatus::Expired => true,
-                _ => false,
-            })
+        self.relay.as_ref().map_or(true, |info| {
+            matches!(
+                info.reservation_status(),
+                RelayReservationStatus::Discovered | RelayReservationStatus::Expired
+            )
+        })
     }
 
     pub(crate) fn is_rendezvous_discover_throttled(&self, rpm: f32) -> bool {
@@ -208,13 +201,12 @@ impl PeerInfo {
     }
 
     pub(crate) fn is_rendezvous_registration_required(&self) -> bool {
-        self.rendezvous
-            .as_ref()
-            .map_or(true, |info| match info.registration_status() {
-                RendezvousRegistrationStatus::Discovered => true,
-                RendezvousRegistrationStatus::Expired => true,
-                _ => false,
-            })
+        self.rendezvous.as_ref().map_or(true, |info| {
+            matches!(
+                info.registration_status(),
+                RendezvousRegistrationStatus::Discovered | RendezvousRegistrationStatus::Expired
+            )
+        })
     }
 
     pub(crate) fn rendezvous(&self) -> Option<&PeerRendezvousInfo> {

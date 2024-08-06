@@ -262,7 +262,7 @@ async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> im
 
     if let Some(certificate) = certificate {
         // Generate the file content
-        let file_content = match str::from_utf8(&certificate.cert()) {
+        let file_content = match str::from_utf8(certificate.cert()) {
             Ok(content) => content.to_string(),
             Err(_) => {
                 return (
