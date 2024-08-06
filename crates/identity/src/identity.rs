@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{KeyPair, PublicKey};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct IdentityHandler {
     context_identities: HashMap<ContextId, KeyPair>,
 }

@@ -17,11 +17,11 @@ interface WsResponse {
 }
 
 interface SubscribeRequest {
-  applicationIds: string[];
+  contextIds: string[];
 }
 
 interface UnsubscribeRequest {
-  applicationIds: string[];
+  contextIds: string[];
 }
 
 export class WsSubscriptionsClient implements SubscriptionsClient {
@@ -61,7 +61,7 @@ export class WsSubscriptionsClient implements SubscriptionsClient {
   }
 
   public subscribe(
-    applicationIds: string[],
+    contextIds: string[],
     connectionId: string = DEFAULT_CONNECTION_ID,
   ): void {
     const websocket = this.connections.get(connectionId);
@@ -71,15 +71,16 @@ export class WsSubscriptionsClient implements SubscriptionsClient {
         id: requestId,
         method: 'subscribe',
         params: {
-          applicationIds: applicationIds,
+          contextIds: contextIds,
         },
       };
+
       websocket.send(JSON.stringify(request));
     }
   }
 
   public unsubscribe(
-    applicationIds: string[],
+    contextIds: string[],
     connectionId: string = DEFAULT_CONNECTION_ID,
   ): void {
     const websocket = this.connections.get(connectionId);
@@ -89,7 +90,7 @@ export class WsSubscriptionsClient implements SubscriptionsClient {
         id: requestId,
         method: 'unsubscribe',
         params: {
-          applicationIds: applicationIds,
+          contextIds: contextIds,
         },
       };
       websocket.send(JSON.stringify(request));
@@ -120,7 +121,7 @@ export class WsSubscriptionsClient implements SubscriptionsClient {
     }
   }
 
-  private handleMessage(connection_id: string, event: any): void {
+  private handleMessage(connectionId: string, event: any): void {
     const response: WsResponse = JSON.parse(event.data.toString());
     if (response.id !== null) {
       // TODO: handle non event messages gracefully
@@ -132,7 +133,7 @@ export class WsSubscriptionsClient implements SubscriptionsClient {
       return;
     }
 
-    const callbacks = this.callbacks.get(connection_id);
+    const callbacks = this.callbacks.get(connectionId);
     if (callbacks) {
       for (const callback of callbacks) {
         const nodeEvent: NodeEvent = response.result;

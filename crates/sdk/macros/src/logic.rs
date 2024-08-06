@@ -17,12 +17,7 @@ pub struct LogicImpl<'a> {
 
 impl<'a> ToTokens for LogicImpl<'a> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let LogicImpl {
-            type_: _,
-            orig,
-            methods,
-            ..
-        } = self;
+        let LogicImpl { orig, methods, .. } = self;
 
         quote! {
             #orig
@@ -59,7 +54,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             ));
         }
 
-        if let Some(_) = &input.item.trait_ {
+        if input.item.trait_.is_some() {
             return Err(errors.finish(syn::Error::new_spanned(
                 input.item,
                 errors::ParseError::NoTraitSupport,
@@ -107,14 +102,15 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
         let type_ = infallible!({ syn::parse2(sanitizer.to_token_stream()) });
 
         let mut methods = vec![];
+
         for item in &input.item.items {
             if let syn::ImplItem::Fn(method) = item {
                 match method::LogicMethod::try_from(method::LogicMethodImplInput {
                     type_: &type_,
                     item: method,
                 }) {
-                    Ok(method::LogicMethod::Private) => {}
                     Ok(method::LogicMethod::Public(method)) => methods.push(method),
+                    Ok(method::LogicMethod::Private) => {}
                     Err(err) => errors.combine(err),
                 }
             }

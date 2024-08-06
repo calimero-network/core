@@ -21,7 +21,7 @@ pub(crate) fn multiaddr_to_url(
 
     let mut url = Url::parse(&format!("{}://{}:{}", scheme, ip, port))?;
 
-    url.set_path(&api_path);
+    url.set_path(api_path);
 
     Ok(url)
 }

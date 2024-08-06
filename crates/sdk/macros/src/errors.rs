@@ -70,6 +70,14 @@ pub enum ParseError<'a> {
     NoComplexVisibility,
     #[error("explicit ABIs are not supported")]
     NoExplicitAbi,
+    #[error("an initializer, by definition, has no `self` to reference")]
+    NoSelfReceiverAtInit,
+    #[error("an initializer method, by definition, has to be public")]
+    NoPrivateInit,
+    #[error("method named `init` must be annotated with `#[app::init]`")]
+    InitMethodWithoutInitAttribute,
+    #[error("method annotated with `#[app::init]` must be named `init`")]
+    AppInitMethodNotNamedInit,
 }
 
 impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {
@@ -163,7 +171,7 @@ impl<'a, T> Errors<'a, T> {
 
     pub fn check(self) -> Result<(), Self> {
         let inner = self.inner_ref().errors.is_some();
-        inner.then(|| ()).map_or(Ok(()), |_| Err(self))
+        inner.then_some(()).map_or(Ok(()), |_| Err(self))
     }
 
     // panics if this instance has already been consumed or "taken"
@@ -171,7 +179,7 @@ impl<'a, T> Errors<'a, T> {
         self.inner().errors
     }
 
-    pub fn to_compile_error(self) -> proc_macro2::TokenStream
+    pub fn to_compile_error(&self) -> proc_macro2::TokenStream
     where
         T: ToTokens,
     {

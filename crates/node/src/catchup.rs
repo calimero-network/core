@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use calimero_primitives::identity::{KeyPair, PublicKey};
 use futures_util::{SinkExt, StreamExt};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::{types, Node};
@@ -12,7 +12,7 @@ mod batch;
 impl Node {
     pub(crate) async fn handle_opened_stream(
         &mut self,
-        mut stream: calimero_network::stream::Stream,
+        mut stream: Box<calimero_network::stream::Stream>,
     ) -> eyre::Result<()> {
         let Some(message) = stream.next().await else {
             eyre::bail!("Stream closed unexpectedly")
@@ -153,7 +153,7 @@ impl Node {
 
             batch_writer
                 .send(types::TransactionWithStatus {
-                    transaction_hash: hash.into(),
+                    transaction_hash: hash,
                     transaction: calimero_primitives::transaction::Transaction {
                         context_id: request.context_id,
                         method: transaction.method.into(),
@@ -244,7 +244,7 @@ impl Node {
 
         loop {
             let message = tokio::time::timeout(
-                self.network_client.catchup_config.receive_timeout.into(),
+                self.network_client.catchup_config.receive_timeout,
                 stream.next(),
             )
             .await;

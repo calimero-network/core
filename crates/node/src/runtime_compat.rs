@@ -39,7 +39,7 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
 
         (key.len() <= state_key.len()).then_some(())?;
 
-        (&mut state_key[..key.len()]).copy_from_slice(key);
+        state_key[..key.len()].copy_from_slice(key);
 
         let mut keys = self.keys.borrow_mut();
 

@@ -57,7 +57,7 @@ async fn create_context(
     application_id: String,
     client: &Client,
 ) -> eyre::Result<()> {
-    if !app_installed(&base_multiaddr, &application_id, client).await? {
+    if !app_installed(base_multiaddr, &application_id, client).await? {
         eyre::bail!("Application is not installed on node.")
     }
 

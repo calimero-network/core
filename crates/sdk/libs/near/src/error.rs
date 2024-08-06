@@ -15,6 +15,7 @@ pub enum Error<R> {
 
 #[derive(Debug, serde::Deserialize, Clone, PartialEq)]
 #[serde(tag = "name", content = "cause", rename_all = "SCREAMING_SNAKE_CASE")]
+#[allow(clippy::enum_variant_names)]
 pub enum RpcErrorKind<R> {
     RequestValidationError(RpcRequestValidationErrorKind),
     HandlerError(R),

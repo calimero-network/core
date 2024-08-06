@@ -99,11 +99,9 @@ pub fn read_register(register_id: sys::RegisterId) -> Option<Vec<u8>> {
 #[inline]
 fn read_register_sized<const N: usize>(register_id: sys::RegisterId) -> Option<[u8; N]> {
     let len = register_len(register_id)?;
-
-    let mut buffer = [0; N];
-
+    let buffer = [0; N];
     let succeed: bool = unsafe {
-        sys::read_register(register_id, sys::BufferMut::new(&mut buffer))
+        sys::read_register(register_id, sys::BufferMut::new(buffer))
             .try_into()
             .unwrap_or_else(expected_boolean)
     };

@@ -114,9 +114,9 @@ pub async fn get_contexts_handler(
     let contexts = state
         .ctx_manager
         .get_contexts(None)
-        .map_err(|err| parse_api_error(err));
+        .map_err(parse_api_error);
 
-    return match contexts {
+    match contexts {
         Ok(contexts) => ApiResponse {
             payload: calimero_server_primitives::admin::GetContextsResponse {
                 data: calimero_server_primitives::admin::ContextList { contexts },
@@ -124,7 +124,7 @@ pub async fn get_contexts_handler(
         }
         .into_response(),
         Err(err) => err.into_response(),
-    };
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -148,9 +148,9 @@ pub async fn delete_context_handler(
         .ctx_manager
         .delete_context(&context_id)
         .await
-        .map_err(|err| parse_api_error(err));
+        .map_err(parse_api_error);
 
-    return match result {
+    match result {
         Ok(result) => ApiResponse {
             payload: DeleteContextResponse {
                 data: DeletedContext { is_deleted: result },
@@ -158,7 +158,7 @@ pub async fn delete_context_handler(
         }
         .into_response(),
         Err(err) => err.into_response(),
-    };
+    }
 }
 
 pub async fn create_context_handler(
@@ -198,9 +198,9 @@ pub async fn create_context_handler(
         .ctx_manager
         .add_context(context.clone(), initial_identity)
         .await
-        .map_err(|err| parse_api_error(err));
+        .map_err(parse_api_error);
 
-    let response = match result {
+    match result {
         Ok(_) => ApiResponse {
             payload: calimero_server_primitives::admin::CreateContextResponse {
                 data: calimero_server_primitives::admin::ContextResponse {
@@ -211,9 +211,7 @@ pub async fn create_context_handler(
         }
         .into_response(),
         Err(err) => err.into_response(),
-    };
-
-    response
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -270,7 +268,7 @@ pub async fn join_context_handler(
         .ctx_manager
         .join_context(&context_id_result, initial_identity)
         .await
-        .map_err(|err| parse_api_error(err));
+        .map_err(parse_api_error);
 
     match result {
         Ok(_) => ApiResponse {

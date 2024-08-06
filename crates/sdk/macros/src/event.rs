@@ -93,7 +93,7 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
 
         if ident == &*reserved::idents::input() {
             errors.subsume(syn::Error::new_spanned(
-                &ident,
+                ident,
                 errors::ParseError::UseOfReservedIdent,
             ));
         }

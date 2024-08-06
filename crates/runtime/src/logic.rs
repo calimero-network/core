@@ -199,7 +199,7 @@ impl<'a> VMHostFunctions<'a> {
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(&logic.limits, register_id, &logic.context.input[..])
+                .set(logic.limits, register_id, &logic.context.input[..])
         })?;
 
         Ok(())
@@ -272,7 +272,7 @@ impl<'a> VMHostFunctions<'a> {
         let key = self.read_guest_memory(key_ptr, key_len)?;
 
         if let Some(value) = logic.storage.get(&key) {
-            self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, value))?;
+            self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, value))?;
 
             return Ok(1);
         }
@@ -304,7 +304,7 @@ impl<'a> VMHostFunctions<'a> {
         let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
 
         if let Some(evicted) = evicted {
-            self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, evicted))?;
+            self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, evicted))?;
 
             return Ok(1);
         };
@@ -312,6 +312,7 @@ impl<'a> VMHostFunctions<'a> {
         Ok(0)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn fetch(
         &mut self,
         url_ptr: u64,
@@ -356,7 +357,7 @@ impl<'a> VMHostFunctions<'a> {
             Err(e) => (1, e.to_string().into_bytes()),
         };
 
-        self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, data))?;
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, data))?;
         Ok(status)
     }
 }

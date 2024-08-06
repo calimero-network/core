@@ -6,12 +6,13 @@ use super::{HostError, Location, PanicContext, VMLogic};
 
 thread_local! {
     // https://open.spotify.com/track/7DPUuTaTZCtQ6o4Xx00qzT
-    static HOOKER: Once = Once::new();
-    static PAYLOAD: RefCell<Option<(String, Location)>> = RefCell::new(None);
-    static HOST_CTX: AtomicBool = AtomicBool::new(false);
+    static HOOKER: Once = const { Once::new() };
+    static PAYLOAD: RefCell<Option<(String, Location)>> = const { RefCell::new(None) };
+    static HOST_CTX: AtomicBool = const { AtomicBool::new(false) };
 }
 
 impl<'a> VMLogic<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn imports(&mut self, store: &mut wasmer::Store) -> wasmer::Imports {
         imports! {
             store;

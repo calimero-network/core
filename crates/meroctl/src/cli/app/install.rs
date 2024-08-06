@@ -43,7 +43,7 @@ impl InstallCommand {
 
         let client = reqwest::Client::new();
 
-        let install_url = multiaddr_to_url(&multiaddr, "admin-api/dev/install-application")?;
+        let install_url = multiaddr_to_url(multiaddr, "admin-api/dev/install-application")?;
 
         let id = format!("{}:{}", self.version, self.path);
         let mut hasher = Sha256::new();

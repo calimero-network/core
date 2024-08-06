@@ -92,7 +92,7 @@ impl AsKeyParts for ContextIdentity {
     type Components = (ContextId, PublicKey);
 
     fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Identity, (&self.0).into())
+        (Column::Identity, &self.0)
     }
 }
 
@@ -148,7 +148,7 @@ impl AsKeyParts for ContextState {
     type Components = (ContextId, StateKey);
 
     fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::State, (&self.0).into())
+        (Column::State, &self.0)
     }
 }
 

@@ -1,6 +1,6 @@
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::store::UnorderedMap;
+use near_sdk::store::iterable_map::IterableMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
 
 #[derive(BorshStorageKey, BorshSerialize)]
@@ -16,8 +16,8 @@ pub enum StorageKeys {
 #[derive(BorshDeserialize, BorshSerialize)]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct PackageManager {
-    pub packages: UnorderedMap<String, Package>,
-    pub releases: UnorderedMap<String, UnorderedMap<String, Release>>,
+    pub packages: IterableMap<String, Package>,
+    pub releases: IterableMap<String, IterableMap<String, Release>>,
 }
 
 //  TODO: add multiple owners
@@ -48,8 +48,8 @@ pub struct Release {
 impl Default for PackageManager {
     fn default() -> Self {
         Self {
-            packages: UnorderedMap::new(StorageKeys::Packages),
-            releases: UnorderedMap::new(StorageKeys::Releases),
+            packages: IterableMap::new(StorageKeys::Packages),
+            releases: IterableMap::new(StorageKeys::Releases),
         }
     }
 }
@@ -76,11 +76,9 @@ impl PackageManager {
     }
 
     fn calculate_id_hash(name: &str) -> String {
-        let author = env::signer_account_id();
-        let id = format!("{}:{}", name, author);
-        let hash_bytes = env::sha256(id.as_bytes());
-        let hash_string = hex::encode(hash_bytes);
-        return hash_string;
+        hex::encode(env::sha256(
+            format!("{}:{}", name, env::signer_account_id()).as_bytes(),
+        ))
     }
 
     pub fn add_release(
@@ -106,8 +104,8 @@ impl PackageManager {
 
         // Check if the last release version exists and is less than the current version
         if let Some(last_version) = last_release_version {
-            let last_version = semver::Version::parse(&last_version)
-                .expect("Failed to parse last release version");
+            let last_version =
+                semver::Version::parse(last_version).expect("Failed to parse last release version");
             let current_version =
                 semver::Version::parse(&version).expect("Failed to parse current version");
             if current_version <= last_version {
@@ -127,7 +125,7 @@ impl PackageManager {
         self.releases
             .entry(id_hash.clone())
             .or_insert_with(|| {
-                UnorderedMap::new(StorageKeys::Release {
+                IterableMap::new(StorageKeys::Release {
                     package: id_hash.clone(),
                 })
             })

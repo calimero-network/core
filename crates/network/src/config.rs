@@ -37,18 +37,10 @@ pub struct SwarmConfig {
     pub listen: Vec<Multiaddr>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct BootstrapConfig {
     #[serde(default)]
     pub nodes: BootstrapNodes,
-}
-
-impl Default for BootstrapConfig {
-    fn default() -> Self {
-        Self {
-            nodes: Default::default(),
-        }
-    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

@@ -44,6 +44,7 @@ impl<'k, L: ReadLayer<'k>> StoreHandle<L> {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn iter<E: Entry<Key: FromKeyParts>>(
         &self,
         start: &'k E,
