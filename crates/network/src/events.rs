@@ -156,6 +156,9 @@ impl EventLoop {
                     };
                 }
             }
+            SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
+                debug!("New external address of peer: {} {}", peer_id, address);
+            }
             unhandled => warn!("Unhandled event: {:?}", unhandled),
         }
     }
