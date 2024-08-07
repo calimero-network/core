@@ -1,8 +1,10 @@
+use calimero_primitives::identity::PublicKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PeerAction {
+    SharePublicKey(PublicKey),
     Transaction(calimero_primitives::transaction::Transaction),
     TransactionConfirmation(TransactionConfirmation),
     TransactionRejection(TransactionRejection),
@@ -38,6 +40,7 @@ pub struct CatchupRequest {
     pub source: Option<calimero_primitives::application::ApplicationSource>,
     pub last_executed_transaction_hash: calimero_primitives::hash::Hash,
     pub batch_size: u8,
+    pub public_key: PublicKey,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

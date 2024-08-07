@@ -100,13 +100,13 @@ fn rocks_store() {
 
     let public_key1 = [0u8; 32];
 
-    let key3 = ContextIdentity::new(context_id1, public_key1);
+    let key3 = ContextIdentity::new(context_id1, public_key1.into());
 
     store.put(&key3, b"Some Associated Value".into()).unwrap();
 
     let public_key2 = [1u8; 32];
 
-    let key4 = ContextIdentity::new(context_id1, public_key2);
+    let key4 = ContextIdentity::new(context_id1, public_key2.into());
 
     store
         .put(&key4, b"Another Associated Value".into())
@@ -231,13 +231,13 @@ fn temporal_store() {
 
     let public_key1 = [0u8; 32];
 
-    let key3 = ContextIdentity::new(context_id1, public_key1);
+    let key3 = ContextIdentity::new(context_id1, public_key1.into());
 
     store.put(&key3, b"Some Associated Value".into()).unwrap();
 
     let public_key2 = [1u8; 32];
 
-    let key4 = ContextIdentity::new(context_id1, public_key2);
+    let key4 = ContextIdentity::new(context_id1, public_key2.into());
 
     store
         .put(&key4, b"Another Associated Value".into())

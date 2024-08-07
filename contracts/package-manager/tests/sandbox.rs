@@ -1,9 +1,6 @@
-use std::env;
-
 use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract};
 use serde_json::json;
-use tokio::fs;
 
 #[tokio::test]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

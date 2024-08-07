@@ -1,4 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::identity::{KeyPair, PublicKey};
 
 use crate::entry::{Borsh, Identity};
 use crate::key;
@@ -10,7 +11,6 @@ pub type TransactionHash = [u8; 32];
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextMeta {
     pub application: key::ApplicationMeta,
-
     pub last_transaction_hash: TransactionHash,
 }
 
@@ -43,7 +43,26 @@ impl<'a> AsRef<[u8]> for ContextState<'a> {
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextIdentity {
+    pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
+}
+
+impl From<KeyPair> for ContextIdentity {
+    fn from(id: KeyPair) -> Self {
+        Self {
+            public_key: id.public_key,
+            private_key: id.private_key,
+        }
+    }
+}
+
+impl From<ContextIdentity> for KeyPair {
+    fn from(id: ContextIdentity) -> Self {
+        Self {
+            public_key: id.public_key,
+            private_key: id.private_key,
+        }
+    }
 }
 
 impl PredefinedEntry for key::ContextIdentity {
@@ -56,6 +75,7 @@ pub struct ContextTransaction {
     pub method: Box<str>,
     pub payload: Box<[u8]>,
     pub prior_hash: TransactionHash,
+    pub executor_public_key: [u8; 32],
 }
 
 impl PredefinedEntry for key::ContextTransaction {

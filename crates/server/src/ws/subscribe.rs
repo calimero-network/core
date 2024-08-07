@@ -14,7 +14,7 @@ async fn handle(
 ) -> eyre::Result<SubscribeResponse> {
     let mut inner = connection_state.inner.write().await;
     request.context_ids.iter().for_each(|id| {
-        inner.subscriptions.insert(id.clone());
+        inner.subscriptions.insert(*id);
     });
 
     Ok(SubscribeResponse {

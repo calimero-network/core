@@ -74,9 +74,12 @@ impl KeyComponent for PublicKey {
 pub struct ContextIdentity(Key<(ContextId, PublicKey)>);
 
 impl ContextIdentity {
-    pub fn new(context_id: calimero_primitives::context::ContextId, context_pk: [u8; 32]) -> Self {
+    pub fn new(
+        context_id: calimero_primitives::context::ContextId,
+        context_pk: calimero_primitives::identity::PublicKey,
+    ) -> Self {
         Self(Key(
-            GenericArray::from(*context_id).concat(context_pk.into())
+            GenericArray::from(*context_id).concat(GenericArray::from(context_pk.0))
         ))
     }
 

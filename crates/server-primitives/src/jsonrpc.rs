@@ -101,6 +101,7 @@ pub struct QueryRequest {
     pub context_id: calimero_primitives::context::ContextId,
     pub method: String,
     pub args_json: serde_json::Value,
+    pub executor_public_key: [u8; 32],
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -126,6 +127,7 @@ pub struct MutateRequest {
     pub context_id: calimero_primitives::context::ContextId,
     pub method: String,
     pub args_json: serde_json::Value,
+    pub executor_public_key: [u8; 32],
 }
 
 #[derive(Debug, Serialize, Deserialize)]

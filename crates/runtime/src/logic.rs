@@ -18,6 +18,7 @@ pub type Result<T, E = errors::VMLogicError> = std::result::Result<T, E>;
 
 pub struct VMContext {
     pub input: Vec<u8>,
+    pub executor_public_key: [u8; 32],
 }
 
 pub struct VMLimits {
@@ -79,6 +80,11 @@ impl<'a> VMLogic<'a> {
             memory_builder: |store| memory.view(store),
         }
         .build()
+    }
+
+    pub fn get_executor_identity(&mut self, register_id: u64) -> Result<()> {
+        self.registers
+            .set(self.limits, register_id, self.context.executor_public_key)
     }
 }
 
@@ -193,7 +199,7 @@ impl<'a> VMHostFunctions<'a> {
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(&logic.limits, register_id, &logic.context.input[..])
+                .set(logic.limits, register_id, &logic.context.input[..])
         })?;
 
         Ok(())
@@ -266,7 +272,7 @@ impl<'a> VMHostFunctions<'a> {
         let key = self.read_guest_memory(key_ptr, key_len)?;
 
         if let Some(value) = logic.storage.get(&key) {
-            self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, value))?;
+            self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, value))?;
 
             return Ok(1);
         }
@@ -298,7 +304,7 @@ impl<'a> VMHostFunctions<'a> {
         let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
 
         if let Some(evicted) = evicted {
-            self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, evicted))?;
+            self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, evicted))?;
 
             return Ok(1);
         };
@@ -306,6 +312,7 @@ impl<'a> VMHostFunctions<'a> {
         Ok(0)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn fetch(
         &mut self,
         url_ptr: u64,
@@ -350,7 +357,7 @@ impl<'a> VMHostFunctions<'a> {
             Err(e) => (1, e.to_string().into_bytes()),
         };
 
-        self.with_logic_mut(|logic| logic.registers.set(&logic.limits, register_id, data))?;
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, data))?;
         Ok(status)
     }
 }

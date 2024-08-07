@@ -1,9 +1,10 @@
 use calimero_primitives::events::OutcomeEvent;
+use calimero_primitives::identity::{KeyPair, PublicKey};
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
 use calimero_store::Store;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
-use libp2p::identity;
+use libp2p::identity as p2p_identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -19,7 +20,7 @@ type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
 #[derive(Debug)]
 pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
-    pub identity: identity::Keypair,
+    pub identity: p2p_identity::Keypair,
     pub node_type: calimero_node_primitives::NodeType,
     pub application: calimero_context::config::ApplicationConfig,
     pub network: calimero_network::config::NetworkConfig,
@@ -111,8 +112,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((context_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
-                node.handle_call(context_id, method, payload, write, outcome_sender).await;
+            Some((context_id, method, payload, write, executor_public_key, outcome_sender)) = server_receiver.recv() => {
+                node.handle_call(context_id, method, payload, write, executor_public_key, outcome_sender).await;
             }
         }
     }
@@ -132,8 +133,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     // TODO: should be replaced with RPC endpoints
     match command {
         "call" => {
-            if let Some((context_id, args)) = args.and_then(|args| args.split_once(' ')) {
-                let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
+            if let Some((context_id, rest)) = args.and_then(|args| args.split_once(' ')) {
+                let (method, rest) = rest.split_once(' ').unwrap_or((rest, "{}"));
+                let (payload, executor_key) = rest.split_once(' ').unwrap_or((rest, ""));
 
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
@@ -146,11 +148,23 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             return Ok(());
                         };
 
+                        // Parse the executor's public key if provided
+                        let executor_public_key = if !executor_key.is_empty() {
+                            bs58::decode(executor_key)
+                                .into_vec()
+                                .map_err(|_| eyre::eyre!("Invalid executor public key"))?
+                                .try_into()
+                                .map_err(|_| eyre::eyre!("Executor public key must be 32 bytes"))?
+                        } else {
+                            return Err(eyre::eyre!("Executor public key is required"));
+                        };
+
                         let tx_hash = match node
                             .call_mutate(
                                 context,
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
+                                executor_public_key,
                                 outcome_sender,
                             )
                             .await
@@ -231,7 +245,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     }
                 }
             } else {
-                println!("{IND} Usage: call <Method> <JSON Payload>");
+                println!(
+                    "{IND} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
+                );
             }
         }
         "gc" => {
@@ -296,10 +312,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             // todo! test this
 
             println!(
-                "{IND} {c1:44} | {c2:44} | {c3}",
+                "{IND} {c1:44} | {c2:44} | Value",
                 c1 = "Context ID",
                 c2 = "State Key",
-                c3 = "Value"
             );
 
             let handle = node.store.handle();
@@ -425,10 +440,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 match subcommand {
                     "ls" => {
                         println!(
-                            "{IND} {c1:44} | {c2:44} | {c3}",
+                            "{IND} {c1:44} | {c2:64} | Last Transaction",
                             c1 = "Context ID",
                             c2 = "Application ID",
-                            c3 = "Last Transaction"
                         );
 
                         let handle = node.store.handle();
@@ -452,8 +466,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         }
                     }
                     "join" => {
-                        let Some(context_id) = args else {
-                            println!("{IND} Usage: context join <context_id>");
+                        let Some((context_id, private_key)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context = iter.next()?;
+                            let private_key = iter.next()?;
+
+                            Some((context, private_key))
+                        }) else {
+                            println!("{IND} Usage: context join <context_id> <private_key>");
                             break 'done;
                         };
 
@@ -462,7 +482,26 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        node.ctx_manager.join_context(&context_id).await?;
+                        // Parse the private key
+                        let private_key = bs58::decode(private_key)
+                            .into_vec()
+                            .map_err(|_| eyre::eyre!("Invalid private key"))?;
+                        let private_key: [u8; 32] = private_key
+                            .try_into()
+                            .map_err(|_| eyre::eyre!("Private key must be 32 bytes"))?;
+
+                        // Generate the public key from the private key
+                        let public_key = PublicKey::derive_from_private_key(&private_key);
+
+                        // Create the KeyPair
+                        let initial_identity = KeyPair {
+                            public_key,
+                            private_key: Some(private_key),
+                        };
+
+                        node.ctx_manager
+                            .join_context(&context_id, initial_identity)
+                            .await?;
 
                         println!(
                             "{IND} Joined context {}, waiting for catchup to complete..",
@@ -485,14 +524,17 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id)) = args.and_then(|args| {
-                            let mut iter = args.split(' ');
-                            let context = iter.next()?;
-                            let application_id = iter.next()?;
+                        let Some((context_id, application_id, private_key)) =
+                            args.and_then(|args| {
+                                let mut iter = args.split(' ');
+                                let context = iter.next()?;
+                                let application = iter.next()?;
+                                let private_key = iter.next()?;
 
-                            Some((context, application_id))
-                        }) else {
-                            println!("{IND} Usage: context create <context_id> <application_id>");
+                                Some((context, application, private_key))
+                            })
+                        else {
+                            println!("{IND} Usage: context create <context_id> <application_id> <version> <url> <private_key>");
                             break 'done;
                         };
 
@@ -506,13 +548,33 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
+                        // Parse the private key
+                        let private_key = bs58::decode(private_key)
+                            .into_vec()
+                            .map_err(|_| eyre::eyre!("Invalid private key"))?;
+                        let private_key: [u8; 32] = private_key
+                            .try_into()
+                            .map_err(|_| eyre::eyre!("Private key must be 32 bytes"))?;
+
+                        // Generate the public key from the private key
+                        let public_key = PublicKey::derive_from_private_key(&private_key);
+
+                        // Create the KeyPair
+                        let initial_identity = KeyPair {
+                            public_key,
+                            private_key: Some(private_key),
+                        };
+
                         let context = calimero_primitives::context::Context {
                             id: context_id,
                             application_id,
                             last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
-                        node.ctx_manager.add_context(context).await?;
+                        // We don't have the identity at this point
+                        node.ctx_manager
+                            .add_context(context, initial_identity)
+                            .await?;
 
                         println!("{IND} Created context {}", context_id);
                     }
@@ -762,6 +824,11 @@ impl Node {
         };
 
         match serde_json::from_slice(&message.data)? {
+            types::PeerAction::SharePublicKey(public_key) => {
+                // Handle the shared public key
+                // TODO: Should we store it? Use it for verification?
+                info!("Received public key: {:?}", public_key);
+            }
             types::PeerAction::Transaction(transaction) => {
                 debug!(?transaction, %source, "Received transaction");
 
@@ -911,6 +978,7 @@ impl Node {
         method: String,
         payload: Vec<u8>,
         write: bool,
+        executor_public_key: [u8; 32],
         outcome_sender: oneshot::Sender<
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
         >,
@@ -927,7 +995,13 @@ impl Node {
             let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
 
             if let Err(err) = self
-                .call_mutate(context, method, payload, inner_outcome_sender)
+                .call_mutate(
+                    context,
+                    method,
+                    payload,
+                    executor_public_key,
+                    inner_outcome_sender,
+                )
                 .await
             {
                 let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(err)));
@@ -955,7 +1029,10 @@ impl Node {
                 }
             });
         } else {
-            match self.call_query(context, method, payload).await {
+            match self
+                .call_query(context, method, payload, executor_public_key)
+                .await
+            {
                 Ok(outcome) => {
                     let _ = outcome_sender.send(Ok(outcome));
                 }
@@ -972,6 +1049,7 @@ impl Node {
         context: calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
+        executor_public_key: [u8; 32],
     ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::QueryCallError> {
         if !self
             .ctx_manager
@@ -985,7 +1063,7 @@ impl Node {
             );
         }
 
-        self.execute(context, None, method, payload)
+        self.execute(context, None, method, payload, executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e,"Failed to execute query call.");
@@ -998,6 +1076,7 @@ impl Node {
         context: calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
+        executor_public_key: [u8; 32],
         outcome_sender: oneshot::Sender<
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError>,
         >,
@@ -1034,6 +1113,7 @@ impl Node {
             method,
             payload,
             prior_hash: context.last_transaction_hash,
+            executor_public_key,
         };
 
         self.push_action(
@@ -1107,6 +1187,7 @@ impl Node {
                 Some(hash),
                 transaction.method.clone(),
                 transaction.payload.clone(),
+                transaction.executor_public_key,
             )
             .await?;
 
@@ -1148,6 +1229,7 @@ impl Node {
                 method: transaction.method.into(),
                 payload: transaction.payload.into(),
                 prior_hash: *transaction.prior_hash,
+                executor_public_key: transaction.executor_public_key,
             },
         )?;
 
@@ -1162,12 +1244,13 @@ impl Node {
         Ok(())
     }
 
-    async fn execute(
+    pub async fn execute(
         &mut self,
         context: calimero_primitives::context::Context,
         hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
+        executor_public_key: [u8; 32],
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let mut storage = match hash {
             Some(_) => runtime_compat::RuntimeCompatStore::temporal(&mut self.store, context.id),
@@ -1188,7 +1271,10 @@ impl Node {
         let outcome = calimero_runtime::run(
             &blob,
             &method,
-            calimero_runtime::logic::VMContext { input: payload },
+            calimero_runtime::logic::VMContext {
+                input: payload,
+                executor_public_key,
+            },
             &mut storage,
             &get_runtime_limits()?,
         )?;

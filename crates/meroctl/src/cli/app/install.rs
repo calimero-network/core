@@ -37,7 +37,7 @@ impl InstallCommand {
 
         let client = reqwest::Client::new();
 
-        let install_url = multiaddr_to_url(&multiaddr, "admin-api/dev/install-application")?;
+        let install_url = multiaddr_to_url(multiaddr, "admin-api/dev/install-application")?;
 
         let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
             path: self.path,

@@ -21,7 +21,7 @@ pub fn run(
     // todo! module, execute that, instead of recompiling
     let mut engine = wasmer::Engine::default();
 
-    engine.set_tunables(memory::WasmerTunables::new(&limits));
+    engine.set_tunables(memory::WasmerTunables::new(limits));
 
     let mut store = Store::new(engine);
 
@@ -37,7 +37,7 @@ pub fn run(
     // todo!     - remove memory section
     // todo! cache the compiled module in storage for later
 
-    let module = match Module::new(&store, &code) {
+    let module = match Module::new(&store, code) {
         Ok(module) => module,
         Err(err) => return Ok(logic.finish(Some(err.into()))),
     };

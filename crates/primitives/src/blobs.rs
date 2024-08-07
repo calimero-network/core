@@ -12,7 +12,7 @@ pub struct BlobId(Hash);
 
 impl BlobId {
     pub fn hash(bytes: &[u8]) -> Self {
-        Self(Hash::hash(bytes))
+        Self(Hash::new(bytes))
     }
 }
 

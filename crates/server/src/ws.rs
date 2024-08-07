@@ -263,7 +263,7 @@ async fn handle_text_message(
         }
     };
 
-    if let None = state.connections.read().await.get(&connection_id) {
+    if state.connections.read().await.get(&connection_id).is_none() {
         error!(%connection_id, "Unexpected state, client_id not found in client state map");
         return;
     };

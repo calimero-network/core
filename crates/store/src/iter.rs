@@ -158,14 +158,12 @@ where
                 Ok(Some(key)) => {
                     // safety: key only needs to live as long as the iterator, not it's reference
                     let key = unsafe { std::mem::transmute(key) };
-
                     return Some(K::try_into_key(key).map_err(Into::into));
                 }
                 Err(e) => return Some(Err(e)),
                 Ok(None) => self.iter.done = true,
             }
         }
-
         None
     }
 }

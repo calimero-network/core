@@ -63,17 +63,14 @@ impl EventLoop {
                 peer_id, endpoint, ..
             } => {
                 debug!(%peer_id, ?endpoint, "Connection established");
-                match endpoint {
-                    libp2p::core::ConnectedPoint::Dialer { .. } => {
-                        self.discovery
-                            .state
-                            .add_peer_addr(peer_id, endpoint.get_remote_address());
+                if let libp2p::core::ConnectedPoint::Dialer { .. } = endpoint {
+                    self.discovery
+                        .state
+                        .add_peer_addr(peer_id, endpoint.get_remote_address());
 
-                        if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                            let _ = sender.send(Ok(Some(())));
-                        }
+                    if let Some(sender) = self.pending_dial.remove(&peer_id) {
+                        let _ = sender.send(Ok(Some(())));
                     }
-                    _ => {}
                 }
             }
             SwarmEvent::ConnectionClosed {
@@ -150,7 +147,7 @@ impl EventLoop {
                 debug!("External address expired: {}", address);
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
-                        &relayed_addr.relay_peer_id(),
+                        relayed_addr.relay_peer_id(),
                         discovery::state::RelayReservationStatus::Expired,
                     );
 

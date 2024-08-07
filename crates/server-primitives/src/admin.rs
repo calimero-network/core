@@ -1,3 +1,4 @@
+use calimero_primitives::identity::PublicKey;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -157,6 +158,7 @@ pub struct CreateContextRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextResponse {
     pub context: calimero_primitives::context::Context,
+    pub member_public_key: PublicKey,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

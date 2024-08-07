@@ -71,6 +71,7 @@ fn main() -> eyre::Result<()> {
         input: serde_json::to_vec(&json!({
             "seed": joe_seed,
         }))?,
+        executor_public_key: [0; 32],
     };
     let create_keypair_outcome = run(file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
@@ -93,6 +94,7 @@ fn main() -> eyre::Result<()> {
         input: serde_json::to_vec(&json!({
             "seed": melissa_seed,
         }))?,
+        executor_public_key: [0; 32],
     };
     let create_keypair_outcome = run(file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
@@ -114,6 +116,7 @@ fn main() -> eyre::Result<()> {
             "player_name": "Joe",
             "public_key": joe_keypair.pk,
         }))?,
+        executor_public_key: [0; 32],
     };
     let join_outcome = run(file, "join", cx, &mut storage, &limits)?;
     dbg!(&join_outcome);
@@ -132,6 +135,7 @@ fn main() -> eyre::Result<()> {
             "player_name": "Melissa",
             "public_key": melissa_keypair.pk,
         }))?,
+        executor_public_key: [0; 32],
     };
     let join_outcome = run(file, "join", cx, &mut storage, &limits)?;
     dbg!(&join_outcome);
@@ -148,7 +152,10 @@ fn main() -> eyre::Result<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext { input: vec![] };
+    let cx = logic::VMContext {
+        input: vec![],
+        executor_public_key: [0; 32],
+    };
     let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
@@ -171,6 +178,7 @@ fn main() -> eyre::Result<()> {
             "choice": joe_choice,
             "nonce": joe_nonce,
         }))?,
+        executor_public_key: [0; 32],
     };
     let prepare_outcome = run(file, "prepare", cx, &mut storage, &limits)?;
     dbg!(&prepare_outcome);
@@ -194,6 +202,7 @@ fn main() -> eyre::Result<()> {
             "choice": melissa_choice,
             "nonce": melissa_nonce,
         }))?,
+        executor_public_key: [0; 32],
     };
     let prepare_outcome = run(file, "prepare", cx, &mut storage, &limits)?;
     dbg!(&prepare_outcome);
@@ -214,6 +223,7 @@ fn main() -> eyre::Result<()> {
             "commitment": joe_commitment,
             "signature": joe_signature,
         }))?,
+        executor_public_key: [0; 32],
     };
     let commit_outcome = run(file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
@@ -230,6 +240,7 @@ fn main() -> eyre::Result<()> {
             "commitment": melissa_commitment,
             "signature": melissa_signature,
         }))?,
+        executor_public_key: [0; 32],
     };
     let commit_outcome = run(file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
@@ -245,6 +256,7 @@ fn main() -> eyre::Result<()> {
             "player_idx": joe_idx,
             "nonce": joe_nonce,
         }))?,
+        executor_public_key: [0; 32],
     };
     let reveal_outcome = run(file, "reveal", cx, &mut storage, &limits)?;
     dbg!(&reveal_outcome);
@@ -260,6 +272,7 @@ fn main() -> eyre::Result<()> {
             "player_idx": melissa_idx,
             "nonce": melissa_nonce,
         }))?,
+        executor_public_key: [0; 32],
     };
     let reveal_outcome = run(file, "reveal", cx, &mut storage, &limits)?;
     dbg!(&reveal_outcome);
@@ -273,7 +286,10 @@ fn main() -> eyre::Result<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext { input: vec![] };
+    let cx = logic::VMContext {
+        input: vec![],
+        executor_public_key: [0; 32],
+    };
     let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
@@ -299,13 +315,17 @@ fn main() -> eyre::Result<()> {
             "commitment": melissa_commitment,
             "signature": melissa_signature,
         }))?,
+        executor_public_key: [0; 32],
     };
     let reset_outcome = run(file, "reset", cx, &mut storage, &limits)?;
     dbg!(&reset_outcome);
 
     serde_json::from_slice::<()>(&reset_outcome.returns?.expect("Expected a return value"))?;
 
-    let cx = logic::VMContext { input: vec![] };
+    let cx = logic::VMContext {
+        input: vec![],
+        executor_public_key: [0; 32],
+    };
     let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 

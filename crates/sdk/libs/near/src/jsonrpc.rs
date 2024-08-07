@@ -59,6 +59,7 @@ struct Request<'a, P: Serialize> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct Response<T: DeserializeOwned, E: DeserializeOwned> {
     pub jsonrpc: Option<String>,
     pub id: u64,
