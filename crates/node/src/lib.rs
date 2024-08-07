@@ -534,7 +534,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                 Some((context, application, private_key))
                             })
                         else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version> <url> <private_key>");
+                            println!("{IND} Usage: context create <context_id> <application_id> <private_key>");
                             break 'done;
                         };
 
@@ -546,6 +546,12 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         let Ok(application_id) = application_id.parse() else {
                             println!("{IND} Invalid application ID: {}", application_id);
                             break 'done;
+                        };
+
+                        let context = calimero_primitives::context::Context {
+                            id: context_id,
+                            application_id,
+                            last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
                         // Parse the private key
@@ -563,12 +569,6 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         let initial_identity = KeyPair {
                             public_key,
                             private_key: Some(private_key),
-                        };
-
-                        let context = calimero_primitives::context::Context {
-                            id: context_id,
-                            application_id,
-                            last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
                         // We don't have the identity at this point

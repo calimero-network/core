@@ -139,14 +139,25 @@ pub struct DeleteContextResponse {
 }
 
 pub async fn delete_context_handler(
-    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Path(context_id): Path<String>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
+    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
+        Ok(context_id) => context_id,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid context id".into(),
+            }
+            .into_response();
+        }
+    };
+
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
         .ctx_manager
-        .delete_context(&context_id)
+        .delete_context(&context_id_result)
         .await
         .map_err(parse_api_error);
 
