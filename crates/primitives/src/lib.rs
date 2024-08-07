@@ -1,4 +1,5 @@
 pub mod application;
+pub mod blobs;
 pub mod common;
 pub mod context;
 pub mod events;

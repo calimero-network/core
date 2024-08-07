@@ -6,10 +6,14 @@ use generic_array::{GenericArray, IntoArrayLength};
 use crate::db::Column;
 use crate::slice::Slice;
 
+mod application;
+mod blobs;
 mod component;
 mod context;
 mod generic;
 
+pub use application::ApplicationMeta;
+pub use blobs::BlobMeta;
 use component::KeyComponents;
 pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction};
 pub use generic::Generic;
@@ -108,11 +112,12 @@ where
     }
 }
 
-pub trait AsKeyParts: Copy {
+pub trait AsKeyParts: Copy + 'static {
     // KeyParts is Sealed so far as KeyComponents stays private
     type Components: KeyComponents;
 
-    fn parts(&self) -> (Column, &Key<Self::Components>);
+    fn column() -> Column;
+    fn as_key(&self) -> &Key<Self::Components>;
 }
 
 pub trait FromKeyParts: AsKeyParts {
@@ -120,3 +125,26 @@ pub trait FromKeyParts: AsKeyParts {
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error>;
 }
+
+#[cfg(feature = "borsh")]
+const _: () = {
+    use std::io;
+
+    use borsh::{BorshDeserialize, BorshSerialize};
+
+    impl<T: KeyComponents> BorshSerialize for Key<T> {
+        fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+            writer.write_all(&self.0)
+        }
+    }
+
+    impl<T: KeyComponents> BorshDeserialize for Key<T> {
+        fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+            let mut key = GenericArray::default();
+
+            reader.read_exact(&mut key)?;
+
+            Ok(Self(key))
+        }
+    }
+};

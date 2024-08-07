@@ -5,17 +5,15 @@ use serde_json::Value;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct InstallApplicationRequest {
-    pub application: calimero_primitives::application::ApplicationId, // TODO: rename to application_id
-    pub version: semver::Version,
-    pub url: String, // represents the url path to the release binary (e.g. ipfs path)
-    pub hash: Option<String>,
+    pub url: url::Url,
+    pub version: Option<semver::Version>,
+    pub hash: calimero_primitives::hash::Hash,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct InstallDevApplicationRequest {
-    pub application_id: calimero_primitives::application::ApplicationId,
-    pub version: semver::Version,
     pub path: Utf8PathBuf,
+    pub version: Option<semver::Version>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -30,7 +28,22 @@ pub struct ListApplicationsResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallApplicationResponse {
-    pub data: bool,
+    pub data: ApplicationInstallResult,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApplicationInstallResult {
+    pub application_id: calimero_primitives::application::ApplicationId,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetApplicationResponse {
+    pub data: GetApplicationResult,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetApplicationResult {
+    pub application: Option<calimero_primitives::application::Application>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,4 +164,10 @@ pub struct ContextResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateContextResponse {
     pub data: ContextResponse,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateContextApplicationRequest {
+    pub application_id: calimero_primitives::application::ApplicationId,
 }

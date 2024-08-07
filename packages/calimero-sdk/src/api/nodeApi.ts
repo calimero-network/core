@@ -12,12 +12,16 @@ interface ETHWalletType extends WalletTypeBase<'ETH'> {
   chainId: number;
 }
 
-interface NEARWalletType extends WalletTypeBase<'NEAR'> {}
+interface NEARWalletType extends WalletTypeBase<'NEAR'> {
+  networkId: string;
+}
 
 export type WalletType = ETHWalletType | NEARWalletType;
 
 export namespace WalletType {
-  export let NEAR: WalletType = { type: 'NEAR' } as NEARWalletType;
+  export function NEAR({ networkId = "mainnet" }: { networkId?: string }): WalletType {
+    return { type: 'NEAR', networkId } as NEARWalletType;
+  }
 
   export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
     return { type: 'ETH', chainId } as ETHWalletType;

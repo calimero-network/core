@@ -139,14 +139,25 @@ pub struct DeleteContextResponse {
 }
 
 pub async fn delete_context_handler(
-    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Path(context_id): Path<String>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
+    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
+        Ok(context_id) => context_id,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid context id".into(),
+            }
+            .into_response();
+        }
+    };
+
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
         .ctx_manager
-        .delete_context(&context_id)
+        .delete_context(&context_id_result)
         .await
         .map_err(parse_api_error);
 
@@ -273,6 +284,41 @@ pub async fn join_context_handler(
     match result {
         Ok(_) => ApiResponse {
             payload: JoinContextResponse { data: Empty {} },
+        }
+        .into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateApplicationIdResponse {
+    data: Empty,
+}
+
+pub async fn update_application_id(
+    Extension(state): Extension<Arc<AdminState>>,
+    Path(context_id): Path<String>,
+    Json(req): Json<calimero_server_primitives::admin::UpdateContextApplicationRequest>,
+) -> impl IntoResponse {
+    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
+        Ok(context_id) => context_id,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid context id".into(),
+            }
+            .into_response();
+        }
+    };
+
+    let result = state
+        .ctx_manager
+        .update_application_id(context_id_result, req.application_id)
+        .map_err(parse_api_error);
+
+    match result {
+        Ok(_) => ApiResponse {
+            payload: UpdateApplicationIdResponse { data: Empty {} },
         }
         .into_response(),
         Err(err) => err.into_response(),

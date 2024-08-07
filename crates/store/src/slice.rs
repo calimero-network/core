@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::fmt;
 use std::ops::Deref;
 use std::rc::Rc;
@@ -95,18 +96,10 @@ impl<'a> AsRef<[u8]> for Slice<'a> {
     }
 }
 
-impl<'a, T: AsRef<[u8]>> From<&'a T> for Slice<'a> {
+impl<'a, T: AsRef<[u8]> + ?Sized> From<&'a T> for Slice<'a> {
     fn from(inner: &'a T) -> Self {
         Self {
             inner: SliceInner::Ref(inner.as_ref()),
-        }
-    }
-}
-
-impl<'a> From<&'a [u8]> for Slice<'a> {
-    fn from(inner: &'a [u8]) -> Self {
-        Self {
-            inner: SliceInner::Ref(inner),
         }
     }
 }
@@ -142,9 +135,21 @@ impl<'a> From<Slice<'a>> for Box<[u8]> {
 }
 
 impl<'a> Eq for Slice<'a> {}
-impl<'a> PartialEq for Slice<'a> {
-    fn eq(&self, other: &Self) -> bool {
+impl<'a, T: AsRef<[u8]> + ?Sized> PartialEq<T> for Slice<'a> {
+    fn eq(&self, other: &T) -> bool {
         self.as_ref() == other.as_ref()
+    }
+}
+
+impl<'a> Ord for Slice<'a> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_ref().cmp(other.as_ref())
+    }
+}
+
+impl<'a, 'b> PartialOrd<Slice<'b>> for Slice<'a> {
+    fn partial_cmp(&self, other: &Slice<'b>) -> Option<std::cmp::Ordering> {
+        self.as_ref().partial_cmp(other.as_ref())
     }
 }
 
@@ -155,6 +160,12 @@ impl<'a> fmt::Debug for Slice<'a> {
         } else {
             write!(f, "{:?}", self.as_ref())
         }
+    }
+}
+
+impl<'a> Borrow<[u8]> for Slice<'a> {
+    fn borrow(&self) -> &[u8] {
+        self
     }
 }
 

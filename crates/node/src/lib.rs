@@ -51,9 +51,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
-    let ctx_manager = calimero_context::ContextManager::start(
-        &config.application,
+    let blob_manager = calimero_blobstore::BlobManager::new(
         store.clone(),
+        calimero_blobstore::FileSystem::new(&config.application.dir).await?,
+    );
+
+    let ctx_manager = calimero_context::ContextManager::start(
+        store.clone(),
+        blob_manager,
         network_client.clone(),
     )
     .await?;
@@ -79,7 +84,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
     match network_client
-        .subscribe(IdentTopic::new("meta_topic".to_string()))
+        .subscribe(IdentTopic::new("meta_topic"))
         .await
     {
         Ok(_) => info!("Subscribed to meta topic"),
@@ -312,11 +317,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 c2 = "State Key",
             );
 
-            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32]);
-
             let handle = node.store.handle();
 
-            for (k, v) in &mut handle.iter(&key)?.entries() {
+            for (k, v) in handle
+                .iter::<calimero_store::key::ContextState>()?
+                .entries()
+            {
+                let (k, v) = (k?, v?);
                 let (cx, state_key) = (k.context_id(), k.state_key());
                 let sk = calimero_primitives::hash::Hash::from(state_key);
                 let entry = format!("{c1:44} | {c2:44}| {c3:?}", c1 = cx, c2 = sk, c3 = v.value);
@@ -324,6 +331,101 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     println!("{IND} {}", line.cyan());
                 }
             }
+        }
+        "application" => 'done: {
+            'usage: {
+                let Some(args) = args else {
+                    break 'usage;
+                };
+
+                let (subcommand, args) = args
+                    .split_once(' ')
+                    .map_or_else(|| (args, None), |(a, b)| (a, Some(b)));
+
+                match subcommand {
+                    "install" => {
+                        let Some((type_, resource, version)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let type_ = iter.next()?;
+                            let resource = iter.next()?;
+                            let version = iter.next();
+
+                            Some((type_, resource, version))
+                        }) else {
+                            println!(
+                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [version]"
+                            );
+                            break 'done;
+                        };
+
+                        let Ok(version) = version.map(|v| v.parse()).transpose() else {
+                            println!("{IND} Invalid version: {:?}", version);
+                            break 'done;
+                        };
+
+                        let application_id = match type_ {
+                            "url" => {
+                                let Ok(url) = resource.parse() else {
+                                    println!("{IND} Invalid URL: {}", resource);
+                                    break 'done;
+                                };
+
+                                println!("{IND} Downloading application..");
+
+                                node.ctx_manager
+                                    .install_application_from_url(url, version)
+                                    .await?
+                            }
+                            "file" => {
+                                let path = camino::Utf8PathBuf::from(resource);
+
+                                node.ctx_manager
+                                    .install_application_from_path(path, version)
+                                    .await?
+                            }
+                            unknown => {
+                                println!("{IND} Unknown resource type: `{}`", unknown);
+                                break 'done;
+                            }
+                        };
+
+                        println!("{IND} Installed application: {}", application_id);
+                    }
+                    "ls" => {
+                        println!(
+                            "{IND} {c1:44} | {c2:44} | {c3:12} | {c4}",
+                            c1 = "Application ID",
+                            c2 = "Blob ID",
+                            c3 = "Version",
+                            c4 = "Source"
+                        );
+
+                        for application in node.ctx_manager.list_installed_applications()? {
+                            let entry = format!(
+                                "{c1:44} | {c2:44} | {c3:>12} | {c4}",
+                                c1 = application.id,
+                                c2 = application.blob,
+                                c3 = application
+                                    .version
+                                    .map(|ver| ver.to_string())
+                                    .unwrap_or_default(),
+                                c4 = application.source
+                            );
+                            for line in entry.lines() {
+                                println!("{IND} {}", line.cyan());
+                            }
+                        }
+                    }
+                    // todo! a "show" subcommand should help keep "ls" compact
+                    unknown => {
+                        println!("{IND} Unknown command: `{}`", unknown);
+                        break 'usage;
+                    }
+                }
+
+                break 'done;
+            }
+            println!("{IND} Usage: application [ls|install]");
         }
         "context" => 'done: {
             'usage: {
@@ -337,7 +439,6 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                 match subcommand {
                     "ls" => {
-                        // todo! application ID shouldn't be hex anymore
                         println!(
                             "{IND} {c1:44} | {c2:64} | Last Transaction",
                             c1 = "Context ID",
@@ -346,14 +447,15 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        for (k, v) in &mut handle
-                            .iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?
-                            .entries()
-                        {
-                            let (cx, app_id, last_tx) =
-                                (k.context_id(), v.application_id, v.last_transaction_hash);
+                        for (k, v) in handle.iter::<calimero_store::key::ContextMeta>()?.entries() {
+                            let (k, v) = (k?, v?);
+                            let (cx, app_id, last_tx) = (
+                                k.context_id(),
+                                v.application.application_id(),
+                                v.last_transaction_hash,
+                            );
                             let entry = format!(
-                                "{c1:44} | {c2:64} | {c3}",
+                                "{c1:44} | {c2:44} | {c3}",
                                 c1 = cx,
                                 c2 = app_id,
                                 c3 = calimero_primitives::hash::Hash::from(last_tx)
@@ -422,19 +524,17 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version, url, private_key)) = args
-                            .and_then(|args| {
+                        let Some((context_id, application_id, private_key)) =
+                            args.and_then(|args| {
                                 let mut iter = args.split(' ');
                                 let context = iter.next()?;
                                 let application = iter.next()?;
-                                let version = iter.next()?;
-                                let url = iter.next()?;
                                 let private_key = iter.next()?;
 
-                                Some((context, application, version, url, private_key))
+                                Some((context, application, private_key))
                             })
                         else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version> <url> <private_key>");
+                            println!("{IND} Usage: context create <context_id> <application_id> <private_key>");
                             break 'done;
                         };
 
@@ -443,12 +543,16 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        let Ok(version) = version.parse() else {
-                            println!("{IND} Invalid version: {}", version);
+                        let Ok(application_id) = application_id.parse() else {
+                            println!("{IND} Invalid application ID: {}", application_id);
                             break 'done;
                         };
 
-                        let application_id = application_id.to_owned().into();
+                        let context = calimero_primitives::context::Context {
+                            id: context_id,
+                            application_id,
+                            last_transaction_hash: calimero_primitives::hash::Hash::default(),
+                        };
 
                         // Parse the private key
                         let private_key = bs58::decode(private_key)
@@ -465,19 +569,6 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         let initial_identity = KeyPair {
                             public_key,
                             private_key: Some(private_key),
-                        };
-
-                        println!("{IND} Downloading application..");
-
-                        // todo! we should be able to install latest version
-                        node.ctx_manager
-                            .install_application(&application_id, &version, url, None)
-                            .await?;
-
-                        let context = calimero_primitives::context::Context {
-                            id: context_id,
-                            application_id,
-                            last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
                         // We don't have the identity at this point
@@ -515,11 +606,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        let key = calimero_store::key::ContextTransaction::new(context_id, [0; 32]);
+                        let mut iter = handle.iter::<calimero_store::key::ContextTransaction>()?;
+
+                        let first = 'first: {
+                            let Some(k) = iter
+                                .seek(calimero_store::key::ContextTransaction::new(
+                                    context_id, [0; 32],
+                                ))
+                                .transpose()
+                            else {
+                                break 'first None;
+                            };
+
+                            Some((k, iter.read()))
+                        };
 
                         println!("{IND} {c1:44} | {c2:44}", c1 = "Hash", c2 = "Prior Hash");
 
-                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                        for (k, v) in first.into_iter().chain(iter.entries()) {
+                            let (k, v) = (k?, v?);
                             let entry = format!(
                                 "{c1:44} | {c2}",
                                 c1 = calimero_primitives::hash::Hash::from(k.transaction_id()),
@@ -543,11 +648,29 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        let key = calimero_store::key::ContextState::new(context_id, [0; 32]);
-
                         println!("{IND} {c1:44} | {c2:44}", c1 = "State Key", c2 = "Value");
 
-                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                        let mut iter = handle.iter::<calimero_store::key::ContextState>()?;
+
+                        // let first = 'first: {
+                        //     let Some(k) = iter
+                        //         .seek(calimero_store::key::ContextState::new(context_id, [0; 32]))
+                        //         .transpose()
+                        //     else {
+                        //         break 'first None;
+                        //     };
+
+                        //     Some((k, iter.read()))
+                        //                   ^^^^~ ContextState<'a> lends the `iter`, while `.entries()` attempts to mutate it
+                        // };
+
+                        for (k, v) in iter.entries() {
+                            let (k, v) = (k?, v?);
+                            if k.context_id() != context_id {
+                                // todo! revisit this when DBIter::seek no longer returns
+                                // todo! the sought item, you have to call next(), read()
+                                continue;
+                            }
                             let entry = format!(
                                 "{c1:44} | {c2:?}",
                                 c1 = calimero_primitives::hash::Hash::from(k.state_key()),
@@ -570,7 +693,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         }
         unknown => {
             println!("{IND} Unknown command: `{}`", unknown);
-            println!("{IND} Usage: [call|peers|pool|gc|store|context] [args]")
+            println!("{IND} Usage: [call|peers|pool|gc|store|context|application] [args]")
         }
     }
 
@@ -931,6 +1054,7 @@ impl Node {
         if !self
             .ctx_manager
             .is_application_installed(&context.application_id)
+            .unwrap_or_default()
         {
             return Err(
                 calimero_node_primitives::QueryCallError::ApplicationNotInstalled {
@@ -966,6 +1090,7 @@ impl Node {
         if !self
             .ctx_manager
             .is_application_installed(&context.application_id)
+            .unwrap_or_default()
         {
             return Err(
                 calimero_node_primitives::MutateCallError::ApplicationNotInstalled {
@@ -1111,7 +1236,7 @@ impl Node {
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
-                application_id: context.application_id.0.into(),
+                application: calimero_store::key::ApplicationMeta::new(context.application_id),
                 last_transaction_hash: *hash.as_bytes(),
             },
         )?;
@@ -1132,10 +1257,19 @@ impl Node {
             None => runtime_compat::RuntimeCompatStore::read_only(&self.store, context.id),
         };
 
+        let Some(blob) = self
+            .ctx_manager
+            .load_application_blob(&context.application_id)
+            .await?
+        else {
+            eyre::bail!(
+                "fatal error: missing blob for application `{}`",
+                context.application_id
+            );
+        };
+
         let outcome = calimero_runtime::run(
-            &self
-                .ctx_manager
-                .load_application_blob(&context.application_id)?,
+            &blob,
             &method,
             calimero_runtime::logic::VMContext {
                 input: payload,

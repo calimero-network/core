@@ -9,7 +9,8 @@ struct SSLEntry {
 
 impl Entry for SSLEntry {
     type Key = Generic;
-    type DataType<'a> = Json<SSLCert>;
+    type Codec = Json;
+    type DataType<'a> = SSLCert;
 
     fn key(&self) -> &Self::Key {
         &self.key
@@ -46,10 +47,9 @@ pub fn insert_or_update_ssl(store: Store, cert: &[u8], key: &[u8]) -> eyre::Resu
         key: key.to_vec(),
     };
 
-    let ssl_document = Json::new(ssl_cert.clone());
     let entry = SSLEntry::new();
     let mut handle = store.handle();
-    handle.put(&entry, &ssl_document)?;
+    handle.put(&entry, &ssl_cert)?;
 
     Ok(ssl_cert)
 }
@@ -59,7 +59,7 @@ pub fn get_ssl(store: Store) -> eyre::Result<Option<SSLCert>> {
     let handle = store.handle();
 
     match handle.get(&entry) {
-        Ok(Some(ssl_document)) => Ok(Some(ssl_document.value())),
+        Ok(Some(ssl_document)) => Ok(Some(ssl_document)),
         Ok(None) => Ok(None),
         Err(e) => Err(e.into()),
     }
