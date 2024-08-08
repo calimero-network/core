@@ -307,11 +307,18 @@ impl ContextManager {
         blob_id: calimero_primitives::blobs::BlobId,
         source: calimero_primitives::application::ApplicationSource,
         version: Option<semver::Version>,
+        contract_app_id: Option<String>,
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
+        let boxed_id: Box<str> = match contract_app_id {
+            Some(s) => s.into_boxed_str(),
+            None => Box::from(""),
+        };
+
         let application = calimero_store::types::ApplicationMeta {
             blob: calimero_store::key::BlobMeta::new(blob_id),
             version: version.map(|v| v.to_string().into_boxed_str()),
             source: source.to_string().into_boxed_str(),
+            contract_app_id: Some(boxed_id),
         };
 
         let application_id = calimero_primitives::application::ApplicationId::from(
@@ -344,13 +351,14 @@ impl ContextManager {
             eyre::bail!("non-absolute path")
         };
 
-        self.install_application(blob_id, uri.as_str().parse()?, version)
+        self.install_application(blob_id, uri.as_str().parse()?, version, None)
     }
 
     pub async fn install_application_from_url(
         &self,
         url: Url,
         version: Option<semver::Version>,
+        contract_app_id: Option<String>,
         // hash: calimero_primitives::hash::Hash,
         // todo! BlobMgr should return hash of content
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
@@ -362,7 +370,7 @@ impl ContextManager {
 
         // todo! if blob hash doesn't match, remove it
 
-        self.install_application(blob_id, uri, version)
+        self.install_application(blob_id, uri, version, Some(contract_app_id).unwrap())
     }
 
     pub fn list_installed_applications(
@@ -382,6 +390,7 @@ impl ContextManager {
                 blob: app.blob.blob_id(),
                 version: app.version.as_deref().map(str::parse).transpose()?,
                 source: app.source.parse()?,
+                contract_app_id: app.contract_app_id.as_deref().map(str::parse).transpose()?,
             })
         }
 
@@ -428,6 +437,7 @@ impl ContextManager {
             blob: application.blob.blob_id(),
             version: application.version.as_deref().map(str::parse).transpose()?,
             source: application.source.parse()?,
+            contract_app_id: application.contract_app_id.as_deref().map(str::parse).transpose()?,
         }))
     }
 

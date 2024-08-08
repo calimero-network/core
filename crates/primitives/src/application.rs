@@ -94,6 +94,7 @@ impl fmt::Display for ApplicationSource {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Application {
+    pub contract_app_id: Option<String>,
     pub id: ApplicationId,
     pub blob: BlobId,
     pub version: Option<semver::Version>,
