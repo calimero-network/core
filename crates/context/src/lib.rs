@@ -309,7 +309,7 @@ impl ContextManager {
         version: Option<semver::Version>,
         contract_app_id: Option<String>,
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
-        let boxed_id: Box<str> = match contract_app_id {
+        let contract_app_id: Box<str> = match contract_app_id {
             Some(s) => s.into_boxed_str(),
             None => Box::from(""),
         };
@@ -318,7 +318,7 @@ impl ContextManager {
             blob: calimero_store::key::BlobMeta::new(blob_id),
             version: version.map(|v| v.to_string().into_boxed_str()),
             source: source.to_string().into_boxed_str(),
-            contract_app_id: Some(boxed_id),
+            contract_app_id: Some(contract_app_id),
         };
 
         let application_id = calimero_primitives::application::ApplicationId::from(
