@@ -373,7 +373,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                 println!("{IND} Downloading application..");
 
                                 node.ctx_manager
-                                    .install_application_from_url(url, version)
+                                    .install_application_from_url(url, version, None)
                                     .await?
                             }
                             "file" => {

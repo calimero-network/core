@@ -225,7 +225,7 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application_from_url(req.url, req.version /*, req.hash */)
+        .install_application_from_url(req.url, req.version, Some(req.contract_app_id) /*, req.hash */)
         .await
     {
         Ok(application_id) => ApiResponse {
