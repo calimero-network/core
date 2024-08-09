@@ -5,6 +5,7 @@ use serde_json::Value;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct InstallApplicationRequest {
+    // contract_app_id - Application ID is hash(owner,name) saved in package manager contract
     pub contract_app_id: String,
     pub url: url::Url,
     pub version: Option<semver::Version>,
