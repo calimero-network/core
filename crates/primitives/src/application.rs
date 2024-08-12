@@ -96,7 +96,7 @@ impl fmt::Display for ApplicationSource {
 pub struct Application {
     // contract_app_id - Application ID is hash(owner,name) saved in package manager contract
     pub contract_app_id: Option<String>,
-    // id - Applicaiton ID created in the node for identification - see line 324 crates/context/src/lib.rs
+    // id - Application ID created in the node for identification - see line 324 crates/context/src/lib.rs
     pub id: ApplicationId,
     pub blob: BlobId,
     pub version: Option<semver::Version>,
