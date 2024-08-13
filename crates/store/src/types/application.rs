@@ -12,7 +12,7 @@ pub struct ApplicationMeta {
     pub version: Option<Box<str>>,
     pub source: Box<str>,
     // metadata - Contains application ID is hash(owner,name) saved in package manager contract
-    pub metadata: Option<Box<str>>,
+    pub metadata: Option<Box<[u8]>>,
 }
 
 impl PredefinedEntry for key::ApplicationMeta {

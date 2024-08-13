@@ -313,7 +313,7 @@ impl ContextManager {
             blob: calimero_store::key::BlobMeta::new(blob_id),
             version: version.map(|v| v.to_string().into_boxed_str()),
             source: source.to_string().into_boxed_str(),
-            metadata: metadata.map(|s| s.into_boxed_str()),
+            metadata: metadata.map(|s| s.into_bytes().into_boxed_slice()),
         };
 
         let application_id = calimero_primitives::application::ApplicationId::from(
@@ -379,13 +379,12 @@ impl ContextManager {
 
         for (id, app) in iter.entries() {
             let (id, app) = (id?, app?);
-
             applications.push(calimero_primitives::application::Application {
                 id: id.application_id(),
                 blob: app.blob.blob_id(),
                 version: app.version.as_deref().map(str::parse).transpose()?,
                 source: app.source.parse()?,
-                metadata: app.metadata.as_deref().map(str::parse).transpose()?,
+                metadata: app.metadata.map(|m| m.into_vec()),
             })
         }
 
@@ -433,10 +432,7 @@ impl ContextManager {
             version: application.version.as_deref().map(str::parse).transpose()?,
             source: application.source.parse()?,
             metadata: application
-                .metadata
-                .as_deref()
-                .map(str::parse)
-                .transpose()?,
+                .metadata.map(|m| m.into_vec())
         }))
     }
 
