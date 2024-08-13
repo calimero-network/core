@@ -244,7 +244,6 @@ pub async fn get_context_storage_handler(
 
 #[derive(Deserialize)]
 pub struct JoinContextRequest {
-    pub public_key: Option<PublicKey>,
     pub private_key: Option<[u8; 32]>,
 }
 
@@ -269,26 +268,21 @@ pub async fn join_context_handler(
         }
     };
 
-    let initial_identity: KeyPair;
-
-    if request.public_key.is_none() && request.private_key.is_none() {
+    let private_key = request.private_key.unwrap_or_else(|| {
         let mut rng = rand::thread_rng();
-        let mut member_seed = [0u8; 32];
-        rng.fill_bytes(&mut member_seed);
+        let mut private_key = [0; 32];
 
-        let member_signing_key = SigningKey::from_bytes(&member_seed);
-        let member_verifying_key = VerifyingKey::from(&member_signing_key);
+        rng.fill_bytes(&mut private_key);
+        private_key
+    });
 
-        initial_identity = KeyPair {
-            public_key: PublicKey(*member_verifying_key.as_bytes()),
-            private_key: Some(*member_signing_key.as_bytes()),
-        };
-    } else {
-        initial_identity = KeyPair {
-            public_key: request.public_key.unwrap(),
-            private_key: request.private_key,
-        };
-    }
+    let private_key = SigningKey::from_bytes(&private_key);
+    let public_key = VerifyingKey::from(&private_key);
+
+    let initial_identity: KeyPair = KeyPair {
+        public_key: PublicKey(*public_key.as_bytes()),
+        private_key: Some(*private_key.as_bytes()),
+    };
 
     let result = state
         .ctx_manager

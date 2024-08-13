@@ -11,8 +11,8 @@ pub struct ApplicationMeta {
     pub blob: key::BlobMeta,
     pub version: Option<Box<str>>,
     pub source: Box<str>,
-    // contract_app_id - Application ID is hash(owner,name) saved in package manager contract
-    pub contract_app_id: Option<Box<str>>,
+    // metadata - Contains application ID is hash(owner,name) saved in package manager contract
+    pub metadata: Option<Box<str>>,
 }
 
 impl PredefinedEntry for key::ApplicationMeta {

@@ -30,7 +30,6 @@ impl InstallCommand {
         let Ok(config) = ConfigFile::load(&path) else {
             eyre::bail!("Failed to load config file")
         };
-
         let Some(multiaddr) = config.network.server.listen.first() else {
             eyre::bail!("No address.")
         };
@@ -40,7 +39,7 @@ impl InstallCommand {
         let install_url = multiaddr_to_url(multiaddr, "admin-api/dev/install-application")?;
 
         let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
-            path: self.path,
+            path: self.path.canonicalize_utf8()?,
             version: self.version,
         };
 

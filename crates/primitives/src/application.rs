@@ -94,8 +94,8 @@ impl fmt::Display for ApplicationSource {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Application {
-    // contract_app_id - Application ID is hash(owner,name) saved in package manager contract
-    pub contract_app_id: Option<String>,
+    // Metadata - Contains application ID is hash(owner,name) saved in package manager contract
+    pub metadata: Option<String>,
     // id - Application ID created in the node for identification - see line 324 crates/context/src/lib.rs
     pub id: ApplicationId,
     pub blob: BlobId,
