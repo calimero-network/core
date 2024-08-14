@@ -30,6 +30,7 @@ impl InstallCommand {
         let Ok(config) = ConfigFile::load(&path) else {
             eyre::bail!("Failed to load config file")
         };
+
         let Some(multiaddr) = config.network.server.listen.first() else {
             eyre::bail!("No address.")
         };

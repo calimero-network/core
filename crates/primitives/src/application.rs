@@ -94,13 +94,12 @@ impl fmt::Display for ApplicationSource {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Application {
-    // Metadata - Contains application ID is hash(owner,name) saved in package manager contract
-    pub metadata: Option<Vec<u8>>,
     // id - Application ID created in the node for identification - see line 324 crates/context/src/lib.rs
     pub id: ApplicationId,
     pub blob: BlobId,
     pub version: Option<semver::Version>,
     pub source: ApplicationSource,
+    pub metadata: Vec<u8>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

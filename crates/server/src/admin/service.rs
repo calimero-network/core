@@ -228,7 +228,7 @@ async fn install_application_handler(
         .install_application_from_url(
             req.url,
             req.version,
-            Some(req.metadata), /*, req.hash */
+            req.metadata, /*, req.hash */
         )
         .await
     {

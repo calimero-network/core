@@ -307,13 +307,13 @@ impl ContextManager {
         blob_id: calimero_primitives::blobs::BlobId,
         source: calimero_primitives::application::ApplicationSource,
         version: Option<semver::Version>,
-        metadata: Option<String>,
+        metadata: Vec<u8>,
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
         let application = calimero_store::types::ApplicationMeta {
             blob: calimero_store::key::BlobMeta::new(blob_id),
             version: version.map(|v| v.to_string().into_boxed_str()),
             source: source.to_string().into_boxed_str(),
-            metadata: metadata.map(|s| s.into_bytes().into_boxed_slice()),
+            metadata: metadata.into_boxed_slice(),
         };
 
         let application_id = calimero_primitives::application::ApplicationId::from(
@@ -346,14 +346,14 @@ impl ContextManager {
             eyre::bail!("non-absolute path")
         };
 
-        self.install_application(blob_id, uri.as_str().parse()?, version, None)
+        self.install_application(blob_id, uri.as_str().parse()?, version, Vec::new())
     }
 
     pub async fn install_application_from_url(
         &self,
         url: Url,
         version: Option<semver::Version>,
-        metadata: Option<String>,
+        metadata: Vec<u8>,
         // hash: calimero_primitives::hash::Hash,
         // todo! BlobMgr should return hash of content
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
@@ -384,7 +384,7 @@ impl ContextManager {
                 blob: app.blob.blob_id(),
                 version: app.version.as_deref().map(str::parse).transpose()?,
                 source: app.source.parse()?,
-                metadata: app.metadata.map(|m| m.into_vec()),
+                metadata: app.metadata.to_vec(),
             })
         }
 
@@ -432,7 +432,7 @@ impl ContextManager {
             version: application.version.as_deref().map(str::parse).transpose()?,
             source: application.source.parse()?,
             metadata: application
-                .metadata.map(|m| m.into_vec())
+                .metadata.to_vec()
         }))
     }
 
