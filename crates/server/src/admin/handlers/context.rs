@@ -14,6 +14,7 @@ use tower_sessions::Session;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
+use crate::admin::utils::identity::generate_identity_keypair;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextObject {
@@ -187,27 +188,18 @@ pub async fn create_context_handler(
     let context_id =
         calimero_primitives::context::ContextId::from(*context_verifying_key.as_bytes());
 
-    // Generate a separate key pair for the member's identity
-    let mut member_seed = [0u8; 32];
-    rng.fill_bytes(&mut member_seed);
-    let member_signing_key = SigningKey::from_bytes(&member_seed);
-    let member_verifying_key = VerifyingKey::from(&member_signing_key);
-
     let context = calimero_primitives::context::Context {
         id: context_id,
         application_id: req.application_id,
         last_transaction_hash: Default::default(),
     };
 
-    let initial_identity = KeyPair {
-        public_key: PublicKey(*member_verifying_key.as_bytes()),
-        private_key: Some(*member_signing_key.as_bytes()),
-    };
+    let initial_identity = generate_identity_keypair();
 
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
         .ctx_manager
-        .add_context(context.clone(), initial_identity)
+        .add_context(context.clone(), initial_identity.clone())
         .await
         .map_err(parse_api_error);
 
@@ -216,7 +208,7 @@ pub async fn create_context_handler(
             payload: calimero_server_primitives::admin::CreateContextResponse {
                 data: calimero_server_primitives::admin::ContextResponse {
                     context,
-                    member_public_key: (*member_verifying_key.as_bytes()).into(),
+                    member_public_key: initial_identity.public_key,
                 },
             },
         }
@@ -256,7 +248,7 @@ struct JoinContextResponse {
 pub async fn join_context_handler(
     Path(context_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(request): Json<JoinContextRequest>,
+    request: Option<Json<JoinContextRequest>>,
 ) -> impl IntoResponse {
     let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
         Ok(context_id) => context_id,
@@ -269,10 +261,14 @@ pub async fn join_context_handler(
         }
     };
 
-    // Create a KeyPair from the provided public and private keys
-    let initial_identity = KeyPair {
-        public_key: request.public_key,
-        private_key: Some(request.private_key),
+    let initial_identity = if let Some(Json(json_body)) = request {
+        // Create a KeyPair from the provided public and private keys
+        KeyPair {
+            public_key: json_body.public_key,
+            private_key: Some(json_body.private_key),
+        }
+    } else {
+        generate_identity_keypair()
     };
 
     let result = state
