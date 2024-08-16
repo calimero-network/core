@@ -4,15 +4,13 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::identity::{KeyPair, PublicKey};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
-use crate::admin::utils::context::create_context;
-use crate::admin::utils::identity::generate_identity_keypair;
+use crate::admin::utils::context::{create_context, join_context};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextObject {
@@ -213,7 +211,6 @@ pub async fn get_context_storage_handler(
 
 #[derive(Deserialize)]
 pub struct JoinContextRequest {
-    pub public_key: PublicKey,
     pub private_key: [u8; 32],
 }
 
@@ -238,21 +235,19 @@ pub async fn join_context_handler(
         }
     };
 
-    let initial_identity = if let Some(Json(json_body)) = request {
-        // Create a KeyPair from the provided public and private keys
-        KeyPair {
-            public_key: json_body.public_key,
-            private_key: Some(json_body.private_key),
-        }
+    let private_key = if let Some(Json(json_body)) = request {
+        Some(bs58::encode(json_body.private_key).into_string())
     } else {
-        generate_identity_keypair()
+        None
     };
 
-    let result = state
-        .ctx_manager
-        .join_context(&context_id_result, initial_identity)
-        .await
-        .map_err(parse_api_error);
+    let result = join_context(
+        &state.ctx_manager,
+        context_id_result,
+        private_key.as_deref(),
+    )
+    .await
+    .map_err(parse_api_error);
 
     match result {
         Ok(_) => ApiResponse {
