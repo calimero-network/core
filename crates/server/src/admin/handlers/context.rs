@@ -5,15 +5,13 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::identity::{KeyPair, PublicKey};
-use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand::rngs::StdRng;
-use rand::{RngCore, SeedableRng};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
+use crate::admin::utils::context::create_context;
 use crate::admin::utils::identity::generate_identity_keypair;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -177,38 +175,17 @@ pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<calimero_server_primitives::admin::CreateContextRequest>,
 ) -> impl IntoResponse {
-    // Create a Send-able RNG
-    let mut rng = StdRng::from_entropy();
-
-    // Generate a key pair for the context ID
-    let mut context_seed = [0u8; 32];
-    rng.fill_bytes(&mut context_seed);
-    let context_signing_key = SigningKey::from_bytes(&context_seed);
-    let context_verifying_key = VerifyingKey::from(&context_signing_key);
-    let context_id =
-        calimero_primitives::context::ContextId::from(*context_verifying_key.as_bytes());
-
-    let context = calimero_primitives::context::Context {
-        id: context_id,
-        application_id: req.application_id,
-        last_transaction_hash: Default::default(),
-    };
-
-    let initial_identity = generate_identity_keypair();
-
-    // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let result = state
-        .ctx_manager
-        .add_context(context.clone(), initial_identity.clone())
+    //TODO enable providing private key in the request
+    let result = create_context(&state.ctx_manager, req.application_id, None)
         .await
         .map_err(parse_api_error);
 
     match result {
-        Ok(_) => ApiResponse {
+        Ok(context_create_result) => ApiResponse {
             payload: calimero_server_primitives::admin::CreateContextResponse {
                 data: calimero_server_primitives::admin::ContextResponse {
-                    context,
-                    member_public_key: initial_identity.public_key,
+                    context: context_create_result.context,
+                    member_public_key: context_create_result.identity.public_key,
                 },
             },
         }
