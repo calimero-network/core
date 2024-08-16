@@ -261,8 +261,6 @@ pub async fn join_context_handler(
         }
     };
 
-    //TODO Should we check if the context exists before trying to join it?
-
     let initial_identity = if let Some(Json(json_body)) = request {
         // Create a KeyPair from the provided public and private keys
         KeyPair {
