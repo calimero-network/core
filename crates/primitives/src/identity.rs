@@ -1,4 +1,3 @@
-use borsh::{BorshDeserialize, BorshSerialize};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -10,9 +9,13 @@ pub struct KeyPair {
     pub private_key: Option<[u8; 32]>,
 }
 
-#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 // This could use a Hash, but we need to be able to serialize the PublicKey and
 // create::hash::Hash does not currently implement Borsh.
+#[derive(Eq, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct PublicKey(pub [u8; 32]);
 
 impl PublicKey {
