@@ -1,9 +1,9 @@
 import { unmarshalPrivateKey } from '@libp2p/crypto/keys';
 import { PrivateKey } from '@libp2p/interface';
 import bs58 from 'bs58';
-// import { WalletType } from '../api/nodeApi';
 import { ClientKey } from '../types/storage';
 import { getStorageClientKey } from '../storage/storage';
+import { WalletType } from '../api/nodeApi';
 
 export interface Header {
   [key: string]: string;
@@ -32,8 +32,7 @@ export async function createAuthHeader(
   const contentBase58 = bs58.encode(hashArray);
 
   const headers: Header = {
-    // todo! what to do here?
-    // wallet_type: JSON.stringify(WalletType.NEAR),
+    wallet_type: JSON.stringify(WalletType.NEAR),
     signing_key: signingKey,
     signature: signatureBase58,
     challenge: contentBase58,
