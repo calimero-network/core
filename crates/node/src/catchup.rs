@@ -206,9 +206,16 @@ impl Node {
             None => return,
         };
 
+        info!(%context_id, %peer_id, "Performing interval catchup");
+
         if let Err(err) = self.perform_catchup(context_id, peer_id).await {
             error!(%err, "Failed to perform interval catchup");
+            return;
         }
+
+        self.ctx_manager
+            .clear_context_pending_catchup(&context_id)
+            .await;
     }
 
     pub(crate) async fn perform_catchup(
