@@ -85,11 +85,17 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         };
 
         let (def, mut call) = match &self.self_type {
-            Some(_type_) => (
-                quote! {
-                    let Some(app) = ::calimero_sdk::env::state_read::<#self_>() else {
-                        ::calimero_sdk::env::panic_str("Failed to read app state.")
+            Some(type_) => (
+                {
+                    let mutability = match type_ {
+                        arg::SelfType::Mutable => Some(quote! {mut}),
+                        arg::SelfType::Owned | arg::SelfType::Immutable => None,
                     };
+                    quote! {
+                        let Some(#mutability app) = ::calimero_sdk::env::state_read::<#self_>() else {
+                            ::calimero_sdk::env::panic_str("Failed to read app state.")
+                        };
+                    }
                 },
                 quote! { app.#name(#(#arg_idents),*); },
             ),
