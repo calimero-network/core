@@ -334,6 +334,7 @@ impl ContextManager {
         &self,
         path: Utf8PathBuf,
         version: Option<semver::Version>,
+        metadata: Vec<u8>,
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
         let file = fs::File::open(&path).await?;
 
@@ -346,7 +347,7 @@ impl ContextManager {
             eyre::bail!("non-absolute path")
         };
 
-        self.install_application(blob_id, uri.as_str().parse()?, version, Vec::new())
+        self.install_application(blob_id, uri.as_str().parse()?, version, metadata)
     }
 
     pub async fn install_application_from_url(

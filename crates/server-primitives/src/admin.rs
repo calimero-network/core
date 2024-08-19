@@ -15,6 +15,7 @@ pub struct InstallApplicationRequest {
 pub struct InstallDevApplicationRequest {
     pub path: Utf8PathBuf,
     pub version: Option<semver::Version>,
+    pub metadata: Vec<u8>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
