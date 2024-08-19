@@ -232,7 +232,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
         publicKey: publicKey,
       };
       const walletMetadata: WalletMetadata = {
-        wallet: WalletType.NEAR({ networkId: selector.options.network.networkId }),
+        wallet: WalletType.NEAR,
         signingKey: publicKey,
       };
       const loginRequest: LoginRequest = {
