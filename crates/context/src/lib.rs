@@ -431,8 +431,7 @@ impl ContextManager {
             blob: application.blob.blob_id(),
             version: application.version.as_deref().map(str::parse).transpose()?,
             source: application.source.parse()?,
-            metadata: application
-                .metadata.to_vec()
+            metadata: application.metadata.to_vec(),
         }))
     }
 

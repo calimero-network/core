@@ -391,7 +391,7 @@ impl Node {
                         .install_application_from_url(
                             change.source.to_string().parse()?,
                             change.version,
-                            Vec::new()
+                            Vec::new(),
                         )
                         .await?;
                 }
