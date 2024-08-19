@@ -94,6 +94,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         }
     };
 
+    let mut catchup_interval_tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + config.network.catchup.initial_delay,
+        config.network.catchup.interval,
+    );
+
     loop {
         tokio::select! {
             event = network_events.recv() => {
@@ -115,6 +120,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             Some((context_id, method, payload, write, executor_public_key, outcome_sender)) = server_receiver.recv() => {
                 node.handle_call(context_id, method, payload, write, executor_public_key, outcome_sender).await;
             }
+            _ = catchup_interval_tick.tick() => node.handle_interval_catchup().await,
         }
     }
 
@@ -799,7 +805,7 @@ impl Node {
                     self.perform_catchup(transaction.context_id, source).await?;
 
                     self.ctx_manager
-                        .clear_context_pending_initial_catchup(&transaction.context_id)
+                        .clear_context_pending_catchup(&transaction.context_id)
                         .await;
 
                     info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
@@ -856,7 +862,7 @@ impl Node {
                 self.perform_catchup(rejection.context_id, source).await?;
 
                 self.ctx_manager
-                    .clear_context_pending_initial_catchup(&rejection.context_id)
+                    .clear_context_pending_catchup(&rejection.context_id)
                     .await;
 
                 info!(context_id=%rejection.context_id, %source, "Rejection triggered catchup successfully finished");

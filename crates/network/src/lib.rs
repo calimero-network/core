@@ -293,6 +293,16 @@ impl EventLoop {
             Command::PeerCount { sender } => {
                 let _ = sender.send(self.swarm.connected_peers().count());
             }
+            Command::MeshPeers { topic, sender } => {
+                let _ = sender.send(
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .mesh_peers(&topic)
+                        .cloned()
+                        .collect(),
+                );
+            }
             Command::MeshPeerCount { topic, sender } => {
                 let _ = sender.send(
                     self.swarm
@@ -369,6 +379,10 @@ enum Command {
     MeshPeerCount {
         topic: gossipsub::TopicHash,
         sender: oneshot::Sender<usize>,
+    },
+    MeshPeers {
+        topic: gossipsub::TopicHash,
+        sender: oneshot::Sender<Vec<PeerId>>,
     },
     Publish {
         topic: gossipsub::TopicHash,

@@ -22,7 +22,7 @@ pub struct ContextManager {
 
 #[derive(Default)]
 struct State {
-    pending_initial_catchup: HashSet<calimero_primitives::context::ContextId>,
+    pending_catchup: HashSet<calimero_primitives::context::ContextId>,
 }
 
 impl ContextManager {
@@ -54,7 +54,7 @@ impl ContextManager {
             self.state
                 .write()
                 .await
-                .pending_initial_catchup
+                .pending_catchup
                 .insert(key.context_id());
 
             self.subscribe(&key.context_id()).await?;
@@ -129,13 +129,7 @@ impl ContextManager {
         context_id: &calimero_primitives::context::ContextId,
         initial_identity: KeyPair,
     ) -> eyre::Result<Option<()>> {
-        if self
-            .state
-            .read()
-            .await
-            .pending_initial_catchup
-            .contains(context_id)
-        {
+        if self.state.read().await.pending_catchup.contains(context_id) {
             return Ok(None);
         }
 
@@ -148,39 +142,39 @@ impl ContextManager {
         );
         handle.put(&identity_key, &initial_identity.into())?;
 
-        self.state
-            .write()
-            .await
-            .pending_initial_catchup
-            .insert(*context_id);
+        self.state.write().await.pending_catchup.insert(*context_id);
 
         self.subscribe(context_id).await?;
 
-        info!(%context_id,  "Joined context with pending initial catchup");
+        info!(%context_id, "Joined context with pending catchup");
 
         Ok(Some(()))
     }
 
-    pub async fn is_context_pending_initial_catchup(
+    pub async fn is_context_pending_catchup(
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> bool {
+        self.state.read().await.pending_catchup.contains(context_id)
+    }
+
+    pub async fn get_any_pending_catchup_context(
+        &self,
+    ) -> Option<calimero_primitives::context::ContextId> {
         self.state
             .read()
             .await
-            .pending_initial_catchup
-            .contains(context_id)
+            .pending_catchup
+            .iter()
+            .next()
+            .cloned()
     }
 
-    pub async fn clear_context_pending_initial_catchup(
+    pub async fn clear_context_pending_catchup(
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> bool {
-        self.state
-            .write()
-            .await
-            .pending_initial_catchup
-            .remove(context_id)
+        self.state.write().await.pending_catchup.remove(context_id)
     }
 
     pub fn get_context(

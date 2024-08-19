@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 
 use calimero_primitives::identity::{KeyPair, PublicKey};
 use futures_util::{SinkExt, StreamExt};
+use libp2p::gossipsub::TopicHash;
+use rand::seq::SliceRandom;
 use tracing::{error, info};
 
 use crate::transaction_pool::TransactionPoolEntry;
@@ -186,6 +188,34 @@ impl Node {
         batch_writer.flush().await?;
 
         Ok(())
+    }
+
+    pub(crate) async fn handle_interval_catchup(&mut self) {
+        let context_id = match self.ctx_manager.get_any_pending_catchup_context().await {
+            Some(context_id) => context_id.clone(),
+            None => return,
+        };
+
+        let peer_id = match self
+            .network_client
+            .mesh_peers(TopicHash::from_raw(context_id))
+            .await
+            .choose(&mut rand::thread_rng())
+        {
+            Some(peer_id) => peer_id.clone(),
+            None => return,
+        };
+
+        info!(%context_id, %peer_id, "Performing interval catchup");
+
+        if let Err(err) = self.perform_catchup(context_id, peer_id).await {
+            error!(%err, "Failed to perform interval catchup");
+            return;
+        }
+
+        self.ctx_manager
+            .clear_context_pending_catchup(&context_id)
+            .await;
     }
 
     pub(crate) async fn perform_catchup(
