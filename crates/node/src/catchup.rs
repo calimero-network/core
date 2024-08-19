@@ -89,6 +89,7 @@ impl Node {
                     version: application.version,
                     source: url,
                     hash: None, // todo! blob_mgr(application.blob)?.hash
+                    metadata: Some(Vec::new()),
                 },
             ))?;
             stream

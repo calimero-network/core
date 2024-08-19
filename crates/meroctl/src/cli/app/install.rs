@@ -17,6 +17,7 @@ pub struct InstallCommand {
     /// Version of the application
     #[clap(short, long, help = "Version of the application")]
     pub version: Option<Version>,
+    pub metadata: Option<Vec<u8>>,
 }
 
 impl InstallCommand {
@@ -42,6 +43,7 @@ impl InstallCommand {
         let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
             path: self.path.canonicalize_utf8()?,
             version: self.version,
+            metadata: self.metadata.unwrap_or(Vec::new()),
         };
 
         let install_response = client
