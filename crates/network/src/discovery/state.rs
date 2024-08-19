@@ -8,6 +8,9 @@ use libp2p::{rendezvous, Multiaddr, PeerId, StreamProtocol};
 const RENDEZVOUS_PROTOCOL_NAME: libp2p::StreamProtocol =
     libp2p::StreamProtocol::new("/rendezvous/1.0.0");
 
+/// DiscoveryState is a struct that holds the state of the disovered peers.
+/// It holds the relay and rendezvous indexes to quickly check if a peer is a relay or rendezvous.
+/// It offers mutable methods for managing the state of the peers.
 #[derive(Debug, Default)]
 pub(crate) struct DiscoveryState {
     peers: BTreeMap<PeerId, PeerInfo>,
@@ -154,6 +157,8 @@ impl DiscoveryState {
     }
 }
 
+/// PeerInfo is a struct that holds information about a peer.
+/// It offers immutable methods for accessing the information.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PeerInfo {
     addrs: HashSet<Multiaddr>,
@@ -195,7 +200,7 @@ impl PeerInfo {
     pub(crate) fn is_rendezvous_discover_throttled(&self, rpm: f32) -> bool {
         self.rendezvous.as_ref().map_or(false, |info| {
             info.last_discovery_at().map_or(false, |instant| {
-                instant.elapsed() > time::Duration::from_secs_f32(60.0 / rpm)
+                instant.elapsed() < time::Duration::from_secs_f32(60.0 / rpm)
             })
         })
     }
@@ -218,8 +223,8 @@ impl PeerInfo {
     }
 
     fn update_rendezvous_cookie(&mut self, cookie: rendezvous::Cookie) {
-        if let Some(ref mut rendezvous_info) = self.rendezvous {
-            rendezvous_info.update_cookie(cookie);
+        if let Some(ref mut info) = self.rendezvous {
+            info.update_cookie(cookie);
         }
     }
 
@@ -257,7 +262,7 @@ impl PeerRelayInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum RelayReservationStatus {
     #[default]
     Discovered,
@@ -273,7 +278,7 @@ pub(crate) struct PeerRendezvousInfo {
     registration_status: RendezvousRegistrationStatus,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum RendezvousRegistrationStatus {
     #[default]
     Discovered,
@@ -304,3 +309,7 @@ impl PeerRendezvousInfo {
         self.registration_status = status;
     }
 }
+
+#[cfg(test)]
+#[path = "tests/state.rs"]
+mod tests;
