@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
@@ -327,14 +328,16 @@ impl ContextManager {
         path: Utf8PathBuf,
         version: Option<semver::Version>,
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
-        let file = fs::File::open(&path).await?;
+        let path_without_prefix = path.as_str().strip_prefix("file://").unwrap_or(path.as_str());
+        let utf_path_buf = Utf8PathBuf::from_str(path_without_prefix)?;
+        let file = fs::File::open(utf_path_buf).await?;
 
         let blob_id = self
             .blob_manager
             .put(tokio_util::io::ReaderStream::new(file))
             .await?;
 
-        let Ok(uri) = reqwest::Url::from_file_path(path) else {
+        let Ok(uri) = reqwest::Url::from_file_path(path_without_prefix) else {
             eyre::bail!("non-absolute path")
         };
 

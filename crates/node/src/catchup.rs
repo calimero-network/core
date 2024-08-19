@@ -400,12 +400,26 @@ impl Node {
                     // note! for now, we assume all paths are urls
                     // todo! for path sources, share the blob peer to peer
 
-                    self.ctx_manager
-                        .install_application_from_url(
-                            change.source.to_string().parse()?,
-                            change.version,
-                        )
-                        .await?;
+                    if change.source.to_string().starts_with("http://")
+                        || change.source.to_string().starts_with("https://")
+                    {
+                        info!("Installing application from the url");
+                        self.ctx_manager
+                            .install_application_from_url(
+                                change.source.to_string().parse()?,
+                                change.version,
+                            )
+                            .await?;
+                    } else {
+                        info!("Installing application from the path");
+
+                        self.ctx_manager
+                            .install_application_from_path(
+                                change.source.to_string().parse()?,
+                                change.version,
+                            )
+                            .await?;
+                    }
                 }
 
                 match context {
