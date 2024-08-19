@@ -19,6 +19,7 @@ hex.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 notify.workspace = true
+rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
