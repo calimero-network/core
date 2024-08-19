@@ -1,8 +1,7 @@
 use calimero_primitives::events::OutcomeEvent;
-use calimero_primitives::identity::{KeyPair, PublicKey};
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
-use calimero_server::admin::utils::context::create_context;
+use calimero_server::admin::utils::context::{create_context, join_context};
 use calimero_store::Store;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::identity as p2p_identity;
@@ -470,11 +469,11 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         let Some((context_id, private_key)) = args.and_then(|args| {
                             let mut iter = args.split(' ');
                             let context = iter.next()?;
-                            let private_key = iter.next()?;
+                            let private_key = iter.next();
 
                             Some((context, private_key))
                         }) else {
-                            println!("{IND} Usage: context join <context_id> <private_key>");
+                            println!("{IND} Usage: context join <context_id> [private_key]");
                             break 'done;
                         };
 
@@ -483,26 +482,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        // Parse the private key
-                        let private_key = bs58::decode(private_key)
-                            .into_vec()
-                            .map_err(|_| eyre::eyre!("Invalid private key"))?;
-                        let private_key: [u8; 32] = private_key
-                            .try_into()
-                            .map_err(|_| eyre::eyre!("Private key must be 32 bytes"))?;
-
-                        // Generate the public key from the private key
-                        let public_key = PublicKey::derive_from_private_key(&private_key);
-
-                        // Create the KeyPair
-                        let initial_identity = KeyPair {
-                            public_key,
-                            private_key: Some(private_key),
-                        };
-
-                        node.ctx_manager
-                            .join_context(&context_id, initial_identity)
-                            .await?;
+                        join_context(&node.ctx_manager, context_id, private_key).await?;
 
                         println!(
                             "{IND} Joined context {}, waiting for catchup to complete..",
