@@ -94,7 +94,6 @@ impl fmt::Display for ApplicationSource {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Application {
-    // id - Application ID created in the node for identification - see line 324 crates/context/src/lib.rs
     pub id: ApplicationId,
     pub blob: BlobId,
     pub version: Option<semver::Version>,
