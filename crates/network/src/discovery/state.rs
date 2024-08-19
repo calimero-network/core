@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../tests/discovery/state.rs"]
+mod tests;
+
 use std::collections::{btree_map, BTreeMap, BTreeSet, HashSet};
 use std::time;
 
@@ -309,7 +313,3 @@ impl PeerRendezvousInfo {
         self.registration_status = status;
     }
 }
-
-#[cfg(test)]
-#[path = "tests/state.rs"]
-mod tests;
