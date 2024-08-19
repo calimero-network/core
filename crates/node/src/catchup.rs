@@ -66,28 +66,29 @@ impl Node {
 
         let application_id = context.application_id.clone();
 
-        let Some(url) = request.url else {
+        let Some(url) = request.source else {
             eyre::bail!("Path is missing in the request")
-        };
-
-        let Some(hash) = request.hash else {
-            eyre::bail!("Hash is missing in the request")
         };
 
         if request
             .application_id
             .map_or(true, |id| id != application_id)
         {
-            let application_version = self
-                .ctx_manager
-                .get_application_latest_version(&application_id)?;
+            let Some(application) = self.ctx_manager.get_application(&application_id)? else {
+                eyre::bail!(
+                    "fatal error: context `{}` links to dangling application ID `{}`",
+                    context.id,
+                    application_id
+                );
+            };
 
             let message = serde_json::to_vec(&types::CatchupStreamMessage::ApplicationChanged(
                 types::CatchupApplicationChanged {
                     application_id,
-                    version: application_version,
-                    url,
-                    hash,
+                    blob_id: application.blob,
+                    version: application.version,
+                    source: url,
+                    hash: None, // todo! blob_mgr(application.blob)?.hash
                 },
             ))?;
             stream
@@ -212,9 +213,8 @@ impl Node {
                         application_id: Some(context.application_id),
                         last_executed_transaction_hash: context.last_transaction_hash,
                         batch_size: self.network_client.catchup_config.batch_size,
-                        url: None,
-                        hash: None,
                         public_key: initial_identity.public_key,
+                        source: None,
                     },
                 )
             }
@@ -225,8 +225,7 @@ impl Node {
                     application_id: None,
                     last_executed_transaction_hash: calimero_primitives::hash::Hash::default(),
                     batch_size: self.network_client.catchup_config.batch_size,
-                    url: None,
-                    hash: None,
+                    source: None,
                     // In this situation, where we have no context, we have no way to know the
                     // public key.
                     public_key: PublicKey([0; 32]),
@@ -383,14 +382,15 @@ impl Node {
 
                 if !self
                     .ctx_manager
-                    .is_application_installed(&change.application_id)
+                    .is_application_installed(&change.application_id)?
                 {
+                    // note! for now, we assume all paths are urls
+                    // todo! for path sources, share the blob peer to peer
+
                     self.ctx_manager
-                        .install_application(
-                            &change.application_id,
-                            &change.version,
-                            &change.url,
-                            Some(change.hash.as_str()),
+                        .install_application_from_url(
+                            change.source.to_string().parse()?,
+                            change.version,
                         )
                         .await?;
                 }
@@ -398,11 +398,7 @@ impl Node {
                 match context {
                     Some(ref mut context_) => {
                         self.ctx_manager
-                            .update_context_application_id(
-                                context_.id,
-                                change.application_id.clone(),
-                            )
-                            .await?;
+                            .update_application_id(context_.id, change.application_id.clone())?;
 
                         context_.application_id = change.application_id;
                     }

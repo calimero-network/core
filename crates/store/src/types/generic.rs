@@ -1,6 +1,4 @@
-use std::convert::Infallible;
-
-use crate::entry::DataType;
+use crate::entry::Identity;
 use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
@@ -10,18 +8,19 @@ pub struct GenericData<'a> {
     value: Slice<'a>,
 }
 
-impl<'a> DataType<'a> for GenericData<'a> {
-    type Error = Infallible;
+impl PredefinedEntry for key::Generic {
+    type Codec = Identity;
+    type DataType<'a> = GenericData<'a>;
+}
 
-    fn from_slice(slice: Slice<'a>) -> Result<Self, Self::Error> {
-        Ok(Self { value: slice })
-    }
-
-    fn as_slice(&'a self) -> Result<Slice<'a>, Self::Error> {
-        Ok(self.value.as_ref().into())
+impl<'a> From<Slice<'a>> for GenericData<'a> {
+    fn from(value: Slice<'a>) -> Self {
+        Self { value }
     }
 }
 
-impl PredefinedEntry for key::Generic {
-    type DataType<'a> = GenericData<'a>;
+impl<'a> AsRef<[u8]> for GenericData<'a> {
+    fn as_ref(&self) -> &[u8] {
+        self.value.as_ref()
+    }
 }

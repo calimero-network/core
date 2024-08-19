@@ -219,7 +219,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
         metadata: signatureMetadata,
       };
       const walletMetadata: WalletMetadata = {
-        wallet: WalletType.NEAR,
+        wallet: WalletType.NEAR({ networkId: selector.options.network.networkId }),
         signingKey: publicKey,
       };
       const rootKeyRequest: RootKeyRequest = {

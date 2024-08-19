@@ -44,7 +44,7 @@ pub fn store_root(
 ) -> Result<AddPublicKeyRequest, ApiError> {
     store_root_key(
         req.wallet_metadata.signing_key.clone(),
-        req.wallet_metadata.wallet_type,
+        req.wallet_metadata.wallet_type.clone(),
         store,
     )?;
     Ok(req)

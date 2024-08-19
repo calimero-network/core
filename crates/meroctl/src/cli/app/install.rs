@@ -2,7 +2,6 @@ use camino::Utf8PathBuf;
 use clap::Parser;
 use eyre::Result;
 use semver::Version;
-use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::cli::RootArgs;
@@ -16,13 +15,8 @@ pub struct InstallCommand {
     pub path: Utf8PathBuf,
 
     /// Version of the application
-    #[clap(
-        short,
-        long,
-        help = "Version of the application (requires --dev and --path)",
-        default_value = "0.0.0"
-    )]
-    pub version: Version,
+    #[clap(short, long, help = "Version of the application")]
+    pub version: Option<Version>,
 }
 
 impl InstallCommand {
@@ -45,15 +39,9 @@ impl InstallCommand {
 
         let install_url = multiaddr_to_url(multiaddr, "admin-api/dev/install-application")?;
 
-        let id = format!("{}:{}", self.version, self.path);
-        let mut hasher = Sha256::new();
-        hasher.update(id.as_bytes());
-        let application_id = hex::encode(hasher.finalize());
-
         let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
-            application_id: calimero_primitives::application::ApplicationId(application_id.clone()),
-            version: self.version,
             path: self.path,
+            version: self.version,
         };
 
         let install_response = client
@@ -72,9 +60,13 @@ impl InstallCommand {
             )
         }
 
+        let body = install_response
+            .json::<calimero_server_primitives::admin::InstallApplicationResponse>()
+            .await?;
+
         info!(
             "Application installed successfully. Application ID: {}",
-            application_id
+            body.data.application_id
         );
 
         Ok(())

@@ -5,15 +5,14 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::identity::{KeyPair, PublicKey};
-use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand::rngs::StdRng;
-use rand::{RngCore, SeedableRng};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
+use crate::admin::utils::context::create_context;
+use crate::admin::utils::identity::generate_identity_keypair;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextObject {
@@ -139,14 +138,25 @@ pub struct DeleteContextResponse {
 }
 
 pub async fn delete_context_handler(
-    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Path(context_id): Path<String>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
+    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
+        Ok(context_id) => context_id,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid context id".into(),
+            }
+            .into_response();
+        }
+    };
+
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
         .ctx_manager
-        .delete_context(&context_id)
+        .delete_context(&context_id_result)
         .await
         .map_err(parse_api_error);
 
@@ -165,47 +175,17 @@ pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<calimero_server_primitives::admin::CreateContextRequest>,
 ) -> impl IntoResponse {
-    // Create a Send-able RNG
-    let mut rng = StdRng::from_entropy();
-
-    // Generate a key pair for the context ID
-    let mut context_seed = [0u8; 32];
-    rng.fill_bytes(&mut context_seed);
-    let context_signing_key = SigningKey::from_bytes(&context_seed);
-    let context_verifying_key = VerifyingKey::from(&context_signing_key);
-    let context_id =
-        calimero_primitives::context::ContextId::from(*context_verifying_key.as_bytes());
-
-    // Generate a separate key pair for the member's identity
-    let mut member_seed = [0u8; 32];
-    rng.fill_bytes(&mut member_seed);
-    let member_signing_key = SigningKey::from_bytes(&member_seed);
-    let member_verifying_key = VerifyingKey::from(&member_signing_key);
-
-    let context = calimero_primitives::context::Context {
-        id: context_id,
-        application_id: req.application_id,
-        last_transaction_hash: Default::default(),
-    };
-
-    let initial_identity = KeyPair {
-        public_key: PublicKey(*member_verifying_key.as_bytes()),
-        private_key: Some(*member_signing_key.as_bytes()),
-    };
-
-    // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let result = state
-        .ctx_manager
-        .add_context(context.clone(), initial_identity)
+    //TODO enable providing private key in the request
+    let result = create_context(&state.ctx_manager, req.application_id, None)
         .await
         .map_err(parse_api_error);
 
     match result {
-        Ok(_) => ApiResponse {
+        Ok(context_create_result) => ApiResponse {
             payload: calimero_server_primitives::admin::CreateContextResponse {
                 data: calimero_server_primitives::admin::ContextResponse {
-                    context,
-                    member_public_key: (*member_verifying_key.as_bytes()).into(),
+                    context: context_create_result.context,
+                    member_public_key: context_create_result.identity.public_key,
                 },
             },
         }
@@ -245,7 +225,7 @@ struct JoinContextResponse {
 pub async fn join_context_handler(
     Path(context_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(request): Json<JoinContextRequest>,
+    request: Option<Json<JoinContextRequest>>,
 ) -> impl IntoResponse {
     let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
         Ok(context_id) => context_id,
@@ -258,10 +238,14 @@ pub async fn join_context_handler(
         }
     };
 
-    // Create a KeyPair from the provided public and private keys
-    let initial_identity = KeyPair {
-        public_key: request.public_key,
-        private_key: Some(request.private_key),
+    let initial_identity = if let Some(Json(json_body)) = request {
+        // Create a KeyPair from the provided public and private keys
+        KeyPair {
+            public_key: json_body.public_key,
+            private_key: Some(json_body.private_key),
+        }
+    } else {
+        generate_identity_keypair()
     };
 
     let result = state
@@ -273,6 +257,41 @@ pub async fn join_context_handler(
     match result {
         Ok(_) => ApiResponse {
             payload: JoinContextResponse { data: Empty {} },
+        }
+        .into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateApplicationIdResponse {
+    data: Empty,
+}
+
+pub async fn update_application_id(
+    Extension(state): Extension<Arc<AdminState>>,
+    Path(context_id): Path<String>,
+    Json(req): Json<calimero_server_primitives::admin::UpdateContextApplicationRequest>,
+) -> impl IntoResponse {
+    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
+        Ok(context_id) => context_id,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid context id".into(),
+            }
+            .into_response();
+        }
+    };
+
+    let result = state
+        .ctx_manager
+        .update_application_id(context_id_result, req.application_id)
+        .map_err(parse_api_error);
+
+    match result {
+        Ok(_) => ApiResponse {
+            payload: UpdateApplicationIdResponse { data: Empty {} },
         }
         .into_response(),
         Err(err) => err.into_response(),

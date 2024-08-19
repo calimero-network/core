@@ -38,6 +38,7 @@ export type Account = AccountView & {
 };
 
 interface NearLoginProps {
+  networkId: string;
   rpcBaseUrl: string;
   contextId?: string;
   successRedirect: () => void;
@@ -231,7 +232,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
         publicKey: publicKey,
       };
       const walletMetadata: WalletMetadata = {
-        wallet: WalletType.NEAR,
+        wallet: WalletType.NEAR({ networkId: selector.options.network.networkId }),
         signingKey: publicKey,
       };
       const loginRequest: LoginRequest = {

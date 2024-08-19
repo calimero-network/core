@@ -1,9 +1,7 @@
-use std::io;
-
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::{KeyPair, PublicKey};
 
-use crate::entry::DataType;
+use crate::entry::{Borsh, Identity};
 use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
@@ -12,24 +10,12 @@ pub type TransactionHash = [u8; 32];
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextMeta {
-    // todo! make [u8; 32] when application_id<->meta is a separate record
-    pub application_id: Box<str>,
+    pub application: key::ApplicationMeta,
     pub last_transaction_hash: TransactionHash,
 }
 
-impl DataType<'_> for ContextMeta {
-    type Error = io::Error;
-
-    fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
-        borsh::from_slice(&slice)
-    }
-
-    fn as_slice(&self) -> Result<Slice, Self::Error> {
-        borsh::to_vec(self).map(Into::into)
-    }
-}
-
 impl PredefinedEntry for key::ContextMeta {
+    type Codec = Borsh;
     type DataType<'a> = ContextMeta;
 }
 
@@ -38,38 +24,27 @@ pub struct ContextState<'a> {
     pub value: Slice<'a>,
 }
 
-impl<'a> DataType<'a> for ContextState<'a> {
-    type Error = io::Error;
+impl PredefinedEntry for key::ContextState {
+    type Codec = Identity;
+    type DataType<'a> = ContextState<'a>;
+}
 
-    fn from_slice(slice: Slice<'a>) -> Result<Self, Self::Error> {
-        Ok(Self { value: slice })
-    }
-
-    fn as_slice(&'a self) -> Result<Slice<'a>, Self::Error> {
-        Ok(self.value.as_ref().into())
+impl<'a> From<Slice<'a>> for ContextState<'a> {
+    fn from(value: Slice<'a>) -> Self {
+        Self { value }
     }
 }
 
-impl PredefinedEntry for key::ContextState {
-    type DataType<'a> = ContextState<'a>;
+impl<'a> AsRef<[u8]> for ContextState<'a> {
+    fn as_ref(&self) -> &[u8] {
+        self.value.as_ref()
+    }
 }
 
 #[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
 pub struct ContextIdentity {
     pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
-}
-
-impl DataType<'_> for ContextIdentity {
-    type Error = io::Error;
-
-    fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
-        borsh::from_slice(&slice)
-    }
-
-    fn as_slice(&self) -> Result<Slice, Self::Error> {
-        borsh::to_vec(self).map(Into::into)
-    }
 }
 
 impl From<KeyPair> for ContextIdentity {
@@ -91,6 +66,7 @@ impl From<ContextIdentity> for KeyPair {
 }
 
 impl PredefinedEntry for key::ContextIdentity {
+    type Codec = Borsh;
     type DataType<'a> = ContextIdentity;
 }
 
@@ -102,18 +78,7 @@ pub struct ContextTransaction {
     pub executor_public_key: [u8; 32],
 }
 
-impl DataType<'_> for ContextTransaction {
-    type Error = io::Error;
-
-    fn from_slice(slice: Slice) -> Result<Self, Self::Error> {
-        borsh::from_slice(&slice)
-    }
-
-    fn as_slice(&self) -> Result<Slice, Self::Error> {
-        borsh::to_vec(self).map(Into::into)
-    }
-}
-
 impl PredefinedEntry for key::ContextTransaction {
+    type Codec = Borsh;
     type DataType<'a> = ContextTransaction;
 }

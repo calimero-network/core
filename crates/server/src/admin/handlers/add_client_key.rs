@@ -23,7 +23,7 @@ pub fn transform_request(
     intermediate: IntermediateAddPublicKeyRequest,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let metadata_enum = match intermediate.wallet_metadata.wallet_type {
-        WalletType::NEAR => {
+        WalletType::NEAR { .. } => {
             let metadata = serde_json::from_value::<NearSignatureMessageMetadata>(
                 intermediate.payload.metadata,
             )
@@ -89,7 +89,7 @@ pub fn store_client_key(
     store: &mut Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let client_key = ClientKey {
-        wallet_type: WalletType::NEAR,
+        wallet_type: req.wallet_metadata.wallet_type.clone(),
         signing_key: req.payload.message.public_key.clone(),
         created_at: Utc::now().timestamp_millis() as u64,
         context_id: req.context_id,
@@ -108,7 +108,7 @@ fn check_root_key(
         //first login so store root key as well
         store_root_key(
             req.wallet_metadata.signing_key.clone(),
-            req.wallet_metadata.wallet_type,
+            req.wallet_metadata.wallet_type.clone(),
             store,
         )?;
         Ok(req)

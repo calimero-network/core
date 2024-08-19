@@ -41,7 +41,17 @@ impl Hash {
         })
     }
 
-    // todo! pub fn hash_borsh
+    #[cfg(feature = "borsh")]
+    pub fn hash_borsh<T: borsh::BorshSerialize>(data: &T) -> std::io::Result<Self> {
+        let mut hasher = sha2::Sha256::default();
+
+        data.serialize(&mut hasher)?;
+
+        Ok(Hash {
+            bytes: hasher.finalize().into(),
+            bs58: MaybeUninit::zeroed(),
+        })
+    }
 
     // todo! using generic-array;
     // todo! as_str(&self, buf: &mut [u8; N]) -> &str

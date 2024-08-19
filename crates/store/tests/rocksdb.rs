@@ -63,21 +63,39 @@ fn rocks_store() {
     store.put(&key2, b"Another Value".into()).unwrap();
 
     {
-        let mut iter = store.iter(&key1).unwrap();
+        let mut iter = store.iter().unwrap();
 
         let mut keys = iter.keys();
 
-        assert_eq!(Some(key1), keys.next());
-        assert_eq!(Some(key2), keys.next());
-        assert_eq!(None, keys.next());
+        assert_eq!(Some(key1), keys.next().transpose().unwrap());
+        assert_eq!(Some(key2), keys.next().transpose().unwrap());
+        assert_eq!(None, keys.next().transpose().unwrap());
 
-        let mut iter = store.iter(&key1).unwrap();
+        let mut iter = store.iter().unwrap();
 
         let mut keys = iter.entries();
 
-        assert_eq!(Some((key1, b"Hello, World".into())), keys.next());
-        assert_eq!(Some((key2, b"Another Value".into())), keys.next());
-        assert_eq!(None, keys.next());
+        assert_eq!(
+            Some((key1, b"Hello, World".into())),
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
+        );
+        assert_eq!(
+            Some((key2, b"Another Value".into())),
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
+        );
+        assert_eq!(
+            None,
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
+        );
     }
 
     let public_key1 = [0u8; 32];
@@ -95,23 +113,23 @@ fn rocks_store() {
         .unwrap();
 
     {
-        let mut iter = store.iter(&key1).unwrap();
+        let mut iter = store.iter().unwrap();
 
         let mut keys = iter.keys();
 
-        assert_eq!(Some(key1), keys.next());
-        assert_eq!(Some(key2), keys.next());
-        assert_eq!(None, keys.next());
+        assert_eq!(Some(key1), keys.next().transpose().unwrap());
+        assert_eq!(Some(key2), keys.next().transpose().unwrap());
+        assert_eq!(None, keys.next().transpose().unwrap());
     }
 
     {
-        let mut iter = store.iter(&key3).unwrap();
+        let mut iter = store.iter().unwrap();
 
         let mut keys = iter.keys();
 
-        assert_eq!(Some(key3), keys.next());
-        assert_eq!(Some(key4), keys.next());
-        assert_eq!(None, keys.next());
+        assert_eq!(Some(key3), keys.next().transpose().unwrap());
+        assert_eq!(Some(key4), keys.next().transpose().unwrap());
+        assert_eq!(None, keys.next().transpose().unwrap());
     }
 }
 
@@ -176,21 +194,39 @@ fn temporal_store() {
     store.put(&key2, b"Another Value".into()).unwrap();
 
     {
-        let mut iter = store.iter(&key1).unwrap();
+        let mut iter = store.iter().unwrap();
 
         let mut keys = iter.keys();
 
-        assert_eq!(Some(key1), keys.next());
-        assert_eq!(Some(key2), keys.next());
-        assert_eq!(None, keys.next());
+        assert_eq!(Some(key1), keys.next().transpose().unwrap());
+        assert_eq!(Some(key2), keys.next().transpose().unwrap());
+        assert_eq!(None, keys.next().transpose().unwrap());
 
-        let mut iter = store.iter(&key1).unwrap();
+        let mut iter = store.iter().unwrap();
 
         let mut keys = iter.entries();
 
-        assert_eq!(Some((key1, b"Hello, World".into())), keys.next());
-        assert_eq!(Some((key2, b"Another Value".into())), keys.next());
-        assert_eq!(None, keys.next());
+        assert_eq!(
+            Some((key1, b"Hello, World".into())),
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
+        );
+        assert_eq!(
+            Some((key2, b"Another Value".into())),
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
+        );
+        assert_eq!(
+            None,
+            keys.next()
+                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .transpose()
+                .unwrap()
+        );
     }
 
     let public_key1 = [0u8; 32];
@@ -208,22 +244,22 @@ fn temporal_store() {
         .unwrap();
 
     {
-        let mut iter = store.iter(&key1).unwrap();
+        let mut iter = store.iter().unwrap();
 
         let mut keys = iter.keys();
 
-        assert_eq!(Some(key1), keys.next());
-        assert_eq!(Some(key2), keys.next());
-        assert_eq!(None, keys.next());
+        assert_eq!(Some(key1), keys.next().transpose().unwrap());
+        assert_eq!(Some(key2), keys.next().transpose().unwrap());
+        assert_eq!(None, keys.next().transpose().unwrap());
     }
 
     {
-        let mut iter = store.iter(&key3).unwrap();
+        let mut iter = store.iter().unwrap();
 
         let mut keys = iter.keys();
 
-        assert_eq!(Some(key3), keys.next());
-        assert_eq!(Some(key4), keys.next());
-        assert_eq!(None, keys.next());
+        assert_eq!(Some(key3), keys.next().transpose().unwrap());
+        assert_eq!(Some(key4), keys.next().transpose().unwrap());
+        assert_eq!(None, keys.next().transpose().unwrap());
     }
 }
