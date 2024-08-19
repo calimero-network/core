@@ -27,7 +27,7 @@ impl JoinCommand {
 
         let url = multiaddr_to_url(
             multiaddr,
-            &format!("/dev/contexts/{}/join", self.context_id),
+            &format!("admin-api/dev/contexts/{}/join", self.context_id),
         )?;
         let client = Client::new();
         let response = client.post(url).send().await?;

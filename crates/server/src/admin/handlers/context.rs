@@ -4,16 +4,13 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_primitives::identity::{KeyPair, PublicKey};
-use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand::rngs::StdRng;
-use rand::{RngCore, SeedableRng};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
+use crate::admin::utils::context::{create_context, join_context};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ContextObject {
@@ -176,47 +173,17 @@ pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<calimero_server_primitives::admin::CreateContextRequest>,
 ) -> impl IntoResponse {
-    // Create a Send-able RNG
-    let mut rng = StdRng::from_entropy();
-
-    // Generate a key pair for the context ID
-    let mut context_seed = [0u8; 32];
-    rng.fill_bytes(&mut context_seed);
-    let context_signing_key = SigningKey::from_bytes(&context_seed);
-    let context_verifying_key = VerifyingKey::from(&context_signing_key);
-    let context_id =
-        calimero_primitives::context::ContextId::from(*context_verifying_key.as_bytes());
-
-    // Generate a separate key pair for the member's identity
-    let mut member_seed = [0u8; 32];
-    rng.fill_bytes(&mut member_seed);
-    let member_signing_key = SigningKey::from_bytes(&member_seed);
-    let member_verifying_key = VerifyingKey::from(&member_signing_key);
-
-    let context = calimero_primitives::context::Context {
-        id: context_id,
-        application_id: req.application_id,
-        last_transaction_hash: Default::default(),
-    };
-
-    let initial_identity = KeyPair {
-        public_key: PublicKey(*member_verifying_key.as_bytes()),
-        private_key: Some(*member_signing_key.as_bytes()),
-    };
-
-    // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let result = state
-        .ctx_manager
-        .add_context(context.clone(), initial_identity)
+    //TODO enable providing private key in the request
+    let result = create_context(&state.ctx_manager, req.application_id, None)
         .await
         .map_err(parse_api_error);
 
     match result {
-        Ok(_) => ApiResponse {
+        Ok(context_create_result) => ApiResponse {
             payload: calimero_server_primitives::admin::CreateContextResponse {
                 data: calimero_server_primitives::admin::ContextResponse {
-                    context,
-                    member_public_key: (*member_verifying_key.as_bytes()).into(),
+                    context: context_create_result.context,
+                    member_public_key: context_create_result.identity.public_key,
                 },
             },
         }
@@ -244,7 +211,7 @@ pub async fn get_context_storage_handler(
 
 #[derive(Deserialize)]
 pub struct JoinContextRequest {
-    pub private_key: Option<[u8; 32]>,
+    pub private_key: [u8; 32],
 }
 
 #[derive(Debug, Serialize)]
@@ -255,7 +222,7 @@ struct JoinContextResponse {
 pub async fn join_context_handler(
     Path(context_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(request): Json<JoinContextRequest>,
+    request: Option<Json<JoinContextRequest>>,
 ) -> impl IntoResponse {
     let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
         Ok(context_id) => context_id,
@@ -268,27 +235,19 @@ pub async fn join_context_handler(
         }
     };
 
-    let private_key = request.private_key.unwrap_or_else(|| {
-        let mut rng = rand::thread_rng();
-        let mut private_key = [0; 32];
-
-        rng.fill_bytes(&mut private_key);
-        private_key
-    });
-
-    let private_key = SigningKey::from_bytes(&private_key);
-    let public_key = VerifyingKey::from(&private_key);
-
-    let initial_identity: KeyPair = KeyPair {
-        public_key: PublicKey(*public_key.as_bytes()),
-        private_key: Some(*private_key.as_bytes()),
+    let private_key = if let Some(Json(json_body)) = request {
+        Some(bs58::encode(json_body.private_key).into_string())
+    } else {
+        None
     };
 
-    let result = state
-        .ctx_manager
-        .join_context(&context_id_result, initial_identity)
-        .await
-        .map_err(parse_api_error);
+    let result = join_context(
+        &state.ctx_manager,
+        context_id_result,
+        private_key.as_deref(),
+    )
+    .await
+    .map_err(parse_api_error);
 
     match result {
         Ok(_) => ApiResponse {
