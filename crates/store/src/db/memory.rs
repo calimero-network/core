@@ -192,8 +192,10 @@ impl<'this> InMemoryDBIter<'this> {
         K: Ord + CastsTo<Slice<'a>>,
         V: CastsTo<Slice<'a>>,
     {
-        // safety: {K, V}: CastsTo<Slice>
-        unsafe { std::mem::transmute(inner) }
+        InMemoryDBIter {
+            // safety: {K, V}: CastsTo<Slice>
+            inner: unsafe { std::mem::transmute(inner) },
+        }
     }
 }
 

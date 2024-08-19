@@ -76,7 +76,7 @@ impl Database<'_> for RocksDB {
 
         iter.seek_to_first();
 
-        Ok(Iter::new(DBIterator { iter }))
+        Ok(Iter::new(DBIterator { ready: true, iter }))
     }
 
     fn apply(&self, tx: &Transaction) -> eyre::Result<()> {
@@ -108,6 +108,7 @@ impl Database<'_> for RocksDB {
 }
 
 struct DBIterator<'a> {
+    ready: bool,
     iter: rocksdb::DBRawIterator<'a>,
 }
 
@@ -115,11 +116,17 @@ impl<'a> DBIter for DBIterator<'a> {
     fn seek(&mut self, key: Slice) -> eyre::Result<Option<Slice>> {
         self.iter.seek(key);
 
+        self.ready = false;
+
         Ok(self.iter.key().map(Into::into))
     }
 
     fn next(&mut self) -> eyre::Result<Option<Slice>> {
-        self.iter.next();
+        if self.ready {
+            self.ready = false;
+        } else {
+            self.iter.next();
+        }
 
         Ok(self.iter.key().map(Into::into))
     }
@@ -194,6 +201,50 @@ mod tests {
 
                 assert_eq!(bytes, &*last_key);
                 assert_eq!(bytes, &*last_value);
+            }
+        }
+    }
+
+    #[test]
+    fn test_rocksdb_iter() {
+        let dir = TempDir::new("_calimero_store_rocks").unwrap();
+
+        let config = StoreConfig {
+            path: dir.path().to_owned().try_into().unwrap(),
+        };
+
+        let db = RocksDB::open(&config).unwrap();
+
+        for b1 in 0..10 {
+            for b2 in 0..10 {
+                let bytes = [b1, b2];
+
+                let key = Slice::from(&bytes[..]);
+                let value = Slice::from(&bytes[..]);
+
+                db.put(Column::Identity, (&key).into(), (&value).into())
+                    .unwrap();
+
+                assert!(db.has(Column::Identity, (&key).into()).unwrap());
+                assert_eq!(db.get(Column::Identity, key).unwrap().unwrap(), value);
+            }
+        }
+
+        let mut iter = db.iter(Column::Identity).unwrap();
+
+        let mut entries = iter.entries();
+
+        for b1 in 0..10 {
+            for b2 in 0..10 {
+                let bytes = [b1, b2];
+
+                let (key, value) = entries
+                    .next()
+                    .map(|(k, v)| (k.unwrap(), v.unwrap()))
+                    .unwrap();
+
+                assert_eq!(key, bytes);
+                assert_eq!(value, bytes);
             }
         }
     }
