@@ -72,7 +72,7 @@ pub async fn start(
     {
         if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone())? {
             app = app.route(path, handler);
-            app = app.layer(middleware::auth::AuthSignatureLayer::new(store.clone()));
+            // app = app.layer(middleware::auth::AuthSignatureLayer::new(store.clone()));
 
             serviced = true;
         }

@@ -37,7 +37,6 @@ pub enum CatchupStreamMessage {
 pub struct CatchupRequest {
     pub context_id: calimero_primitives::context::ContextId,
     pub application_id: Option<calimero_primitives::application::ApplicationId>,
-    pub source: Option<calimero_primitives::application::ApplicationSource>,
     pub last_executed_transaction_hash: calimero_primitives::hash::Hash,
     pub batch_size: u8,
     pub public_key: PublicKey,
