@@ -15,7 +15,7 @@ pub struct LogicImpl<'a> {
     orig: &'a syn::ItemImpl,
 }
 
-impl<'a> ToTokens for LogicImpl<'a> {
+impl ToTokens for LogicImpl<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let LogicImpl { orig, methods, .. } = self;
 
@@ -68,7 +68,8 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             )));
         };
 
-        let mut sanitizer = syn::parse2::<sanitizer::Sanitizer>(type_.to_token_stream()).unwrap();
+        let mut sanitizer =
+            syn::parse2::<sanitizer::Sanitizer<'_>>(type_.to_token_stream()).unwrap();
 
         let reserved_ident = reserved::idents::input();
         let reserved_lifetime = reserved::lifetimes::input();

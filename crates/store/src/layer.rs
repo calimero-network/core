@@ -16,8 +16,8 @@ pub trait Layer {
 
 pub trait ReadLayer: Layer {
     fn has<K: AsKeyParts>(&self, key: &K) -> eyre::Result<bool>;
-    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice>>;
-    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<Structured<K>>>;
+    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice<'_>>>;
+    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<'_, Structured<K>>>;
 }
 
 pub trait WriteLayer<'a>: Layer {
@@ -61,11 +61,11 @@ impl ReadLayer for Store {
         self.db.has(K::column(), key.as_key().as_slice())
     }
 
-    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice>> {
+    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice<'_>>> {
         self.db.get(K::column(), key.as_key().as_slice())
     }
 
-    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<Structured<K>>> {
+    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<'_, Structured<K>>> {
         Ok(self.db.iter(K::column())?.structured_key())
     }
 }

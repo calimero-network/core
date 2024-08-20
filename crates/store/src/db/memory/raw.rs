@@ -9,7 +9,7 @@ use crate::slice::Slice;
 /// Safety to ensure all casts are valid
 pub trait CastsTo<This> {}
 
-impl<'a, 'b> CastsTo<Slice<'a>> for Slice<'b> {}
+impl CastsTo<Slice<'_>> for Slice<'_> {}
 
 pub trait InMemoryDBImpl<'a> {
     type Key: AsRef<[u8]> + CastsTo<Slice<'a>>;
@@ -27,13 +27,13 @@ pub struct DBArena<V> {
 }
 
 impl<V> DBArena<V> {
-    fn read(&self) -> eyre::Result<RwLockReadGuard<thunderdome::Arena<Arc<V>>>> {
+    fn read(&self) -> eyre::Result<RwLockReadGuard<'_, thunderdome::Arena<Arc<V>>>> {
         self.inner
             .read()
             .map_err(|_| eyre::eyre!("failed to acquire read lock on arena"))
     }
 
-    fn write(&self) -> eyre::Result<RwLockWriteGuard<thunderdome::Arena<Arc<V>>>> {
+    fn write(&self) -> eyre::Result<RwLockWriteGuard<'_, thunderdome::Arena<Arc<V>>>> {
         self.inner
             .write()
             .map_err(|_| eyre::eyre!("failed to acquire write lock on arena"))
@@ -141,7 +141,7 @@ struct State<'a, K, V> {
     value: Option<Arc<V>>,
 }
 
-impl<'a, K: Ord, V> Drop for InMemoryIterInner<'a, K, V> {
+impl<K: Ord, V> Drop for InMemoryIterInner<'_, K, V> {
     fn drop(&mut self) {
         let Some(column) = self.column.as_mut() else {
             return;
@@ -157,7 +157,7 @@ impl<'a, K: Ord, V> Drop for InMemoryIterInner<'a, K, V> {
     }
 }
 
-impl<'a, K, V> InMemoryIterInner<'a, K, V>
+impl<K, V> InMemoryIterInner<'_, K, V>
 where
     K: Ord + Borrow<[u8]>,
 {

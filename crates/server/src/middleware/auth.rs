@@ -127,7 +127,7 @@ pub fn auth(headers: &HeaderMap, store: &mut Store) -> Result<(), UnauthorizedEr
     }
 }
 
-fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
+fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError<'_>> {
     let signing_key = headers
         .get("signing_key")
         .ok_or_else(|| UnauthorizedError::new("Missing signing_key header"))?;

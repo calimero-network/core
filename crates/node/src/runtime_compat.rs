@@ -60,7 +60,7 @@ impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
     }
 }
 
-impl<'this, 'entry> calimero_runtime::store::Storage for RuntimeCompatStore<'this, 'entry> {
+impl calimero_runtime::store::Storage for RuntimeCompatStore<'_, '_> {
     fn get(&self, key: &calimero_runtime::store::Key) -> Option<Vec<u8>> {
         let key = self.state_key(key)?;
 

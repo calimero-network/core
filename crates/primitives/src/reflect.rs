@@ -38,7 +38,7 @@ pub trait Reflect: DynReflect {
     }
 }
 
-impl<'a> dyn Reflect + 'a {
+impl dyn Reflect + '_ {
     pub fn is<T: Reflect>(&self) -> bool {
         self.type_id() == non_static_type_id::<T>()
     }

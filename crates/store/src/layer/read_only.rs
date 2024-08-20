@@ -16,11 +16,11 @@ where
     }
 }
 
-impl<'base, L: Layer> Layer for ReadOnly<'base, L> {
+impl<L: Layer> Layer for ReadOnly<'_, L> {
     type Base = L;
 }
 
-impl<'base, L> ReadLayer for ReadOnly<'base, L>
+impl<L> ReadLayer for ReadOnly<'_, L>
 where
     L: ReadLayer,
 {
@@ -28,11 +28,11 @@ where
         self.inner.has(key)
     }
 
-    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice>> {
+    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice<'_>>> {
         self.inner.get(key)
     }
 
-    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<Structured<K>>> {
+    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<'_, Structured<K>>> {
         self.inner.iter()
     }
 }

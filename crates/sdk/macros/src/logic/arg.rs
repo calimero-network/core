@@ -19,7 +19,7 @@ pub struct LogicArgTyped<'a> {
     pub ty: ty::LogicTy,
 }
 
-impl<'a> ToTokens for LogicArgTyped<'a> {
+impl ToTokens for LogicArgTyped<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let ident = &self.ident;
         let ty = &self.ty;

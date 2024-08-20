@@ -40,7 +40,7 @@ impl Database<'_> for RocksDB {
         })
     }
 
-    fn has(&self, col: Column, key: Slice) -> eyre::Result<bool> {
+    fn has(&self, col: Column, key: Slice<'_>) -> eyre::Result<bool> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         let exists = self.db.key_may_exist_cf(cf_handle, key.as_ref())
@@ -49,7 +49,7 @@ impl Database<'_> for RocksDB {
         Ok(exists)
     }
 
-    fn get(&self, col: Column, key: Slice) -> eyre::Result<Option<Slice>> {
+    fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         let value = self.db.get_pinned_cf(cf_handle, key.as_ref())?;
@@ -57,7 +57,7 @@ impl Database<'_> for RocksDB {
         Ok(value.map(Slice::from_owned))
     }
 
-    fn put(&self, col: Column, key: Slice, value: Slice) -> eyre::Result<()> {
+    fn put(&self, col: Column, key: Slice<'_>, value: Slice<'_>) -> eyre::Result<()> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         self.db.put_cf(cf_handle, key.as_ref(), value.as_ref())?;
@@ -65,7 +65,7 @@ impl Database<'_> for RocksDB {
         Ok(())
     }
 
-    fn delete(&self, col: Column, key: Slice) -> eyre::Result<()> {
+    fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         self.db.delete_cf(cf_handle, key.as_ref())?;
@@ -73,7 +73,7 @@ impl Database<'_> for RocksDB {
         Ok(())
     }
 
-    fn iter(&self, col: Column) -> eyre::Result<Iter> {
+    fn iter(&self, col: Column) -> eyre::Result<Iter<'_>> {
         let cf_handle = self.try_cf_handle(&col)?;
 
         let mut iter = self.db.raw_iterator_cf(cf_handle);
@@ -83,7 +83,7 @@ impl Database<'_> for RocksDB {
         Ok(Iter::new(DBIterator { ready: true, iter }))
     }
 
-    fn apply(&self, tx: &Transaction) -> eyre::Result<()> {
+    fn apply(&self, tx: &Transaction<'_>) -> eyre::Result<()> {
         let mut batch = rocksdb::WriteBatch::default();
 
         let mut unknown_cfs = vec![];
@@ -116,8 +116,8 @@ struct DBIterator<'a> {
     iter: rocksdb::DBRawIterator<'a>,
 }
 
-impl<'a> DBIter for DBIterator<'a> {
-    fn seek(&mut self, key: Slice) -> eyre::Result<Option<Slice>> {
+impl DBIter for DBIterator<'_> {
+    fn seek(&mut self, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
         self.iter.seek(key);
 
         self.ready = false;
@@ -125,7 +125,7 @@ impl<'a> DBIter for DBIterator<'a> {
         Ok(self.iter.key().map(Into::into))
     }
 
-    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+    fn next(&mut self) -> eyre::Result<Option<Slice<'_>>> {
         if self.ready {
             self.ready = false;
         } else {
@@ -135,7 +135,7 @@ impl<'a> DBIter for DBIterator<'a> {
         Ok(self.iter.key().map(Into::into))
     }
 
-    fn read(&self) -> eyre::Result<Slice> {
+    fn read(&self) -> eyre::Result<Slice<'_>> {
         let Some(value) = self.iter.value() else {
             eyre::bail!("missing value for iterator entry {:?}", self.iter.key());
         };

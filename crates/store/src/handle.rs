@@ -31,11 +31,11 @@ type EntryError<'a, E> =
     Error<<<E as Entry>::Codec as Codec<'a, <E as Entry>::DataType<'a>>>::Error>;
 
 impl<L: ReadLayer> Handle<L> {
-    pub fn has<E: Entry>(&self, entry: &E) -> Result<bool, EntryError<E>> {
+    pub fn has<E: Entry>(&self, entry: &E) -> Result<bool, EntryError<'_, E>> {
         Ok(self.inner.has(entry.key())?)
     }
 
-    pub fn get<E: Entry>(&self, entry: &E) -> Result<Option<E::DataType<'_>>, EntryError<E>> {
+    pub fn get<E: Entry>(&self, entry: &E) -> Result<Option<E::DataType<'_>>, EntryError<'_, E>> {
         match self.inner.get(entry.key())? {
             Some(value) => Ok(Some(E::Codec::decode(value).map_err(Error::CodecError)?)),
             None => Ok(None),
@@ -45,7 +45,7 @@ impl<L: ReadLayer> Handle<L> {
     #[allow(clippy::type_complexity)]
     pub fn iter<E: Entry<Key: FromKeyParts>>(
         &self,
-    ) -> Result<Iter<Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>, EntryError<E>>
+    ) -> Result<Iter<'_, Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>, EntryError<'_, E>>
     {
         Ok(self.inner.iter()?.structured_value())
     }
@@ -65,7 +65,7 @@ impl<'a, L: WriteLayer<'a>> Handle<L> {
             .map_err(Error::LayerError)
     }
 
-    pub fn delete<E: Entry>(&'a mut self, entry: &'a E) -> Result<(), EntryError<E>> {
+    pub fn delete<E: Entry>(&'a mut self, entry: &'a E) -> Result<(), EntryError<'_, E>> {
         self.inner.delete(entry.key()).map_err(Error::LayerError)
     }
 }

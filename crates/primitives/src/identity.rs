@@ -131,7 +131,7 @@ pub mod serde_identity {
         impl<'de> de::Visitor<'de> for IdentityVisitor {
             type Value = Keypair;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("an identity")
             }
 

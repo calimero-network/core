@@ -153,7 +153,7 @@ where
     impl<'de> de::Visitor<'de> for BootstrapVisitor {
         type Value = Vec<Multiaddr>;
 
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             formatter.write_str("a list of multiaddresses")
         }
 

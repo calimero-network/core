@@ -31,7 +31,7 @@ impl<'a, T: AsRef<[u8]> + 'a> BufRef for T {
     }
 }
 
-impl<'a> fmt::Debug for dyn BufRef + 'a {
+impl fmt::Debug for dyn BufRef + '_ {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.type_name())
     }
@@ -82,7 +82,7 @@ impl<'a> Slice<'a> {
     }
 }
 
-impl<'a> Deref for Slice<'a> {
+impl Deref for Slice<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -90,7 +90,7 @@ impl<'a> Deref for Slice<'a> {
     }
 }
 
-impl<'a> AsRef<[u8]> for Slice<'a> {
+impl AsRef<[u8]> for Slice<'_> {
     fn as_ref(&self) -> &[u8] {
         match &self.inner {
             SliceInner::Ref(inner) => inner,
@@ -108,7 +108,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> From<&'a T> for Slice<'a> {
     }
 }
 
-impl<'a> From<Box<[u8]>> for Slice<'a> {
+impl From<Box<[u8]>> for Slice<'_> {
     fn from(inner: Box<[u8]>) -> Self {
         Self {
             inner: SliceInner::Box(inner.into()),
@@ -116,7 +116,7 @@ impl<'a> From<Box<[u8]>> for Slice<'a> {
     }
 }
 
-impl<'a> From<Vec<u8>> for Slice<'a> {
+impl From<Vec<u8>> for Slice<'_> {
     fn from(inner: Vec<u8>) -> Self {
         Self {
             inner: SliceInner::Box(Rc::new(inner.into())),
@@ -124,7 +124,7 @@ impl<'a> From<Vec<u8>> for Slice<'a> {
     }
 }
 
-impl<'a> From<Rc<Box<[u8]>>> for Slice<'a> {
+impl From<Rc<Box<[u8]>>> for Slice<'_> {
     fn from(inner: Rc<Box<[u8]>>) -> Self {
         Self {
             inner: SliceInner::Box(inner),
@@ -138,26 +138,26 @@ impl<'a> From<Slice<'a>> for Box<[u8]> {
     }
 }
 
-impl<'a> Eq for Slice<'a> {}
-impl<'a, T: AsRef<[u8]> + ?Sized> PartialEq<T> for Slice<'a> {
+impl Eq for Slice<'_> {}
+impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for Slice<'_> {
     fn eq(&self, other: &T) -> bool {
         self.as_ref() == other.as_ref()
     }
 }
 
-impl<'a> Ord for Slice<'a> {
+impl Ord for Slice<'_> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.as_ref().cmp(other.as_ref())
     }
 }
 
-impl<'a, 'b> PartialOrd<Slice<'b>> for Slice<'a> {
-    fn partial_cmp(&self, other: &Slice<'b>) -> Option<std::cmp::Ordering> {
+impl<'a> PartialOrd<Slice<'a>> for Slice<'_> {
+    fn partial_cmp(&self, other: &Slice<'a>) -> Option<std::cmp::Ordering> {
         self.as_ref().partial_cmp(other.as_ref())
     }
 }
 
-impl<'a> fmt::Debug for Slice<'a> {
+impl fmt::Debug for Slice<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_tuple("Slice").field(&self.inner).finish()
@@ -167,7 +167,7 @@ impl<'a> fmt::Debug for Slice<'a> {
     }
 }
 
-impl<'a> Borrow<[u8]> for Slice<'a> {
+impl Borrow<[u8]> for Slice<'_> {
     fn borrow(&self) -> &[u8] {
         self
     }

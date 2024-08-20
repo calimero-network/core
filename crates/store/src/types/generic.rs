@@ -19,7 +19,7 @@ impl<'a> From<Slice<'a>> for GenericData<'a> {
     }
 }
 
-impl<'a> AsRef<[u8]> for GenericData<'a> {
+impl AsRef<[u8]> for GenericData<'_> {
     fn as_ref(&self) -> &[u8] {
         self.value.as_ref()
     }

@@ -14,7 +14,7 @@ pub struct Iter<'a, K = Unstructured, V = Unstructured> {
     _priv: PhantomData<(K, V)>,
 }
 
-impl<'a, K, V> fmt::Debug for Iter<'a, K, V> {
+impl<K, V> fmt::Debug for Iter<'_, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Iter").field(&self.inner).finish()
     }
@@ -22,12 +22,12 @@ impl<'a, K, V> fmt::Debug for Iter<'a, K, V> {
 
 pub trait DBIter {
     // todo! indicate somehow that Key<'a> doesn't contain mutable references to &'a mut self
-    fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>>;
-    fn next(&mut self) -> eyre::Result<Option<Key>>;
-    fn read(&self) -> eyre::Result<Value>;
+    fn seek(&mut self, key: Key<'_>) -> eyre::Result<Option<Key<'_>>>;
+    fn next(&mut self) -> eyre::Result<Option<Key<'_>>>;
+    fn read(&self) -> eyre::Result<Value<'_>>;
 }
 
-impl<'a> fmt::Debug for dyn DBIter + 'a {
+impl fmt::Debug for dyn DBIter + '_ {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.type_name())
     }
@@ -51,17 +51,17 @@ impl<'a, K, V> Iter<'a, K, V> {
     }
 }
 
-impl<'a, V> Iter<'a, Unstructured, V> {
-    pub fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>> {
+impl<V> Iter<'_, Unstructured, V> {
+    pub fn seek(&mut self, key: Key<'_>) -> eyre::Result<Option<Key<'_>>> {
         self.inner.seek(key)
     }
 
-    pub fn next(&mut self) -> eyre::Result<Option<Key>> {
+    pub fn next(&mut self) -> eyre::Result<Option<Key<'_>>> {
         self.inner.next()
     }
 }
 
-impl<'a, K: FromKeyParts, V> Iter<'a, Structured<K>, V>
+impl<K: FromKeyParts, V> Iter<'_, Structured<K>, V>
 where
     eyre::Report: From<Error<K::Error>>,
 {
@@ -82,8 +82,8 @@ where
     }
 }
 
-impl<'a, K> Iter<'a, K, Unstructured> {
-    pub fn read(&self) -> eyre::Result<Value> {
+impl<K> Iter<'_, K, Unstructured> {
+    pub fn read(&self) -> eyre::Result<Value<'_>> {
         self.inner.read()
     }
 }
@@ -121,12 +121,12 @@ impl<'a, K> Iter<'a, K, Unstructured> {
 type Key<'a> = Slice<'a>;
 type Value<'a> = Slice<'a>;
 
-impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
-    fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>> {
+impl<K> DBIter for Iter<'_, K, Unstructured> {
+    fn seek(&mut self, key: Key<'_>) -> eyre::Result<Option<Key<'_>>> {
         self.inner.seek(key)
     }
 
-    fn next(&mut self) -> eyre::Result<Option<Key>> {
+    fn next(&mut self) -> eyre::Result<Option<Key<'_>>> {
         if !self.done {
             if let Some(key) = self.inner.next()? {
                 return Ok(Some(key));
@@ -137,7 +137,7 @@ impl<'a, K> DBIter for Iter<'a, K, Unstructured> {
         Ok(None)
     }
 
-    fn read(&self) -> eyre::Result<Value> {
+    fn read(&self) -> eyre::Result<Value<'_>> {
         self.inner.read()
     }
 }
@@ -146,7 +146,7 @@ pub struct IterKeys<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
 }
 
-impl<'a, 'b, K: TryIntoKey<'b>, V> Iterator for IterKeys<'a, 'b, K, V>
+impl<'b, K: TryIntoKey<'b>, V> Iterator for IterKeys<'_, 'b, K, V>
 where
     eyre::Report: From<K::Error>,
 {
@@ -172,7 +172,7 @@ pub struct IterEntries<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
 }
 
-impl<'a, 'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'a, 'b, K, V>
+impl<'b, K: TryIntoKey<'b>, V: TryIntoValue<'b>> Iterator for IterEntries<'_, 'b, K, V>
 where
     eyre::Report: From<K::Error> + From<V::Error>,
 {
@@ -295,7 +295,7 @@ enum FusedIter<I> {
 }
 
 impl<I: DBIter> FusedIter<I> {
-    fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>> {
+    fn seek(&mut self, key: Key<'_>) -> eyre::Result<Option<Key<'_>>> {
         if let FusedIter::Active(iter) = self {
             return iter.seek(key);
         }
@@ -303,7 +303,7 @@ impl<I: DBIter> FusedIter<I> {
         Ok(None)
     }
 
-    fn next(&mut self) -> eyre::Result<Option<Key>> {
+    fn next(&mut self) -> eyre::Result<Option<Key<'_>>> {
         let this = unsafe { &mut *(self as *mut Self) };
 
         if let FusedIter::Active(iter) = this {
@@ -320,7 +320,7 @@ impl<I: DBIter> FusedIter<I> {
         Ok(None)
     }
 
-    fn read(&self) -> eyre::Result<Option<Value>> {
+    fn read(&self) -> eyre::Result<Option<Value<'_>>> {
         if let FusedIter::Active(iter) = self {
             return iter.read().map(Some);
         }
@@ -342,7 +342,7 @@ where
     A: DBIter,
     B: DBIter,
 {
-    fn seek(&mut self, key: Key) -> eyre::Result<Option<Key>> {
+    fn seek(&mut self, key: Key<'_>) -> eyre::Result<Option<Key<'_>>> {
         if let Some(key) = self.0.seek(key.as_ref().into())? {
             return Ok(Some(key));
         }
@@ -350,7 +350,7 @@ where
         self.1.seek(key)
     }
 
-    fn next(&mut self) -> eyre::Result<Option<Key>> {
+    fn next(&mut self) -> eyre::Result<Option<Key<'_>>> {
         if let Some(key) = self.0.next()? {
             return Ok(Some(key));
         }
@@ -358,7 +358,7 @@ where
         self.1.next()
     }
 
-    fn read(&self) -> eyre::Result<Value> {
+    fn read(&self) -> eyre::Result<Value<'_>> {
         if let Some(value) = self.0.read()? {
             return Ok(value);
         }

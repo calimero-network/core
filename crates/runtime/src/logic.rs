@@ -103,7 +103,7 @@ pub struct Event {
     pub data: Vec<u8>,
 }
 
-impl<'a> VMLogic<'a> {
+impl VMLogic<'_> {
     pub fn finish(self, err: Option<FunctionCallError>) -> Outcome {
         let returns = match err {
             Some(err) => Err(err),
@@ -131,7 +131,7 @@ pub struct VMHostFunctions<'a> {
     memory: wasmer::MemoryView<'this>,
 }
 
-impl<'a> VMHostFunctions<'a> {
+impl VMHostFunctions<'_> {
     fn read_guest_memory(&self, ptr: u64, len: u64) -> Result<Vec<u8>> {
         let mut buf = vec![0; len as usize];
 
@@ -147,7 +147,7 @@ impl<'a> VMHostFunctions<'a> {
     }
 }
 
-impl<'a> VMHostFunctions<'a> {
+impl VMHostFunctions<'_> {
     pub fn panic(&self, file_ptr: u64, file_len: u64, line: u32, column: u32) -> Result<()> {
         let file = self.get_string(file_ptr, file_len)?;
         Err(HostError::Panic {

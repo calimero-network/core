@@ -209,7 +209,7 @@ impl Sanitizer<'_> {
     }
 }
 
-impl<'a> ToTokens for Sanitizer<'a> {
+impl ToTokens for Sanitizer<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let entries = self.entries.as_ref();
 
@@ -240,8 +240,8 @@ impl<'a> ToTokens for Sanitizer<'a> {
     }
 }
 
-impl<'a> Parse for Sanitizer<'a> {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+impl Parse for Sanitizer<'_> {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let sanitizer = infallible!({
             let mut entries = Vec::new();
 

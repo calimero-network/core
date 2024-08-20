@@ -7,7 +7,7 @@ pub enum StructOrEnumItem {
 }
 
 impl Parse for StructOrEnumItem {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut attrs = Vec::new();
         let mut vis = syn::Visibility::Inherited;
         let item = loop {
@@ -52,7 +52,7 @@ pub struct Empty {
 }
 
 impl Parse for Empty {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
             return Ok(Empty { _priv: () });
         }

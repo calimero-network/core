@@ -27,7 +27,7 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
         let mut errors = errors::Errors::new(input.ty);
 
         let mut sanitizer =
-            syn::parse2::<sanitizer::Sanitizer>(input.ty.to_token_stream()).unwrap();
+            syn::parse2::<sanitizer::Sanitizer<'_>>(input.ty.to_token_stream()).unwrap();
 
         let reserved_ident = reserved::idents::input();
         let reserved_lifetime = reserved::lifetimes::input();

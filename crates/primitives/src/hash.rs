@@ -187,10 +187,10 @@ impl<'de> serde::Deserialize<'de> for Hash {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct HashVisitor;
 
-        impl<'de> serde::de::Visitor<'de> for HashVisitor {
+        impl serde::de::Visitor<'_> for HashVisitor {
             type Value = Hash;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a base58 encoded hash")
             }
 

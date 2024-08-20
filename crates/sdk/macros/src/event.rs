@@ -8,7 +8,7 @@ pub struct EventImpl<'a> {
     orig: &'a items::StructOrEnumItem,
 }
 
-impl<'a> ToTokens for EventImpl<'a> {
+impl ToTokens for EventImpl<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let EventImpl {
             ident,

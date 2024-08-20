@@ -12,7 +12,7 @@ pub struct StateImpl<'a> {
     orig: &'a items::StructOrEnumItem,
 }
 
-impl<'a> ToTokens for StateImpl<'a> {
+impl ToTokens for StateImpl<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let StateImpl {
             ident,
@@ -55,7 +55,7 @@ struct MaybeBoundEvent {
 // todo! move all errors to ParseError
 
 impl syn::parse::Parse for MaybeBoundEvent {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut lifetime = None;
 
         let mut errors = errors::Errors::default();
@@ -118,7 +118,7 @@ impl syn::parse::Parse for MaybeBoundEvent {
             Err(err) => return Err(errors.subsumed(err)),
         };
 
-        let mut sanitizer = syn::parse2::<sanitizer::Sanitizer>(ty.to_token_stream()).unwrap();
+        let mut sanitizer = syn::parse2::<sanitizer::Sanitizer<'_>>(ty.to_token_stream()).unwrap();
 
         let mut cases = vec![];
 
@@ -193,7 +193,7 @@ pub struct StateArgs {
 }
 
 impl Parse for StateArgs {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut emits = None;
 
         if !input.is_empty() {

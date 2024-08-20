@@ -10,7 +10,7 @@ pub enum Pretty<'a> {
     Type(&'a syn::Type),
 }
 
-impl<'a> fmt::Display for Pretty<'a> {
+impl fmt::Display for Pretty<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (tokens, (pre, post)) = match self {
             Self::Type(ty) => (quote! { impl #ty {} }, (5, 3)),
@@ -98,7 +98,7 @@ pub struct Errors<'a, T = Void> {
     inner: RefCell<Option<ErrorsInner<'a, T>>>,
 }
 
-impl<'a> Default for Errors<'a> {
+impl Default for Errors<'_> {
     #[track_caller]
     fn default() -> Self {
         Self::new(&Void { _priv: () })
@@ -124,7 +124,7 @@ impl<'a, T> Errors<'a, T> {
             .expect("This instance has already been consumed")
     }
 
-    fn inner_ref(&self) -> Ref<ErrorsInner<'a, T>> {
+    fn inner_ref(&self) -> Ref<'_, ErrorsInner<'a, T>> {
         Ref::map(self.inner.borrow(), |inner| {
             inner
                 .as_ref()
@@ -132,7 +132,7 @@ impl<'a, T> Errors<'a, T> {
         })
     }
 
-    fn inner_mut(&self) -> RefMut<ErrorsInner<'a, T>> {
+    fn inner_mut(&self) -> RefMut<'_, ErrorsInner<'a, T>> {
         RefMut::map(self.inner.borrow_mut(), |inner| {
             inner
                 .as_mut()
@@ -201,7 +201,7 @@ impl<'a, T> Errors<'a, T> {
     }
 }
 
-impl<'a, T> Drop for Errors<'a, T> {
+impl<T> Drop for Errors<'_, T> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
             if let Some(inner) = &*self.inner.borrow() {

@@ -25,7 +25,7 @@ pub struct PublicLogicMethod<'a> {
     modifiers: Vec<Modifer>,
 }
 
-impl<'a> ToTokens for LogicMethod<'a> {
+impl ToTokens for LogicMethod<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
             LogicMethod::Public(method) => method.to_tokens(tokens),
@@ -34,7 +34,7 @@ impl<'a> ToTokens for LogicMethod<'a> {
     }
 }
 
-impl<'a> ToTokens for PublicLogicMethod<'a> {
+impl ToTokens for PublicLogicMethod<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let self_ = &self.self_;
         let name = &self.name;

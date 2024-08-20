@@ -35,7 +35,7 @@ impl<'a> From<Slice<'a>> for ContextState<'a> {
     }
 }
 
-impl<'a> AsRef<[u8]> for ContextState<'a> {
+impl AsRef<[u8]> for ContextState<'_> {
     fn as_ref(&self) -> &[u8] {
         self.value.as_ref()
     }

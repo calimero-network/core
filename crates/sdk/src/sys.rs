@@ -6,26 +6,26 @@ pub use types::*;
 
 wasm_imports! {
     "env" => {
-        fn panic(loc: Location) -> !;
-        fn panic_utf8(msg: Buffer, loc: Location) -> !;
+        fn panic(loc: Location<'_>) -> !;
+        fn panic_utf8(msg: Buffer<'_>, loc: Location<'_>) -> !;
         // --
         fn register_len(register_id: RegisterId) -> PtrSizedInt;
-        fn read_register(register_id: RegisterId, buf: BufferMut) -> Bool;
+        fn read_register(register_id: RegisterId, buf: BufferMut<'_>) -> Bool;
         // --
         fn get_executor_identity(register_id: RegisterId);
         fn input(register_id: RegisterId);
-        fn value_return(value: ValueReturn);
-        fn log_utf8(msg: Buffer);
-        fn emit(event: Event);
+        fn value_return(value: ValueReturn<'_>);
+        fn log_utf8(msg: Buffer<'_>);
+        fn emit(event: Event<'_>);
         // --
-        fn storage_read(key: Buffer, register_id: RegisterId) -> Bool;
-        fn storage_write(key: Buffer, value: Buffer, register_id: RegisterId) -> Bool;
+        fn storage_read(key: Buffer<'_>, register_id: RegisterId) -> Bool;
+        fn storage_write(key: Buffer<'_>, value: Buffer<'_>, register_id: RegisterId) -> Bool;
         // --
         fn fetch(
-            url: Buffer,
-            method: Buffer,
-            headers: Buffer,
-            body: Buffer,
+            url: Buffer<'_>,
+            method: Buffer<'_>,
+            headers: Buffer<'_>,
+            body: Buffer<'_>,
             register_id: RegisterId
         ) -> Bool;
     }

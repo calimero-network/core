@@ -19,7 +19,7 @@ pub trait Entry {
 pub trait Codec<'a, T> {
     type Error;
 
-    fn encode(value: &T) -> Result<Slice, Self::Error>;
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error>;
     fn decode(bytes: Slice<'a>) -> Result<T, Self::Error>;
 }
 
@@ -31,7 +31,7 @@ where
 {
     type Error = E;
 
-    fn encode(value: &T) -> Result<Slice, Self::Error> {
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
         Ok(value.into())
     }
 
@@ -50,11 +50,11 @@ where
 {
     type Error = serde_json::Error;
 
-    fn encode(value: &T) -> Result<Slice, Self::Error> {
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
         serde_json::to_vec(value).map(Into::into)
     }
 
-    fn decode(bytes: Slice) -> Result<T, Self::Error> {
+    fn decode(bytes: Slice<'_>) -> Result<T, Self::Error> {
         serde_json::from_slice(&bytes)
     }
 }
@@ -69,11 +69,11 @@ where
 {
     type Error = std::io::Error;
 
-    fn encode(value: &T) -> Result<Slice, Self::Error> {
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
         borsh::to_vec(&value).map(Into::into)
     }
 
-    fn decode(bytes: Slice) -> Result<T, Self::Error> {
+    fn decode(bytes: Slice<'_>) -> Result<T, Self::Error> {
         borsh::from_slice(&bytes)
     }
 }

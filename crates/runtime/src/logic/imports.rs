@@ -11,7 +11,7 @@ thread_local! {
     static HOST_CTX: AtomicBool = const { AtomicBool::new(false) };
 }
 
-impl<'a> VMLogic<'a> {
+impl VMLogic<'_> {
     #[allow(clippy::too_many_arguments)]
     pub fn imports(&mut self, store: &mut wasmer::Store) -> wasmer::Imports {
         imports! {
@@ -97,7 +97,7 @@ macro_rules! _imports {
             $(
                 #[allow(unused_parens)]
                 fn $func(
-                    mut env: wasmer::FunctionEnvMut<fragile::Fragile<*mut ()>>,
+                    mut env: wasmer::FunctionEnvMut<'_, fragile::Fragile<*mut ()>>,
                     $($arg: $arg_ty),*
                 ) -> Result<($( $returns )?), wasmer::RuntimeError> {
                     #[cfg(feature = "host-traces")]
@@ -127,7 +127,7 @@ macro_rules! _imports {
                     HOST_CTX.with(|ctx| ctx.store(true, Ordering::Relaxed));
                     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let (data, store) = env.data_and_store_mut();
-                        let data = unsafe { &mut *(*data.get_mut() as *mut VMLogic) };
+                        let data = unsafe { &mut *(*data.get_mut() as *mut VMLogic<'_>) };
 
                         data.host_functions(store).$func($($arg),*)
                     })).unwrap_or_else(|_| {

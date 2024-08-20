@@ -17,11 +17,11 @@ pub enum Operation<'a> {
 }
 
 impl<'a> Transaction<'a> {
-    pub(crate) fn raw_get(&self, column: Column, key: &[u8]) -> Option<&Operation> {
+    pub(crate) fn raw_get(&self, column: Column, key: &[u8]) -> Option<&Operation<'_>> {
         self.cols.get(&column).and_then(|ops| ops.get(key))
     }
 
-    pub fn get<K: AsKeyParts>(&self, key: &K) -> Option<&Operation> {
+    pub fn get<K: AsKeyParts>(&self, key: &K) -> Option<&Operation<'_>> {
         self.cols
             .get(&K::column())
             .and_then(|ops| ops.get(key.as_key().as_bytes()))

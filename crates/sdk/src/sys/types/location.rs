@@ -7,7 +7,7 @@ pub struct Location<'a> {
     column: u32,
 }
 
-impl<'a> Location<'a> {
+impl Location<'_> {
     #[inline(always)]
     pub fn unknown() -> Self {
         Location {
