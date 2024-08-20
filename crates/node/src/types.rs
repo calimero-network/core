@@ -1,10 +1,8 @@
-use calimero_primitives::identity::PublicKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PeerAction {
-    SharePublicKey(PublicKey),
     Transaction(calimero_primitives::transaction::Transaction),
     TransactionConfirmation(TransactionConfirmation),
     TransactionRejection(TransactionRejection),
