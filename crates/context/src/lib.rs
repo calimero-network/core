@@ -97,7 +97,16 @@ impl ContextManager {
         context: &calimero_primitives::context::Context,
         initial_identity: KeyPair,
     ) -> eyre::Result<()> {
-        self.add_context(context, Some(initial_identity)).await?;
+        self.add_context(context).await?;
+
+        let mut handle = self.store.handle();
+
+        let identity_key = calimero_store::key::ContextIdentity::new(
+            context.id,
+            initial_identity.public_key.clone(),
+        );
+
+        handle.put(&identity_key, &initial_identity.into())?;
 
         self.subscribe(&context.id).await?;
 
@@ -107,7 +116,6 @@ impl ContextManager {
     pub async fn add_context(
         &self,
         context: &calimero_primitives::context::Context,
-        initial_identity: Option<KeyPair>,
     ) -> eyre::Result<()> {
         if !self.is_application_installed(&context.application_id)? {
             eyre::bail!("Application is not installed on node.")
@@ -122,14 +130,6 @@ impl ContextManager {
                 last_transaction_hash: context.last_transaction_hash.into(),
             },
         )?;
-
-        if let Some(initial_identity) = initial_identity {
-            let identity_key = calimero_store::key::ContextIdentity::new(
-                context.id,
-                initial_identity.public_key.clone(),
-            );
-            handle.put(&identity_key, &initial_identity.into())?;
-        }
 
         Ok(())
     }
