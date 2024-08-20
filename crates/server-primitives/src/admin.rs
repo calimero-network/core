@@ -6,7 +6,7 @@ use serde_json::Value;
 pub struct InstallApplicationRequest {
     pub application: calimero_primitives::application::ApplicationId, // TODO: rename to application_id
     pub version: semver::Version,
-    pub url: String,  // represents the url path to the release binary (e.g. ipfs path)
+    pub url: String, // represents the url path to the release binary (e.g. ipfs path)
     pub hash: Option<String>,
 }
 
@@ -35,7 +35,7 @@ pub struct InstallApplicationResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddPublicKeyRequest {
-    pub wallet_signature: String,
+    pub wallet_signature: WalletSignature,
     pub payload: Payload,
     pub wallet_metadata: WalletMetadata,
     pub context_id: Option<calimero_primitives::context::ContextId>,
@@ -65,6 +65,7 @@ pub struct WalletMetadata {
     #[serde(rename = "wallet")]
     pub wallet_type: calimero_primitives::identity::WalletType,
     pub signing_key: String,
+    pub wallet_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +73,7 @@ pub struct WalletMetadata {
 pub enum SignatureMetadataEnum {
     NEAR(NearSignatureMessageMetadata),
     ETH(EthSignatureMessageMetadata),
+    SN(StarknetSignatureMessageMetadata),
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,14 +88,32 @@ pub struct NearSignatureMessageMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct EthSignatureMessageMetadata {}
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StarknetSignatureMessageMetadata {}
+
 // Intermediate structs for initial parsing
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntermediateAddPublicKeyRequest {
-    pub wallet_signature: String,
+    pub wallet_signature: WalletSignature,
     pub payload: IntermediatePayload,
     pub wallet_metadata: WalletMetadata, // Reuse WalletMetadata as it fits the intermediate step
     pub context_id: Option<calimero_primitives::context::ContextId>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum WalletSignature {
+    String(String),
+    StarknetPayload(StarknetPayload),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StarknetPayload {
+    pub signature: Vec<String>,
+    pub message_hash: String,
 }
 
 #[derive(Debug, Deserialize)]

@@ -34,7 +34,7 @@ pub struct ContextUser {
     pub joined_at: u64,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Serialize, Clone, Copy)]
+#[derive(Debug, Deserialize, PartialEq, Serialize, Clone)]
 #[serde(rename_all = "UPPERCASE")]
 #[serde(tag = "type")]
 pub enum WalletType {
@@ -42,6 +42,10 @@ pub enum WalletType {
     ETH {
         #[serde(rename = "chainId")]
         chain_id: u64,
+    },
+    SN {
+        #[serde(rename = "walletName")]
+        wallet_name: String,
     },
 }
 
