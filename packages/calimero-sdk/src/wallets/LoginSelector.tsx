@@ -1,16 +1,19 @@
 import React from 'react';
 import { MetamaskIcon } from './MetamaskLogin/MetamaskIcon';
 import { NearIcon } from './NearLogin/NearIcon';
+import { StarknetIcon } from './StarknetLogin/StarknetLogo';
 
 export interface LoginSelectorProps {
   navigateMetamaskLogin: () => void | undefined;
   navigateNearLogin: () => void | undefined;
+  navigateStarknetLogin: () => void | undefined;
   cardBackgroundColor: string | undefined;
 }
 
 export const LoginSelector: React.FC<LoginSelectorProps> = ({
   navigateMetamaskLogin,
   navigateNearLogin,
+  navigateStarknetLogin,
   cardBackgroundColor,
 }) => {
   return (
@@ -101,6 +104,30 @@ export const LoginSelector: React.FC<LoginSelectorProps> = ({
           >
             <NearIcon />
             <span>Near wallet</span>
+          </button>
+          <button
+            style={{
+              width: '100%',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: '2px',
+              height: '46px',
+              cursor: 'pointer',
+              fontSize: '1rem',
+              lineheight: '1.5rem',
+              fontWeight: '500',
+              lineHeight: '1.25rem',
+              borderRadius: '0.375rem',
+              backgroundColor: '#D1D5DB',
+              color: 'black',
+              border: 'none',
+              outline: 'none',
+            }}
+            onClick={navigateStarknetLogin}
+          >
+            <StarknetIcon />
+            <span>Starknet wallets</span>
           </button>
         </div>
       </div>

@@ -14,13 +14,19 @@ interface ETHWalletType extends WalletTypeBase<'ETH'> {
 
 interface NEARWalletType extends WalletTypeBase<'NEAR'> {}
 
-export type WalletType = ETHWalletType | NEARWalletType;
+interface SNWalletType extends WalletTypeBase<'SN'> {}
+
+export type WalletType = ETHWalletType | NEARWalletType | SNWalletType;
 
 export namespace WalletType {
   export let NEAR: WalletType = { type: 'NEAR' } as NEARWalletType;
 
   export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
     return { type: 'ETH', chainId } as ETHWalletType;
+  }
+
+  export function SN({ walletName = 'MS'}: { walletName?: string }): WalletType {
+    return { type: 'SN', walletName } as SNWalletType;
   }
 }
 
@@ -99,6 +105,7 @@ export interface Payload {
 export interface WalletMetadata {
   wallet: WalletType;
   signingKey: String;
+  walletAddress?: String;
 }
 
 export interface SignatureMetadata {
