@@ -370,30 +370,16 @@ impl Node {
                     .ctx_manager
                     .is_application_installed(&change.application_id)?
                 {
-                    if change.source.to_string().starts_with("http://")
-                        || change.source.to_string().starts_with("https://")
-                    {
-                        info!("Installing application from the url");
-                        self.ctx_manager
-                            .install_application_from_url(
-                                change.source.to_string().parse()?,
-                                change.version,
-                                Vec::new(),
-                            )
-                            .await?;
-                    } else {
-                        // TODO: for path sources, share the blob peer to peer
-                        // NOTE: this will fail if the path is not accessible by the node
-                        info!("Installing application from the path");
+                    // note! for now, we assume all paths are urls
+                    // todo! for path sources, share the blob peer to peer
 
-                        self.ctx_manager
-                            .install_application_from_path(
-                                change.source.to_string().parse()?,
-                                change.version,
-                                Vec::new(),
-                            )
-                            .await?;
-                    }
+                    self.ctx_manager
+                        .install_application_from_url(
+                            change.source.to_string().parse()?,
+                            change.version,
+                            Vec::new(),
+                        )
+                        .await?;
                 }
 
                 match context {
