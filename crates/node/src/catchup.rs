@@ -202,7 +202,7 @@ impl Node {
             None => return,
         };
 
-        info!(%context_id, %peer_id, "Performing interval catchup");
+        info!(%context_id, %peer_id, "Attempting to perform interval triggered catchup");
 
         if let Err(err) = self.perform_catchup(context_id, peer_id).await {
             error!(%err, "Failed to perform interval catchup");
@@ -212,6 +212,8 @@ impl Node {
         self.ctx_manager
             .clear_context_pending_catchup(&context_id)
             .await;
+
+        info!(%context_id, %peer_id, "Interval triggered catchup successfully finished");
     }
 
     pub(crate) async fn perform_catchup(
@@ -368,9 +370,6 @@ impl Node {
                     .ctx_manager
                     .is_application_installed(&change.application_id)?
                 {
-                    // note! for now, we assume all paths are urls
-                    // todo! for path sources, share the blob peer to peer
-
                     if change.source.to_string().starts_with("http://")
                         || change.source.to_string().starts_with("https://")
                     {
@@ -383,6 +382,8 @@ impl Node {
                             )
                             .await?;
                     } else {
+                        // TODO: for path sources, share the blob peer to peer
+                        // NOTE: this will fail if the path is not accessible by the node
                         info!("Installing application from the path");
 
                         self.ctx_manager
