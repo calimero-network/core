@@ -1,17 +1,17 @@
-use crate::iter::{Iter, IterPair, Structured};
+use crate::iter::{DBIter, Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
 use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
-use crate::tx::{Operation, Transaction};
+use crate::tx::{self, Operation, Transaction};
 
-pub struct Temporal<'base, 'key, 'value, L> {
+pub struct Temporal<'base, 'entry, L> {
     inner: &'base mut L,
-    shadow: Transaction<'key, 'value>,
+    shadow: Transaction<'entry>,
 }
 
-impl<'base, 'key, 'value, L> Temporal<'base, 'key, 'value, L>
+impl<'base, 'entry, L> Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'key, 'value>,
+    L: WriteLayer<'entry>,
 {
     pub fn new(layer: &'base mut L) -> Self {
         Self {
@@ -21,18 +21,18 @@ where
     }
 }
 
-impl<'base, 'key, 'value, L> Layer for Temporal<'base, 'key, 'value, L>
+impl<'base, 'entry, L> Layer for Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'key, 'value>,
+    L: Layer,
 {
     type Base = L;
 }
 
-impl<'base, 'key, 'value, L> ReadLayer<'key> for Temporal<'base, 'key, 'value, L>
+impl<'base, 'entry, L> ReadLayer for Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'key, 'value>,
+    L: ReadLayer,
 {
-    fn has(&self, key: &'key impl AsKeyParts) -> eyre::Result<bool> {
+    fn has<K: AsKeyParts>(&self, key: &K) -> eyre::Result<bool> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(false),
             Some(Operation::Put { .. }) => Ok(true),
@@ -40,7 +40,7 @@ where
         }
     }
 
-    fn get(&self, key: &'key impl AsKeyParts) -> eyre::Result<Option<Slice>> {
+    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice>> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(None),
             Some(Operation::Put { value }) => Ok(Some(value.into())),
@@ -48,34 +48,33 @@ where
         }
     }
 
-    fn iter<K: AsKeyParts + FromKeyParts>(
-        &self,
-        start: &'key K,
-    ) -> eyre::Result<Iter<Structured<K>>> {
-        let inner = self.inner.iter(start)?;
-        let shadow = self.shadow.iter_range(start);
-
-        Ok(Iter::new(IterPair(inner, shadow)))
+    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<Structured<K>>> {
+        Ok(Iter::new(TemporalIterator {
+            inner: self.inner.iter::<K>()?,
+            shadow: &self.shadow,
+            shadow_iter: None,
+            value: None,
+        }))
     }
 }
 
-impl<'base, 'key, 'value, L> WriteLayer<'key, 'value> for Temporal<'base, 'key, 'value, L>
+impl<'base, 'entry, L> WriteLayer<'entry> for Temporal<'base, 'entry, L>
 where
-    L: WriteLayer<'key, 'value>,
+    L: WriteLayer<'entry>,
 {
-    fn put(&mut self, key: &'key impl AsKeyParts, value: Slice<'value>) -> eyre::Result<()> {
+    fn put<K: AsKeyParts>(&mut self, key: &'entry K, value: Slice<'entry>) -> eyre::Result<()> {
         self.shadow.put(key, value);
 
         Ok(())
     }
 
-    fn delete(&mut self, key: &'key impl AsKeyParts) -> eyre::Result<()> {
+    fn delete<K: AsKeyParts>(&mut self, key: &'entry K) -> eyre::Result<()> {
         self.shadow.delete(key);
 
         Ok(())
     }
 
-    fn apply(&mut self, tx: &Transaction<'key, 'value>) -> eyre::Result<()> {
+    fn apply(&mut self, tx: &Transaction<'entry>) -> eyre::Result<()> {
         self.shadow.merge(tx);
 
         Ok(())
@@ -88,5 +87,62 @@ where
     }
 }
 
-// todo! impl calimero_runtime_primitives::Storage for Temporal
-// todo!      to get rid of the TemporalRuntimeStore in node
+struct TemporalIterator<'a, 'b, K> {
+    inner: Iter<'a, Structured<K>>,
+    shadow: &'a Transaction<'b>,
+    shadow_iter: Option<tx::ColRange<'a, 'b>>,
+    value: Option<Slice<'a>>,
+}
+
+impl<'a, 'b, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, 'b, K> {
+    fn seek(&mut self, key: Slice) -> eyre::Result<Option<Slice>> {
+        self.shadow_iter = Some(self.shadow.col_iter(K::column(), Some(&key)));
+        self.inner.seek(key)
+    }
+
+    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+        self.value = None;
+
+        loop {
+            // safety: Slice doesn't mutably borrow self
+            let other = unsafe { &mut *(&mut self.inner as *mut Iter<'a, Structured<K>>) };
+
+            let Some(key) = other.next()? else {
+                break;
+            };
+
+            match self.shadow.raw_get(K::column(), &key) {
+                Some(Operation::Delete) => continue,
+                Some(Operation::Put { value }) => self.value = Some(value.into()),
+                None => {}
+            }
+
+            return Ok(Some(key));
+        }
+
+        let shadow_iter = self
+            .shadow_iter
+            .get_or_insert_with(|| self.shadow.col_iter(K::column(), None));
+
+        loop {
+            if let Some((key, op)) = shadow_iter.next() {
+                match op {
+                    Operation::Delete => continue,
+                    Operation::Put { value } => self.value = Some(value.into()),
+                }
+
+                return Ok(Some(key.into()));
+            }
+
+            return Ok(None);
+        }
+    }
+
+    fn read(&self) -> eyre::Result<Slice> {
+        if let Some(value) = &self.value {
+            return Ok(value.into());
+        };
+
+        self.inner.read()
+    }
+}

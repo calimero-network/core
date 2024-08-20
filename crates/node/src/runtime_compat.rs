@@ -5,20 +5,20 @@ use calimero_store::key::ContextState;
 use calimero_store::layer::{read_only, temporal, LayerExt, ReadLayer, WriteLayer};
 use calimero_store::Store;
 
-pub enum RuntimeCompatStoreInner<'a, 'k, 'v> {
-    Read(read_only::ReadOnly<'k, Store>),
-    Write(temporal::Temporal<'a, 'k, 'v, Store>),
+pub enum RuntimeCompatStoreInner<'this, 'entry> {
+    Read(read_only::ReadOnly<'this, Store>),
+    Write(temporal::Temporal<'this, 'entry, Store>),
 }
 
-pub struct RuntimeCompatStore<'a, 'k, 'v> {
+pub struct RuntimeCompatStore<'this, 'entry> {
     context_id: ContextId,
-    inner: RuntimeCompatStoreInner<'a, 'k, 'v>,
+    inner: RuntimeCompatStoreInner<'this, 'entry>,
     // todo! unideal, will revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
     keys: RefCell<Vec<ContextState>>,
 }
 
-impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
-    pub fn temporal(store: &'a mut Store, context_id: ContextId) -> Self {
+impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
+    pub fn temporal(store: &'this mut Store, context_id: ContextId) -> Self {
         Self {
             context_id,
             inner: RuntimeCompatStoreInner::Write(store.temporal()),
@@ -26,7 +26,7 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
         }
     }
 
-    pub fn read_only(store: &'k Store, context_id: ContextId) -> Self {
+    pub fn read_only(store: &'this Store, context_id: ContextId) -> Self {
         Self {
             context_id,
             inner: RuntimeCompatStoreInner::Read(store.read_only()),
@@ -34,12 +34,12 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
         }
     }
 
-    fn state_key(&self, key: &[u8]) -> Option<&'k ContextState> {
+    fn state_key(&self, key: &[u8]) -> Option<&'entry ContextState> {
         let mut state_key = [0; 32];
 
         (key.len() <= state_key.len()).then_some(())?;
 
-        (&mut state_key[..key.len()]).copy_from_slice(key);
+        state_key[..key.len()].copy_from_slice(key);
 
         let mut keys = self.keys.borrow_mut();
 
@@ -47,7 +47,7 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
 
         // safety: TemporalStore lives as long as Self, so the reference will hold
         unsafe {
-            std::mem::transmute::<Option<&ContextState>, Option<&'k ContextState>>(keys.last())
+            std::mem::transmute::<Option<&ContextState>, Option<&'entry ContextState>>(keys.last())
         }
     }
 
@@ -60,7 +60,7 @@ impl<'a, 'k, 'v> RuntimeCompatStore<'a, 'k, 'v> {
     }
 }
 
-impl<'a, 'k, 'v> calimero_runtime::store::Storage for RuntimeCompatStore<'a, 'k, 'v> {
+impl<'this, 'entry> calimero_runtime::store::Storage for RuntimeCompatStore<'this, 'entry> {
     fn get(&self, key: &calimero_runtime::store::Key) -> Option<Vec<u8>> {
         let key = self.state_key(key)?;
 

@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
 
+use calimero_primitives::identity::{KeyPair, PublicKey};
 use futures_util::{SinkExt, StreamExt};
-use tracing::{error, info, warn};
+use libp2p::gossipsub::TopicHash;
+use rand::seq::SliceRandom;
+use tracing::{error, info};
 
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::{types, Node};
@@ -11,7 +14,7 @@ mod batch;
 impl Node {
     pub(crate) async fn handle_opened_stream(
         &mut self,
-        mut stream: calimero_network::stream::Stream,
+        mut stream: Box<calimero_network::stream::Stream>,
     ) -> eyre::Result<()> {
         let Some(message) = stream.next().await else {
             eyre::bail!("Stream closed unexpectedly")
@@ -65,28 +68,30 @@ impl Node {
 
         let application_id = context.application_id.clone();
 
-        let Some(url) = request.url else {
+        let Some(url) = request.source else {
             eyre::bail!("Path is missing in the request")
-        };
-
-        let Some(hash) = request.hash else {
-            eyre::bail!("Hash is missing in the request")
         };
 
         if request
             .application_id
             .map_or(true, |id| id != application_id)
         {
-            let application_version = self
-                .ctx_manager
-                .get_application_latest_version(&application_id)?;
+            let Some(application) = self.ctx_manager.get_application(&application_id)? else {
+                eyre::bail!(
+                    "fatal error: context `{}` links to dangling application ID `{}`",
+                    context.id,
+                    application_id
+                );
+            };
 
             let message = serde_json::to_vec(&types::CatchupStreamMessage::ApplicationChanged(
                 types::CatchupApplicationChanged {
                     application_id,
-                    version: application_version,
-                    url,
-                    hash,
+                    blob_id: application.blob,
+                    version: application.version,
+                    source: url,
+                    hash: None, // todo! blob_mgr(application.blob)?.hash
+                    metadata: Some(Vec::new()),
                 },
             ))?;
             stream
@@ -152,12 +157,13 @@ impl Node {
 
             batch_writer
                 .send(types::TransactionWithStatus {
-                    transaction_hash: hash.into(),
+                    transaction_hash: hash,
                     transaction: calimero_primitives::transaction::Transaction {
                         context_id: request.context_id,
                         method: transaction.method.into(),
                         payload: transaction.payload.into(),
                         prior_hash: calimero_primitives::hash::Hash::from(transaction.prior_hash),
+                        executor_public_key: transaction.executor_public_key,
                     },
                     status: types::TransactionStatus::Executed,
                 })
@@ -173,6 +179,7 @@ impl Node {
                         method: transaction.method.clone(),
                         payload: transaction.payload.clone(),
                         prior_hash: transaction.prior_hash,
+                        executor_public_key: transaction.executor_public_key,
                     },
                     status: types::TransactionStatus::Pending,
                 })
@@ -184,23 +191,64 @@ impl Node {
         Ok(())
     }
 
+    pub(crate) async fn handle_interval_catchup(&mut self) {
+        let context_id = match self.ctx_manager.get_any_pending_catchup_context().await {
+            Some(context_id) => context_id.clone(),
+            None => return,
+        };
+
+        let peer_id = match self
+            .network_client
+            .mesh_peers(TopicHash::from_raw(context_id))
+            .await
+            .choose(&mut rand::thread_rng())
+        {
+            Some(peer_id) => peer_id.clone(),
+            None => return,
+        };
+
+        info!(%context_id, %peer_id, "Performing interval catchup");
+
+        if let Err(err) = self.perform_catchup(context_id, peer_id).await {
+            error!(%err, "Failed to perform interval catchup");
+            return;
+        }
+
+        self.ctx_manager
+            .clear_context_pending_catchup(&context_id)
+            .await;
+    }
+
     pub(crate) async fn perform_catchup(
         &mut self,
         context_id: calimero_primitives::context::ContextId,
         chosen_peer: libp2p::PeerId,
     ) -> eyre::Result<()> {
         let (mut context, request) = match self.ctx_manager.get_context(&context_id)? {
-            Some(context) => (
-                Some(context.clone()),
-                types::CatchupRequest {
-                    context_id,
-                    application_id: Some(context.application_id),
-                    last_executed_transaction_hash: context.last_transaction_hash,
-                    batch_size: self.network_client.catchup_config.batch_size,
-                    url: None,
-                    hash: None,
-                },
-            ),
+            Some(context) => {
+                let identity_key =
+                    calimero_store::key::ContextIdentity::new(context_id, PublicKey([0; 32]));
+                let initial_identity: KeyPair = self
+                    .store
+                    .handle()
+                    .get(&identity_key)?
+                    .ok_or_else(|| {
+                        eyre::eyre!("Initial identity not found for context {}", context_id)
+                    })?
+                    .into();
+
+                (
+                    Some(context.clone()),
+                    types::CatchupRequest {
+                        context_id,
+                        application_id: Some(context.application_id),
+                        last_executed_transaction_hash: context.last_transaction_hash,
+                        batch_size: self.network_client.catchup_config.batch_size,
+                        public_key: initial_identity.public_key,
+                        source: None,
+                    },
+                )
+            }
             None => (
                 None,
                 types::CatchupRequest {
@@ -208,8 +256,10 @@ impl Node {
                     application_id: None,
                     last_executed_transaction_hash: calimero_primitives::hash::Hash::default(),
                     batch_size: self.network_client.catchup_config.batch_size,
-                    url: None,
-                    hash: None,
+                    source: None,
+                    // In this situation, where we have no context, we have no way to know the
+                    // public key.
+                    public_key: PublicKey([0; 32]),
                 },
             ),
         };
@@ -224,7 +274,7 @@ impl Node {
 
         loop {
             let message = tokio::time::timeout(
-                self.network_client.catchup_config.receive_timeout.into(),
+                self.network_client.catchup_config.receive_timeout,
                 stream.next(),
             )
             .await;
@@ -260,6 +310,29 @@ impl Node {
         message: types::CatchupStreamMessage,
     ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
         match message {
+            types::CatchupStreamMessage::Request(request) => {
+                // Handle the initial catchup request
+                info!(
+                    ?request,
+                    "Received catchup request for context {}", request.context_id
+                );
+
+                // TODO: Consider storing the public key in the future? E.g.
+                // self.store_peer_public_key(chosen_peer, request.public_key)?;
+
+                // If we don't have a context yet, create one
+                if context.is_none() {
+                    context = Some(calimero_primitives::context::Context {
+                        id: request.context_id,
+                        application_id: request.application_id.ok_or_else(|| {
+                            eyre::eyre!("Application ID missing in catchup request")
+                        })?,
+                        last_transaction_hash: request.last_executed_transaction_hash,
+                    });
+                }
+
+                // Note: Might need to prepare and send an initial response?
+            }
             types::CatchupStreamMessage::TransactionsBatch(batch) => {
                 let Some(ref mut context_) = context else {
                     eyre::bail!("Received transactions batch for uninitialized context");
@@ -295,6 +368,7 @@ impl Node {
                                         method: transaction.method,
                                         payload: transaction.payload,
                                         prior_hash: transaction.prior_hash,
+                                        executor_public_key: transaction.executor_public_key,
                                     },
                                     None,
                                 )?;
@@ -314,7 +388,7 @@ impl Node {
                             calimero_node_primitives::NodeType::Peer => {
                                 self.execute_transaction(
                                     context_.clone(),
-                                    transaction,
+                                    transaction.clone(),
                                     transaction_hash,
                                 )
                                 .await?;
@@ -339,14 +413,16 @@ impl Node {
 
                 if !self
                     .ctx_manager
-                    .is_application_installed(&change.application_id)
+                    .is_application_installed(&change.application_id)?
                 {
+                    // note! for now, we assume all paths are urls
+                    // todo! for path sources, share the blob peer to peer
+
                     self.ctx_manager
-                        .install_application(
-                            &change.application_id,
-                            &change.version,
-                            &change.url,
-                            Some(change.hash.as_str()),
+                        .install_application_from_url(
+                            change.source.to_string().parse()?,
+                            change.version,
+                            Vec::new(),
                         )
                         .await?;
                 }
@@ -354,11 +430,7 @@ impl Node {
                 match context {
                     Some(ref mut context_) => {
                         self.ctx_manager
-                            .update_context_application_id(
-                                context_.id,
-                                change.application_id.clone(),
-                            )
-                            .await?;
+                            .update_application_id(context_.id, change.application_id.clone())?;
 
                         context_.application_id = change.application_id;
                     }
@@ -369,7 +441,33 @@ impl Node {
                             last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
-                        self.ctx_manager.add_context(context_inner.clone()).await?;
+                        // Retrieve the initial identity that should have been set by join_context
+                        let identity_key = calimero_store::key::ContextIdentity::new(
+                            context_id,
+                            PublicKey([0; 32]),
+                        );
+                        let initial_identity: KeyPair = self
+                            .store
+                            .handle()
+                            .get(&identity_key)?
+                            .ok_or_else(|| {
+                                eyre::eyre!("Initial identity not found for context {}", context_id)
+                            })?
+                            .into();
+
+                        // Share our public key with the catchup node
+                        self.network_client
+                            .publish(
+                                libp2p::gossipsub::TopicHash::from_raw(context_id),
+                                serde_json::to_vec(&types::PeerAction::SharePublicKey(
+                                    initial_identity.public_key.clone(),
+                                ))?,
+                            )
+                            .await?;
+
+                        self.ctx_manager
+                            .add_context(context_inner.clone(), initial_identity)
+                            .await?;
 
                         context = Some(context_inner);
                     }
@@ -378,9 +476,6 @@ impl Node {
             types::CatchupStreamMessage::Error(err) => {
                 error!(?err, "Received error during catchup");
                 eyre::bail!(err);
-            }
-            event => {
-                warn!(?event, "Unexpected event");
             }
         }
 

@@ -66,7 +66,7 @@ impl EventLoop {
         self.event_sender
             .send(types::NetworkEvent::StreamOpened {
                 peer_id: peer,
-                stream: Stream::new(stream),
+                stream: Box::new(Stream::new(stream)),
             })
             .await
             .expect("Failed to send stream opened event");

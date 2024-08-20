@@ -1,6 +1,53 @@
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
+
+#[derive(Eq, Clone, Debug, PartialEq)]
+pub struct KeyPair {
+    pub public_key: PublicKey,
+    pub private_key: Option<[u8; 32]>,
+}
+
+// This could use a Hash, but we need to be able to serialize the PublicKey and
+// create::hash::Hash does not currently implement Borsh.
+#[derive(Eq, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
+pub struct PublicKey(pub [u8; 32]);
+
+impl PublicKey {
+    pub fn derive_from_private_key(private_key: &[u8; 32]) -> Self {
+        let secret_key = SigningKey::from_bytes(private_key);
+        let public_key: VerifyingKey = (&secret_key).into();
+        public_key.into()
+    }
+}
+
+impl From<[u8; 32]> for PublicKey {
+    fn from(bytes: [u8; 32]) -> Self {
+        PublicKey(bytes)
+    }
+}
+
+impl From<VerifyingKey> for PublicKey {
+    fn from(public_key: VerifyingKey) -> Self {
+        PublicKey(public_key.to_bytes())
+    }
+}
+impl From<KeyPair> for PublicKey {
+    fn from(key_pair: KeyPair) -> Self {
+        key_pair.public_key
+    }
+}
+
+impl From<&KeyPair> for PublicKey {
+    fn from(key_pair: &KeyPair) -> Self {
+        key_pair.public_key.clone()
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Did {
@@ -34,7 +81,7 @@ pub struct ContextUser {
     pub joined_at: u64,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Serialize, Clone)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 #[serde(tag = "type")]
 pub enum WalletType {
@@ -47,6 +94,15 @@ pub enum WalletType {
         #[serde(rename = "walletName")]
         wallet_name: String,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NearNetworkId {
+    Mainnet,
+    Testnet,
+    #[serde(untagged)]
+    Custom(String),
 }
 
 pub mod serde_identity {

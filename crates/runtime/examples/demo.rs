@@ -26,6 +26,7 @@ fn main() -> eyre::Result<()> {
         input: serde_json::to_vec(&json!({
             "key": "foo"
         }))?,
+        executor_public_key: [0; 32],
     };
     let get_outcome = run(file, "get", cx, &mut storage, &limits)?;
     dbg!(get_outcome);
@@ -35,6 +36,7 @@ fn main() -> eyre::Result<()> {
             "key": "foo",
             "value": "bar"
         }))?,
+        executor_public_key: [0; 32],
     };
     let set_outcome = run(file, "set", cx, &mut storage, &limits)?;
     dbg!(set_outcome);
@@ -43,6 +45,7 @@ fn main() -> eyre::Result<()> {
         input: serde_json::to_vec(&json!({
             "key": "foo"
         }))?,
+        executor_public_key: [0; 32],
     };
     let get_outcome = run(file, "get", cx, &mut storage, &limits)?;
     dbg!(get_outcome);
@@ -51,6 +54,7 @@ fn main() -> eyre::Result<()> {
         input: serde_json::to_vec(&json!({
             "key": "food"
         }))?,
+        executor_public_key: [0; 32],
     };
     let get_result_outcome = run(file, "get_result", cx, &mut storage, &limits)?;
     dbg!(get_result_outcome);
@@ -59,6 +63,7 @@ fn main() -> eyre::Result<()> {
         input: serde_json::to_vec(&json!({
             "key": "food"
         }))?,
+        executor_public_key: [0; 32],
     };
     let get_unchecked_outcome = run(file, "get_unchecked", cx, &mut storage, &limits)?;
     dbg!(get_unchecked_outcome);

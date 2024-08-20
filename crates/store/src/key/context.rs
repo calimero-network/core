@@ -16,6 +16,10 @@ impl KeyComponent for ContextId {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ContextMeta(Key<ContextId>);
 
 impl ContextMeta {
@@ -31,8 +35,12 @@ impl ContextMeta {
 impl AsKeyParts for ContextMeta {
     type Components = (ContextId,);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Identity, (&self.0).into())
+    fn column() -> Column {
+        Column::Meta
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
     }
 }
 
@@ -47,7 +55,7 @@ impl FromKeyParts for ContextMeta {
 impl fmt::Debug for ContextMeta {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContextMeta")
-            .field("context_id", &self.context_id())
+            .field("id", &self.context_id())
             .finish()
     }
 }
@@ -59,12 +67,19 @@ impl KeyComponent for PublicKey {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ContextIdentity(Key<(ContextId, PublicKey)>);
 
 impl ContextIdentity {
-    pub fn new(context_id: calimero_primitives::context::ContextId, context_pk: [u8; 32]) -> Self {
+    pub fn new(
+        context_id: calimero_primitives::context::ContextId,
+        context_pk: calimero_primitives::identity::PublicKey,
+    ) -> Self {
         Self(Key(
-            GenericArray::from(*context_id).concat(context_pk.into())
+            GenericArray::from(*context_id).concat(GenericArray::from(context_pk.0))
         ))
     }
 
@@ -88,8 +103,12 @@ impl ContextIdentity {
 impl AsKeyParts for ContextIdentity {
     type Components = (ContextId, PublicKey);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Identity, (&self.0).into())
+    fn column() -> Column {
+        Column::Identity
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
     }
 }
 
@@ -117,6 +136,10 @@ impl KeyComponent for StateKey {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ContextState(Key<(ContextId, StateKey)>);
 
 impl ContextState {
@@ -144,8 +167,12 @@ impl ContextState {
 impl AsKeyParts for ContextState {
     type Components = (ContextId, StateKey);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::State, (&self.0).into())
+    fn column() -> Column {
+        Column::State
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
     }
 }
 
@@ -173,6 +200,10 @@ impl KeyComponent for TransactionId {
 }
 
 #[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
+)]
 pub struct ContextTransaction(Key<(ContextId, TransactionId)>);
 
 impl ContextTransaction {
@@ -205,8 +236,12 @@ impl ContextTransaction {
 impl AsKeyParts for ContextTransaction {
     type Components = (ContextId, TransactionId);
 
-    fn parts(&self) -> (Column, &Key<Self::Components>) {
-        (Column::Transaction, &self.0)
+    fn column() -> Column {
+        Column::Transaction
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        &self.0
     }
 }
 

@@ -14,3 +14,5 @@ eyre.workspace = true
 hex.workspace = true
 libp2p = { workspace = true }
 web3.workspace = true
+
+calimero-primitives = { path = "../primitives" }

@@ -21,8 +21,7 @@ impl<T: KeyComponent> KeyComponents for (T,) {
 
 impl<T: KeyComponent, U: KeyComponent> KeyComponents for (T, U)
 where
-    T::LEN: Add<U::LEN>,
-    Sum<T::LEN, U::LEN>: ArrayLength,
+    T::LEN: Add<U::LEN, Output: ArrayLength>,
 {
     type LEN = Sum<T::LEN, U::LEN>;
 }

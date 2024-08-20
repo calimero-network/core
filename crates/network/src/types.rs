@@ -20,6 +20,6 @@ pub enum NetworkEvent {
     },
     StreamOpened {
         peer_id: PeerId,
-        stream: stream::Stream,
+        stream: Box<stream::Stream>,
     },
 }

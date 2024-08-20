@@ -38,6 +38,7 @@ export type Account = AccountView & {
 };
 
 interface NearLoginProps {
+  networkId: string;
   rpcBaseUrl: string;
   contextId?: string;
   successRedirect: () => void;

@@ -37,18 +37,10 @@ pub struct SwarmConfig {
     pub listen: Vec<Multiaddr>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct BootstrapConfig {
     #[serde(default)]
     pub nodes: BootstrapNodes,
-}
-
-impl Default for BootstrapConfig {
-    fn default() -> Self {
-        Self {
-            nodes: Default::default(),
-        }
-    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -121,7 +113,12 @@ impl Default for RendezvousConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatchupConfig {
     pub batch_size: u8,
+
     pub receive_timeout: time::Duration,
+
+    pub interval: time::Duration,
+
+    pub initial_delay: time::Duration,
 }
 
 fn serialize_rendezvous_namespace<S>(

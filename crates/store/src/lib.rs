@@ -9,23 +9,23 @@ pub mod key;
 pub mod layer;
 pub mod slice;
 mod tx;
+#[cfg(feature = "datatypes")]
 pub mod types;
 
-use handle::StoreHandle;
+use handle::Handle;
 
 #[derive(Clone)]
 pub struct Store {
-    db: Arc<dyn db::Database>,
+    db: Arc<dyn for<'a> db::Database<'a>>,
 }
 
 impl Store {
-    pub fn open<T: db::Database>(config: &config::StoreConfig) -> eyre::Result<Self> {
+    pub fn open<T: for<'a> db::Database<'a>>(config: &config::StoreConfig) -> eyre::Result<Self> {
         let db = T::open(&config)?;
-
-        Ok(Self { db: Arc::new(db) })
+        Ok(Store { db: Arc::new(db) })
     }
 
-    pub fn handle(&self) -> StoreHandle {
-        StoreHandle::new(self.clone())
+    pub fn handle(&self) -> Handle<Self> {
+        Handle::new(self.clone())
     }
 }

@@ -16,7 +16,7 @@ pub struct PublicLogicMethod<'a> {
     self_: syn::Path,
 
     name: &'a syn::Ident,
-    self_type: Option<arg::SelfType>,
+    self_type: Option<arg::SelfType<'a>>,
     args: Vec<arg::LogicArgTyped<'a>>,
     ret: Option<ty::LogicTy>,
 
@@ -42,7 +42,7 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         let modifiers = &self.modifiers;
         let ret = &self.ret;
 
-        let arg_idents = args.iter().map(|arg| &*arg.ident).collect::<Vec<_>>();
+        let arg_idents = args.iter().map(|arg| arg.ident).collect::<Vec<_>>();
 
         let init_method = modifiers
             .iter()
@@ -85,17 +85,29 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         };
 
         let (def, mut call) = match &self.self_type {
-            Some(_type_) => (
-                quote! {
-                    let Some(app) = ::calimero_sdk::env::state_read::<#self_>() else {
-                        ::calimero_sdk::env::panic_str("Failed to read app state.")
+            Some(type_) => (
+                {
+                    let mutability = match type_ {
+                        arg::SelfType::Mutable(_) => Some(quote! {mut}),
+                        arg::SelfType::Owned(_) | arg::SelfType::Immutable(_) => None,
                     };
+                    quote! {
+                        let Some(#mutability app) = ::calimero_sdk::env::state_read::<#self_>() else {
+                            ::calimero_sdk::env::panic_str("Failed to read app state.")
+                        };
+                    }
                 },
                 quote! { app.#name(#(#arg_idents),*); },
             ),
             None => (
                 match init_method {
-                    true => quote! {let app: #self_ = },
+                    true => quote! {
+                        if let Some(mut app) = ::calimero_sdk::env::state_read::<#self_>() {
+                            ::calimero_sdk::env::panic_str("Cannot initialize over already existing state.")
+                        };
+
+                        let app: #self_ =
+                    },
                     false => quote! {},
                 },
                 quote! { <#self_>::#name(#(#arg_idents),*); },
@@ -124,7 +136,7 @@ impl<'a> ToTokens for PublicLogicMethod<'a> {
         }
 
         let state_finalizer = match (&self.self_type, init_method) {
-            (Some(arg::SelfType::Mutable), _) | (_, true) => quote! {
+            (Some(arg::SelfType::Mutable(_)), _) | (_, true) => quote! {
                 ::calimero_sdk::env::state_write(&app);
             },
             _ => quote! {},
@@ -262,16 +274,20 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         let name = &input.item.sig.ident;
 
         match (is_init, &self_type) {
-            (true, Some(_)) => errors.subsume(syn::Error::new_spanned(
-                input.item,
+            (true, Some(self_type)) => errors.subsume(syn::Error::new_spanned(
+                match self_type {
+                    arg::SelfType::Owned(ty) => ty,
+                    arg::SelfType::Mutable(ty) => ty,
+                    arg::SelfType::Immutable(ty) => ty,
+                },
                 errors::ParseError::NoSelfReceiverAtInit,
             )),
             (true, None) if name != "init" => errors.subsume(syn::Error::new_spanned(
-                input.item,
+                name,
                 errors::ParseError::AppInitMethodNotNamedInit,
             )),
             (false, _) if name == "init" => errors.subsume(syn::Error::new_spanned(
-                input.item,
+                name,
                 errors::ParseError::InitMethodWithoutInitAttribute,
             )),
             _ => {}
@@ -281,7 +297,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         if let syn::ReturnType::Type(_, ret_type) = &input.item.sig.output {
             match ty::LogicTy::try_from(ty::LogicTyInput {
                 type_: input.type_,
-                ty: &*ret_type,
+                ty: ret_type,
             }) {
                 Ok(ty) => ret = Some(ty),
                 Err(err) => errors.combine(err),

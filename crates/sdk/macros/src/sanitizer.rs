@@ -115,10 +115,10 @@ impl<'a> SanitizerAtom<'a> {
         true
     }
 
-    fn apply_action<'b>(
+    fn apply_action(
         &mut self,
         span: proc_macro2::Span,
-        action: &Action<'b>,
+        action: &Action<'_>,
         errors: &mut errors::Errors<'static>,
     ) -> bool {
         match action {

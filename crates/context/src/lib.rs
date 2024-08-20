@@ -1,46 +1,39 @@
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::symlink;
-#[cfg(windows)]
-use std::os::windows::fs::symlink_file as symlink;
 use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
+use calimero_primitives::identity::KeyPair;
 use camino::Utf8PathBuf;
-use near_jsonrpc_client::{methods, JsonRpcClient};
-use near_jsonrpc_primitives::types::query::QueryResponseKind;
-use near_primitives::types::{BlockReference, Finality, FunctionArgs};
-use near_primitives::views::QueryRequest;
-use sha2::{Digest, Sha256};
+use futures_util::TryStreamExt;
+use reqwest::Url;
+use tokio::fs;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::info;
 
 pub mod config;
 
 #[derive(Clone)]
 pub struct ContextManager {
-    pub config: config::ApplicationConfig,
     pub store: calimero_store::Store,
+    pub blob_manager: calimero_blobstore::BlobManager,
     pub network_client: NetworkClient,
     state: Arc<RwLock<State>>,
 }
 
 #[derive(Default)]
 struct State {
-    pending_initial_catchup: HashSet<calimero_primitives::context::ContextId>,
+    pending_catchup: HashSet<calimero_primitives::context::ContextId>,
 }
 
 impl ContextManager {
     pub async fn start(
-        config: &config::ApplicationConfig,
         store: calimero_store::Store,
+        blob_manager: calimero_blobstore::BlobManager,
         network_client: NetworkClient,
     ) -> eyre::Result<Self> {
         let this = ContextManager {
-            config: config.clone(),
             store,
+            blob_manager,
             network_client,
             state: Default::default(),
         };
@@ -53,13 +46,15 @@ impl ContextManager {
     async fn boot(&self) -> eyre::Result<()> {
         let handle = self.store.handle();
 
-        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?;
+        let mut iter = handle.iter::<calimero_store::key::ContextMeta>()?;
 
         for key in iter.keys() {
+            let key = key?;
+
             self.state
                 .write()
                 .await
-                .pending_initial_catchup
+                .pending_catchup
                 .insert(key.context_id());
 
             self.subscribe(&key.context_id()).await?;
@@ -99,20 +94,30 @@ impl ContextManager {
     pub async fn add_context(
         &self,
         context: calimero_primitives::context::Context,
+        initial_identity: KeyPair,
     ) -> eyre::Result<()> {
-        if !self.is_application_installed(&context.application_id) {
+        if !self.is_application_installed(&context.application_id)? {
             eyre::bail!("Application is not installed on node.")
         }
 
         let mut handle = self.store.handle();
 
+        // Store ContextMeta
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
-                application_id: context.application_id.0.into(),
+                application: calimero_store::key::ApplicationMeta::new(context.application_id),
                 last_transaction_hash: context.last_transaction_hash.into(),
             },
         )?;
+
+        // Store ContextIdentity
+        let identity_key = calimero_store::key::ContextIdentity::new(
+            context.id,
+            initial_identity.public_key.clone(),
+        );
+        let context_identity: calimero_store::types::ContextIdentity = initial_identity.into();
+        handle.put(&identity_key, &context_identity)?;
 
         self.subscribe(&context.id).await?;
 
@@ -122,50 +127,54 @@ impl ContextManager {
     pub async fn join_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
+        initial_identity: KeyPair,
     ) -> eyre::Result<Option<()>> {
-        if self
-            .state
-            .read()
-            .await
-            .pending_initial_catchup
-            .contains(&context_id)
-        {
+        if self.state.read().await.pending_catchup.contains(context_id) {
             return Ok(None);
         }
 
-        self.state
-            .write()
-            .await
-            .pending_initial_catchup
-            .insert(*context_id);
+        let mut handle = self.store.handle();
+
+        // Store ContextIdentity
+        let identity_key = calimero_store::key::ContextIdentity::new(
+            *context_id,
+            initial_identity.public_key.clone(),
+        );
+        handle.put(&identity_key, &initial_identity.into())?;
+
+        self.state.write().await.pending_catchup.insert(*context_id);
 
         self.subscribe(context_id).await?;
 
-        info!(%context_id,  "Joined context with pending initial catchup");
+        info!(%context_id, "Joined context with pending catchup");
 
         Ok(Some(()))
     }
 
-    pub async fn is_context_pending_initial_catchup(
+    pub async fn is_context_pending_catchup(
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> bool {
+        self.state.read().await.pending_catchup.contains(context_id)
+    }
+
+    pub async fn get_any_pending_catchup_context(
+        &self,
+    ) -> Option<calimero_primitives::context::ContextId> {
         self.state
             .read()
             .await
-            .pending_initial_catchup
-            .contains(context_id)
+            .pending_catchup
+            .iter()
+            .next()
+            .cloned()
     }
 
-    pub async fn clear_context_pending_initial_catchup(
+    pub async fn clear_context_pending_catchup(
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> bool {
-        self.state
-            .write()
-            .await
-            .pending_initial_catchup
-            .remove(context_id)
+        self.state.write().await.pending_catchup.remove(context_id)
     }
 
     pub fn get_context(
@@ -182,7 +191,7 @@ impl ContextManager {
 
         Ok(Some(calimero_primitives::context::Context {
             id: *context_id,
-            application_id: ctx_meta.application_id.into_string().into(),
+            application_id: ctx_meta.application.application_id(),
             last_transaction_hash: ctx_meta.last_transaction_hash.into(),
         }))
     }
@@ -212,13 +221,21 @@ impl ContextManager {
     ) -> eyre::Result<Vec<calimero_primitives::context::ContextId>> {
         let handle = self.store.handle();
 
-        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new(
-            start.map_or_else(|| [0; 32].into(), Into::into),
-        ))?;
+        let mut iter = handle.iter::<calimero_store::key::ContextMeta>()?;
 
-        let contexts = iter.keys().map(|key| key.context_id());
+        let mut ids = vec![];
 
-        Ok(contexts.collect())
+        if let Some(start) = start {
+            if let Some(key) = iter.seek(calimero_store::key::ContextMeta::new(start))? {
+                ids.push(key.context_id());
+            }
+        }
+
+        for key in iter.keys() {
+            ids.push(key?.context_id());
+        }
+
+        Ok(ids)
     }
 
     pub fn get_contexts(
@@ -227,50 +244,36 @@ impl ContextManager {
     ) -> eyre::Result<Vec<calimero_primitives::context::Context>> {
         let handle = self.store.handle();
 
-        let mut iter = handle.iter(&calimero_store::key::ContextMeta::new(
-            start.map_or_else(|| [0; 32].into(), Into::into),
-        ))?;
+        let mut iter = handle.iter::<calimero_store::key::ContextMeta>()?;
 
-        let contexts = iter
-            .entries()
-            .map(|(k, v)| calimero_primitives::context::Context {
+        let mut contexts = vec![];
+
+        if let Some(start) = start {
+            // todo! Iter shouldn't behave like DBIter, first next should return sought element
+            if let Some(key) = iter.seek(calimero_store::key::ContextMeta::new(start))? {
+                let value: calimero_store::types::ContextMeta = iter.read()?;
+
+                contexts.push(calimero_primitives::context::Context {
+                    id: key.context_id(),
+                    application_id: value.application.application_id(),
+                    last_transaction_hash: value.last_transaction_hash.into(),
+                });
+            }
+        }
+
+        for (k, v) in iter.entries() {
+            let (k, v) = (k?, v?);
+            contexts.push(calimero_primitives::context::Context {
                 id: k.context_id(),
-                application_id: v.application_id.into_string().into(),
+                application_id: v.application.application_id(),
                 last_transaction_hash: v.last_transaction_hash.into(),
             });
+        }
 
-        Ok(contexts.collect())
+        Ok(contexts)
     }
 
-    // todo! do this only when initializing contexts
-    // todo! start refining to blob API
-    pub async fn install_application(
-        &self,
-        application_id: &calimero_primitives::application::ApplicationId,
-        // todo! permit None version for latest
-        version: &semver::Version,
-         // represents the url path to the release binary (e.g. ipfs path)
-         url: &str,
-        hash: Option<&str>,
-    ) -> eyre::Result<()> {
-        self.download_and_install_release(&application_id, &version, &url, hash)
-            .await?;
-
-        Ok(())
-    }
-
-    pub async fn install_dev_application(
-        &self,
-        application_id: calimero_primitives::application::ApplicationId,
-        version: &semver::Version,
-        path: Utf8PathBuf,
-    ) -> eyre::Result<()> {
-        self.link_release(&application_id, version, &path)?;
-
-        Ok(())
-    }
-
-    pub async fn update_context_application_id(
+    pub fn update_application_id(
         &self,
         context_id: calimero_primitives::context::ContextId,
         application_id: calimero_primitives::application::ApplicationId,
@@ -283,37 +286,102 @@ impl ContextManager {
             eyre::bail!("Context not found")
         };
 
-        value.application_id = application_id.0.into();
+        value.application = calimero_store::key::ApplicationMeta::new(application_id);
 
         handle.put(&key, &value)?;
 
         Ok(())
     }
+}
 
-    pub async fn list_installed_applications(
+// vv~ these would be more appropriate in an ApplicationManager
+impl ContextManager {
+    fn install_application(
+        &self,
+        blob_id: calimero_primitives::blobs::BlobId,
+        source: calimero_primitives::application::ApplicationSource,
+        version: Option<semver::Version>,
+        metadata: Vec<u8>,
+    ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
+        let application = calimero_store::types::ApplicationMeta {
+            blob: calimero_store::key::BlobMeta::new(blob_id),
+            version: version.map(|v| v.to_string().into_boxed_str()),
+            source: source.to_string().into_boxed_str(),
+            metadata: metadata.into_boxed_slice(),
+        };
+
+        let application_id = calimero_primitives::application::ApplicationId::from(
+            *calimero_primitives::hash::Hash::hash_borsh(&application)?,
+        );
+
+        let mut handle = self.store.handle();
+
+        handle.put(
+            &calimero_store::key::ApplicationMeta::new(application_id),
+            &application,
+        )?;
+
+        Ok(application_id)
+    }
+
+    pub async fn install_application_from_path(
+        &self,
+        path: Utf8PathBuf,
+        version: Option<semver::Version>,
+        metadata: Vec<u8>,
+    ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
+        let file = fs::File::open(&path).await?;
+
+        let blob_id = self
+            .blob_manager
+            .put(tokio_util::io::ReaderStream::new(file))
+            .await?;
+
+        let Ok(uri) = reqwest::Url::from_file_path(path) else {
+            eyre::bail!("non-absolute path")
+        };
+
+        self.install_application(blob_id, uri.as_str().parse()?, version, metadata)
+    }
+
+    pub async fn install_application_from_url(
+        &self,
+        url: Url,
+        version: Option<semver::Version>,
+        metadata: Vec<u8>,
+        // hash: calimero_primitives::hash::Hash,
+        // todo! BlobMgr should return hash of content
+    ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
+        let uri = url.as_str().parse()?;
+
+        let response = reqwest::Client::new().get(url).send().await?;
+
+        let blob_id = self.blob_manager.put(response.bytes_stream()).await?;
+
+        // todo! if blob hash doesn't match, remove it
+
+        self.install_application(blob_id, uri, version, metadata)
+    }
+
+    pub fn list_installed_applications(
         &self,
     ) -> eyre::Result<Vec<calimero_primitives::application::Application>> {
-        if !self.config.dir.exists() {
-            return Ok(vec![]);
-        }
+        let handle = self.store.handle();
 
-        let Ok(entries) = fs::read_dir(&self.config.dir) else {
-            eyre::bail!("Failed to read application directory");
-        };
+        let mut iter = handle.iter::<calimero_store::key::ApplicationMeta>()?;
 
         let mut applications = vec![];
 
-        entries.filter_map(|entry| entry.ok()).for_each(|entry| {
-            if let Some(file_name) = entry.file_name().to_str() {
-                let application_id = file_name.to_string().into();
-                if let Some((version, _)) = self.get_latest_application_info(&application_id) {
-                    applications.push(calimero_primitives::application::Application {
-                        id: application_id,
-                        version,
-                    });
-                }
-            }
-        });
+        for (id, app) in iter.entries() {
+            let (id, app) = (id?, app?);
+            applications.push(calimero_primitives::application::Application {
+                id: id.application_id(),
+                blob: app.blob.blob_id(),
+                version: app.version.as_deref().map(str::parse).transpose()?,
+                source: app.source.parse()?,
+                metadata: app.metadata.to_vec(),
+            })
+        }
 
         Ok(applications)
     }
@@ -321,134 +389,72 @@ impl ContextManager {
     pub fn is_application_installed(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
-    ) -> bool {
-        self.get_latest_application_info(application_id).is_some()
-    }
-
-    pub fn load_application_blob(
-        &self,
-        application_id: &calimero_primitives::application::ApplicationId,
-    ) -> eyre::Result<Vec<u8>> {
-        let Some((_, path)) = self.get_latest_application_info(application_id) else {
-            eyre::bail!("failed to get application with id: {}", application_id)
-        };
-
-        Ok(fs::read(&path)?)
-    }
-
-    pub fn get_application_latest_version(
-        &self,
-        application_id: &calimero_primitives::application::ApplicationId,
-    ) -> eyre::Result<semver::Version> {
-        let Some((version, _)) = self.get_latest_application_info(application_id) else {
-            eyre::bail!("failed to get application with id: {}", application_id)
-        };
-
-        Ok(version)
-    }
-
-    async fn download_and_install_release(
-        &self,
-        application_id: &calimero_primitives::application::ApplicationId,
-        version: &semver::Version,
-        // represents the url path to the release binary (e.g. ipfs path)
-        url: &str,
-        hash: Option<&str>,
     ) -> eyre::Result<bool> {
-        // todo! download to a tempdir
-        // todo! Blob API
-        let base_path = format!("{}/{}/{}", self.config.dir, application_id, version);
-        fs::create_dir_all(&base_path)?;
+        let handle = self.store.handle();
 
-        let file_path = format!("{}/binary.wasm", base_path);
-        if fs::metadata(&file_path).is_ok() {
+        let Some(application) =
+            handle.get(&calimero_store::key::ApplicationMeta::new(*application_id))?
+        else {
             return Ok(false);
-        }
+        };
 
-        let mut file = File::create(&file_path)?;
-
-        let mut response = reqwest::Client::new().get(url).send().await?;
-        let mut hasher = Sha256::new();
-        while let Some(chunk) = response.chunk().await? {
-            hasher.update(&chunk);
-            file.write_all(&chunk)?;
-        }
-        let result = hasher.finalize();
-        let blob_hash = format!("{:x}", result);
-
-        if let Some(hash) = hash {
-            if blob_hash.as_str() != hash {
-                if let Err(e) = std::fs::remove_file(&file_path) {
-                    error!(%e, "Failed to delete file after failed verification");
-                }
-
-                eyre::bail!("Release hash does not match the hash of the downloaded file");
-            }
+        if !handle.has(&application.blob)? {
+            eyre::bail!(
+                "fatal: application `{}` points to danling blob `{}`",
+                application_id,
+                application.blob.blob_id()
+            );
         }
 
         Ok(true)
     }
 
-    fn link_release(
+    pub fn get_application(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
-        version: &semver::Version,
-        link_path: &camino::Utf8Path,
-    ) -> eyre::Result<bool> {
-        let base_path = format!("{}/{}/{}", self.config.dir, application_id, version);
-        fs::create_dir_all(&base_path)?;
+    ) -> eyre::Result<Option<calimero_primitives::application::Application>> {
+        let handle = self.store.handle();
 
-        let file_path = format!("{}/binary.wasm", base_path);
-        if fs::metadata(&file_path).is_ok() {
-            return Ok(false);
-        }
+        let Some(application) =
+            handle.get(&calimero_store::key::ApplicationMeta::new(*application_id))?
+        else {
+            return Ok(None);
+        };
 
-        info!("Application file saved at: {}", file_path);
-        if let Err(err) = symlink(link_path, &file_path) {
-            eyre::bail!("Symlinking failed: {}", err);
-        }
-
-        info!(
-            "Application {} linked to node\nPath to linked file at {}",
-            application_id, file_path
-        );
-
-        Ok(true)
+        Ok(Some(calimero_primitives::application::Application {
+            id: *application_id,
+            blob: application.blob.blob_id(),
+            version: application.version.as_deref().map(str::parse).transpose()?,
+            source: application.source.parse()?,
+            metadata: application.metadata.to_vec(),
+        }))
     }
 
-    fn get_latest_application_info(
+    pub async fn load_application_blob(
         &self,
         application_id: &calimero_primitives::application::ApplicationId,
-    ) -> Option<(semver::Version, String)> {
-        let application_base_path = self.config.dir.join(application_id.to_string());
+    ) -> eyre::Result<Option<Vec<u8>>> {
+        let handle = self.store.handle();
 
-        if let Ok(entries) = fs::read_dir(&application_base_path) {
-            let mut versions_with_binary = entries
-                .filter_map(|entry| {
-                    let entry = entry.ok()?;
-                    let entry_path = entry.path();
+        let Some(application) =
+            handle.get(&calimero_store::key::ApplicationMeta::new(*application_id))?
+        else {
+            return Ok(None);
+        };
 
-                    let version =
-                        semver::Version::parse(entry_path.file_name()?.to_string_lossy().as_ref())
-                            .ok()?;
+        let Some(mut stream) = self.blob_manager.get(application.blob.blob_id()).await? else {
+            eyre::bail!("fatal: application points to dangling blob");
+        };
 
-                    let binary_path = entry_path.join("binary.wasm");
-                    binary_path.exists().then_some((version, binary_path))
-                })
-                .collect::<Vec<_>>();
+        // todo! we can preallocate the right capacity here
+        // todo! once `blob_manager::get` -> Blob{size}:Stream
+        let mut buf = vec![];
 
-            versions_with_binary.sort_by(|a, b| b.0.cmp(&a.0));
-
-            let version_with_binary = versions_with_binary.first();
-            let version = match version_with_binary {
-                Some((version, path)) => {
-                    Some((version.clone(), path.to_string_lossy().into_owned()))
-                }
-                None => None,
-            };
-            version
-        } else {
-            None
+        // todo! guard against loading excessively large blobs into memory
+        while let Some(chunk) = stream.try_next().await? {
+            buf.extend_from_slice(&chunk);
         }
+
+        Ok(Some(buf))
     }
 }

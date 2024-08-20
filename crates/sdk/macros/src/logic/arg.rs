@@ -3,14 +3,14 @@ use quote::{quote, ToTokens};
 use super::{ty, utils};
 use crate::errors;
 
-pub enum SelfType {
-    Owned,
-    Mutable,
-    Immutable,
+pub enum SelfType<'a> {
+    Owned(&'a syn::Type),
+    Mutable(&'a syn::Type),
+    Immutable(&'a syn::Type),
 }
 
 pub enum LogicArg<'a> {
-    Receiver(SelfType),
+    Receiver(SelfType<'a>),
     Typed(LogicArgTyped<'a>),
 }
 
@@ -54,7 +54,9 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                     if let syn::Type::Reference(ref_) = &*receiver.ty {
                         reference = ref_
                             .mutability
-                            .map_or(Some(SelfType::Immutable), |_| Some(SelfType::Mutable));
+                            .map_or(Some(SelfType::Immutable(&*receiver.ty)), |_| {
+                                Some(SelfType::Mutable(&*receiver.ty))
+                            });
                     } else if is_self {
                         // todo! circumvent via `#[app::destroy]`
                         errors.subsume(syn::Error::new_spanned(
@@ -66,7 +68,9 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                     if is_self {
                         errors.check()?;
 
-                        return Ok(Self::Receiver(reference.unwrap_or(SelfType::Owned)));
+                        return Ok(Self::Receiver(
+                            reference.unwrap_or(SelfType::Owned(&*receiver.ty)),
+                        ));
                     }
                 };
 
@@ -85,7 +89,7 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
 
                 let ty = match ty::LogicTy::try_from(ty::LogicTyInput {
                     type_: input.type_,
-                    ty: &*typed.ty,
+                    ty: &typed.ty,
                 }) {
                     Ok(ty) => ty,
                     Err(err) => {

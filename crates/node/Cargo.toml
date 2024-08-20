@@ -17,6 +17,7 @@ futures-util.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
 owo-colors.workspace = true
+rand.workspace = true
 semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -27,10 +28,11 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 calimero-context = { path = "../context" }
+calimero-blobstore = { path = "../store/blobs" }
 calimero-identity = { path = "../identity" }
 calimero-network = { path = "../network" }
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-primitives = { path = "../primitives" }
 calimero-runtime = { path = "../runtime" }
 calimero-server = { path = "../server", features = ["jsonrpc", "websocket", "admin"] }
-calimero-store = { path = "../store" }
+calimero-store = { path = "../store", features = ["datatypes"] }

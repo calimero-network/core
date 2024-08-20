@@ -1,9 +1,10 @@
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
+use calimero_server::admin::utils::context::{create_context, join_context};
 use calimero_store::Store;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
-use libp2p::identity;
+use libp2p::identity as p2p_identity;
 use owo_colors::OwoColorize;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -19,7 +20,7 @@ type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
 #[derive(Debug)]
 pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
-    pub identity: identity::Keypair,
+    pub identity: p2p_identity::Keypair,
     pub node_type: calimero_node_primitives::NodeType,
     pub application: calimero_context::config::ApplicationConfig,
     pub network: calimero_network::config::NetworkConfig,
@@ -50,9 +51,14 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
-    let ctx_manager = calimero_context::ContextManager::start(
-        &config.application,
+    let blob_manager = calimero_blobstore::BlobManager::new(
         store.clone(),
+        calimero_blobstore::FileSystem::new(&config.application.dir).await?,
+    );
+
+    let ctx_manager = calimero_context::ContextManager::start(
+        store.clone(),
+        blob_manager,
         network_client.clone(),
     )
     .await?;
@@ -78,9 +84,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
 
     match network_client
-        .subscribe(IdentTopic::new(
-            "meta_topic".to_string(),
-        ))
+        .subscribe(IdentTopic::new("meta_topic"))
         .await
     {
         Ok(_) => info!("Subscribed to meta topic"),
@@ -89,6 +93,11 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             eyre::bail!("Failed to subscribe to meta topic: {:?}", err)
         }
     };
+
+    let mut catchup_interval_tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + config.network.catchup.initial_delay,
+        config.network.catchup.interval,
+    );
 
     loop {
         tokio::select! {
@@ -108,9 +117,10 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((context_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
-                node.handle_call(context_id, method, payload, write, outcome_sender).await;
+            Some((context_id, method, payload, write, executor_public_key, outcome_sender)) = server_receiver.recv() => {
+                node.handle_call(context_id, method, payload, write, executor_public_key, outcome_sender).await;
             }
+            _ = catchup_interval_tick.tick() => node.handle_interval_catchup().await,
         }
     }
 
@@ -129,8 +139,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     // TODO: should be replaced with RPC endpoints
     match command {
         "call" => {
-            if let Some((context_id, args)) = args.and_then(|args| args.split_once(' ')) {
-                let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
+            if let Some((context_id, rest)) = args.and_then(|args| args.split_once(' ')) {
+                let (method, rest) = rest.split_once(' ').unwrap_or((rest, "{}"));
+                let (payload, executor_key) = rest.split_once(' ').unwrap_or((rest, ""));
 
                 match serde_json::from_str::<serde_json::Value>(payload) {
                     Ok(_) => {
@@ -143,11 +154,23 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             return Ok(());
                         };
 
+                        // Parse the executor's public key if provided
+                        let executor_public_key = if !executor_key.is_empty() {
+                            bs58::decode(executor_key)
+                                .into_vec()
+                                .map_err(|_| eyre::eyre!("Invalid executor public key"))?
+                                .try_into()
+                                .map_err(|_| eyre::eyre!("Executor public key must be 32 bytes"))?
+                        } else {
+                            return Err(eyre::eyre!("Executor public key is required"));
+                        };
+
                         let tx_hash = match node
                             .call_mutate(
                                 context,
                                 method.to_owned(),
                                 payload.as_bytes().to_owned(),
+                                executor_public_key,
                                 outcome_sender,
                             )
                             .await
@@ -228,7 +251,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     }
                 }
             } else {
-                println!("{IND} Usage: call <Method> <JSON Payload>");
+                println!(
+                    "{IND} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
+                );
             }
         }
         "gc" => {
@@ -293,17 +318,18 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             // todo! test this
 
             println!(
-                "{IND} {c1:44} | {c2:44} | {c3}",
+                "{IND} {c1:44} | {c2:44} | Value",
                 c1 = "Context ID",
                 c2 = "State Key",
-                c3 = "Value"
             );
-
-            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32].into());
 
             let handle = node.store.handle();
 
-            for (k, v) in &mut handle.iter(&key)?.entries() {
+            for (k, v) in handle
+                .iter::<calimero_store::key::ContextState>()?
+                .entries()
+            {
+                let (k, v) = (k?, v?);
                 let (cx, state_key) = (k.context_id(), k.state_key());
                 let sk = calimero_primitives::hash::Hash::from(state_key);
                 let entry = format!("{c1:44} | {c2:44}| {c3:?}", c1 = cx, c2 = sk, c3 = v.value);
@@ -311,6 +337,102 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     println!("{IND} {}", line.cyan());
                 }
             }
+        }
+        "application" => 'done: {
+            'usage: {
+                let Some(args) = args else {
+                    break 'usage;
+                };
+
+                let (subcommand, args) = args
+                    .split_once(' ')
+                    .map_or_else(|| (args, None), |(a, b)| (a, Some(b)));
+
+                match subcommand {
+                    "install" => {
+                        let Some((type_, resource, version, metadata)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let type_ = iter.next()?;
+                            let resource = iter.next()?;
+                            let version = iter.next();
+                            let metadata = iter.next()?.as_bytes().to_vec();
+
+                            Some((type_, resource, version, metadata))
+                        }) else {
+                            println!(
+                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [version] <metadata>"
+                            );
+                            break 'done;
+                        };
+
+                        let Ok(version) = version.map(|v| v.parse()).transpose() else {
+                            println!("{IND} Invalid version: {:?}", version);
+                            break 'done;
+                        };
+
+                        let application_id = match type_ {
+                            "url" => {
+                                let Ok(url) = resource.parse() else {
+                                    println!("{IND} Invalid URL: {}", resource);
+                                    break 'done;
+                                };
+
+                                println!("{IND} Downloading application..");
+
+                                node.ctx_manager
+                                    .install_application_from_url(url, version, Vec::new())
+                                    .await?
+                            }
+                            "file" => {
+                                let path = camino::Utf8PathBuf::from(resource);
+
+                                node.ctx_manager
+                                    .install_application_from_path(path, version, metadata)
+                                    .await?
+                            }
+                            unknown => {
+                                println!("{IND} Unknown resource type: `{}`", unknown);
+                                break 'done;
+                            }
+                        };
+
+                        println!("{IND} Installed application: {}", application_id);
+                    }
+                    "ls" => {
+                        println!(
+                            "{IND} {c1:44} | {c2:44} | {c3:12} | {c4}",
+                            c1 = "Application ID",
+                            c2 = "Blob ID",
+                            c3 = "Version",
+                            c4 = "Source"
+                        );
+
+                        for application in node.ctx_manager.list_installed_applications()? {
+                            let entry = format!(
+                                "{c1:44} | {c2:44} | {c3:>12} | {c4}",
+                                c1 = application.id,
+                                c2 = application.blob,
+                                c3 = application
+                                    .version
+                                    .map(|ver| ver.to_string())
+                                    .unwrap_or_default(),
+                                c4 = application.source
+                            );
+                            for line in entry.lines() {
+                                println!("{IND} {}", line.cyan());
+                            }
+                        }
+                    }
+                    // todo! a "show" subcommand should help keep "ls" compact
+                    unknown => {
+                        println!("{IND} Unknown command: `{}`", unknown);
+                        break 'usage;
+                    }
+                }
+
+                break 'done;
+            }
+            println!("{IND} Usage: application [ls|install]");
         }
         "context" => 'done: {
             'usage: {
@@ -324,24 +446,23 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                 match subcommand {
                     "ls" => {
-                        // todo! application ID shouldn't be hex anymore
                         println!(
-                            "{IND} {c1:44} | {c2:64} | {c3}",
+                            "{IND} {c1:44} | {c2:64} | Last Transaction",
                             c1 = "Context ID",
                             c2 = "Application ID",
-                            c3 = "Last Transaction"
                         );
 
                         let handle = node.store.handle();
 
-                        for (k, v) in &mut handle
-                            .iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?
-                            .entries()
-                        {
-                            let (cx, app_id, last_tx) =
-                                (k.context_id(), v.application_id, v.last_transaction_hash);
+                        for (k, v) in handle.iter::<calimero_store::key::ContextMeta>()?.entries() {
+                            let (k, v) = (k?, v?);
+                            let (cx, app_id, last_tx) = (
+                                k.context_id(),
+                                v.application.application_id(),
+                                v.last_transaction_hash,
+                            );
                             let entry = format!(
-                                "{c1:44} | {c2:64} | {c3}",
+                                "{c1:44} | {c2:44} | {c3}",
                                 c1 = cx,
                                 c2 = app_id,
                                 c3 = calimero_primitives::hash::Hash::from(last_tx)
@@ -352,8 +473,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         }
                     }
                     "join" => {
-                        let Some(context_id) = args else {
-                            println!("{IND} Usage: context join <context_id>");
+                        let Some((context_id, private_key)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context = iter.next()?;
+                            let private_key = iter.next();
+
+                            Some((context, private_key))
+                        }) else {
+                            println!("{IND} Usage: context join <context_id> [private_key]");
                             break 'done;
                         };
 
@@ -362,7 +489,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        node.ctx_manager.join_context(&context_id).await?;
+                        join_context(&node.ctx_manager, context_id, private_key).await?;
 
                         println!(
                             "{IND} Joined context {}, waiting for catchup to complete..",
@@ -385,49 +512,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((context_id, application_id, version, url)) = args
-                            .and_then(|args| {
-                                let mut iter = args.split(' ');
-                                let context = iter.next()?;
-                                let application = iter.next()?;
-                                let version = iter.next()?;
-                                let url = iter.next()?;
-
-                                Some((context, application, version, url))
-                            })
-                        else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version> <url>");
+                        let Some((application_id, private_key)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let application = iter.next()?;
+                            let private_key = iter.next();
+                            Some((application, private_key))
+                        }) else {
+                            println!("{IND} Usage: context create <application_id> [private_key]");
                             break 'done;
                         };
 
-                        let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                        let Ok(application_id) = application_id.parse() else {
+                            println!("{IND} Invalid application ID: {}", application_id);
                             break 'done;
                         };
 
-                        let Ok(version) = version.parse() else {
-                            println!("{IND} Invalid version: {}", version);
-                            break 'done;
-                        };
+                        let context_create_result =
+                            create_context(&node.ctx_manager, application_id, private_key).await?;
 
-                        let application_id = application_id.to_owned().into();
-
-                        println!("{IND} Downloading application..");
-
-                        // todo! we should be able to install latest version
-                        node.ctx_manager
-                            .install_application(&application_id, &version, &url, None)
-                            .await?;
-
-                        let context = calimero_primitives::context::Context {
-                            id: context_id,
-                            application_id,
-                            last_transaction_hash: calimero_primitives::hash::Hash::default(),
-                        };
-
-                        node.ctx_manager.add_context(context).await?;
-
-                        println!("{IND} Created context {}", context_id);
+                        println!("{IND} Created context {}", context_create_result.context.id);
                     }
                     "delete" => {
                         let Some(context_id) = args else {
@@ -457,14 +560,25 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        let key = calimero_store::key::ContextTransaction::new(
-                            context_id,
-                            [0; 32].into(),
-                        );
+                        let mut iter = handle.iter::<calimero_store::key::ContextTransaction>()?;
+
+                        let first = 'first: {
+                            let Some(k) = iter
+                                .seek(calimero_store::key::ContextTransaction::new(
+                                    context_id, [0; 32],
+                                ))
+                                .transpose()
+                            else {
+                                break 'first None;
+                            };
+
+                            Some((k, iter.read()))
+                        };
 
                         println!("{IND} {c1:44} | {c2:44}", c1 = "Hash", c2 = "Prior Hash");
 
-                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                        for (k, v) in first.into_iter().chain(iter.entries()) {
+                            let (k, v) = (k?, v?);
                             let entry = format!(
                                 "{c1:44} | {c2}",
                                 c1 = calimero_primitives::hash::Hash::from(k.transaction_id()),
@@ -488,12 +602,29 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         let handle = node.store.handle();
 
-                        let key =
-                            calimero_store::key::ContextState::new(context_id, [0; 32].into());
-
                         println!("{IND} {c1:44} | {c2:44}", c1 = "State Key", c2 = "Value");
 
-                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                        let mut iter = handle.iter::<calimero_store::key::ContextState>()?;
+
+                        // let first = 'first: {
+                        //     let Some(k) = iter
+                        //         .seek(calimero_store::key::ContextState::new(context_id, [0; 32]))
+                        //         .transpose()
+                        //     else {
+                        //         break 'first None;
+                        //     };
+
+                        //     Some((k, iter.read()))
+                        //                   ^^^^~ ContextState<'a> lends the `iter`, while `.entries()` attempts to mutate it
+                        // };
+
+                        for (k, v) in iter.entries() {
+                            let (k, v) = (k?, v?);
+                            if k.context_id() != context_id {
+                                // todo! revisit this when DBIter::seek no longer returns
+                                // todo! the sought item, you have to call next(), read()
+                                continue;
+                            }
                             let entry = format!(
                                 "{c1:44} | {c2:?}",
                                 c1 = calimero_primitives::hash::Hash::from(k.state_key()),
@@ -516,7 +647,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         }
         unknown => {
             println!("{IND} Unknown command: `{}`", unknown);
-            println!("{IND} Usage: [call|peers|pool|gc|store|context] [args]")
+            println!("{IND} Usage: [call|peers|pool|gc|store|context|application] [args]")
         }
     }
 
@@ -647,6 +778,11 @@ impl Node {
         };
 
         match serde_json::from_slice(&message.data)? {
+            types::PeerAction::SharePublicKey(public_key) => {
+                // Handle the shared public key
+                // TODO: Should we store it? Use it for verification?
+                info!("Received public key: {:?}", public_key);
+            }
             types::PeerAction::Transaction(transaction) => {
                 debug!(?transaction, %source, "Received transaction");
 
@@ -670,7 +806,7 @@ impl Node {
                     self.perform_catchup(transaction.context_id, source).await?;
 
                     self.ctx_manager
-                        .clear_context_pending_initial_catchup(&transaction.context_id)
+                        .clear_context_pending_catchup(&transaction.context_id)
                         .await;
 
                     info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
@@ -727,7 +863,7 @@ impl Node {
                 self.perform_catchup(rejection.context_id, source).await?;
 
                 self.ctx_manager
-                    .clear_context_pending_initial_catchup(&rejection.context_id)
+                    .clear_context_pending_catchup(&rejection.context_id)
                     .await;
 
                 info!(context_id=%rejection.context_id, %source, "Rejection triggered catchup successfully finished");
@@ -796,6 +932,7 @@ impl Node {
         method: String,
         payload: Vec<u8>,
         write: bool,
+        executor_public_key: [u8; 32],
         outcome_sender: oneshot::Sender<
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
         >,
@@ -812,7 +949,13 @@ impl Node {
             let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
 
             if let Err(err) = self
-                .call_mutate(context, method, payload, inner_outcome_sender)
+                .call_mutate(
+                    context,
+                    method,
+                    payload,
+                    executor_public_key,
+                    inner_outcome_sender,
+                )
                 .await
             {
                 let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(err)));
@@ -840,7 +983,10 @@ impl Node {
                 }
             });
         } else {
-            match self.call_query(context, method, payload).await {
+            match self
+                .call_query(context, method, payload, executor_public_key)
+                .await
+            {
                 Ok(outcome) => {
                     let _ = outcome_sender.send(Ok(outcome));
                 }
@@ -857,10 +1003,12 @@ impl Node {
         context: calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
+        executor_public_key: [u8; 32],
     ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::QueryCallError> {
         if !self
             .ctx_manager
             .is_application_installed(&context.application_id)
+            .unwrap_or_default()
         {
             return Err(
                 calimero_node_primitives::QueryCallError::ApplicationNotInstalled {
@@ -869,7 +1017,7 @@ impl Node {
             );
         }
 
-        self.execute(context, None, method, payload)
+        self.execute(context, None, method, payload, executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e,"Failed to execute query call.");
@@ -882,6 +1030,7 @@ impl Node {
         context: calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
+        executor_public_key: [u8; 32],
         outcome_sender: oneshot::Sender<
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError>,
         >,
@@ -895,6 +1044,7 @@ impl Node {
         if !self
             .ctx_manager
             .is_application_installed(&context.application_id)
+            .unwrap_or_default()
         {
             return Err(
                 calimero_node_primitives::MutateCallError::ApplicationNotInstalled {
@@ -917,6 +1067,7 @@ impl Node {
             method,
             payload,
             prior_hash: context.last_transaction_hash,
+            executor_public_key,
         };
 
         self.push_action(
@@ -990,6 +1141,7 @@ impl Node {
                 Some(hash),
                 transaction.method.clone(),
                 transaction.payload.clone(),
+                transaction.executor_public_key,
             )
             .await?;
 
@@ -1031,13 +1183,14 @@ impl Node {
                 method: transaction.method.into(),
                 payload: transaction.payload.into(),
                 prior_hash: *transaction.prior_hash,
+                executor_public_key: transaction.executor_public_key,
             },
         )?;
 
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
-                application_id: context.application_id.0.into(),
+                application: calimero_store::key::ApplicationMeta::new(context.application_id),
                 last_transaction_hash: *hash.as_bytes(),
             },
         )?;
@@ -1045,24 +1198,37 @@ impl Node {
         Ok(())
     }
 
-    async fn execute(
+    pub async fn execute(
         &mut self,
         context: calimero_primitives::context::Context,
         hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
+        executor_public_key: [u8; 32],
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let mut storage = match hash {
             Some(_) => runtime_compat::RuntimeCompatStore::temporal(&mut self.store, context.id),
             None => runtime_compat::RuntimeCompatStore::read_only(&self.store, context.id),
         };
 
+        let Some(blob) = self
+            .ctx_manager
+            .load_application_blob(&context.application_id)
+            .await?
+        else {
+            eyre::bail!(
+                "fatal error: missing blob for application `{}`",
+                context.application_id
+            );
+        };
+
         let outcome = calimero_runtime::run(
-            &self
-                .ctx_manager
-                .load_application_blob(&context.application_id)?,
+            &blob,
             &method,
-            calimero_runtime::logic::VMContext { input: payload },
+            calimero_runtime::logic::VMContext {
+                input: payload,
+                executor_public_key,
+            },
             &mut storage,
             &get_runtime_limits()?,
         )?;

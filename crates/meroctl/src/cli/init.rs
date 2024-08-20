@@ -6,6 +6,7 @@ use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
 use libp2p::identity;
 use multiaddr::Multiaddr;
+use rand::Rng;
 use tracing::{info, warn};
 
 use crate::config_file::{ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig};
@@ -155,6 +156,10 @@ impl InitCommand {
                 catchup: calimero_network::config::CatchupConfig {
                     batch_size: 50,
                     receive_timeout: std::time::Duration::from_secs(2),
+                    interval: std::time::Duration::from_secs(2),
+                    initial_delay: std::time::Duration::from_millis(
+                        rand::thread_rng().gen_range(0..1001),
+                    ),
                 },
             },
         };

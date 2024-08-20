@@ -23,7 +23,7 @@ pub async fn create_root_key_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(intermediate_req): Json<IntermediateAddPublicKeyRequest>,
 ) -> impl IntoResponse {
-    let response = transform_request(intermediate_req)
+    transform_request(intermediate_req)
         .and_then(|req| validate_challenge(req, &state.keypair))
         .and_then(|req| store_root(req, &mut state.store.clone()))
         .map_or_else(
@@ -35,9 +35,7 @@ pub async fn create_root_key_handler(
                 }
                 .into_response()
             },
-        );
-
-    response
+        )
 }
 
 pub fn store_root(
@@ -62,7 +60,7 @@ pub fn store_root_key(
         wallet_type,
         created_at: Utc::now().timestamp_millis() as u64,
     };
-    add_root_key(store, root_key).map_err(|e| parse_api_error(e))?;
+    add_root_key(store, root_key).map_err(parse_api_error)?;
 
     info!("Root key stored successfully.");
     Ok(true)

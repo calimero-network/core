@@ -138,6 +138,7 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
 
 #[derive(Debug, Error)]
 #[error("CallError")]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum CallError {
     UpstreamCallError(calimero_node_primitives::CallError),
     UpstreamFunctionCallError(String), // TODO use FunctionCallError from runtime-primitives once they are migrated
@@ -150,11 +151,19 @@ pub(crate) async fn call(
     method: String,
     args: Vec<u8>,
     writes: bool,
+    executor_public_key: [u8; 32],
 ) -> Result<Option<String>, CallError> {
     let (outcome_sender, outcome_receiver) = oneshot::channel();
 
     sender
-        .send((context_id, method, args, writes, outcome_sender))
+        .send((
+            context_id,
+            method,
+            args,
+            writes,
+            executor_public_key,
+            outcome_sender,
+        ))
         .await
         .map_err(|e| CallError::InternalError(eyre::eyre!("Failed to send call message: {}", e)))?;
 

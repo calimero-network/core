@@ -8,7 +8,8 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use calimero_server_primitives::admin::{
-    ApplicationListResult, InstallApplicationResponse, ListApplicationsResponse,
+    ApplicationInstallResult, ApplicationListResult, InstallApplicationResponse,
+    ListApplicationsResponse,
 };
 use calimero_store::Store;
 use libp2p::identity::Keypair;
@@ -113,6 +114,10 @@ pub(crate) fn setup(
             post(handlers::applications::install_dev_application_handler),
         )
         .route(
+            "/dev/application/:application_id",
+            get(handlers::applications::get_application),
+        )
+        .route(
             "/dev/contexts",
             get(handlers::context::get_contexts_handler)
                 .post(handlers::context::create_context_handler),
@@ -120,6 +125,10 @@ pub(crate) fn setup(
         .route(
             "/dev/contexts/:context_id/join",
             post(handlers::context::join_context_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/application",
+            post(handlers::context::update_application_id),
         )
         .route("/dev/applications", get(list_applications_handler))
         .layer(Extension(shared_state));
@@ -216,16 +225,13 @@ async fn install_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application(
-            &req.application,
-            &req.version,
-            &req.url,
-            req.hash.as_deref(),
-        )
+        .install_application_from_url(req.url, req.version, req.metadata /*, req.hash */)
         .await
     {
-        Ok(()) => ApiResponse {
-            payload: InstallApplicationResponse { data: true },
+        Ok(application_id) => ApiResponse {
+            payload: InstallApplicationResponse {
+                data: ApplicationInstallResult { application_id },
+            },
         }
         .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
@@ -235,7 +241,7 @@ async fn install_application_handler(
 async fn list_applications_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    match state.ctx_manager.list_installed_applications().await {
+    match state.ctx_manager.list_installed_applications() {
         Ok(applications) => ApiResponse {
             payload: ListApplicationsResponse {
                 data: ApplicationListResult { apps: applications },
@@ -262,7 +268,7 @@ async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> im
 
     if let Some(certificate) = certificate {
         // Generate the file content
-        let file_content = match str::from_utf8(&certificate.cert()) {
+        let file_content = match str::from_utf8(certificate.cert()) {
             Ok(content) => content.to_string(),
             Err(_) => {
                 return (

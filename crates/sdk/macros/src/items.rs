@@ -33,7 +33,7 @@ impl Parse for StructOrEnumItem {
 
         input
             .is_empty()
-            .then(|| item)
+            .then_some(item)
             .ok_or_else(|| input.error("unexpected token"))
     }
 }

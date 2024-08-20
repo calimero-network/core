@@ -65,7 +65,7 @@ fn generate_challenge(
     keypair: &Keypair,
 ) -> Result<NodeChallenge, ApiError> {
     let random_bytes = generate_random_bytes();
-    let encoded = STANDARD.encode(&random_bytes);
+    let encoded = STANDARD.encode(random_bytes);
 
     let node_challenge_message = NodeChallengeMessage {
         nonce: encoded,

@@ -88,7 +88,7 @@ async fn init(
         .with_quic()
         .with_relay_client(noise::Config::new, yamux::Config::default)?
         .with_behaviour(|key, relay_behaviour| Behaviour {
-            dcutr: dcutr::Behaviour::new(peer_id.clone()),
+            dcutr: dcutr::Behaviour::new(peer_id),
             identify: identify::Behaviour::new(
                 identify::Config::new(PROTOCOL_VERSION.to_owned(), key.public())
                     .with_push_listen_addr_updates(true),
@@ -234,12 +234,9 @@ impl EventLoop {
                 Ok(query_id) => {
                     self.pending_bootstrap.insert(query_id, sender);
                 }
-                Err(err) => {
-                    sender
-                        .send(Err(eyre::eyre!(err)))
-                        .expect("Receiver not to be dropped.");
-                    return;
-                }
+                Err(err) => sender
+                    .send(Err(eyre::eyre!(err)))
+                    .expect("Receiver not to be dropped."),
             },
             Command::Dial {
                 mut peer_addr,
@@ -295,6 +292,16 @@ impl EventLoop {
             }
             Command::PeerCount { sender } => {
                 let _ = sender.send(self.swarm.connected_peers().count());
+            }
+            Command::MeshPeers { topic, sender } => {
+                let _ = sender.send(
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .mesh_peers(&topic)
+                        .cloned()
+                        .collect(),
+                );
             }
             Command::MeshPeerCount { topic, sender } => {
                 let _ = sender.send(
@@ -372,6 +379,10 @@ enum Command {
     MeshPeerCount {
         topic: gossipsub::TopicHash,
         sender: oneshot::Sender<usize>,
+    },
+    MeshPeers {
+        topic: gossipsub::TopicHash,
+        sender: oneshot::Sender<Vec<PeerId>>,
     },
     Publish {
         topic: gossipsub::TopicHash,

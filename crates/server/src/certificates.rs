@@ -94,7 +94,7 @@ async fn check_certificate(store: Store, cert: SSLCert) -> eyre::Result<(Vec<u8>
     }
 
     if !ip_found {
-        return Ok(generate_certificate(store.clone()).await?);
+        return generate_certificate(store.clone()).await;
     }
     Ok((cert_pem.clone(), key_pem.clone()))
 }

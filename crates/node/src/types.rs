@@ -1,8 +1,10 @@
+use calimero_primitives::identity::PublicKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PeerAction {
+    SharePublicKey(PublicKey),
     Transaction(calimero_primitives::transaction::Transaction),
     TransactionConfirmation(TransactionConfirmation),
     TransactionRejection(TransactionRejection),
@@ -35,18 +37,20 @@ pub enum CatchupStreamMessage {
 pub struct CatchupRequest {
     pub context_id: calimero_primitives::context::ContextId,
     pub application_id: Option<calimero_primitives::application::ApplicationId>,
-    pub url: Option<String>,
-    pub hash: Option<String>,
+    pub source: Option<calimero_primitives::application::ApplicationSource>,
     pub last_executed_transaction_hash: calimero_primitives::hash::Hash,
     pub batch_size: u8,
+    pub public_key: PublicKey,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CatchupApplicationChanged {
     pub application_id: calimero_primitives::application::ApplicationId,
-    pub version: semver::Version,
-    pub url: String,
-    pub hash: String,
+    pub blob_id: calimero_primitives::blobs::BlobId,
+    pub version: Option<semver::Version>,
+    pub source: calimero_primitives::application::ApplicationSource,
+    pub hash: Option<calimero_primitives::hash::Hash>,
+    pub metadata: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
