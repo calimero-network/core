@@ -48,6 +48,7 @@ pub struct CatchupApplicationChanged {
     pub version: Option<semver::Version>,
     pub source: calimero_primitives::application::ApplicationSource,
     pub hash: Option<calimero_primitives::hash::Hash>,
+    pub metadata: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

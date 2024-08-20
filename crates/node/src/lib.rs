@@ -350,16 +350,17 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                 match subcommand {
                     "install" => {
-                        let Some((type_, resource, version)) = args.and_then(|args| {
+                        let Some((type_, resource, version, metadata)) = args.and_then(|args| {
                             let mut iter = args.split(' ');
                             let type_ = iter.next()?;
                             let resource = iter.next()?;
                             let version = iter.next();
+                            let metadata = iter.next()?.as_bytes().to_vec();
 
-                            Some((type_, resource, version))
+                            Some((type_, resource, version, metadata))
                         }) else {
                             println!(
-                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [version]"
+                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [version] <metadata>"
                             );
                             break 'done;
                         };
@@ -379,14 +380,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                 println!("{IND} Downloading application..");
 
                                 node.ctx_manager
-                                    .install_application_from_url(url, version)
+                                    .install_application_from_url(url, version, Vec::new())
                                     .await?
                             }
                             "file" => {
                                 let path = camino::Utf8PathBuf::from(resource);
 
                                 node.ctx_manager
-                                    .install_application_from_path(path, version)
+                                    .install_application_from_path(path, version, metadata)
                                     .await?
                             }
                             unknown => {

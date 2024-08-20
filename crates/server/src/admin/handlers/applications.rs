@@ -17,7 +17,7 @@ pub async fn install_dev_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application_from_path(req.path, req.version)
+        .install_application_from_path(req.path, req.version, req.metadata)
         .await
     {
         Ok(application_id) => ApiResponse {

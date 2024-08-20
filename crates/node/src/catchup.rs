@@ -87,6 +87,7 @@ impl Node {
                     version: application.version,
                     source: application.source,
                     hash: None, // todo! blob_mgr(application.blob)?.hash
+                    metadata: Some(Vec::new()),
                 },
             ))?;
             stream
@@ -379,6 +380,7 @@ impl Node {
                             .install_application_from_url(
                                 change.source.to_string().parse()?,
                                 change.version,
+                                Vec::new(),
                             )
                             .await?;
                     } else {
@@ -388,6 +390,7 @@ impl Node {
                             .install_application_from_path(
                                 change.source.to_string().parse()?,
                                 change.version,
+                                Vec::new(),
                             )
                             .await?;
                     }
