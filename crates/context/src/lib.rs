@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
-use calimero_primitives::identity::KeyPair;
+use calimero_primitives::identity::{KeyPair, PublicKey};
 use camino::Utf8PathBuf;
 use futures_util::TryStreamExt;
 use reqwest::Url;
@@ -92,18 +92,37 @@ impl ContextManager {
 }
 
 impl ContextManager {
-    pub async fn add_context(
+    pub async fn create_context(
         &self,
-        context: calimero_primitives::context::Context,
+        context: &calimero_primitives::context::Context,
         initial_identity: KeyPair,
     ) -> eyre::Result<()> {
+        self.add_context(context, initial_identity).await?;
+
+        self.subscribe(&context.id).await?;
+
+        Ok(())
+    }
+
+    pub async fn add_context(
+        &self,
+        context: &calimero_primitives::context::Context,
+        _initial_identity: KeyPair,
+    ) -> eyre::Result<()> {
+        // TODO: Store passed initial identity
+        // This ensures that all peers in the
+        // context have the same ContextIdentity
+        let initial_identity = KeyPair {
+            public_key: PublicKey([0; 32]),
+            private_key: Some([0; 32]),
+        };
+
         if !self.is_application_installed(&context.application_id)? {
             eyre::bail!("Application is not installed on node.")
         }
 
         let mut handle = self.store.handle();
 
-        // Store ContextMeta
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
@@ -112,15 +131,11 @@ impl ContextManager {
             },
         )?;
 
-        // Store ContextIdentity
         let identity_key = calimero_store::key::ContextIdentity::new(
             context.id,
             initial_identity.public_key.clone(),
         );
-        let context_identity: calimero_store::types::ContextIdentity = initial_identity.into();
-        handle.put(&identity_key, &context_identity)?;
-
-        self.subscribe(&context.id).await?;
+        handle.put(&identity_key, &initial_identity.into())?;
 
         Ok(())
     }
@@ -128,15 +143,22 @@ impl ContextManager {
     pub async fn join_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
-        initial_identity: KeyPair,
+        _initial_identity: KeyPair,
     ) -> eyre::Result<Option<()>> {
+        // TODO: Store passed initial identity
+        // This ensures that all peers in the
+        // context have the same ContextIdentity
+        let initial_identity = KeyPair {
+            public_key: PublicKey([0; 32]),
+            private_key: Some([0; 32]),
+        };
+
         if self.state.read().await.pending_catchup.contains(context_id) {
             return Ok(None);
         }
 
         let mut handle = self.store.handle();
 
-        // Store ContextIdentity
         let identity_key = calimero_store::key::ContextIdentity::new(
             *context_id,
             initial_identity.public_key.clone(),
@@ -328,7 +350,10 @@ impl ContextManager {
         path: Utf8PathBuf,
         version: Option<semver::Version>,
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
-        let path_without_prefix = path.as_str().strip_prefix("file://").unwrap_or(path.as_str());
+        let path_without_prefix = path
+            .as_str()
+            .strip_prefix("file://")
+            .unwrap_or(path.as_str());
         let utf_path_buf = Utf8PathBuf::from_str(path_without_prefix)?;
         let file = fs::File::open(utf_path_buf).await?;
 

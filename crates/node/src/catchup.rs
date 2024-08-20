@@ -1,11 +1,10 @@
 use std::collections::VecDeque;
 
 use calimero_primitives::identity::{KeyPair, PublicKey};
-use calimero_store::layer::ReadLayer;
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use rand::seq::SliceRandom;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::{types, Node};
@@ -228,7 +227,6 @@ impl Node {
                     application_id: Some(context.application_id),
                     last_executed_transaction_hash: context.last_transaction_hash,
                     batch_size: self.network_client.catchup_config.batch_size,
-                    public_key: PublicKey([0; 32]), // todo! get public key(s) from storage
                 },
             ),
             None => (
@@ -238,9 +236,6 @@ impl Node {
                     application_id: None,
                     last_executed_transaction_hash: calimero_primitives::hash::Hash::default(),
                     batch_size: self.network_client.catchup_config.batch_size,
-                    // In this situation, where we have no context, we have no way to know the
-                    // public key.
-                    public_key: PublicKey([0; 32]),
                 },
             ),
         };
@@ -291,30 +286,6 @@ impl Node {
         message: types::CatchupStreamMessage,
     ) -> eyre::Result<Option<calimero_primitives::context::Context>> {
         match message {
-            // TODO: Figure out how to handle this
-            types::CatchupStreamMessage::Request(request) => {
-                // Handle the initial catchup request
-                info!(
-                    ?request,
-                    "Received catchup request for context {}", request.context_id
-                );
-
-                // TODO: Consider storing the public key in the future? E.g.
-                // self.store_peer_public_key(chosen_peer, request.public_key)?;
-
-                // If we don't have a context yet, create one
-                // if context.is_none() {
-                //     context = Some(calimero_primitives::context::Context {
-                //         id: request.context_id,
-                //         application_id: request.application_id.ok_or_else(|| {
-                //             eyre::eyre!("Application ID missing in catchup request")
-                //         })?,
-                //         last_transaction_hash: request.last_executed_transaction_hash,
-                //     });
-                // }
-
-                // Note: Might need to prepare and send an initial response?
-            }
             types::CatchupStreamMessage::TransactionsBatch(batch) => {
                 let Some(ref mut context_) = context else {
                     eyre::bail!("Received transactions batch for uninitialized context");
@@ -436,34 +407,9 @@ impl Node {
                             last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
-                        // TODO: Figure out how to handle this
-                        // Retrieve the initial identity that should have been set by join_context
-                        // let identity_key = calimero_store::key::ContextIdentity::new(
-                        //     context_id,
-                        //     PublicKey([0; 32]),
-                        // );
-                        // let initial_identity: KeyPair = self
-                        //     .store
-                        //     .handle()
-                        //     .get(&identity_key)?
-                        //     .ok_or_else(|| {
-                        //         eyre::eyre!("Initial identity not found for context {}", context_id)
-                        //     })?
-                        //     .into();
-
-                        // // Share our public key with the catchup node
-                        // self.network_client
-                        //     .publish(
-                        //         libp2p::gossipsub::TopicHash::from_raw(context_id),
-                        //         serde_json::to_vec(&types::PeerAction::SharePublicKey(
-                        //             initial_identity.public_key.clone(),
-                        //         ))?,
-                        //     )
-                        //     .await?;
-
                         self.ctx_manager
                             .add_context(
-                                context_inner.clone(),
+                                &context_inner,
                                 KeyPair {
                                     public_key: PublicKey([0; 32]),
                                     private_key: Some([0; 32]),
@@ -478,6 +424,9 @@ impl Node {
             types::CatchupStreamMessage::Error(err) => {
                 error!(?err, "Received error during catchup");
                 eyre::bail!(err);
+            }
+            types::CatchupStreamMessage::Request(request) => {
+                warn!("Unexpected message: {:?}", request)
             }
         }
 

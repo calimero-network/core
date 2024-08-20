@@ -39,7 +39,6 @@ pub struct CatchupRequest {
     pub application_id: Option<calimero_primitives::application::ApplicationId>,
     pub last_executed_transaction_hash: calimero_primitives::hash::Hash,
     pub batch_size: u8,
-    pub public_key: PublicKey,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
