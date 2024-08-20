@@ -43,22 +43,24 @@ impl CreateCommand {
             CreateCommand {
                 application_id: Some(app_id),
                 watch: None,
-                metadata: None,
+                metadata: _,
             } => {
                 create_context(multiaddr, app_id, &client).await?;
             }
             CreateCommand {
                 application_id: None,
                 watch: Some(path),
-                metadata: Some(metadata),
+                metadata,
             } => {
                 let path = path.canonicalize_utf8()?;
 
-                let application_id = install_app(multiaddr, path.clone(), &client, Some(metadata.clone())).await?;
+                let application_id =
+                    install_app(multiaddr, path.clone(), &client, metadata.clone()).await?;
 
                 let context_id = create_context(multiaddr, application_id, &client).await?;
 
-                watch_app_and_update_context(multiaddr, context_id, path, &client, Some(metadata)).await?;
+                watch_app_and_update_context(multiaddr, context_id, path, &client, metadata)
+                    .await?;
             }
             _ => eyre::bail!("Invalid command configuration"),
         }
@@ -144,7 +146,8 @@ async fn watch_app_and_update_context(
             _ => continue,
         }
 
-        let application_id = install_app(base_multiaddr, path.clone(), &client, metadata.clone()).await?;
+        let application_id =
+            install_app(base_multiaddr, path.clone(), &client, metadata.clone()).await?;
 
         update_context_application(base_multiaddr, context_id, application_id, client).await?;
     }
