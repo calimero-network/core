@@ -1,5 +1,6 @@
 use std::str::FromStr;
 use std::sync::Arc;
+use std::vec;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
@@ -13,8 +14,10 @@ use crate::admin::storage::client_keys::get_context_client_key;
 use crate::admin::utils::context::{create_context, join_context};
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContextObject {
     context: calimero_primitives::context::Context,
+    context_identities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,12 +37,26 @@ pub async fn get_context_handler(
 
     match context {
         Ok(ctx) => match ctx {
-            Some(context) => ApiResponse {
-                payload: GetContextResponse {
-                    data: ContextObject { context },
-                },
+            Some(context) => {
+                let context_identities = state
+                    .ctx_manager
+                    .get_context_identities(context.id)
+                    .map_err(|err| parse_api_error(err).into_response())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|identity| bs58::encode(identity.0).into_string())
+                    .collect::<Vec<String>>();
+
+                ApiResponse {
+                    payload: GetContextResponse {
+                        data: ContextObject {
+                            context,
+                            context_identities,
+                        },
+                    },
+                }
+                .into_response()
             }
-            .into_response(),
             None => ApiError {
                 status_code: StatusCode::NOT_FOUND,
                 message: "Context not found".into(),

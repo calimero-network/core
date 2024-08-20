@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
-use calimero_primitives::identity::KeyPair;
+use calimero_primitives::identity::{KeyPair, PublicKey};
 use camino::Utf8PathBuf;
 use futures_util::TryStreamExt;
 use reqwest::Url;
@@ -215,7 +215,7 @@ impl ContextManager {
         Ok(true)
     }
 
-    pub fn get_context_ids(
+    pub fn get_contexts_ids(
         &self,
         start: Option<calimero_primitives::context::ContextId>,
     ) -> eyre::Result<Vec<calimero_primitives::context::ContextId>> {
@@ -235,6 +235,30 @@ impl ContextManager {
             ids.push(key?.context_id());
         }
 
+        Ok(ids)
+    }
+
+    // Iterate over all identities in a context (from members and mine)
+    // and return only public key of identities which contains private key (in value)
+    // If there is private key then it means that identity is mine.
+    pub fn get_context_identities(
+        &self,
+        context_id: calimero_primitives::context::ContextId,
+    ) -> eyre::Result<Vec<PublicKey>> {
+        let handle = self.store.handle();
+
+        let mut iter = handle.iter::<calimero_store::key::ContextIdentity>()?;
+        let mut ids = Vec::<PublicKey>::new();
+
+        for (k, v) in iter.entries() {
+            let (k, v) = (k?, v?);
+
+            if k.context_id() == context_id {
+                if v.private_key.is_some() {
+                    ids.push(PublicKey::from(k.public_key()));
+                }
+            }
+        }
         Ok(ids)
     }
 
