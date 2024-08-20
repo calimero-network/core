@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 
-use calimero_primitives::identity::{KeyPair, PublicKey};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use rand::seq::SliceRandom;
@@ -410,15 +409,7 @@ impl Node {
                             last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
-                        self.ctx_manager
-                            .add_context(
-                                &context_inner,
-                                KeyPair {
-                                    public_key: PublicKey([0; 32]),
-                                    private_key: Some([0; 32]),
-                                },
-                            )
-                            .await?;
+                        self.ctx_manager.add_context(&context_inner, None).await?;
 
                         context = Some(context_inner);
                     }

@@ -3,7 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use calimero_network::client::NetworkClient;
-use calimero_primitives::identity::{KeyPair, PublicKey};
+use calimero_primitives::identity::KeyPair;
 use camino::Utf8PathBuf;
 use futures_util::TryStreamExt;
 use reqwest::Url;
@@ -97,7 +97,7 @@ impl ContextManager {
         context: &calimero_primitives::context::Context,
         initial_identity: KeyPair,
     ) -> eyre::Result<()> {
-        self.add_context(context, initial_identity).await?;
+        self.add_context(context, Some(initial_identity)).await?;
 
         self.subscribe(&context.id).await?;
 
@@ -107,16 +107,8 @@ impl ContextManager {
     pub async fn add_context(
         &self,
         context: &calimero_primitives::context::Context,
-        _initial_identity: KeyPair,
+        initial_identity: Option<KeyPair>,
     ) -> eyre::Result<()> {
-        // TODO: Store passed initial identity
-        // This ensures that all peers in the
-        // context have the same ContextIdentity
-        let initial_identity = KeyPair {
-            public_key: PublicKey([0; 32]),
-            private_key: Some([0; 32]),
-        };
-
         if !self.is_application_installed(&context.application_id)? {
             eyre::bail!("Application is not installed on node.")
         }
@@ -131,11 +123,13 @@ impl ContextManager {
             },
         )?;
 
-        let identity_key = calimero_store::key::ContextIdentity::new(
-            context.id,
-            initial_identity.public_key.clone(),
-        );
-        handle.put(&identity_key, &initial_identity.into())?;
+        if let Some(initial_identity) = initial_identity {
+            let identity_key = calimero_store::key::ContextIdentity::new(
+                context.id,
+                initial_identity.public_key.clone(),
+            );
+            handle.put(&identity_key, &initial_identity.into())?;
+        }
 
         Ok(())
     }
@@ -143,16 +137,8 @@ impl ContextManager {
     pub async fn join_context(
         &self,
         context_id: &calimero_primitives::context::ContextId,
-        _initial_identity: KeyPair,
+        initial_identity: KeyPair,
     ) -> eyre::Result<Option<()>> {
-        // TODO: Store passed initial identity
-        // This ensures that all peers in the
-        // context have the same ContextIdentity
-        let initial_identity = KeyPair {
-            public_key: PublicKey([0; 32]),
-            private_key: Some([0; 32]),
-        };
-
         if self.state.read().await.pending_catchup.contains(context_id) {
             return Ok(None);
         }
