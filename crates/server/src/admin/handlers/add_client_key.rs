@@ -6,7 +6,7 @@ use axum::{Extension, Json};
 use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_server_primitives::admin::{
     AddPublicKeyRequest, EthSignatureMessageMetadata, IntermediateAddPublicKeyRequest,
-    NearSignatureMessageMetadata, Payload, SignatureMetadataEnum,
+    NearSignatureMessageMetadata, Payload, SignatureMetadataEnum, StarknetSignatureMessageMetadata,
 };
 use calimero_store::Store;
 use chrono::Utc;
@@ -42,6 +42,16 @@ pub fn transform_request(
                 message: "Invalid metadata.".into(),
             })?;
             SignatureMetadataEnum::ETH(metadata)
+        }
+        WalletType::SN { .. } => {
+            let metadata = serde_json::from_value::<StarknetSignatureMessageMetadata>(
+                intermediate.payload.metadata,
+            )
+            .map_err(|_| ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid metadata.".into(),
+            })?;
+            SignatureMetadataEnum::SN(metadata)
         }
     };
 
@@ -110,7 +120,7 @@ fn check_root_key(
         //first login so store root key as well
         store_root_key(
             req.wallet_metadata.signing_key.clone(),
-            req.wallet_metadata.wallet_type,
+            req.wallet_metadata.wallet_type.clone(),
             store,
         )?;
         Ok(req)
