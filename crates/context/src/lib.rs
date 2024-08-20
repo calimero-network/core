@@ -255,7 +255,7 @@ impl ContextManager {
 
             if k.context_id() == context_id {
                 if v.private_key.is_some() {
-                    ids.push(PublicKey::from(k.public_key()));
+                    ids.push(PublicKey(k.public_key()));
                 }
             }
         }
