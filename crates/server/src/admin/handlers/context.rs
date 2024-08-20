@@ -40,7 +40,7 @@ pub async fn get_context_handler(
             Some(context) => {
                 let context_identities = state
                     .ctx_manager
-                    .get_context_identities(context.id)
+                    .get_context_owned_identities(context.id)
                     .map_err(|err| parse_api_error(err).into_response())
                     .unwrap_or_default()
                     .into_iter()

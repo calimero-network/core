@@ -238,12 +238,10 @@ impl ContextManager {
         Ok(ids)
     }
 
-    // Iterate over all identities in a context (from members and mine)
-    // and return only public key of identities which contains private key (in value)
-    // If there is private key then it means that identity is mine.
-    pub fn get_context_identities(
+    fn get_context_identities(
         &self,
         context_id: calimero_primitives::context::ContextId,
+        only_owned_identities: bool,
     ) -> eyre::Result<Vec<PublicKey>> {
         let handle = self.store.handle();
 
@@ -254,12 +252,29 @@ impl ContextManager {
             let (k, v) = (k?, v?);
 
             if k.context_id() == context_id {
-                if v.private_key.is_some() {
+                if !only_owned_identities || v.private_key.is_some() {
                     ids.push(PublicKey(k.public_key()));
                 }
             }
         }
         Ok(ids)
+    }
+
+    pub fn get_context_members_identities(
+        &self,
+        context_id: calimero_primitives::context::ContextId,
+    ) -> eyre::Result<Vec<PublicKey>> {
+        Ok(self.get_context_identities(context_id, false)?)
+    }
+
+    // Iterate over all identities in a context (from members and mine)
+    // and return only public key of identities which contains private key (in value)
+    // If there is private key then it means that identity is mine.
+    pub fn get_context_owned_identities(
+        &self,
+        context_id: calimero_primitives::context::ContextId,
+    ) -> eyre::Result<Vec<PublicKey>> {
+        Ok(self.get_context_identities(context_id, true)?)
     }
 
     pub fn get_contexts(
