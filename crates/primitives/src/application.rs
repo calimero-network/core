@@ -98,6 +98,7 @@ pub struct Application {
     pub blob: BlobId,
     pub version: Option<semver::Version>,
     pub source: ApplicationSource,
+    pub metadata: Vec<u8>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

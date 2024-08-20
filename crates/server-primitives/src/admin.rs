@@ -7,13 +7,15 @@ use serde_json::Value;
 pub struct InstallApplicationRequest {
     pub url: url::Url,
     pub version: Option<semver::Version>,
-    pub hash: calimero_primitives::hash::Hash,
+    pub hash: Option<calimero_primitives::hash::Hash>,
+    pub metadata: Vec<u8>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct InstallDevApplicationRequest {
     pub path: Utf8PathBuf,
     pub version: Option<semver::Version>,
+    pub metadata: Vec<u8>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

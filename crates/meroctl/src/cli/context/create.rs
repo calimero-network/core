@@ -18,6 +18,7 @@ pub struct CreateCommand {
     /// Path to the application file to watch and install locally
     #[clap(long, short = 'w', exclusive = true)]
     watch: Option<Utf8PathBuf>,
+    metadata: Option<Vec<u8>>,
 }
 
 impl CreateCommand {
@@ -42,20 +43,22 @@ impl CreateCommand {
             CreateCommand {
                 application_id: Some(app_id),
                 watch: None,
+                metadata: None,
             } => {
                 create_context(multiaddr, app_id, &client).await?;
             }
             CreateCommand {
                 application_id: None,
                 watch: Some(path),
+                metadata: Some(metadata),
             } => {
                 let path = path.canonicalize_utf8()?;
 
-                let application_id = install_app(multiaddr, path.clone(), &client).await?;
+                let application_id = install_app(multiaddr, path.clone(), &client, Some(metadata.clone())).await?;
 
                 let context_id = create_context(multiaddr, application_id, &client).await?;
 
-                watch_app_and_update_context(multiaddr, context_id, path, &client).await?;
+                watch_app_and_update_context(multiaddr, context_id, path, &client, Some(metadata)).await?;
             }
             _ => eyre::bail!("Invalid command configuration"),
         }
@@ -108,6 +111,7 @@ async fn watch_app_and_update_context(
     context_id: calimero_primitives::context::ContextId,
     path: Utf8PathBuf,
     client: &Client,
+    metadata: Option<Vec<u8>>,
 ) -> eyre::Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -140,7 +144,7 @@ async fn watch_app_and_update_context(
             _ => continue,
         }
 
-        let application_id = install_app(base_multiaddr, path.clone(), &client).await?;
+        let application_id = install_app(base_multiaddr, path.clone(), &client, metadata.clone()).await?;
 
         update_context_application(base_multiaddr, context_id, application_id, client).await?;
     }
@@ -208,12 +212,14 @@ async fn install_app(
     base_multiaddr: &Multiaddr,
     path: Utf8PathBuf,
     client: &Client,
+    metadata: Option<Vec<u8>>,
 ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
     let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
         version: None,
         path,
+        metadata: metadata.unwrap_or_else(Vec::new),
     };
 
     let install_response = client
