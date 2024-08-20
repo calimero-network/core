@@ -4,7 +4,8 @@ use calimero_identity::auth::verify_eth_signature;
 use calimero_primitives::identity::WalletType;
 use calimero_server_primitives::admin::{
     AddPublicKeyRequest, EthSignatureMessageMetadata, NearSignatureMessageMetadata,
-    NodeChallengeMessage, Payload, SignatureMessage, SignatureMetadataEnum, WalletMetadata,
+    NodeChallengeMessage, Payload, SignatureMessage, SignatureMetadataEnum,
+    StarknetSignatureMessageMetadata, WalletMetadata, WalletSignature,
 };
 use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
@@ -15,10 +16,11 @@ use tracing::info;
 use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::root_key::get_root_key;
 use crate::verifysignature::verify_near_signature;
+use crate::verifysnsignature::{verify_argent_signature, verify_metamask_signature};
 
 pub fn verify_node_signature(
     wallet_metadata: &WalletMetadata,
-    wallet_signature: &str,
+    wallet_signature: &WalletSignature,
     payload: &Payload,
 ) -> Result<bool, ApiError> {
     match wallet_metadata.wallet_type {
@@ -33,12 +35,22 @@ pub fn verify_node_signature(
                 }
             };
 
+            let signature_str = match wallet_signature {
+                WalletSignature::String(sig) => sig,
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid wallet signature type.".into(),
+                    })
+                }
+            };
+
             let result = verify_near_signature(
                 &payload.message.nonce,
                 &payload.message.message,
                 &near_metadata.recipient,
                 &near_metadata.callback_url,
-                &wallet_signature,
+                &signature_str,
                 &wallet_metadata.signing_key,
             );
 
@@ -61,11 +73,76 @@ pub fn verify_node_signature(
                 }
             };
 
+            let signature_str = match wallet_signature {
+                WalletSignature::String(sig) => sig,
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid wallet signature type.".into(),
+                    })
+                }
+            };
+
             if let Err(err) = verify_eth_signature(
                 &wallet_metadata.signing_key,
                 &payload.message.message,
-                wallet_signature,
+                signature_str,
             ) {
+                return Err(parse_api_error(err));
+            }
+
+            Ok(true)
+        }
+        WalletType::SN { ref wallet_name } => {
+            let _sn_metadata: &StarknetSignatureMessageMetadata = match &payload.metadata {
+                SignatureMetadataEnum::SN(metadata) => metadata,
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid metadata.".into(),
+                    })
+                }
+            };
+
+            let (message_hash, signature) = match wallet_signature {
+                WalletSignature::StarknetPayload(payload) => {
+                    (payload.message_hash.clone(), payload.signature.clone())
+                }
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid wallet signature type for Starknet.".into(),
+                    })
+                }
+            };
+
+            let result = match wallet_name.as_str() {
+                "argentX" => tokio::task::block_in_place(|| {
+                    tokio::runtime::Runtime::new()
+                        .unwrap()
+                        .block_on(verify_argent_signature(
+                            message_hash,
+                            signature,
+                            wallet_metadata.signing_key.clone(),
+                            &payload.message.message,
+                        ))
+                }),
+                "metamask" => verify_metamask_signature(
+                    message_hash,
+                    signature,
+                    wallet_metadata.signing_key.clone(),
+                    &payload.message.message,
+                    wallet_metadata.wallet_address.clone().unwrap_or_default(),
+                ),
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid wallet name for Starknet.".into(),
+                    })
+                }
+            };
+
+            if let Err(err) = result {
                 return Err(parse_api_error(err));
             }
 
