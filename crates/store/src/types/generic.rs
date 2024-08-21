@@ -3,7 +3,7 @@ use crate::key;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
-#[derive(Eq, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenericData<'a> {
     value: Slice<'a>,
 }

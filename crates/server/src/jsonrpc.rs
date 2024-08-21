@@ -11,7 +11,7 @@ use tracing::{debug, error, info};
 mod mutate;
 mod query;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct JsonRpcConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,

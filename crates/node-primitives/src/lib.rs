@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub enum NodeType {
     Peer,
     Coordinator,
@@ -26,7 +26,7 @@ pub type ServerSender = mpsc::Sender<(
     oneshot::Sender<Result<calimero_runtime::logic::Outcome, CallError>>,
 )>;
 
-#[derive(Clone, Debug, Serialize, Deserialize, Error)]
+#[derive(Clone, Debug, Deserialize, Error, Serialize)]
 #[error("CallError")]
 #[serde(tag = "type", content = "data")]
 pub enum CallError {
@@ -37,7 +37,7 @@ pub enum CallError {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Error)]
+#[derive(Clone, Debug, Deserialize, Error, Serialize)]
 #[error("QueryCallError")]
 #[serde(tag = "type", content = "data")]
 pub enum QueryCallError {
@@ -47,7 +47,7 @@ pub enum QueryCallError {
     InternalError,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Error)]
+#[derive(Clone, Debug, Deserialize, Error, Serialize)]
 #[error("MutateCallError")]
 #[serde(tag = "type", content = "data")]
 pub enum MutateCallError {

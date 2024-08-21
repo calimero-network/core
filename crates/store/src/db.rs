@@ -11,7 +11,7 @@ mod rocksdb;
 pub use memory::InMemoryDB;
 pub use rocksdb::RocksDB;
 
-#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd, EnumIter, AsRefStr)]
+#[derive(AsRefStr, Clone, Copy, Debug, EnumIter, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Column {
     Meta,
     Identity,

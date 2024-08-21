@@ -25,7 +25,7 @@ impl SSLEntry {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SSLCert {
     cert: Vec<u8>,
     key: Vec<u8>,

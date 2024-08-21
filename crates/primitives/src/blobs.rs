@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::hash::{Error as HashError, Hash};
 
-#[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct BlobId(Hash);
 
 impl BlobId {

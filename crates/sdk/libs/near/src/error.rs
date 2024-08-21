@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -13,7 +14,7 @@ pub enum Error<R> {
     ServerError(RpcError<R>),
 }
 
-#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "name", content = "cause", rename_all = "SCREAMING_SNAKE_CASE")]
 #[allow(clippy::enum_variant_names)]
 pub enum RpcErrorKind<R> {
@@ -22,14 +23,14 @@ pub enum RpcErrorKind<R> {
     InternalError(Value),
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "name", content = "info", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RpcRequestValidationErrorKind {
     MethodNotFound { method_name: String },
     ParseError { error_message: String },
 }
 
-#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RpcError<T> {
     #[serde(flatten)]

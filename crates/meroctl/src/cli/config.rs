@@ -45,7 +45,7 @@ pub struct ConfigCommand {
     pub print: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Args, Debug)]
 #[group(multiple = false)]
 pub struct MdnsArgs {
     /// Enable mDNS discovery

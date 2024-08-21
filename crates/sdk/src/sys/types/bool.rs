@@ -1,5 +1,5 @@
 #[repr(C)]
-#[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Bool(u32);
 
 impl TryFrom<Bool> for bool {

@@ -15,7 +15,7 @@ impl KeyComponent for ContextId {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
@@ -66,7 +66,7 @@ impl KeyComponent for PublicKey {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
@@ -135,7 +135,7 @@ impl KeyComponent for StateKey {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
@@ -199,7 +199,7 @@ impl KeyComponent for TransactionId {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)

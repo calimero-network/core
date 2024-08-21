@@ -13,7 +13,7 @@ use thiserror::Error;
 const BYTES_LEN: usize = 32;
 const MAX_STR_LEN: usize = (BYTES_LEN + 1) * 4 / 3;
 
-#[derive(Copy, Clone)]
+#[derive(Clone, Copy)]
 pub struct Hash {
     // todo! consider genericizing over a const N
     bytes: [u8; BYTES_LEN],

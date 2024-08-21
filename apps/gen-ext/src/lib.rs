@@ -5,7 +5,7 @@ use calimero_sdk_near::views::QueryRequest;
 use calimero_sdk_near::Client;
 
 #[app::state]
-#[derive(Default, BorshSerialize, BorshDeserialize)]
+#[derive(BorshDeserialize, BorshSerialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct GenExt;
 

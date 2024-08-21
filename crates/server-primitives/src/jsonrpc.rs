@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum RequestId {
     String(String),
@@ -39,7 +39,7 @@ impl<'de> Deserialize<'de> for Version {
 }
 
 // **************************** request *******************************
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request<P> {
     pub jsonrpc: Version,
@@ -48,7 +48,7 @@ pub struct Request<P> {
     pub payload: P,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum RequestPayload {
     Query(QueryRequest),
@@ -57,7 +57,7 @@ pub enum RequestPayload {
 // *************************************************************************
 
 // **************************** response *******************************
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     pub jsonrpc: Version,
@@ -66,24 +66,24 @@ pub struct Response {
     pub body: ResponseBody,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ResponseBody {
     Result(ResponseBodyResult),
     Error(ResponseBodyError),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ResponseBodyResult(pub serde_json::Value);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum ResponseBodyError {
     ServerError(ServerResponseError),
     HandlerError(serde_json::Value),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerResponseError {
     ParseError(String),
@@ -95,7 +95,7 @@ pub enum ServerResponseError {
 // *************************************************************************
 
 // **************************** call method *******************************
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
     pub context_id: calimero_primitives::context::ContextId,
@@ -104,13 +104,13 @@ pub struct QueryRequest {
     pub executor_public_key: [u8; 32],
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResponse {
     pub output: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Error)]
+#[derive(Debug, Deserialize, Error, Serialize)]
 #[error("QueryError")]
 #[serde(tag = "type", content = "data")]
 pub enum QueryError {
@@ -121,7 +121,7 @@ pub enum QueryError {
 // *************************************************************************
 
 // **************************** call_mut method ****************************
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutateRequest {
     pub context_id: calimero_primitives::context::ContextId,
@@ -130,13 +130,13 @@ pub struct MutateRequest {
     pub executor_public_key: [u8; 32],
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutateResponse {
     pub output: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Error)]
+#[derive(Debug, Deserialize, Error, Serialize)]
 #[error("MutateError")]
 #[serde(tag = "type", content = "data")]
 pub enum MutateError {

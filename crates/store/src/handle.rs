@@ -19,7 +19,7 @@ impl<L: Layer> Handle<L> {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(Debug, Error)]
 pub enum Error<E> {
     #[error(transparent)]
     LayerError(#[from] eyre::Report),

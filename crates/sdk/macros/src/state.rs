@@ -4,7 +4,7 @@ use syn::parse::Parse;
 use crate::macros::infallible;
 use crate::{errors, items, reserved, sanitizer};
 
-#[derive(Copy, Clone)]
+#[derive(Clone, Copy)]
 pub struct StateImpl<'a> {
     ident: &'a syn::Ident,
     generics: &'a syn::Generics,

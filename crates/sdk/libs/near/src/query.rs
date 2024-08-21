@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::types::{AccountId, BlockHash, BlockHeight, BlockId, ShardId};
@@ -7,14 +8,14 @@ use crate::views::{
 };
 use crate::RpcMethod;
 
-#[derive(serde::Serialize, Debug)]
+#[derive(Debug, Serialize)]
 pub struct RpcQueryRequest {
     pub block_id: BlockId,
     #[serde(flatten)]
     pub request: QueryRequest,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(Debug, Deserialize)]
 pub struct RpcQueryResponse {
     #[serde(flatten)]
     pub kind: QueryResponseKind,
@@ -22,7 +23,7 @@ pub struct RpcQueryResponse {
     pub block_hash: BlockHash,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum QueryResponseKind {
     ViewAccount(AccountView),
@@ -46,7 +47,7 @@ impl RpcMethod for RpcQueryRequest {
     }
 }
 
-#[derive(thiserror::Error, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Deserialize, thiserror::Error, Serialize)]
 #[serde(tag = "name", content = "info", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RpcQueryError {
     #[error("There are no fully synchronized blocks on the node yet")]

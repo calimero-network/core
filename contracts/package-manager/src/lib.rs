@@ -3,7 +3,7 @@ use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::store::iterable_map::IterableMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
 
-#[derive(BorshStorageKey, BorshSerialize)]
+#[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
 pub enum StorageKeys {
     Packages,
@@ -21,7 +21,7 @@ pub struct PackageManager {
 }
 
 //  TODO: add multiple owners
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct Package {
@@ -35,7 +35,7 @@ pub struct Package {
 // TODO: add a checksum in the future
 // TODO: figure out status of reproduciable builds
 // TODO: add better error checking for URL path
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct Release {

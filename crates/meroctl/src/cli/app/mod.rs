@@ -5,7 +5,7 @@ use super::RootArgs;
 mod install;
 mod list;
 
-#[derive(Parser, Debug)]
+#[derive(Debug, Parser)]
 pub struct AppCommand {
     #[command(subcommand)]
     pub subcommand: AppSubCommands,

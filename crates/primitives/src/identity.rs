@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
 
-#[derive(Eq, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeyPair {
     pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
@@ -11,7 +11,7 @@ pub struct KeyPair {
 
 // This could use a Hash, but we need to be able to serialize the PublicKey and
 // create::hash::Hash does not currently implement Borsh.
-#[derive(Eq, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
@@ -49,14 +49,14 @@ impl From<&KeyPair> for PublicKey {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Did {
     pub id: String,
     pub root_keys: Vec<RootKey>,
     pub client_keys: Vec<ClientKey>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RootKey {
     pub signing_key: String,
     #[serde(rename = "wallet")]
@@ -64,7 +64,7 @@ pub struct RootKey {
     pub created_at: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientKey {
     #[serde(rename = "wallet")]
@@ -74,14 +74,14 @@ pub struct ClientKey {
     pub context_id: Option<ContextId>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextUser {
     pub user_id: String,
     pub joined_at: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 #[serde(tag = "type")]
 pub enum WalletType {
@@ -92,7 +92,7 @@ pub enum WalletType {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NearNetworkId {
     Mainnet,

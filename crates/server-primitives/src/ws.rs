@@ -6,7 +6,7 @@ pub type ConnectionId = u64;
 pub type RequestId = u64;
 
 // **************************** request *******************************
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request<P> {
     pub id: Option<RequestId>,
@@ -14,7 +14,7 @@ pub struct Request<P> {
     pub payload: P,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum RequestPayload {
     Subscribe(SubscribeRequest),
@@ -23,7 +23,7 @@ pub enum RequestPayload {
 // *************************************************************************
 
 // **************************** response *******************************
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Response {
     pub id: Option<RequestId>,
@@ -31,21 +31,21 @@ pub struct Response {
     pub body: ResponseBody,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ResponseBody {
     Result(serde_json::Value),
     Error(ResponseBodyError),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum ResponseBodyError {
     ServerError(ServerResponseError),
     HandlerError(serde_json::Value),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerResponseError {
     ParseError(String),
@@ -57,13 +57,13 @@ pub enum ServerResponseError {
 // *************************************************************************
 
 // **************************** subscribe method *******************************
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscribeRequest {
     pub context_ids: Vec<calimero_primitives::context::ContextId>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscribeResponse {
     pub context_ids: Vec<calimero_primitives::context::ContextId>,
@@ -71,13 +71,13 @@ pub struct SubscribeResponse {
 // *************************************************************************
 
 // **************************** unsubscribe method *******************************
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeRequest {
     pub context_ids: Vec<calimero_primitives::context::ContextId>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnsubscribeResponse {
     pub context_ids: Vec<calimero_primitives::context::ContextId>,

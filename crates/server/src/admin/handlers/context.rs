@@ -12,12 +12,12 @@ use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, 
 use crate::admin::storage::client_keys::get_context_client_key;
 use crate::admin::utils::context::{create_context, join_context};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ContextObject {
     context: calimero_primitives::context::Context,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GetContextResponse {
     data: ContextObject,
 }
@@ -50,13 +50,13 @@ pub async fn get_context_handler(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientKeys {
     client_keys: Vec<calimero_primitives::identity::ClientKey>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GetContextClientKeysResponse {
     data: ClientKeys,
 }
@@ -79,13 +79,13 @@ pub async fn get_context_client_keys_handler(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextUsers {
     context_users: Vec<calimero_primitives::identity::ContextUser>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GetContextUsersResponse {
     data: ContextUsers,
 }
@@ -124,13 +124,13 @@ pub async fn get_contexts_handler(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletedContext {
     is_deleted: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DeleteContextResponse {
     data: DeletedContext,
 }

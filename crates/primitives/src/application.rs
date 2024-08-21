@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::blobs::BlobId;
 use crate::hash::{Error as HashError, Hash};
 
-#[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 // todo! define macros that construct newtypes
 // todo! wrapping Hash<N> with this interface
 pub struct ApplicationId(Hash);
@@ -63,7 +63,7 @@ impl FromStr for ApplicationId {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ApplicationSource(url::Url);
 
 impl FromStr for ApplicationSource {
@@ -92,7 +92,7 @@ impl fmt::Display for ApplicationSource {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Application {
     pub id: ApplicationId,
     pub blob: BlobId,
@@ -101,7 +101,7 @@ pub struct Application {
     pub metadata: Vec<u8>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Release {
     pub version: semver::Version,
     pub notes: String,

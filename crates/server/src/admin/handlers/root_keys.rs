@@ -66,7 +66,7 @@ pub fn store_root_key(
     Ok(true)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DeleteKeysResponse {
     data: Empty,
 }

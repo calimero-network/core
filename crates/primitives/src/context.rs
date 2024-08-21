@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::application::ApplicationId;
 use crate::hash::{Error as HashError, Hash};
 
-#[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 // todo! define macros that construct newtypes
 // todo! wrapping Hash<N> with this interface
 pub struct ContextId(Hash);
@@ -63,7 +63,7 @@ impl FromStr for ContextId {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Context {
     pub id: ContextId,

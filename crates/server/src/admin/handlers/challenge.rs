@@ -15,13 +15,13 @@ use tracing::error;
 
 use crate::admin::service::{AdminState, ApiError, ApiResponse};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestChallenge {
     pub(crate) context_id: Option<ContextId>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RequestChallengeResponse {
     data: NodeChallenge,

@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum PeerAction {
     Transaction(calimero_primitives::transaction::Transaction),
     TransactionConfirmation(TransactionConfirmation),
     TransactionRejection(TransactionRejection),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TransactionConfirmation {
     pub context_id: calimero_primitives::context::ContextId,
     pub nonce: u64,
@@ -17,13 +17,13 @@ pub struct TransactionConfirmation {
     pub confirmation_hash: calimero_primitives::hash::Hash,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TransactionRejection {
     pub context_id: calimero_primitives::context::ContextId,
     pub transaction_hash: calimero_primitives::hash::Hash,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum CatchupStreamMessage {
     Request(CatchupRequest),
     ApplicationChanged(CatchupApplicationChanged),
@@ -31,7 +31,7 @@ pub enum CatchupStreamMessage {
     Error(CatchupError),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CatchupRequest {
     pub context_id: calimero_primitives::context::ContextId,
     pub application_id: Option<calimero_primitives::application::ApplicationId>,
@@ -39,7 +39,7 @@ pub struct CatchupRequest {
     pub batch_size: u8,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CatchupApplicationChanged {
     pub application_id: calimero_primitives::application::ApplicationId,
     pub blob_id: calimero_primitives::blobs::BlobId,
@@ -49,12 +49,12 @@ pub struct CatchupApplicationChanged {
     pub metadata: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CatchupTransactionBatch {
     pub transactions: Vec<TransactionWithStatus>,
 }
 
-#[derive(Error, Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Error, Serialize)]
 pub enum CatchupError {
     #[error("context `{context_id:?}` not found")]
     ContextNotFound {
@@ -68,14 +68,14 @@ pub enum CatchupError {
     InternalError,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TransactionWithStatus {
     pub transaction_hash: calimero_primitives::hash::Hash,
     pub transaction: calimero_primitives::transaction::Transaction,
     pub status: TransactionStatus,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub enum TransactionStatus {
     Pending,
     Executed,

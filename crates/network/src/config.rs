@@ -32,18 +32,18 @@ pub struct NetworkConfig {
     pub catchup: CatchupConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SwarmConfig {
     pub listen: Vec<Multiaddr>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct BootstrapConfig {
     #[serde(default)]
     pub nodes: BootstrapNodes,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct BootstrapNodes {
     #[serde(deserialize_with = "deserialize_bootstrap")]
@@ -70,7 +70,7 @@ impl BootstrapNodes {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DiscoveryConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub mdns: bool,
@@ -87,7 +87,7 @@ impl Default for DiscoveryConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RendezvousConfig {
     #[serde(
         serialize_with = "serialize_rendezvous_namespace",
@@ -110,7 +110,7 @@ impl Default for RendezvousConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CatchupConfig {
     pub batch_size: u8,
 

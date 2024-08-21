@@ -16,7 +16,7 @@ use tracing::{debug, error, info};
 mod subscribe;
 mod unsubscribe;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct WsConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,

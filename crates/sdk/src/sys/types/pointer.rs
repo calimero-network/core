@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 #[repr(C)]
-#[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 
 pub struct PtrSizedInt {
     value: u64,
@@ -29,7 +29,7 @@ impl From<usize> for PtrSizedInt {
 }
 
 #[repr(C)]
-#[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Pointer<T> {
     value: PtrSizedInt,
     _phantom: PhantomData<T>,

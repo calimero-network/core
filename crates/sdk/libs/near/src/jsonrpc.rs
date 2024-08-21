@@ -49,7 +49,7 @@ impl Client {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Request<'a, P: Serialize> {
     jsonrpc: &'a str,
     id: u64,
@@ -58,7 +58,7 @@ struct Request<'a, P: Serialize> {
     params: P,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct Response<T: DeserializeOwned, E: DeserializeOwned> {
     pub jsonrpc: Option<String>,

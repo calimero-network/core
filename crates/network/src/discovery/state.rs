@@ -245,7 +245,7 @@ impl PeerInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum PeerDiscoveryMechanism {
     Mdns,
     Rendezvous,
@@ -266,7 +266,7 @@ impl PeerRelayInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum RelayReservationStatus {
     #[default]
     Discovered,
@@ -282,7 +282,7 @@ pub(crate) struct PeerRendezvousInfo {
     registration_status: RendezvousRegistrationStatus,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum RendezvousRegistrationStatus {
     #[default]
     Discovered,

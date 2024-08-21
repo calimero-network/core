@@ -4,7 +4,7 @@ use crate::entry::Borsh;
 use crate::key;
 use crate::types::PredefinedEntry;
 
-#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationMeta {
     // todo! impl proper entry reference count
     // pub refs: usize,

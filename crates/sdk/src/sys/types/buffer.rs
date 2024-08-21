@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use super::Pointer;
 
 #[repr(C)]
-#[derive(Eq, Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Slice<'a, T> {
     ptr: Pointer<T>,
     len: u64,

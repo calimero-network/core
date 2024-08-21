@@ -19,7 +19,7 @@ enum State {
     Revealed(Choice),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 enum Choice {
     Rock,
     Paper,

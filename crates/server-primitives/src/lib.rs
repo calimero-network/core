@@ -5,6 +5,6 @@ pub mod admin;
 pub mod jsonrpc;
 pub mod ws;
 
-#[derive(Debug, Serialize, Deserialize, Error)]
+#[derive(Debug, Deserialize, Error, Serialize)]
 #[error("Infallible")]
 pub enum Infallible {}

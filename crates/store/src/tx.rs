@@ -84,7 +84,7 @@ impl<'this, 'a> Iterator for ColRange<'this, 'a> {
     }
 }
 
-#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Entry<'a> {
     column: Column,
     key: &'a [u8],

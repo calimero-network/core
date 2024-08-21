@@ -6,7 +6,7 @@ use crate::cli::RootArgs;
 use crate::common::multiaddr_to_url;
 use crate::config_file::ConfigFile;
 
-#[derive(Parser, Debug)]
+#[derive(Debug, Parser)]
 pub struct JoinCommand {
     #[clap(long, short)]
     context_id: String,

@@ -22,7 +22,7 @@ use super::handlers;
 use super::storage::ssl::get_ssl;
 use crate::middleware;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
@@ -141,7 +141,7 @@ pub(crate) fn setup(
     Ok(Some((admin_path, admin_router)))
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Empty {}
 
 pub struct ApiResponse<T: Serialize> {

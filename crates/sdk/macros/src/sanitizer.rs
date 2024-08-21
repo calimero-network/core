@@ -53,7 +53,7 @@ enum LifetimeAtom {
     Named(syn::Lifetime),
 }
 
-#[derive(Eq, Ord, Debug, PartialEq, PartialOrd)]
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Case<'a> {
     Self_,
     Ident(Option<&'a syn::Ident>),

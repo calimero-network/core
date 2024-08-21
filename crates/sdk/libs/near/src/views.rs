@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use serde_with::base64::Base64;
 use serde_with::{serde_as, DisplayFromStr};
 
 use crate::types::{AccountId, Balance, BlockHeight, BlockId, Nonce, StorageUsage};
 
-#[derive(serde::Serialize, Debug)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "request_type", rename_all = "snake_case")]
 pub enum QueryRequest {
     ViewAccount {
@@ -37,7 +38,7 @@ pub enum QueryRequest {
 }
 
 #[serde_as]
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AccountView {
     #[serde_as(as = "DisplayFromStr")]
     pub amount: Balance,
@@ -49,7 +50,7 @@ pub struct AccountView {
 }
 
 #[serde_as]
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ContractCodeView {
     #[serde(rename = "code_base64")]
     #[serde_as(as = "Base64")]
@@ -57,14 +58,14 @@ pub struct ContractCodeView {
     pub hash: Box<str>,
 }
 
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct StateItem {
     pub key: StoreKey,
     pub value: StoreValue,
 }
 
 #[serde_as]
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ViewStateResult {
     pub values: Box<[StateItem]>,
     #[serde_as(as = "Box<[Base64]>")]
@@ -72,14 +73,14 @@ pub struct ViewStateResult {
     pub proof: Box<[Arc<[u8]>]>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AccessKeyView {
     pub nonce: Nonce,
     pub permission: AccessKeyPermissionView,
 }
 
 #[serde_as]
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub enum AccessKeyPermissionView {
     FunctionCall {
         #[serde_as(as = "Option<DisplayFromStr>")]
@@ -90,39 +91,39 @@ pub enum AccessKeyPermissionView {
     FullAccess,
 }
 
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AccessKeyList {
     pub keys: Box<[AccessKeyInfoView]>,
 }
 
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AccessKeyInfoView {
     pub public_key: Box<str>,
     pub access_key: AccessKeyView,
 }
 
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct CallResult {
     pub result: Box<[u8]>,
     pub logs: Box<[Box<str>]>,
 }
 
 #[serde_as]
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(transparent)]
 pub struct StoreValue(#[serde_as(as = "Base64")] pub Box<[u8]>);
 
 #[serde_as]
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct StoreKey(#[serde_as(as = "Base64")] pub Box<[u8]>);
 
 #[serde_as]
-#[derive(serde::Serialize, Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(transparent)]
 pub struct FunctionArgs(#[serde_as(as = "Base64")] Box<[u8]>);
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockReference {
     BlockId(BlockId),
@@ -130,14 +131,14 @@ pub enum BlockReference {
     SyncCheckpoint(SyncCheckpoint),
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncCheckpoint {
     Genesis,
     EarliestAvailable,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub enum Finality {
     #[serde(rename = "optimistic")]
     None,

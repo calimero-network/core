@@ -11,7 +11,7 @@ pub struct RunCommand {
     pub node_type: NodeType,
 }
 
-#[derive(Copy, Clone, Debug, Default, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
 pub enum NodeType {
     #[default]
     Peer,

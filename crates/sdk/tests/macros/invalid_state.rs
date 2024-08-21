@@ -14,7 +14,7 @@
 #[app::state(emits = for<'a> Event)]
 #[app::state(emits = for<'a> Event<'a>)]
 #[app::state(emits = for<'a> Event<'a> alt)]
-#[derive(Default, BorshSerialize, BorshDeserialize)]
+#[derive(BorshDeserialize, BorshSerialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
 struct MyType {
     items: HashMap<String, String>,

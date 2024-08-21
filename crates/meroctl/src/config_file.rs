@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "config.toml";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ConfigFile {
     #[serde(
         with = "calimero_primitives::identity::serde_identity",
@@ -22,7 +22,7 @@ pub struct ConfigFile {
     pub application: ApplicationConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct NetworkConfig {
     pub swarm: calimero_network::config::SwarmConfig,
 
@@ -37,7 +37,7 @@ pub struct NetworkConfig {
     pub catchup: calimero_network::config::CatchupConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
@@ -51,12 +51,12 @@ pub struct ServerConfig {
     pub websocket: Option<calimero_server::ws::WsConfig>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StoreConfig {
     pub path: camino::Utf8PathBuf,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ApplicationConfig {
     pub path: camino::Utf8PathBuf,
 }
