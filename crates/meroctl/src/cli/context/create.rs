@@ -53,7 +53,6 @@ impl CreateCommand {
                 metadata,
             } => {
                 let path = path.canonicalize_utf8()?;
-
                 let application_id =
                     install_app(multiaddr, path.clone(), &client, metadata.clone()).await?;
 
