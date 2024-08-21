@@ -1,6 +1,5 @@
 use std::str::FromStr;
 use std::sync::Arc;
-use std::vec;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
@@ -17,7 +16,6 @@ use crate::admin::utils::context::{create_context, join_context};
 #[serde(rename_all = "camelCase")]
 pub struct ContextObject {
     context: calimero_primitives::context::Context,
-    context_identities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -37,6 +35,44 @@ pub async fn get_context_handler(
 
     match context {
         Ok(ctx) => match ctx {
+            Some(context) => ApiResponse {
+                payload: GetContextResponse {
+                    data: ContextObject { context },
+                },
+            }
+            .into_response(),
+            None => ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "Context not found".into(),
+            }
+            .into_response(),
+        },
+        Err(err) => err.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetContextIdentitiesResponse {
+    data: ContextIdentities,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextIdentities {
+    identities: Vec<String>,
+}
+
+pub async fn get_context_identities_handler(
+    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    let context = state
+        .ctx_manager
+        .get_context(&context_id)
+        .map_err(|err| parse_api_error(err).into_response());
+
+    match context {
+        Ok(ctx) => match ctx {
             Some(context) => {
                 let context_identities = state
                     .ctx_manager
@@ -48,10 +84,9 @@ pub async fn get_context_handler(
                     .collect::<Vec<String>>();
 
                 ApiResponse {
-                    payload: GetContextResponse {
-                        data: ContextObject {
-                            context,
-                            context_identities,
+                    payload: GetContextIdentitiesResponse {
+                        data: ContextIdentities {
+                            identities: context_identities,
                         },
                     },
                 }
