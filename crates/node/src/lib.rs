@@ -356,13 +356,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             let mut iter = args.split(' ');
                             let type_ = iter.next()?;
                             let resource = iter.next()?;
-                            let version = iter.next();
-                            let metadata = iter.next()?.as_bytes().to_vec();
+                            let version = iter.next()?;
+                            let metadata = iter.next();
 
                             Some((type_, resource, version, metadata))
                         }) else {
                             println!(
-                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [version] <metadata>"
+                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [version] [metadata]"
                             );
                             break 'done;
                         };
@@ -387,6 +387,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             }
                             "file" => {
                                 let path = camino::Utf8PathBuf::from(resource);
+
+                                let metadata = match metadata {
+                                    Some(metadata) => metadata.as_bytes().to_vec(),
+                                    None => {
+                                        vec![]
+                                    }
+                                };
 
                                 node.ctx_manager
                                     .install_application_from_path(path, version, metadata)
