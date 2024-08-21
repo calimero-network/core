@@ -91,10 +91,30 @@ impl ContextManager {
 }
 
 impl ContextManager {
+    pub async fn create_context(
+        &self,
+        context: &calimero_primitives::context::Context,
+        initial_identity: KeyPair,
+    ) -> eyre::Result<()> {
+        self.add_context(context).await?;
+
+        let mut handle = self.store.handle();
+
+        let identity_key = calimero_store::key::ContextIdentity::new(
+            context.id,
+            initial_identity.public_key.clone(),
+        );
+
+        handle.put(&identity_key, &initial_identity.into())?;
+
+        self.subscribe(&context.id).await?;
+
+        Ok(())
+    }
+
     pub async fn add_context(
         &self,
-        context: calimero_primitives::context::Context,
-        initial_identity: KeyPair,
+        context: &calimero_primitives::context::Context,
     ) -> eyre::Result<()> {
         if !self.is_application_installed(&context.application_id)? {
             eyre::bail!("Application is not installed on node.")
@@ -102,7 +122,6 @@ impl ContextManager {
 
         let mut handle = self.store.handle();
 
-        // Store ContextMeta
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
             &calimero_store::types::ContextMeta {
@@ -110,16 +129,6 @@ impl ContextManager {
                 last_transaction_hash: context.last_transaction_hash.into(),
             },
         )?;
-
-        // Store ContextIdentity
-        let identity_key = calimero_store::key::ContextIdentity::new(
-            context.id,
-            initial_identity.public_key.clone(),
-        );
-        let context_identity: calimero_store::types::ContextIdentity = initial_identity.into();
-        handle.put(&identity_key, &context_identity)?;
-
-        self.subscribe(&context.id).await?;
 
         Ok(())
     }
@@ -135,7 +144,6 @@ impl ContextManager {
 
         let mut handle = self.store.handle();
 
-        // Store ContextIdentity
         let identity_key = calimero_store::key::ContextIdentity::new(
             *context_id,
             initial_identity.public_key.clone(),
