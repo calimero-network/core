@@ -68,10 +68,12 @@ impl CreateCommand {
                 let application_id =
                     install_app(&client, multiaddr, path.clone(), metadata.clone()).await?;
                 let context_id = match context_id {
-                    Some(context_id) => context_id,
-                    None => {
-                        create_context(&client, multiaddr, application_id, context_id, params)
+                    Some(context_id) => {
+                        create_context(&client, multiaddr, application_id, Some(context_id), params)
                             .await?
+                    }
+                    None => {
+                        create_context(&client, multiaddr, application_id, None, params).await?
                     }
                 };
                 watch_app_and_update_context(&client, multiaddr, context_id, path, metadata)
