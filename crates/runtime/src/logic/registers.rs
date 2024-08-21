@@ -59,7 +59,7 @@ impl Registers {
 
         match entry {
             Entry::Occupied(mut entry) => {
-                let _ = entry.insert(data.into());
+                drop(entry.insert(data.into()));
             }
             Entry::Vacant(entry) => {
                 let _ = entry.insert(data.into());

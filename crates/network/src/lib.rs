@@ -51,7 +51,7 @@ pub async fn run(
         client.listen_on(addr.clone()).await?;
     }
 
-    let _ = client.bootstrap().await;
+    drop(client.bootstrap().await);
 
     Ok((client, event_receiver))
 }
@@ -225,10 +225,10 @@ impl EventLoop {
     async fn handle_command(&mut self, command: Command) {
         match command {
             Command::ListenOn { addr, sender } => {
-                let _ = match self.swarm.listen_on(addr) {
+                drop(match self.swarm.listen_on(addr) {
                     Ok(_) => sender.send(Ok(())),
                     Err(e) => sender.send(Err(eyre::eyre!(e))),
-                };
+                });
             }
             Command::Bootstrap { sender } => match self.swarm.behaviour_mut().kad.bootstrap() {
                 Ok(query_id) => {
@@ -243,16 +243,16 @@ impl EventLoop {
                 sender,
             } => {
                 let Some(multiaddr::Protocol::P2p(peer_id)) = peer_addr.pop() else {
-                    let _ = sender.send(Err(eyre::eyre!(format!(
+                    drop(sender.send(Err(eyre::eyre!(format!(
                         "No peer ID in address: {}",
                         peer_addr
-                    ))));
+                    )))));
                     return;
                 };
 
                 match self.pending_dial.entry(peer_id) {
                     hash_map::Entry::Occupied(_) => {
-                        let _ = sender.send(Ok(None));
+                        drop(sender.send(Ok(None)));
                     }
                     hash_map::Entry::Vacant(entry) => {
                         let _ = self
@@ -266,7 +266,7 @@ impl EventLoop {
                                 let _ = entry.insert(sender);
                             }
                             Err(e) => {
-                                let _ = sender.send(Err(eyre::eyre!(e)));
+                                drop(sender.send(Err(eyre::eyre!(e))));
                             }
                         }
                     }
@@ -274,34 +274,36 @@ impl EventLoop {
             }
             Command::Subscribe { topic, sender } => {
                 if let Err(err) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
-                    let _ = sender.send(Err(eyre::eyre!(err)));
+                    drop(sender.send(Err(eyre::eyre!(err))));
                     return;
                 }
 
-                let _ = sender.send(Ok(topic));
+                drop(sender.send(Ok(topic)));
             }
             Command::Unsubscribe { topic, sender } => {
                 if let Err(err) = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic) {
-                    let _ = sender.send(Err(eyre::eyre!(err)));
+                    drop(sender.send(Err(eyre::eyre!(err))));
                     return;
                 }
 
-                let _ = sender.send(Ok(topic));
+                drop(sender.send(Ok(topic)));
             }
             Command::OpenStream { peer_id, sender } => {
-                let _ = sender.send(self.open_stream(peer_id).await.map_err(Into::into));
+                drop(sender.send(self.open_stream(peer_id).await.map_err(Into::into)));
             }
             Command::PeerCount { sender } => {
                 let _ = sender.send(self.swarm.connected_peers().count());
             }
             Command::MeshPeers { topic, sender } => {
-                let _ = sender.send(
-                    self.swarm
-                        .behaviour_mut()
-                        .gossipsub
-                        .mesh_peers(&topic)
-                        .cloned()
-                        .collect(),
+                drop(
+                    sender.send(
+                        self.swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .mesh_peers(&topic)
+                            .cloned()
+                            .collect(),
+                    ),
                 );
             }
             Command::MeshPeerCount { topic, sender } => {
@@ -321,12 +323,12 @@ impl EventLoop {
                 let id = match self.swarm.behaviour_mut().gossipsub.publish(topic, data) {
                     Ok(id) => id,
                     Err(err) => {
-                        let _ = sender.send(Err(eyre::eyre!(err)));
+                        drop(sender.send(Err(eyre::eyre!(err))));
                         return;
                     }
                 };
 
-                let _ = sender.send(Ok(id));
+                drop(sender.send(Ok(id)));
             }
             Command::StartProviding { key, sender } => {
                 let query_id = self

@@ -67,7 +67,7 @@ impl EventLoop {
                         .add_peer_addr(peer_id, endpoint.get_remote_address());
 
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                        let _ = sender.send(Ok(Some(())));
+                        drop(sender.send(Ok(Some(()))));
                     }
                 }
             }
@@ -103,7 +103,7 @@ impl EventLoop {
                 debug!(?peer_id, %error, "Outgoing connection error");
                 if let Some(peer_id) = peer_id {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                        let _ = sender.send(Err(eyre::eyre!(error)));
+                        drop(sender.send(Err(eyre::eyre!(error))));
                     }
                 }
             }

@@ -229,7 +229,7 @@ async fn handle_commands(
                         "Failed to send ws::Message::Close",
                     );
                 }
-                let _ = socket_sender.close().await;
+                drop(socket_sender.close().await);
                 break;
             }
             ws_primitives::Command::Send(response) => {

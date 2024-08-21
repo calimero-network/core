@@ -147,7 +147,7 @@ pub mod serde_identity {
                         "peer_id" => peer_id = Some(map.next_value()?),
                         "keypair" => priv_key = Some(map.next_value()?),
                         _ => {
-                            let _ = map.next_value::<de::IgnoredAny>();
+                            drop(map.next_value::<de::IgnoredAny>());
                         }
                     }
                 }

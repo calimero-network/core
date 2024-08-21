@@ -736,18 +736,19 @@ impl Node {
         };
 
         info!("{} joined the session.", their_peer_id.cyan());
-        let _ = self
-            .node_events
-            .send(calimero_primitives::events::NodeEvent::Application(
-                calimero_primitives::events::ApplicationEvent {
-                    context_id,
-                    payload: calimero_primitives::events::ApplicationEventPayload::PeerJoined(
-                        calimero_primitives::events::PeerJoinedPayload {
-                            peer_id: their_peer_id,
-                        },
-                    ),
-                },
-            ));
+        drop(
+            self.node_events
+                .send(calimero_primitives::events::NodeEvent::Application(
+                    calimero_primitives::events::ApplicationEvent {
+                        context_id,
+                        payload: calimero_primitives::events::ApplicationEventPayload::PeerJoined(
+                            calimero_primitives::events::PeerJoinedPayload {
+                                peer_id: their_peer_id,
+                            },
+                        ),
+                    },
+                )),
+        );
 
         Ok(())
     }
@@ -825,7 +826,7 @@ impl Node {
                     .await;
 
                 if let Some(outcome_sender) = outcome_sender {
-                    let _ = outcome_sender.send(outcome_result);
+                    drop(outcome_sender.send(outcome_result));
                 }
             }
             types::PeerAction::TransactionRejection(rejection) => {
@@ -919,10 +920,11 @@ impl Node {
         >,
     ) {
         let Ok(Some(context)) = self.ctx_manager.get_context(&context_id) else {
-            let _ =
+            drop(
                 outcome_sender.send(Err(calimero_node_primitives::CallError::ContextNotFound {
                     context_id,
-                }));
+                })),
+            );
             return;
         };
 
@@ -939,7 +941,7 @@ impl Node {
                 )
                 .await
             {
-                let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(err)));
+                drop(outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(err))));
                 return;
             }
 
@@ -947,19 +949,22 @@ impl Node {
                 match inner_outcome_receiver.await {
                     Ok(outcome) => match outcome {
                         Ok(outcome) => {
-                            let _ = outcome_sender.send(Ok(outcome));
+                            drop(outcome_sender.send(Ok(outcome)));
                         }
                         Err(err) => {
-                            let _ = outcome_sender
-                                .send(Err(calimero_node_primitives::CallError::Mutate(err)));
+                            drop(
+                                outcome_sender
+                                    .send(Err(calimero_node_primitives::CallError::Mutate(err))),
+                            );
                         }
                     },
                     Err(err) => {
                         error!("Failed to receive inner outcome of a transaction: {}", err);
-                        let _ =
-                            outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(
+                        drop(outcome_sender.send(Err(
+                            calimero_node_primitives::CallError::Mutate(
                                 calimero_node_primitives::MutateCallError::InternalError,
-                            )));
+                            ),
+                        )));
                     }
                 }
             }));
@@ -969,11 +974,10 @@ impl Node {
                 .await
             {
                 Ok(outcome) => {
-                    let _ = outcome_sender.send(Ok(outcome));
+                    drop(outcome_sender.send(Ok(outcome)));
                 }
                 Err(err) => {
-                    let _ =
-                        outcome_sender.send(Err(calimero_node_primitives::CallError::Query(err)));
+                    drop(outcome_sender.send(Err(calimero_node_primitives::CallError::Query(err))));
                 }
             };
         }
@@ -1142,9 +1146,9 @@ impl Node {
         };
 
         if let Some(sender) = outcome_sender {
-            let _ = sender.send(Err(
+            drop(sender.send(Err(
                 calimero_node_primitives::MutateCallError::TransactionRejected,
-            ));
+            )));
         }
 
         Ok(Some(()))
@@ -1221,7 +1225,7 @@ impl Node {
             // todo! debate: when we switch to optimistic execution
             // todo! we won't have query vs. mutate methods anymore, so this shouldn't matter
 
-            let _ = self
+            drop(self
                 .node_events
                 .send(calimero_primitives::events::NodeEvent::Application(
                 calimero_primitives::events::ApplicationEvent {
@@ -1231,28 +1235,29 @@ impl Node {
                             calimero_primitives::events::ExecutedTransactionPayload { hash },
                         ),
                 },
-            ));
+            )));
         }
 
-        let _ = self
-            .node_events
-            .send(calimero_primitives::events::NodeEvent::Application(
-                calimero_primitives::events::ApplicationEvent {
-                    context_id: context.id,
-                    payload: calimero_primitives::events::ApplicationEventPayload::OutcomeEvent(
-                        calimero_primitives::events::OutcomeEventPayload {
-                            events: outcome
-                                .events
-                                .iter()
-                                .map(|e| OutcomeEvent {
-                                    data: e.data.clone(),
-                                    kind: e.kind.clone(),
-                                })
-                                .collect(),
-                        },
-                    ),
-                },
-            ));
+        drop(
+            self.node_events
+                .send(calimero_primitives::events::NodeEvent::Application(
+                    calimero_primitives::events::ApplicationEvent {
+                        context_id: context.id,
+                        payload: calimero_primitives::events::ApplicationEventPayload::OutcomeEvent(
+                            calimero_primitives::events::OutcomeEventPayload {
+                                events: outcome
+                                    .events
+                                    .iter()
+                                    .map(|e| OutcomeEvent {
+                                        data: e.data.clone(),
+                                        kind: e.kind.clone(),
+                                    })
+                                    .collect(),
+                            },
+                        ),
+                    },
+                )),
+        );
 
         Ok(outcome)
     }

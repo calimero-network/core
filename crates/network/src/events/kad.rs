@@ -17,7 +17,7 @@ impl EventHandler<kad::Event> for EventLoop {
                 ..
             } => {
                 if let Some(sender) = self.pending_bootstrap.remove(&id) {
-                    let _ = sender.send(result.map(|_| None).map_err(Into::into));
+                    drop(sender.send(result.map(|_| None).map_err(Into::into)));
                 }
             }
             kad::Event::OutboundQueryProgressed {

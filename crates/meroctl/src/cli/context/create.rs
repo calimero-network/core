@@ -120,7 +120,7 @@ async fn watch_app_and_update_context(
     let handle = tokio::runtime::Handle::current();
     let mut watcher = notify::recommended_watcher(move |evt| {
         handle.block_on(async {
-            let _ = tx.send(evt).await;
+            drop(tx.send(evt).await);
         })
     })?;
 
