@@ -46,8 +46,7 @@ export class NodeApiDataSource implements NodeApi {
     );
   }
 
-  async getContextIdentity(rpcBaseUrl: string): ApiResponse<ContextResponse> {
-    const contextId = process.env['NEXT_PUBLIC_CONTEXT_ID'];
+  async getContextIdentity(rpcBaseUrl: string, contextId: string): ApiResponse<ContextResponse> {
     const headers: Header | null = await createAuthHeader(contextId);
 
     return await this.client.get<ContextResponse>(

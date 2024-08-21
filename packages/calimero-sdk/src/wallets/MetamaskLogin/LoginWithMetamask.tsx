@@ -135,8 +135,7 @@ export function LoginWithMetamask({
         try {
           const identity = await apiClient
             .node()
-            .getContextIdentity(rpcBaseUrl);
-
+            .getContextIdentity(rpcBaseUrl, contextId);
           if (
             !identity ||
             !identity.data ||
