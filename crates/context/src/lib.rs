@@ -273,10 +273,12 @@ impl ContextManager {
         for (k, v) in first.into_iter().chain(iter.entries()) {
             let (k, v) = (k?, v?);
 
-            if k.context_id() == context_id {
-                if !only_owned_identities || v.private_key.is_some() {
-                    ids.push(PublicKey(k.public_key()));
-                }
+            if k.context_id() != context_id {
+                break;
+            }
+
+            if !only_owned_identities || v.private_key.is_some() {
+                ids.push(PublicKey(k.public_key()));
             }
         }
         Ok(ids)
