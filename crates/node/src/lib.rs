@@ -9,6 +9,7 @@ use calimero_store::Store;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::identity as p2p_identity;
 use owo_colors::OwoColorize;
+use semver::Version;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
@@ -367,7 +368,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        let Ok(version) = version.map(|v| v.parse()).transpose() else {
+                        let Ok(version) = version.parse::<Version>() else {
                             println!("{IND} Invalid version: {:?}", version);
                             break 'done;
                         };
@@ -382,7 +383,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                 println!("{IND} Downloading application..");
 
                                 node.ctx_manager
-                                    .install_application_from_url(url, version, Vec::new())
+                                    .install_application_from_url(url, Some(version), Vec::new())
                                     .await?
                             }
                             "file" => {
@@ -396,7 +397,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                 };
 
                                 node.ctx_manager
-                                    .install_application_from_path(path, version, metadata)
+                                    .install_application_from_path(path, Some(version), metadata)
                                     .await?
                             }
                             unknown => {
