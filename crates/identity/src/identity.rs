@@ -21,7 +21,7 @@ impl IdentityHandler {
         public_key: PublicKey,
         private_key: Option<[u8; 32]>,
     ) {
-        self.context_identities.insert(
+        let _ = self.context_identities.insert(
             context_id,
             KeyPair {
                 public_key,

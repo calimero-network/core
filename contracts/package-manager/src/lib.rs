@@ -62,7 +62,7 @@ impl PackageManager {
             env::panic_str("Package already exists.")
         }
 
-        self.packages.insert(
+        drop(self.packages.insert(
             id_hash.clone(),
             Package::new(
                 id_hash.clone(),
@@ -71,7 +71,7 @@ impl PackageManager {
                 repository,
                 env::signer_account_id(),
             ),
-        );
+        ));
         id_hash
     }
 
@@ -122,22 +122,24 @@ impl PackageManager {
         }
 
         // Insert the new release
-        self.releases
-            .entry(id_hash.clone())
-            .or_insert_with(|| {
-                IterableMap::new(StorageKeys::Release {
-                    package: id_hash.clone(),
+        drop(
+            self.releases
+                .entry(id_hash.clone())
+                .or_insert_with(|| {
+                    IterableMap::new(StorageKeys::Release {
+                        package: id_hash.clone(),
+                    })
                 })
-            })
-            .insert(
-                version.clone(),
-                Release {
-                    version,
-                    notes,
-                    path,
-                    hash,
-                },
-            );
+                .insert(
+                    version.clone(),
+                    Release {
+                        version,
+                        notes,
+                        path,
+                        hash,
+                    },
+                ),
+        );
     }
 
     pub fn get_packages(&self, offset: usize, limit: usize) -> Vec<Package> {

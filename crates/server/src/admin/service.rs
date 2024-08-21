@@ -40,7 +40,7 @@ pub(crate) fn setup(
     store: Store,
     ctx_manager: calimero_context::ContextManager,
 ) -> eyre::Result<Option<(&'static str, Router)>> {
-    match &config.admin {
+    let _ = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
             info!("Admin api is disabled");
@@ -284,11 +284,11 @@ async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> im
 
         // Create headers for file download
         let mut headers = HeaderMap::new();
-        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
-        headers.insert(
+        drop(headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain")));
+        drop(headers.insert(
             header::CONTENT_DISPOSITION,
             HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file_name)).unwrap(),
-        );
+        ));
 
         // Create the response with the file content and headers
         (headers, file_content).into_response()

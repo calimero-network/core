@@ -45,7 +45,7 @@ pub async fn run(
 
     let (client, event_receiver, event_loop) = init(peer_id, config).await?;
 
-    tokio::spawn(event_loop.run());
+    drop(tokio::spawn(event_loop.run()));
 
     for addr in &config.swarm.listen {
         client.listen_on(addr.clone()).await?;
@@ -101,7 +101,7 @@ async fn init(
                 .into(),
             kad: {
                 let mut kad_config = kad::Config::default();
-                kad_config.set_protocol_names(vec![CALIMERO_KAD_PROTO_NAME]);
+                let _ = kad_config.set_protocol_names(vec![CALIMERO_KAD_PROTO_NAME]);
 
                 let mut kad = kad::Behaviour::with_config(
                     peer_id,
@@ -112,7 +112,7 @@ async fn init(
                 kad.set_mode(Some(kad::Mode::Client));
 
                 for (peer_id, addr) in bootstrap_peers {
-                    kad.add_address(&peer_id, addr);
+                    let _ = kad.add_address(&peer_id, addr);
                 }
                 if let Err(err) = kad.bootstrap() {
                     warn!(%err, "Failed to bootstrap Kademlia");
@@ -232,7 +232,7 @@ impl EventLoop {
             }
             Command::Bootstrap { sender } => match self.swarm.behaviour_mut().kad.bootstrap() {
                 Ok(query_id) => {
-                    self.pending_bootstrap.insert(query_id, sender);
+                    drop(self.pending_bootstrap.insert(query_id, sender));
                 }
                 Err(err) => sender
                     .send(Err(eyre::eyre!(err)))
@@ -255,14 +255,15 @@ impl EventLoop {
                         let _ = sender.send(Ok(None));
                     }
                     hash_map::Entry::Vacant(entry) => {
-                        self.swarm
+                        let _ = self
+                            .swarm
                             .behaviour_mut()
                             .kad
                             .add_address(&peer_id, peer_addr.clone());
 
                         match self.swarm.dial(peer_addr) {
                             Ok(()) => {
-                                entry.insert(sender);
+                                let _ = entry.insert(sender);
                             }
                             Err(e) => {
                                 let _ = sender.send(Err(eyre::eyre!(e)));
@@ -334,7 +335,7 @@ impl EventLoop {
                     .kad
                     .start_providing(key.into_bytes().into())
                     .expect("No store error.");
-                self.pending_start_providing.insert(query_id, sender);
+                drop(self.pending_start_providing.insert(query_id, sender));
             }
             Command::GetProviders { key, sender } => {
                 let query_id = self
@@ -342,7 +343,7 @@ impl EventLoop {
                     .behaviour_mut()
                     .kad
                     .get_providers(key.into_bytes().into());
-                self.pending_get_providers.insert(query_id, sender);
+                drop(self.pending_get_providers.insert(query_id, sender));
             }
         }
     }

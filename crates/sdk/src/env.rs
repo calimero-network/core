@@ -178,5 +178,5 @@ pub fn state_write<T: crate::state::AppState>(state: &T) {
         Ok(data) => data,
         Err(err) => panic_str(&format!("Cannot serialize app state: {:?}", err)),
     };
-    storage_write(STATE_KEY, &data);
+    let _ = storage_write(STATE_KEY, &data);
 }

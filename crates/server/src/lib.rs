@@ -134,7 +134,7 @@ pub async fn start(
         let rustls_config = rustls_config.clone();
         let app = app.clone();
         let addr = listener.local_addr().unwrap();
-        set.spawn(async move {
+        drop(set.spawn(async move {
             if let Err(e) = axum_server_dual_protocol::bind_dual_protocol(addr, rustls_config)
                 .serve(app.into_make_service())
                 .await
@@ -143,7 +143,7 @@ pub async fn start(
                 return Err(e);
             }
             Ok::<(), std::io::Error>(())
-        });
+        }));
     }
 
     while let Some(result) = set.join_next().await {

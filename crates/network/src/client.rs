@@ -31,7 +31,7 @@ impl NetworkClient {
             .await
             .expect("Command receiver not to be dropped.");
 
-        receiver.await.expect("Sender not to be dropped.")?;
+        let _ = receiver.await.expect("Sender not to be dropped.")?;
 
         Ok(())
     }

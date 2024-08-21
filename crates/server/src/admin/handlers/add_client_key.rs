@@ -94,7 +94,7 @@ pub fn store_client_key(
         created_at: Utc::now().timestamp_millis() as u64,
         context_id: req.context_id,
     };
-    add_client_key(store, client_key).map_err(parse_api_error)?;
+    let _ = add_client_key(store, client_key).map_err(parse_api_error)?;
     info!("Client key stored successfully.");
     Ok(req)
 }
@@ -106,7 +106,7 @@ fn check_root_key(
     let root_keys = exists_root_keys(store).map_err(parse_api_error)?;
     if !root_keys {
         //first login so store root key as well
-        store_root_key(
+        let _ = store_root_key(
             req.wallet_metadata.signing_key.clone(),
             req.wallet_metadata.wallet_type.clone(),
             store,

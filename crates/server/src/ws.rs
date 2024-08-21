@@ -83,7 +83,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
                     commands: commands_sender.clone(),
                     inner: Default::default(),
                 };
-                entry.insert(connection_state.clone());
+                let _ = entry.insert(connection_state.clone());
                 break (connection_id, connection_state);
             }
         }
@@ -91,20 +91,20 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
     debug!(%connection_id, "Client connection established");
 
-    tokio::spawn(handle_node_events(
+    drop(tokio::spawn(handle_node_events(
         connection_id,
         state.clone(),
         state.node_events.subscribe(),
         commands_sender.clone(),
-    ));
+    )));
 
     let (socket_sender, mut socket_receiver) = socket.split();
 
-    tokio::spawn(handle_commands(
+    drop(tokio::spawn(handle_commands(
         connection_id,
         commands_receiver,
         socket_sender,
-    ));
+    )));
 
     while let Some(message) = socket_receiver.next().await {
         let message = match message {
@@ -117,7 +117,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
         match message {
             Message::Text(message) => {
-                tokio::spawn(handle_text_message(connection_id, state.clone(), message));
+                drop(tokio::spawn(handle_text_message(
+                    connection_id,
+                    state.clone(),
+                    message,
+                )));
             }
             Message::Binary(_) => {
                 debug!("Received binary message");
@@ -138,7 +142,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     debug!(%connection_id, "Client connection terminated");
 
     let mut state = state.connections.write().await;
-    state.remove(&connection_id);
+    drop(state.remove(&connection_id));
 }
 
 async fn handle_node_events(

@@ -166,11 +166,11 @@ impl InitCommand {
 
         config.save(&path)?;
 
-        calimero_store::Store::open::<calimero_store::db::RocksDB>(
+        drop(calimero_store::Store::open::<calimero_store::db::RocksDB>(
             &calimero_store::config::StoreConfig {
                 path: path.join(config.store.path),
             },
-        )?;
+        )?);
 
         info!("Initialized a node in {:?}", path);
 

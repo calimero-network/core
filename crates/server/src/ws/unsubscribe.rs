@@ -14,7 +14,7 @@ async fn handle(
 ) -> eyre::Result<UnsubscribeResponse> {
     let mut inner = connection_state.inner.write().await;
     request.context_ids.iter().for_each(|id| {
-        inner.subscriptions.remove(id);
+        let _ = inner.subscriptions.remove(id);
     });
 
     Ok(UnsubscribeResponse {

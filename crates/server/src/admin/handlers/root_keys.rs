@@ -42,7 +42,7 @@ pub fn store_root(
     req: AddPublicKeyRequest,
     store: &mut Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    store_root_key(
+    let _ = store_root_key(
         req.wallet_metadata.signing_key.clone(),
         req.wallet_metadata.wallet_type.clone(),
         store,
@@ -60,7 +60,7 @@ pub fn store_root_key(
         wallet_type,
         created_at: Utc::now().timestamp_millis() as u64,
     };
-    add_root_key(store, root_key).map_err(parse_api_error)?;
+    let _ = add_root_key(store, root_key).map_err(parse_api_error)?;
 
     info!("Root key stored successfully.");
     Ok(true)
@@ -73,7 +73,7 @@ pub struct DeleteKeysResponse {
 pub async fn delete_auth_keys_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    clean_auth_keys(&mut state.store.clone()).map_or_else(
+    drop(clean_auth_keys(&mut state.store.clone()).map_or_else(
         |err| parse_api_error(err).into_response(),
         |_| {
             ApiResponse {
@@ -81,5 +81,5 @@ pub async fn delete_auth_keys_handler(
             }
             .into_response()
         },
-    );
+    ));
 }

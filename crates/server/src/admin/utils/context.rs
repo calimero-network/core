@@ -78,7 +78,7 @@ pub async fn join_context(
         generate_identity_keypair()
     };
 
-    ctx_manager
+    let _ = ctx_manager
         .join_context(&context_id, initial_identity)
         .await?;
 

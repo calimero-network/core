@@ -154,7 +154,7 @@ impl<K: Ord, V> Drop for InMemoryIterInner<'_, K, V> {
         while let Some((_, idx)) = column.pop_first() {
             if Arc::strong_count(&idx) == 1 {
                 if let Ok(mut value) = self.arena.write() {
-                    value.remove(*idx);
+                    drop(value.remove(*idx));
                 }
             }
         }

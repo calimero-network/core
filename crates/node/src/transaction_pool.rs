@@ -32,14 +32,14 @@ impl TransactionPool {
         let transaction_hash = calimero_primitives::hash::Hash::hash_json(&transaction)
             .expect("Failed to hash transaction. This is a bug and should be reported.");
 
-        self.transactions.insert(
+        drop(self.transactions.insert(
             transaction_hash,
             TransactionPoolEntry {
                 sender,
                 transaction,
                 outcome_sender,
             },
-        );
+        ));
 
         Ok(transaction_hash)
     }

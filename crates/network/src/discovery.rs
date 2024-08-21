@@ -203,7 +203,7 @@ impl EventLoop {
             }
         };
 
-        self.swarm.listen_on(relayed_addr)?;
+        let _ = self.swarm.listen_on(relayed_addr)?;
 
         self.discovery
             .state

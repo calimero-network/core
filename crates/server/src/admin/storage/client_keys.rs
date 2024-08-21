@@ -56,7 +56,7 @@ pub fn remove_client_key(store: &mut Store, client_key: &ClientKey) -> eyre::Res
         .iter()
         .position(|x| x.signing_key == client_key.signing_key)
     {
-        did_document.client_keys.remove(pos);
+        drop(did_document.client_keys.remove(pos));
         update_did(store, did_document)?;
     }
 

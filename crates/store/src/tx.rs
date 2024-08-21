@@ -28,28 +28,32 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn put<K: AsKeyParts>(&mut self, key: &'a K, value: Slice<'a>) {
-        self.cols
-            .entry(K::column())
-            .or_default()
-            .insert(key.as_key().as_slice(), Operation::Put { value });
+        drop(
+            self.cols
+                .entry(K::column())
+                .or_default()
+                .insert(key.as_key().as_slice(), Operation::Put { value }),
+        );
     }
 
     pub fn delete<K: AsKeyParts>(&mut self, key: &'a K) {
-        self.cols
-            .entry(K::column())
-            .or_default()
-            .insert(key.as_key().as_slice(), Operation::Delete);
+        drop(
+            self.cols
+                .entry(K::column())
+                .or_default()
+                .insert(key.as_key().as_slice(), Operation::Delete),
+        );
     }
 
     pub fn merge(&mut self, other: &Transaction<'a>) {
         for (entry, op) in other.iter() {
-            self.cols.entry(entry.column).or_default().insert(
+            drop(self.cols.entry(entry.column).or_default().insert(
                 match op {
                     Operation::Put { value } => value.clone(),
                     Operation::Delete => unreachable!(),
                 },
                 op.clone(),
-            );
+            ));
         }
     }
 

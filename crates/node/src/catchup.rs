@@ -209,7 +209,8 @@ impl Node {
             return;
         }
 
-        self.ctx_manager
+        let _ = self
+            .ctx_manager
             .clear_context_pending_catchup(&context_id)
             .await;
 
@@ -316,7 +317,7 @@ impl Node {
                     match status {
                         types::TransactionStatus::Pending => match self.typ {
                             calimero_node_primitives::NodeType::Peer => {
-                                self.tx_pool.insert(
+                                let _ = self.tx_pool.insert(
                                     chosen_peer,
                                     calimero_primitives::transaction::Transaction {
                                         context_id: context_.id,
@@ -329,26 +330,29 @@ impl Node {
                                 )?;
                             }
                             calimero_node_primitives::NodeType::Coordinator => {
-                                self.validate_pending_transaction(
-                                    context_.clone(),
-                                    transaction,
-                                    transaction_hash,
-                                )
-                                .await?;
+                                let _ = self
+                                    .validate_pending_transaction(
+                                        context_.clone(),
+                                        transaction,
+                                        transaction_hash,
+                                    )
+                                    .await?;
 
-                                self.tx_pool.remove(&transaction_hash);
+                                drop(self.tx_pool.remove(&transaction_hash));
                             }
                         },
                         types::TransactionStatus::Executed => match self.typ {
                             calimero_node_primitives::NodeType::Peer => {
-                                self.execute_transaction(
-                                    context_.clone(),
-                                    transaction.clone(),
-                                    transaction_hash,
-                                )
-                                .await?;
+                                drop(
+                                    self.execute_transaction(
+                                        context_.clone(),
+                                        transaction.clone(),
+                                        transaction_hash,
+                                    )
+                                    .await?,
+                                );
 
-                                self.tx_pool.remove(&transaction_hash);
+                                drop(self.tx_pool.remove(&transaction_hash));
                             }
                             calimero_node_primitives::NodeType::Coordinator => {
                                 self.persist_transaction(
@@ -373,7 +377,8 @@ impl Node {
                     // note! for now, we assume all paths are urls
                     // todo! for path sources, share the blob peer to peer
 
-                    self.ctx_manager
+                    let _ = self
+                        .ctx_manager
                         .install_application_from_url(
                             change.source.to_string().parse()?,
                             change.version,

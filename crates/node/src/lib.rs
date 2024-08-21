@@ -185,7 +185,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                         println!("{IND} Scheduled Transaction! {:?}", tx_hash);
 
-                        tokio::spawn(async move {
+                        drop(tokio::spawn(async move {
                             if let Ok(outcome_result) = outcome_receiver.await {
                                 println!("{IND} {:?}", tx_hash);
 
@@ -245,7 +245,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                     }
                                 }
                             }
-                        });
+                        }));
                     }
                     Err(e) => {
                         println!("{IND} Failed to parse payload: {}", e);
@@ -508,7 +508,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        node.ctx_manager.delete_context(&context_id).await?;
+                        let _ = node.ctx_manager.delete_context(&context_id).await?;
 
                         println!("{IND} Left context {}", context_id);
                     }
@@ -544,7 +544,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        node.ctx_manager.delete_context(&context_id).await?;
+                        let _ = node.ctx_manager.delete_context(&context_id).await?;
 
                         println!("{IND} Deleted context {}", context_id);
                     }
@@ -781,7 +781,8 @@ impl Node {
 
                     self.perform_catchup(transaction.context_id, source).await?;
 
-                    self.ctx_manager
+                    let _ = self
+                        .ctx_manager
                         .clear_context_pending_catchup(&transaction.context_id)
                         .await;
 
@@ -797,12 +798,13 @@ impl Node {
                         return Ok(());
                     };
 
-                    self.validate_pending_transaction(
-                        context,
-                        pool_entry.transaction,
-                        transaction_hash,
-                    )
-                    .await?;
+                    let _ = self
+                        .validate_pending_transaction(
+                            context,
+                            pool_entry.transaction,
+                            transaction_hash,
+                        )
+                        .await?;
                 }
             }
             types::PeerAction::TransactionConfirmation(confirmation) => {
@@ -838,7 +840,8 @@ impl Node {
 
                 self.perform_catchup(rejection.context_id, source).await?;
 
-                self.ctx_manager
+                let _ = self
+                    .ctx_manager
                     .clear_context_pending_catchup(&rejection.context_id)
                     .await;
 
@@ -892,12 +895,14 @@ impl Node {
         context_id: calimero_primitives::context::ContextId,
         action: types::PeerAction,
     ) -> eyre::Result<()> {
-        self.network_client
-            .publish(
-                TopicHash::from_raw(context_id),
-                serde_json::to_vec(&action)?,
-            )
-            .await?;
+        drop(
+            self.network_client
+                .publish(
+                    TopicHash::from_raw(context_id),
+                    serde_json::to_vec(&action)?,
+                )
+                .await?,
+        );
 
         Ok(())
     }
@@ -938,7 +943,7 @@ impl Node {
                 return;
             }
 
-            tokio::spawn(async move {
+            drop(tokio::spawn(async move {
                 match inner_outcome_receiver.await {
                     Ok(outcome) => match outcome {
                         Ok(outcome) => {
@@ -957,7 +962,7 @@ impl Node {
                             )));
                     }
                 }
-            });
+            }));
         } else {
             match self
                 .call_query(context, method, payload, executor_public_key)

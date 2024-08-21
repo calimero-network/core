@@ -59,10 +59,10 @@ impl Registers {
 
         match entry {
             Entry::Occupied(mut entry) => {
-                entry.insert(data.into());
+                let _ = entry.insert(data.into());
             }
             Entry::Vacant(entry) => {
-                entry.insert(data.into());
+                let _ = entry.insert(data.into());
             }
         };
 

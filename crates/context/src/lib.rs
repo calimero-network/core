@@ -51,7 +51,8 @@ impl ContextManager {
         for key in iter.keys() {
             let key = key?;
 
-            self.state
+            let _ = self
+                .state
                 .write()
                 .await
                 .pending_catchup
@@ -67,9 +68,11 @@ impl ContextManager {
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> eyre::Result<()> {
-        self.network_client
-            .subscribe(calimero_network::types::IdentTopic::new(context_id))
-            .await?;
+        drop(
+            self.network_client
+                .subscribe(calimero_network::types::IdentTopic::new(context_id))
+                .await?,
+        );
 
         info!(%context_id, "Subscribed to context");
 
@@ -80,9 +83,11 @@ impl ContextManager {
         &self,
         context_id: &calimero_primitives::context::ContextId,
     ) -> eyre::Result<()> {
-        self.network_client
-            .unsubscribe(calimero_network::types::IdentTopic::new(context_id))
-            .await?;
+        drop(
+            self.network_client
+                .unsubscribe(calimero_network::types::IdentTopic::new(context_id))
+                .await?,
+        );
 
         info!(%context_id, "Unsubscribed from context");
 
@@ -150,7 +155,7 @@ impl ContextManager {
         );
         handle.put(&identity_key, &initial_identity.into())?;
 
-        self.state.write().await.pending_catchup.insert(*context_id);
+        let _ = self.state.write().await.pending_catchup.insert(*context_id);
 
         self.subscribe(context_id).await?;
 

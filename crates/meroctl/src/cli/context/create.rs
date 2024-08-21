@@ -45,7 +45,7 @@ impl CreateCommand {
                 watch: None,
                 metadata: _,
             } => {
-                create_context(multiaddr, app_id, &client).await?;
+                let _ = create_context(multiaddr, app_id, &client).await?;
             }
             CreateCommand {
                 application_id: None,

@@ -82,7 +82,7 @@ pub fn validate_challenge(
     validate_challenge_content(&req.payload, keypair)?;
 
     // Check if node has created signature
-    verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload)?;
+    let _ = verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload)?;
 
     // Check challenge to verify if it has expired or not
     if is_older_than_15_minutes(req.payload.message.timestamp) {
@@ -164,7 +164,7 @@ pub fn validate_root_key_exists(
             }
         })?;
 
-    match root_key_result {
+    drop(match root_key_result {
         Some(root_key) => root_key,
         None => {
             return Err(ApiError {
@@ -172,7 +172,7 @@ pub fn validate_root_key_exists(
                 message: "Root key does not exist".into(),
             });
         }
-    };
+    });
 
     Ok(req)
 }

@@ -55,7 +55,7 @@ async fn generate_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> 
     let cert_pem = cert.pem().into_bytes();
     let key_pem = key_pair.serialize_pem().into_bytes();
 
-    insert_or_update_ssl(store.clone(), &cert_pem, &key_pem)?;
+    drop(insert_or_update_ssl(store.clone(), &cert_pem, &key_pem)?);
 
     Ok((cert_pem, key_pem))
 }
