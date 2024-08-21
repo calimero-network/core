@@ -33,8 +33,10 @@ export function StarknetRootKey({
   successRedirect,
   navigateBack,
 }: StarknetRootKeyProps) {
-  const [starknetInstance, setStarknetInstance] = useState<StarknetWindowObject | null>(null);
-  const [walletSignatureData, setWalletSignatureData] = useState<WalletSignatureData | null>(null);
+  const [starknetInstance, setStarknetInstance] =
+    useState<StarknetWindowObject | null>(null);
+  const [walletSignatureData, setWalletSignatureData] =
+    useState<WalletSignatureData | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [signData, setSignData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -45,20 +47,26 @@ export function StarknetRootKey({
       setLoading(true);
       const starknet = getStarknet();
       if (starknet) {
-        if(walletType === argentXId) {
+        if (walletType === argentXId) {
           await starknet.enable(window.starknet_argentX);
-          const wallets: StarknetWindowObject[] = await starknet.getAvailableWallets();
-          const argentX: StarknetWindowObject = wallets.find((wallet: any) => wallet.id === argentXId);
+          const wallets: StarknetWindowObject[] =
+            await starknet.getAvailableWallets();
+          const argentX: StarknetWindowObject = wallets.find(
+            (wallet: any) => wallet.id === argentXId,
+          );
           setStarknetInstance(argentX);
-        }else {
+        } else {
           await starknet.enable(window.starknet_metamask);
-          const wallets: StarknetWindowObject[] = await starknet.getAvailableWallets();
-          const metamask: StarknetWindowObject = wallets.find((wallet: any) => wallet.id === 'metamask');
+          const wallets: StarknetWindowObject[] =
+            await starknet.getAvailableWallets();
+          const metamask: StarknetWindowObject = wallets.find(
+            (wallet: any) => wallet.id === 'metamask',
+          );
           setStarknetInstance(metamask);
         }
       }
       setLoading(false);
-    }catch(error) {
+    } catch (error) {
       console.error('Error logging in:', error);
       setErrorMessage('Error logging in');
     }
@@ -72,24 +80,26 @@ export function StarknetRootKey({
         .node()
         .requestChallenge(rpcBaseUrl, contextId);
       const { publicKey } = await getOrCreateKeypair();
-  
+
       if (challengeResponseData.error) {
         console.error('requestNodeData error', challengeResponseData.error);
-        setErrorMessage("Error while getting node challenge");
+        setErrorMessage('Error while getting node challenge');
         return;
       }
-  
+
       const signatureMessage: SignatureMessage = {
         nodeSignature: challengeResponseData.data?.nodeSignature ?? '',
         publicKey: publicKey,
       };
-  
+
       const signatureMessageMetadata: SignatureMessageMetadata = {
         nodeSignature: challengeResponseData.data?.nodeSignature ?? '',
         publicKey: publicKey,
-        nonce: challengeResponseData.data?.nonce ?? randomBytes(32).toString('hex'),
+        nonce:
+          challengeResponseData.data?.nonce ?? randomBytes(32).toString('hex'),
         contextId: challengeResponseData.data?.contextId ?? null,
-        timestamp: challengeResponseData.data?.timestamp ?? new Date().getTime(),
+        timestamp:
+          challengeResponseData.data?.timestamp ?? new Date().getTime(),
         message: JSON.stringify(signatureMessage),
       };
       const signatureMetadata: EthSignatureMessageMetadata = {};
@@ -102,7 +112,7 @@ export function StarknetRootKey({
         publicKey,
       };
       setWalletSignatureData(wsd);
-    }catch(error) {
+    } catch (error) {
       console.error('Error requesting node data:', error);
       setErrorMessage('Error requesting node data');
     }
@@ -112,34 +122,39 @@ export function StarknetRootKey({
     try {
       setErrorMessage(null);
       setLoading(true);
-      if(starknetInstance) {
+      if (starknetInstance) {
         const message = {
           domain: {
-            name: "ServerChallenge",
-            chainId: starknetInstance.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA,
-            version: "1",
-            revision: "1"
+            name: 'ServerChallenge',
+            chainId:
+              starknetInstance.chainId === 'SN_MAIN'
+                ? constants.StarknetChainId.SN_MAIN
+                : constants.StarknetChainId.SN_SEPOLIA,
+            version: '1',
+            revision: '1',
           },
           types: {
             StarknetDomain: [
-              { name: "name", type: "shortstring" },
-              { name: "chainId", type: "felt" },
-              { name: "version", type: "shortstring" },
-              { name: "revision", type: "shortstring" },
+              { name: 'name', type: 'shortstring' },
+              { name: 'chainId', type: 'felt' },
+              { name: 'version', type: 'shortstring' },
+              { name: 'revision', type: 'shortstring' },
             ],
             Challenge: [
-              { name: "nodeSignature", type: "string"},
-              { name: "publicKey", type: "string"},
+              { name: 'nodeSignature', type: 'string' },
+              { name: 'publicKey', type: 'string' },
             ],
           },
-          primaryType: "Challenge",
+          primaryType: 'Challenge',
           message: {
             nodeSignature: walletSignatureData.payload.message.nodeSignature,
-            publicKey: walletSignatureData.payload.message.publicKey
-          }
+            publicKey: walletSignatureData.payload.message.publicKey,
+          },
         };
-        const signature: Signature = await starknetInstance.account.signMessage(message);
-        const messageHash: String = await starknetInstance.account.hashMessage(message);
+        const signature: Signature =
+          await starknetInstance.account.signMessage(message);
+        const messageHash: String =
+          await starknetInstance.account.hashMessage(message);
 
         if (signature) {
           setSignData({
@@ -148,7 +163,7 @@ export function StarknetRootKey({
           });
         }
       }
-    }catch(error) {
+    } catch (error) {
       console.error('Error signing message:', error);
       setErrorMessage('Error signing message');
     }
@@ -168,11 +183,20 @@ export function StarknetRootKey({
       } else {
         const walletMetadata: WalletMetadata = {
           wallet: getWalletType(starknetInstance?.id),
-          signingKey: starknetInstance?.id === argentXId ? starknetInstance?.account.address : await starknetInstance?.account.signer.getPubKey(),
+          signingKey:
+            starknetInstance?.id === argentXId
+              ? starknetInstance?.account.address
+              : await starknetInstance?.account.signer.getPubKey(),
           walletAddress: starknetInstance.account.address,
           networkMetadata: {
-            chainId: starknetInstance.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA,
-            rpcUrl: starknetInstance?.chainId === 'SN_MAIN' ? constants.RPC_NODES.SN_MAIN[0] : constants.RPC_NODES.SN_SEPOLIA[0],
+            chainId:
+              starknetInstance.chainId === 'SN_MAIN'
+                ? constants.StarknetChainId.SN_MAIN
+                : constants.StarknetChainId.SN_SEPOLIA,
+            rpcUrl:
+              starknetInstance?.chainId === 'SN_MAIN'
+                ? constants.RPC_NODES.SN_MAIN[0]
+                : constants.RPC_NODES.SN_SEPOLIA[0],
           },
         };
         const rootKeyRequest: RootKeyRequest = {
@@ -198,12 +222,12 @@ export function StarknetRootKey({
             setErrorMessage('Error while login!');
           });
       }
-    }catch(error) {
+    } catch (error) {
       console.error('Error adding root key:', error);
       setErrorMessage('Error adding root key');
     }
     setLoading(false);
-  }, [    
+  }, [
     rpcBaseUrl,
     signData,
     successRedirect,
@@ -231,7 +255,6 @@ export function StarknetRootKey({
     setSignData(null);
     setErrorMessage(null);
   }, []);
-
 
   if (loading) {
     return <Loading />;
@@ -275,7 +298,9 @@ export function StarknetRootKey({
             whiteSpace: 'break-spaces',
           }}
         >
-          <span>Choose which account from your wallet you want to add root key with</span>
+          <span>
+            Choose which account from your wallet you want to add root key with
+          </span>
         </div>
         {!starknetInstance && (
           <header
@@ -288,43 +313,42 @@ export function StarknetRootKey({
               flexDirection: 'column',
             }}
           >
-          <span
-            style={{
-              marginTop: '1.5rem',
-              display: 'grid',
-              fontSize: '1.25rem',
-              fontWeight: '500',
-              textAlign: 'center',
-              marginBottom: '0.5rem',
-              color: '#000',
-              backgroundColor: '#FFF',
-              padding: '0.5rem 0.7rem',
-              borderRadius: '0.375rem',
-              cursor: 'pointer',
-            }}
-            onClick={() => walletLogin('argentX')}
-          >
-            Add root key with ArgentX
-          </span>
-          <span
-            style={{
-              marginTop: '1.5rem',
-              display: 'grid',
-              fontSize: '1.25rem',
-              fontWeight: '500',
-              textAlign: 'center',
-              marginBottom: '0.5rem',
-              color: '#000',
-              backgroundColor: '#FFF',
-              padding: '0.5rem',
-              borderRadius: '0.375rem',
-              cursor: 'pointer',
-            }}
-
-            onClick={() => walletLogin('metamask')}
-          >
-            Add root key with Metamask snap
-          </span>
+            <span
+              style={{
+                marginTop: '1.5rem',
+                display: 'grid',
+                fontSize: '1.25rem',
+                fontWeight: '500',
+                textAlign: 'center',
+                marginBottom: '0.5rem',
+                color: '#000',
+                backgroundColor: '#FFF',
+                padding: '0.5rem 0.7rem',
+                borderRadius: '0.375rem',
+                cursor: 'pointer',
+              }}
+              onClick={() => walletLogin('argentX')}
+            >
+              Add root key with ArgentX
+            </span>
+            <span
+              style={{
+                marginTop: '1.5rem',
+                display: 'grid',
+                fontSize: '1.25rem',
+                fontWeight: '500',
+                textAlign: 'center',
+                marginBottom: '0.5rem',
+                color: '#000',
+                backgroundColor: '#FFF',
+                padding: '0.5rem',
+                borderRadius: '0.375rem',
+                cursor: 'pointer',
+              }}
+              onClick={() => walletLogin('metamask')}
+            >
+              Add root key with Metamask snap
+            </span>
           </header>
         )}
         {starknetInstance && walletSignatureData && (
@@ -355,18 +379,18 @@ export function StarknetRootKey({
                 Sign root key transaction
               </button>
             </div>
-             <div
-             style={{
-               paddingTop: '1rem',
-               fontSize: '14px',
-               color: '#fff',
-               textAlign: 'center',
-               cursor: 'pointer',
-             }}
-             onClick={() => logout()}
-           >
-             Back to Starknet wallet selector
-           </div>
+            <div
+              style={{
+                paddingTop: '1rem',
+                fontSize: '14px',
+                color: '#fff',
+                textAlign: 'center',
+                cursor: 'pointer',
+              }}
+              onClick={() => logout()}
+            >
+              Back to Starknet wallet selector
+            </div>
           </>
         )}
       </div>

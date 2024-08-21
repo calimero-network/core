@@ -33,8 +33,10 @@ export function LoginWithStarknet({
   successRedirect,
   navigateBack,
 }: LoginWithStarknetProps) {
-  const [starknetInstance, setStarknetInstance] = useState<StarknetWindowObject | null>(null);
-  const [walletSignatureData, setWalletSignatureData] = useState<WalletSignatureData | null>(null);
+  const [starknetInstance, setStarknetInstance] =
+    useState<StarknetWindowObject | null>(null);
+  const [walletSignatureData, setWalletSignatureData] =
+    useState<WalletSignatureData | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [signData, setSignData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
@@ -46,23 +48,29 @@ export function LoginWithStarknet({
       setLoading(true);
       const starknetInstance = getStarknet();
       if (starknetInstance) {
-        if(walletType === argentXId) {
+        if (walletType === argentXId) {
           await starknetInstance.enable(window.starknet_argentX);
-          const wallets: StarknetWindowObject[] = await starknetInstance.getAvailableWallets();
-          const argentX: StarknetWindowObject = wallets.find((wallet: any) => wallet.id === argentXId);
+          const wallets: StarknetWindowObject[] =
+            await starknetInstance.getAvailableWallets();
+          const argentX: StarknetWindowObject = wallets.find(
+            (wallet: any) => wallet.id === argentXId,
+          );
           setStarknetInstance(argentX);
-        }else {
+        } else {
           await starknetInstance.enable(window.starknet_metamask);
-          const wallets: StarknetWindowObject[] = await starknetInstance.getAvailableWallets();
-          const metamask: StarknetWindowObject = wallets.find((wallet: any) => wallet.id === 'metamask');
+          const wallets: StarknetWindowObject[] =
+            await starknetInstance.getAvailableWallets();
+          const metamask: StarknetWindowObject = wallets.find(
+            (wallet: any) => wallet.id === 'metamask',
+          );
           setStarknetInstance(metamask);
         }
       }
-    }catch(error) {
+    } catch (error) {
       console.error('Error while login with starknet:', error);
       setErrorMessage('Error while login with starknet');
     }
-    
+
     setLoading(false);
   }, []);
 
@@ -70,13 +78,13 @@ export function LoginWithStarknet({
     try {
       setErrorMessage(null);
       const challengeResponseData: ResponseData<NodeChallenge> = await apiClient
-      .node()
-      .requestChallenge(rpcBaseUrl, contextId);
+        .node()
+        .requestChallenge(rpcBaseUrl, contextId);
       const { publicKey } = await getOrCreateKeypair();
 
       if (challengeResponseData.error) {
         console.error('requestNodeData error', challengeResponseData.error);
-        setErrorMessage("Error while getting node challenge");
+        setErrorMessage('Error while getting node challenge');
         return;
       }
 
@@ -88,9 +96,11 @@ export function LoginWithStarknet({
       const signatureMessageMetadata: SignatureMessageMetadata = {
         nodeSignature: challengeResponseData.data?.nodeSignature ?? '',
         publicKey: publicKey,
-        nonce: challengeResponseData.data?.nonce ?? randomBytes(32).toString('hex'),
+        nonce:
+          challengeResponseData.data?.nonce ?? randomBytes(32).toString('hex'),
         contextId: challengeResponseData.data?.contextId ?? null,
-        timestamp: challengeResponseData.data?.timestamp ?? new Date().getTime(),
+        timestamp:
+          challengeResponseData.data?.timestamp ?? new Date().getTime(),
         message: JSON.stringify(signatureMessage),
       };
       const signatureMetadata: EthSignatureMessageMetadata = {};
@@ -103,7 +113,7 @@ export function LoginWithStarknet({
         publicKey,
       };
       setWalletSignatureData(wsd);
-    }catch(error) {
+    } catch (error) {
       console.error('Error requesting node data:', error);
       setErrorMessage('Error requesting node data');
     }
@@ -113,35 +123,40 @@ export function LoginWithStarknet({
     try {
       setErrorMessage(null);
       setLoading(true);
-      if(starknetInstance) {
+      if (starknetInstance) {
         const message = {
           domain: {
-            name: "ServerChallenge",
-            chainId: starknetInstance.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA,
-            version: "1",
-            revision: "1"
+            name: 'ServerChallenge',
+            chainId:
+              starknetInstance.chainId === 'SN_MAIN'
+                ? constants.StarknetChainId.SN_MAIN
+                : constants.StarknetChainId.SN_SEPOLIA,
+            version: '1',
+            revision: '1',
           },
           types: {
             StarknetDomain: [
-              { name: "name", type: "shortstring" },
-              { name: "chainId", type: "felt" },
-              { name: "version", type: "shortstring" },
-              { name: "revision", type: "shortstring" },
+              { name: 'name', type: 'shortstring' },
+              { name: 'chainId', type: 'felt' },
+              { name: 'version', type: 'shortstring' },
+              { name: 'revision', type: 'shortstring' },
             ],
             Challenge: [
-              { name: "nodeSignature", type: "string"},
-              { name: "publicKey", type: "string"},
+              { name: 'nodeSignature', type: 'string' },
+              { name: 'publicKey', type: 'string' },
             ],
           },
-          primaryType: "Challenge",
+          primaryType: 'Challenge',
           message: {
             nodeSignature: walletSignatureData.payload.message.nodeSignature,
-            publicKey: walletSignatureData.payload.message.publicKey
-          }
+            publicKey: walletSignatureData.payload.message.publicKey,
+          },
         };
-        const signature: Signature = await starknetInstance.account.signMessage(message);
-        const messageHash: String = await starknetInstance.account.hashMessage(message);
-        
+        const signature: Signature =
+          await starknetInstance.account.signMessage(message);
+        const messageHash: String =
+          await starknetInstance.account.hashMessage(message);
+
         if (signature) {
           setSignData({
             signature: signature,
@@ -149,7 +164,7 @@ export function LoginWithStarknet({
           });
         }
       }
-    }catch(error) {
+    } catch (error) {
       console.error('Error signing message:', error);
       setErrorMessage('Error signing message');
     }
@@ -169,11 +184,20 @@ export function LoginWithStarknet({
       } else {
         const walletMetadata: WalletMetadata = {
           wallet: getWalletType(starknetInstance?.id),
-          signingKey: starknetInstance?.id === argentXId ? starknetInstance?.account.address : await starknetInstance?.account.signer.getPubKey(),
+          signingKey:
+            starknetInstance?.id === argentXId
+              ? starknetInstance?.account.address
+              : await starknetInstance?.account.signer.getPubKey(),
           walletAddress: starknetInstance.account.address,
           networkMetadata: {
-            chainId: starknetInstance.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA,
-            rpcUrl: starknetInstance.chainId === 'SN_MAIN' ? constants.RPC_NODES.SN_MAIN[0] : constants.RPC_NODES.SN_SEPOLIA[0],
+            chainId:
+              starknetInstance.chainId === 'SN_MAIN'
+                ? constants.StarknetChainId.SN_MAIN
+                : constants.StarknetChainId.SN_SEPOLIA,
+            rpcUrl:
+              starknetInstance.chainId === 'SN_MAIN'
+                ? constants.RPC_NODES.SN_MAIN[0]
+                : constants.RPC_NODES.SN_SEPOLIA[0],
           },
         };
         const loginRequest: LoginRequest = {
@@ -199,12 +223,12 @@ export function LoginWithStarknet({
             setErrorMessage('Error while login!');
           });
       }
-    }catch(error) {
+    } catch (error) {
       console.error('Error login:', error);
       setErrorMessage('Error login');
     }
     setLoading(false);
-  }, [    
+  }, [
     rpcBaseUrl,
     signData,
     successRedirect,
@@ -231,7 +255,6 @@ export function LoginWithStarknet({
     setSignData(null);
     setErrorMessage(null);
   }, []);
-
 
   if (loading) {
     return <Loading />;
@@ -275,7 +298,9 @@ export function LoginWithStarknet({
             whiteSpace: 'break-spaces',
           }}
         >
-          <span>Choose which account from your wallet you want to log in with</span>
+          <span>
+            Choose which account from your wallet you want to log in with
+          </span>
         </div>
         {!starknetInstance && (
           <header
@@ -287,43 +312,42 @@ export function LoginWithStarknet({
               alignItems: 'center',
             }}
           >
-          <span
-            style={{
-              marginTop: '1.5rem',
-              display: 'grid',
-              fontSize: '1.25rem',
-              fontWeight: '500',
-              textAlign: 'center',
-              marginBottom: '0.5rem',
-              color: '#000',
-              backgroundColor: '#FFF',
-              padding: '0.5rem 0.7rem',
-              borderRadius: '0.375rem',
-              cursor: 'pointer',
-            }}
-            onClick={() => walletLogin('argentX')}
-          >
-            Login with ArgentX
-          </span>
-          <span
-            style={{
-              marginTop: '1.5rem',
-              display: 'grid',
-              fontSize: '1.25rem',
-              fontWeight: '500',
-              textAlign: 'center',
-              marginBottom: '0.5rem',
-              color: '#000',
-              backgroundColor: '#FFF',
-              padding: '0.5rem',
-              borderRadius: '0.375rem',
-              cursor: 'pointer',
-            }}
-
-            onClick={() => walletLogin('metamask')}
-          >
-            Login with Metamask snap
-          </span>
+            <span
+              style={{
+                marginTop: '1.5rem',
+                display: 'grid',
+                fontSize: '1.25rem',
+                fontWeight: '500',
+                textAlign: 'center',
+                marginBottom: '0.5rem',
+                color: '#000',
+                backgroundColor: '#FFF',
+                padding: '0.5rem 0.7rem',
+                borderRadius: '0.375rem',
+                cursor: 'pointer',
+              }}
+              onClick={() => walletLogin('argentX')}
+            >
+              Login with ArgentX
+            </span>
+            <span
+              style={{
+                marginTop: '1.5rem',
+                display: 'grid',
+                fontSize: '1.25rem',
+                fontWeight: '500',
+                textAlign: 'center',
+                marginBottom: '0.5rem',
+                color: '#000',
+                backgroundColor: '#FFF',
+                padding: '0.5rem',
+                borderRadius: '0.375rem',
+                cursor: 'pointer',
+              }}
+              onClick={() => walletLogin('metamask')}
+            >
+              Login with Metamask snap
+            </span>
           </header>
         )}
         {starknetInstance && walletSignatureData && (
@@ -354,18 +378,18 @@ export function LoginWithStarknet({
                 Sign authentication transaction
               </button>
             </div>
-             <div
-             style={{
-               paddingTop: '1rem',
-               fontSize: '14px',
-               color: '#fff',
-               textAlign: 'center',
-               cursor: 'pointer',
-             }}
-             onClick={() => logout()}
-           >
-             Back to Starknet wallet selector
-           </div>
+            <div
+              style={{
+                paddingTop: '1rem',
+                fontSize: '14px',
+                color: '#fff',
+                textAlign: 'center',
+                cursor: 'pointer',
+              }}
+              onClick={() => logout()}
+            >
+              Back to Starknet wallet selector
+            </div>
           </>
         )}
       </div>

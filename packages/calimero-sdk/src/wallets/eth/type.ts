@@ -22,4 +22,4 @@ export const getWalletType = (walletType: string): WalletType => {
     default:
       return WalletType.STARKNET({ walletName: 'metamask' });
   }
-}
+};
