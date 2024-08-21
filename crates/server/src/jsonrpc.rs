@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::routing::{post, MethodRouter};
-use axum::{extract, Extension, Json};
+use axum::{Extension, Json};
 use calimero_server_primitives::jsonrpc as jsonrpc_primitives;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

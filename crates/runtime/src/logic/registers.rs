@@ -1,5 +1,4 @@
 use std::collections::hash_map::{Entry, HashMap};
-use std::mem;
 
 use crate::errors::HostError;
 use crate::logic::{Result, VMLimits};
