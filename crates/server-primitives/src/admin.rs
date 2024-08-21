@@ -155,6 +155,7 @@ pub struct GetContextsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
     pub application_id: calimero_primitives::application::ApplicationId,
+    pub context_id: Option<calimero_primitives::context::ContextId>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

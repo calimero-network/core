@@ -12,8 +12,13 @@ pub async fn create_context(
     ctx_manager: &calimero_context::ContextManager,
     application_id: calimero_primitives::application::ApplicationId,
     private_key: Option<&str>,
+    context_id: Option<ContextId>,
 ) -> Result<ContextCreateResult, eyre::Error> {
-    let context_id = generate_context_id();
+    let context_id = match context_id {
+        Some(context_id) => context_id,
+        None => generate_context_id(),
+    };
+
     let context = calimero_primitives::context::Context {
         id: context_id,
         application_id,
