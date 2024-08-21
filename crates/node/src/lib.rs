@@ -28,6 +28,7 @@ pub struct NodeConfig {
     pub store: calimero_store::config::StoreConfig,
 }
 
+#[derive(Debug)]
 pub struct Node {
     id: calimero_network::types::PeerId,
     typ: calimero_node_primitives::NodeType,

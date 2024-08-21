@@ -28,6 +28,7 @@ pub struct AdminConfig {
     pub enabled: bool,
 }
 
+#[derive(Debug)]
 pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
@@ -144,6 +145,7 @@ pub(crate) fn setup(
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Empty {}
 
+#[derive(Debug)]
 pub struct ApiResponse<T: Serialize> {
     pub(crate) payload: T,
 }

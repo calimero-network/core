@@ -3,6 +3,7 @@
 mod tests;
 
 use std::borrow::Borrow;
+use std::fmt::Debug;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::config::StoreConfig;
@@ -15,6 +16,7 @@ mod raw;
 
 use raw::{CastsTo, InMemoryDBImpl, InMemoryDBInner, InMemoryIterInner};
 
+#[derive(Debug)]
 pub struct Ref<'a> {
     inner: Arc<RwLock<InMemoryDBInner<Slice<'a>, Slice<'a>>>>,
 }
@@ -36,6 +38,7 @@ impl<'a> InMemoryDBImpl<'a> for Ref<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct Owned {
     inner: Arc<RwLock<InMemoryDBInner<Slice<'static>, Slice<'static>>>>,
 }
@@ -57,13 +60,14 @@ impl<'a> InMemoryDBImpl<'a> for Owned {
     }
 }
 
-pub struct InMemoryDB<T> {
+#[derive(Debug)]
+pub struct InMemoryDB<T: Debug> {
     inner: T,
 }
 
 // todo! vvvvv remove this once miraclx/slice/multi-thread-capable is merged in
-unsafe impl<T> Sync for InMemoryDB<T> {}
-unsafe impl<T> Send for InMemoryDB<T> {}
+unsafe impl<T: Debug> Sync for InMemoryDB<T> {}
+unsafe impl<T: Debug> Send for InMemoryDB<T> {}
 // todo! ^^^^^ remove this once miraclx/slice/multi-thread-capable is merged in
 
 impl InMemoryDB<()> {
@@ -84,7 +88,7 @@ impl InMemoryDB<()> {
     }
 }
 
-impl<'a, T: InMemoryDBImpl<'a>> InMemoryDB<T> {
+impl<'a, T: InMemoryDBImpl<'a> + Debug> InMemoryDB<T> {
     fn db(&self) -> eyre::Result<RwLockReadGuard<'_, InMemoryDBInner<T::Key, T::Value>>> {
         self.inner
             .db()
@@ -119,7 +123,7 @@ impl AsRef<[u8]> for ArcSlice<'_> {
     }
 }
 
-impl<'a, T: InMemoryDBImpl<'a> + 'static> Database<'a> for InMemoryDB<T>
+impl<'a, T: InMemoryDBImpl<'a> + Debug + 'static> Database<'a> for InMemoryDB<T>
 where
     T::Key: Ord + Clone + Borrow<[u8]>,
 {

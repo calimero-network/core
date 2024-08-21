@@ -11,6 +11,7 @@ pub trait IntoResult: private::Sealed {
     fn into_result(self) -> ReturnsResult<Self::Ok, Self::Err>;
 }
 
+#[derive(Debug)]
 pub struct ReturnsResult<T, E>(Result<T, E>);
 
 impl<T, E> ReturnsResult<T, E>
@@ -27,6 +28,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct WrappedReturn<T>(T);
 
 impl<T> WrappedReturn<T> {
@@ -44,7 +46,7 @@ impl<T, E> WrappedReturn<Result<T, E>> {
     }
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub enum Infallible {}
 
 impl<T> private::Sealed for WrappedReturn<T> {}

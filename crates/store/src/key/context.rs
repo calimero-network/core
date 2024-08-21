@@ -9,7 +9,7 @@ use crate::db::Column;
 use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ContextId;
 
 impl KeyComponent for ContextId {
@@ -61,7 +61,7 @@ impl fmt::Debug for ContextMeta {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct PublicKey;
 
 impl KeyComponent for PublicKey {
@@ -131,7 +131,7 @@ impl fmt::Debug for ContextIdentity {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct StateKey;
 
 impl KeyComponent for StateKey {
@@ -196,7 +196,7 @@ impl fmt::Debug for ContextState {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct TransactionId;
 
 impl KeyComponent for TransactionId {

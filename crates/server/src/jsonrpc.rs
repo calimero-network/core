@@ -91,6 +91,7 @@ pub(crate) trait Request {
     ) -> Result<Self::Response, RpcError<Self::Error>>;
 }
 
+#[derive(Debug)]
 pub enum RpcError<E> {
     MethodCallError(E),
     InternalError(eyre::Error),

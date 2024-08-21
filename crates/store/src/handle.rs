@@ -5,6 +5,7 @@ use crate::iter::{Iter, Structured};
 use crate::key::FromKeyParts;
 use crate::layer::{Layer, ReadLayer, WriteLayer};
 
+#[derive(Debug)]
 pub struct Handle<L> {
     pub(crate) inner: L,
 }

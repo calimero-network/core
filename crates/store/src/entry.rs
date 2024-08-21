@@ -23,7 +23,7 @@ pub trait Codec<'a, T> {
     fn decode(bytes: Slice<'a>) -> Result<T, Self::Error>;
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Identity {}
 
 impl<'a, T, E> Codec<'a, T> for Identity
@@ -42,7 +42,7 @@ where
 }
 
 #[cfg(feature = "serde")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Json {}
 
 #[cfg(feature = "serde")]
@@ -62,7 +62,7 @@ where
 }
 
 #[cfg(feature = "borsh")]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Borsh {}
 
 #[cfg(feature = "borsh")]

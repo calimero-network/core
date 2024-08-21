@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use strum::{AsRefStr, EnumIter};
 
 use crate::config::StoreConfig;
@@ -22,7 +24,7 @@ pub enum Column {
     Generic,
 }
 
-pub trait Database<'a>: Send + Sync + 'static {
+pub trait Database<'a>: Debug + Send + Sync + 'static {
     fn open(config: &StoreConfig) -> eyre::Result<Self>
     where
         Self: Sized;

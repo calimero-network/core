@@ -3,7 +3,7 @@ use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::store::iterable_map::IterableMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
 
-#[derive(BorshSerialize, BorshStorageKey)]
+#[derive(BorshSerialize, BorshStorageKey, Debug)]
 #[borsh(crate = "near_sdk::borsh")]
 pub enum StorageKeys {
     Packages,
@@ -13,7 +13,7 @@ pub enum StorageKeys {
 
 // TODO: enable ABI generation support
 #[near_bindgen]
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(BorshDeserialize, BorshSerialize, Debug)]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct PackageManager {
     pub packages: IterableMap<String, Package>,
@@ -21,7 +21,7 @@ pub struct PackageManager {
 }
 
 //  TODO: add multiple owners
-#[derive(BorshDeserialize, BorshSerialize, Clone, Deserialize, Serialize)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct Package {
@@ -35,7 +35,7 @@ pub struct Package {
 // TODO: add a checksum in the future
 // TODO: figure out status of reproduciable builds
 // TODO: add better error checking for URL path
-#[derive(BorshDeserialize, BorshSerialize, Clone, Deserialize, Serialize)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
 pub struct Release {

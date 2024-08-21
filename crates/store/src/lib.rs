@@ -14,7 +14,7 @@ pub mod types;
 
 use handle::Handle;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Store {
     db: Arc<dyn for<'a> db::Database<'a>>,
 }

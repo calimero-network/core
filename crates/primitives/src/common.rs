@@ -4,7 +4,7 @@ pub const fn bool_true() -> bool {
     true
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(remote = "Result")]
 pub enum ResultAlt<T, E> {
     #[serde(rename = "result")]

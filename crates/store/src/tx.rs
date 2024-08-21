@@ -5,12 +5,12 @@ use crate::db::Column;
 use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Transaction<'a> {
     cols: BTreeMap<Column, BTreeMap<Slice<'a>, Operation<'a>>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Operation<'a> {
     Put { value: Slice<'a> },
     Delete,
@@ -84,7 +84,7 @@ impl<'this, 'a> Iterator for ColRange<'this, 'a> {
     }
 }
 
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Entry<'a> {
     column: Column,
     key: &'a [u8],
@@ -100,11 +100,13 @@ impl<'a> Entry<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct Iter<'this, 'a> {
     iter: btree_map::Iter<'this, Column, BTreeMap<Slice<'a>, Operation<'a>>>,
     cursor: Option<IterCursor<'this, 'a>>,
 }
 
+#[derive(Debug)]
 struct IterCursor<'this, 'a> {
     column: Column,
     iter: btree_map::Iter<'this, Slice<'a>, Operation<'a>>,

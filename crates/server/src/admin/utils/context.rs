@@ -3,6 +3,7 @@ use calimero_primitives::identity::{KeyPair, PublicKey};
 
 use super::identity::{generate_context_id, generate_identity_keypair};
 
+#[derive(Debug)]
 pub struct ContextCreateResult {
     pub context: Context,
     pub identity: KeyPair,

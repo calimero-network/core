@@ -5,11 +5,13 @@ use calimero_store::key::ContextState;
 use calimero_store::layer::{read_only, temporal, LayerExt, ReadLayer, WriteLayer};
 use calimero_store::Store;
 
+#[derive(Debug)]
 pub enum RuntimeCompatStoreInner<'this, 'entry> {
     Read(read_only::ReadOnly<'this, Store>),
     Write(temporal::Temporal<'this, 'entry, Store>),
 }
 
+#[derive(Debug)]
 pub struct RuntimeCompatStore<'this, 'entry> {
     context_id: ContextId,
     inner: RuntimeCompatStoreInner<'this, 'entry>,

@@ -4,6 +4,7 @@ use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
 use crate::tx::{self, Operation, Transaction};
 
+#[derive(Debug)]
 pub struct Temporal<'base, 'entry, L> {
     inner: &'base mut L,
     shadow: Transaction<'entry>,

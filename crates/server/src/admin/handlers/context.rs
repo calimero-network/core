@@ -209,7 +209,7 @@ pub async fn get_context_storage_handler(
     .into_response()
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 pub struct JoinContextRequest {
     pub private_key: [u8; 32],
 }

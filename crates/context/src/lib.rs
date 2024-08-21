@@ -12,7 +12,7 @@ use tracing::info;
 
 pub mod config;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ContextManager {
     pub store: calimero_store::Store,
     pub blob_manager: calimero_blobstore::BlobManager,
@@ -20,7 +20,7 @@ pub struct ContextManager {
     state: Arc<RwLock<State>>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct State {
     pending_catchup: HashSet<calimero_primitives::context::ContextId>,
 }

@@ -16,11 +16,13 @@ use registers::Registers;
 
 pub type Result<T, E = errors::VMLogicError> = std::result::Result<T, E>;
 
+#[derive(Debug)]
 pub struct VMContext {
     pub input: Vec<u8>,
     pub executor_public_key: [u8; 32],
 }
 
+#[derive(Debug)]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -40,6 +42,7 @@ pub struct VMLimits {
     // number of functions per contract
 }
 
+#[derive(Debug)]
 pub struct VMLogic<'a> {
     storage: &'a mut dyn Storage,
     memory: Option<wasmer::Memory>,

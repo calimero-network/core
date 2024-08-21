@@ -3,6 +3,7 @@ use crate::key::{AsKeyParts, FromKeyParts};
 use crate::layer::{Layer, ReadLayer};
 use crate::slice::Slice;
 
+#[derive(Debug)]
 pub struct ReadOnly<'base, L> {
     inner: &'base L,
 }

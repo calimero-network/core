@@ -15,7 +15,7 @@ use tracing::error;
 
 use crate::admin::service::{AdminState, ApiError, ApiResponse};
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestChallenge {
     pub(crate) context_id: Option<ContextId>,

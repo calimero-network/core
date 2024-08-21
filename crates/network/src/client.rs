@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{config, stream, Command};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NetworkClient {
     pub catchup_config: config::CatchupConfig,
     pub(crate) sender: mpsc::Sender<Command>,

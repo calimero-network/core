@@ -21,6 +21,7 @@ pub trait InMemoryDBImpl<'a> {
     fn value_from_slice(slice: Slice<'a>) -> Self::Value;
 }
 
+#[derive(Debug)]
 pub struct DBArena<V> {
     // todo! Slice::clone points to the same object, can save one allocation here
     inner: Arc<RwLock<thunderdome::Arena<Arc<V>>>>,
@@ -56,6 +57,7 @@ impl<V> Default for DBArena<V> {
     }
 }
 
+#[derive(Debug)]
 pub struct InMemoryDBInner<K, V> {
     arena: DBArena<V>,
     links: BTreeMap<Column, BTreeMap<K, Arc<thunderdome::Index>>>,
@@ -130,12 +132,14 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
     }
 }
 
+#[derive(Debug)]
 pub struct InMemoryIterInner<'a, K: Ord, V> {
     arena: DBArena<V>,
     column: Option<BTreeMap<K, Arc<thunderdome::Index>>>,
     state: Option<State<'a, K, V>>,
 }
 
+#[derive(Debug)]
 struct State<'a, K, V> {
     range: BTreeMapRange<'a, K, Arc<thunderdome::Index>>,
     value: Option<Arc<V>>,

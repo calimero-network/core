@@ -10,6 +10,7 @@ use crate::iter::{DBIter, Iter};
 use crate::slice::Slice;
 use crate::tx::{Operation, Transaction};
 
+#[derive(Debug)]
 pub struct RocksDB {
     db: rocksdb::DB,
 }

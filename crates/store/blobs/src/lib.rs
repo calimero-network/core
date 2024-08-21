@@ -1,3 +1,4 @@
+use std::fmt::{self, Debug, Formatter};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -13,7 +14,7 @@ const CHUNK_SIZE: usize = 1 << 18; // 256 KiB
 
 // const MAX_LINKS_PER_BLOB: usize = 256;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BlobManager {
     data_store: DataStore,
     blob_store: FileSystem, // Arc<dyn BlobRepository>
@@ -147,6 +148,13 @@ impl Blob {
     }
 }
 
+impl Debug for Blob {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        // TODO: Add more details if/when additional fields are added to Blob
+        f.debug_struct("Blob").finish()
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum BlobError {
     #[error("encountered a dangling Blob ID: `{id}`, the blob store may be corrupt")]
@@ -170,7 +178,7 @@ trait BlobRepository {
     async fn put(&self, id: BlobId, data: &[u8]) -> eyre::Result<()>;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FileSystem {
     root: camino::Utf8PathBuf,
     // strategy: ShardingStrategy,

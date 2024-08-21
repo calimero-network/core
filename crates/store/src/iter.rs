@@ -142,6 +142,7 @@ impl<K> DBIter for Iter<'_, K, Unstructured> {
     }
 }
 
+#[derive(Debug)]
 pub struct IterKeys<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
 }
@@ -168,6 +169,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct IterEntries<'a, 'b, K, V> {
     iter: &'a mut Iter<'b, K, V>,
 }
@@ -216,11 +218,12 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct Structured<K> {
     _priv: PhantomData<K>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Unstructured {}
 
 mod private {
@@ -289,6 +292,7 @@ impl<'a> TryIntoValue<'a> for Unstructured {
     }
 }
 
+#[derive(Debug)]
 enum FusedIter<I> {
     Active(I),
     Interregnum,
@@ -330,6 +334,7 @@ impl<I: DBIter> FusedIter<I> {
     }
 }
 
+#[derive(Debug)]
 pub struct IterPair<A, B>(FusedIter<A>, B);
 
 impl<A, B> IterPair<A, B> {

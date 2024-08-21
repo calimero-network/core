@@ -324,6 +324,7 @@ pub(crate) trait Request {
     ) -> Result<Self::Response, WsError<Self::Error>>;
 }
 
+#[derive(Debug)]
 pub enum WsError<E> {
     MethodCallError(E),
     InternalError(eyre::Error),
