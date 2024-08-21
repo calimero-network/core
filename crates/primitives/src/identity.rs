@@ -90,7 +90,7 @@ pub enum WalletType {
         #[serde(rename = "chainId")]
         chain_id: u64,
     },
-    SN {
+    STARKNET {
         #[serde(rename = "walletName")]
         wallet_name: String,
     },

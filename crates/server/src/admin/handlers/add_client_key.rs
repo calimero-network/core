@@ -43,7 +43,7 @@ pub fn transform_request(
             })?;
             SignatureMetadataEnum::ETH(metadata)
         }
-        WalletType::SN { .. } => {
+        WalletType::STARKNET { .. } => {
             let metadata = serde_json::from_value::<StarknetSignatureMessageMetadata>(
                 intermediate.payload.metadata,
             )
@@ -51,7 +51,7 @@ pub fn transform_request(
                 status_code: StatusCode::BAD_REQUEST,
                 message: "Invalid metadata.".into(),
             })?;
-            SignatureMetadataEnum::SN(metadata)
+            SignatureMetadataEnum::STARKNET(metadata)
         }
     };
 
