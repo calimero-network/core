@@ -40,9 +40,7 @@ pub async fn verify_argent_signature(
     let message_hash = Felt::from_str(&message_hash).unwrap();
 
     // Set up a JSON-RPC client to interact with the StarkNet blockchain
-    let provider = JsonRpcClient::new(HttpTransport::new(
-        Url::parse(rpc_node_url).unwrap(),
-    ));
+    let provider = JsonRpcClient::new(HttpTransport::new(Url::parse(rpc_node_url).unwrap()));
 
     // Parse the signature strings into Felt types
     let parsed_signature: Vec<_> = signature
@@ -51,7 +49,9 @@ pub async fn verify_argent_signature(
         .collect();
 
     // Formatted entry point selector (isValidSignature string) to needed format for StarkNet RPC call
-    let entry_point_selector: Felt = Felt::from_str("0x213dfe25e2ca309c4d615a09cfc95fdb2fc7dc73fbcad12c450fe93b1f2ff9e").unwrap();
+    let entry_point_selector: Felt =
+        Felt::from_str("0x213dfe25e2ca309c4d615a09cfc95fdb2fc7dc73fbcad12c450fe93b1f2ff9e")
+            .unwrap();
 
     // Prepare a function call to verify the signature on-chain
     let function_call = FunctionCall {
