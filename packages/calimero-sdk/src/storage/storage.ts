@@ -3,6 +3,7 @@ import { ClientKey } from '../types/storage';
 export const CLIENT_KEY = 'client-key';
 export const APP_URL = 'app-url';
 export const AUTHORIZED = 'node-authorized';
+export const CONTEXT_IDENTITY = "context-identity";
 
 export const setStorageClientKey = (clientKey: ClientKey) => {
   localStorage.setItem(CLIENT_KEY, JSON.stringify(clientKey));
@@ -26,6 +27,10 @@ export const clearClientKey = () => {
 
 export const setStorageNodeAuthorized = () => {
   localStorage.setItem(AUTHORIZED, JSON.stringify(true));
+};
+
+export const setExecutorPublicKey = (publicKey: string) => {
+  localStorage.setItem(CONTEXT_IDENTITY, JSON.stringify(publicKey));
 };
 
 export const getStorageNodeAuthorized = (): boolean | null => {

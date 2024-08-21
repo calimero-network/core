@@ -22,7 +22,10 @@ import {
   WalletSignatureData,
 } from '../../api/nodeApi';
 import { ResponseData } from '../../types/api-response';
-import { setStorageNodeAuthorized } from '../../storage/storage';
+import {
+  setExecutorPublicKey,
+  setStorageNodeAuthorized,
+} from '../../storage/storage';
 import { Loading } from '../loading/Loading';
 import { getNetworkType } from '../eth/type';
 
@@ -120,22 +123,41 @@ export function LoginWithMetamask({
         walletMetadata: walletMetadata,
         contextId,
       };
-      await apiClient
-        .node()
-        .login(loginRequest, rpcBaseUrl)
-        .then((result) => {
-          if (result.error) {
-            console.error('Login error: ', result.error);
-            setErrorMessage(result.error.message);
-          } else {
-            setStorageNodeAuthorized();
-            successRedirect();
+      try {
+        const result = await apiClient.node().login(loginRequest, rpcBaseUrl);
+
+        if (result.error) {
+          console.error('Login error: ', result.error);
+          setErrorMessage(result.error.message);
+          return;
+        }
+
+        try {
+          const identity = await apiClient
+            .node()
+            .getContextIdentity(rpcBaseUrl);
+
+          if (
+            !identity ||
+            !identity.data ||
+            !identity.data.contextIdentities ||
+            identity.data.contextIdentities.length === 0
+          ) {
+            console.error('Login error: No context identities found');
+            setErrorMessage('Error while login! No context identities found.');
           }
-        })
-        .catch(() => {
-          console.error('error while login!');
-          setErrorMessage('Error while login!');
-        });
+
+          setExecutorPublicKey(identity.data.contextIdentities[0]);
+          setStorageNodeAuthorized();
+          successRedirect();
+        } catch (identityError) {
+          console.error('Error fetching context identity: ', identityError);
+          setErrorMessage('Error fetching context identity!');
+        }
+      } catch (loginError) {
+        console.error('Login error: ', loginError);
+        setErrorMessage('Error while login!');
+      }
     }
   }, [
     address,
@@ -204,7 +226,9 @@ export function LoginWithMetamask({
             whiteSpace: 'break-spaces',
           }}
         >
-          <span>Choose which account from your wallet you want to log in with</span>
+          <span>
+            Choose which account from your wallet you want to log in with
+          </span>
         </div>
         <header
           style={{
