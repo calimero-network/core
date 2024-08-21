@@ -7,6 +7,7 @@ use axum::{Extension, Json};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
+use tracing::error;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
@@ -77,20 +78,33 @@ pub async fn get_context_identities_handler(
                 let context_identities = state
                     .ctx_manager
                     .get_context_owned_identities(context.id)
-                    .map_err(|err| parse_api_error(err).into_response())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|identity| bs58::encode(identity.0).into_string())
-                    .collect::<Vec<String>>();
+                    .map_err(|err| parse_api_error(err).into_response());
 
-                ApiResponse {
-                    payload: GetContextIdentitiesResponse {
-                        data: ContextIdentities {
-                            identities: context_identities,
-                        },
-                    },
+                match context_identities {
+                    Ok(identities) => {
+                        let context_identities = identities
+                            .into_iter()
+                            .map(|identity| bs58::encode(identity.0).into_string())
+                            .collect::<Vec<String>>();
+
+                        ApiResponse {
+                            payload: GetContextIdentitiesResponse {
+                                data: ContextIdentities {
+                                    identities: context_identities,
+                                },
+                            },
+                        }
+                        .into_response()
+                    }
+                    Err(err) => {
+                        error!("Error getting context identities: {:?}", err);
+                        ApiError {
+                            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                            message: "Something went wrong".into(),
+                        }
+                        .into_response()
+                    }
                 }
-                .into_response()
             }
             None => ApiError {
                 status_code: StatusCode::NOT_FOUND,
