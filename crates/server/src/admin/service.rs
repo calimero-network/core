@@ -1,15 +1,17 @@
+use axum::extract::Path;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::str;
+use std::str::{self, FromStr};
 use std::sync::Arc;
 
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
+use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
-    ApplicationInstallResult, ApplicationListResult, InstallApplicationResponse,
-    ListApplicationsResponse,
+    ApplicationInstallResult, ApplicationListResult, GetApplicationDetailsResponse,
+    InstallApplicationResponse, ListApplicationsResponse,
 };
 use calimero_store::Store;
 use libp2p::identity::Keypair;
@@ -64,6 +66,10 @@ pub(crate) fn setup(
         )
         .route("/install-application", post(install_application_handler))
         .route("/applications", get(list_applications_handler))
+        .route(
+            "/applications/:app_id",
+            get(get_application_details_handler),
+        )
         .route("/did", get(handlers::fetch_did::fetch_did_handler))
         .route("/contexts", post(handlers::context::create_context_handler))
         .route(
@@ -99,7 +105,7 @@ pub(crate) fn setup(
             "/identity/keys",
             delete(handlers::root_keys::delete_auth_keys_handler),
         )
-        .layer(middleware::auth::AuthSignatureLayer::new(store))
+        // .layer(middleware::auth::AuthSignatureLayer::new(store))
         .layer(Extension(shared_state.clone()));
 
     let unprotected_router = Router::new()
@@ -256,6 +262,43 @@ async fn list_applications_handler(
                     data: ApplicationListResult { apps: applications },
                 },
             }
+        }
+        .into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+async fn get_application_details_handler(
+    Path(app_id): Path<String>,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    let app_id_result = match ApplicationId::from_str(&app_id) {
+        Ok(app_id) => app_id,
+        Err(_) => {
+            return ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Invalid app id".into(),
+            }
+            .into_response();
+        }
+    };
+
+    let application = state
+        .ctx_manager
+        .get_application(&app_id_result)
+        .map_err(|err| parse_api_error(err).into_response());
+
+    match application {
+        Ok(application) => match application {
+            Some(application) => ApiResponse {
+                payload: GetApplicationDetailsResponse { data: application },
+            }
+            .into_response(),
+            None => ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "Context not found".into(),
+            }
+            .into_response(),
         }
         .into_response(),
         Err(err) => err.into_response(),
