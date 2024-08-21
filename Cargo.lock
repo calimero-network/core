@@ -1077,7 +1077,6 @@ dependencies = [
  "camino",
  "eyre",
  "futures-util",
- "http 1.1.0",
  "reqwest 0.12.5",
  "semver",
  "serde",
@@ -1127,7 +1126,6 @@ dependencies = [
  "bs58 0.5.1",
  "calimero-blobstore",
  "calimero-context",
- "calimero-identity",
  "calimero-network",
  "calimero-node-primitives",
  "calimero-primitives",
@@ -1135,13 +1133,9 @@ dependencies = [
  "calimero-server",
  "calimero-store",
  "camino",
- "clap",
- "color-eyre",
- "dirs",
  "eyre",
  "futures-util",
  "libp2p",
- "multiaddr",
  "owo-colors",
  "rand 0.8.5",
  "semver",
@@ -1149,9 +1143,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
- "toml",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1161,7 +1153,6 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "serde",
- "serde_json",
  "thiserror",
  "tokio",
 ]
@@ -1196,7 +1187,6 @@ dependencies = [
  "owo-colors",
  "rand 0.8.5",
  "serde",
- "serde_json",
  "thiserror",
  "ureq",
  "wasmer",
@@ -1266,7 +1256,6 @@ dependencies = [
  "rand 0.8.5",
  "rcgen 0.13.1",
  "reqwest 0.12.5",
- "semver",
  "serde",
  "serde_json",
  "sha2 0.10.8",
@@ -4777,7 +4766,6 @@ name = "meroctl"
 version = "0.1.0"
 dependencies = [
  "calimero-context",
- "calimero-identity",
  "calimero-network",
  "calimero-node",
  "calimero-node-primitives",
@@ -4791,7 +4779,6 @@ dependencies = [
  "const_format",
  "dirs",
  "eyre",
- "hex 0.4.3",
  "libp2p",
  "multiaddr",
  "notify",
@@ -4799,7 +4786,6 @@ dependencies = [
  "reqwest 0.12.5",
  "semver",
  "serde",
- "serde_json",
  "tokio",
  "toml",
  "toml_edit 0.22.20",
@@ -6148,7 +6134,6 @@ dependencies = [
  "near-workspaces",
  "semver",
  "serde_json",
- "sha2 0.10.8",
  "tokio",
 ]
 

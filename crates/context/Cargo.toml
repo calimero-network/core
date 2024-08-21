@@ -10,7 +10,6 @@ license.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
 futures-util.workspace = true
-http.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 semver.workspace = true
 serde.workspace = true
