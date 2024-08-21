@@ -13,16 +13,16 @@ use crate::config_file::ConfigFile;
 #[derive(Debug, Parser)]
 pub struct CreateCommand {
     /// The application ID to attach to the context
-    #[clap(long, short = 'a')]
+    #[clap(long, short = 'a', conflicts_with = "watch")]
     application_id: Option<calimero_primitives::application::ApplicationId>,
 
     /// Path to the application file to watch and install locally
     #[clap(long, short = 'w')]
     watch: Option<Utf8PathBuf>,
-
+    #[clap(requires = "watch")]
     metadata: Option<Vec<u8>>,
 
-    #[clap(long, short = 'c')]
+    #[clap(long, short = 'c', requires = "watch")]
     context_id: Option<ContextId>,
 }
 
@@ -43,11 +43,6 @@ impl CreateCommand {
         };
 
         let client = Client::new();
-
-        // Manually check for exclusivity between application_id and watch
-        if self.application_id.is_some() && self.watch.is_some() {
-            eyre::bail!("Cannot use --application-id and --watch together");
-        }
 
         match dbg!(self) {
             CreateCommand {
