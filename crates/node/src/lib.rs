@@ -745,26 +745,6 @@ impl Node {
             return Ok(());
         };
 
-        // Too much errors due to concurrent tries to catchup, e.g.
-        // 2024-07-12T16:29:36.373857Z ERROR calimero_node: Failed to handle subscribed event err=
-        // 0: Timeout while waiting for catchup message: Elapsed(())
-
-        // if self
-        //     .ctx_manager
-        //     .is_context_pending_initial_catchup(&context_id)
-        //     .await
-        // {
-        //     info!(%context_id, %their_peer_id, "Attempting to perform subscription triggered catchup");
-
-        //     self.perform_catchup(context_id, their_peer_id).await?;
-
-        //     self.ctx_manager
-        //         .clear_context_pending_initial_catchup(&context_id)
-        //         .await;
-
-        //     info!(%context_id, %their_peer_id, "Subscription triggered catchup successfully finished");
-        // }
-
         let handle = self.store.handle();
 
         if !handle.has(&calimero_store::key::ContextMeta::new(context_id))? {
@@ -800,11 +780,6 @@ impl Node {
         };
 
         match serde_json::from_slice(&message.data)? {
-            types::PeerAction::SharePublicKey(public_key) => {
-                // Handle the shared public key
-                // TODO: Should we store it? Use it for verification?
-                info!("Received public key: {:?}", public_key);
-            }
             types::PeerAction::Transaction(transaction) => {
                 debug!(?transaction, %source, "Received transaction");
 

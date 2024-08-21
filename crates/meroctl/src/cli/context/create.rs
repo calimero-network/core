@@ -83,7 +83,6 @@ impl CreateCommand {
                     install_app(multiaddr, path.clone(), &client, Some(metadata.clone())).await?;
                 let context_id =
                     create_context(multiaddr, application_id, &client, Some(context_id)).await?;
-
                 watch_app_and_update_context(multiaddr, context_id, path, &client, Some(metadata))
                     .await?;
             }
@@ -97,7 +96,6 @@ impl CreateCommand {
                 let application_id = install_app(multiaddr, path.clone(), &client, None).await?;
                 let context_id =
                     create_context(multiaddr, application_id, &client, Some(context_id)).await?;
-
                 watch_app_and_update_context(multiaddr, context_id, path, &client, None).await?;
             }
             CreateCommand {
