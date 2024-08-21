@@ -19,16 +19,14 @@ impl EventLoop {
     pub(super) async fn handle_swarm_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
         match event {
             SwarmEvent::Behaviour(event) => match event {
-                BehaviourEvent::Dcutr(event) => events::EventHandler::handle(self, event).await,
-                BehaviourEvent::Gossipsub(event) => events::EventHandler::handle(self, event).await,
-                BehaviourEvent::Identify(event) => events::EventHandler::handle(self, event).await,
-                BehaviourEvent::Kad(event) => events::EventHandler::handle(self, event).await,
-                BehaviourEvent::Mdns(event) => events::EventHandler::handle(self, event).await,
-                BehaviourEvent::Ping(event) => events::EventHandler::handle(self, event).await,
-                BehaviourEvent::Relay(event) => events::EventHandler::handle(self, event).await,
-                BehaviourEvent::Rendezvous(event) => {
-                    events::EventHandler::handle(self, event).await
-                }
+                BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event).await,
+                BehaviourEvent::Gossipsub(event) => EventHandler::handle(self, event).await,
+                BehaviourEvent::Identify(event) => EventHandler::handle(self, event).await,
+                BehaviourEvent::Kad(event) => EventHandler::handle(self, event).await,
+                BehaviourEvent::Mdns(event) => EventHandler::handle(self, event).await,
+                BehaviourEvent::Ping(event) => EventHandler::handle(self, event).await,
+                BehaviourEvent::Relay(event) => EventHandler::handle(self, event).await,
+                BehaviourEvent::Rendezvous(event) => EventHandler::handle(self, event).await,
                 BehaviourEvent::Stream(()) => {}
             },
             SwarmEvent::NewListenAddr {

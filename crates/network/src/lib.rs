@@ -82,8 +82,8 @@ async fn init(
         .with_tokio()
         .with_tcp(
             Default::default(),
-            (libp2p::tls::Config::new, libp2p::noise::Config::new),
-            libp2p::yamux::Config::default,
+            (libp2p::tls::Config::new, noise::Config::new),
+            yamux::Config::default,
         )?
         .with_quic()
         .with_relay_client(noise::Config::new, yamux::Config::default)?

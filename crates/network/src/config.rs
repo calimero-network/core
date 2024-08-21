@@ -165,7 +165,7 @@ where
 
             while let Some(addr) = seq.next_element::<Multiaddr>()? {
                 let Some(multiaddr::Protocol::P2p(_)) = addr.iter().last() else {
-                    return Err(serde::de::Error::custom("peer ID not allowed"));
+                    return Err(de::Error::custom("peer ID not allowed"));
                 };
 
                 addrs.push(addr);

@@ -54,7 +54,7 @@ struct MaybeBoundEvent {
 
 // todo! move all errors to ParseError
 
-impl syn::parse::Parse for MaybeBoundEvent {
+impl Parse for MaybeBoundEvent {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut lifetime = None;
 

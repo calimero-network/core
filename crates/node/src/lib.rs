@@ -32,7 +32,7 @@ pub struct NodeConfig {
 pub struct Node {
     id: calimero_network::types::PeerId,
     typ: calimero_node_primitives::NodeType,
-    store: calimero_store::Store,
+    store: Store,
     tx_pool: transaction_pool::TransactionPool,
     ctx_manager: calimero_context::ContextManager,
     network_client: calimero_network::client::NetworkClient,
@@ -50,7 +50,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
+    let store = Store::open::<calimero_store::db::RocksDB>(&config.store)?;
 
     let blob_manager = calimero_blobstore::BlobManager::new(
         store.clone(),
@@ -714,7 +714,7 @@ impl Node {
     async fn handle_subscribed(
         &mut self,
         their_peer_id: libp2p::PeerId,
-        topic_hash: libp2p::gossipsub::TopicHash,
+        topic_hash: TopicHash,
     ) -> eyre::Result<()> {
         let Ok(context_id) = topic_hash.as_str().parse() else {
             // eyre::bail!(
@@ -1256,7 +1256,7 @@ impl Node {
 // TODO: move this into the config
 // TODO: also this would be nice to have global default with per application customization
 fn get_runtime_limits() -> eyre::Result<VMLimits> {
-    Ok(calimero_runtime::logic::VMLimits {
+    Ok(VMLimits {
         max_stack_size: 200 << 10, // 200 KiB
         max_memory_pages: 1 << 10, // 1 KiB
         max_registers: 100,

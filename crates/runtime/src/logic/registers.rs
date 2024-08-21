@@ -4,7 +4,7 @@ use std::mem;
 use crate::errors::HostError;
 use crate::logic::{Result, VMLimits};
 
-const REGISTER_SIZE: u64 = mem::size_of::<u64>() as _;
+const REGISTER_SIZE: u64 = size_of::<u64>() as _;
 
 #[derive(Debug, Default)]
 pub struct Registers {

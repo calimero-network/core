@@ -15,7 +15,7 @@ pub async fn create_context(
     private_key: Option<&str>,
 ) -> Result<ContextCreateResult, eyre::Error> {
     let context_id = generate_context_id();
-    let context = calimero_primitives::context::Context {
+    let context = Context {
         id: context_id,
         application_id,
         last_transaction_hash: calimero_primitives::hash::Hash::default(),

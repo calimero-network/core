@@ -105,8 +105,8 @@ impl InitCommand {
             let host = format!(
                 "/{}/{}",
                 match host {
-                    std::net::IpAddr::V4(_) => "ip4",
-                    std::net::IpAddr::V6(_) => "ip6",
+                    IpAddr::V4(_) => "ip4",
+                    IpAddr::V6(_) => "ip6",
                 },
                 host,
             );

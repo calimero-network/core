@@ -9,8 +9,7 @@ use libp2p::{rendezvous, Multiaddr, PeerId, StreamProtocol};
 
 // The rendezvous protocol name is not public in libp2p, so we have to define it here.
 // source: https://github.com/libp2p/rust-libp2p/blob/a8888a7978f08ec9b8762207bf166193bf312b94/protocols/rendezvous/src/lib.rs#L50C12-L50C92
-const RENDEZVOUS_PROTOCOL_NAME: libp2p::StreamProtocol =
-    libp2p::StreamProtocol::new("/rendezvous/1.0.0");
+const RENDEZVOUS_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/rendezvous/1.0.0");
 
 /// DiscoveryState is a struct that holds the state of the disovered peers.
 /// It holds the relay and rendezvous indexes to quickly check if a peer is a relay or rendezvous.
@@ -97,10 +96,10 @@ impl DiscoveryState {
         mechanism: PeerDiscoveryMechanism,
     ) {
         match self.peers.entry(*peer_id) {
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
+            btree_map::Entry::Occupied(mut entry) => {
                 entry.get_mut().add_discovery_mechanism(mechanism);
             }
-            std::collections::btree_map::Entry::Vacant(entry) => {
+            btree_map::Entry::Vacant(entry) => {
                 let mut discoveries = HashSet::new();
                 discoveries.insert(mechanism);
 

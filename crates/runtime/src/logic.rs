@@ -14,7 +14,7 @@ mod registers;
 pub use errors::VMLogicError;
 use registers::Registers;
 
-pub type Result<T, E = errors::VMLogicError> = std::result::Result<T, E>;
+pub type Result<T, E = VMLogicError> = std::result::Result<T, E>;
 
 #[derive(Debug)]
 pub struct VMContext {

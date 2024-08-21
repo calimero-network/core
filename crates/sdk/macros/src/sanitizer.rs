@@ -38,7 +38,7 @@ enum SanitizerAtom<'a> {
     Self_(syn::Token![Self]),
     Ident(syn::Ident),
     Lifetime(LifetimeAtom),
-    Tree(proc_macro2::TokenTree),
+    Tree(TokenTree),
     Stream(proc_macro2::TokenStream),
     Group {
         entry: Sanitizer<'a>,
@@ -98,7 +98,7 @@ impl<'a> SanitizerAtom<'a> {
                 LifetimeAtom::Named(lifetime) => Some(lifetime.span()),
                 LifetimeAtom::Elided(span) => Some(*span),
             },
-            (SanitizerAtom::Tree(proc_macro2::TokenTree::Punct(punct)), Case::Lifetime(None)) => {
+            (SanitizerAtom::Tree(TokenTree::Punct(punct)), Case::Lifetime(None)) => {
                 (punct.as_char() == '&' && punct.spacing() == proc_macro2::Spacing::Joint)
                     .then(|| punct.span())
             }
@@ -107,7 +107,7 @@ impl<'a> SanitizerAtom<'a> {
     }
 
     fn replace_with(&mut self, span: proc_macro2::Span, replacement: &dyn ToTokens) -> bool {
-        if let SanitizerAtom::Tree(proc_macro2::TokenTree::Punct(punct)) = self {
+        if let SanitizerAtom::Tree(TokenTree::Punct(punct)) = self {
             if punct.as_char() == '&' && punct.spacing() == proc_macro2::Spacing::Joint {
                 *punct = proc_macro2::Punct::new('&', proc_macro2::Spacing::Alone);
                 punct.set_span(span);
@@ -253,7 +253,7 @@ impl Parse for Sanitizer<'_> {
                 } else if input.peek(syn::Lifetime) {
                     entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Named(input.parse()?)));
                 } else if input.peek(syn::Token![&]) {
-                    let and = input.parse::<proc_macro2::TokenTree>()?;
+                    let and = input.parse::<TokenTree>()?;
                     let and_span = and.span();
                     entries.push(SanitizerAtom::Tree(and));
                     if input.peek(syn::Lifetime) {

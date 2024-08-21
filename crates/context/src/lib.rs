@@ -345,7 +345,7 @@ impl ContextManager {
             .put(tokio_util::io::ReaderStream::new(file))
             .await?;
 
-        let Ok(uri) = reqwest::Url::from_file_path(path) else {
+        let Ok(uri) = Url::from_file_path(path) else {
             eyre::bail!("non-absolute path")
         };
 

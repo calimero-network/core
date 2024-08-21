@@ -1,16 +1,15 @@
+use libp2p::multiaddr::Protocol;
+use libp2p::Multiaddr;
 use reqwest::Url;
 
-pub(crate) fn multiaddr_to_url(
-    multiaddr: &libp2p::Multiaddr,
-    api_path: &str,
-) -> eyre::Result<reqwest::Url> {
+pub(crate) fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> eyre::Result<Url> {
     let (ip, port, scheme) = multiaddr.iter().fold(
         (None, None, None),
         |(ip, port, scheme), protocol| match protocol {
-            libp2p::multiaddr::Protocol::Ip4(addr) => (Some(addr), port, scheme),
-            libp2p::multiaddr::Protocol::Tcp(p) => (ip, Some(p), scheme),
-            libp2p::multiaddr::Protocol::Http => (ip, port, Some("http")),
-            libp2p::multiaddr::Protocol::Https => (ip, port, Some("https")),
+            Protocol::Ip4(addr) => (Some(addr), port, scheme),
+            Protocol::Tcp(p) => (ip, Some(p), scheme),
+            Protocol::Http => (ip, port, Some("http")),
+            Protocol::Https => (ip, port, Some("https")),
             _ => (ip, port, scheme),
         },
     );
