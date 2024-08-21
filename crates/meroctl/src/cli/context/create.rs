@@ -56,34 +56,6 @@ impl CreateCommand {
             CreateCommand {
                 application_id: None,
                 watch: Some(path),
-                context_id: None,
-                metadata: Some(metadata),
-            } => {
-                let path = path.canonicalize_utf8()?;
-                let application_id =
-                    install_app(multiaddr, path.clone(), &client, Some(metadata.clone())).await?;
-                let context_id = create_context(multiaddr, application_id, &client, None).await?;
-
-                watch_app_and_update_context(multiaddr, context_id, path, &client, Some(metadata))
-                    .await?;
-            }
-            CreateCommand {
-                application_id: None,
-                watch: Some(path),
-                context_id: Some(context_id),
-                metadata: Some(metadata),
-            } => {
-                let path = path.canonicalize_utf8()?;
-                let application_id =
-                    install_app(multiaddr, path.clone(), &client, Some(metadata.clone())).await?;
-                let context_id =
-                    create_context(multiaddr, application_id, &client, Some(context_id)).await?;
-                watch_app_and_update_context(multiaddr, context_id, path, &client, Some(metadata))
-                    .await?;
-            }
-            CreateCommand {
-                application_id: None,
-                watch: Some(path),
                 context_id,
                 metadata,
             } => {
