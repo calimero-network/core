@@ -82,6 +82,14 @@ pub struct WalletMetadata {
     pub wallet_type: calimero_primitives::identity::WalletType,
     pub signing_key: String,
     pub wallet_address: Option<String>,
+    pub network_metadata: Option<NetworkMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkMetadata {
+    pub chain_id: String,
+    pub rpc_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,7 +97,7 @@ pub struct WalletMetadata {
 pub enum SignatureMetadataEnum {
     NEAR(NearSignatureMessageMetadata),
     ETH(EthSignatureMessageMetadata),
-    SN(StarknetSignatureMessageMetadata),
+    STARKNET(StarknetSignatureMessageMetadata),
 }
 
 #[derive(Debug, Deserialize)]

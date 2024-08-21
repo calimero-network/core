@@ -32,6 +32,8 @@ pub async fn verify_argent_signature(
     signature: Vec<String>,
     wallet_address: String,
     message: &str,
+    rpc_node_url: &str,
+    chain_id: &str,
 ) -> eyre::Result<bool> {
     // Convert inputs from strings to StarkNet-compatible types
     let wallet_address = Felt::from_str(&wallet_address).unwrap();
@@ -39,7 +41,7 @@ pub async fn verify_argent_signature(
 
     // Set up a JSON-RPC client to interact with the StarkNet blockchain
     let provider = JsonRpcClient::new(HttpTransport::new(
-        Url::parse("https://starknet-mainnet.public.blastapi.io").unwrap(),
+        Url::parse(rpc_node_url).unwrap(),
     ));
 
     // Parse the signature strings into Felt types
@@ -48,13 +50,13 @@ pub async fn verify_argent_signature(
         .map(|s| Felt::from_str(s).unwrap())
         .collect();
 
+    // Formatted entry point selector (isValidSignature string) to needed format for StarkNet RPC call
+    let entry_point_selector: Felt = Felt::from_str("0x213dfe25e2ca309c4d615a09cfc95fdb2fc7dc73fbcad12c450fe93b1f2ff9e").unwrap();
+
     // Prepare a function call to verify the signature on-chain
     let function_call = FunctionCall {
         contract_address: wallet_address,
-        entry_point_selector: Felt::from_str(
-            "0x213dfe25e2ca309c4d615a09cfc95fdb2fc7dc73fbcad12c450fe93b1f2ff9e",
-        )
-        .unwrap(),
+        entry_point_selector,
         calldata: {
             let mut data = vec![message_hash, Felt::from(parsed_signature.len())];
             data.extend_from_slice(&parsed_signature);
@@ -70,7 +72,7 @@ pub async fn verify_argent_signature(
     match result {
         // If the signature is valid, verify the hash
         Ok(_) => {
-            let verify = verify_signature_hash(message_hash, wallet_address, message);
+            let verify = verify_signature_hash(message_hash, wallet_address, message, chain_id);
             if verify.is_ok() {
                 return Ok(true);
             }
@@ -89,6 +91,7 @@ pub fn verify_metamask_signature(
     signing_key: String,
     message: &str,
     wallet_address: String,
+    chain_id: &str,
 ) -> eyre::Result<bool> {
     // Convert inputs to Felt types
     let signing_key = Felt::from_str(&signing_key).unwrap();
@@ -105,7 +108,7 @@ pub fn verify_metamask_signature(
     match result {
         // If the signature is valid, verify the hash
         Ok(true) => {
-            let verify = verify_signature_hash(message_hash, wallet_address, message);
+            let verify = verify_signature_hash(message_hash, wallet_address, message, chain_id);
             if verify.is_ok() {
                 return Ok(true);
             }
@@ -125,6 +128,7 @@ fn verify_signature_hash(
     message_hash: Felt,
     wallet_address: Felt,
     message: &str,
+    chain_id: &str,
 ) -> eyre::Result<()> {
     let types = Types {
         stark_net_domain: vec![
@@ -134,7 +138,7 @@ fn verify_signature_hash(
             },
             FieldType {
                 name: "chainId".to_string(),
-                field_type: "shortstring".to_string(),
+                field_type: "felt".to_string(),
             },
             FieldType {
                 name: "version".to_string(),
@@ -185,7 +189,7 @@ fn verify_signature_hash(
 
     let domain_data = serde_json::json!({
         "name": "ServerChallenge",
-        "chainId": "SN_MAIN",
+        "chainId": chain_id,
         "version": "1",
         "revision": "1"
     });
@@ -218,7 +222,6 @@ fn verify_signature_hash(
         encoded_challenge_hash,
     ];
     let server_message_hash = poseidon_hash_many(&message);
-
     // Compare the calculated message hash with the provided one to verify integrity
     if server_message_hash == message_hash {
         Ok(())

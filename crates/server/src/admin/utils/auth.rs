@@ -23,6 +23,7 @@ pub fn verify_node_signature(
     wallet_signature: &WalletSignature,
     payload: &Payload,
 ) -> Result<bool, ApiError> {
+    println!("verify_node_signature {:?}", wallet_metadata.wallet_type);
     match wallet_metadata.wallet_type {
         WalletType::NEAR { .. } => {
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
@@ -93,9 +94,9 @@ pub fn verify_node_signature(
 
             Ok(true)
         }
-        WalletType::SN { ref wallet_name } => {
+        WalletType::STARKNET { ref wallet_name } => {
             let _sn_metadata: &StarknetSignatureMessageMetadata = match &payload.metadata {
-                SignatureMetadataEnum::SN(metadata) => metadata,
+                SignatureMetadataEnum::STARKNET(metadata) => metadata,
                 _ => {
                     return Err(ApiError {
                         status_code: StatusCode::BAD_REQUEST,
@@ -116,23 +117,43 @@ pub fn verify_node_signature(
                 }
             };
 
+            let network_metadata = match &wallet_metadata.network_metadata {
+                Some(network_metadata) => network_metadata,
+                None => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Missing network_metadata for Starknet.".into(),
+                    });
+                }
+            };
+            
+            // Now extract `rpc_url` and `chain_id` from the `network_metadata`
+            let rpc_node_url = network_metadata.rpc_url.clone();
+            let chain_id = network_metadata.chain_id.clone();
+
             let result = match wallet_name.as_str() {
-                "argentX" => tokio::task::block_in_place(|| {
-                    tokio::runtime::Runtime::new()
-                        .unwrap()
-                        .block_on(verify_argent_signature(
-                            message_hash,
-                            signature,
-                            wallet_metadata.signing_key.clone(),
-                            &payload.message.message,
-                        ))
-                }),
+                "argentX" => {
+                        tokio::task::block_in_place(|| {
+                            tokio::runtime::Runtime::new()
+                                .unwrap()
+                                .block_on(verify_argent_signature(
+                                    message_hash,
+                                    signature,
+                                    wallet_metadata.signing_key.clone(),
+                                    &payload.message.message,
+                                    &rpc_node_url,
+                                    &chain_id
+                                ))
+                        })
+                 
+                },
                 "metamask" => verify_metamask_signature(
                     message_hash,
                     signature,
                     wallet_metadata.signing_key.clone(),
                     &payload.message.message,
                     wallet_metadata.wallet_address.clone().unwrap_or_default(),
+                    &chain_id
                 ),
                 _ => {
                     return Err(ApiError {
