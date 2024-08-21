@@ -240,9 +240,15 @@ pub async fn create_context_handler(
     Json(req): Json<calimero_server_primitives::admin::CreateContextRequest>,
 ) -> impl IntoResponse {
     //TODO enable providing private key in the request
-    let result = create_context(&state.ctx_manager, req.application_id, None, req.context_id)
-        .await
-        .map_err(parse_api_error);
+    let result = create_context(
+        &state.ctx_manager,
+        req.application_id,
+        None,
+        req.context_id,
+        req.initialization_params,
+    )
+    .await
+    .map_err(parse_api_error);
 
     match result {
         Ok(context_create_result) => ApiResponse {

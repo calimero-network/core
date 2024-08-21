@@ -156,14 +156,14 @@ pub(crate) async fn call(
     let (outcome_sender, outcome_receiver) = oneshot::channel();
 
     sender
-        .send((
+        .send(calimero_node_primitives::ExecutionRequest {
             context_id,
             method,
-            args,
+            payload: args,
             writes,
             executor_public_key,
             outcome_sender,
-        ))
+        })
         .await
         .map_err(|e| CallError::InternalError(eyre::eyre!("Failed to send call message: {}", e)))?;
 

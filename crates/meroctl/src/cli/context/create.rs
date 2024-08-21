@@ -24,6 +24,9 @@ pub struct CreateCommand {
 
     #[clap(long, short = 'c', requires = "watch")]
     context_id: Option<ContextId>,
+
+    #[clap(long, short = 'p')]
+    params: String,
 }
 
 impl CreateCommand {
@@ -50,23 +53,28 @@ impl CreateCommand {
                 watch: None,
                 context_id: None,
                 metadata: None,
+                params,
             } => {
-                create_context(multiaddr, app_id, &client, None).await?;
+                create_context(&client, multiaddr, app_id, None, params).await?;
             }
             CreateCommand {
                 application_id: None,
                 watch: Some(path),
                 context_id,
                 metadata,
+                params,
             } => {
                 let path = path.canonicalize_utf8()?;
                 let application_id =
-                    install_app(multiaddr, path.clone(), &client, metadata.clone()).await?;
+                    install_app(&client, multiaddr, path.clone(), metadata.clone()).await?;
                 let context_id = match context_id {
                     Some(context_id) => context_id,
-                    None => create_context(multiaddr, application_id, &client, context_id).await?,
+                    None => {
+                        create_context(&client, multiaddr, application_id, context_id, params)
+                            .await?
+                    }
                 };
-                watch_app_and_update_context(multiaddr, context_id, path, &client, metadata)
+                watch_app_and_update_context(&client, multiaddr, context_id, path, metadata)
                     .await?;
             }
             _ => eyre::bail!("Invalid command configuration"),
@@ -77,10 +85,11 @@ impl CreateCommand {
 }
 
 async fn create_context(
+    client: &Client,
     base_multiaddr: &Multiaddr,
     application_id: calimero_primitives::application::ApplicationId,
-    client: &Client,
     context_id: Option<ContextId>,
+    params: String,
 ) -> eyre::Result<calimero_primitives::context::ContextId> {
     if !app_installed(&base_multiaddr, &application_id, client).await? {
         eyre::bail!("Application is not installed on node.")
@@ -90,6 +99,7 @@ async fn create_context(
     let request = calimero_server_primitives::admin::CreateContextRequest {
         application_id,
         context_id,
+        initialization_params: params.into_bytes(),
     };
 
     let response = client.post(url).json(&request).send().await?;
@@ -120,10 +130,10 @@ async fn create_context(
 }
 
 async fn watch_app_and_update_context(
+    client: &Client,
     base_multiaddr: &Multiaddr,
     context_id: calimero_primitives::context::ContextId,
     path: Utf8PathBuf,
-    client: &Client,
     metadata: Option<Vec<u8>>,
 ) -> eyre::Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
@@ -158,19 +168,19 @@ async fn watch_app_and_update_context(
         }
 
         let application_id =
-            install_app(base_multiaddr, path.clone(), &client, metadata.clone()).await?;
+            install_app(&client, base_multiaddr, path.clone(), metadata.clone()).await?;
 
-        update_context_application(base_multiaddr, context_id, application_id, client).await?;
+        update_context_application(client, base_multiaddr, context_id, application_id).await?;
     }
 
     Ok(())
 }
 
 async fn update_context_application(
+    client: &Client,
     base_multiaddr: &Multiaddr,
     context_id: calimero_primitives::context::ContextId,
     application_id: calimero_primitives::application::ApplicationId,
-    client: &Client,
 ) -> eyre::Result<()> {
     let url = multiaddr_to_url(
         base_multiaddr,
@@ -223,9 +233,9 @@ async fn app_installed(
 }
 
 async fn install_app(
+    client: &Client,
     base_multiaddr: &Multiaddr,
     path: Utf8PathBuf,
-    client: &Client,
     metadata: Option<Vec<u8>>,
 ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;

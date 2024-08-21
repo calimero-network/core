@@ -59,9 +59,12 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         calimero_blobstore::FileSystem::new(&config.application.dir).await?,
     );
 
+    let (server_sender, mut server_receiver) = mpsc::channel(32);
+
     let ctx_manager = calimero_context::ContextManager::start(
         store.clone(),
         blob_manager,
+        server_sender.clone(),
         network_client.clone(),
     )
     .await?;
@@ -73,8 +76,6 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         ctx_manager.clone(),
         store.clone(),
     );
-
-    let (server_sender, mut server_receiver) = mpsc::channel(32);
 
     let mut server = Box::pin(calimero_server::start(
         config.server,
@@ -120,9 +121,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
                 server = Box::pin(std::future::pending());
                 continue;
             }
-            Some((context_id, method, payload, write, executor_public_key, outcome_sender)) = server_receiver.recv() => {
-                node.handle_call(context_id, method, payload, write, executor_public_key, outcome_sender).await;
-            }
+            Some(request) = server_receiver.recv() => node.handle_call(request).await,
             _ = catchup_interval_tick.tick() => node.handle_interval_catchup().await,
         }
     }
@@ -515,13 +514,16 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((application_id, context_id)) = args.and_then(|args| {
-                            let mut iter = args.split(' ');
-                            let application = iter.next()?;
-                            let context_id = iter.next();
-                            Some((application, context_id))
-                        }) else {
-                            println!("{IND} Usage: context create <application_id> [private_key]");
+                        let Some((application_id, context_id, mut params)) =
+                            args.and_then(|args| {
+                                let mut iter = args.split(' ');
+                                let application = iter.next()?;
+                                let context_id = iter.next();
+                                let params = iter.next();
+                                Some((application, context_id, params))
+                            })
+                        else {
+                            println!("{IND} Usage: context create <application_id> [context_id] [initialization params]");
                             break 'done;
                         };
 
@@ -530,20 +532,35 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        let context_id = match context_id {
-                            Some(context_id) => match ContextId::from_str(context_id) {
-                                Ok(context_id) => Some(context_id),
-                                Err(_) => {
-                                    println!("{IND} Invalid context ID: {}", context_id);
-                                    break 'done;
-                                }
-                            },
-                            None => None,
+                        let (context_id, params) = 'infer: {
+                            let Some(context_id) = context_id else {
+                                break 'infer (None, None);
+                            };
+
+                            if let Ok(context_id) = context_id.parse() {
+                                break 'infer (Some(context_id), params);
+                            };
+
+                            match std::mem::replace(&mut params, Some(context_id))
+                                .map(FromStr::from_str)
+                            {
+                                Some(Ok(context_id)) => break 'infer (Some(context_id), params),
+                                None => break 'infer (None, params),
+                                _ => {}
+                            };
+
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
                         };
 
-                        let context_create_result =
-                            create_context(&node.ctx_manager, application_id, None, context_id)
-                                .await?;
+                        let context_create_result = create_context(
+                            &node.ctx_manager,
+                            application_id,
+                            None,
+                            context_id,
+                            params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                        )
+                        .await?;
 
                         println!("{IND} Created context {}", context_create_result.context.id);
                     }
@@ -916,39 +933,32 @@ impl Node {
         Ok(())
     }
 
-    pub async fn handle_call(
-        &mut self,
-        context_id: calimero_primitives::context::ContextId,
-        method: String,
-        payload: Vec<u8>,
-        write: bool,
-        executor_public_key: [u8; 32],
-        outcome_sender: oneshot::Sender<
-            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
-        >,
-    ) {
-        let Ok(Some(context)) = self.ctx_manager.get_context(&context_id) else {
-            let _ =
-                outcome_sender.send(Err(calimero_node_primitives::CallError::ContextNotFound {
-                    context_id,
-                }));
+    pub async fn handle_call(&mut self, request: calimero_node_primitives::ExecutionRequest) {
+        let Ok(Some(context)) = self.ctx_manager.get_context(&request.context_id) else {
+            let _ = request.outcome_sender.send(Err(
+                calimero_node_primitives::CallError::ContextNotFound {
+                    context_id: request.context_id,
+                },
+            ));
             return;
         };
 
-        if write {
+        if request.writes {
             let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
 
             if let Err(err) = self
                 .call_mutate(
                     context,
-                    method,
-                    payload,
-                    executor_public_key,
+                    request.method,
+                    request.payload,
+                    request.executor_public_key,
                     inner_outcome_sender,
                 )
                 .await
             {
-                let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(err)));
+                let _ = request
+                    .outcome_sender
+                    .send(Err(calimero_node_primitives::CallError::Mutate(err)));
                 return;
             }
 
@@ -956,33 +966,41 @@ impl Node {
                 match inner_outcome_receiver.await {
                     Ok(outcome) => match outcome {
                         Ok(outcome) => {
-                            let _ = outcome_sender.send(Ok(outcome));
+                            let _ = request.outcome_sender.send(Ok(outcome));
                         }
                         Err(err) => {
-                            let _ = outcome_sender
+                            let _ = request
+                                .outcome_sender
                                 .send(Err(calimero_node_primitives::CallError::Mutate(err)));
                         }
                     },
                     Err(err) => {
                         error!("Failed to receive inner outcome of a transaction: {}", err);
-                        let _ =
-                            outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(
+                        let _ = request.outcome_sender.send(Err(
+                            calimero_node_primitives::CallError::Mutate(
                                 calimero_node_primitives::MutateCallError::InternalError,
-                            )));
+                            ),
+                        ));
                     }
                 }
             });
         } else {
             match self
-                .call_query(context, method, payload, executor_public_key)
+                .call_query(
+                    context,
+                    request.method,
+                    request.payload,
+                    request.executor_public_key,
+                )
                 .await
             {
                 Ok(outcome) => {
-                    let _ = outcome_sender.send(Ok(outcome));
+                    let _ = request.outcome_sender.send(Ok(outcome));
                 }
                 Err(err) => {
-                    let _ =
-                        outcome_sender.send(Err(calimero_node_primitives::CallError::Query(err)));
+                    let _ = request
+                        .outcome_sender
+                        .send(Err(calimero_node_primitives::CallError::Query(err)));
                 }
             };
         }

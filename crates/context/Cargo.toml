@@ -21,4 +21,5 @@ tracing.workspace = true
 calimero-blobstore = { path = "../store/blobs" }
 calimero-primitives = { path = "../primitives", features = ["borsh"] }
 calimero-network = { path = "../network" }
+calimero-node-primitives = { path = "../node-primitives" }
 calimero-store = { path = "../store", features = ["datatypes"] }
