@@ -44,7 +44,7 @@ impl CreateCommand {
 
         let client = Client::new();
 
-        match dbg!(self) {
+        match self {
             CreateCommand {
                 application_id: Some(app_id),
                 watch: None,
@@ -84,26 +84,18 @@ impl CreateCommand {
             CreateCommand {
                 application_id: None,
                 watch: Some(path),
-                context_id: Some(context_id),
-                metadata: None,
+                context_id,
+                metadata,
             } => {
                 let path = path.canonicalize_utf8()?;
-                let application_id = install_app(multiaddr, path.clone(), &client, None).await?;
-                let context_id =
-                    create_context(multiaddr, application_id, &client, Some(context_id)).await?;
-                watch_app_and_update_context(multiaddr, context_id, path, &client, None).await?;
-            }
-            CreateCommand {
-                application_id: None,
-                watch: Some(path),
-                metadata: None,
-                context_id: None,
-            } => {
-                let path = path.canonicalize_utf8()?;
-                let application_id = install_app(multiaddr, path.clone(), &client, None).await?;
-                let context_id = create_context(multiaddr, application_id, &client, None).await?;
-
-                watch_app_and_update_context(multiaddr, context_id, path, &client, None).await?;
+                let application_id =
+                    install_app(multiaddr, path.clone(), &client, metadata.clone()).await?;
+                let context_id = match context_id {
+                    Some(context_id) => context_id,
+                    None => create_context(multiaddr, application_id, &client, context_id).await?,
+                };
+                watch_app_and_update_context(multiaddr, context_id, path, &client, metadata)
+                    .await?;
             }
             _ => eyre::bail!("Invalid command configuration"),
         }
