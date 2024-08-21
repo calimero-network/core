@@ -51,7 +51,7 @@ impl From<&ApplicationId> for String {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Error)]
 #[error(transparent)]
 pub struct InvalidApplicationId(HashError);
 

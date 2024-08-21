@@ -28,12 +28,12 @@ pub struct ListApplicationsResponse {
     pub data: ApplicationListResult,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct InstallApplicationResponse {
     pub data: ApplicationInstallResult,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct ApplicationInstallResult {
     pub application_id: calimero_primitives::application::ApplicationId,
 }
@@ -98,7 +98,7 @@ pub struct NearSignatureMessageMetadata {
     pub nonce: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EthSignatureMessageMetadata {}
 
@@ -135,7 +135,7 @@ pub struct NodeChallengeMessage {
     pub timestamp: i64,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextStorage {
     pub size_in_bytes: u64,
@@ -151,7 +151,7 @@ pub struct GetContextsResponse {
     pub data: ContextList,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateContextRequest {
     pub application_id: calimero_primitives::application::ApplicationId,
@@ -168,7 +168,7 @@ pub struct CreateContextResponse {
     pub data: ContextResponse,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateContextApplicationRequest {
     pub application_id: calimero_primitives::application::ApplicationId,

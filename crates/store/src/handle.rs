@@ -45,8 +45,10 @@ impl<L: ReadLayer> Handle<L> {
     #[allow(clippy::type_complexity)]
     pub fn iter<E: Entry<Key: FromKeyParts>>(
         &self,
-    ) -> Result<Iter<'_, Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>, EntryError<'_, E>>
-    {
+    ) -> Result<
+        Iter<'_, Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>,
+        EntryError<'_, E>,
+    > {
         Ok(self.inner.iter()?.structured_value())
     }
 }

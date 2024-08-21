@@ -88,6 +88,7 @@ pub fn downcast<T: AppEventExt + 'static>(
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum NoEvent {}
 impl AppEvent for NoEvent {
     fn kind(&self) -> Cow<'_, str> {

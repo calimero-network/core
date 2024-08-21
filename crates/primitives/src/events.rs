@@ -25,13 +25,13 @@ pub enum ApplicationEventPayload {
     OutcomeEvent(OutcomeEventPayload),
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutedTransactionPayload {
     pub hash: Hash,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerJoinedPayload {
     pub peer_id: libp2p_identity::PeerId,

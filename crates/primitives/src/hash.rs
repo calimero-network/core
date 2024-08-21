@@ -156,7 +156,7 @@ impl fmt::Debug for Hash {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Error)]
 pub enum Error {
     #[error("invalid hash length")]
     InvalidLength,

@@ -17,7 +17,7 @@ pub struct TransactionConfirmation {
     pub confirmation_hash: calimero_primitives::hash::Hash,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct TransactionRejection {
     pub context_id: calimero_primitives::context::ContextId,
     pub transaction_hash: calimero_primitives::hash::Hash,
@@ -54,7 +54,7 @@ pub struct CatchupTransactionBatch {
     pub transactions: Vec<TransactionWithStatus>,
 }
 
-#[derive(Debug, Deserialize, Error, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Error, Serialize)]
 pub enum CatchupError {
     #[error("context `{context_id:?}` not found")]
     ContextNotFound {
@@ -75,7 +75,7 @@ pub struct TransactionWithStatus {
     pub status: TransactionStatus,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub enum TransactionStatus {
     Pending,
     Executed,

@@ -84,6 +84,7 @@ pub struct UnsubscribeResponse {
 }
 // *************************************************************************
 
+#[derive(Debug)]
 pub enum Command {
     Close(u16, String),
     Send(Response),

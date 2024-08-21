@@ -54,7 +54,7 @@ impl From<&BlobId> for String {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Error)]
 #[error(transparent)]
 pub struct InvalidBlobId(HashError);
 

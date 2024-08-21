@@ -15,7 +15,7 @@ pub enum VMRuntimeError {
     HostError(HostError),
 }
 
-#[derive(Debug, Error)]
+#[derive(Copy, Clone, Debug, Error)]
 pub enum StorageError {}
 
 #[derive(Debug, Error, Serialize)]
@@ -92,13 +92,13 @@ pub enum HostError {
     EventDataSizeOverflow,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub enum PanicContext {
     Guest,
     Host,
 }
 
-#[derive(Debug, Error, Serialize)]
+#[derive(Copy, Clone, Debug, Error, Serialize)]
 pub enum WasmTrap {
     #[error("stack overflow")]
     StackOverflow,

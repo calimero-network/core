@@ -44,7 +44,7 @@ impl<T, E> WrappedReturn<Result<T, E>> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 pub enum Infallible {}
 
 impl<T> private::Sealed for WrappedReturn<T> {}

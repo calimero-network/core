@@ -7,6 +7,7 @@ use crate::db::Column;
 use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 
+#[derive(Clone, Copy)]
 pub struct BlobId;
 
 impl KeyComponent for BlobId {

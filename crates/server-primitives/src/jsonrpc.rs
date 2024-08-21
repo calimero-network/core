@@ -9,7 +9,7 @@ pub enum RequestId {
     Null,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Version {
     TwoPointZero,
 }

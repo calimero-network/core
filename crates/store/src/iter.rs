@@ -220,6 +220,7 @@ pub struct Structured<K> {
     _priv: PhantomData<K>,
 }
 
+#[derive(Clone, Copy)]
 pub enum Unstructured {}
 
 mod private {

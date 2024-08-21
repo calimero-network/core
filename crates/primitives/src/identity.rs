@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyPair {
     pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
@@ -11,7 +11,7 @@ pub struct KeyPair {
 
 // This could use a Hash, but we need to be able to serialize the PublicKey and
 // create::hash::Hash does not currently implement Borsh.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
@@ -81,7 +81,7 @@ pub struct ContextUser {
     pub joined_at: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 #[serde(tag = "type")]
 pub enum WalletType {

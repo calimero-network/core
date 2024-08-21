@@ -8,7 +8,7 @@ use crate::types::PredefinedEntry;
 
 pub type TransactionHash = [u8; 32];
 
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContextMeta {
     pub application: key::ApplicationMeta,
     pub last_transaction_hash: TransactionHash,
@@ -41,7 +41,7 @@ impl AsRef<[u8]> for ContextState<'_> {
     }
 }
 
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContextIdentity {
     pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,

@@ -110,7 +110,7 @@ impl Default for RendezvousConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct CatchupConfig {
     pub batch_size: u8,
 

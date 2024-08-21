@@ -124,13 +124,13 @@ pub async fn get_contexts_handler(
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletedContext {
     is_deleted: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct DeleteContextResponse {
     data: DeletedContext,
 }
@@ -209,7 +209,7 @@ pub async fn get_context_storage_handler(
     .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 pub struct JoinContextRequest {
     pub private_key: [u8; 32],
 }
