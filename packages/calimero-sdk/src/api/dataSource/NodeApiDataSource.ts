@@ -1,5 +1,6 @@
 import { ApiResponse } from '../../types/api-response';
 import {
+  ContextResponse,
   HealthRequest,
   HealthStatus,
   LoginRequest,
@@ -42,6 +43,15 @@ export class NodeApiDataSource implements NodeApi {
       {
         ...loginRequest,
       },
+    );
+  }
+
+  async getContextIdentity(rpcBaseUrl: string, contextId: string): ApiResponse<ContextResponse> {
+    const headers: Header | null = await createAuthHeader(contextId);
+
+    return await this.client.get<ContextResponse>(
+      `${rpcBaseUrl}/admin-api/contexts/${contextId}/identities`,
+      headers
     );
   }
 
