@@ -258,13 +258,13 @@ export const NearLogin: React.FC<NearLoginProps> = ({
           if (
             !identity ||
             !identity.data ||
-            !identity.data.contextIdentities ||
-            identity.data.contextIdentities.length === 0
+            !identity.data.identities ||
+            identity.data.identities.length === 0
           ) {
             console.error('Login error: No context identities found');
           }
 
-          setExecutorPublicKey(identity.data.contextIdentities[0]);
+          setExecutorPublicKey(identity.data.identities[0]);
           setStorageNodeAuthorized();
           successRedirect();
         } catch (identityError) {

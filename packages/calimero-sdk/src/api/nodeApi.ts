@@ -132,7 +132,7 @@ export interface HealthStatus {
 }
 
 export interface ContextResponse {
-  contextIdentities: string[];
+  identities: string[];
 }
 
 export interface NodeApi {
