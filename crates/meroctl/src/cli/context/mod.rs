@@ -9,13 +9,13 @@ mod list;
 
 pub const EXAMPLES: &str = r#"
   # List all contexts
-  $ meroctl --home data/ --node-name node1 context ls
+  $ cargo run -p meroctl -- --home data --node-name node1 context ls
 
   # Create a new context
-  $ meroctl --home data/ --node-name node1 context create --application-id my-app-id
+  $ cargo run -p meroctl -- --home data --node-name node1 context create --application-id <appId>
 
   # Create a new context in dev mode
-  $ meroctl --home data/ --node-name node1 context create --dev --path /path/to/app --version 1.0.0
+  $ cargo run -p meroctl -- --home data --node-name node1 context create --watch <path>
 "#;
 
 #[derive(Debug, Parser)]

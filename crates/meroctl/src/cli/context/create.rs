@@ -1,3 +1,4 @@
+use calimero_primitives::context::ContextId;
 use camino::Utf8PathBuf;
 use clap::Parser;
 use libp2p::Multiaddr;
@@ -12,13 +13,17 @@ use crate::config_file::ConfigFile;
 #[derive(Debug, Parser)]
 pub struct CreateCommand {
     /// The application ID to attach to the context
-    #[clap(long, short = 'a', exclusive = true)]
+    #[clap(long, short = 'a')]
     application_id: Option<calimero_primitives::application::ApplicationId>,
 
     /// Path to the application file to watch and install locally
-    #[clap(long, short = 'w', exclusive = true)]
+    #[clap(long, short = 'w')]
     watch: Option<Utf8PathBuf>,
+
     metadata: Option<Vec<u8>>,
+
+    #[clap(long, short = 'c')]
+    context_id: Option<ContextId>,
 }
 
 impl CreateCommand {
@@ -39,26 +44,73 @@ impl CreateCommand {
 
         let client = Client::new();
 
-        match self {
+        // Manually check for exclusivity between application_id and watch
+        if self.application_id.is_some() && self.watch.is_some() {
+            eyre::bail!("Cannot use --application-id and --watch together");
+        }
+
+        match dbg!(self) {
             CreateCommand {
                 application_id: Some(app_id),
                 watch: None,
+                context_id: None,
                 metadata: None,
             } => {
-                create_context(multiaddr, app_id, &client).await?;
+                create_context(multiaddr, app_id, &client, None).await?;
             }
             CreateCommand {
                 application_id: None,
                 watch: Some(path),
+                context_id: None,
                 metadata: Some(metadata),
             } => {
                 let path = path.canonicalize_utf8()?;
+                let application_id =
+                    install_app(multiaddr, path.clone(), &client, Some(metadata.clone())).await?;
+                let context_id = create_context(multiaddr, application_id, &client, None).await?;
 
-                let application_id = install_app(multiaddr, path.clone(), &client, Some(metadata.clone())).await?;
+                watch_app_and_update_context(multiaddr, context_id, path, &client, Some(metadata))
+                    .await?;
+            }
+            CreateCommand {
+                application_id: None,
+                watch: Some(path),
+                context_id: Some(context_id),
+                metadata: Some(metadata),
+            } => {
+                let path = path.canonicalize_utf8()?;
+                let application_id =
+                    install_app(multiaddr, path.clone(), &client, Some(metadata.clone())).await?;
+                let context_id =
+                    create_context(multiaddr, application_id, &client, Some(context_id)).await?;
 
-                let context_id = create_context(multiaddr, application_id, &client).await?;
+                watch_app_and_update_context(multiaddr, context_id, path, &client, Some(metadata))
+                    .await?;
+            }
+            CreateCommand {
+                application_id: None,
+                watch: Some(path),
+                context_id: Some(context_id),
+                metadata: None,
+            } => {
+                let path = path.canonicalize_utf8()?;
+                let application_id = install_app(multiaddr, path.clone(), &client, None).await?;
+                let context_id =
+                    create_context(multiaddr, application_id, &client, Some(context_id)).await?;
 
-                watch_app_and_update_context(multiaddr, context_id, path, &client, Some(metadata)).await?;
+                watch_app_and_update_context(multiaddr, context_id, path, &client, None).await?;
+            }
+            CreateCommand {
+                application_id: None,
+                watch: Some(path),
+                metadata: None,
+                context_id: None,
+            } => {
+                let path = path.canonicalize_utf8()?;
+                let application_id = install_app(multiaddr, path.clone(), &client, None).await?;
+                let context_id = create_context(multiaddr, application_id, &client, None).await?;
+
+                watch_app_and_update_context(multiaddr, context_id, path, &client, None).await?;
             }
             _ => eyre::bail!("Invalid command configuration"),
         }
@@ -71,13 +123,17 @@ async fn create_context(
     base_multiaddr: &Multiaddr,
     application_id: calimero_primitives::application::ApplicationId,
     client: &Client,
+    context_id: Option<ContextId>,
 ) -> eyre::Result<calimero_primitives::context::ContextId> {
     if !app_installed(&base_multiaddr, &application_id, client).await? {
         eyre::bail!("Application is not installed on node.")
     }
 
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
-    let request = calimero_server_primitives::admin::CreateContextRequest { application_id };
+    let request = calimero_server_primitives::admin::CreateContextRequest {
+        application_id,
+        context_id,
+    };
 
     let response = client.post(url).json(&request).send().await?;
 
@@ -144,7 +200,8 @@ async fn watch_app_and_update_context(
             _ => continue,
         }
 
-        let application_id = install_app(base_multiaddr, path.clone(), &client, metadata.clone()).await?;
+        let application_id =
+            install_app(base_multiaddr, path.clone(), &client, metadata.clone()).await?;
 
         update_context_application(base_multiaddr, context_id, application_id, client).await?;
     }

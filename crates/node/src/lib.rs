@@ -1,3 +1,6 @@
+use std::str::FromStr;
+
+use calimero_primitives::context::ContextId;
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
@@ -512,12 +515,15 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((application_id, private_key)) = args.and_then(|args| {
-                            let mut iter = args.split(' ');
-                            let application = iter.next()?;
-                            let private_key = iter.next();
-                            Some((application, private_key))
-                        }) else {
+                        let Some((application_id, private_key, context_id)) =
+                            args.and_then(|args| {
+                                let mut iter = args.split(' ');
+                                let application = iter.next()?;
+                                let context_id = iter.next();
+                                let private_key = iter.next();
+                                Some((application, private_key, context_id))
+                            })
+                        else {
                             println!("{IND} Usage: context create <application_id> [private_key]");
                             break 'done;
                         };
@@ -527,8 +533,24 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        let context_create_result =
-                            create_context(&node.ctx_manager, application_id, private_key).await?;
+                        let context_id = match context_id {
+                            Some(context_id) => match ContextId::from_str(context_id) {
+                                Ok(context_id) => Some(context_id),
+                                Err(_) => {
+                                    println!("{IND} Invalid context ID: {}", context_id);
+                                    break 'done;
+                                }
+                            },
+                            None => None,
+                        };
+
+                        let context_create_result = create_context(
+                            &node.ctx_manager,
+                            application_id,
+                            private_key,
+                            context_id,
+                        )
+                        .await?;
 
                         println!("{IND} Created context {}", context_create_result.context.id);
                     }
