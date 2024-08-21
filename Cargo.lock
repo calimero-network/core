@@ -1072,6 +1072,7 @@ version = "0.1.0"
 dependencies = [
  "calimero-blobstore",
  "calimero-network",
+ "calimero-node-primitives",
  "calimero-primitives",
  "calimero-store",
  "camino",

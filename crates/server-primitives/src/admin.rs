@@ -156,6 +156,7 @@ pub struct GetContextsResponse {
 pub struct CreateContextRequest {
     pub application_id: calimero_primitives::application::ApplicationId,
     pub context_id: Option<calimero_primitives::context::ContextId>,
+    pub initialization_params: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

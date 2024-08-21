@@ -17,14 +17,16 @@ impl NodeType {
     }
 }
 
-pub type ServerSender = mpsc::Sender<(
-    calimero_primitives::context::ContextId,
-    String,
-    Vec<u8>,
-    bool,
-    [u8; 32],
-    oneshot::Sender<Result<calimero_runtime::logic::Outcome, CallError>>,
-)>;
+pub struct ExecutionRequest {
+    pub context_id: calimero_primitives::context::ContextId,
+    pub method: String,
+    pub payload: Vec<u8>,
+    pub writes: bool,
+    pub executor_public_key: [u8; 32],
+    pub outcome_sender: oneshot::Sender<Result<calimero_runtime::logic::Outcome, CallError>>,
+}
+
+pub type ServerSender = mpsc::Sender<ExecutionRequest>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Error)]
 #[error("CallError")]

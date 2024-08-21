@@ -7,6 +7,7 @@ use camino::Utf8PathBuf;
 use futures_util::TryStreamExt;
 use reqwest::Url;
 use tokio::fs;
+use tokio::sync::oneshot;
 use tokio::sync::RwLock;
 use tracing::info;
 
@@ -16,7 +17,8 @@ pub mod config;
 pub struct ContextManager {
     pub store: calimero_store::Store,
     pub blob_manager: calimero_blobstore::BlobManager,
-    pub network_client: NetworkClient,
+    network_client: NetworkClient,
+    server_sender: calimero_node_primitives::ServerSender,
     state: Arc<RwLock<State>>,
 }
 
@@ -29,12 +31,14 @@ impl ContextManager {
     pub async fn start(
         store: calimero_store::Store,
         blob_manager: calimero_blobstore::BlobManager,
+        server_sender: calimero_node_primitives::ServerSender,
         network_client: NetworkClient,
     ) -> eyre::Result<Self> {
         let this = ContextManager {
             store,
             blob_manager,
             network_client,
+            server_sender,
             state: Default::default(),
         };
 
@@ -95,8 +99,22 @@ impl ContextManager {
         &self,
         context: &calimero_primitives::context::Context,
         initial_identity: KeyPair,
+        initialization_params: Vec<u8>,
     ) -> eyre::Result<()> {
         self.add_context(context).await?;
+
+        let (tx, _) = oneshot::channel();
+
+        self.server_sender
+            .send(calimero_node_primitives::ExecutionRequest {
+                context_id: context.id,
+                method: "init".to_owned(),
+                payload: initialization_params,
+                writes: true,
+                executor_public_key: initial_identity.public_key.0,
+                outcome_sender: tx,
+            })
+            .await?;
 
         let mut handle = self.store.handle();
 
