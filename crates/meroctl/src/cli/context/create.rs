@@ -26,7 +26,7 @@ pub struct CreateCommand {
     context_id: Option<ContextId>,
 
     #[clap(long, short = 'p')]
-    params: String,
+    params: Option<String>,
 }
 
 impl CreateCommand {
@@ -89,7 +89,7 @@ async fn create_context(
     base_multiaddr: &Multiaddr,
     application_id: calimero_primitives::application::ApplicationId,
     context_id: Option<ContextId>,
-    params: String,
+    params: Option<String>,
 ) -> eyre::Result<calimero_primitives::context::ContextId> {
     if !app_installed(&base_multiaddr, &application_id, client).await? {
         eyre::bail!("Application is not installed on node.")
@@ -99,7 +99,7 @@ async fn create_context(
     let request = calimero_server_primitives::admin::CreateContextRequest {
         application_id,
         context_id,
-        initialization_params: params.into_bytes(),
+        initialization_params: params.map(String::into_bytes).unwrap_or_default(),
     };
 
     let response = client.post(url).json(&request).send().await?;
