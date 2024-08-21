@@ -245,14 +245,20 @@ async fn install_application_handler(
 async fn list_applications_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    match state.ctx_manager.list_installed_applications() {
-        Ok(applications) => ApiResponse {
-            payload: ListApplicationsResponse {
-                data: ApplicationListResult { apps: applications },
-            },
+    let applications = state
+        .ctx_manager
+        .list_installed_applications()
+        .map_err(|err| parse_api_error(err).into_response());
+    match applications {
+        Ok(applications) => {
+            ApiResponse {
+                payload: ListApplicationsResponse {
+                    data: ApplicationListResult { apps: applications },
+                },
+            }
         }
         .into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => err.into_response(),
     }
 }
 
