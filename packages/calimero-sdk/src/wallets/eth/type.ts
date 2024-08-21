@@ -18,8 +18,8 @@ export const getNetworkType = (chainId: string): WalletType => {
 export const getWalletType = (walletType: string): WalletType => {
   switch (walletType) {
     case 'argentX':
-      return WalletType.SN({ walletName: 'argentX' });
+      return WalletType.STARKNET({ walletName: 'argentX' });
     default:
-      return WalletType.SN({ walletName: 'metamask' });
+      return WalletType.STARKNET({ walletName: 'metamask' });
   }
 }

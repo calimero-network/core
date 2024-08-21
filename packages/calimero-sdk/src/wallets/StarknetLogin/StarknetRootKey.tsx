@@ -18,6 +18,7 @@ import { setStorageNodeAuthorized } from '../../storage/storage';
 import { Loading } from '../loading/Loading';
 import { getWalletType } from '../eth/type';
 import { getStarknet, StarknetWindowObject } from 'get-starknet-core';
+import { constants, Signature } from 'starknet';
 
 interface StarknetRootKeyProps {
   contextId?: string;
@@ -32,27 +33,28 @@ export function StarknetRootKey({
   successRedirect,
   navigateBack,
 }: StarknetRootKeyProps) {
-  const [starknetAccount, setStarknetAccount] = useState<StarknetWindowObject | undefined>();
+  const [starknetInstance, setStarknetInstance] = useState<StarknetWindowObject | null>(null);
   const [walletSignatureData, setWalletSignatureData] = useState<WalletSignatureData | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [signData, setSignData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const argentXId = 'argentX';
 
   const walletLogin = useCallback(async (walletType: string) => {
     try {
       setLoading(true);
-      const starknetInstance = getStarknet();
-      if (starknetInstance) {
-        if(walletType === 'argentX') {
-          await starknetInstance.enable(window.starknet_argentX);
-          const wallets = await starknetInstance.getAvailableWallets();
-          const argentX = wallets.find((wallet: any) => wallet.id === 'argentX');
-          setStarknetAccount(argentX);
+      const starknet = getStarknet();
+      if (starknet) {
+        if(walletType === argentXId) {
+          await starknet.enable(window.starknet_argentX);
+          const wallets: StarknetWindowObject[] = await starknet.getAvailableWallets();
+          const argentX: StarknetWindowObject = wallets.find((wallet: any) => wallet.id === argentXId);
+          setStarknetInstance(argentX);
         }else {
-          await starknetInstance.enable(window.starknet_metamask);
-          const wallets = await starknetInstance.getAvailableWallets();
-          const metamask = wallets.find((wallet: any) => wallet.id === 'metamask');
-          setStarknetAccount(metamask);
+          await starknet.enable(window.starknet_metamask);
+          const wallets: StarknetWindowObject[] = await starknet.getAvailableWallets();
+          const metamask: StarknetWindowObject = wallets.find((wallet: any) => wallet.id === 'metamask');
+          setStarknetInstance(metamask);
         }
       }
       setLoading(false);
@@ -110,18 +112,18 @@ export function StarknetRootKey({
     try {
       setErrorMessage(null);
       setLoading(true);
-      if(starknetAccount) {
+      if(starknetInstance) {
         const message = {
           domain: {
             name: "ServerChallenge",
-            chainId: "SN_MAIN",
+            chainId: starknetInstance.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA,
             version: "1",
             revision: "1"
           },
           types: {
             StarknetDomain: [
               { name: "name", type: "shortstring" },
-              { name: "chainId", type: "shortstring" },
+              { name: "chainId", type: "felt" },
               { name: "version", type: "shortstring" },
               { name: "revision", type: "shortstring" },
             ],
@@ -136,8 +138,8 @@ export function StarknetRootKey({
             publicKey: walletSignatureData.payload.message.publicKey
           }
         };
-        const signature = await starknetAccount.account.signMessage(message);
-        const messageHash = await starknetAccount.account.hashMessage(message);
+        const signature: Signature = await starknetInstance.account.signMessage(message);
+        const messageHash: String = await starknetInstance.account.hashMessage(message);
 
         if (signature) {
           setSignData({
@@ -149,10 +151,9 @@ export function StarknetRootKey({
     }catch(error) {
       console.error('Error signing message:', error);
       setErrorMessage('Error signing message');
-      //TODO handle error
     }
     setLoading(false);
-  }, [starknetAccount, walletSignatureData]);
+  }, [starknetInstance, walletSignatureData]);
 
   const addRootKey = useCallback(async () => {
     try {
@@ -161,14 +162,18 @@ export function StarknetRootKey({
       if (!signData) {
         console.error('signature is empty');
         setErrorMessage('Signature is empty');
-      } else if (!starknetAccount) {
+      } else if (!starknetInstance) {
         console.error('address is empty');
         setErrorMessage('Address is empty');
       } else {
         const walletMetadata: WalletMetadata = {
-          wallet: getWalletType(starknetAccount?.id),
-          signingKey: starknetAccount?.id === 'argentX' ? starknetAccount?.account.address : await starknetAccount?.account.signer.getPubKey(),
-          walletAddress: starknetAccount.account.address
+          wallet: getWalletType(starknetInstance?.id),
+          signingKey: starknetInstance?.id === argentXId ? starknetInstance?.account.address : await starknetInstance?.account.signer.getPubKey(),
+          walletAddress: starknetInstance.account.address,
+          networkMetadata: {
+            chainId: starknetInstance.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA,
+            rpcUrl: starknetInstance?.chainId === 'SN_MAIN' ? constants.RPC_NODES.SN_MAIN[0] : constants.RPC_NODES.SN_SEPOLIA[0],
+          },
         };
         const rootKeyRequest: RootKeyRequest = {
           walletSignature: signData,
@@ -203,15 +208,15 @@ export function StarknetRootKey({
     signData,
     successRedirect,
     walletSignatureData?.payload,
-    starknetAccount,
+    starknetInstance,
     contextId,
   ]);
 
   useEffect(() => {
-    if (starknetAccount) {
+    if (starknetInstance) {
       requestNodeData();
     }
-  }, [starknetAccount, requestNodeData]);
+  }, [starknetInstance, requestNodeData]);
 
   useEffect(() => {
     if (signData && walletSignatureData) {
@@ -221,7 +226,7 @@ export function StarknetRootKey({
   }, [addRootKey, signData, walletSignatureData]);
 
   const logout = useCallback(() => {
-    setStarknetAccount(undefined);
+    setStarknetInstance(null);
     setWalletSignatureData(null);
     setSignData(null);
     setErrorMessage(null);
@@ -272,7 +277,7 @@ export function StarknetRootKey({
         >
           <span>Choose which account from your wallet you want to add root key with</span>
         </div>
-        {!starknetAccount && (
+        {!starknetInstance && (
           <header
             style={{
               marginTop: '1.5rem',
@@ -322,7 +327,7 @@ export function StarknetRootKey({
           </span>
           </header>
         )}
-        {starknetAccount && walletSignatureData && (
+        {starknetInstance && walletSignatureData && (
           <>
             <div style={{ marginTop: '20px' }}>
               <button
@@ -344,7 +349,7 @@ export function StarknetRootKey({
                   paddingLeft: '0.5rem',
                   paddingRight: '0.5rem',
                 }}
-                disabled={starknetAccount === undefined}
+                disabled={starknetInstance === null}
                 onClick={() => signMessage()}
               >
                 Sign root key transaction

@@ -14,7 +14,7 @@ interface ETHWalletType extends WalletTypeBase<'ETH'> {
 
 interface NEARWalletType extends WalletTypeBase<'NEAR'> {}
 
-interface SNWalletType extends WalletTypeBase<'SN'> {}
+interface SNWalletType extends WalletTypeBase<'STARKNET'> {}
 
 export type WalletType = ETHWalletType | NEARWalletType | SNWalletType;
 
@@ -25,8 +25,8 @@ export namespace WalletType {
     return { type: 'ETH', chainId } as ETHWalletType;
   }
 
-  export function SN({ walletName = 'MS'}: { walletName?: string }): WalletType {
-    return { type: 'SN', walletName } as SNWalletType;
+  export function STARKNET({ walletName = 'MS'}: { walletName?: string }): WalletType {
+    return { type: 'STARKNET', walletName } as SNWalletType;
   }
 }
 
@@ -102,10 +102,16 @@ export interface Payload {
   metadata: SignatureMetadata;
 }
 
+export interface NetworkMetadata {
+  chainId: String;
+  rpcUrl: String;
+}
+
 export interface WalletMetadata {
   wallet: WalletType;
   signingKey: String;
   walletAddress?: String;
+  networkMetadata?: NetworkMetadata;
 }
 
 export interface SignatureMetadata {
