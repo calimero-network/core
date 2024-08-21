@@ -15,8 +15,8 @@ use tracing::info;
 
 use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::root_key::get_root_key;
-use crate::verifysignature::verify_near_signature;
-use crate::verifysnsignature::{verify_argent_signature, verify_metamask_signature};
+use crate::verifywalletsignatures::near::verify_near_signature;
+use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
 pub fn verify_node_signature(
     wallet_metadata: &WalletMetadata,
@@ -106,7 +106,7 @@ pub fn verify_node_signature(
 
             let (message_hash, signature) = match wallet_signature {
                 WalletSignature::StarknetPayload(payload) => {
-                    (payload.message_hash.clone(), payload.signature.clone())
+                    (&payload.message_hash, payload.signature.clone())
                 }
                 _ => {
                     return Err(ApiError {
@@ -137,20 +137,31 @@ pub fn verify_node_signature(
                         .block_on(verify_argent_signature(
                             message_hash,
                             signature,
-                            wallet_metadata.signing_key.clone(),
+                            &wallet_metadata.signing_key.clone(),
                             &payload.message.message,
                             &rpc_node_url,
                             &chain_id,
                         ))
                 }),
-                "metamask" => verify_metamask_signature(
-                    message_hash,
-                    signature,
-                    wallet_metadata.signing_key.clone(),
-                    &payload.message.message,
-                    wallet_metadata.wallet_address.clone().unwrap_or_default(),
-                    &chain_id,
-                ),
+                "metamask" => {
+                    let wallet_address: &str = match &wallet_metadata.wallet_address {
+                        Some(s) => s,
+                        None => {
+                            return Err(ApiError {
+                                status_code: StatusCode::BAD_REQUEST,
+                                message: "Wallet address not present.".into(),
+                            })
+                        }
+                    };
+                    verify_metamask_signature(
+                        &message_hash,
+                        signature,
+                        &wallet_metadata.signing_key,
+                        &payload.message.message,
+                        wallet_address,
+                        &chain_id,
+                    )
+                }
                 _ => {
                     return Err(ApiError {
                         status_code: StatusCode::BAD_REQUEST,

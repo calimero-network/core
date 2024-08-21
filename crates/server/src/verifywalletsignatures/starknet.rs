@@ -18,40 +18,37 @@ struct FieldType {
 }
 
 // Structure holding definitions of StarkNet types: StarknetDomain and Challenge
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 struct Types {
-    #[serde(rename = "StarknetDomain")]
     stark_net_domain: Vec<FieldType>,
-    #[serde(rename = "Challenge")]
     challenge: Vec<FieldType>,
 }
 
 // Asynchronous function to verify an Argent wallet signature on chain
 pub async fn verify_argent_signature(
-    message_hash: String,
+    message_hash: &str,
     signature: Vec<String>,
-    wallet_address: String,
+    wallet_address: &str,
     message: &str,
     rpc_node_url: &str,
     chain_id: &str,
 ) -> eyre::Result<bool> {
     // Convert inputs from strings to StarkNet-compatible types
-    let wallet_address = Felt::from_str(&wallet_address).unwrap();
-    let message_hash = Felt::from_str(&message_hash).unwrap();
+    let wallet_address = Felt::from_str(wallet_address)?;
+    let message_hash = Felt::from_str(message_hash)?;
 
     // Set up a JSON-RPC client to interact with the StarkNet blockchain
-    let provider = JsonRpcClient::new(HttpTransport::new(Url::parse(rpc_node_url).unwrap()));
+    let provider = JsonRpcClient::new(HttpTransport::new(Url::parse(rpc_node_url)?));
 
     // Parse the signature strings into Felt types
-    let parsed_signature: Vec<_> = signature
+    let parsed_signature: Vec<Felt> = signature
         .iter()
-        .map(|s| Felt::from_str(s).unwrap())
-        .collect();
+        .map(|s| Felt::from_str(s))
+        .collect::<Result<Vec<Felt>, _>>()?;
 
     // Formatted entry point selector (isValidSignature string) to needed format for StarkNet RPC call
     let entry_point_selector: Felt =
-        Felt::from_str("0x213dfe25e2ca309c4d615a09cfc95fdb2fc7dc73fbcad12c450fe93b1f2ff9e")
-            .unwrap();
+        Felt::from_str("0x213dfe25e2ca309c4d615a09cfc95fdb2fc7dc73fbcad12c450fe93b1f2ff9e")?;
 
     // Prepare a function call to verify the signature on-chain
     let function_call = FunctionCall {
@@ -86,24 +83,24 @@ pub async fn verify_argent_signature(
 
 // Function to verify a MetaMask Snap wallet signature off chain
 pub fn verify_metamask_signature(
-    message_hash: String,
+    message_hash: &str,
     signature: Vec<String>,
-    signing_key: String,
+    signing_key: &str,
     message: &str,
-    wallet_address: String,
+    wallet_address: &str,
     chain_id: &str,
 ) -> eyre::Result<bool> {
     // Convert inputs to Felt types
-    let signing_key = Felt::from_str(&signing_key).unwrap();
-    let message_hash = Felt::from_str(&message_hash).unwrap();
-    let wallet_address = Felt::from_str(&wallet_address).unwrap();
+    let signing_key = Felt::from_str(&signing_key)?;
+    let message_hash = Felt::from_str(&message_hash)?;
+    let wallet_address = Felt::from_str(&wallet_address)?;
 
     // Verify the signature using the StarkNet crypto library
     let result = verify(
         &signing_key,
         &message_hash,
-        &Felt::from_str(&signature[0]).unwrap(),
-        &Felt::from_str(&signature[1]).unwrap(),
+        &Felt::from_str(&signature[0])?,
+        &Felt::from_str(&signature[1])?,
     );
     match result {
         // If the signature is valid, verify the hash
@@ -162,7 +159,7 @@ fn verify_signature_hash(
     };
 
     // Parse the JSON message into a structured format
-    let challenge: Value = serde_json::from_str(message).unwrap();
+    let challenge: Value = serde_json::from_str(message)?;
 
     // Calculate the prefix for the message to be verified
     let message_prefix: Felt = Felt::from_str(&format!(
@@ -171,8 +168,7 @@ fn verify_signature_hash(
             .chars()
             .map(|c| format!("{:x}", c as u32))
             .collect::<String>()
-    ))
-    .unwrap();
+    ))?;
 
     // Encode the StarkNet domain data and calculate its hash
     let sn_domain_types = format!(
@@ -194,7 +190,7 @@ fn verify_signature_hash(
         "revision": "1"
     });
 
-    let mut encoded_domain = encode_data(&types, "StarknetDomain", &domain_data);
+    let mut encoded_domain = encode_data(&types, "StarknetDomain", &domain_data)?;
     encoded_domain.insert(0, domain_felt);
     let encoded_domain_hash = poseidon_hash_many(&encoded_domain);
 
@@ -210,7 +206,7 @@ fn verify_signature_hash(
     );
     let challenge_felt: Felt =
         get_selector_from_name(challenge_types.as_str()).expect("wrong type");
-    let mut encoded_challenge = encode_data(&types, "Challenge", &challenge);
+    let mut encoded_challenge = encode_data(&types, "Challenge", &challenge)?;
     encoded_challenge.insert(0, challenge_felt);
     let encoded_challenge_hash = poseidon_hash_many(&encoded_challenge);
 
@@ -231,14 +227,14 @@ fn verify_signature_hash(
 }
 
 // Function to encode a value based on its type into a StarkNet-compatible format
-fn encode_value(field_type: &str, value: &str) -> String {
+fn encode_value(field_type: &str, value: &str) -> eyre::Result<String> {
     match field_type {
         "felt" => {
             if value.chars().all(char::is_numeric) {
                 // Convert numeric strings to actual numbers
-                format!("0x{}", u64::from_str(value).unwrap().to_string())
+                Ok(format!("0x{}", u64::from_str(value)?.to_string()))
             } else {
-                value.to_string()
+                Ok(value.to_string())
             }
         }
         "string" => {
@@ -277,25 +273,32 @@ fn encode_value(field_type: &str, value: &str) -> String {
             encoded_elements.push(Felt::from(pending_word_len as u64));
             // Poseidon hash
             let hash = poseidon_hash_many(&encoded_elements);
-            hash.to_string()
+            Ok(hash.to_string())
         }
         "shortstring" => {
             // Check if the value is a numeric string and handle it like "felt"
             if value.chars().all(char::is_numeric) {
-                format!("0x{:x}", u64::from_str(value).unwrap())
+                // Attempt to convert the string to a u64, returning an error if it fails
+                let num_value = u64::from_str(value)
+                    .map_err(|_| eyre::eyre!("Failed to parse numeric string into u64"))?;
+                Ok(format!("0x{:x}", num_value))
             } else {
                 // Otherwise, convert each character to its ASCII value in hexadecimal
                 let hex_string: String =
                     value.chars().map(|c| format!("{:02x}", c as u8)).collect();
-                format!("0x{}", hex_string)
+                Ok(format!("0x{}", hex_string))
             }
         }
-        _ => panic!("Unsupported field type"),
+        _ => Err(eyre::eyre!("Unsupported field type")),
     }
 }
 
 // Function to encode data fields into a vector of Felt values based on their types
-fn encode_data(types: &Types, type_name: &str, data: &serde_json::Value) -> Vec<Felt> {
+fn encode_data(
+    types: &Types,
+    type_name: &str,
+    data: &serde_json::Value,
+) -> eyre::Result<Vec<Felt>> {
     let target_type = match type_name {
         "StarknetDomain" => &types.stark_net_domain,
         "Challenge" => &types.challenge,
@@ -304,10 +307,14 @@ fn encode_data(types: &Types, type_name: &str, data: &serde_json::Value) -> Vec<
 
     let mut values = vec![];
     for field in target_type {
-        let field_value = data.get(&field.name).unwrap().as_str().unwrap();
-        let encoded_value = encode_value(&field.field_type, field_value);
-        values.push(Felt::from_str(&encoded_value.to_string()).unwrap());
+        let field_value = data
+            .get(&field.name)
+            .ok_or_else(|| eyre::eyre!("Field not found"))?
+            .as_str()
+            .ok_or_else(|| eyre::eyre!("Invalid field value"))?;
+        let encoded_value = encode_value(&field.field_type, field_value)?;
+        values.push(Felt::from_str(&encoded_value)?);
     }
 
-    values
+    Ok(values)
 }
