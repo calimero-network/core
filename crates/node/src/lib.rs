@@ -515,15 +515,12 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         println!("{IND} Left context {}", context_id);
                     }
                     "create" => {
-                        let Some((application_id, private_key, context_id)) =
-                            args.and_then(|args| {
-                                let mut iter = args.split(' ');
-                                let application = iter.next()?;
-                                let context_id = iter.next();
-                                let private_key = iter.next();
-                                Some((application, private_key, context_id))
-                            })
-                        else {
+                        let Some((application_id, context_id)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let application = iter.next()?;
+                            let context_id = iter.next();
+                            Some((application, context_id))
+                        }) else {
                             println!("{IND} Usage: context create <application_id> [private_key]");
                             break 'done;
                         };
@@ -544,13 +541,9 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             None => None,
                         };
 
-                        let context_create_result = create_context(
-                            &node.ctx_manager,
-                            application_id,
-                            private_key,
-                            context_id,
-                        )
-                        .await?;
+                        let context_create_result =
+                            create_context(&node.ctx_manager, application_id, None, context_id)
+                                .await?;
 
                         println!("{IND} Created context {}", context_create_result.context.id);
                     }
