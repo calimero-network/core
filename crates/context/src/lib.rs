@@ -248,7 +248,21 @@ impl ContextManager {
         let mut iter = handle.iter::<calimero_store::key::ContextIdentity>()?;
         let mut ids = Vec::<PublicKey>::new();
 
-        for (k, v) in iter.entries() {
+        let first = 'first: {
+            let Some(k) = iter
+                .seek(calimero_store::key::ContextIdentity::new(
+                    context_id,
+                    PublicKey([0; 32]),
+                ))
+                .transpose()
+            else {
+                break 'first None;
+            };
+
+            Some((k, iter.read()))
+        };
+
+        for (k, v) in first.into_iter().chain(iter.entries()) {
             let (k, v) = (k?, v?);
 
             if k.context_id() == context_id {
