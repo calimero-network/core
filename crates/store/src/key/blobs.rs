@@ -22,10 +22,12 @@ impl KeyComponent for BlobId {
 pub struct BlobMeta(Key<BlobId>);
 
 impl BlobMeta {
+    #[must_use]
     pub fn new(blob_id: calimero_primitives::blobs::BlobId) -> Self {
         Self(Key((*blob_id).into()))
     }
 
+    #[must_use]
     pub fn blob_id(&self) -> calimero_primitives::blobs::BlobId {
         (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
     }

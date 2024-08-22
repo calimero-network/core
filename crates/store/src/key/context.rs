@@ -24,10 +24,12 @@ impl KeyComponent for ContextId {
 pub struct ContextMeta(Key<ContextId>);
 
 impl ContextMeta {
+    #[must_use]
     pub fn new(context_id: calimero_primitives::context::ContextId) -> Self {
         Self(Key((*context_id).into()))
     }
 
+    #[must_use]
     pub fn context_id(&self) -> calimero_primitives::context::ContextId {
         (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
     }
@@ -76,6 +78,7 @@ impl KeyComponent for PublicKey {
 pub struct ContextIdentity(Key<(ContextId, PublicKey)>);
 
 impl ContextIdentity {
+    #[must_use]
     pub fn new(
         context_id: calimero_primitives::context::ContextId,
         context_pk: calimero_primitives::identity::PublicKey,
@@ -85,6 +88,7 @@ impl ContextIdentity {
         ))
     }
 
+    #[must_use]
     pub fn context_id(&self) -> calimero_primitives::context::ContextId {
         let mut context_id = [0; 32];
 
@@ -93,6 +97,7 @@ impl ContextIdentity {
         context_id.into()
     }
 
+    #[must_use]
     pub fn public_key(&self) -> [u8; 32] {
         let mut public_key = [0; 32];
 
@@ -146,10 +151,12 @@ impl KeyComponent for StateKey {
 pub struct ContextState(Key<(ContextId, StateKey)>);
 
 impl ContextState {
+    #[must_use]
     pub fn new(context_id: calimero_primitives::context::ContextId, state_key: [u8; 32]) -> Self {
         Self(Key(GenericArray::from(*context_id).concat(state_key.into())))
     }
 
+    #[must_use]
     pub fn context_id(&self) -> calimero_primitives::context::ContextId {
         let mut context_id = [0; 32];
 
@@ -158,6 +165,7 @@ impl ContextState {
         context_id.into()
     }
 
+    #[must_use]
     pub fn state_key(&self) -> [u8; 32] {
         let mut state_key = [0; 32];
 
@@ -211,6 +219,7 @@ impl KeyComponent for TransactionId {
 pub struct ContextTransaction(Key<(ContextId, TransactionId)>);
 
 impl ContextTransaction {
+    #[must_use]
     pub fn new(
         context_id: calimero_primitives::context::ContextId,
         transaction_id: [u8; 32],
@@ -220,6 +229,7 @@ impl ContextTransaction {
         ))
     }
 
+    #[must_use]
     pub fn context_id(&self) -> calimero_primitives::context::ContextId {
         let mut context_id = [0; 32];
 
@@ -228,6 +238,7 @@ impl ContextTransaction {
         context_id.into()
     }
 
+    #[must_use]
     pub fn transaction_id(&self) -> [u8; 32] {
         let mut transaction_id = [0; 32];
 

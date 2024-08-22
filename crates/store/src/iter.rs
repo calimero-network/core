@@ -99,6 +99,7 @@ where
 }
 
 impl<'a, V> Iter<'a, Unstructured, V> {
+    #[must_use]
     pub fn structured_key<K: FromKeyParts>(self) -> Iter<'a, Structured<K>, V> {
         Iter {
             done: self.done,
@@ -109,6 +110,7 @@ impl<'a, V> Iter<'a, Unstructured, V> {
 }
 
 impl<'a, K> Iter<'a, K, Unstructured> {
+    #[must_use]
     pub fn structured_value<'b, V, C: Codec<'b, V>>(self) -> Iter<'a, K, Structured<(V, C)>> {
         Iter {
             done: self.done,

@@ -32,10 +32,12 @@ pub struct SSLCert {
 }
 
 impl SSLCert {
+    #[must_use]
     pub fn cert(&self) -> &Vec<u8> {
         &self.cert
     }
 
+    #[must_use]
     pub fn key(&self) -> &Vec<u8> {
         &self.key
     }

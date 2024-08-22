@@ -143,6 +143,7 @@ pub fn verify_signature(
     }
 }
 
+#[must_use]
 pub fn is_older_than_15_minutes(timestamp: i64) -> bool {
     let timestamp_datetime = Utc.timestamp_opt(timestamp, 0).unwrap();
     let now = Utc::now();

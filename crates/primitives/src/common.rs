@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+#[must_use]
 pub const fn bool_true() -> bool {
     true
 }

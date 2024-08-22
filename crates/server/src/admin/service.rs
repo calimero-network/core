@@ -190,6 +190,7 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[must_use]
 pub fn parse_api_error(err: eyre::Report) -> ApiError {
     match err.downcast::<ApiError>() {
         Ok(api_error) => api_error,

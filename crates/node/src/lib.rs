@@ -657,6 +657,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 }
 
 impl Node {
+    #[must_use]
     pub fn new(
         config: &NodeConfig,
         network_client: calimero_network::client::NetworkClient,

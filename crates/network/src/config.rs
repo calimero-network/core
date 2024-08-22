@@ -51,6 +51,7 @@ pub struct BootstrapNodes {
 }
 
 impl BootstrapNodes {
+    #[must_use]
     pub fn ipfs() -> Self {
         Self {
             list: IPFS_BOOT_NODES
@@ -60,6 +61,7 @@ impl BootstrapNodes {
         }
     }
 
+    #[must_use]
     pub fn calimero_dev() -> Self {
         Self {
             list: CALIMERO_DEV_BOOT_NODES

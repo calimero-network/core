@@ -58,6 +58,7 @@ impl<'a> Slice<'a> {
         Rc::try_unwrap(ref_boxed).unwrap_or_else(|inner| (*inner).clone())
     }
 
+    #[must_use]
     pub fn owned_ref<T: AsRef<[u8]>>(&'a self) -> Option<&'a T> {
         if let SliceInner::Any(inner) = &self.inner {
             if let Some(inner) = inner.as_dyn().downcast_ref::<T>() {

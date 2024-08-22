@@ -25,6 +25,7 @@ impl Store {
         Ok(Store { db: Arc::new(db) })
     }
 
+    #[must_use]
     pub fn handle(&self) -> Handle<Self> {
         Handle::new(self.clone())
     }

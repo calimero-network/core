@@ -31,6 +31,7 @@ fn expected_boolean<T>(e: u32) -> T {
     panic_str(&format!("Expected 0|1. Got {e}"));
 }
 
+#[must_use]
 pub fn get_executor_identity() -> [u8; 32] {
     unsafe { sys::get_executor_identity(DATA_REGISTER) };
     read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
@@ -65,6 +66,7 @@ pub fn unreachable() -> ! {
 }
 
 #[inline(always)]
+#[must_use]
 pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
     let len = unsafe { sys::register_len(register_id) };
 
@@ -117,6 +119,7 @@ fn read_register_sized<const N: usize>(register_id: sys::RegisterId) -> Option<[
 }
 
 #[inline]
+#[must_use]
 pub fn input() -> Option<Vec<u8>> {
     unsafe { sys::input(DATA_REGISTER) };
     read_register(DATA_REGISTER)
@@ -152,6 +155,7 @@ pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
         .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
 }
 
+#[must_use]
 pub fn state_read<T: crate::state::AppState>() -> Option<T> {
     let data = storage_read(STATE_KEY)?;
     match borsh::from_slice(&data) {

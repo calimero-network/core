@@ -71,6 +71,7 @@ unsafe impl<T: Debug> Send for InMemoryDB<T> {}
 // todo! ^^^^^ remove this once miraclx/slice/multi-thread-capable is merged in
 
 impl InMemoryDB<()> {
+    #[must_use]
     pub fn referenced<'a>() -> InMemoryDB<Ref<'a>> {
         InMemoryDB {
             inner: Ref {
@@ -79,6 +80,7 @@ impl InMemoryDB<()> {
         }
     }
 
+    #[must_use]
     pub fn owned() -> InMemoryDB<Owned> {
         InMemoryDB {
             inner: Owned {

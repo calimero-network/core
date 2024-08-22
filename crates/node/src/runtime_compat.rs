@@ -28,6 +28,7 @@ impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
         }
     }
 
+    #[must_use]
     pub fn read_only(store: &'this Store, context_id: ContextId) -> Self {
         Self {
             context_id,

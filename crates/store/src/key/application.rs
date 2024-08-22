@@ -22,10 +22,12 @@ impl KeyComponent for ApplicationId {
 pub struct ApplicationMeta(Key<ApplicationId>);
 
 impl ApplicationMeta {
+    #[must_use]
     pub fn new(application_id: calimero_primitives::application::ApplicationId) -> Self {
         Self(Key((*application_id).into()))
     }
 
+    #[must_use]
     pub fn application_id(&self) -> calimero_primitives::application::ApplicationId {
         (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
     }

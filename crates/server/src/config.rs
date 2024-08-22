@@ -24,6 +24,7 @@ pub struct ServerConfig {
     pub websocket: Option<crate::ws::WsConfig>,
 }
 
+#[must_use]
 pub fn default_addrs() -> Vec<Multiaddr> {
     DEFAULT_ADDRS
         .into_iter()

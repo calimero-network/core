@@ -11,6 +11,7 @@ use crate::hash::{Error as HashError, Hash};
 pub struct BlobId(Hash);
 
 impl BlobId {
+    #[must_use]
     pub fn hash(bytes: &[u8]) -> Self {
         Self(Hash::new(bytes))
     }
@@ -31,6 +32,7 @@ impl Deref for BlobId {
 }
 
 impl BlobId {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }

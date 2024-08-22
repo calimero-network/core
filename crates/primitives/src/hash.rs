@@ -21,11 +21,13 @@ pub struct Hash {
 }
 
 impl Hash {
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8; BYTES_LEN] {
         &self.bytes
     }
 
     // todo! genericize over D: Digest
+    #[must_use]
     pub fn new(data: &[u8]) -> Self {
         Self {
             bytes: sha2::Sha256::digest(data).into(),
@@ -59,6 +61,7 @@ impl Hash {
 
     // todo! using generic-array;
     // todo! as_str(&self, buf: &mut [u8; N]) -> &str
+    #[must_use]
     pub fn as_str(&self) -> &str {
         let (len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
 

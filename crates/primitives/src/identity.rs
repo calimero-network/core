@@ -19,6 +19,7 @@ pub struct KeyPair {
 pub struct PublicKey(pub [u8; 32]);
 
 impl PublicKey {
+    #[must_use]
     pub fn derive_from_private_key(private_key: &[u8; 32]) -> Self {
         let secret_key = SigningKey::from_bytes(private_key);
         let public_key: VerifyingKey = (&secret_key).into();

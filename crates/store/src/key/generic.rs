@@ -30,10 +30,12 @@ impl KeyComponent for Fragment {
 pub struct Generic(Key<(Scope, Fragment)>);
 
 impl Generic {
+    #[must_use]
     pub fn new(scope: [u8; 16], fragment: [u8; 32]) -> Self {
         Self(Key(GenericArray::from(scope).concat(fragment.into())))
     }
 
+    #[must_use]
     pub fn scope(&self) -> [u8; 16] {
         let mut scope = [0; 16];
 
@@ -42,6 +44,7 @@ impl Generic {
         scope
     }
 
+    #[must_use]
     pub fn fragment(&self) -> [u8; 32] {
         let mut fragment = [0; 32];
 
