@@ -98,7 +98,10 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<T>) -> Self {
-        unsafe { &*(key as *const _ as *const _) }
+        #[allow(trivial_casts)]
+        unsafe {
+            &*(key as *const _ as *const _)
+        }
     }
 }
 
@@ -108,7 +111,10 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<(T,)>) -> Self {
-        unsafe { &*(key as *const _ as *const _) }
+        #[allow(trivial_casts)]
+        unsafe {
+            &*(key as *const _ as *const _)
+        }
     }
 }
 

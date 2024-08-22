@@ -74,6 +74,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
+    #[allow(trivial_casts)]
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,

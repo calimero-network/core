@@ -70,7 +70,7 @@ impl<'a> Func<'a> {
         F: FnMut(proc_macro2::Span) -> Action<'a> + 'a,
     {
         Self {
-            inner: UnsafeCell::new(f as _),
+            inner: UnsafeCell::new(f),
         }
     }
 }

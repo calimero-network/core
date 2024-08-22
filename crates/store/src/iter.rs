@@ -309,6 +309,7 @@ impl<I: DBIter> FusedIter<I> {
     }
 
     fn next(&mut self) -> eyre::Result<Option<Key<'_>>> {
+        #[allow(trivial_casts)]
         let this = unsafe { &mut *(self as *mut Self) };
 
         if let FusedIter::Active(iter) = this {

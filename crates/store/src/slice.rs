@@ -41,7 +41,7 @@ impl<'a> Slice<'a> {
     /// Create a new `Slice` from an owned value.
     pub fn from_owned<T: AsRef<[u8]> + 'a>(inner: T) -> Self {
         Self {
-            inner: SliceInner::Any(Rc::new(inner) as _),
+            inner: SliceInner::Any(Rc::new(inner)),
         }
     }
 

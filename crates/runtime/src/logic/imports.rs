@@ -13,6 +13,7 @@ thread_local! {
 
 impl VMLogic<'_> {
     #[allow(clippy::too_many_arguments)]
+    #[allow(trivial_casts)]
     pub fn imports(&mut self, store: &mut wasmer::Store) -> wasmer::Imports {
         imports! {
             store;
