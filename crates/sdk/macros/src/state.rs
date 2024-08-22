@@ -72,25 +72,21 @@ impl Parse for MaybeBoundEvent {
                     }
                 };
 
-                let mut fine = true;
-
-                if input.is_empty() {
-                    errors.subsume(syn::Error::new_spanned(
-                        &bounds,
-                        "expected an event type to immediately follow",
-                    ));
-
-                    fine = false;
-                }
-
-                if bounds.lifetimes.is_empty() {
+                let fine = if bounds.lifetimes.is_empty() {
                     errors.subsume(syn::Error::new_spanned(
                         bounds.gt_token,
                         "non-empty lifetime bounds expected",
                     ));
-
-                    fine = false;
-                }
+                    false
+                } else if input.is_empty() {
+                    errors.subsume(syn::Error::new_spanned(
+                        &bounds,
+                        "expected an event type to immediately follow",
+                    ));
+                    false
+                } else {
+                    true
+                };
 
                 if !fine {
                     return Err(errors.take().expect("not fine, so we must have errors"));
