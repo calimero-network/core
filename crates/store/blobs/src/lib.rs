@@ -114,6 +114,7 @@ pub struct Blob {
     // meta: calimero_store::types::BlobMeta,
 
     // blob_mgr: BlobManager,
+    #[allow(clippy::type_complexity)]
     stream: Pin<Box<dyn Stream<Item = Result<Box<[u8]>, BlobError>>>>,
 }
 

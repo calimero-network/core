@@ -170,7 +170,7 @@ where
             return Ok(None);
         };
 
-        let range = column.range((Bound::Included(key.as_ref()), Bound::Unbounded));
+        let range = column.range((Bound::Included(key), Bound::Unbounded));
 
         self.state = Some(State {
             // safety: range lives as long as self

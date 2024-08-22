@@ -402,11 +402,10 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     }
                     "ls" => {
                         println!(
-                            "{IND} {c1:44} | {c2:44} | {c3:12} | {c4}",
+                            "{IND} {c1:44} | {c2:44} | {c3:12} | Source",
                             c1 = "Application ID",
                             c2 = "Blob ID",
                             c3 = "Version",
-                            c4 = "Source"
                         );
 
                         for application in node.ctx_manager.list_installed_applications()? {

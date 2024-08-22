@@ -51,6 +51,8 @@ impl<'a, K, V> Iter<'a, K, V> {
     }
 }
 
+// TODO: We should consider using std::iter::Iterator here
+#[allow(clippy::should_implement_trait)]
 impl<V> Iter<'_, Unstructured, V> {
     pub fn seek(&mut self, key: Key<'_>) -> eyre::Result<Option<Key<'_>>> {
         self.inner.seek(key)
@@ -61,6 +63,8 @@ impl<V> Iter<'_, Unstructured, V> {
     }
 }
 
+// TODO: We should consider using std::iter::Iterator here
+#[allow(clippy::should_implement_trait)]
 impl<K: FromKeyParts, V> Iter<'_, Structured<K>, V>
 where
     eyre::Report: From<Error<K::Error>>,

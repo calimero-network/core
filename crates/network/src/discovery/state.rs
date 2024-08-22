@@ -119,11 +119,10 @@ impl DiscoveryState {
         rendezvous_peer: &PeerId,
         cookie: rendezvous::Cookie,
     ) {
-        drop(
-            self.peers
-                .entry(*rendezvous_peer)
-                .and_modify(|info| info.update_rendezvous_cookie(cookie.clone())),
-        );
+        let _ = self
+            .peers
+            .entry(*rendezvous_peer)
+            .and_modify(|info| info.update_rendezvous_cookie(cookie.clone()));
     }
 
     pub(crate) fn update_relay_reservation_status(
@@ -131,11 +130,10 @@ impl DiscoveryState {
         relay_peer: &PeerId,
         status: RelayReservationStatus,
     ) {
-        drop(
-            self.peers
-                .entry(*relay_peer)
-                .and_modify(|info| info.update_relay_reservation_status(status)),
-        );
+        let _ = self
+            .peers
+            .entry(*relay_peer)
+            .and_modify(|info| info.update_relay_reservation_status(status));
     }
 
     pub(crate) fn update_rendezvous_registration_status(
@@ -143,11 +141,10 @@ impl DiscoveryState {
         rendezvous_peer: &PeerId,
         status: RendezvousRegistrationStatus,
     ) {
-        drop(
-            self.peers
-                .entry(*rendezvous_peer)
-                .and_modify(|info| info.update_rendezvous_registartion_status(status)),
-        );
+        let _ = self
+            .peers
+            .entry(*rendezvous_peer)
+            .and_modify(|info| info.update_rendezvous_registartion_status(status));
     }
 
     pub(crate) fn get_peer_info(&self, peer_id: &PeerId) -> Option<&PeerInfo> {

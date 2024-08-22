@@ -222,7 +222,7 @@ async fn install_app(
     let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
         version: None,
         path,
-        metadata: metadata.unwrap_or_else(Vec::new),
+        metadata: metadata.unwrap_or_default(),
     };
 
     let install_response = client
