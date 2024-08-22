@@ -102,15 +102,16 @@ impl ToTokens for PublicLogicMethod<'_> {
                 quote! { app.#name(#(#arg_idents),*); },
             ),
             None => (
-                match init_method {
-                    true => quote! {
+                if init_method {
+                    quote! {
                         if let Some(mut app) = ::calimero_sdk::env::state_read::<#self_>() {
                             ::calimero_sdk::env::panic_str("Cannot initialize over already existing state.")
                         };
 
                         let app: #self_ =
-                    },
-                    false => quote! {},
+                    }
+                } else {
+                    quote! {}
                 },
                 quote! { <#self_>::#name(#(#arg_idents),*); },
             ),
