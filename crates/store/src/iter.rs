@@ -325,7 +325,9 @@ impl<I: DBIter> FusedIter<I> {
 
             match std::mem::replace(self, Self::Interregnum) {
                 Self::Active(iter) => *self = Self::Expended(iter),
-                _ => unsafe { std::hint::unreachable_unchecked() },
+                Self::Expended(_) | Self::Interregnum => unsafe {
+                    std::hint::unreachable_unchecked()
+                },
             }
         }
 

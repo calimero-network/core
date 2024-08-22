@@ -179,6 +179,7 @@ impl Sanitizer<'_> {
         };
 
         for entry in entries.iter_mut() {
+            #[allow(clippy::wildcard_enum_match_arm)]
             match entry {
                 SanitizerAtom::Group { entry, .. } => {
                     let SanitizationResult {
@@ -262,6 +263,7 @@ impl Parse for Sanitizer<'_> {
                         entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Elided(and_span)));
                     }
                 } else {
+                    #[allow(clippy::wildcard_enum_match_arm)]
                     match input.parse::<TokenTree>()? {
                         TokenTree::Group(group) => {
                             let entry = syn::parse2(group.stream())?;

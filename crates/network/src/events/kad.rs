@@ -66,7 +66,13 @@ impl EventHandler<kad::Event> for EventLoop {
                     }
                 }
             }
-            _ => {}
+            kad::Event::InboundRequest { .. }
+            | kad::Event::ModeChanged { .. }
+            | kad::Event::OutboundQueryProgressed { .. }
+            | kad::Event::PendingRoutablePeer { .. }
+            | kad::Event::RoutablePeer { .. }
+            | kad::Event::RoutingUpdated { .. }
+            | kad::Event::UnroutablePeer { .. } => {}
         }
     }
 }

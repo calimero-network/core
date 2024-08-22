@@ -3,6 +3,7 @@ use libp2p::Multiaddr;
 use reqwest::Url;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> eyre::Result<Url> {
+    #[allow(clippy::wildcard_enum_match_arm)]
     let (ip, port, scheme) = multiaddr.iter().fold(
         (None, None, None),
         |(ip, port, scheme), protocol| match protocol {

@@ -24,7 +24,9 @@ impl Node {
 
         let request = match serde_json::from_slice(&message?.data)? {
             types::CatchupStreamMessage::Request(req) => req,
-            message => {
+            message @ (types::CatchupStreamMessage::ApplicationChanged(_)
+            | types::CatchupStreamMessage::TransactionsBatch(_)
+            | types::CatchupStreamMessage::Error(_)) => {
                 eyre::bail!("Unexpected message: {:?}", message)
             }
         };

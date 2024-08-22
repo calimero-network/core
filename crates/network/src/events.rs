@@ -20,6 +20,7 @@ impl EventLoop {
     // TODO: Consider splitting this long function into multiple parts.
     #[allow(clippy::too_many_lines)]
     pub(super) async fn handle_swarm_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
+        #[allow(clippy::wildcard_enum_match_arm)]
         match event {
             SwarmEvent::Behaviour(event) => match event {
                 BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event).await,
@@ -175,6 +176,7 @@ impl TryFrom<&Multiaddr> for RelayedMultiaddr {
         let mut iter = value.iter();
 
         while let Some(protocol) = iter.next() {
+            #[allow(clippy::wildcard_enum_match_arm)]
             match protocol {
                 multiaddr::Protocol::P2pCircuit => {
                     if peer_ids.is_empty() {

@@ -145,7 +145,11 @@ async fn watch_app_and_update_context(
                 eprintln!("\x1b[33mWARN\x1b[0m: file removed, ignoring..");
                 continue;
             }
-            _ => continue,
+            notify::EventKind::Any
+            | notify::EventKind::Access(_)
+            | notify::EventKind::Create(_)
+            | notify::EventKind::Modify(_)
+            | notify::EventKind::Other => continue,
         }
 
         let application_id =

@@ -115,6 +115,7 @@ impl ConfigCommand {
                             new_addr.push(Protocol::Ip6(ipv6_host));
                         }
                         (Protocol::Tcp(_) | Protocol::Udp(_), _, _, Some(new_port)) => {
+                            #[allow(clippy::wildcard_enum_match_arm)]
                             new_addr.push(match &protocol {
                                 Protocol::Tcp(_) => Protocol::Tcp(new_port),
                                 Protocol::Udp(_) => Protocol::Udp(new_port),

@@ -32,7 +32,8 @@ impl EventHandler<gossipsub::Event> for EventLoop {
                     error!("Failed to send subscribed event");
                 }
             }
-            _ => {}
+            gossipsub::Event::GossipsubNotSupported { .. }
+            | gossipsub::Event::Unsubscribed { .. } => {}
         }
     }
 }
