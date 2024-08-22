@@ -143,7 +143,7 @@ pub(crate) fn setup(
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct Empty {}
+pub struct Empty;
 
 #[derive(Debug)]
 pub struct ApiResponse<T: Serialize> {

@@ -100,7 +100,7 @@ pub struct NearSignatureMessageMetadata {
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EthSignatureMessageMetadata {}
+pub struct EthSignatureMessageMetadata;
 
 // Intermediate structs for initial parsing
 #[derive(Debug, Deserialize)]

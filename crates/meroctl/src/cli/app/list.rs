@@ -6,7 +6,7 @@ use crate::common::multiaddr_to_url;
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
-pub struct ListCommand {}
+pub struct ListCommand;
 
 impl ListCommand {
     pub async fn run(self, root_args: RootArgs) -> eyre::Result<()> {
