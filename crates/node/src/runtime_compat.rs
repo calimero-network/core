@@ -24,7 +24,7 @@ impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
         Self {
             context_id,
             inner: RuntimeCompatStoreInner::Write(store.temporal()),
-            keys: Default::default(),
+            keys: RefCell::default(),
         }
     }
 
@@ -33,7 +33,7 @@ impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
         Self {
             context_id,
             inner: RuntimeCompatStoreInner::Read(store.read_only()),
-            keys: Default::default(),
+            keys: RefCell::default(),
         }
     }
 

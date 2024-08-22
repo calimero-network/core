@@ -1,7 +1,9 @@
 use std::fs;
 use std::net::IpAddr;
 
-use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
+use calimero_network::config::{
+    BootstrapConfig, BootstrapNodes, DiscoveryConfig, RendezvousConfig, SwarmConfig,
+};
 use clap::{Parser, ValueEnum};
 use eyre::WrapErr;
 use libp2p::identity;
@@ -139,7 +141,7 @@ impl InitCommand {
                 },
                 discovery: DiscoveryConfig {
                     mdns,
-                    rendezvous: Default::default(),
+                    rendezvous: RendezvousConfig::default(),
                 },
                 server: ServerConfig {
                     listen: self

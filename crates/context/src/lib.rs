@@ -35,7 +35,7 @@ impl ContextManager {
             store,
             blob_manager,
             network_client,
-            state: Default::default(),
+            state: Arc::default(),
         };
 
         this.boot().await?;

@@ -45,14 +45,14 @@ impl DiscoveryState {
                 match self.peers.entry(*peer_id) {
                     btree_map::Entry::Occupied(mut entry) => {
                         if entry.get().relay.is_none() {
-                            entry.get_mut().relay = Some(Default::default());
+                            entry.get_mut().relay = Some(PeerRelayInfo::default());
                         }
                     }
                     btree_map::Entry::Vacant(entry) => {
                         let _ = entry.insert(PeerInfo {
-                            addrs: Default::default(),
-                            discoveries: Default::default(),
-                            relay: Some(Default::default()),
+                            addrs: HashSet::default(),
+                            discoveries: HashSet::default(),
+                            relay: Some(PeerRelayInfo::default()),
                             rendezvous: None,
                         });
                     }
@@ -64,15 +64,15 @@ impl DiscoveryState {
                 match self.peers.entry(*peer_id) {
                     btree_map::Entry::Occupied(mut entry) => {
                         if entry.get().rendezvous.is_none() {
-                            entry.get_mut().rendezvous = Some(Default::default());
+                            entry.get_mut().rendezvous = Some(PeerRendezvousInfo::default());
                         }
                     }
                     btree_map::Entry::Vacant(entry) => {
                         let _ = entry.insert(PeerInfo {
-                            addrs: Default::default(),
-                            discoveries: Default::default(),
+                            addrs: HashSet::default(),
+                            discoveries: HashSet::default(),
                             relay: None,
-                            rendezvous: Some(Default::default()),
+                            rendezvous: Some(PeerRendezvousInfo::default()),
                         });
                     }
                 };
@@ -105,7 +105,7 @@ impl DiscoveryState {
                 let _ = discoveries.insert(mechanism);
 
                 let _ = entry.insert(PeerInfo {
-                    addrs: Default::default(),
+                    addrs: HashSet::default(),
                     discoveries,
                     relay: None,
                     rendezvous: None,

@@ -81,7 +81,7 @@ async fn init(
     let swarm = libp2p::SwarmBuilder::with_existing_identity(config.identity.clone())
         .with_tokio()
         .with_tcp(
-            Default::default(),
+            libp2p::tcp::Config::default(),
             (libp2p::tls::Config::new, noise::Config::new),
             yamux::Config::default,
         )?
@@ -194,10 +194,10 @@ impl EventLoop {
             command_receiver,
             event_sender,
             discovery,
-            pending_dial: Default::default(),
-            pending_bootstrap: Default::default(),
-            pending_start_providing: Default::default(),
-            pending_get_providers: Default::default(),
+            pending_dial: HashMap::default(),
+            pending_bootstrap: HashMap::default(),
+            pending_start_providing: HashMap::default(),
+            pending_get_providers: HashMap::default(),
         }
     }
 

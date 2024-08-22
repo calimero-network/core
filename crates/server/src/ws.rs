@@ -58,7 +58,7 @@ pub(crate) fn service(
 
     let state = Arc::new(ServiceState {
         node_events,
-        connections: Default::default(),
+        connections: RwLock::default(),
     });
 
     Ok(Some((path, get(ws_handler).layer(Extension(state)))))
@@ -81,7 +81,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
             hash_map::Entry::Vacant(entry) => {
                 let connection_state = ConnectionState {
                     commands: commands_sender.clone(),
-                    inner: Default::default(),
+                    inner: Arc::default(),
                 };
                 let _ = entry.insert(connection_state.clone());
                 break (connection_id, connection_state);

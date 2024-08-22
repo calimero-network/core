@@ -75,7 +75,7 @@ impl InMemoryDB<()> {
     pub fn referenced<'a>() -> InMemoryDB<Ref<'a>> {
         InMemoryDB {
             inner: Ref {
-                inner: Default::default(),
+                inner: Arc::default(),
             },
         }
     }
@@ -84,7 +84,7 @@ impl InMemoryDB<()> {
     pub fn owned() -> InMemoryDB<Owned> {
         InMemoryDB {
             inner: Owned {
-                inner: Default::default(),
+                inner: Arc::default(),
             },
         }
     }

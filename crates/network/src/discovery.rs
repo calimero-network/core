@@ -2,20 +2,22 @@ use eyre::ContextCompat;
 use libp2p::PeerId;
 use tracing::{debug, error};
 
+use crate::discovery::state::DiscoveryState;
+
 pub(crate) mod state;
 
 use super::{config, EventLoop};
 
 #[derive(Debug)]
 pub(crate) struct Discovery {
-    pub(crate) state: state::DiscoveryState,
+    pub(crate) state: DiscoveryState,
     pub(crate) rendezvous_config: config::RendezvousConfig,
 }
 
 impl Discovery {
     pub(crate) fn new(rendezvous_config: &config::RendezvousConfig) -> Self {
         Discovery {
-            state: Default::default(),
+            state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
         }
     }

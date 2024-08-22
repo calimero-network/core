@@ -84,7 +84,7 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             mdns: true,
-            rendezvous: Default::default(),
+            rendezvous: RendezvousConfig::default(),
         }
     }
 }

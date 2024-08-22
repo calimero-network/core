@@ -52,7 +52,7 @@ impl<V> Clone for DBArena<V> {
 impl<V> Default for DBArena<V> {
     fn default() -> Self {
         Self {
-            inner: Default::default(),
+            inner: Arc::default(),
         }
     }
 }
@@ -66,8 +66,8 @@ pub struct InMemoryDBInner<K, V> {
 impl<K, V> Default for InMemoryDBInner<K, V> {
     fn default() -> Self {
         Self {
-            arena: Default::default(),
-            links: Default::default(),
+            arena: DBArena::default(),
+            links: BTreeMap::default(),
         }
     }
 }
