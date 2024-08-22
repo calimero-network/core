@@ -29,7 +29,7 @@ impl BlobManager {
         }
     }
 
-    pub async fn has(&self, id: BlobId) -> eyre::Result<bool> {
+    pub fn has(&self, id: BlobId) -> eyre::Result<bool> {
         Ok(self
             .data_store
             .handle()
@@ -37,8 +37,8 @@ impl BlobManager {
     }
 
     // return a concrete type that resolves to the content of the file
-    pub async fn get(&self, id: BlobId) -> eyre::Result<Option<Blob>> {
-        Blob::new(id, self.clone()).await
+    pub fn get(&self, id: BlobId) -> eyre::Result<Option<Blob>> {
+        Blob::new(id, self.clone())
     }
 
     pub async fn put<S, T, E>(&self, stream: S) -> eyre::Result<BlobId>
@@ -119,7 +119,7 @@ pub struct Blob {
 }
 
 impl Blob {
-    async fn new(id: BlobId, blob_mgr: BlobManager) -> eyre::Result<Option<Self>> {
+    fn new(id: BlobId, blob_mgr: BlobManager) -> eyre::Result<Option<Self>> {
         let Some(blob_meta) = blob_mgr
             .data_store
             .handle()
@@ -138,7 +138,7 @@ impl Blob {
             }
 
             for link in blob_meta.links {
-                let maybe_link = Blob::new(link.blob_id(), blob_mgr.clone()).await;
+                let maybe_link = Blob::new(link.blob_id(), blob_mgr.clone());
                 let maybe_link = maybe_link.map_err(BlobError::RepoError)?;
                 let link = maybe_link.ok_or_else(|| BlobError::DanglingBlob { id })?;
                 for await blob in link {

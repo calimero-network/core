@@ -101,7 +101,7 @@ impl ContextManager {
         context: &calimero_primitives::context::Context,
         initial_identity: KeyPair,
     ) -> eyre::Result<()> {
-        self.add_context(context).await?;
+        self.add_context(context)?;
 
         let mut handle = self.store.handle();
 
@@ -115,10 +115,7 @@ impl ContextManager {
         Ok(())
     }
 
-    pub async fn add_context(
-        &self,
-        context: &calimero_primitives::context::Context,
-    ) -> eyre::Result<()> {
+    pub fn add_context(&self, context: &calimero_primitives::context::Context) -> eyre::Result<()> {
         if !self.is_application_installed(&context.application_id)? {
             eyre::bail!("Application is not installed on node.")
         }
@@ -451,7 +448,7 @@ impl ContextManager {
             return Ok(None);
         };
 
-        let Some(mut stream) = self.blob_manager.get(application.blob.blob_id()).await? else {
+        let Some(mut stream) = self.blob_manager.get(application.blob.blob_id())? else {
             eyre::bail!("fatal: application points to dangling blob");
         };
 

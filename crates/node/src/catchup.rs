@@ -400,7 +400,7 @@ impl Node {
                             last_transaction_hash: calimero_primitives::hash::Hash::default(),
                         };
 
-                        self.ctx_manager.add_context(&context_inner).await?;
+                        self.ctx_manager.add_context(&context_inner)?;
 
                         context = Some(context_inner);
                     }

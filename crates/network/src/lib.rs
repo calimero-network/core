@@ -43,7 +43,7 @@ pub async fn run(
 ) -> eyre::Result<(NetworkClient, mpsc::Receiver<types::NetworkEvent>)> {
     let peer_id = config.identity.public().to_peer_id();
 
-    let (client, event_receiver, event_loop) = init(peer_id, config).await?;
+    let (client, event_receiver, event_loop) = init(peer_id, config)?;
 
     drop(tokio::spawn(event_loop.run()));
 
@@ -56,7 +56,7 @@ pub async fn run(
     Ok((client, event_receiver))
 }
 
-async fn init(
+fn init(
     peer_id: PeerId,
     config: &NetworkConfig,
 ) -> eyre::Result<(
@@ -217,7 +217,7 @@ impl EventLoop {
                     let Some(c) = command else { break };
                     self.handle_command(c).await;
                 }
-                _ = rendezvous_discover_tick.tick() => self.broadcast_rendezvous_discoveries().await,
+                _ = rendezvous_discover_tick.tick() => self.broadcast_rendezvous_discoveries(),
             }
         }
     }

@@ -117,7 +117,7 @@ pub async fn start(
             .allow_private_network(true),
     );
     // Check if the certificate exists and if they contain the current local IP address
-    let (cert_pem, key_pem) = certificates::get_certificate(store.clone()).await?;
+    let (cert_pem, key_pem) = certificates::get_certificate(&store)?;
 
     // Configure certificate and private key used by https
     let rustls_config = match RustlsConfig::from_pem(cert_pem, key_pem).await {

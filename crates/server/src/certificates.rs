@@ -8,16 +8,16 @@ use x509_parser::prelude::{parse_x509_pem, ParsedExtension};
 
 use crate::admin::storage::ssl::{get_ssl, insert_or_update_ssl, SSLCert};
 
-pub async fn get_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
-    let certificate = match get_ssl(&store)? {
-        Some(cert) => check_certificate(store.clone(), cert).await?,
-        None => generate_certificate(store.clone()).await?,
+pub fn get_certificate(store: &Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+    let certificate = match get_ssl(store)? {
+        Some(cert) => check_certificate(store, &cert)?,
+        None => generate_certificate(store)?,
     };
     write_out_instructions();
     Ok(certificate)
 }
 
-async fn generate_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+fn generate_certificate(store: &Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     // Get the local IP address
     let local_ip = local_ip()?;
 
@@ -41,7 +41,7 @@ async fn generate_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> 
         .distinguished_name
         .push(DnType::CommonName, certificate_name);
 
-    let key_pair = match get_ssl(&store)? {
+    let key_pair = match get_ssl(store)? {
         Some(ssl) => {
             let key = from_utf8(ssl.key())?;
             rcgen::KeyPair::from_pem(key)?
@@ -55,12 +55,12 @@ async fn generate_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> 
     let cert_pem = cert.pem().into_bytes();
     let key_pem = key_pair.serialize_pem().into_bytes();
 
-    drop(insert_or_update_ssl(&store, &cert_pem, &key_pem)?);
+    drop(insert_or_update_ssl(store, &cert_pem, &key_pem)?);
 
     Ok((cert_pem, key_pem))
 }
 
-async fn check_certificate(store: Store, cert: SSLCert) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+fn check_certificate(store: &Store, cert: &SSLCert) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     let (cert_pem, key_pem) = (cert.cert(), cert.key());
     let (_, pem) = parse_x509_pem(cert_pem)?;
     let x509_cert = pem.parse_x509()?;
@@ -94,7 +94,7 @@ async fn check_certificate(store: Store, cert: SSLCert) -> eyre::Result<(Vec<u8>
     }
 
     if !ip_found {
-        return generate_certificate(store.clone()).await;
+        return generate_certificate(store);
     }
     Ok((cert_pem.clone(), key_pem.clone()))
 }

@@ -685,7 +685,7 @@ impl Node {
                 peer_id: their_peer_id,
                 topic: topic_hash,
             } => {
-                if let Err(err) = self.handle_subscribed(their_peer_id, topic_hash).await {
+                if let Err(err) = self.handle_subscribed(their_peer_id, &topic_hash) {
                     error!(?err, "Failed to handle subscribed event");
                 }
             }
@@ -711,10 +711,10 @@ impl Node {
         Ok(())
     }
 
-    async fn handle_subscribed(
+    fn handle_subscribed(
         &mut self,
         their_peer_id: libp2p::PeerId,
-        topic_hash: TopicHash,
+        topic_hash: &TopicHash,
     ) -> eyre::Result<()> {
         let Ok(context_id) = topic_hash.as_str().parse() else {
             // eyre::bail!(
@@ -833,7 +833,7 @@ impl Node {
                 debug!(?rejection, %source, "Received transaction rejection");
                 // todo! ensure this was only sent by a coordinator
 
-                if let Err(err) = self.reject_from_pool(rejection.transaction_hash).await {
+                if let Err(err) = self.reject_from_pool(rejection.transaction_hash) {
                     error!(%err, "Failed to reject transaction from pool");
                 };
 
@@ -1135,7 +1135,7 @@ impl Node {
         Ok(outcome)
     }
 
-    async fn reject_from_pool(
+    fn reject_from_pool(
         &mut self,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<Option<()>> {
