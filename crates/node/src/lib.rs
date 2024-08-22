@@ -159,14 +159,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         // Parse the executor's public key if provided
-                        let executor_public_key = if !executor_key.is_empty() {
+                        let executor_public_key = if executor_key.is_empty() {
+                            return Err(eyre::eyre!("Executor public key is required"));
+                        } else {
                             bs58::decode(executor_key)
                                 .into_vec()
                                 .map_err(|_| eyre::eyre!("Invalid executor public key"))?
                                 .try_into()
                                 .map_err(|_| eyre::eyre!("Executor public key must be 32 bytes"))?
-                        } else {
-                            return Err(eyre::eyre!("Executor public key is required"));
                         };
 
                         let tx_hash = match node

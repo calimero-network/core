@@ -102,7 +102,9 @@ fn check_root_key(
     store: &mut Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let root_keys = exists_root_keys(store).map_err(parse_api_error)?;
-    if !root_keys {
+    if root_keys {
+        validate_root_key_exists(req, store)
+    } else {
         //first login so store root key as well
         let _ = store_root_key(
             req.wallet_metadata.signing_key.clone(),
@@ -110,7 +112,5 @@ fn check_root_key(
             store,
         )?;
         Ok(req)
-    } else {
-        validate_root_key_exists(req, store)
     }
 }

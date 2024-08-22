@@ -349,10 +349,10 @@ impl VMHostFunctions<'_> {
             request = request.set(key, value);
         }
 
-        let response = if !body.is_empty() {
-            request.send_bytes(&body)
-        } else {
+        let response = if body.is_empty() {
             request.call()
+        } else {
+            request.send_bytes(&body)
         };
 
         let (status, data) = match response {
