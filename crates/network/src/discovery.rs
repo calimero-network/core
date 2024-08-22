@@ -144,7 +144,9 @@ impl EventLoop {
                 libp2p::rendezvous::client::RegisterError::NoExternalAddresses => {
                     return Ok(());
                 }
-                err => eyre::bail!(err),
+                err @ libp2p::rendezvous::client::RegisterError::FailedToMakeRecord(_) => {
+                    eyre::bail!(err)
+                }
             }
         }
 

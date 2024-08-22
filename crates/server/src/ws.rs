@@ -178,7 +178,7 @@ async fn handle_node_events(
             {
                 calimero_primitives::events::NodeEvent::Application(event)
             }
-            _ => continue,
+            calimero_primitives::events::NodeEvent::Application(_) => continue,
         };
 
         let body = match serde_json::to_value(event) {

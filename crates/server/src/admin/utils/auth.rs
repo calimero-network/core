@@ -25,7 +25,7 @@ pub fn verify_node_signature(
         WalletType::NEAR { .. } => {
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::NEAR(metadata) => metadata,
-                _ => {
+                SignatureMetadataEnum::ETH(_) => {
                     return Err(ApiError {
                         status_code: StatusCode::BAD_REQUEST,
                         message: "Invalid metadata.".into(),
@@ -53,7 +53,7 @@ pub fn verify_node_signature(
         WalletType::ETH { .. } => {
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
-                _ => {
+                SignatureMetadataEnum::NEAR(_) => {
                     return Err(ApiError {
                         status_code: StatusCode::BAD_REQUEST,
                         message: "Invalid metadata.".into(),
