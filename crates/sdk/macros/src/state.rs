@@ -55,6 +55,8 @@ struct MaybeBoundEvent {
 // todo! move all errors to ParseError
 
 impl Parse for MaybeBoundEvent {
+    // TODO: Consider splitting this long function into multiple parts.
+    #[allow(clippy::too_many_lines)]
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut lifetime = None;
 

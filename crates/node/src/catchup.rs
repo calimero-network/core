@@ -11,6 +11,8 @@ use crate::{types, Node};
 mod batch;
 
 impl Node {
+    // TODO: Consider splitting this long function into multiple parts.
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn handle_opened_stream(
         &mut self,
         mut stream: Box<calimero_network::stream::Stream>,
@@ -278,6 +280,8 @@ impl Node {
         Ok(())
     }
 
+    // TODO: Consider splitting this long function into multiple parts.
+    #[allow(clippy::too_many_lines)]
     async fn handle_catchup_message(
         &mut self,
         context_id: calimero_primitives::context::ContextId,

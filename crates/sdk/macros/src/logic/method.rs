@@ -35,6 +35,8 @@ impl ToTokens for LogicMethod<'_> {
 }
 
 impl ToTokens for PublicLogicMethod<'_> {
+    // TODO: Consider splitting this long function into multiple parts.
+    #[allow(clippy::too_many_lines)]
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let self_ = &self.self_;
         let name = &self.name;
@@ -185,6 +187,8 @@ pub struct LogicMethodImplInput<'a, 'b> {
 impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
     type Error = errors::Errors<'a, syn::ImplItemFn>;
 
+    // TODO: Consider splitting this long function into multiple parts.
+    #[allow(clippy::too_many_lines)]
     fn try_from(input: LogicMethodImplInput<'a, 'b>) -> Result<Self, Self::Error> {
         let mut errors = errors::Errors::new(input.item);
 

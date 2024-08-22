@@ -66,6 +66,8 @@ pub enum BootstrapNetwork {
 
 #[warn(unused_results)]
 impl ConfigCommand {
+    // TODO: Consider splitting this long function into multiple parts.
+    #[allow(clippy::too_many_lines)]
     pub fn run(self, root_args: &cli::RootArgs) -> eyre::Result<()> {
         let path = root_args
             .home

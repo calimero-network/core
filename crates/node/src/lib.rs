@@ -129,6 +129,8 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
     Ok(())
 }
 
+// TODO: Consider splitting this long function into multiple parts.
+#[allow(clippy::too_many_lines)]
 async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     let (command, args) = match line.split_once(' ') {
         Some((method, payload)) => (method, Some(payload)),

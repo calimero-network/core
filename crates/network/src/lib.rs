@@ -222,6 +222,8 @@ impl EventLoop {
         }
     }
 
+    // TODO: Consider splitting this long function into multiple parts.
+    #[allow(clippy::too_many_lines)]
     async fn handle_command(&mut self, command: Command) {
         match command {
             Command::ListenOn { addr, sender } => {

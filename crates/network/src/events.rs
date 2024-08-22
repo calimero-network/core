@@ -16,6 +16,8 @@ pub trait EventHandler<E> {
 }
 
 impl EventLoop {
+    // TODO: Consider splitting this long function into multiple parts.
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn handle_swarm_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
         match event {
             SwarmEvent::Behaviour(event) => match event {
