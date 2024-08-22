@@ -16,7 +16,7 @@ impl Registers {
         self.inner
             .get(&id)
             .map(|v| &**v)
-            .ok_or(HostError::InvalidRegisterId { id }.into())
+            .ok_or_else(|| HostError::InvalidRegisterId { id }.into())
     }
 
     pub fn get_len(&self, id: u64) -> Option<u64> {

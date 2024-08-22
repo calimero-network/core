@@ -162,6 +162,8 @@ impl From<wasmer::ExportError> for FunctionCallError {
     }
 }
 
+// TODO: We should change this to use TryFrom instead of panicking in a From.
+#[allow(clippy::fallible_impl_from)]
 impl From<wasmer::InstantiationError> for FunctionCallError {
     fn from(err: wasmer::InstantiationError) -> Self {
         match err {

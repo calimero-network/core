@@ -29,6 +29,7 @@ impl EventLoop {
     // TODO: Consider splitting this function up to reduce complexity.
     #[allow(clippy::cognitive_complexity)]
     pub(crate) fn broadcast_rendezvous_discoveries(&mut self) {
+        #[allow(clippy::needless_collect)]
         for peer_id in self
             .discovery
             .state
@@ -98,6 +99,7 @@ impl EventLoop {
     // TODO: Consider splitting this function up to reduce complexity.
     #[allow(clippy::cognitive_complexity)]
     pub(crate) fn broadcast_rendezvous_registrations(&mut self) {
+        #[allow(clippy::needless_collect)]
         for peer_id in self
             .discovery
             .state

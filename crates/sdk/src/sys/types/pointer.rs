@@ -2,7 +2,6 @@ use std::marker::PhantomData;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-
 pub struct PtrSizedInt {
     value: u64,
 }

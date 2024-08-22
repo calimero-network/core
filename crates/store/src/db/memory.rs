@@ -66,8 +66,8 @@ pub struct InMemoryDB<T: Debug> {
 }
 
 // todo! vvvvv remove this once miraclx/slice/multi-thread-capable is merged in
-unsafe impl<T: Debug> Sync for InMemoryDB<T> {}
-unsafe impl<T: Debug> Send for InMemoryDB<T> {}
+unsafe impl<T: Debug + Sync> Sync for InMemoryDB<T> {}
+unsafe impl<T: Debug + Send> Send for InMemoryDB<T> {}
 // todo! ^^^^^ remove this once miraclx/slice/multi-thread-capable is merged in
 
 impl InMemoryDB<()> {
@@ -125,7 +125,7 @@ impl AsRef<[u8]> for ArcSlice<'_> {
     }
 }
 
-impl<'a, T: InMemoryDBImpl<'a> + Debug + 'static> Database<'a> for InMemoryDB<T>
+impl<'a, T: InMemoryDBImpl<'a> + Debug + Send + Sync + 'static> Database<'a> for InMemoryDB<T>
 where
     T::Key: Ord + Clone + Borrow<[u8]>,
 {
