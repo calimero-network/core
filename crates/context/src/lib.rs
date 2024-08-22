@@ -109,9 +109,9 @@ impl ContextManager {
                 context_id: context.id,
                 method: "init".to_owned(),
                 payload: initialization_params,
-                writes: true,
                 executor_public_key: initial_identity.public_key.0,
                 outcome_sender: tx,
+                finality: Some(calimero_node_primitives::Finality::Local),
             })
             .await?;
 

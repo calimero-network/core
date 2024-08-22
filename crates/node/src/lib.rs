@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use calimero_node_primitives::Finality;
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;
@@ -166,16 +167,15 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             return Err(eyre::eyre!("Executor public key is required"));
                         };
 
-                        let tx_hash = match node
-                            .call_mutate(
-                                context,
-                                method.to_owned(),
-                                payload.as_bytes().to_owned(),
-                                executor_public_key,
-                                outcome_sender,
-                            )
-                            .await
-                        {
+                        let tx = calimero_primitives::transaction::Transaction {
+                            context_id: context.id,
+                            method: method.to_owned(),
+                            payload: payload.as_bytes().to_owned(),
+                            executor_public_key,
+                            prior_hash: context.last_transaction_hash,
+                        };
+
+                        let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {
                             Ok(tx_hash) => tx_hash,
                             Err(e) => {
                                 println!("{IND} Failed to execute transaction: {}", e);
@@ -834,7 +834,7 @@ impl Node {
                     };
 
                     self.validate_pending_transaction(
-                        context,
+                        &context,
                         pool_entry.transaction,
                         transaction_hash,
                     )
@@ -887,7 +887,7 @@ impl Node {
 
     async fn validate_pending_transaction(
         &mut self,
-        context: calimero_primitives::context::Context,
+        context: &calimero_primitives::context::Context,
         transaction: calimero_primitives::transaction::Transaction,
         transaction_hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<bool> {
@@ -906,7 +906,7 @@ impl Node {
             )
             .await?;
 
-            self.persist_transaction(context.clone(), transaction.clone(), transaction_hash)?;
+            self.persist_transaction(context, transaction, transaction_hash)?;
 
             Ok(true)
         } else {
@@ -948,51 +948,75 @@ impl Node {
             return;
         };
 
-        if request.writes {
-            let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
+        if let Some(finality) = request.finality {
+            let transaction = calimero_primitives::transaction::Transaction {
+                context_id: context.id,
+                method: request.method,
+                payload: request.payload,
+                prior_hash: context.last_transaction_hash,
+                executor_public_key: request.executor_public_key,
+            };
 
-            if let Err(err) = self
-                .call_mutate(
-                    context,
-                    request.method,
-                    request.payload,
-                    request.executor_public_key,
-                    inner_outcome_sender,
-                )
-                .await
-            {
-                let _ = request
-                    .outcome_sender
-                    .send(Err(calimero_node_primitives::CallError::Mutate(err)));
-                return;
-            }
+            match finality {
+                Finality::Local => {
+                    let task = async {
+                        let hash = calimero_primitives::hash::Hash::hash_json(&transaction)?;
 
-            tokio::spawn(async move {
-                match inner_outcome_receiver.await {
-                    Ok(outcome) => match outcome {
-                        Ok(outcome) => {
-                            let _ = request.outcome_sender.send(Ok(outcome));
-                        }
-                        Err(err) => {
-                            let _ = request
-                                .outcome_sender
-                                .send(Err(calimero_node_primitives::CallError::Mutate(err)));
-                        }
-                    },
-                    Err(err) => {
-                        error!("Failed to receive inner outcome of a transaction: {}", err);
-                        let _ = request.outcome_sender.send(Err(
-                            calimero_node_primitives::CallError::Mutate(
-                                calimero_node_primitives::MutateCallError::InternalError,
-                            ),
-                        ));
-                    }
+                        self.execute_transaction(&context, transaction, hash).await
+                    };
+
+                    let _ = request.outcome_sender.send(task.await.map_err(|err| {
+                        error!(%err, "failed to execute local transaction");
+
+                        calimero_node_primitives::CallError::Mutate(
+                            calimero_node_primitives::MutateCallError::InternalError,
+                        )
+                    }));
+
+                    return;
                 }
-            });
+                Finality::Global => {
+                    let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
+
+                    if let Err(err) = self
+                        .call_mutate(&context, transaction, inner_outcome_sender)
+                        .await
+                    {
+                        let _ = request
+                            .outcome_sender
+                            .send(Err(calimero_node_primitives::CallError::Mutate(err)));
+                        return;
+                    }
+
+                    tokio::spawn(async move {
+                        match inner_outcome_receiver.await {
+                            Ok(outcome) => match outcome {
+                                Ok(outcome) => {
+                                    let _ = request.outcome_sender.send(Ok(outcome));
+                                }
+                                Err(err) => {
+                                    let _ = request.outcome_sender.send(Err(
+                                        calimero_node_primitives::CallError::Mutate(err),
+                                    ));
+                                }
+                            },
+                            Err(err) => {
+                                error!("Failed to receive inner outcome of a transaction: {}", err);
+                                let _ =
+                                    request
+                                        .outcome_sender
+                                        .send(Err(calimero_node_primitives::CallError::Mutate(
+                                        calimero_node_primitives::MutateCallError::InternalError,
+                                    )));
+                            }
+                        }
+                    });
+                }
+            }
         } else {
             match self
                 .call_query(
-                    context,
+                    &context,
                     request.method,
                     request.payload,
                     request.executor_public_key,
@@ -1013,7 +1037,7 @@ impl Node {
 
     async fn call_query(
         &mut self,
-        context: calimero_primitives::context::Context,
+        context: &calimero_primitives::context::Context,
         method: String,
         payload: Vec<u8>,
         executor_public_key: [u8; 32],
@@ -1030,7 +1054,7 @@ impl Node {
             );
         }
 
-        self.execute(context, None, method, payload, executor_public_key)
+        self.execute(&context, None, method, payload, executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e,"Failed to execute query call.");
@@ -1040,14 +1064,16 @@ impl Node {
 
     async fn call_mutate(
         &mut self,
-        context: calimero_primitives::context::Context,
-        method: String,
-        payload: Vec<u8>,
-        executor_public_key: [u8; 32],
+        context: &calimero_primitives::context::Context,
+        transaction: calimero_primitives::transaction::Transaction,
         outcome_sender: oneshot::Sender<
             Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError>,
         >,
     ) -> Result<calimero_primitives::hash::Hash, calimero_node_primitives::MutateCallError> {
+        if context.id != transaction.context_id {
+            return Err(calimero_node_primitives::MutateCallError::TransactionRejected);
+        }
+
         if self.typ.is_coordinator() {
             return Err(calimero_node_primitives::MutateCallError::InvalidNodeType {
                 node_type: self.typ,
@@ -1074,14 +1100,6 @@ impl Node {
         {
             return Err(calimero_node_primitives::MutateCallError::NoConnectedPeers);
         }
-
-        let transaction = calimero_primitives::transaction::Transaction {
-            context_id: context.id,
-            method,
-            payload,
-            prior_hash: context.last_transaction_hash,
-            executor_public_key,
-        };
 
         self.push_action(
             context.id,
@@ -1132,7 +1150,7 @@ impl Node {
         }
 
         let outcome = self
-            .execute_transaction(context, transaction, transaction_hash)
+            .execute_transaction(&context, transaction, transaction_hash)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute transaction");
@@ -1144,13 +1162,13 @@ impl Node {
 
     async fn execute_transaction(
         &mut self,
-        context: calimero_primitives::context::Context,
+        context: &calimero_primitives::context::Context,
         transaction: calimero_primitives::transaction::Transaction,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<calimero_runtime::logic::Outcome> {
         let outcome = self
             .execute(
-                context.clone(),
+                context,
                 Some(hash),
                 transaction.method.clone(),
                 transaction.payload.clone(),
@@ -1184,7 +1202,7 @@ impl Node {
 
     fn persist_transaction(
         &mut self,
-        context: calimero_primitives::context::Context,
+        context: &calimero_primitives::context::Context,
         transaction: calimero_primitives::transaction::Transaction,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<()> {
@@ -1213,7 +1231,7 @@ impl Node {
 
     pub async fn execute(
         &mut self,
-        context: calimero_primitives::context::Context,
+        context: &calimero_primitives::context::Context,
         hash: Option<calimero_primitives::hash::Hash>,
         method: String,
         payload: Vec<u8>,
