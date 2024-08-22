@@ -112,7 +112,7 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
             return Ok(());
         };
 
-        if let Some(idx) = column.remove(&key) {
+        if let Some(idx) = column.remove(key) {
             if let Ok(idx) = Arc::try_unwrap(idx) {
                 let Some(_value) = self.arena.write()?.remove(idx) else {
                     panic!("inconsistent state, index points to non-existent value")

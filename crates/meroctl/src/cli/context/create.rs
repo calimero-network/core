@@ -74,7 +74,7 @@ async fn create_context(
     application_id: calimero_primitives::application::ApplicationId,
     client: &Client,
 ) -> eyre::Result<calimero_primitives::context::ContextId> {
-    if !app_installed(&base_multiaddr, &application_id, client).await? {
+    if !app_installed(base_multiaddr, &application_id, client).await? {
         eyre::bail!("Application is not installed on node.")
     }
 
@@ -147,7 +147,7 @@ async fn watch_app_and_update_context(
         }
 
         let application_id =
-            install_app(base_multiaddr, path.clone(), &client, metadata.clone()).await?;
+            install_app(base_multiaddr, path.clone(), client, metadata.clone()).await?;
 
         update_context_application(base_multiaddr, context_id, application_id, client).await?;
     }

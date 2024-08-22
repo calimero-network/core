@@ -56,7 +56,7 @@ impl BlobManager {
                 let blob = blob.as_ref();
 
                 for chunk in blob.chunks(CHUNK_SIZE) {
-                    let id = BlobId::hash(&chunk);
+                    let id = BlobId::hash(chunk);
 
                     self.data_store.handle().put(
                         &calimero_store::key::BlobMeta::new(id),
