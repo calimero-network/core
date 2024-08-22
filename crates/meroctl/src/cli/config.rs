@@ -103,7 +103,7 @@ impl ConfigCommand {
                     .parse()?;
                 let mut new_addr = Multiaddr::empty();
 
-                for protocol in addr.iter() {
+                for protocol in &addr {
                     match (&protocol, ipv4_host, ipv6_host, self.swarm_port) {
                         (Protocol::Ip4(_), Some(ipv4_host), _, _) => {
                             new_addr.push(Protocol::Ip4(ipv4_host));
@@ -139,7 +139,7 @@ impl ConfigCommand {
                     .parse()?;
                 let mut new_addr = Multiaddr::empty();
 
-                for protocol in addr.iter() {
+                for protocol in &addr {
                     match (&protocol, ipv4_host, ipv6_host, self.server_port) {
                         (Protocol::Ip4(_), Some(ipv4_host), _, _) => {
                             new_addr.push(Protocol::Ip4(ipv4_host));
@@ -164,7 +164,7 @@ impl ConfigCommand {
                 .as_array_mut()
                 .ok_or(eyre!("No swarm table in config.toml"))?;
             list_array.clear();
-            for node in self.boot_nodes.iter() {
+            for node in self.boot_nodes {
                 list_array.push(node.to_string());
             }
         } else if let Some(network) = self.boot_network {
@@ -176,7 +176,7 @@ impl ConfigCommand {
                 BootstrapNetwork::CalimeroDev => BootstrapNodes::calimero_dev().list,
                 BootstrapNetwork::Ipfs => BootstrapNodes::ipfs().list,
             };
-            for node in new_nodes.iter() {
+            for node in new_nodes {
                 list_array.push(node.to_string());
             }
         }

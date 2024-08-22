@@ -193,7 +193,7 @@ impl Sanitizer<'_> {
                     errors.combine(&err);
                 }
                 entry => {
-                    for (case, action) in cases.iter() {
+                    for (case, action) in cases {
                         if let Some(span) = entry.satisfies(case) {
                             if entry.apply_action(span, action, &mut errors) {
                                 *counts.entry(case).or_insert(0) += 1;
@@ -213,7 +213,7 @@ impl ToTokens for Sanitizer<'_> {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let entries = self.entries.as_ref();
 
-        for entry in entries.iter() {
+        for entry in entries {
             match entry {
                 SanitizerAtom::Self_(self_) => self_.to_tokens(tokens),
                 SanitizerAtom::Ident(ident) => ident.to_tokens(tokens),

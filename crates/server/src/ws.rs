@@ -52,7 +52,7 @@ pub(crate) fn service(
 
     let path = "/ws"; // todo! source from config
 
-    for listen in config.listen.iter() {
+    for listen in &config.listen {
         info!("WebSocket server listening on {}/ws{{{}}}", listen, path);
     }
 

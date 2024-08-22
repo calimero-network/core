@@ -341,7 +341,7 @@ impl VMHostFunctions<'_> {
         let body = self.read_guest_memory(body_ptr, body_len)?;
         let mut request = ureq::request(&method, &url);
 
-        for (key, value) in headers.iter() {
+        for (key, value) in &headers {
             request = request.set(key, value);
         }
 

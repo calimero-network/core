@@ -35,7 +35,7 @@ pub(crate) fn service(
 
     let path = "/jsonrpc"; // todo! source from config
 
-    for listen in config.listen.iter() {
+    for listen in &config.listen {
         info!("JSON RPC server listening on {}/http{{{}}}", listen, path);
     }
 
