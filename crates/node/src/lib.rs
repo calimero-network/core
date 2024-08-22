@@ -8,7 +8,6 @@ use calimero_store::Store;
 use libp2p::gossipsub::{IdentTopic, TopicHash};
 use libp2p::identity as p2p_identity;
 use owo_colors::OwoColorize;
-use semver::Version;
 use tokio::io::AsyncBufReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
@@ -362,12 +361,12 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             Some((type_, resource, version, metadata))
                         }) else {
                             println!(
-                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [version] [metadata]"
+                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> <version> [metadata]"
                             );
                             break 'done;
                         };
 
-                        let Ok(version) = version.parse::<Version>() else {
+                        let Ok(version) = version.parse() else {
                             println!("{IND} Invalid version: {:?}", version);
                             break 'done;
                         };
@@ -388,15 +387,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             "file" => {
                                 let path = camino::Utf8PathBuf::from(resource);
 
-                                let metadata = match metadata {
-                                    Some(metadata) => metadata.as_bytes().to_vec(),
-                                    None => {
-                                        vec![]
-                                    }
-                                };
-
                                 node.ctx_manager
-                                    .install_application_from_path(path, Some(version), metadata)
+                                    .install_application_from_path(
+                                        path,
+                                        Some(version),
+                                        metadata
+                                            .map(|x| x.as_bytes().to_owned())
+                                            .unwrap_or_default(),
+                                    )
                                     .await?
                             }
                             unknown => {
