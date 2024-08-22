@@ -65,36 +65,6 @@ impl VMLogic<'_> {
 macro_rules! _imports {
     ($store:ident; logic: $logic:ident; $(fn $func:ident($($arg:ident: $arg_ty:ty),*$(,)?) $(-> $returns:ty)?;)*) => {
         {
-            let mut store = $store;
-            let logic = $logic;
-
-            HOOKER.with(|hooker| {
-                hooker.call_once(|| {
-                    let prev_hook = std::panic::take_hook();
-                    std::panic::set_hook(Box::new(move |info| {
-                        if !HOST_CTX.with(|ctx| ctx.load(Ordering::Relaxed)) {
-                            return prev_hook(info);
-                        }
-                        PAYLOAD.with(|payload| {
-                            let message = match info.payload().downcast_ref::<&'static str>() {
-                                Some(message) => *message,
-                                None => match info.payload().downcast_ref::<String>() {
-                                    Some(message) => &**message,
-                                    None => "<no message>",
-                                },
-                            };
-
-                            *payload.borrow_mut() = Some(match info.location() {
-                                Some(location) => (message.to_owned(), Location::from(location)),
-                                None => (message.to_owned(), Location::Unknown),
-                            });
-                        });
-
-                        prev_hook(info);
-                    }));
-                });
-            });
-
             $(
                 #[allow(unused_parens)]
                 fn $func(
@@ -159,6 +129,36 @@ macro_rules! _imports {
                     res.map_err(|err| wasmer::RuntimeError::user(Box::new(err)))
                 }
             )*
+
+            let mut store = $store;
+            let logic = $logic;
+
+            HOOKER.with(|hooker| {
+                hooker.call_once(|| {
+                    let prev_hook = std::panic::take_hook();
+                    std::panic::set_hook(Box::new(move |info| {
+                        if !HOST_CTX.with(|ctx| ctx.load(Ordering::Relaxed)) {
+                            return prev_hook(info);
+                        }
+                        PAYLOAD.with(|payload| {
+                            let message = match info.payload().downcast_ref::<&'static str>() {
+                                Some(message) => *message,
+                                None => match info.payload().downcast_ref::<String>() {
+                                    Some(message) => &**message,
+                                    None => "<no message>",
+                                },
+                            };
+
+                            *payload.borrow_mut() = Some(match info.location() {
+                                Some(location) => (message.to_owned(), Location::from(location)),
+                                None => (message.to_owned(), Location::Unknown),
+                            });
+                        });
+
+                        prev_hook(info);
+                    }));
+                });
+            });
 
             let env = wasmer::FunctionEnv::new(&mut store, fragile::Fragile::new(std::ptr::from_mut(logic).cast::<()>()));
 
