@@ -246,7 +246,7 @@ pub async fn join_context_handler(
     .map_err(parse_api_error);
 
     match result {
-        Ok(_) => ApiResponse {
+        Ok(()) => ApiResponse {
             payload: JoinContextResponse { data: Empty {} },
         }
         .into_response(),
@@ -279,7 +279,7 @@ pub async fn update_application_id(
         .map_err(parse_api_error);
 
     match result {
-        Ok(_) => ApiResponse {
+        Ok(()) => ApiResponse {
             payload: UpdateApplicationIdResponse { data: Empty {} },
         }
         .into_response(),

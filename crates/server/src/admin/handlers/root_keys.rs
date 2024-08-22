@@ -73,7 +73,7 @@ pub async fn delete_auth_keys_handler(
 ) -> impl IntoResponse {
     drop(clean_auth_keys(&mut state.store.clone()).map_or_else(
         |err| parse_api_error(err).into_response(),
-        |_| {
+        |()| {
             ApiResponse {
                 payload: DeleteKeysResponse { data: Empty {} },
             }

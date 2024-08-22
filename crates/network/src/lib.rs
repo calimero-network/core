@@ -97,7 +97,7 @@ fn init(
                 .discovery
                 .mdns
                 .then_some(())
-                .and_then(|_| mdns::Behaviour::new(mdns::Config::default(), peer_id).ok())
+                .and_then(|()| mdns::Behaviour::new(mdns::Config::default(), peer_id).ok())
                 .into(),
             kad: {
                 let mut kad_config = kad::Config::default();

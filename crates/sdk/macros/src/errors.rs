@@ -180,7 +180,7 @@ impl<'a, T> Errors<'a, T> {
 
     pub fn check(self) -> Result<(), Self> {
         let inner = self.inner_ref().errors.is_some();
-        inner.then_some(()).map_or(Ok(()), |_| Err(self))
+        inner.then_some(()).map_or(Ok(()), |()| Err(self))
     }
 
     // panics if this instance has already been consumed or "taken"
