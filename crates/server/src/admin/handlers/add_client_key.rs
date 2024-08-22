@@ -68,10 +68,10 @@ pub async fn add_client_key_handler(
 ) -> impl IntoResponse {
     transform_request(intermediate_req)
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        .and_then(|req| check_root_key(req, &mut state.store.clone()))
+        .and_then(|req| check_root_key(req, &state.store.clone()))
         .and_then(|req| validate_challenge(req, &state.keypair))
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        .and_then(|req| store_client_key(req, &mut state.store.clone()))
+        .and_then(|req| store_client_key(req, &state.store.clone()))
         .map_or_else(IntoResponse::into_response, |_| {
             let data: String = "Client key stored".to_string();
             ApiResponse {
@@ -83,7 +83,7 @@ pub async fn add_client_key_handler(
 
 pub fn store_client_key(
     req: AddPublicKeyRequest,
-    store: &mut Store,
+    store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     #[allow(clippy::cast_sign_loss)]
     let client_key = ClientKey {
@@ -99,7 +99,7 @@ pub fn store_client_key(
 
 fn check_root_key(
     req: AddPublicKeyRequest,
-    store: &mut Store,
+    store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let root_keys = exists_root_keys(store).map_err(parse_api_error)?;
     if root_keys {

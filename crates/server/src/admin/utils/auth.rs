@@ -154,7 +154,7 @@ pub fn is_older_than_15_minutes(timestamp: i64) -> bool {
 
 pub fn validate_root_key_exists(
     req: AddPublicKeyRequest,
-    store: &mut Store,
+    store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let root_key_result = get_root_key(store, &req.wallet_metadata.signing_key).map_err(|e| {
         info!("Error getting root key: {}", e);

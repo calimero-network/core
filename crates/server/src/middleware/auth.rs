@@ -61,7 +61,7 @@ where
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        let result = auth(request.headers(), &mut self.store.clone());
+        let result = auth(request.headers(), &self.store.clone());
 
         if let Err(err) = result {
             let error_response = err.into_response();
@@ -86,7 +86,7 @@ struct AuthHeaders {
     context_id: Option<ContextId>,
 }
 
-pub fn auth(headers: &HeaderMap, store: &mut Store) -> Result<(), UnauthorizedError<'static>> {
+pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<'static>> {
     let auth_headers = get_auth_headers(headers).map_err(|e| {
         debug!("Failed to extract authentication headers {}", e);
         UnauthorizedError::new("Failed to extract authentication headers.")

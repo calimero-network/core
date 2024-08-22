@@ -38,7 +38,7 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
     type Error = errors::Errors<'a, syn::FnArg>;
 
     fn try_from(input: LogicArgInput<'a, 'b>) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(input.arg);
+        let errors = errors::Errors::new(input.arg);
 
         match input.arg {
             syn::FnArg::Receiver(receiver) => {

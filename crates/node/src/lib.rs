@@ -715,7 +715,7 @@ impl Node {
     }
 
     fn handle_subscribed(
-        &mut self,
+        &self,
         their_peer_id: libp2p::PeerId,
         topic_hash: &TopicHash,
     ) -> eyre::Result<()> {
@@ -893,7 +893,7 @@ impl Node {
     }
 
     async fn push_action(
-        &mut self,
+        &self,
         context_id: calimero_primitives::context::ContextId,
         action: types::PeerAction,
     ) -> eyre::Result<()> {
@@ -1150,7 +1150,7 @@ impl Node {
     }
 
     fn persist_transaction(
-        &mut self,
+        &self,
         context: &calimero_primitives::context::Context,
         transaction: calimero_primitives::transaction::Transaction,
         hash: calimero_primitives::hash::Hash,

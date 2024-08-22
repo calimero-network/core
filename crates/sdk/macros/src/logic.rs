@@ -36,7 +36,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
     type Error = errors::Errors<'a, syn::ItemImpl>;
 
     fn try_from(input: LogicImplInput<'a>) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(input.item);
+        let errors = errors::Errors::new(input.item);
 
         for generic in &input.item.generics.params {
             if let syn::GenericParam::Lifetime(params) = generic {

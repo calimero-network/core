@@ -24,7 +24,7 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
     type Error = errors::Errors<'a, syn::Type>;
 
     fn try_from(input: LogicTyInput<'a, 'b>) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(input.ty);
+        let errors = errors::Errors::new(input.ty);
 
         let mut sanitizer =
             syn::parse2::<sanitizer::Sanitizer<'_>>(input.ty.to_token_stream()).unwrap();

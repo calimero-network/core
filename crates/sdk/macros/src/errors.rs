@@ -151,14 +151,14 @@ impl<'a, T> Errors<'a, T> {
 }
 
 impl<'a, T> Errors<'a, T> {
-    pub fn subsume(&mut self, error: syn::Error) {
+    pub fn subsume(&self, error: syn::Error) {
         match &mut self.inner_mut().errors {
             err @ None => *err = Some(error),
             Some(err) => err.combine(error),
         }
     }
 
-    pub fn subsumed(mut self, other: syn::Error) -> syn::Error {
+    pub fn subsumed(self, other: syn::Error) -> syn::Error {
         self.subsume(other);
         let Some(errors) = self.inner().errors else {
             // safety: we know we have at least one error
@@ -167,12 +167,12 @@ impl<'a, T> Errors<'a, T> {
         errors
     }
 
-    pub fn finish(mut self, error: syn::Error) -> Self {
+    pub fn finish(self, error: syn::Error) -> Self {
         self.subsume(error);
         self
     }
 
-    pub fn combine<U>(&mut self, other: &Errors<'a, U>) {
+    pub fn combine<U>(&self, other: &Errors<'a, U>) {
         if let Some(errors) = other.inner().errors {
             self.subsume(errors);
         }

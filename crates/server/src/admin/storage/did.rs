@@ -25,7 +25,7 @@ impl DidEntry {
     }
 }
 
-pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
+pub fn create_did(store: &Store) -> eyre::Result<Did> {
     let did_document = Did {
         id: "did:cali".to_string(),
         root_keys: vec![],
@@ -41,7 +41,7 @@ pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
     Ok(did_document)
 }
 
-pub fn get_or_create_did(store: &mut Store) -> eyre::Result<Did> {
+pub fn get_or_create_did(store: &Store) -> eyre::Result<Did> {
     let entry = DidEntry::new();
 
     let handle = store.handle();
@@ -53,7 +53,7 @@ pub fn get_or_create_did(store: &mut Store) -> eyre::Result<Did> {
     Ok(did_document)
 }
 
-pub fn update_did(store: &mut Store, did: &Did) -> eyre::Result<()> {
+pub fn update_did(store: &Store, did: &Did) -> eyre::Result<()> {
     let entry = DidEntry::new();
 
     let mut handle = store.handle();

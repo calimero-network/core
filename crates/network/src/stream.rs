@@ -59,6 +59,10 @@ impl FuturesSink<Message> for Stream {
     }
 }
 
+// TODO: The &mut self usages are needed for reasons not yet apparent, despite
+// TODO: not actually making any self-modifications. If removed, they cause
+// TODO: errors about Send compatibility.
+#[allow(clippy::needless_pass_by_ref_mut)]
 impl EventLoop {
     pub(crate) async fn handle_incoming_stream(
         &mut self,

@@ -14,7 +14,7 @@ impl Node {
     // TODO: Consider splitting this long function into multiple parts.
     #[allow(clippy::too_many_lines)]
     pub(crate) async fn handle_opened_stream(
-        &mut self,
+        &self,
         mut stream: Box<calimero_network::stream::Stream>,
     ) -> eyre::Result<()> {
         let Some(message) = stream.next().await else {

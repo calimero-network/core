@@ -192,7 +192,7 @@ impl VMHostFunctions<'_> {
             .unwrap_or(u64::MAX))
     }
 
-    pub fn read_register(&mut self, register_id: u64, ptr: u64, len: u64) -> Result<u32> {
+    pub fn read_register(&self, register_id: u64, ptr: u64, len: u64) -> Result<u32> {
         let data = self.borrow_logic().registers.get(register_id)?;
         if data.len() != usize::try_from(len).map_err(|_| HostError::IntegerOverflow)? {
             return Ok(0);

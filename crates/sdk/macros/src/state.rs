@@ -60,7 +60,7 @@ impl Parse for MaybeBoundEvent {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut lifetime = None;
 
-        let mut errors = errors::Errors::default();
+        let errors = errors::Errors::default();
 
         'bounds: {
             if input.peek(syn::Token![for]) {
@@ -255,7 +255,7 @@ impl<'a> TryFrom<StateImplInput<'a>> for StateImpl<'a> {
     type Error = errors::Errors<'a, items::StructOrEnumItem>;
 
     fn try_from(input: StateImplInput<'a>) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(input.item);
+        let errors = errors::Errors::new(input.item);
 
         let (ident, generics) = match input.item {
             items::StructOrEnumItem::Struct(item) => (&item.ident, &item.generics),

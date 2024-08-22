@@ -66,7 +66,7 @@ pub async fn get_context_client_keys_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let client_keys_result = get_context_client_key(&mut state.store.clone(), &context_id)
+    let client_keys_result = get_context_client_key(&state.store.clone(), &context_id)
         .map_err(|err| parse_api_error(err).into_response());
     match client_keys_result {
         Ok(client_keys) => ApiResponse {

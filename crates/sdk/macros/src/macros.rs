@@ -1,8 +1,8 @@
 macro_rules! parse_macro_input {
-    (@let $er:ident =) => { let mut $er = errors::Errors::default(); };
+    (@let $er:ident =) => { let $er = errors::Errors::default(); };
     (@let $er:ident = $item:expr) => {
         let item = proc_macro2::TokenStream::from($item);
-        let mut $er = errors::Errors::new(&item);
+        let $er = errors::Errors::new(&item);
     };
     ($({ $item:expr } =>)? $stream:ident as $ty:ty ) => {
         match syn::parse::<$ty>($stream) {

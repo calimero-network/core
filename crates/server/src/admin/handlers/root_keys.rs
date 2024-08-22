@@ -25,7 +25,7 @@ pub async fn create_root_key_handler(
 ) -> impl IntoResponse {
     transform_request(intermediate_req)
         .and_then(|req| validate_challenge(req, &state.keypair))
-        .and_then(|req| store_root(req, &mut state.store.clone()))
+        .and_then(|req| store_root(req, &state.store.clone()))
         .map_or_else(IntoResponse::into_response, |_| {
             let data: String = "Root key stored".to_string();
             ApiResponse {
@@ -37,7 +37,7 @@ pub async fn create_root_key_handler(
 
 pub fn store_root(
     req: AddPublicKeyRequest,
-    store: &mut Store,
+    store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let _ = store_root_key(
         req.wallet_metadata.signing_key.clone(),
@@ -50,7 +50,7 @@ pub fn store_root(
 pub fn store_root_key(
     signing_key: String,
     wallet_type: WalletType,
-    store: &mut Store,
+    store: &Store,
 ) -> Result<bool, ApiError> {
     #[allow(clippy::cast_sign_loss)]
     let root_key = RootKey {
@@ -71,7 +71,7 @@ pub struct DeleteKeysResponse {
 pub async fn delete_auth_keys_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    drop(clean_auth_keys(&mut state.store.clone()).map_or_else(
+    drop(clean_auth_keys(&state.store.clone()).map_or_else(
         |err| parse_api_error(err).into_response(),
         |()| {
             ApiResponse {

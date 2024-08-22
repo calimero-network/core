@@ -68,7 +68,7 @@ impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
     type Error = errors::Errors<'a, items::StructOrEnumItem>;
 
     fn try_from(input: EventImplInput<'a>) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(input.item);
+        let errors = errors::Errors::new(input.item);
 
         let (vis, ident, generics) = match input.item {
             items::StructOrEnumItem::Struct(item) => (&item.vis, &item.ident, &item.generics),

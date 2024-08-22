@@ -191,7 +191,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
     // TODO: Consider splitting this long function into multiple parts.
     #[allow(clippy::too_many_lines)]
     fn try_from(input: LogicMethodImplInput<'a, 'b>) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(input.item);
+        let errors = errors::Errors::new(input.item);
 
         let mut modifiers = vec![];
         let mut is_init = false;
