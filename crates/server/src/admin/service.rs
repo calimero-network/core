@@ -7,10 +7,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
-use calimero_server_primitives::admin::{
-    ApplicationInstallResult, ApplicationListResult, InstallApplicationResponse,
-    ListApplicationsResponse,
-};
+use calimero_server_primitives::admin::{InstallApplicationResponse, ListApplicationsResponse};
 use calimero_store::Store;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
@@ -23,12 +20,21 @@ use super::storage::ssl::get_ssl;
 use crate::middleware;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct AdminConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
 }
 
+impl AdminConfig {
+    #[must_use]
+    pub const fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+}
+
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
@@ -143,6 +149,7 @@ pub(crate) fn setup(
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[allow(clippy::exhaustive_structs)]
 pub struct Empty;
 
 #[derive(Debug)]
@@ -232,9 +239,7 @@ async fn install_application_handler(
         .await
     {
         Ok(application_id) => ApiResponse {
-            payload: InstallApplicationResponse {
-                data: ApplicationInstallResult { application_id },
-            },
+            payload: InstallApplicationResponse::new(application_id),
         }
         .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
@@ -246,9 +251,7 @@ async fn list_applications_handler(
 ) -> impl IntoResponse {
     match state.ctx_manager.list_installed_applications() {
         Ok(applications) => ApiResponse {
-            payload: ListApplicationsResponse {
-                data: ApplicationListResult { apps: applications },
-            },
+            payload: ListApplicationsResponse::new(applications),
         }
         .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),

@@ -67,11 +67,8 @@ fn generate_challenge(
     let random_bytes = generate_random_bytes();
     let encoded = STANDARD.encode(random_bytes);
 
-    let node_challenge_message = NodeChallengeMessage {
-        nonce: encoded,
-        context_id,
-        timestamp: chrono::Utc::now().timestamp(),
-    };
+    let node_challenge_message =
+        NodeChallengeMessage::new(encoded, context_id, chrono::Utc::now().timestamp());
 
     let message_vec = serde_json::to_vec(&node_challenge_message).map_err(|_| ApiError {
         status_code: StatusCode::INTERNAL_SERVER_ERROR,
@@ -81,10 +78,7 @@ fn generate_challenge(
     match keypair.sign(&message_vec) {
         Ok(signature) => {
             let node_signature = STANDARD.encode(&signature);
-            Ok(NodeChallenge {
-                message: node_challenge_message,
-                node_signature,
-            })
+            Ok(NodeChallenge::new(node_challenge_message, node_signature))
         }
         Err(e) => Err(ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,

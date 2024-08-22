@@ -40,11 +40,11 @@ impl InstallCommand {
 
         let install_url = multiaddr_to_url(multiaddr, "admin-api/dev/install-application")?;
 
-        let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
-            path: self.path.canonicalize_utf8()?,
-            version: self.version,
-            metadata: self.metadata.unwrap_or_default(),
-        };
+        let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest::new(
+            self.path.canonicalize_utf8()?,
+            self.version,
+            self.metadata.unwrap_or_default(),
+        );
 
         let install_response = client
             .post(install_url)

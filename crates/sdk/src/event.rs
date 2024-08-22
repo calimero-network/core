@@ -9,6 +9,7 @@ pub trait AppEvent {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct EncodedAppEvent<'a> {
     pub kind: Cow<'a, str>,
     pub data: Cow<'a, [u8]>,
@@ -90,6 +91,7 @@ pub fn downcast<T: AppEventExt + 'static>(
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::exhaustive_enums)]
 pub enum NoEvent {}
 impl AppEvent for NoEvent {
     fn kind(&self) -> Cow<'_, str> {

@@ -31,6 +31,12 @@ pub fn verify_node_signature(
                         message: "Invalid metadata.".into(),
                     })
                 }
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Unsupported metadata.".into(),
+                    })
+                }
             };
 
             let result = verify_near_signature(
@@ -59,6 +65,12 @@ pub fn verify_node_signature(
                         message: "Invalid metadata.".into(),
                     })
                 }
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Unsupported metadata.".into(),
+                    })
+                }
             };
 
             if let Err(err) = verify_eth_signature(
@@ -71,6 +83,10 @@ pub fn verify_node_signature(
 
             Ok(true)
         }
+        _ => Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Unsupported wallet type.".into(),
+        }),
     }
 }
 
@@ -107,11 +123,11 @@ pub fn validate_challenge_content(payload: &Payload, keypair: &Keypair) -> Resul
 pub fn construct_node_challenge(
     message: &SignatureMessage,
 ) -> Result<NodeChallengeMessage, ApiError> {
-    Ok(NodeChallengeMessage {
-        nonce: message.nonce.clone(),
-        context_id: message.context_id,
-        timestamp: message.timestamp,
-    })
+    Ok(NodeChallengeMessage::new(
+        message.nonce.clone(),
+        message.context_id,
+        message.timestamp,
+    ))
 }
 
 pub fn decode_signature(encoded_sig: &String) -> Result<Vec<u8>, ApiError> {

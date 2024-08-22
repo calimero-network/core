@@ -38,7 +38,7 @@ impl Node {
                 },
             ))?;
             stream
-                .send(calimero_network::stream::Message { data: message })
+                .send(calimero_network::stream::Message::new(message))
                 .await?;
 
             return Ok(());
@@ -64,7 +64,7 @@ impl Node {
                 },
             ))?;
             stream
-                .send(calimero_network::stream::Message { data: message })
+                .send(calimero_network::stream::Message::new(message))
                 .await?;
 
             return Ok(());
@@ -95,7 +95,7 @@ impl Node {
                 },
             ))?;
             stream
-                .send(calimero_network::stream::Message { data: message })
+                .send(calimero_network::stream::Message::new(message))
                 .await?;
         }
 
@@ -128,7 +128,7 @@ impl Node {
                     types::CatchupError::InternalError,
                 ))?;
                 stream
-                    .send(calimero_network::stream::Message { data: message })
+                    .send(calimero_network::stream::Message::new(message))
                     .await?;
 
                 return Ok(());
@@ -158,13 +158,13 @@ impl Node {
             batch_writer
                 .send(types::TransactionWithStatus {
                     transaction_hash: hash,
-                    transaction: calimero_primitives::transaction::Transaction {
-                        context_id: request.context_id,
-                        method: transaction.method.into(),
-                        payload: transaction.payload.into(),
-                        prior_hash: calimero_primitives::hash::Hash::from(transaction.prior_hash),
-                        executor_public_key: transaction.executor_public_key,
-                    },
+                    transaction: calimero_primitives::transaction::Transaction::new(
+                        request.context_id,
+                        transaction.method.into(),
+                        transaction.payload.into(),
+                        calimero_primitives::hash::Hash::from(transaction.prior_hash),
+                        transaction.executor_public_key,
+                    ),
                     status: types::TransactionStatus::Executed,
                 })
                 .await?;
@@ -174,13 +174,13 @@ impl Node {
             batch_writer
                 .send(types::TransactionWithStatus {
                     transaction_hash: *hash,
-                    transaction: calimero_primitives::transaction::Transaction {
-                        context_id: request.context_id,
-                        method: transaction.method.clone(),
-                        payload: transaction.payload.clone(),
-                        prior_hash: transaction.prior_hash,
-                        executor_public_key: transaction.executor_public_key,
-                    },
+                    transaction: calimero_primitives::transaction::Transaction::new(
+                        request.context_id,
+                        transaction.method.clone(),
+                        transaction.payload.clone(),
+                        transaction.prior_hash,
+                        transaction.executor_public_key,
+                    ),
                     status: types::TransactionStatus::Pending,
                 })
                 .await?;
@@ -250,7 +250,7 @@ impl Node {
         let data = serde_json::to_vec(&types::CatchupStreamMessage::Request(request))?;
 
         stream
-            .send(calimero_network::stream::Message { data })
+            .send(calimero_network::stream::Message::new(data))
             .await?;
 
         loop {
@@ -323,13 +323,13 @@ impl Node {
                             calimero_node_primitives::NodeType::Peer => {
                                 let _ = self.tx_pool.insert(
                                     chosen_peer,
-                                    calimero_primitives::transaction::Transaction {
-                                        context_id: context_.id,
-                                        method: transaction.method,
-                                        payload: transaction.payload,
-                                        prior_hash: transaction.prior_hash,
-                                        executor_public_key: transaction.executor_public_key,
-                                    },
+                                    calimero_primitives::transaction::Transaction::new(
+                                        context_.id,
+                                        transaction.method,
+                                        transaction.payload,
+                                        transaction.prior_hash,
+                                        transaction.executor_public_key,
+                                    ),
                                     None,
                                 )?;
                             }
@@ -344,6 +344,7 @@ impl Node {
 
                                 drop(self.tx_pool.remove(&transaction_hash));
                             }
+                            _ => eyre::bail!("Unexpected node type"),
                         },
                         types::TransactionStatus::Executed => match self.typ {
                             calimero_node_primitives::NodeType::Peer => {
@@ -365,6 +366,7 @@ impl Node {
                                     transaction_hash,
                                 )?;
                             }
+                            _ => eyre::bail!("Unexpected node type"),
                         },
                     }
 
@@ -397,11 +399,11 @@ impl Node {
 
                     context_.application_id = change.application_id;
                 } else {
-                    let context_inner = calimero_primitives::context::Context {
-                        id: context_id,
-                        application_id: change.application_id,
-                        last_transaction_hash: calimero_primitives::hash::Hash::default(),
-                    };
+                    let context_inner = calimero_primitives::context::Context::new(
+                        context_id,
+                        change.application_id,
+                        calimero_primitives::hash::Hash::default(),
+                    );
 
                     self.ctx_manager.add_context(&context_inner)?;
 

@@ -8,12 +8,21 @@ use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[non_exhaustive]
 pub struct Message {
     pub data: Vec<u8>,
 }
 
+impl Message {
+    #[must_use]
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data }
+    }
+}
+
 #[derive(Debug, Error)]
 #[error("CodecError")]
+#[non_exhaustive]
 pub enum CodecError {
     StdIo(#[from] std::io::Error),
     SerDe(serde_json::Error),

@@ -26,11 +26,7 @@ impl DidEntry {
 }
 
 pub fn create_did(store: &Store) -> eyre::Result<Did> {
-    let did_document = Did {
-        id: "did:cali".to_owned(),
-        root_keys: vec![],
-        client_keys: vec![],
-    };
+    let did_document = Did::new("did:cali".to_owned(), vec![], vec![]);
 
     let entry = DidEntry::new();
 

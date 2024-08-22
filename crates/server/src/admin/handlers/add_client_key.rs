@@ -43,17 +43,20 @@ pub fn transform_request(
             })?;
             SignatureMetadataEnum::ETH(metadata)
         }
+        _ => {
+            return Err(ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: "Unsupported wallet type.".into(),
+            });
+        }
     };
 
-    Ok(AddPublicKeyRequest {
-        wallet_signature: intermediate.wallet_signature,
-        payload: Payload {
-            message: intermediate.payload.message,
-            metadata: metadata_enum,
-        },
-        wallet_metadata: intermediate.wallet_metadata,
-        context_id: intermediate.context_id,
-    })
+    Ok(AddPublicKeyRequest::new(
+        intermediate.wallet_signature,
+        Payload::new(intermediate.payload.message, metadata_enum),
+        intermediate.wallet_metadata,
+        intermediate.context_id,
+    ))
 }
 
 #[derive(Debug, Serialize)]
@@ -86,12 +89,12 @@ pub fn store_client_key(
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     #[allow(clippy::cast_sign_loss)]
-    let client_key = ClientKey {
-        wallet_type: req.wallet_metadata.wallet_type,
-        signing_key: req.payload.message.public_key.clone(),
-        created_at: Utc::now().timestamp_millis() as u64,
-        context_id: req.context_id,
-    };
+    let client_key = ClientKey::new(
+        req.wallet_metadata.wallet_type,
+        req.payload.message.public_key.clone(),
+        Utc::now().timestamp_millis() as u64,
+        req.context_id,
+    );
     let _ = add_client_key(store, client_key).map_err(parse_api_error)?;
     info!("Client key stored successfully.");
     Ok(req)

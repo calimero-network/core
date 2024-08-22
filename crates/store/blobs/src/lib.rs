@@ -60,10 +60,7 @@ impl BlobManager {
 
                     self.data_store.handle().put(
                         &calimero_store::key::BlobMeta::new(id),
-                        &calimero_store::types::BlobMeta {
-                            size: 0,
-                            links: Vec::new().into_boxed_slice(),
-                        },
+                        &calimero_store::types::BlobMeta::new(0, Vec::new().into_boxed_slice()),
                     )?;
                     self.blob_store.put(id, chunk).await?;
 
@@ -94,11 +91,11 @@ impl BlobManager {
 
         self.data_store.handle().put(
             &calimero_store::key::BlobMeta::new(id),
-            &calimero_store::types::BlobMeta {
-                size: 0,
-                links: links.into_boxed_slice(),
+            &calimero_store::types::BlobMeta::new(
+                0,
+                links.into_boxed_slice(),
                 // todo! hash of the blob data
-            },
+            ),
         )?;
 
         Ok(id) // todo!: Ok((id, Blob { size, hash }::{fn stream()}))
@@ -160,6 +157,7 @@ impl Debug for Blob {
 
 #[derive(Debug, Error)]
 #[allow(variant_size_differences)]
+#[non_exhaustive]
 pub enum BlobError {
     #[error("encountered a dangling Blob ID: `{id}`, the blob store may be corrupt")]
     DanglingBlob { id: BlobId },

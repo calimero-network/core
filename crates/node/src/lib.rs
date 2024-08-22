@@ -20,6 +20,7 @@ pub mod types;
 type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NodeConfig {
     pub home: camino::Utf8PathBuf,
     pub identity: p2p_identity::Keypair,
@@ -28,6 +29,29 @@ pub struct NodeConfig {
     pub network: calimero_network::config::NetworkConfig,
     pub server: calimero_server::config::ServerConfig,
     pub store: calimero_store::config::StoreConfig,
+}
+
+impl NodeConfig {
+    #[must_use]
+    pub const fn new(
+        home: camino::Utf8PathBuf,
+        node_type: calimero_node_primitives::NodeType,
+        identity: p2p_identity::Keypair,
+        store: calimero_store::config::StoreConfig,
+        application: calimero_context::config::ApplicationConfig,
+        network: calimero_network::config::NetworkConfig,
+        server: calimero_server::config::ServerConfig,
+    ) -> Self {
+        Self {
+            home,
+            identity,
+            node_type,
+            application,
+            network,
+            server,
+            store,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -714,6 +738,7 @@ impl Node {
 
                 info!("Stream closed from peer: {:?}", peer_id);
             }
+            _ => error!("Unhandled event: {:?}", event),
         }
 
         Ok(())
@@ -747,14 +772,12 @@ impl Node {
         drop(
             self.node_events
                 .send(calimero_primitives::events::NodeEvent::Application(
-                    calimero_primitives::events::ApplicationEvent {
+                    calimero_primitives::events::ApplicationEvent::new(
                         context_id,
-                        payload: calimero_primitives::events::ApplicationEventPayload::PeerJoined(
-                            calimero_primitives::events::PeerJoinedPayload {
-                                peer_id: their_peer_id,
-                            },
+                        calimero_primitives::events::ApplicationEventPayload::PeerJoined(
+                            calimero_primitives::events::PeerJoinedPayload::new(their_peer_id),
                         ),
-                    },
+                    ),
                 )),
         );
 
@@ -1053,13 +1076,13 @@ impl Node {
             return Err(calimero_node_primitives::MutateCallError::NoConnectedPeers);
         }
 
-        let transaction = calimero_primitives::transaction::Transaction {
-            context_id: context.id,
+        let transaction = calimero_primitives::transaction::Transaction::new(
+            context.id,
             method,
             payload,
-            prior_hash: context.last_transaction_hash,
+            context.last_transaction_hash,
             executor_public_key,
-        };
+        );
 
         self.push_action(
             context.id,
@@ -1164,20 +1187,20 @@ impl Node {
 
         handle.put(
             &calimero_store::key::ContextTransaction::new(context.id, hash.into()),
-            &calimero_store::types::ContextTransaction {
-                method: transaction.method.into(),
-                payload: transaction.payload.into(),
-                prior_hash: *transaction.prior_hash,
-                executor_public_key: transaction.executor_public_key,
-            },
+            &calimero_store::types::ContextTransaction::new(
+                transaction.method.into(),
+                transaction.payload.into(),
+                *transaction.prior_hash,
+                transaction.executor_public_key,
+            ),
         )?;
 
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
-            &calimero_store::types::ContextMeta {
-                application: calimero_store::key::ApplicationMeta::new(context.application_id),
-                last_transaction_hash: *hash.as_bytes(),
-            },
+            &calimero_store::types::ContextMeta::new(
+                calimero_store::key::ApplicationMeta::new(context.application_id),
+                *hash.as_bytes(),
+            ),
         )?;
 
         Ok(())
@@ -1210,10 +1233,7 @@ impl Node {
         let outcome = calimero_runtime::run(
             &blob,
             &method,
-            calimero_runtime::logic::VMContext {
-                input: payload,
-                executor_public_key,
-            },
+            calimero_runtime::logic::VMContext::new(payload, executor_public_key),
             &mut storage,
             &get_runtime_limits()?,
         )?;
@@ -1225,37 +1245,34 @@ impl Node {
             // todo! debate: when we switch to optimistic execution
             // todo! we won't have query vs. mutate methods anymore, so this shouldn't matter
 
-            drop(self
-                .node_events
-                .send(calimero_primitives::events::NodeEvent::Application(
-                calimero_primitives::events::ApplicationEvent {
-                    context_id: context.id,
-                    payload:
+            drop(
+                self.node_events
+                    .send(calimero_primitives::events::NodeEvent::Application(
+                    calimero_primitives::events::ApplicationEvent::new(
+                        context.id,
                         calimero_primitives::events::ApplicationEventPayload::TransactionExecuted(
-                            calimero_primitives::events::ExecutedTransactionPayload { hash },
+                            calimero_primitives::events::ExecutedTransactionPayload::new(hash),
                         ),
-                },
-            )));
+                    ),
+                )),
+            );
         }
 
         drop(
             self.node_events
                 .send(calimero_primitives::events::NodeEvent::Application(
-                    calimero_primitives::events::ApplicationEvent {
-                        context_id: context.id,
-                        payload: calimero_primitives::events::ApplicationEventPayload::OutcomeEvent(
-                            calimero_primitives::events::OutcomeEventPayload {
-                                events: outcome
+                    calimero_primitives::events::ApplicationEvent::new(
+                        context.id,
+                        calimero_primitives::events::ApplicationEventPayload::OutcomeEvent(
+                            calimero_primitives::events::OutcomeEventPayload::new(
+                                outcome
                                     .events
                                     .iter()
-                                    .map(|e| OutcomeEvent {
-                                        data: e.data.clone(),
-                                        kind: e.kind.clone(),
-                                    })
+                                    .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
                                     .collect(),
-                            },
+                            ),
                         ),
-                    },
+                    ),
                 )),
         );
 
@@ -1266,19 +1283,20 @@ impl Node {
 // TODO: move this into the config
 // TODO: also this would be nice to have global default with per application customization
 fn get_runtime_limits() -> eyre::Result<VMLimits> {
-    Ok(VMLimits {
-        max_stack_size: 200 << 10, // 200 KiB
-        max_memory_pages: 1 << 10, // 1 KiB
-        max_registers: 100,
-        max_register_size: (100 << 20).validate()?, // 100 MiB
-        max_registers_capacity: 1 << 30,            // 1 GiB
-        max_logs: 100,
-        max_log_size: 16 << 10, // 16 KiB
-        max_events: 100,
-        max_event_kind_size: 100,
-        max_event_data_size: 16 << 10,               // 16 KiB
-        max_storage_key_size: (1 << 20).try_into()?, // 1 MiB
-        max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
-                                                     // can_write: writes, // todo!
-    })
+    Ok(VMLimits::new(
+        /*max_stack_size:*/ 200 << 10, // 200 KiB
+        /*max_memory_pages:*/ 1 << 10, // 1 KiB
+        /*max_registers:*/ 100,
+        /*max_register_size:*/ (100 << 20).validate()?, // 100 MiB
+        /*max_registers_capacity:*/ 1 << 30, // 1 GiB
+        /*max_logs:*/ 100,
+        /*max_log_size:*/ 16 << 10, // 16 KiB
+        /*max_events:*/ 100,
+        /*max_event_kind_size:*/ 100,
+        /*max_event_data_size:*/ 16 << 10, // 16 KiB
+        /*max_storage_key_size:*/ (1 << 20).try_into()?, // 1 MiB
+        /*max_storage_value_size:*/
+        (10 << 20).try_into()?, // 10 MiB
+                                // can_write: writes, // todo!
+    ))
 }

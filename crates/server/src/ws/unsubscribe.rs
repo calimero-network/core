@@ -17,7 +17,5 @@ async fn handle(
         let _ = inner.subscriptions.remove(id);
     });
 
-    Ok(UnsubscribeResponse {
-        context_ids: request.context_ids,
-    })
+    Ok(UnsubscribeResponse::new(request.context_ids))
 }

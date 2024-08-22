@@ -22,6 +22,7 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
 ];
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NetworkConfig {
     pub identity: identity::Keypair,
     pub node_type: calimero_node_primitives::NodeType,
@@ -32,25 +33,68 @@ pub struct NetworkConfig {
     pub catchup: CatchupConfig,
 }
 
+impl NetworkConfig {
+    #[must_use]
+    pub const fn new(
+        identity: identity::Keypair,
+        node_type: calimero_node_primitives::NodeType,
+        swarm: SwarmConfig,
+        bootstrap: BootstrapConfig,
+        discovery: DiscoveryConfig,
+        catchup: CatchupConfig,
+    ) -> Self {
+        Self {
+            identity,
+            node_type,
+            swarm,
+            bootstrap,
+            discovery,
+            catchup,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct SwarmConfig {
     pub listen: Vec<Multiaddr>,
 }
 
+impl SwarmConfig {
+    #[must_use]
+    pub const fn new(listen: Vec<Multiaddr>) -> Self {
+        Self { listen }
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct BootstrapConfig {
     #[serde(default)]
     pub nodes: BootstrapNodes,
 }
 
+impl BootstrapConfig {
+    #[must_use]
+    pub const fn new(nodes: BootstrapNodes) -> Self {
+        Self { nodes }
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(transparent)]
+#[non_exhaustive]
 pub struct BootstrapNodes {
     #[serde(deserialize_with = "deserialize_bootstrap")]
     pub list: Vec<Multiaddr>,
 }
 
 impl BootstrapNodes {
+    #[must_use]
+    pub const fn new(list: Vec<Multiaddr>) -> Self {
+        Self { list }
+    }
+
     #[must_use]
     pub fn ipfs() -> Self {
         Self {
@@ -73,11 +117,19 @@ impl BootstrapNodes {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct DiscoveryConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub mdns: bool,
 
     pub rendezvous: RendezvousConfig,
+}
+
+impl DiscoveryConfig {
+    #[must_use]
+    pub const fn new(mdns: bool, rendezvous: RendezvousConfig) -> Self {
+        Self { mdns, rendezvous }
+    }
 }
 
 impl Default for DiscoveryConfig {
@@ -90,6 +142,7 @@ impl Default for DiscoveryConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct RendezvousConfig {
     #[serde(
         serialize_with = "serialize_rendezvous_namespace",
@@ -113,6 +166,7 @@ impl Default for RendezvousConfig {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct CatchupConfig {
     pub batch_size: u8,
 
@@ -121,6 +175,23 @@ pub struct CatchupConfig {
     pub interval: time::Duration,
 
     pub initial_delay: time::Duration,
+}
+
+impl CatchupConfig {
+    #[must_use]
+    pub const fn new(
+        batch_size: u8,
+        receive_timeout: time::Duration,
+        interval: time::Duration,
+        initial_delay: time::Duration,
+    ) -> Self {
+        Self {
+            batch_size,
+            receive_timeout,
+            interval,
+            initial_delay,
+        }
+    }
 }
 
 fn serialize_rendezvous_namespace<S>(

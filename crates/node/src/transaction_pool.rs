@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TransactionPoolEntry {
     pub sender: calimero_network::types::PeerId,
     pub transaction: calimero_primitives::transaction::Transaction,
@@ -14,6 +15,7 @@ pub struct TransactionPoolEntry {
 }
 
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct TransactionPool {
     pub transactions: BTreeMap<calimero_primitives::hash::Hash, TransactionPoolEntry>,
 }

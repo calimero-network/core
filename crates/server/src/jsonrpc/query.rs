@@ -30,12 +30,12 @@ async fn handle(
     .await
     {
         Ok(Some(output)) => match serde_json::from_str::<serde_json::Value>(&output) {
-            Ok(v) => Ok(QueryResponse { output: Some(v) }),
+            Ok(v) => Ok(QueryResponse::new(Some(v))),
             Err(err) => eyre::bail!(QueryError::SerdeError {
                 message: err.to_string()
             }),
         },
-        Ok(None) => Ok(QueryResponse { output: None }),
+        Ok(None) => Ok(QueryResponse::new(None)),
         Err(err) => match err {
             jsonrpc::CallError::UpstreamCallError(err) => eyre::bail!(QueryError::CallError(err)),
             jsonrpc::CallError::UpstreamFunctionCallError(message) => {

@@ -32,7 +32,7 @@ impl CatchupBatchSender {
             let message = serde_json::to_vec(&message)?;
 
             self.stream
-                .send(calimero_network::stream::Message { data: message })
+                .send(calimero_network::stream::Message::new(message))
                 .await?;
 
             self.batch.clear();
@@ -51,7 +51,7 @@ impl CatchupBatchSender {
             let message = serde_json::to_vec(&message)?;
 
             self.stream
-                .send(calimero_network::stream::Message { data: message })
+                .send(calimero_network::stream::Message::new(message))
                 .await?;
         }
 
@@ -66,7 +66,7 @@ impl CatchupBatchSender {
 
         let message = serde_json::to_vec(&types::CatchupStreamMessage::Error(error))?;
         self.stream
-            .send(calimero_network::stream::Message { data: message })
+            .send(calimero_network::stream::Message::new(message))
             .await?;
 
         Ok(())

@@ -24,6 +24,7 @@ pub trait Codec<'a, T> {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Identity {}
 
 impl<'a, T, E> Codec<'a, T> for Identity
@@ -43,6 +44,7 @@ where
 
 #[cfg(feature = "serde")]
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Json {}
 
 #[cfg(feature = "serde")]
@@ -63,6 +65,7 @@ where
 
 #[cfg(feature = "borsh")]
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Borsh {}
 
 #[cfg(feature = "borsh")]

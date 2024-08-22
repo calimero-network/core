@@ -53,11 +53,11 @@ pub fn store_root_key(
     store: &Store,
 ) -> Result<bool, ApiError> {
     #[allow(clippy::cast_sign_loss)]
-    let root_key = RootKey {
+    let root_key = RootKey::new(
         signing_key,
         wallet_type,
-        created_at: Utc::now().timestamp_millis() as u64,
-    };
+        Utc::now().timestamp_millis() as u64,
+    );
     let _ = add_root_key(store, root_key).map_err(parse_api_error)?;
 
     info!("Root key stored successfully.");

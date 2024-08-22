@@ -94,6 +94,7 @@ impl fmt::Display for ApplicationSource {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct Application {
     pub id: ApplicationId,
     pub blob: BlobId,
@@ -102,7 +103,27 @@ pub struct Application {
     pub metadata: Vec<u8>,
 }
 
+impl Application {
+    #[must_use]
+    pub fn new(
+        id: ApplicationId,
+        blob: BlobId,
+        version: Option<semver::Version>,
+        source: ApplicationSource,
+        metadata: Vec<u8>,
+    ) -> Self {
+        Self {
+            id,
+            blob,
+            version,
+            source,
+            metadata,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct Release {
     pub version: semver::Version,
     pub notes: String,

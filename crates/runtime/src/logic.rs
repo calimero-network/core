@@ -20,12 +20,24 @@ use registers::Registers;
 pub type Result<T, E = VMLogicError> = std::result::Result<T, E>;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct VMContext {
     pub input: Vec<u8>,
     pub executor_public_key: [u8; 32],
 }
 
+impl VMContext {
+    #[must_use]
+    pub fn new(input: Vec<u8>, executor_public_key: [u8; 32]) -> Self {
+        Self {
+            input,
+            executor_public_key,
+        }
+    }
+}
+
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -43,6 +55,40 @@ pub struct VMLimits {
     pub max_storage_value_size: NonZeroU64,
     // pub max_execution_time: u64,
     // number of functions per contract
+}
+
+impl VMLimits {
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub const fn new(
+        max_memory_pages: u32,
+        max_stack_size: usize,
+        max_registers: u64,
+        max_register_size: Constrained<u64, MaxU64<{ u64::MAX - 1 }>>,
+        max_registers_capacity: u64,
+        max_logs: u64,
+        max_log_size: u64,
+        max_events: u64,
+        max_event_kind_size: u64,
+        max_event_data_size: u64,
+        max_storage_key_size: NonZeroU64,
+        max_storage_value_size: NonZeroU64,
+    ) -> Self {
+        Self {
+            max_memory_pages,
+            max_stack_size,
+            max_registers,
+            max_register_size,
+            max_registers_capacity,
+            max_logs,
+            max_log_size,
+            max_events,
+            max_event_kind_size,
+            max_event_data_size,
+            max_storage_key_size,
+            max_storage_value_size,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -95,6 +141,7 @@ impl<'a> VMLogic<'a> {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct Outcome {
     pub returns: Result<Option<Vec<u8>>, FunctionCallError>,
     pub logs: Vec<String>,
@@ -104,6 +151,7 @@ pub struct Outcome {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct Event {
     pub kind: String,
     pub data: Vec<u8>,

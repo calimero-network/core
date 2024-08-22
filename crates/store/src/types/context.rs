@@ -9,9 +9,23 @@ use crate::types::PredefinedEntry;
 pub type TransactionHash = [u8; 32];
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ContextMeta {
     pub application: key::ApplicationMeta,
     pub last_transaction_hash: TransactionHash,
+}
+
+impl ContextMeta {
+    #[must_use]
+    pub const fn new(
+        application: key::ApplicationMeta,
+        last_transaction_hash: TransactionHash,
+    ) -> Self {
+        Self {
+            application,
+            last_transaction_hash,
+        }
+    }
 }
 
 impl PredefinedEntry for key::ContextMeta {
@@ -20,6 +34,7 @@ impl PredefinedEntry for key::ContextMeta {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ContextState<'a> {
     pub value: Slice<'a>,
 }
@@ -42,6 +57,7 @@ impl AsRef<[u8]> for ContextState<'_> {
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::exhaustive_structs)]
 pub struct ContextIdentity {
     pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
@@ -71,11 +87,29 @@ impl PredefinedEntry for key::ContextIdentity {
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ContextTransaction {
     pub method: Box<str>,
     pub payload: Box<[u8]>,
     pub prior_hash: TransactionHash,
     pub executor_public_key: [u8; 32],
+}
+
+impl ContextTransaction {
+    #[must_use]
+    pub fn new(
+        method: Box<str>,
+        payload: Box<[u8]>,
+        prior_hash: TransactionHash,
+        executor_public_key: [u8; 32],
+    ) -> Self {
+        Self {
+            method,
+            payload,
+            prior_hash,
+            executor_public_key,
+        }
+    }
 }
 
 impl PredefinedEntry for key::ContextTransaction {

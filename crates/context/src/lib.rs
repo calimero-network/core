@@ -122,10 +122,10 @@ impl ContextManager {
 
         handle.put(
             &calimero_store::key::ContextMeta::new(context.id),
-            &calimero_store::types::ContextMeta {
-                application: calimero_store::key::ApplicationMeta::new(context.application_id),
-                last_transaction_hash: context.last_transaction_hash.into(),
-            },
+            &calimero_store::types::ContextMeta::new(
+                calimero_store::key::ApplicationMeta::new(context.application_id),
+                context.last_transaction_hash.into(),
+            ),
         )?;
 
         Ok(())
@@ -193,11 +193,11 @@ impl ContextManager {
             return Ok(None);
         };
 
-        Ok(Some(calimero_primitives::context::Context {
-            id: *context_id,
-            application_id: ctx_meta.application.application_id(),
-            last_transaction_hash: ctx_meta.last_transaction_hash.into(),
-        }))
+        Ok(Some(calimero_primitives::context::Context::new(
+            *context_id,
+            ctx_meta.application.application_id(),
+            ctx_meta.last_transaction_hash.into(),
+        )))
     }
 
     pub async fn delete_context(
@@ -257,21 +257,21 @@ impl ContextManager {
             if let Some(key) = iter.seek(calimero_store::key::ContextMeta::new(start))? {
                 let value: calimero_store::types::ContextMeta = iter.read()?;
 
-                contexts.push(calimero_primitives::context::Context {
-                    id: key.context_id(),
-                    application_id: value.application.application_id(),
-                    last_transaction_hash: value.last_transaction_hash.into(),
-                });
+                contexts.push(calimero_primitives::context::Context::new(
+                    key.context_id(),
+                    value.application.application_id(),
+                    value.last_transaction_hash.into(),
+                ));
             }
         }
 
         for (k, v) in iter.entries() {
             let (k, v) = (k?, v?);
-            contexts.push(calimero_primitives::context::Context {
-                id: k.context_id(),
-                application_id: v.application.application_id(),
-                last_transaction_hash: v.last_transaction_hash.into(),
-            });
+            contexts.push(calimero_primitives::context::Context::new(
+                k.context_id(),
+                v.application.application_id(),
+                v.last_transaction_hash.into(),
+            ));
         }
 
         Ok(contexts)
@@ -306,12 +306,12 @@ impl ContextManager {
         version: Option<semver::Version>,
         metadata: Vec<u8>,
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
-        let application = calimero_store::types::ApplicationMeta {
-            blob: calimero_store::key::BlobMeta::new(blob_id),
-            version: version.map(|v| v.to_string().into_boxed_str()),
-            source: source.to_string().into_boxed_str(),
-            metadata: metadata.into_boxed_slice(),
-        };
+        let application = calimero_store::types::ApplicationMeta::new(
+            calimero_store::key::BlobMeta::new(blob_id),
+            version.map(|v| v.to_string().into_boxed_str()),
+            source.to_string().into_boxed_str(),
+            metadata.into_boxed_slice(),
+        );
 
         let application_id = calimero_primitives::application::ApplicationId::from(
             *calimero_primitives::hash::Hash::hash_borsh(&application)?,
@@ -378,13 +378,13 @@ impl ContextManager {
 
         for (id, app) in iter.entries() {
             let (id, app) = (id?, app?);
-            applications.push(calimero_primitives::application::Application {
-                id: id.application_id(),
-                blob: app.blob.blob_id(),
-                version: app.version.as_deref().map(str::parse).transpose()?,
-                source: app.source.parse()?,
-                metadata: app.metadata.to_vec(),
-            });
+            applications.push(calimero_primitives::application::Application::new(
+                id.application_id(),
+                app.blob.blob_id(),
+                app.version.as_deref().map(str::parse).transpose()?,
+                app.source.parse()?,
+                app.metadata.to_vec(),
+            ));
         }
 
         Ok(applications)
@@ -425,13 +425,13 @@ impl ContextManager {
             return Ok(None);
         };
 
-        Ok(Some(calimero_primitives::application::Application {
-            id: *application_id,
-            blob: application.blob.blob_id(),
-            version: application.version.as_deref().map(str::parse).transpose()?,
-            source: application.source.parse()?,
-            metadata: application.metadata.to_vec(),
-        }))
+        Ok(Some(calimero_primitives::application::Application::new(
+            *application_id,
+            application.blob.blob_id(),
+            application.version.as_deref().map(str::parse).transpose()?,
+            application.source.parse()?,
+            application.metadata.to_vec(),
+        )))
     }
 
     pub async fn load_application_blob(

@@ -66,8 +66,24 @@ impl FromStr for ContextId {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct Context {
     pub id: ContextId,
     pub application_id: ApplicationId,
     pub last_transaction_hash: Hash,
+}
+
+impl Context {
+    #[must_use]
+    pub const fn new(
+        id: ContextId,
+        application_id: ApplicationId,
+        last_transaction_hash: Hash,
+    ) -> Self {
+        Self {
+            id,
+            application_id,
+            last_transaction_hash,
+        }
+    }
 }

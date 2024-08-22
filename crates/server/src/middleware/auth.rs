@@ -93,12 +93,12 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
     })?;
 
     #[allow(clippy::cast_sign_loss)]
-    let client_key = ClientKey {
-        wallet_type: auth_headers.wallet_type,
-        signing_key: auth_headers.signing_key.clone(),
-        created_at: Utc::now().timestamp_millis() as u64,
-        context_id: auth_headers.context_id,
-    };
+    let client_key = ClientKey::new(
+        auth_headers.wallet_type,
+        auth_headers.signing_key.clone(),
+        Utc::now().timestamp_millis() as u64,
+        auth_headers.context_id,
+    );
 
     let key_exists = exists_client_key(store, &client_key)
         .map_err(|_| UnauthorizedError::new("Issue during extracting client key"))?;

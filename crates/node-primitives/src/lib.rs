@@ -3,6 +3,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub enum NodeType {
     Peer,
     Coordinator,
@@ -30,6 +31,7 @@ pub type ServerSender = mpsc::Sender<(
 #[derive(Clone, Copy, Debug, Deserialize, Error, Serialize)]
 #[error("CallError")]
 #[serde(tag = "type", content = "data")]
+#[non_exhaustive]
 pub enum CallError {
     Query(QueryCallError),
     Mutate(MutateCallError),
@@ -41,6 +43,7 @@ pub enum CallError {
 #[derive(Clone, Copy, Debug, Deserialize, Error, Serialize)]
 #[error("QueryCallError")]
 #[serde(tag = "type", content = "data")]
+#[non_exhaustive]
 pub enum QueryCallError {
     ApplicationNotInstalled {
         application_id: calimero_primitives::application::ApplicationId,
@@ -52,6 +55,7 @@ pub enum QueryCallError {
 #[error("MutateCallError")]
 #[serde(tag = "type", content = "data")]
 #[allow(variant_size_differences)]
+#[non_exhaustive]
 pub enum MutateCallError {
     InvalidNodeType {
         node_type: NodeType,

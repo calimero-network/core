@@ -5,6 +5,7 @@ pub use libp2p::identity::PeerId;
 use super::stream;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum NetworkEvent {
     ListeningOn {
         listener_id: transport::ListenerId,

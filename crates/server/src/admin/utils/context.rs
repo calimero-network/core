@@ -4,6 +4,7 @@ use calimero_primitives::identity::{KeyPair, PublicKey};
 use super::identity::{generate_context_id, generate_identity_keypair};
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ContextCreateResult {
     pub context: Context,
     pub identity: KeyPair,
@@ -15,11 +16,11 @@ pub async fn create_context(
     private_key: Option<&str>,
 ) -> Result<ContextCreateResult, eyre::Error> {
     let context_id = generate_context_id();
-    let context = Context {
-        id: context_id,
+    let context = Context::new(
+        context_id,
         application_id,
-        last_transaction_hash: calimero_primitives::hash::Hash::default(),
-    };
+        calimero_primitives::hash::Hash::default(),
+    );
 
     let initial_identity = if let Some(private_key) = private_key {
         // Parse the private key

@@ -7,6 +7,7 @@ use thiserror::Error;
 use wasmer_types::TrapCode;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum VMRuntimeError {
     #[error(transparent)]
     StorageError(StorageError),
@@ -16,10 +17,12 @@ pub enum VMRuntimeError {
 }
 
 #[derive(Copy, Clone, Debug, Error)]
+#[non_exhaustive]
 pub enum StorageError {}
 
 #[derive(Debug, Error, Serialize)]
 #[serde(tag = "type", content = "data")]
+#[non_exhaustive]
 pub enum FunctionCallError {
     #[error("compilation error: {}", .source)]
     CompilationError {
@@ -45,6 +48,7 @@ pub enum FunctionCallError {
 
 #[derive(Debug, Error, Serialize)]
 #[serde(tag = "type", content = "data")]
+#[non_exhaustive]
 pub enum MethodResolutionError {
     #[error("method {name:?} has invalid signature: expected no arguments and no return value")]
     InvalidSignature { name: String },
@@ -54,6 +58,7 @@ pub enum MethodResolutionError {
 
 #[derive(Debug, Error, Serialize)]
 #[serde(tag = "type", content = "data")]
+#[non_exhaustive]
 pub enum HostError {
     #[error("invalid register id: {id}")]
     InvalidRegisterId { id: u64 },
@@ -97,12 +102,14 @@ pub enum HostError {
 }
 
 #[derive(Copy, Clone, Debug, Serialize)]
+#[allow(clippy::exhaustive_enums)]
 pub enum PanicContext {
     Guest,
     Host,
 }
 
 #[derive(Copy, Clone, Debug, Error, Serialize)]
+#[non_exhaustive]
 pub enum WasmTrap {
     #[error("stack overflow")]
     StackOverflow,
@@ -128,6 +135,7 @@ pub enum WasmTrap {
 
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum Location {
     At {
         file: String,

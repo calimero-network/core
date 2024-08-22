@@ -17,7 +17,5 @@ async fn handle(
         let _ = inner.subscriptions.insert(*id);
     });
 
-    Ok(SubscribeResponse {
-        context_ids: request.context_ids,
-    })
+    Ok(SubscribeResponse::new(request.context_ids))
 }

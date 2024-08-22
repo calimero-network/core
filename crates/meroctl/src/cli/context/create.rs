@@ -81,7 +81,7 @@ async fn create_context(
     }
 
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
-    let request = calimero_server_primitives::admin::CreateContextRequest { application_id };
+    let request = calimero_server_primitives::admin::CreateContextRequest::new(application_id);
 
     let response = client.post(url).json(&request).send().await?;
 
@@ -173,7 +173,7 @@ async fn update_context_application(
     )?;
 
     let request =
-        calimero_server_primitives::admin::UpdateContextApplicationRequest { application_id };
+        calimero_server_primitives::admin::UpdateContextApplicationRequest::new(application_id);
 
     let response = client.post(url).json(&request).send().await?;
 
@@ -224,11 +224,11 @@ async fn install_app(
 ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
-    let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest {
-        version: None,
+    let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest::new(
         path,
-        metadata: metadata.unwrap_or_default(),
-    };
+        None,
+        metadata.unwrap_or_default(),
+    );
 
     let install_response = client
         .post(install_url)

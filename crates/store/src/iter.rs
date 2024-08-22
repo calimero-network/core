@@ -230,6 +230,7 @@ pub struct Structured<K> {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::exhaustive_enums)]
 pub enum Unstructured {}
 
 mod private {
@@ -251,6 +252,7 @@ pub trait TryIntoValue<'a>: private::Sealed {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum IterError<E> {
     #[error("size mismatch")]
     SizeMismatch,

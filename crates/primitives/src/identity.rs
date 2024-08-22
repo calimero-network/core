@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::context::ContextId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::exhaustive_structs)]
 pub struct KeyPair {
     pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
@@ -16,6 +17,7 @@ pub struct KeyPair {
     feature = "borsh",
     derive(borsh::BorshSerialize, borsh::BorshDeserialize)
 )]
+#[allow(clippy::exhaustive_structs)]
 pub struct PublicKey(pub [u8; 32]);
 
 impl PublicKey {
@@ -51,13 +53,26 @@ impl From<&KeyPair> for PublicKey {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct Did {
     pub id: String,
     pub root_keys: Vec<RootKey>,
     pub client_keys: Vec<ClientKey>,
 }
 
+impl Did {
+    #[must_use]
+    pub const fn new(id: String, root_keys: Vec<RootKey>, client_keys: Vec<ClientKey>) -> Self {
+        Self {
+            id,
+            root_keys,
+            client_keys,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct RootKey {
     pub signing_key: String,
     #[serde(rename = "wallet")]
@@ -65,8 +80,20 @@ pub struct RootKey {
     pub created_at: u64,
 }
 
+impl RootKey {
+    #[must_use]
+    pub const fn new(signing_key: String, wallet_type: WalletType, created_at: u64) -> Self {
+        Self {
+            signing_key,
+            wallet_type,
+            created_at,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct ClientKey {
     #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
@@ -75,8 +102,26 @@ pub struct ClientKey {
     pub context_id: Option<ContextId>,
 }
 
+impl ClientKey {
+    #[must_use]
+    pub const fn new(
+        wallet_type: WalletType,
+        signing_key: String,
+        created_at: u64,
+        context_id: Option<ContextId>,
+    ) -> Self {
+        Self {
+            wallet_type,
+            signing_key,
+            created_at,
+            context_id,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct ContextUser {
     pub user_id: String,
     pub joined_at: u64,
@@ -85,6 +130,7 @@ pub struct ContextUser {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum WalletType {
     NEAR,
     ETH {
@@ -95,6 +141,7 @@ pub enum WalletType {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum NearNetworkId {
     Mainnet,
     Testnet,

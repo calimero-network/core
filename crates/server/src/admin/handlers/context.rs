@@ -116,9 +116,7 @@ pub async fn get_contexts_handler(
 
     match contexts {
         Ok(contexts) => ApiResponse {
-            payload: calimero_server_primitives::admin::GetContextsResponse {
-                data: calimero_server_primitives::admin::ContextList { contexts },
-            },
+            payload: calimero_server_primitives::admin::GetContextsResponse::new(contexts),
         }
         .into_response(),
         Err(err) => err.into_response(),
@@ -179,12 +177,10 @@ pub async fn create_context_handler(
 
     match result {
         Ok(context_create_result) => ApiResponse {
-            payload: calimero_server_primitives::admin::CreateContextResponse {
-                data: calimero_server_primitives::admin::ContextResponse {
-                    context: context_create_result.context,
-                    member_public_key: context_create_result.identity.public_key,
-                },
-            },
+            payload: calimero_server_primitives::admin::CreateContextResponse::new(
+                context_create_result.context,
+                context_create_result.identity.public_key,
+            ),
         }
         .into_response(),
         Err(err) => err.into_response(),
@@ -196,19 +192,27 @@ struct GetContextStorageResponse {
     data: calimero_server_primitives::admin::ContextStorage,
 }
 
+impl GetContextStorageResponse {
+    #[must_use]
+    pub const fn new(size_in_bytes: u64) -> Self {
+        Self {
+            data: calimero_server_primitives::admin::ContextStorage::new(size_in_bytes),
+        }
+    }
+}
+
 pub async fn get_context_storage_handler(
     Path(_context_id): Path<String>,
     Extension(_state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     ApiResponse {
-        payload: GetContextStorageResponse {
-            data: calimero_server_primitives::admin::ContextStorage { size_in_bytes: 0 },
-        },
+        payload: GetContextStorageResponse::new(0),
     }
     .into_response()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
+#[non_exhaustive]
 pub struct JoinContextRequest {
     pub private_key: [u8; 32],
 }

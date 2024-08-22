@@ -3,6 +3,7 @@ use thiserror::Error;
 use crate::errors::{FunctionCallError, HostError, StorageError, VMRuntimeError};
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum VMLogicError {
     #[error(transparent)]
     HostError(#[from] HostError),

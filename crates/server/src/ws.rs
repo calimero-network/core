@@ -17,9 +17,17 @@ mod subscribe;
 mod unsubscribe;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct WsConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
+}
+
+impl WsConfig {
+    #[must_use]
+    pub const fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -180,6 +188,7 @@ async fn handle_node_events(
                 calimero_primitives::events::NodeEvent::Application(event)
             }
             calimero_primitives::events::NodeEvent::Application(_) => continue,
+            _ => unreachable!("Unexpected event type"),
         };
 
         let body = match serde_json::to_value(event) {
@@ -193,7 +202,7 @@ async fn handle_node_events(
             }
         };
 
-        let response = ws_primitives::Response { id: None, body };
+        let response = ws_primitives::Response::new(None, body);
 
         if let Err(err) = command_sender
             .send(ws_primitives::Command::Send(response))
@@ -246,6 +255,7 @@ async fn handle_commands(
                     error!(%connection_id, %err, "Failed to send ws::Message::Text");
                 }
             }
+            _ => unreachable!("Unexpected Command"),
         }
     }
 }
@@ -285,6 +295,7 @@ async fn handle_text_message(
                 .handle(Arc::clone(&state), connection_state.clone())
                 .await
                 .to_res_body(),
+            _ => unreachable!("Unsupported WebSocket method"),
         },
         Err(err) => {
             error!(%connection_id, %err, "Failed to deserialize ws_primitives::RequestPayload");
@@ -297,10 +308,9 @@ async fn handle_text_message(
 
     if let Err(err) = connection_state
         .commands
-        .send(ws_primitives::Command::Send(ws_primitives::Response {
-            id: message.id,
-            body,
-        }))
+        .send(ws_primitives::Command::Send(ws_primitives::Response::new(
+            message.id, body,
+        )))
         .await
     {
         error!(
@@ -323,6 +333,7 @@ pub(crate) trait Request {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum WsError<E> {
     MethodCallError(E),
     InternalError(eyre::Error),

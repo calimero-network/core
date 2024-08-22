@@ -9,6 +9,7 @@ pub const DEFAULT_ADDRS: [IpAddr; 2] = [
 ];
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
@@ -22,6 +23,25 @@ pub struct ServerConfig {
 
     #[cfg(feature = "websocket")]
     pub websocket: Option<crate::ws::WsConfig>,
+}
+
+impl ServerConfig {
+    #[must_use]
+    pub const fn new(
+        listen: Vec<Multiaddr>,
+        identity: libp2p::identity::Keypair,
+        admin: Option<crate::admin::service::AdminConfig>,
+        jsonrpc: Option<crate::jsonrpc::JsonRpcConfig>,
+        websocket: Option<crate::ws::WsConfig>,
+    ) -> Self {
+        Self {
+            listen,
+            identity,
+            admin,
+            jsonrpc,
+            websocket,
+        }
+    }
 }
 
 #[must_use]

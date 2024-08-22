@@ -6,6 +6,7 @@ use calimero_store::layer::{read_only, temporal, LayerExt, ReadLayer, WriteLayer
 use calimero_store::Store;
 
 #[derive(Debug)]
+#[allow(clippy::exhaustive_enums)]
 pub enum RuntimeCompatStoreInner<'this, 'entry> {
     Read(read_only::ReadOnly<'this, Store>),
     Write(temporal::Temporal<'this, 'entry, Store>),

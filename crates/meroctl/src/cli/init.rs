@@ -137,14 +137,9 @@ impl InitCommand {
                 path: "apps".into(),
             },
             network: NetworkConfig {
-                swarm: SwarmConfig { listen },
-                bootstrap: BootstrapConfig {
-                    nodes: BootstrapNodes { list: boot_nodes },
-                },
-                discovery: DiscoveryConfig {
-                    mdns,
-                    rendezvous: RendezvousConfig::default(),
-                },
+                swarm: SwarmConfig::new(listen),
+                bootstrap: BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
+                discovery: DiscoveryConfig::new(mdns, RendezvousConfig::default()),
                 server: ServerConfig {
                     listen: self
                         .server_host
@@ -153,27 +148,23 @@ impl InitCommand {
                             Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
                         })
                         .collect(),
-                    admin: Some(calimero_server::admin::service::AdminConfig { enabled: true }),
-                    jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
-                    websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
+                    admin: Some(calimero_server::admin::service::AdminConfig::new(true)),
+                    jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig::new(true)),
+                    websocket: Some(calimero_server::ws::WsConfig::new(true)),
                 },
-                catchup: calimero_network::config::CatchupConfig {
-                    batch_size: 50,
-                    receive_timeout: std::time::Duration::from_secs(2),
-                    interval: std::time::Duration::from_secs(2),
-                    initial_delay: std::time::Duration::from_millis(
-                        rand::thread_rng().gen_range(0..1001),
-                    ),
-                },
+                catchup: calimero_network::config::CatchupConfig::new(
+                    50,
+                    std::time::Duration::from_secs(2),
+                    std::time::Duration::from_secs(2),
+                    std::time::Duration::from_millis(rand::thread_rng().gen_range(0..1001)),
+                ),
             },
         };
 
         config.save(&path)?;
 
         drop(calimero_store::Store::open::<calimero_store::db::RocksDB>(
-            &calimero_store::config::StoreConfig {
-                path: path.join(config.store.path),
-            },
+            &calimero_store::config::StoreConfig::new(path.join(config.store.path)),
         )?);
 
         info!("Initialized a node in {:?}", path);

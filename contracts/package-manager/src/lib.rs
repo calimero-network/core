@@ -5,6 +5,7 @@ use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
 
 #[derive(BorshSerialize, BorshStorageKey, Debug)]
 #[borsh(crate = "near_sdk::borsh")]
+#[non_exhaustive]
 pub enum StorageKeys {
     Packages,
     Release { package: String },
@@ -15,6 +16,7 @@ pub enum StorageKeys {
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, Debug)]
 #[borsh(crate = "near_sdk::borsh")]
+#[non_exhaustive]
 pub struct PackageManager {
     pub packages: IterableMap<String, Package>,
     pub releases: IterableMap<String, IterableMap<String, Release>>,
@@ -24,6 +26,7 @@ pub struct PackageManager {
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
+#[non_exhaustive]
 pub struct Package {
     pub id: String,
     pub name: String,
@@ -38,6 +41,7 @@ pub struct Package {
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
+#[non_exhaustive]
 pub struct Release {
     pub version: String,
     pub notes: String,

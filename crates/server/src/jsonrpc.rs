@@ -12,9 +12,17 @@ mod mutate;
 mod query;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct JsonRpcConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
+}
+
+impl JsonRpcConfig {
+    #[must_use]
+    pub const fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
 }
 
 pub(crate) struct ServiceState {
@@ -57,6 +65,7 @@ async fn handle_request(
             jsonrpc_primitives::RequestPayload::Mutate(request) => {
                 request.handle(state).await.to_res_body()
             }
+            _ => unreachable!("Unsupported JSON RPC method"),
         },
         Err(err) => {
             error!(%err, "Failed to deserialize jsonrpc_primitives::RequestPayload");
@@ -73,11 +82,7 @@ async fn handle_request(
         error!(?err, "Failed to execute JSON RPC method");
     }
 
-    let response = jsonrpc_primitives::Response {
-        jsonrpc: request.jsonrpc,
-        body,
-        id: request.id,
-    };
+    let response = jsonrpc_primitives::Response::new(request.jsonrpc, request.id, body);
     Json(response)
 }
 
@@ -92,6 +97,7 @@ pub(crate) trait Request {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RpcError<E> {
     MethodCallError(E),
     InternalError(eyre::Error),

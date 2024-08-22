@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub enum PeerAction {
     Transaction(calimero_primitives::transaction::Transaction),
     TransactionConfirmation(TransactionConfirmation),
@@ -9,6 +10,7 @@ pub enum PeerAction {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct TransactionConfirmation {
     pub context_id: calimero_primitives::context::ContextId,
     pub nonce: u64,
@@ -18,12 +20,14 @@ pub struct TransactionConfirmation {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct TransactionRejection {
     pub context_id: calimero_primitives::context::ContextId,
     pub transaction_hash: calimero_primitives::hash::Hash,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub enum CatchupStreamMessage {
     Request(CatchupRequest),
     ApplicationChanged(CatchupApplicationChanged),
@@ -32,6 +36,7 @@ pub enum CatchupStreamMessage {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct CatchupRequest {
     pub context_id: calimero_primitives::context::ContextId,
     pub application_id: Option<calimero_primitives::application::ApplicationId>,
@@ -40,6 +45,7 @@ pub struct CatchupRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct CatchupApplicationChanged {
     pub application_id: calimero_primitives::application::ApplicationId,
     pub blob_id: calimero_primitives::blobs::BlobId,
@@ -50,11 +56,13 @@ pub struct CatchupApplicationChanged {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct CatchupTransactionBatch {
     pub transactions: Vec<TransactionWithStatus>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Error, Serialize)]
+#[non_exhaustive]
 pub enum CatchupError {
     #[error("context `{context_id:?}` not found")]
     ContextNotFound {
@@ -69,6 +77,7 @@ pub enum CatchupError {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct TransactionWithStatus {
     pub transaction_hash: calimero_primitives::hash::Hash,
     pub transaction: calimero_primitives::transaction::Transaction,
@@ -76,6 +85,7 @@ pub struct TransactionWithStatus {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub enum TransactionStatus {
     Pending,
     Executed,
