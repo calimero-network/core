@@ -128,7 +128,7 @@ macro_rules! _imports {
                     HOST_CTX.with(|ctx| ctx.store(true, Ordering::Relaxed));
                     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let (data, store) = env.data_and_store_mut();
-                        let data = unsafe { &mut *(*data.get_mut() as *mut VMLogic<'_>) };
+                        let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
 
                         data.host_functions(store).$func($($arg),*)
                     })).unwrap_or_else(|_| {
@@ -160,7 +160,7 @@ macro_rules! _imports {
                 }
             )*
 
-            let env = wasmer::FunctionEnv::new(&mut store, fragile::Fragile::new(logic as *mut _ as *mut ()));
+            let env = wasmer::FunctionEnv::new(&mut store, fragile::Fragile::new(std::ptr::from_mut(logic).cast::<()>()));
 
             wasmer::imports! {
                 "env" => {

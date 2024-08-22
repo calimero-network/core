@@ -100,7 +100,7 @@ where
     fn from(key: &Key<T>) -> Self {
         #[allow(trivial_casts)]
         unsafe {
-            &*(key as *const _ as *const _)
+            &*std::ptr::from_ref(key).cast()
         }
     }
 }
@@ -113,7 +113,7 @@ where
     fn from(key: &Key<(T,)>) -> Self {
         #[allow(trivial_casts)]
         unsafe {
-            &*(key as *const _ as *const _)
+            &*std::ptr::from_ref(key).cast()
         }
     }
 }

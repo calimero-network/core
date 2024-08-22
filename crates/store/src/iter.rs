@@ -316,7 +316,7 @@ impl<I: DBIter> FusedIter<I> {
 
     fn next(&mut self) -> eyre::Result<Option<Key<'_>>> {
         #[allow(trivial_casts)]
-        let this = unsafe { &mut *(self as *mut Self) };
+        let this = unsafe { &mut *std::ptr::from_mut::<Self>(self) };
 
         if let FusedIter::Active(iter) = this {
             if let Some(key) = iter.next()? {

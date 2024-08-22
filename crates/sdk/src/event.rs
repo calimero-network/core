@@ -83,7 +83,7 @@ pub fn downcast<T: AppEventExt + 'static>(
     event: Box<dyn AppEventExt>,
 ) -> Result<T, Box<dyn AppEventExt>> {
     if event.is::<T>() {
-        Ok(*unsafe { Box::from_raw(Box::into_raw(event) as *mut T) })
+        Ok(*unsafe { Box::from_raw(Box::into_raw(event).cast::<T>()) })
     } else {
         Err(event)
     }

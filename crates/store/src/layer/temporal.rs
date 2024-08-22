@@ -107,7 +107,8 @@ impl<'a, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, '_, K> {
         loop {
             // safety: Slice doesn't mutably borrow self
             #[allow(trivial_casts)]
-            let other = unsafe { &mut *(&mut self.inner as *mut Iter<'a, Structured<K>>) };
+            let other =
+                unsafe { &mut *std::ptr::from_mut::<Iter<'a, Structured<K>>>(&mut self.inner) };
 
             let Some(key) = other.next()? else {
                 break;

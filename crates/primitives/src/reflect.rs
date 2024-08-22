@@ -46,7 +46,7 @@ impl dyn Reflect + '_ {
     pub fn downcast_ref<T: Reflect>(&self) -> Option<&T> {
         if self.is::<T>() {
             #[allow(trivial_casts)]
-            return Some(unsafe { &*(self as *const dyn Reflect as *const T) });
+            return Some(unsafe { &*std::ptr::from_ref::<dyn Reflect>(self).cast::<T>() });
         }
 
         None
@@ -54,7 +54,7 @@ impl dyn Reflect + '_ {
 
     pub fn downcast_box<T: Reflect>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
         if self.is::<T>() {
-            return Ok(unsafe { Box::from_raw(Box::into_raw(self) as *mut T) });
+            return Ok(unsafe { Box::from_raw(Box::into_raw(self).cast::<T>()) });
         }
         Err(self)
     }
