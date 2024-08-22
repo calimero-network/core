@@ -115,7 +115,7 @@ impl AsKeyParts for ContextIdentity {
     }
 
     fn as_key(&self) -> &Key<Self::Components> {
-        (&self.0).into()
+        &self.0
     }
 }
 
@@ -183,7 +183,7 @@ impl AsKeyParts for ContextState {
     }
 
     fn as_key(&self) -> &Key<Self::Components> {
-        (&self.0).into()
+        &self.0
     }
 }
 

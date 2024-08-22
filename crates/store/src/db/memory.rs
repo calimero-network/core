@@ -183,7 +183,7 @@ where
                     )?;
                 }
                 Operation::Delete => {
-                    db.remove(entry.column(), entry.key().into())?;
+                    db.remove(entry.column(), entry.key())?;
                 }
             }
         }

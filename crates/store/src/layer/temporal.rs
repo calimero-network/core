@@ -133,7 +133,7 @@ impl<'a, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, '_, K> {
                     Operation::Put { value } => self.value = Some(value.into()),
                 }
 
-                return Ok(Some(key.into()));
+                return Ok(Some(key));
             }
 
             return Ok(None);
