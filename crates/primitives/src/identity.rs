@@ -46,7 +46,7 @@ impl From<KeyPair> for PublicKey {
 
 impl From<&KeyPair> for PublicKey {
     fn from(key_pair: &KeyPair) -> Self {
-        key_pair.public_key.clone()
+        key_pair.public_key
     }
 }
 

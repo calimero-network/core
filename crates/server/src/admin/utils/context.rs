@@ -42,7 +42,7 @@ pub async fn create_context(
     };
 
     ctx_manager
-        .create_context(&context, initial_identity.clone())
+        .create_context(&context, initial_identity)
         .await?;
 
     let context_create_result = ContextCreateResult {

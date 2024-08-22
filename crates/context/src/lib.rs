@@ -105,10 +105,8 @@ impl ContextManager {
 
         let mut handle = self.store.handle();
 
-        let identity_key = calimero_store::key::ContextIdentity::new(
-            context.id,
-            initial_identity.public_key.clone(),
-        );
+        let identity_key =
+            calimero_store::key::ContextIdentity::new(context.id, initial_identity.public_key);
 
         handle.put(&identity_key, &initial_identity.into())?;
 
@@ -149,10 +147,8 @@ impl ContextManager {
 
         let mut handle = self.store.handle();
 
-        let identity_key = calimero_store::key::ContextIdentity::new(
-            *context_id,
-            initial_identity.public_key.clone(),
-        );
+        let identity_key =
+            calimero_store::key::ContextIdentity::new(*context_id, initial_identity.public_key);
         handle.put(&identity_key, &initial_identity.into())?;
 
         let _ = self.state.write().await.pending_catchup.insert(*context_id);

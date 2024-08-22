@@ -65,7 +65,7 @@ impl Node {
             return Ok(());
         };
 
-        let application_id = context.application_id.clone();
+        let application_id = context.application_id;
 
         if request
             .application_id
@@ -188,23 +188,22 @@ impl Node {
 
     pub(crate) async fn handle_interval_catchup(&mut self) {
         let context_id = match self.ctx_manager.get_any_pending_catchup_context().await {
-            Some(context_id) => context_id.clone(),
+            Some(context_id) => context_id,
             None => return,
         };
 
-        let peer_id = match self
+        let peers = self
             .network_client
             .mesh_peers(TopicHash::from_raw(context_id))
-            .await
-            .choose(&mut rand::thread_rng())
-        {
-            Some(peer_id) => peer_id.clone(),
+            .await;
+        let peer_id = match peers.choose(&mut rand::thread_rng()) {
+            Some(peer_id) => peer_id,
             None => return,
         };
 
         info!(%context_id, %peer_id, "Attempting to perform interval triggered catchup");
 
-        if let Err(err) = self.perform_catchup(context_id, peer_id).await {
+        if let Err(err) = self.perform_catchup(context_id, *peer_id).await {
             error!(%err, "Failed to perform interval catchup");
             return;
         }
@@ -390,7 +389,7 @@ impl Node {
                 match context {
                     Some(ref mut context_) => {
                         self.ctx_manager
-                            .update_application_id(context_.id, change.application_id.clone())?;
+                            .update_application_id(context_.id, change.application_id)?;
 
                         context_.application_id = change.application_id;
                     }

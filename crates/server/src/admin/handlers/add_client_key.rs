@@ -89,7 +89,7 @@ pub fn store_client_key(
     store: &mut Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let client_key = ClientKey {
-        wallet_type: req.wallet_metadata.wallet_type.clone(),
+        wallet_type: req.wallet_metadata.wallet_type,
         signing_key: req.payload.message.public_key.clone(),
         created_at: Utc::now().timestamp_millis() as u64,
         context_id: req.context_id,
@@ -108,7 +108,7 @@ fn check_root_key(
         //first login so store root key as well
         let _ = store_root_key(
             req.wallet_metadata.signing_key.clone(),
-            req.wallet_metadata.wallet_type.clone(),
+            req.wallet_metadata.wallet_type,
             store,
         )?;
         Ok(req)
