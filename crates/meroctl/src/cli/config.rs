@@ -1,3 +1,5 @@
+#![allow(unused_results)]
+
 use std::fs;
 use std::net::IpAddr;
 
@@ -62,6 +64,7 @@ pub enum BootstrapNetwork {
     Ipfs,
 }
 
+#[warn(unused_results)]
 impl ConfigCommand {
     pub fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
         let path = root_args
