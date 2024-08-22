@@ -75,8 +75,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     let (commands_sender, commands_receiver) = mpsc::channel(32);
     let (connection_id, _) = loop {
         let connection_id = rand::random();
+        let mut connections = state.connections.write().await;
 
-        match state.connections.write().await.entry(connection_id) {
+        match connections.entry(connection_id) {
             hash_map::Entry::Occupied(_) => continue,
             hash_map::Entry::Vacant(entry) => {
                 let connection_state = ConnectionState {
@@ -152,8 +153,8 @@ async fn handle_node_events(
     command_sender: mpsc::Sender<ws_primitives::Command>,
 ) {
     while let Ok(event) = node_events_receiver.recv().await {
-        let connections = state.connections.read().await;
-        let Some(connection_state) = connections.get(&connection_id) else {
+        let Some(connection_state) = state.connections.read().await.get(&connection_id).cloned()
+        else {
             error!(%connection_id, "Unexpected state, client_id not found in client state map");
             return;
         };
@@ -255,8 +256,7 @@ async fn handle_text_message(
     message: String,
 ) {
     debug!(%connection_id, %message, "Received text message");
-    let connections = state.connections.read().await;
-    let Some(connection_state) = connections.get(&connection_id) else {
+    let Some(connection_state) = state.connections.read().await.get(&connection_id).cloned() else {
         error!(%connection_id, "Unexpected state, client_id not found in client state map");
         return;
     };

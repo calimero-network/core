@@ -138,9 +138,7 @@ where
     }
 
     fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
-        let db = self.db()?;
-
-        let Some(value) = db.get(col, &key)? else {
+        let Some(value) = self.db()?.get(col, &key)? else {
             return Ok(None);
         };
 
@@ -148,17 +146,14 @@ where
     }
 
     fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
-        let mut db = self.db_mut()?;
-
-        db.insert(col, T::key_from_slice(key), T::value_from_slice(value))?;
+        self.db_mut()?
+            .insert(col, T::key_from_slice(key), T::value_from_slice(value))?;
 
         Ok(())
     }
 
     fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()> {
-        let mut db = self.db_mut()?;
-
-        db.remove(col, &key)?;
+        self.db_mut()?.remove(col, &key)?;
 
         Ok(())
     }
@@ -187,6 +182,7 @@ where
                 }
             }
         }
+        drop(db);
 
         Ok(())
     }

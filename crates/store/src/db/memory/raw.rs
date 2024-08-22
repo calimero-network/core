@@ -82,13 +82,11 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
             return Ok(None);
         };
 
-        let arena = self.arena.read()?;
-
-        let Some(value) = arena.get(**idx) else {
+        let Some(value) = self.arena.read()?.get(**idx).cloned() else {
             panic!("inconsistent state, index points to non-existent value");
         };
 
-        Ok(Some(value.clone()))
+        Ok(Some(value))
     }
 
     pub fn insert(&mut self, col: Column, key: K, value: V) -> eyre::Result<()> {
@@ -209,13 +207,14 @@ where
             return Ok(None);
         };
 
-        let arena = self.arena.read()?;
-
-        let value = arena
+        let value = self
+            .arena
+            .read()?
             .get(**idx)
+            .cloned()
             .expect("inconsistent state, index points to non-existent value");
 
-        state.value = Some(value.clone());
+        state.value = Some(value);
 
         Ok(Some(key))
     }
