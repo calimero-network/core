@@ -16,11 +16,11 @@ pub struct RocksDB {
 }
 
 impl RocksDB {
-    fn cf_handle(&self, column: &Column) -> Option<&rocksdb::ColumnFamily> {
+    fn cf_handle(&self, column: Column) -> Option<&rocksdb::ColumnFamily> {
         self.db.cf_handle(column.as_ref())
     }
 
-    fn try_cf_handle(&self, column: &Column) -> eyre::Result<&rocksdb::ColumnFamily> {
+    fn try_cf_handle(&self, column: Column) -> eyre::Result<&rocksdb::ColumnFamily> {
         let Some(cf_handle) = self.cf_handle(column) else {
             eyre::bail!("unknown column family: {:?}", column);
         };
@@ -42,7 +42,7 @@ impl Database<'_> for RocksDB {
     }
 
     fn has(&self, col: Column, key: Slice<'_>) -> eyre::Result<bool> {
-        let cf_handle = self.try_cf_handle(&col)?;
+        let cf_handle = self.try_cf_handle(col)?;
 
         let exists = self.db.key_may_exist_cf(cf_handle, key.as_ref())
             && self.get(col, key).map(|value| value.is_some())?;
@@ -51,7 +51,7 @@ impl Database<'_> for RocksDB {
     }
 
     fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
-        let cf_handle = self.try_cf_handle(&col)?;
+        let cf_handle = self.try_cf_handle(col)?;
 
         let value = self.db.get_pinned_cf(cf_handle, key.as_ref())?;
 
@@ -59,7 +59,7 @@ impl Database<'_> for RocksDB {
     }
 
     fn put(&self, col: Column, key: Slice<'_>, value: Slice<'_>) -> eyre::Result<()> {
-        let cf_handle = self.try_cf_handle(&col)?;
+        let cf_handle = self.try_cf_handle(col)?;
 
         self.db.put_cf(cf_handle, key.as_ref(), value.as_ref())?;
 
@@ -67,7 +67,7 @@ impl Database<'_> for RocksDB {
     }
 
     fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()> {
-        let cf_handle = self.try_cf_handle(&col)?;
+        let cf_handle = self.try_cf_handle(col)?;
 
         self.db.delete_cf(cf_handle, key.as_ref())?;
 
@@ -75,7 +75,7 @@ impl Database<'_> for RocksDB {
     }
 
     fn iter(&self, col: Column) -> eyre::Result<Iter<'_>> {
-        let cf_handle = self.try_cf_handle(&col)?;
+        let cf_handle = self.try_cf_handle(col)?;
 
         let mut iter = self.db.raw_iterator_cf(cf_handle);
 
@@ -92,7 +92,7 @@ impl Database<'_> for RocksDB {
         for (entry, op) in tx.iter() {
             let (col, key) = (entry.column(), entry.key());
 
-            let Some(cf) = self.cf_handle(&col) else {
+            let Some(cf) = self.cf_handle(col) else {
                 unknown_cfs.push(col);
                 continue;
             };
