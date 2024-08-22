@@ -27,7 +27,7 @@ impl DidEntry {
 
 pub fn create_did(store: &Store) -> eyre::Result<Did> {
     let did_document = Did {
-        id: "did:cali".to_string(),
+        id: "did:cali".to_owned(),
         root_keys: vec![],
         client_keys: vec![],
     };

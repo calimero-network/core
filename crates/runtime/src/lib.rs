@@ -66,7 +66,7 @@ pub fn run(
         return Ok(
             logic.finish(Some(errors::FunctionCallError::MethodResolutionError(
                 errors::MethodResolutionError::InvalidSignature {
-                    name: method_name.to_string(),
+                    name: method_name.to_owned(),
                 },
             ))),
         );

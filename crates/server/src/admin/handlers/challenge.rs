@@ -40,7 +40,7 @@ pub async fn request_challenge_handler(
                 error!("Failed to insert challenge into session: {}", err);
                 return ApiError {
                     status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "Failed to insert challenge into session".to_string(),
+                    message: "Failed to insert challenge into session".to_owned(),
                 }
                 .into_response();
             }
@@ -53,7 +53,7 @@ pub async fn request_challenge_handler(
             error!("Failed to generate client challenge: {}", err);
             ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: "Failed to generate challenge".to_string(),
+                message: "Failed to generate challenge".to_owned(),
             }
             .into_response()
         }

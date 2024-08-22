@@ -11,10 +11,10 @@ use sha2::{Digest, Sha256};
 fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url: &str) -> Payload {
     Payload {
         tag: 2_147_484_061,
-        message: message.to_string(),
+        message: message.to_owned(),
         nonce,
-        recipient: recipient.to_string(),
-        callback_url: Some(callback_url.to_string()),
+        recipient: recipient.to_owned(),
+        callback_url: Some(callback_url.to_owned()),
     }
 }
 

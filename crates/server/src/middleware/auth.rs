@@ -198,6 +198,6 @@ impl std::error::Error for UnauthorizedError<'_> {}
 
 impl IntoResponse for UnauthorizedError<'_> {
     fn into_response(self) -> Response<Body> {
-        (StatusCode::UNAUTHORIZED, self.reason.to_string()).into_response()
+        (StatusCode::UNAUTHORIZED, self.reason.to_owned()).into_response()
     }
 }

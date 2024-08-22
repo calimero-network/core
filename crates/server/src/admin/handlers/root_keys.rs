@@ -27,7 +27,7 @@ pub async fn create_root_key_handler(
         .and_then(|req| validate_challenge(req, &state.keypair))
         .and_then(|req| store_root(req, &state.store.clone()))
         .map_or_else(IntoResponse::into_response, |_| {
-            let data: String = "Root key stored".to_string();
+            let data: String = "Root key stored".to_owned();
             ApiResponse {
                 payload: CreateRootKeyResponse { data },
             }

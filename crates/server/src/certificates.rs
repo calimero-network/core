@@ -24,8 +24,8 @@ fn generate_certificate(store: &Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     // Generate a self-signed certificate for IP address and localhost
     let subject_alt_names = vec![
         local_ip.to_string(),
-        "127.0.0.1".to_string(),
-        "localhost".to_string(),
+        "127.0.0.1".to_owned(),
+        "localhost".to_owned(),
     ];
 
     // Certificate name

@@ -42,13 +42,13 @@ impl fmt::Display for ContextId {
 
 impl From<ContextId> for String {
     fn from(id: ContextId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
 impl From<&ContextId> for String {
     fn from(id: &ContextId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 

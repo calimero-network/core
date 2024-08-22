@@ -73,7 +73,7 @@ pub async fn add_client_key_handler(
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
         .and_then(|req| store_client_key(req, &state.store.clone()))
         .map_or_else(IntoResponse::into_response, |_| {
-            let data: String = "Client key stored".to_string();
+            let data: String = "Client key stored".to_owned();
             ApiResponse {
                 payload: AddClientKeyResponse { data },
             }

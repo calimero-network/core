@@ -46,13 +46,13 @@ impl fmt::Display for BlobId {
 
 impl From<BlobId> for String {
     fn from(id: BlobId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
 impl From<&BlobId> for String {
     fn from(id: &BlobId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 

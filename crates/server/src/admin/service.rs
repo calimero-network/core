@@ -215,7 +215,7 @@ async fn health_check_handler() -> impl IntoResponse {
     ApiResponse {
         payload: GetHealthResponse {
             data: HealthStatus {
-                status: "alive".to_string(),
+                status: "alive".to_owned(),
             },
         },
     }
@@ -272,7 +272,7 @@ async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> im
     if let Some(certificate) = certificate {
         // Generate the file content
         let file_content = match str::from_utf8(certificate.cert()) {
-            Ok(content) => content.to_string(),
+            Ok(content) => content.to_owned(),
             Err(_) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,

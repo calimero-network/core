@@ -42,13 +42,13 @@ impl fmt::Display for ApplicationId {
 
 impl From<ApplicationId> for String {
     fn from(id: ApplicationId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
 impl From<&ApplicationId> for String {
     fn from(id: &ApplicationId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
