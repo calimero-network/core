@@ -54,8 +54,8 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                     if let syn::Type::Reference(ref_) = &*receiver.ty {
                         reference = ref_
                             .mutability
-                            .map_or(Some(SelfType::Immutable(&*receiver.ty)), |_| {
-                                Some(SelfType::Mutable(&*receiver.ty))
+                            .map_or(Some(SelfType::Immutable(&receiver.ty)), |_| {
+                                Some(SelfType::Mutable(&receiver.ty))
                             });
                     } else if is_self {
                         // todo! circumvent via `#[app::destroy]`
@@ -69,7 +69,7 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                         errors.check()?;
 
                         return Ok(Self::Receiver(
-                            reference.unwrap_or(SelfType::Owned(&*receiver.ty)),
+                            reference.unwrap_or(SelfType::Owned(&receiver.ty)),
                         ));
                     }
                 };
