@@ -384,24 +384,21 @@ impl Node {
                         .await?;
                 }
 
-                match context {
-                    Some(ref mut context_) => {
-                        self.ctx_manager
-                            .update_application_id(context_.id, change.application_id)?;
+                if let Some(ref mut context_) = context {
+                    self.ctx_manager
+                        .update_application_id(context_.id, change.application_id)?;
 
-                        context_.application_id = change.application_id;
-                    }
-                    None => {
-                        let context_inner = calimero_primitives::context::Context {
-                            id: context_id,
-                            application_id: change.application_id,
-                            last_transaction_hash: calimero_primitives::hash::Hash::default(),
-                        };
+                    context_.application_id = change.application_id;
+                } else {
+                    let context_inner = calimero_primitives::context::Context {
+                        id: context_id,
+                        application_id: change.application_id,
+                        last_transaction_hash: calimero_primitives::hash::Hash::default(),
+                    };
 
-                        self.ctx_manager.add_context(&context_inner)?;
+                    self.ctx_manager.add_context(&context_inner)?;
 
-                        context = Some(context_inner);
-                    }
+                    context = Some(context_inner);
                 }
             }
             types::CatchupStreamMessage::Error(err) => {
