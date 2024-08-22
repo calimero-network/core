@@ -26,7 +26,7 @@ impl Stream {
     pub fn new(stream: libp2p::Stream) -> Self {
         let stream = BufStream::new(stream.compat());
         let stream = Framed::new(stream, codec::MessageJsonCodec::new());
-        Stream { inner: stream }
+        Self { inner: stream }
     }
 }
 

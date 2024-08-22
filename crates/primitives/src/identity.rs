@@ -29,13 +29,13 @@ impl PublicKey {
 
 impl From<[u8; 32]> for PublicKey {
     fn from(bytes: [u8; 32]) -> Self {
-        PublicKey(bytes)
+        Self(bytes)
     }
 }
 
 impl From<VerifyingKey> for PublicKey {
     fn from(public_key: VerifyingKey) -> Self {
-        PublicKey(public_key.to_bytes())
+        Self(public_key.to_bytes())
     }
 }
 impl From<KeyPair> for PublicKey {

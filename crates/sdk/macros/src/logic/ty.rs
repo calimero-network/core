@@ -69,6 +69,6 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
 
         errors.check()?;
 
-        Ok(LogicTy { ty, ref_: has_ref })
+        Ok(Self { ty, ref_: has_ref })
     }
 }

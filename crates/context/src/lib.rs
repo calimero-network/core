@@ -31,7 +31,7 @@ impl ContextManager {
         blob_manager: calimero_blobstore::BlobManager,
         network_client: NetworkClient,
     ) -> eyre::Result<Self> {
-        let this = ContextManager {
+        let this = Self {
             store,
             blob_manager,
             network_client,

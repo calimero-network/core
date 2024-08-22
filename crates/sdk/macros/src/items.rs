@@ -16,12 +16,12 @@ impl Parse for StructOrEnumItem {
                 let mut struct_: syn::ItemStruct = input.parse()?;
                 struct_.attrs = attrs;
                 struct_.vis = vis;
-                break StructOrEnumItem::Struct(struct_);
+                break Self::Struct(struct_);
             } else if lookahead.peek(syn::Token![enum]) {
                 let mut enum_: syn::ItemEnum = input.parse()?;
                 enum_.attrs = attrs;
                 enum_.vis = vis;
-                break StructOrEnumItem::Enum(enum_);
+                break Self::Enum(enum_);
             } else if lookahead.peek(syn::Token![#]) {
                 attrs.extend(input.call(syn::Attribute::parse_outer)?);
             } else if lookahead.peek(syn::Token![pub]) {
@@ -41,8 +41,8 @@ impl Parse for StructOrEnumItem {
 impl ToTokens for StructOrEnumItem {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-            StructOrEnumItem::Struct(item) => item.to_tokens(tokens),
-            StructOrEnumItem::Enum(item) => item.to_tokens(tokens),
+            Self::Struct(item) => item.to_tokens(tokens),
+            Self::Enum(item) => item.to_tokens(tokens),
         }
     }
 }
@@ -54,7 +54,7 @@ pub struct Empty {
 impl Parse for Empty {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
-            return Ok(Empty { _priv: () });
+            return Ok(Self { _priv: () });
         }
 
         Err(input.error("unexpected token"))

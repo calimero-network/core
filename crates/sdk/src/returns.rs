@@ -22,8 +22,8 @@ where
     #[inline]
     pub fn to_json(&self) -> serde_json::Result<Result<Vec<u8>, Vec<u8>>> {
         Ok(match self {
-            ReturnsResult(Ok(ok)) => Ok(serde_json::to_vec(&ok)?),
-            ReturnsResult(Err(err)) => Err(serde_json::to_vec(&err)?),
+            Self(Ok(ok)) => Ok(serde_json::to_vec(&ok)?),
+            Self(Err(err)) => Err(serde_json::to_vec(&err)?),
         })
     }
 }
@@ -34,14 +34,14 @@ pub struct WrappedReturn<T>(T);
 impl<T> WrappedReturn<T> {
     #[inline]
     pub fn new(value: T) -> Self {
-        WrappedReturn(value)
+        Self(value)
     }
 }
 
 impl<T, E> WrappedReturn<Result<T, E>> {
     #[inline]
     pub fn into_result(self) -> ReturnsResult<T, E> {
-        let WrappedReturn(value) = self;
+        let Self(value) = self;
         ReturnsResult(value)
     }
 }
@@ -59,7 +59,7 @@ where
 
     #[inline]
     fn into_result(self) -> ReturnsResult<Self::Ok, Self::Err> {
-        let WrappedReturn(value) = self;
+        let Self(value) = self;
         ReturnsResult(Ok(value))
     }
 }

@@ -45,6 +45,7 @@ impl<'a> Transaction<'a> {
         );
     }
 
+    #[allow(clippy::use_self)]
     pub fn merge(&mut self, other: &Transaction<'a>) {
         for (entry, op) in other.iter() {
             drop(self.cols.entry(entry.column).or_default().insert(

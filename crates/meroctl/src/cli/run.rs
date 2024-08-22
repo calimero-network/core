@@ -21,8 +21,8 @@ pub enum NodeType {
 impl From<NodeType> for calimero_node_primitives::NodeType {
     fn from(value: NodeType) -> Self {
         match value {
-            NodeType::Peer => calimero_node_primitives::NodeType::Peer,
-            NodeType::Coordinator => calimero_node_primitives::NodeType::Coordinator,
+            NodeType::Peer => Self::Peer,
+            NodeType::Coordinator => Self::Coordinator,
         }
     }
 }

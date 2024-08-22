@@ -307,7 +307,7 @@ enum FusedIter<I> {
 
 impl<I: DBIter> FusedIter<I> {
     fn seek(&mut self, key: Key<'_>) -> eyre::Result<Option<Key<'_>>> {
-        if let FusedIter::Active(iter) = self {
+        if let Self::Active(iter) = self {
             return iter.seek(key);
         }
 
@@ -318,13 +318,13 @@ impl<I: DBIter> FusedIter<I> {
         #[allow(trivial_casts)]
         let this = unsafe { &mut *std::ptr::from_mut::<Self>(self) };
 
-        if let FusedIter::Active(iter) = this {
+        if let Self::Active(iter) = this {
             if let Some(key) = iter.next()? {
                 return Ok(Some(key));
             }
 
-            match std::mem::replace(self, FusedIter::Interregnum) {
-                FusedIter::Active(iter) => *self = FusedIter::Expended(iter),
+            match std::mem::replace(self, Self::Interregnum) {
+                Self::Active(iter) => *self = Self::Expended(iter),
                 _ => unsafe { std::hint::unreachable_unchecked() },
             }
         }
@@ -333,7 +333,7 @@ impl<I: DBIter> FusedIter<I> {
     }
 
     fn read(&self) -> eyre::Result<Option<Value<'_>>> {
-        if let FusedIter::Active(iter) = self {
+        if let Self::Active(iter) = self {
             return iter.read().map(Some);
         }
 

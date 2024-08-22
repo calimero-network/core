@@ -23,7 +23,7 @@ pub struct BlobManager {
 impl BlobManager {
     #[must_use]
     pub fn new(data_store: DataStore, blob_store: FileSystem) -> Self {
-        BlobManager {
+        Self {
             data_store,
             blob_store,
         }
@@ -138,7 +138,7 @@ impl Blob {
             }
 
             for link in blob_meta.links {
-                let maybe_link = Blob::new(link.blob_id(), blob_mgr.clone());
+                let maybe_link = Self::new(link.blob_id(), blob_mgr.clone());
                 let maybe_link = maybe_link.map_err(BlobError::RepoError)?;
                 let link = maybe_link.ok_or_else(|| BlobError::DanglingBlob { id })?;
                 for await blob in link {

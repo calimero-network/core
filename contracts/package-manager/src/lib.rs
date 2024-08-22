@@ -57,7 +57,7 @@ impl Default for PackageManager {
 #[near_bindgen]
 impl PackageManager {
     pub fn add_package(&mut self, name: String, description: String, repository: String) -> String {
-        let id_hash = PackageManager::calculate_id_hash(&name);
+        let id_hash = Self::calculate_id_hash(&name);
         if self.packages.contains_key(&id_hash) {
             env::panic_str("Package already exists.")
         }
@@ -89,7 +89,7 @@ impl PackageManager {
         path: String,
         hash: String,
     ) {
-        let id_hash = PackageManager::calculate_id_hash(name);
+        let id_hash = Self::calculate_id_hash(name);
         // Get the last release version for the package
         let last_release_version = self.releases.get(&id_hash).map(|version_map| {
             version_map

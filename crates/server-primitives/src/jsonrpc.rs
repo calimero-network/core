@@ -20,7 +20,7 @@ impl Serialize for Version {
         S: Serializer,
     {
         match *self {
-            Version::TwoPointZero => serializer.serialize_str("2.0"),
+            Self::TwoPointZero => serializer.serialize_str("2.0"),
         }
     }
 }
@@ -32,7 +32,7 @@ impl<'de> Deserialize<'de> for Version {
     {
         let version_str = String::deserialize(deserializer)?;
         match version_str.as_str() {
-            "2.0" => Ok(Version::TwoPointZero),
+            "2.0" => Ok(Self::TwoPointZero),
             _ => Err(serde::de::Error::custom("Invalid JSON-RPC version")),
         }
     }

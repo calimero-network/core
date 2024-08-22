@@ -185,7 +185,7 @@ impl Parse for MaybeBoundEvent {
 
         input
             .is_empty()
-            .then(|| MaybeBoundEvent { lifetime, ty })
+            .then(|| Self { lifetime, ty })
             .ok_or_else(|| input.error("unexpected token"))
     }
 }
@@ -242,7 +242,7 @@ impl Parse for StateArgs {
             }
         }
 
-        Ok(StateArgs { emits })
+        Ok(Self { emits })
     }
 }
 

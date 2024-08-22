@@ -137,13 +137,13 @@ pub enum Location {
 
 impl Location {
     fn is_unknown(&self) -> bool {
-        matches!(self, Location::Unknown)
+        matches!(self, Self::Unknown)
     }
 }
 
 impl From<&std::panic::Location<'_>> for Location {
     fn from(location: &std::panic::Location<'_>) -> Self {
-        Location::At {
+        Self::At {
             file: location.file().to_owned(),
             line: location.line(),
             column: location.column(),
@@ -155,9 +155,7 @@ impl From<wasmer::ExportError> for FunctionCallError {
     fn from(err: wasmer::ExportError) -> Self {
         match err {
             wasmer::ExportError::Missing(name) => {
-                FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
-                    name,
-                })
+                Self::MethodResolutionError(MethodResolutionError::MethodNotFound { name })
             }
             wasmer::ExportError::IncompatibleType => unreachable!(),
         }
@@ -185,27 +183,21 @@ impl From<wasmer::InstantiationError> for FunctionCallError {
 impl From<wasmer::RuntimeError> for FunctionCallError {
     fn from(err: wasmer::RuntimeError) -> Self {
         match err.to_trap() {
-            Some(TrapCode::StackOverflow) => FunctionCallError::WasmTrap(WasmTrap::StackOverflow),
+            Some(TrapCode::StackOverflow) => Self::WasmTrap(WasmTrap::StackOverflow),
             Some(TrapCode::HeapAccessOutOfBounds | TrapCode::TableAccessOutOfBounds) => {
-                FunctionCallError::WasmTrap(WasmTrap::MemoryOutOfBounds)
+                Self::WasmTrap(WasmTrap::MemoryOutOfBounds)
             }
-            Some(TrapCode::HeapMisaligned) => FunctionCallError::WasmTrap(WasmTrap::HeapMisaligned),
-            Some(TrapCode::IndirectCallToNull) => {
-                FunctionCallError::WasmTrap(WasmTrap::IndirectCallToNull)
-            }
-            Some(TrapCode::BadSignature) => FunctionCallError::WasmTrap(WasmTrap::BadSignature),
+            Some(TrapCode::HeapMisaligned) => Self::WasmTrap(WasmTrap::HeapMisaligned),
+            Some(TrapCode::IndirectCallToNull) => Self::WasmTrap(WasmTrap::IndirectCallToNull),
+            Some(TrapCode::BadSignature) => Self::WasmTrap(WasmTrap::BadSignature),
             Some(
                 TrapCode::IntegerOverflow
                 | TrapCode::IntegerDivisionByZero
                 | TrapCode::BadConversionToInteger,
-            ) => FunctionCallError::WasmTrap(WasmTrap::IllegalArithmetic),
-            Some(TrapCode::UnreachableCodeReached) => {
-                FunctionCallError::WasmTrap(WasmTrap::Unreachable)
-            }
-            Some(TrapCode::UnalignedAtomic) => {
-                FunctionCallError::WasmTrap(WasmTrap::UnalignedAtomic)
-            }
-            None => FunctionCallError::WasmTrap(WasmTrap::Indeterminate),
+            ) => Self::WasmTrap(WasmTrap::IllegalArithmetic),
+            Some(TrapCode::UnreachableCodeReached) => Self::WasmTrap(WasmTrap::Unreachable),
+            Some(TrapCode::UnalignedAtomic) => Self::WasmTrap(WasmTrap::UnalignedAtomic),
+            None => Self::WasmTrap(WasmTrap::Indeterminate),
         }
     }
 }

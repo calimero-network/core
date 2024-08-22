@@ -16,7 +16,7 @@ pub(crate) struct Discovery {
 
 impl Discovery {
     pub(crate) fn new(rendezvous_config: &config::RendezvousConfig) -> Self {
-        Discovery {
+        Self {
             state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
         }

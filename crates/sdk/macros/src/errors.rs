@@ -89,8 +89,8 @@ mod parse_error {
 }
 pub use parse_error::ParseError;
 
-impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {
-    fn as_ref(&self) -> &ParseError<'a> {
+impl AsRef<Self> for ParseError<'_> {
+    fn as_ref(&self) -> &Self {
         self
     }
 }

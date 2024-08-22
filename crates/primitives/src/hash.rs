@@ -41,7 +41,7 @@ impl Hash {
 
         serde_json::to_writer(&mut hasher, data)?;
 
-        Ok(Hash {
+        Ok(Self {
             bytes: hasher.finalize().into(),
             bs58: MaybeUninit::zeroed(),
         })
@@ -53,7 +53,7 @@ impl Hash {
 
         data.serialize(&mut hasher)?;
 
-        Ok(Hash {
+        Ok(Self {
             bytes: hasher.finalize().into(),
             bs58: MaybeUninit::zeroed(),
         })

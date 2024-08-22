@@ -12,7 +12,7 @@ pub enum VMLogicError {
 
 impl From<wasmer::MemoryAccessError> for VMLogicError {
     fn from(_: wasmer::MemoryAccessError) -> Self {
-        VMLogicError::HostError(HostError::InvalidMemoryAccess)
+        Self::HostError(HostError::InvalidMemoryAccess)
     }
 }
 
@@ -29,7 +29,7 @@ impl TryFrom<VMLogicError> for FunctionCallError {
             //     context: PanicContext::Host,
             //     message,
             // }) => Err(VMRuntimeError::HostError(err)),
-            VMLogicError::HostError(err) => Ok(FunctionCallError::HostError(err)),
+            VMLogicError::HostError(err) => Ok(Self::HostError(err)),
         }
     }
 }
