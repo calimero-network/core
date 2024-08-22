@@ -35,7 +35,7 @@ fn generate_certificate(store: &Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     );
 
     // Create certificate parameters
-    let mut params = CertificateParams::new(subject_alt_names.clone())?;
+    let mut params = CertificateParams::new(subject_alt_names)?;
     // Set the distinguished name
     params
         .distinguished_name

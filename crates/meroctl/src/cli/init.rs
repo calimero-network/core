@@ -129,7 +129,7 @@ impl InitCommand {
         }
 
         let config = ConfigFile {
-            identity: identity.clone(),
+            identity,
             store: StoreConfig {
                 path: "data".into(),
             },
