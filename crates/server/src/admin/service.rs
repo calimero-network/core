@@ -1,14 +1,13 @@
-use axum::extract::Path;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::str::{self, FromStr};
+use std::str::{self};
 use std::sync::Arc;
 
+use axum::extract::Path;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
-use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
     ApplicationInstallResult, ApplicationListResult, GetApplicationDetailsResponse,
     InstallApplicationResponse, ListApplicationsResponse,
@@ -105,7 +104,7 @@ pub(crate) fn setup(
             "/identity/keys",
             delete(handlers::root_keys::delete_auth_keys_handler),
         )
-        // .layer(middleware::auth::AuthSignatureLayer::new(store))
+        .layer(middleware::auth::AuthSignatureLayer::new(store))
         .layer(Extension(shared_state.clone()));
 
     let unprotected_router = Router::new()
@@ -272,7 +271,7 @@ async fn get_application_details_handler(
     Path(app_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let app_id_result = match ApplicationId::from_str(&app_id) {
+    let app_id_result = match app_id.parse() {
         Ok(app_id) => app_id,
         Err(_) => {
             return ApiError {
