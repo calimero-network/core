@@ -119,14 +119,14 @@ impl EventLoop {
                 ..
             } => debug!("Dialing peer: {}", peer_id),
             SwarmEvent::ExpiredListenAddr { address, .. } => {
-                trace!("Expired listen address: {}", address)
+                trace!("Expired listen address: {}", address);
             }
             SwarmEvent::ListenerClosed {
                 addresses, reason, ..
             } => trace!("Listener closed: {:?} {:?}", addresses, reason.err()),
             SwarmEvent::ListenerError { error, .. } => trace!("Listener error: {:?}", error),
             SwarmEvent::NewExternalAddrCandidate { address } => {
-                trace!("New external address candidate: {}", address)
+                trace!("New external address candidate: {}", address);
             }
             SwarmEvent::ExternalAddrConfirmed { address } => {
                 debug!("External address confirmed: {}", address);

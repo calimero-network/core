@@ -10,7 +10,7 @@ pub struct LogicTy {
 
 impl ToTokens for LogicTy {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.ty.to_tokens(tokens)
+        self.ty.to_tokens(tokens);
     }
 }
 

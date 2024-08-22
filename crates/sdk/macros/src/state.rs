@@ -43,7 +43,7 @@ impl ToTokens for StateImpl<'_> {
                 type Event<#lifetime> = #event;
             }
         }
-        .to_tokens(tokens)
+        .to_tokens(tokens);
     }
 }
 
@@ -225,7 +225,7 @@ impl Parse for StateArgs {
                             "expected an event type after `=`",
                         ));
                     }
-                    emits = Some(input.parse::<MaybeBoundEvent>()?)
+                    emits = Some(input.parse::<MaybeBoundEvent>()?);
                 }
                 _ => {
                     return Err(syn::Error::new_spanned(

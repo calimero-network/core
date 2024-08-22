@@ -37,7 +37,7 @@ where
 pub fn emit<'a, E: AppEventExt + 'a>(event: E) {
     let f = HANDLER.with_borrow(|handler| *handler);
     let f: fn(Box<dyn AppEventExt + 'a>) = unsafe { std::mem::transmute::<_, _>(f) };
-    f(Box::new(event))
+    f(Box::new(event));
 }
 
 mod reflect {

@@ -128,6 +128,7 @@ impl Blob {
             return Ok(None);
         };
 
+        #[allow(clippy::semicolon_if_nothing_returned)]
         let stream = Box::pin(try_stream!({
             if blob_meta.links.is_empty() {
                 let maybe_blob = blob_mgr.blob_store.get(id).await;

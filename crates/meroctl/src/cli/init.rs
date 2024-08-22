@@ -120,7 +120,7 @@ impl InitCommand {
         if let Some(network) = self.boot_network {
             match network {
                 BootstrapNetwork::CalimeroDev => {
-                    boot_nodes.extend(BootstrapNodes::calimero_dev().list)
+                    boot_nodes.extend(BootstrapNodes::calimero_dev().list);
                 }
                 BootstrapNetwork::Ipfs => boot_nodes.extend(BootstrapNodes::ipfs().list),
             }

@@ -389,7 +389,7 @@ impl ContextManager {
                 version: app.version.as_deref().map(str::parse).transpose()?,
                 source: app.source.parse()?,
                 metadata: app.metadata.to_vec(),
-            })
+            });
         }
 
         Ok(applications)

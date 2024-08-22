@@ -233,7 +233,7 @@ impl ToTokens for Sanitizer<'_> {
                     };
                     let mut group = proc_macro2::Group::new(*delimiter, entry.to_token_stream());
                     group.set_span(*span);
-                    tokens.extend(std::iter::once(TokenTree::Group(group)))
+                    tokens.extend(std::iter::once(TokenTree::Group(group)));
                 }
             }
         }

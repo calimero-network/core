@@ -411,7 +411,7 @@ impl Node {
                 eyre::bail!(err);
             }
             types::CatchupStreamMessage::Request(request) => {
-                warn!("Unexpected message: {:?}", request)
+                warn!("Unexpected message: {:?}", request);
             }
         }
 

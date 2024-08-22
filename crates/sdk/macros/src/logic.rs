@@ -24,7 +24,7 @@ impl ToTokens for LogicImpl<'_> {
 
             #(#methods)*
         }
-        .to_tokens(tokens)
+        .to_tokens(tokens);
     }
 }
 

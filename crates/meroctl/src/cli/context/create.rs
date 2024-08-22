@@ -121,7 +121,7 @@ async fn watch_app_and_update_context(
     let mut watcher = notify::recommended_watcher(move |evt| {
         handle.block_on(async {
             drop(tx.send(evt).await);
-        })
+        });
     })?;
 
     watcher.watch(path.as_std_path(), notify::RecursiveMode::NonRecursive)?;

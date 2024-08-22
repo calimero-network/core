@@ -172,7 +172,7 @@ impl ToTokens for PublicLogicMethod<'_> {
             #init_impl
 
         }
-        .to_tokens(tokens)
+        .to_tokens(tokens);
     }
 }
 
@@ -264,7 +264,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                     (arg::LogicArg::Receiver(_), Some(_)) => { /* handled by rustc */ }
                     (arg::LogicArg::Typed(arg), _) => {
                         has_refs |= arg.ty.ref_;
-                        args.push(arg)
+                        args.push(arg);
                     }
                 },
                 Err(err) => errors.combine(&err),

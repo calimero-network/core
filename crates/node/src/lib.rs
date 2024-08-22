@@ -647,7 +647,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         }
         unknown => {
             println!("{IND} Unknown command: `{unknown}`");
-            println!("{IND} Usage: [call|peers|pool|gc|store|context|application] [args]")
+            println!("{IND} Usage: [call|peers|pool|gc|store|context|application] [args]");
         }
     }
 

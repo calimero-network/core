@@ -24,7 +24,7 @@ impl ToTokens for LogicArgTyped<'_> {
         let ident = &self.ident;
         let ty = &self.ty;
 
-        quote! { #ident: #ty }.to_tokens(tokens)
+        quote! { #ident: #ty }.to_tokens(tokens);
     }
 }
 
