@@ -63,6 +63,7 @@ impl FuturesSink<Message> for Stream {
 // TODO: not actually making any self-modifications. If removed, they cause
 // TODO: errors about Send compatibility.
 #[allow(clippy::needless_pass_by_ref_mut)]
+#[allow(clippy::multiple_inherent_impl)]
 impl EventLoop {
     pub(crate) async fn handle_incoming_stream(
         &mut self,

@@ -15,6 +15,7 @@ pub trait EventHandler<E> {
     async fn handle(&mut self, event: E);
 }
 
+#[allow(clippy::multiple_inherent_impl)]
 impl EventLoop {
     // TODO: Consider splitting this long function into multiple parts.
     #[allow(clippy::too_many_lines)]

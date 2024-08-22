@@ -659,6 +659,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::multiple_inherent_impl)]
 impl Node {
     #[must_use]
     pub fn new(

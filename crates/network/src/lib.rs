@@ -180,6 +180,7 @@ pub(crate) struct EventLoop {
     pending_get_providers: HashMap<kad::QueryId, oneshot::Sender<HashSet<PeerId>>>,
 }
 
+#[allow(clippy::multiple_inherent_impl)]
 impl EventLoop {
     fn new(
         swarm: Swarm<Behaviour>,

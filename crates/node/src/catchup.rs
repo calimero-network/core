@@ -10,6 +10,7 @@ use crate::{types, Node};
 
 mod batch;
 
+#[allow(clippy::multiple_inherent_impl)]
 impl Node {
     // TODO: Consider splitting this long function into multiple parts.
     #[allow(clippy::too_many_lines)]

@@ -93,9 +93,7 @@ impl ContextManager {
 
         Ok(())
     }
-}
 
-impl ContextManager {
     pub async fn create_context(
         &self,
         context: &calimero_primitives::context::Context,
@@ -298,10 +296,9 @@ impl ContextManager {
 
         Ok(())
     }
-}
 
-// vv~ these would be more appropriate in an ApplicationManager
-impl ContextManager {
+    // vv~ these would be more appropriate in an ApplicationManager
+
     fn install_application(
         &self,
         blob_id: calimero_primitives::blobs::BlobId,
