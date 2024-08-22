@@ -35,50 +35,59 @@ impl fmt::Display for Pretty<'_> {
 
 static TAG: &str = "(calimero)>";
 
-#[derive(Debug, Error)]
-pub enum ParseError<'a> {
-    #[error("trait impls are not supported")]
-    NoTraitSupport,
-    #[error("cannot ascribe app logic to primitive types")]
-    UnsupportedImplType,
-    #[error("expected `Self` or `{0}`")]
-    ExpectedSelf(Pretty<'a>),
-    #[error("exposing an async method is not supported")]
-    NoAsyncSupport,
-    #[error("exposing an unsafe method is not supported")]
-    NoUnsafeSupport,
-    // todo! disable with `#[app::destroy]`
-    #[error("`self` must be passed by reference")]
-    NoSelfOwnership,
-    #[error("expected an identifier, found a pattern")]
-    ExpectedIdent,
-    #[error("generic types are not supported")]
-    NoGenericTypeSupport,
-    #[error("state lifetimes are not supported")]
-    NoGenericLifetimeSupport,
-    #[error("this lifetime is reserved")]
-    UseOfReservedLifetime,
-    #[error("this identifier is reserved")]
-    UseOfReservedIdent,
-    #[error("this lifetime has not been declared{append}")]
-    UseOfUndeclaredLifetime { append: String },
-    #[error("this lifetime must be specified")]
-    MustSpecifyLifetime,
-    #[error("this event must be public")]
-    NoPrivateEvent,
-    #[error("please use a simple `pub` directive")]
-    NoComplexVisibility,
-    #[error("explicit ABIs are not supported")]
-    NoExplicitAbi,
-    #[error("an initializer, by definition, has no `self` to reference")]
-    NoSelfReceiverAtInit,
-    #[error("an initializer method, by definition, has to be public")]
-    NoPrivateInit,
-    #[error("method named `init` must be annotated with `#[app::init]`")]
-    InitMethodWithoutInitAttribute,
-    #[error("method annotated with `#[app::init]` must be named `init`")]
-    AppInitMethodNotNamedInit,
+// This module is a workaround for not being able to allow single_use_lifetimes
+// directly on the enum and/or its variant in order to suppress the false
+// positive warning.
+#[allow(single_use_lifetimes)]
+mod parse_error {
+    use super::*;
+
+    #[derive(Debug, Error)]
+    pub enum ParseError<'a> {
+        #[error("trait impls are not supported")]
+        NoTraitSupport,
+        #[error("cannot ascribe app logic to primitive types")]
+        UnsupportedImplType,
+        #[error("expected `Self` or `{0}`")]
+        ExpectedSelf(Pretty<'a>),
+        #[error("exposing an async method is not supported")]
+        NoAsyncSupport,
+        #[error("exposing an unsafe method is not supported")]
+        NoUnsafeSupport,
+        // todo! disable with `#[app::destroy]`
+        #[error("`self` must be passed by reference")]
+        NoSelfOwnership,
+        #[error("expected an identifier, found a pattern")]
+        ExpectedIdent,
+        #[error("generic types are not supported")]
+        NoGenericTypeSupport,
+        #[error("state lifetimes are not supported")]
+        NoGenericLifetimeSupport,
+        #[error("this lifetime is reserved")]
+        UseOfReservedLifetime,
+        #[error("this identifier is reserved")]
+        UseOfReservedIdent,
+        #[error("this lifetime has not been declared{append}")]
+        UseOfUndeclaredLifetime { append: String },
+        #[error("this lifetime must be specified")]
+        MustSpecifyLifetime,
+        #[error("this event must be public")]
+        NoPrivateEvent,
+        #[error("please use a simple `pub` directive")]
+        NoComplexVisibility,
+        #[error("explicit ABIs are not supported")]
+        NoExplicitAbi,
+        #[error("an initializer, by definition, has no `self` to reference")]
+        NoSelfReceiverAtInit,
+        #[error("an initializer method, by definition, has to be public")]
+        NoPrivateInit,
+        #[error("method named `init` must be annotated with `#[app::init]`")]
+        InitMethodWithoutInitAttribute,
+        #[error("method annotated with `#[app::init]` must be named `init`")]
+        AppInitMethodNotNamedInit,
+    }
 }
+pub use parse_error::ParseError;
 
 impl<'a> AsRef<ParseError<'a>> for ParseError<'a> {
     fn as_ref(&self) -> &ParseError<'a> {

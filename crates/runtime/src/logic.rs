@@ -1,3 +1,5 @@
+#![allow(single_use_lifetimes, unused_lifetimes)]
+
 use std::num::NonZeroU64;
 
 use ouroboros::self_referencing;
