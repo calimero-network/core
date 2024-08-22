@@ -156,6 +156,7 @@ impl Debug for Blob {
 }
 
 #[derive(Debug, Error)]
+#[allow(variant_size_differences)]
 pub enum BlobError {
     #[error("encountered a dangling Blob ID: `{id}`, the blob store may be corrupt")]
     DanglingBlob { id: BlobId },

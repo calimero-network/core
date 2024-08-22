@@ -50,6 +50,7 @@ pub enum QueryCallError {
 #[derive(Clone, Copy, Debug, Deserialize, Error, Serialize)]
 #[error("MutateCallError")]
 #[serde(tag = "type", content = "data")]
+#[allow(variant_size_differences)]
 pub enum MutateCallError {
     InvalidNodeType {
         node_type: NodeType,
