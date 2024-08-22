@@ -44,7 +44,7 @@ impl<V> DBArena<V> {
 impl<V> Clone for DBArena<V> {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            inner: Arc::clone(&self.inner),
         }
     }
 }

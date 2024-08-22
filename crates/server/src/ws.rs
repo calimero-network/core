@@ -94,7 +94,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
     drop(tokio::spawn(handle_node_events(
         connection_id,
-        state.clone(),
+        Arc::clone(&state),
         state.node_events.subscribe(),
         commands_sender.clone(),
     )));
@@ -120,7 +120,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
             Message::Text(message) => {
                 drop(tokio::spawn(handle_text_message(
                     connection_id,
-                    state.clone(),
+                    Arc::clone(&state),
                     message,
                 )));
             }
@@ -278,11 +278,11 @@ async fn handle_text_message(
     let body = match serde_json::from_value::<ws_primitives::RequestPayload>(message.payload) {
         Ok(payload) => match payload {
             ws_primitives::RequestPayload::Subscribe(request) => request
-                .handle(state.clone(), connection_state.clone())
+                .handle(Arc::clone(&state), connection_state.clone())
                 .await
                 .to_res_body(),
             ws_primitives::RequestPayload::Unsubscribe(request) => request
-                .handle(state.clone(), connection_state.clone())
+                .handle(Arc::clone(&state), connection_state.clone())
                 .await
                 .to_res_body(),
         },
