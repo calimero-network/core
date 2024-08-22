@@ -65,7 +65,7 @@ pub fn unreachable() -> ! {
     unreachable!()
 }
 
-#[inline(always)]
+#[inline]
 #[must_use]
 pub fn register_len(register_id: sys::RegisterId) -> Option<usize> {
     let len = unsafe { sys::register_len(register_id) };

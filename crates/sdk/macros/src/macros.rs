@@ -23,7 +23,7 @@ pub(crate) use parse_macro_input;
 macro_rules! infallible {
     ($body:block) => {{
         #[track_caller]
-        #[inline(always)]
+        #[inline]
         fn infallible<T, E: std::fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> T {
             match f() {
                 Ok(value) => value,
@@ -41,7 +41,7 @@ macro_rules! infallible {
         }
 
         infallible(
-            #[inline(always)]
+            #[inline]
             || $body,
         )
     }};

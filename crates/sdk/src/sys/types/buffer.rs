@@ -21,7 +21,7 @@ impl<'a, T> Slice<'a, T> {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn empty() -> Self {
         Self {
             ptr: Pointer::null(),
@@ -30,7 +30,7 @@ impl<'a, T> Slice<'a, T> {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn len(&self) -> usize {
         self.len as _
     }

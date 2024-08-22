@@ -8,7 +8,7 @@ pub struct Location<'a> {
 }
 
 impl Location<'_> {
-    #[inline(always)]
+    #[inline]
     pub fn unknown() -> Self {
         Location {
             file: Buffer::empty(),
@@ -30,12 +30,12 @@ impl Location<'_> {
             .expect("this should always be a valid utf8 string") // todo! test if this pulls in format code
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn line(&self) -> u32 {
         self.line
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn column(&self) -> u32 {
         self.column
     }

@@ -32,14 +32,14 @@ where
 pub struct WrappedReturn<T>(T);
 
 impl<T> WrappedReturn<T> {
-    #[inline(always)]
+    #[inline]
     pub fn new(value: T) -> Self {
         WrappedReturn(value)
     }
 }
 
 impl<T, E> WrappedReturn<Result<T, E>> {
-    #[inline(always)]
+    #[inline]
     pub fn into_result(self) -> ReturnsResult<T, E> {
         let WrappedReturn(value) = self;
         ReturnsResult(value)
@@ -57,7 +57,7 @@ where
     type Ok = T;
     type Err = Infallible;
 
-    #[inline(always)]
+    #[inline]
     fn into_result(self) -> ReturnsResult<Self::Ok, Self::Err> {
         let WrappedReturn(value) = self;
         ReturnsResult(Ok(value))
