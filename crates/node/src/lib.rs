@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use calimero_primitives::context::ContextId;
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;

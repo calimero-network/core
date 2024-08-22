@@ -1,7 +1,7 @@
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::store::iterable_map::IterableMap;
-use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
+use near_sdk::{env, near_bindgen, require, AccountId, BorshStorageKey};
 
 #[derive(BorshStorageKey, BorshSerialize)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -170,6 +170,18 @@ impl PackageManager {
             .expect("Package doesn't exist")
             .get(&version)
             .expect("Version doesn't exist")
+    }
+
+    pub fn erase(&mut self) {
+        require!(
+            env::signer_account_id() == env::current_account_id(),
+            "Not so fast, chief.."
+        );
+
+        self.packages.clear();
+        for (_, mut releases) in self.releases.drain() {
+            releases.clear();
+        }
     }
 }
 
