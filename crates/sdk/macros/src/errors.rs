@@ -196,7 +196,7 @@ impl<'a, T> Errors<'a, T> {
 
         let mut tokens = proc_macro2::TokenStream::new();
 
-        for err in inner.errors.into_iter().flat_map(|err| err.into_iter()) {
+        for err in inner.errors.into_iter().flat_map(IntoIterator::into_iter) {
             let msg = err.to_string();
             quote_spanned! {err.span()=>
                 ::core::compile_error!(::core::concat!(#TAG, " ", #msg));

@@ -26,16 +26,13 @@ pub async fn create_root_key_handler(
     transform_request(intermediate_req)
         .and_then(|req| validate_challenge(req, &state.keypair))
         .and_then(|req| store_root(req, &mut state.store.clone()))
-        .map_or_else(
-            |err| err.into_response(),
-            |_| {
-                let data: String = "Root key stored".to_string();
-                ApiResponse {
-                    payload: CreateRootKeyResponse { data },
-                }
-                .into_response()
-            },
-        )
+        .map_or_else(IntoResponse::into_response, |_| {
+            let data: String = "Root key stored".to_string();
+            ApiResponse {
+                payload: CreateRootKeyResponse { data },
+            }
+            .into_response()
+        })
 }
 
 pub fn store_root(

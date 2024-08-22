@@ -367,7 +367,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                             break 'done;
                         };
 
-                        let Ok(version) = version.map(|v| v.parse()).transpose() else {
+                        let Ok(version) = version.map(str::parse).transpose() else {
                             println!("{IND} Invalid version: {version:?}");
                             break 'done;
                         };
