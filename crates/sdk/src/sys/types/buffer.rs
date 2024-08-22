@@ -2,6 +2,10 @@ use std::marker::PhantomData;
 
 use super::Pointer;
 
+// TODO: It does not make sense to have Slice.len as a u64 internally, and then
+// TODO: cast to usize everywhere, especially as this may fail on 32-bit
+// TODO: systems. Therefore, at some point this should be assessed, and ideally
+// TODO: the type used would be unified.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Slice<'a, T> {
@@ -30,6 +34,11 @@ impl<'a, T> Slice<'a, T> {
         }
     }
 
+    // TODO: This converts from u64 to usize, which may fail on 32-bit systems,
+    // TODO: but this function is meant to be infallible. That is a concern, as
+    // TODO: we want to eliminate all potential panics. This needs future
+    // TODO: assessment.
+    #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub fn len(&self) -> usize {
         self.len as _

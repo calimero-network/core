@@ -11,8 +11,8 @@ impl WasmerTunables {
     pub fn new(limits: &VMLimits) -> Self {
         let base = wasmer::sys::BaseTunables {
             static_memory_bound: wasmer_types::Pages(limits.max_memory_pages),
-            static_memory_offset_guard_size: wasmer_types::WASM_MAX_PAGES as _,
-            dynamic_memory_offset_guard_size: wasmer_types::WASM_MAX_PAGES as _,
+            static_memory_offset_guard_size: u64::from(wasmer_types::WASM_MAX_PAGES),
+            dynamic_memory_offset_guard_size: u64::from(wasmer_types::WASM_MAX_PAGES),
         };
 
         let vmconfig = wasmer::sys::VMConfig {

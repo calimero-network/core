@@ -15,6 +15,11 @@ impl PtrSizedInt {
         Self { value: value as _ }
     }
 
+    // TODO: This converts from u64 to usize, which may fail on 32-bit systems,
+    // TODO: but this function is meant to be infallible. That is a concern, as
+    // TODO: we want to eliminate all potential panics. This needs future
+    // TODO: assessment.
+    #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub const fn as_usize(self) -> usize {
         self.value as _

@@ -138,7 +138,7 @@ pub struct VMHostFunctions<'a> {
 
 impl VMHostFunctions<'_> {
     fn read_guest_memory(&self, ptr: u64, len: u64) -> Result<Vec<u8>> {
-        let mut buf = vec![0; len as usize];
+        let mut buf = vec![0; usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?];
 
         self.borrow_memory().read(ptr, &mut buf)?;
 
@@ -193,7 +193,7 @@ impl VMHostFunctions<'_> {
 
     pub fn read_register(&mut self, register_id: u64, ptr: u64, len: u64) -> Result<u32> {
         let data = self.borrow_logic().registers.get(register_id)?;
-        if data.len() != len as usize {
+        if data.len() != usize::try_from(len).map_err(|_| HostError::IntegerOverflow)? {
             return Ok(0);
         }
         self.borrow_memory().write(ptr, data)?;
@@ -227,7 +227,9 @@ impl VMHostFunctions<'_> {
     pub fn log_utf8(&mut self, ptr: u64, len: u64) -> Result<()> {
         let logic = self.borrow_logic();
 
-        if logic.logs.len() >= logic.limits.max_logs as usize {
+        if logic.logs.len()
+            >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
+        {
             return Err(HostError::LogsOverflow.into());
         }
 
@@ -255,7 +257,9 @@ impl VMHostFunctions<'_> {
             return Err(HostError::EventDataSizeOverflow.into());
         }
 
-        if logic.events.len() >= logic.limits.max_events as usize {
+        if logic.events.len()
+            >= usize::try_from(logic.limits.max_events).map_err(|_| HostError::IntegerOverflow)?
+        {
             return Err(HostError::EventsOverflow.into());
         }
 

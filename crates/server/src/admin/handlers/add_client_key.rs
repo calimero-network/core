@@ -85,6 +85,7 @@ pub fn store_client_key(
     req: AddPublicKeyRequest,
     store: &mut Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
+    #[allow(clippy::cast_sign_loss)]
     let client_key = ClientKey {
         wallet_type: req.wallet_metadata.wallet_type,
         signing_key: req.payload.message.public_key.clone(),

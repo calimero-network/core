@@ -92,6 +92,7 @@ pub fn auth(headers: &HeaderMap, store: &mut Store) -> Result<(), UnauthorizedEr
         UnauthorizedError::new("Failed to extract authentication headers.")
     })?;
 
+    #[allow(clippy::cast_sign_loss)]
     let client_key = ClientKey {
         wallet_type: auth_headers.wallet_type,
         signing_key: auth_headers.signing_key.clone(),

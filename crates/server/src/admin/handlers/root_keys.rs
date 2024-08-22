@@ -52,6 +52,7 @@ pub fn store_root_key(
     wallet_type: WalletType,
     store: &mut Store,
 ) -> Result<bool, ApiError> {
+    #[allow(clippy::cast_sign_loss)]
     let root_key = RootKey {
         signing_key,
         wallet_type,
