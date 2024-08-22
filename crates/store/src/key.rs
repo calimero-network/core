@@ -70,7 +70,7 @@ impl<T: KeyComponents> Key<T> {
         self.as_bytes().into()
     }
 
-    pub(crate) fn try_from_slice(slice: Slice<'_>) -> Option<Self> {
+    pub(crate) fn try_from_slice(slice: &Slice<'_>) -> Option<Self> {
         let bytes = slice.as_ref();
 
         (bytes.len() == GenericArray::<u8, T::LEN>::len()).then_some(())?;

@@ -156,14 +156,13 @@ pub fn validate_root_key_exists(
     req: AddPublicKeyRequest,
     store: &mut Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    let root_key_result =
-        get_root_key(store, req.wallet_metadata.signing_key.clone()).map_err(|e| {
-            info!("Error getting root key: {}", e);
-            ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: e.to_string(),
-            }
-        })?;
+    let root_key_result = get_root_key(store, &req.wallet_metadata.signing_key).map_err(|e| {
+        info!("Error getting root key: {}", e);
+        ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.to_string(),
+        }
+    })?;
 
     drop(match root_key_result {
         Some(root_key) => root_key,

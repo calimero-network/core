@@ -355,7 +355,7 @@ impl Node {
                             }
                             calimero_node_primitives::NodeType::Coordinator => {
                                 self.persist_transaction(
-                                    context_.clone(),
+                                    context_,
                                     transaction.clone(),
                                     transaction_hash,
                                 )?;

@@ -12,13 +12,13 @@ pub fn add_root_key(store: &mut Store, root_key: RootKey) -> eyre::Result<bool> 
         .any(|k| k.signing_key == root_key.signing_key)
     {
         did_document.root_keys.push(root_key);
-        update_did(store, did_document)?;
+        update_did(store, &did_document)?;
     }
 
     Ok(true)
 }
 
-pub fn get_root_key(store: &mut Store, signing_key: String) -> eyre::Result<Option<RootKey>> {
+pub fn get_root_key(store: &mut Store, signing_key: &str) -> eyre::Result<Option<RootKey>> {
     let did = get_or_create_did(store)?;
     Ok(did
         .root_keys
@@ -42,7 +42,7 @@ pub fn clean_auth_keys(store: &mut Store) -> eyre::Result<()> {
     did.client_keys.clear();
     did.root_keys.clear();
 
-    update_did(store, did)?;
+    update_did(store, &did)?;
 
     Ok(())
 }

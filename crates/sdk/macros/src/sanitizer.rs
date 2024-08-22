@@ -190,7 +190,7 @@ impl Sanitizer<'_> {
                         *counts.entry(case).or_insert(0) += count;
                     }
 
-                    errors.combine(err);
+                    errors.combine(&err);
                 }
                 entry => {
                     for (case, action) in cases.iter() {

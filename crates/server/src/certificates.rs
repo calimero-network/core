@@ -9,7 +9,7 @@ use x509_parser::prelude::{parse_x509_pem, ParsedExtension};
 use crate::admin::storage::ssl::{get_ssl, insert_or_update_ssl, SSLCert};
 
 pub async fn get_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
-    let certificate = match get_ssl(store.clone())? {
+    let certificate = match get_ssl(&store)? {
         Some(cert) => check_certificate(store.clone(), cert).await?,
         None => generate_certificate(store.clone()).await?,
     };
@@ -41,7 +41,7 @@ async fn generate_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> 
         .distinguished_name
         .push(DnType::CommonName, certificate_name);
 
-    let key_pair = match get_ssl(store.clone())? {
+    let key_pair = match get_ssl(&store)? {
         Some(ssl) => {
             let key = from_utf8(ssl.key())?;
             rcgen::KeyPair::from_pem(key)?
@@ -55,7 +55,7 @@ async fn generate_certificate(store: Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> 
     let cert_pem = cert.pem().into_bytes();
     let key_pem = key_pair.serialize_pem().into_bytes();
 
-    drop(insert_or_update_ssl(store.clone(), &cert_pem, &key_pem)?);
+    drop(insert_or_update_ssl(&store, &cert_pem, &key_pem)?);
 
     Ok((cert_pem, key_pem))
 }

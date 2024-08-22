@@ -93,7 +93,7 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                 }) {
                     Ok(ty) => ty,
                     Err(err) => {
-                        errors.combine(err);
+                        errors.combine(&err);
                         return Err(errors);
                     }
                 };

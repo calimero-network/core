@@ -112,7 +112,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
                 }) {
                     Ok(method::LogicMethod::Public(method)) => methods.push(method),
                     Ok(method::LogicMethod::Private) => {}
-                    Err(err) => errors.combine(err),
+                    Err(err) => errors.combine(&err),
                 }
             }
         }

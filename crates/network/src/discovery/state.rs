@@ -117,7 +117,7 @@ impl DiscoveryState {
     pub(crate) fn update_rendezvous_cookie(
         &mut self,
         rendezvous_peer: &PeerId,
-        cookie: rendezvous::Cookie,
+        cookie: &rendezvous::Cookie,
     ) {
         let _ = self
             .peers

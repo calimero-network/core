@@ -264,7 +264,7 @@ impl<'a, K: FromKeyParts> TryIntoKey<'a> for Structured<K> {
     type Error = Error<K::Error>;
 
     fn try_into_key(key: Key<'a>) -> Result<Self::Key, Self::Error> {
-        let key = KeyCore::try_from_slice(key).ok_or(Error::SizeMismatch)?;
+        let key = KeyCore::try_from_slice(&key).ok_or(Error::SizeMismatch)?;
 
         K::try_from_parts(key).map_err(Error::Structured)
     }

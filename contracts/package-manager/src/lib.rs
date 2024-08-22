@@ -83,13 +83,13 @@ impl PackageManager {
 
     pub fn add_release(
         &mut self,
-        name: String,
+        name: &str,
         version: String,
         notes: String,
         path: String,
         hash: String,
     ) {
-        let id_hash = PackageManager::calculate_id_hash(&name);
+        let id_hash = PackageManager::calculate_id_hash(name);
         // Get the last release version for the package
         let last_release_version = self.releases.get(&id_hash).map(|version_map| {
             version_map
@@ -151,9 +151,9 @@ impl PackageManager {
             .collect()
     }
 
-    pub fn get_releases(&self, id: String, offset: usize, limit: usize) -> Vec<&Release> {
+    pub fn get_releases(&self, id: &str, offset: usize, limit: usize) -> Vec<&Release> {
         self.releases
-            .get(&id)
+            .get(id)
             .expect("Package doesn't exist.")
             .iter()
             .skip(offset)
@@ -162,15 +162,15 @@ impl PackageManager {
             .collect()
     }
 
-    pub fn get_package(&self, id: String) -> &Package {
-        self.packages.get(&id).expect("Package doesn't exist")
+    pub fn get_package(&self, id: &str) -> &Package {
+        self.packages.get(id).expect("Package doesn't exist")
     }
 
-    pub fn get_release(&self, id: String, version: String) -> &Release {
+    pub fn get_release(&self, id: &str, version: &str) -> &Release {
         self.releases
-            .get(&id)
+            .get(id)
             .expect("Package doesn't exist")
-            .get(&version)
+            .get(version)
             .expect("Version doesn't exist")
     }
 }

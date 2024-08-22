@@ -875,7 +875,7 @@ impl Node {
             )
             .await?;
 
-            self.persist_transaction(context.clone(), transaction.clone(), transaction_hash)?;
+            self.persist_transaction(&context, transaction.clone(), transaction_hash)?;
 
             Ok(true)
         } else {
@@ -1131,7 +1131,7 @@ impl Node {
             )
             .await?;
 
-        self.persist_transaction(context, transaction, hash)?;
+        self.persist_transaction(&context, transaction, hash)?;
 
         Ok(outcome)
     }
@@ -1157,7 +1157,7 @@ impl Node {
 
     fn persist_transaction(
         &mut self,
-        context: calimero_primitives::context::Context,
+        context: &calimero_primitives::context::Context,
         transaction: calimero_primitives::transaction::Transaction,
         hash: calimero_primitives::hash::Hash,
     ) -> eyre::Result<()> {

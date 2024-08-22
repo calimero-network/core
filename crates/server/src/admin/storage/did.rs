@@ -53,12 +53,12 @@ pub fn get_or_create_did(store: &mut Store) -> eyre::Result<Did> {
     Ok(did_document)
 }
 
-pub fn update_did(store: &mut Store, did: Did) -> eyre::Result<()> {
+pub fn update_did(store: &mut Store, did: &Did) -> eyre::Result<()> {
     let entry = DidEntry::new();
 
     let mut handle = store.handle();
 
-    handle.put(&entry, &did)?;
+    handle.put(&entry, did)?;
 
     Ok(())
 }

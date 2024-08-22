@@ -66,7 +66,7 @@ impl RootCommand {
     pub async fn run(self) -> eyre::Result<()> {
         match self.action {
             SubCommands::Init(init) => init.run(self.args),
-            SubCommands::Config(config) => config.run(self.args),
+            SubCommands::Config(config) => config.run(&self.args),
             SubCommands::Run(run) => run.run(self.args).await,
             SubCommands::Context(context) => context.run(self.args).await,
             SubCommands::App(application) => application.run(self.args).await,

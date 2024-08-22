@@ -126,7 +126,7 @@ pub fn input() -> Option<Vec<u8>> {
 }
 
 #[inline]
-pub fn value_return<T, E>(result: Result<T, E>)
+pub fn value_return<T, E>(result: &Result<T, E>)
 where
     T: AsRef<[u8]>,
     E: AsRef<[u8]>,
@@ -140,7 +140,7 @@ pub fn log(message: &str) {
 }
 
 #[inline]
-pub fn emit<T: crate::event::AppEvent>(event: T) {
+pub fn emit<T: crate::event::AppEvent>(event: &T) {
     let kind = event.kind();
     let data = event.data();
 

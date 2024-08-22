@@ -267,7 +267,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                         args.push(arg)
                     }
                 },
-                Err(err) => errors.combine(err),
+                Err(err) => errors.combine(&err),
             }
         }
 
@@ -300,7 +300,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
                 ty: ret_type,
             }) {
                 Ok(ty) => ret = Some(ty),
-                Err(err) => errors.combine(err),
+                Err(err) => errors.combine(&err),
             }
         }
 

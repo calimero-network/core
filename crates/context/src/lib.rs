@@ -308,7 +308,7 @@ impl ContextManager {
     fn install_application(
         &self,
         blob_id: calimero_primitives::blobs::BlobId,
-        source: calimero_primitives::application::ApplicationSource,
+        source: &calimero_primitives::application::ApplicationSource,
         version: Option<semver::Version>,
         metadata: Vec<u8>,
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
@@ -350,7 +350,7 @@ impl ContextManager {
             eyre::bail!("non-absolute path")
         };
 
-        self.install_application(blob_id, uri.as_str().parse()?, version, metadata)
+        self.install_application(blob_id, &(uri.as_str().parse()?), version, metadata)
     }
 
     pub async fn install_application_from_url(
@@ -369,7 +369,7 @@ impl ContextManager {
 
         // todo! if blob hash doesn't match, remove it
 
-        self.install_application(blob_id, uri, version, metadata)
+        self.install_application(blob_id, &uri, version, metadata)
     }
 
     pub fn list_installed_applications(

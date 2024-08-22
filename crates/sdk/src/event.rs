@@ -22,7 +22,7 @@ thread_local! {
 #[inline(never)]
 fn handler<E: AppEventExt + 'static>(event: Box<dyn AppEventExt>) {
     if let Ok(event) = E::downcast(event) {
-        env::emit(event);
+        env::emit(&event);
     }
 }
 

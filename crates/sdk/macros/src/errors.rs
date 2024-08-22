@@ -172,7 +172,7 @@ impl<'a, T> Errors<'a, T> {
         self
     }
 
-    pub fn combine<U>(&mut self, other: Errors<'a, U>) {
+    pub fn combine<U>(&mut self, other: &Errors<'a, U>) {
         if let Some(errors) = other.inner().errors {
             self.subsume(errors);
         }

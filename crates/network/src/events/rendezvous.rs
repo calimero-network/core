@@ -16,7 +16,7 @@ impl EventHandler<rendezvous::client::Event> for EventLoop {
             } => {
                 self.discovery
                     .state
-                    .update_rendezvous_cookie(&rendezvous_node, cookie);
+                    .update_rendezvous_cookie(&rendezvous_node, &cookie);
 
                 for registration in registrations {
                     let peer_id = registration.record.peer_id();

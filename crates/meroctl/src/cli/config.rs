@@ -66,7 +66,7 @@ pub enum BootstrapNetwork {
 
 #[warn(unused_results)]
 impl ConfigCommand {
-    pub fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
+    pub fn run(self, root_args: &cli::RootArgs) -> eyre::Result<()> {
         let path = root_args
             .home
             .join(&root_args.node_name)

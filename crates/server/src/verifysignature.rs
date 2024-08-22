@@ -39,7 +39,7 @@ pub(crate) fn verify_near_signature(
     signature_base64: &str,
     public_key_str: &str,
 ) -> bool {
-    let Ok(nonce) = decode_to_fixed_array::<32>(Encoding::Base64, challenge) else {
+    let Ok(nonce) = decode_to_fixed_array::<32>(&Encoding::Base64, challenge) else {
         return false;
     };
     let payload: Payload = create_payload(message, nonce, app, callback_url);
@@ -57,7 +57,7 @@ enum Encoding {
 }
 
 fn decode_to_fixed_array<const N: usize>(
-    encoding: Encoding,
+    encoding: &Encoding,
     encoded: &str,
 ) -> eyre::Result<[u8; N]> {
     let decoded_vec = match encoding {
@@ -77,11 +77,11 @@ fn verify(public_key_str: &str, message: &[u8], signature: &str) -> eyre::Result
     let encoded_key = public_key_str.trim_start_matches("ed25519:");
 
     let decoded_key: [u8; 32] =
-        decode_to_fixed_array(Encoding::Base58, encoded_key).map_err(|e| eyre::eyre!(e))?;
+        decode_to_fixed_array(&Encoding::Base58, encoded_key).map_err(|e| eyre::eyre!(e))?;
     let vk = VerifyingKey::from_bytes(&decoded_key).map_err(|e| eyre::eyre!(e))?;
 
     let decoded_signature: [u8; 64] =
-        decode_to_fixed_array(Encoding::Base64, signature).map_err(|e| eyre::eyre!(e))?;
+        decode_to_fixed_array(&Encoding::Base64, signature).map_err(|e| eyre::eyre!(e))?;
     let signature = Signature::from_bytes(&decoded_signature);
 
     vk.verify(message, &signature).map_err(|e| eyre::eyre!(e))?;

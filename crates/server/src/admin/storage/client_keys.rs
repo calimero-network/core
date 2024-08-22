@@ -13,7 +13,7 @@ pub fn add_client_key(store: &mut Store, client_key: ClientKey) -> eyre::Result<
         .any(|k| k.signing_key == client_key.signing_key)
     {
         did_document.client_keys.push(client_key);
-        update_did(store, did_document)?;
+        update_did(store, &did_document)?;
     }
     Ok(true)
 }
@@ -57,7 +57,7 @@ pub fn remove_client_key(store: &mut Store, client_key: &ClientKey) -> eyre::Res
         .position(|x| x.signing_key == client_key.signing_key)
     {
         drop(did_document.client_keys.remove(pos));
-        update_did(store, did_document)?;
+        update_did(store, &did_document)?;
     }
 
     Ok(())
