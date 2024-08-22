@@ -70,7 +70,7 @@ pub async fn start(
 
     #[cfg(feature = "jsonrpc")]
     {
-        if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone())? {
+        if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone()) {
             app = app.route(path, handler);
             app = app.layer(middleware::auth::AuthSignatureLayer::new(store.clone()));
 
@@ -80,7 +80,7 @@ pub async fn start(
 
     #[cfg(feature = "websocket")]
     {
-        if let Some((path, handler)) = ws::service(&config, node_events.clone())? {
+        if let Some((path, handler)) = ws::service(&config, node_events.clone()) {
             app = app.route(path, handler);
 
             serviced = true;
@@ -89,8 +89,7 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) =
-            admin::service::setup(&config, store.clone(), ctx_manager)?
+        if let Some((api_path, router)) = admin::service::setup(&config, store.clone(), ctx_manager)
         {
             app = app.nest(api_path, router);
             serviced = true;

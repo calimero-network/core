@@ -39,12 +39,12 @@ pub(crate) fn setup(
     config: &crate::config::ServerConfig,
     store: Store,
     ctx_manager: calimero_context::ContextManager,
-) -> eyre::Result<Option<(&'static str, Router)>> {
+) -> Option<(&'static str, Router)> {
     let _ = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
             info!("Admin api is disabled");
-            return Ok(None);
+            return None;
         }
     };
 
@@ -139,7 +139,7 @@ pub(crate) fn setup(
         .nest("/", protected_router)
         .layer(session_layer);
 
-    Ok(Some((admin_path, admin_router)))
+    Some((admin_path, admin_router))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

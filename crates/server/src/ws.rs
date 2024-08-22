@@ -41,12 +41,12 @@ pub(crate) struct ServiceState {
 pub(crate) fn service(
     config: &crate::config::ServerConfig,
     node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
+) -> Option<(&'static str, MethodRouter)> {
     let _config = match &config.websocket {
         Some(config) if config.enabled => config,
         _ => {
             info!("WebSocket server is disabled");
-            return Ok(None);
+            return None;
         }
     };
 
@@ -61,7 +61,7 @@ pub(crate) fn service(
         connections: RwLock::default(),
     });
 
-    Ok(Some((path, get(ws_handler).layer(Extension(state)))))
+    Some((path, get(ws_handler).layer(Extension(state))))
 }
 
 async fn ws_handler(

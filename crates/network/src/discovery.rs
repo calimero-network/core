@@ -96,7 +96,7 @@ impl EventLoop {
 
     // Sends rendezvous registrations request to all rendezvous peers which require registration.
     // If rendezvous peer is not connected, it will be dialed which will trigger the registration during identify exchange.
-    pub(crate) fn broadcast_rendezvous_registrations(&mut self) -> eyre::Result<()> {
+    pub(crate) fn broadcast_rendezvous_registrations(&mut self) {
         for peer_id in self
             .discovery
             .state
@@ -125,8 +125,6 @@ impl EventLoop {
                 error!(%err, "Failed to update rendezvous registration");
             }
         }
-
-        Ok(())
     }
 
     // Sends rendezvous registration request to rendezvous peer if one is required.

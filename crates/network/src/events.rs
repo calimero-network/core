@@ -136,9 +136,7 @@ impl EventLoop {
                         discovery::state::RelayReservationStatus::Accepted,
                     );
 
-                    if let Err(err) = self.broadcast_rendezvous_registrations() {
-                        error!(%err, "Failed to handle rendezvous register");
-                    };
+                    self.broadcast_rendezvous_registrations();
                 }
             }
             SwarmEvent::ExternalAddrExpired { address } => {
@@ -149,9 +147,7 @@ impl EventLoop {
                         discovery::state::RelayReservationStatus::Expired,
                     );
 
-                    if let Err(err) = self.broadcast_rendezvous_registrations() {
-                        error!(%err, "Failed to handle rendezvous register");
-                    };
+                    self.broadcast_rendezvous_registrations();
                 }
             }
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {

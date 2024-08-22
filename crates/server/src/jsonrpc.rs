@@ -24,12 +24,12 @@ pub(crate) struct ServiceState {
 pub(crate) fn service(
     config: &crate::config::ServerConfig,
     server_sender: calimero_node_primitives::ServerSender,
-) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
+) -> Option<(&'static str, MethodRouter)> {
     let _config = match &config.jsonrpc {
         Some(config) if config.enabled => config,
         _ => {
             info!("JSON RPC server is disabled");
-            return Ok(None);
+            return None;
         }
     };
 
@@ -41,7 +41,7 @@ pub(crate) fn service(
 
     let state = Arc::new(ServiceState { server_sender });
 
-    Ok(Some((path, post(handle_request).layer(Extension(state)))))
+    Some((path, post(handle_request).layer(Extension(state))))
 }
 
 async fn handle_request(

@@ -833,9 +833,7 @@ impl Node {
                 debug!(?rejection, %source, "Received transaction rejection");
                 // todo! ensure this was only sent by a coordinator
 
-                if let Err(err) = self.reject_from_pool(rejection.transaction_hash) {
-                    error!(%err, "Failed to reject transaction from pool");
-                };
+                let _ = self.reject_from_pool(rejection.transaction_hash);
 
                 info!(context_id=%rejection.context_id, %source, "Attempting to perform rejection triggered catchup");
 
@@ -1135,15 +1133,9 @@ impl Node {
         Ok(outcome)
     }
 
-    fn reject_from_pool(
-        &mut self,
-        hash: calimero_primitives::hash::Hash,
-    ) -> eyre::Result<Option<()>> {
-        let Some(transaction_pool::TransactionPoolEntry { outcome_sender, .. }) =
-            self.tx_pool.remove(&hash)
-        else {
-            return Ok(None);
-        };
+    fn reject_from_pool(&mut self, hash: calimero_primitives::hash::Hash) -> Option<()> {
+        let transaction_pool::TransactionPoolEntry { outcome_sender, .. } =
+            self.tx_pool.remove(&hash)?;
 
         if let Some(sender) = outcome_sender {
             drop(sender.send(Err(
@@ -1151,7 +1143,7 @@ impl Node {
             )));
         }
 
-        Ok(Some(()))
+        Some(())
     }
 
     fn persist_transaction(
