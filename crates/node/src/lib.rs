@@ -1229,7 +1229,7 @@ impl Node {
         Ok(())
     }
 
-    pub async fn execute(
+    async fn execute(
         &mut self,
         context: &calimero_primitives::context::Context,
         hash: Option<calimero_primitives::hash::Hash>,
