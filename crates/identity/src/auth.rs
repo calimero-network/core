@@ -38,7 +38,7 @@ pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> ey
     match recover(&message_hash, &signature_bytes[..64], recovery_id) {
         Ok(pubkey) => {
             // Format the recovered public key as a hex string
-            let pubkey_hex = format!("{:02X?}", pubkey);
+            let pubkey_hex = format!("{pubkey:02X?}");
             // Compare the recovered public key with the account address in a case-insensitive manner
             let result = account.eq_ignore_ascii_case(&pubkey_hex);
             if !result {

@@ -77,7 +77,7 @@ impl InitCommand {
             } else {
                 fs::create_dir(&path)
             }
-            .wrap_err_with(|| format!("failed to create directory {:?}", path))?;
+            .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
         if ConfigFile::exists(&path) {

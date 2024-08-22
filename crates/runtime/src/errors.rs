@@ -67,7 +67,7 @@ pub enum HostError {
         },
         match .location {
             Location::Unknown => "".to_owned(),
-            Location::At { file, line, column } => format!(" at {}:{}:{}", file, line, column),
+            Location::At { file, line, column } => format!(" at {file}:{line}:{column}"),
         }
     )]
     Panic {
@@ -168,7 +168,7 @@ impl From<wasmer::InstantiationError> for FunctionCallError {
             wasmer::InstantiationError::Link(err) => err.into(),
             wasmer::InstantiationError::Start(err) => err.into(),
             wasmer::InstantiationError::CpuFeature(err) => {
-                panic!("host CPU does not support a required feature: {}", err)
+                panic!("host CPU does not support a required feature: {err}")
             }
             wasmer::InstantiationError::DifferentStores => {
                 panic!("one of the imports is incompatible with this execution instance")

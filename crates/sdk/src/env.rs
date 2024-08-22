@@ -110,8 +110,7 @@ fn read_register_sized<const N: usize>(register_id: sys::RegisterId) -> Option<[
 
     if !succeed {
         panic_str(&format!(
-            "register content length ({}) does not match buffer length ({})",
-            len, N
+            "register content length ({len}) does not match buffer length ({N})"
         ));
     }
 
@@ -160,7 +159,7 @@ pub fn state_read<T: crate::state::AppState>() -> Option<T> {
     let data = storage_read(STATE_KEY)?;
     match borsh::from_slice(&data) {
         Ok(state) => Some(state),
-        Err(err) => panic_str(&format!("Cannot deserialize app state: {:?}", err)),
+        Err(err) => panic_str(&format!("Cannot deserialize app state: {err:?}")),
     }
 }
 
@@ -180,7 +179,7 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
 pub fn state_write<T: crate::state::AppState>(state: &T) {
     let data = match borsh::to_vec(state) {
         Ok(data) => data,
-        Err(err) => panic_str(&format!("Cannot serialize app state: {:?}", err)),
+        Err(err) => panic_str(&format!("Cannot serialize app state: {err:?}")),
     };
     let _ = storage_write(STATE_KEY, &data);
 }

@@ -18,7 +18,7 @@ impl fmt::Display for Pretty<'_> {
         };
 
         let item = syn::parse2(tokens).map_err(|err| {
-            panic!("failed to parse tokens: {}", err);
+            panic!("failed to parse tokens: {err}");
         })?;
 
         let parsed = prettyplease::unparse(&syn::File {

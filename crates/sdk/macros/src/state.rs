@@ -211,7 +211,7 @@ impl Parse for StateArgs {
                 };
                 return Err(syn::Error::new(
                     span,
-                    format_args!("expected `=` after `{}`", ident),
+                    format_args!("expected `=` after `{ident}`"),
                 ));
             }
 
@@ -230,7 +230,7 @@ impl Parse for StateArgs {
                 _ => {
                     return Err(syn::Error::new_spanned(
                         &ident,
-                        format_args!("unexpected `{}`", ident),
+                        format_args!("unexpected `{ident}`"),
                     ));
                 }
             }

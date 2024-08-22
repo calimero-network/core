@@ -123,7 +123,7 @@ pub async fn start(
     let rustls_config = match RustlsConfig::from_pem(cert_pem, key_pem).await {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Failed to load TLS configuration: {:?}", e);
+            eprintln!("Failed to load TLS configuration: {e:?}");
             return Err(e.into());
         }
     };
@@ -139,7 +139,7 @@ pub async fn start(
                 .serve(app.into_make_service())
                 .await
             {
-                eprintln!("Server error: {:?}", e);
+                eprintln!("Server error: {e:?}");
                 return Err(e);
             }
             Ok::<(), std::io::Error>(())

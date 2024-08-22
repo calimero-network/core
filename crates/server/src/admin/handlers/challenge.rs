@@ -88,7 +88,7 @@ fn generate_challenge(
         }
         Err(e) => Err(ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("Failed to sign challenge: {}", e),
+            message: format!("Failed to sign challenge: {e}"),
         }),
     }
 }

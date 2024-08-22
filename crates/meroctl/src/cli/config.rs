@@ -78,7 +78,7 @@ impl ConfigCommand {
         let mut doc = toml_str.parse::<DocumentMut>()?;
 
         if self.print {
-            println!("{}", doc);
+            println!("{doc}");
             return Ok(());
         }
 

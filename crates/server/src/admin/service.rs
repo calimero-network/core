@@ -260,7 +260,7 @@ async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> im
         Ok(Some(cert)) => Some(cert),
         Ok(None) => None,
         Err(err) => {
-            eprintln!("Failed to get the certificate: {}", err);
+            eprintln!("Failed to get the certificate: {err}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to get the certificate",
@@ -288,7 +288,7 @@ async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> im
         drop(headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain")));
         drop(headers.insert(
             header::CONTENT_DISPOSITION,
-            HeaderValue::from_str(&format!("attachment; filename=\"{}\"", file_name)).unwrap(),
+            HeaderValue::from_str(&format!("attachment; filename=\"{file_name}\"")).unwrap(),
         ));
 
         // Create the response with the file content and headers

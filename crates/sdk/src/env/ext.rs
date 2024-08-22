@@ -10,7 +10,7 @@ pub unsafe fn fetch(
 ) -> Result<Vec<u8>, String> {
     let headers = match borsh::to_vec(&headers) {
         Ok(data) => data,
-        Err(err) => panic_str(&format!("Cannot serialize headers: {:?}", err)),
+        Err(err) => panic_str(&format!("Cannot serialize headers: {err:?}")),
     };
     let method = sys::Buffer::from(method);
     let url = sys::Buffer::from(url);

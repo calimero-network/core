@@ -152,7 +152,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         let context_id = context_id.parse()?;
 
                         let Ok(Some(context)) = node.ctx_manager.get_context(&context_id) else {
-                            println!("{IND} Context not found: {}", context_id);
+                            println!("{IND} Context not found: {context_id}");
                             return Ok(());
                         };
 
@@ -179,16 +179,16 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         {
                             Ok(tx_hash) => tx_hash,
                             Err(e) => {
-                                println!("{IND} Failed to execute transaction: {}", e);
+                                println!("{IND} Failed to execute transaction: {e}");
                                 return Ok(());
                             }
                         };
 
-                        println!("{IND} Scheduled Transaction! {:?}", tx_hash);
+                        println!("{IND} Scheduled Transaction! {tx_hash:?}");
 
                         drop(tokio::spawn(async move {
                             if let Ok(outcome_result) = outcome_receiver.await {
-                                println!("{IND} {:?}", tx_hash);
+                                println!("{IND} {tx_hash:?}");
 
                                 match outcome_result {
                                     Ok(outcome) => {
@@ -202,7 +202,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                                         ) {
                                                         format!(
                                                             "(json): {}",
-                                                            format!("{:#}", value)
+                                                            format!("{value:#}")
                                                                 .lines()
                                                                 .map(|line| line.cyan().to_string())
                                                                 .collect::<Vec<_>>()
@@ -213,13 +213,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                                     };
 
                                                     for line in result.lines() {
-                                                        println!("{IND}     > {}", line);
+                                                        println!("{IND}     > {line}");
                                                     }
                                                 }
                                                 None => println!("{IND}   (No return value)"),
                                             },
                                             Err(err) => {
-                                                let err = format!("{:#?}", err);
+                                                let err = format!("{err:#?}");
 
                                                 println!("{IND}   Error:");
                                                 for line in err.lines() {
@@ -237,7 +237,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                         }
                                     }
                                     Err(err) => {
-                                        let err = format!("{:#?}", err);
+                                        let err = format!("{err:#?}");
 
                                         println!("{IND}   Error:");
                                         for line in err.lines() {
@@ -249,7 +249,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         }));
                     }
                     Err(e) => {
-                        println!("{IND} Failed to parse payload: {}", e);
+                        println!("{IND} Failed to parse payload: {e}");
                     }
                 }
             } else {
@@ -283,7 +283,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 {
                     format!(
                         "(json): {}",
-                        format!("{:#}", value)
+                        format!("{value:#}")
                             .lines()
                             .map(|line| line.cyan().to_string())
                             .collect::<Vec<_>>()
@@ -294,7 +294,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 };
 
                 for line in payload.lines() {
-                    println!("{IND}       > {}", line);
+                    println!("{IND}       > {line}");
                 }
                 println!("{IND}     Prior: {:?}", entry.transaction.prior_hash.cyan());
             }
@@ -368,14 +368,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(version) = version.map(|v| v.parse()).transpose() else {
-                            println!("{IND} Invalid version: {:?}", version);
+                            println!("{IND} Invalid version: {version:?}");
                             break 'done;
                         };
 
                         let application_id = match type_ {
                             "url" => {
                                 let Ok(url) = resource.parse() else {
-                                    println!("{IND} Invalid URL: {}", resource);
+                                    println!("{IND} Invalid URL: {resource}");
                                     break 'done;
                                 };
 
@@ -393,12 +393,12 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                     .await?
                             }
                             unknown => {
-                                println!("{IND} Unknown resource type: `{}`", unknown);
+                                println!("{IND} Unknown resource type: `{unknown}`");
                                 break 'done;
                             }
                         };
 
-                        println!("{IND} Installed application: {}", application_id);
+                        println!("{IND} Installed application: {application_id}");
                     }
                     "ls" => {
                         println!(
@@ -426,7 +426,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     }
                     // todo! a "show" subcommand should help keep "ls" compact
                     unknown => {
-                        println!("{IND} Unknown command: `{}`", unknown);
+                        println!("{IND} Unknown command: `{unknown}`");
                         break 'usage;
                     }
                 }
@@ -486,15 +486,14 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
                         join_context(&node.ctx_manager, context_id, private_key).await?;
 
                         println!(
-                            "{IND} Joined context {}, waiting for catchup to complete..",
-                            context_id
+                            "{IND} Joined context {context_id}, waiting for catchup to complete..."
                         );
                     }
                     "leave" => {
@@ -504,13 +503,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
                         let _ = node.ctx_manager.delete_context(&context_id).await?;
 
-                        println!("{IND} Left context {}", context_id);
+                        println!("{IND} Left context {context_id}");
                     }
                     "create" => {
                         let Some((application_id, private_key)) = args.and_then(|args| {
@@ -524,7 +523,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(application_id) = application_id.parse() else {
-                            println!("{IND} Invalid application ID: {}", application_id);
+                            println!("{IND} Invalid application ID: {application_id}");
                             break 'done;
                         };
 
@@ -540,13 +539,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
                         let _ = node.ctx_manager.delete_context(&context_id).await?;
 
-                        println!("{IND} Deleted context {}", context_id);
+                        println!("{IND} Deleted context {context_id}");
                     }
                     "transactions" => {
                         let Some(context_id) = args else {
@@ -555,7 +554,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
@@ -597,7 +596,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
@@ -637,7 +636,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         }
                     }
                     unknown => {
-                        println!("{IND} Unknown command: `{}`", unknown);
+                        println!("{IND} Unknown command: `{unknown}`");
                         break 'usage;
                     }
                 }
@@ -647,7 +646,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             println!("{IND} Usage: context [ls|join|leave|create|delete|state] [args]");
         }
         unknown => {
-            println!("{IND} Unknown command: `{}`", unknown);
+            println!("{IND} Unknown command: `{unknown}`");
             println!("{IND} Usage: [call|peers|pool|gc|store|context|application] [args]")
         }
     }

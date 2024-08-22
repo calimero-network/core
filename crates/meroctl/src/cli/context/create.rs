@@ -126,13 +126,13 @@ async fn watch_app_and_update_context(
 
     watcher.watch(path.as_std_path(), notify::RecursiveMode::NonRecursive)?;
 
-    println!("(i) Watching for changes to \"\x1b[36m{}\x1b[0m\"", path);
+    println!("(i) Watching for changes to \"\x1b[36m{path}\x1b[0m\"");
 
     while let Some(event) = rx.recv().await {
         let event = match event {
             Ok(event) => event,
             Err(err) => {
-                eprintln!("\x1b[1mERROR\x1b[0m: {:?}", err);
+                eprintln!("\x1b[1mERROR\x1b[0m: {err:?}");
                 continue;
             }
         };
@@ -163,7 +163,7 @@ async fn update_context_application(
 ) -> eyre::Result<()> {
     let url = multiaddr_to_url(
         base_multiaddr,
-        &format!("admin-api/dev/contexts/{}/application", context_id),
+        &format!("admin-api/dev/contexts/{context_id}/application"),
     )?;
 
     let request =
@@ -173,8 +173,7 @@ async fn update_context_application(
 
     if response.status().is_success() {
         println!(
-            "Context{{\x1b[36m{}\x1b[0m}} -> Application{{\x1b[36m{}\x1b[0m}}",
-            context_id, application_id
+            "Context{{\x1b[36m{context_id}\x1b[0m}} -> Application{{\x1b[36m{application_id}\x1b[0m}}"
         );
 
         return Ok(());
@@ -197,7 +196,7 @@ async fn app_installed(
 ) -> eyre::Result<bool> {
     let url = multiaddr_to_url(
         base_multiaddr,
-        &format!("admin-api/dev/application/{}", application_id),
+        &format!("admin-api/dev/application/{application_id}"),
     )?;
     let response = client.get(url).send().await?;
 

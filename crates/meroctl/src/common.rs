@@ -18,7 +18,7 @@ pub(crate) fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> eyre::R
     let port = port.ok_or_else(|| eyre::eyre!("No TCP port found in Multiaddr"))?;
     let scheme = scheme.unwrap_or("http");
 
-    let mut url = Url::parse(&format!("{}://{}:{}", scheme, ip, port))?;
+    let mut url = Url::parse(&format!("{scheme}://{ip}:{port}"))?;
 
     url.set_path(api_path);
 
