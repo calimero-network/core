@@ -26,6 +26,8 @@ impl Discovery {
 impl EventLoop {
     // Sends rendezvous discovery requests to all rendezvous peers which are not throttled.
     // If rendezvous peer is not connected, it will be dialed which will trigger the discovery during identify exchange.
+    // TODO: Consider splitting this function up to reduce complexity.
+    #[allow(clippy::cognitive_complexity)]
     pub(crate) fn broadcast_rendezvous_discoveries(&mut self) {
         for peer_id in self
             .discovery
@@ -93,6 +95,8 @@ impl EventLoop {
 
     // Sends rendezvous registrations request to all rendezvous peers which require registration.
     // If rendezvous peer is not connected, it will be dialed which will trigger the registration during identify exchange.
+    // TODO: Consider splitting this function up to reduce complexity.
+    #[allow(clippy::cognitive_complexity)]
     pub(crate) fn broadcast_rendezvous_registrations(&mut self) {
         for peer_id in self
             .discovery

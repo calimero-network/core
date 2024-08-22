@@ -68,6 +68,8 @@ pub enum BootstrapNetwork {
 }
 
 impl InitCommand {
+    // TODO: Consider splitting this function up to reduce complexity.
+    #[allow(clippy::cognitive_complexity)]
     pub fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
         let mdns = self.mdns && !self.no_mdns;
 
