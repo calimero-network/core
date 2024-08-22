@@ -93,11 +93,11 @@ pub fn downcast<T: AppEventExt + 'static>(
 pub enum NoEvent {}
 impl AppEvent for NoEvent {
     fn kind(&self) -> Cow<'_, str> {
-        match *self {}
+        unreachable!()
     }
 
     fn data(&self) -> Cow<'_, [u8]> {
-        match *self {}
+        unreachable!()
     }
 }
 impl AppEventExt for NoEvent {}
