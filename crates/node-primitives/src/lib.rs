@@ -17,13 +17,20 @@ impl NodeType {
     }
 }
 
+#[derive(Debug)]
 pub struct ExecutionRequest {
     pub context_id: calimero_primitives::context::ContextId,
     pub method: String,
     pub payload: Vec<u8>,
-    pub writes: bool,
     pub executor_public_key: [u8; 32],
     pub outcome_sender: oneshot::Sender<Result<calimero_runtime::logic::Outcome, CallError>>,
+    pub finality: Option<Finality>,
+}
+
+#[derive(Debug)]
+pub enum Finality {
+    Local,
+    Global,
 }
 
 pub type ServerSender = mpsc::Sender<ExecutionRequest>;

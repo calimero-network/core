@@ -160,7 +160,7 @@ pub(crate) async fn call(
             context_id,
             method,
             payload: args,
-            writes,
+            finality: writes.then_some(calimero_node_primitives::Finality::Global),
             executor_public_key,
             outcome_sender,
         })

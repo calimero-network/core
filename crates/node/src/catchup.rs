@@ -330,7 +330,7 @@ impl Node {
                             }
                             calimero_node_primitives::NodeType::Coordinator => {
                                 self.validate_pending_transaction(
-                                    context_.clone(),
+                                    &context_,
                                     transaction,
                                     transaction_hash,
                                 )
@@ -341,21 +341,13 @@ impl Node {
                         },
                         types::TransactionStatus::Executed => match self.typ {
                             calimero_node_primitives::NodeType::Peer => {
-                                self.execute_transaction(
-                                    context_.clone(),
-                                    transaction.clone(),
-                                    transaction_hash,
-                                )
-                                .await?;
+                                self.execute_transaction(&context_, transaction, transaction_hash)
+                                    .await?;
 
                                 self.tx_pool.remove(&transaction_hash);
                             }
                             calimero_node_primitives::NodeType::Coordinator => {
-                                self.persist_transaction(
-                                    context_.clone(),
-                                    transaction.clone(),
-                                    transaction_hash,
-                                )?;
+                                self.persist_transaction(&context_, transaction, transaction_hash)?;
                             }
                         },
                     }
