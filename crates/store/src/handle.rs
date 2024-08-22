@@ -21,7 +21,7 @@ impl<L: Layer> Handle<L> {
 }
 
 #[derive(Debug, Error)]
-pub enum Error<E> {
+pub enum HandleError<E> {
     #[error(transparent)]
     LayerError(#[from] eyre::Report),
     #[error(transparent)]
@@ -29,7 +29,7 @@ pub enum Error<E> {
 }
 
 type EntryError<'a, E> =
-    Error<<<E as Entry>::Codec as Codec<'a, <E as Entry>::DataType<'a>>>::Error>;
+    HandleError<<<E as Entry>::Codec as Codec<'a, <E as Entry>::DataType<'a>>>::Error>;
 
 impl<L: ReadLayer> Handle<L> {
     pub fn has<E: Entry>(&self, entry: &E) -> Result<bool, EntryError<'_, E>> {
@@ -38,7 +38,9 @@ impl<L: ReadLayer> Handle<L> {
 
     pub fn get<E: Entry>(&self, entry: &E) -> Result<Option<E::DataType<'_>>, EntryError<'_, E>> {
         match self.inner.get(entry.key())? {
-            Some(value) => Ok(Some(E::Codec::decode(value).map_err(Error::CodecError)?)),
+            Some(value) => Ok(Some(
+                E::Codec::decode(value).map_err(HandleError::CodecError)?,
+            )),
             None => Ok(None),
         }
     }
@@ -65,13 +67,15 @@ impl<'a, L: WriteLayer<'a>> Handle<L> {
         self.inner
             .put(
                 entry.key(),
-                E::Codec::encode(value).map_err(Error::CodecError)?,
+                E::Codec::encode(value).map_err(HandleError::CodecError)?,
             )
-            .map_err(Error::LayerError)
+            .map_err(HandleError::LayerError)
     }
 
     pub fn delete<E: Entry>(&'a mut self, entry: &'a E) -> Result<(), EntryError<'_, E>> {
-        self.inner.delete(entry.key()).map_err(Error::LayerError)
+        self.inner
+            .delete(entry.key())
+            .map_err(HandleError::LayerError)
     }
 }
 

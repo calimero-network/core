@@ -160,7 +160,7 @@ impl fmt::Debug for Hash {
 }
 
 #[derive(Clone, Copy, Debug, Error)]
-pub enum Error {
+pub enum HashError {
     #[error("invalid hash length")]
     InvalidLength,
 
@@ -169,13 +169,13 @@ pub enum Error {
 }
 
 impl FromStr for Hash {
-    type Err = Error;
+    type Err = HashError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match Self::from_str(s) {
             Ok(hash) => Ok(hash),
-            Err(None) => Err(Error::InvalidLength),
-            Err(Some(err)) => Err(Error::DecodeError(err)),
+            Err(None) => Err(HashError::InvalidLength),
+            Err(Some(err)) => Err(HashError::DecodeError(err)),
         }
     }
 }

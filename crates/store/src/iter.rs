@@ -67,7 +67,7 @@ impl<V> Iter<'_, Unstructured, V> {
 #[allow(clippy::should_implement_trait)]
 impl<K: FromKeyParts, V> Iter<'_, Structured<K>, V>
 where
-    eyre::Report: From<Error<K::Error>>,
+    eyre::Report: From<IterError<K::Error>>,
 {
     pub fn seek(&mut self, key: K) -> eyre::Result<Option<K>> {
         let Some(key) = self.inner.seek(key.as_key().as_slice())? else {
@@ -95,7 +95,7 @@ impl<K> Iter<'_, K, Unstructured> {
 impl<'a, K, V, C> Iter<'a, K, Structured<(V, C)>>
 where
     C: Codec<'a, V>,
-    eyre::Report: From<Error<C::Error>>,
+    eyre::Report: From<IterError<C::Error>>,
 {
     pub fn read(&'a self) -> eyre::Result<V> {
         Structured::<(V, C)>::try_into_value(self.inner.read()?).map_err(Into::into)
@@ -251,7 +251,7 @@ pub trait TryIntoValue<'a>: private::Sealed {
 }
 
 #[derive(Debug, Error)]
-pub enum Error<E> {
+pub enum IterError<E> {
     #[error("size mismatch")]
     SizeMismatch,
     #[error(transparent)]
@@ -261,21 +261,21 @@ pub enum Error<E> {
 impl<K> private::Sealed for Structured<K> {}
 impl<'a, K: FromKeyParts> TryIntoKey<'a> for Structured<K> {
     type Key = K;
-    type Error = Error<K::Error>;
+    type Error = IterError<K::Error>;
 
     fn try_into_key(key: Key<'a>) -> Result<Self::Key, Self::Error> {
-        let key = KeyCore::try_from_slice(&key).ok_or(Error::SizeMismatch)?;
+        let key = KeyCore::try_from_slice(&key).ok_or(IterError::SizeMismatch)?;
 
-        K::try_from_parts(key).map_err(Error::Structured)
+        K::try_from_parts(key).map_err(IterError::Structured)
     }
 }
 
 impl<'a, V, C: Codec<'a, V>> TryIntoValue<'a> for Structured<(V, C)> {
     type Value = V;
-    type Error = Error<C::Error>;
+    type Error = IterError<C::Error>;
 
     fn try_into_value(value: Value<'a>) -> Result<Self::Value, Self::Error> {
-        C::decode(value).map_err(Error::Structured)
+        C::decode(value).map_err(IterError::Structured)
     }
 }
 
