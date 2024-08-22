@@ -187,18 +187,16 @@ impl Node {
     }
 
     pub(crate) async fn handle_interval_catchup(&mut self) {
-        let context_id = match self.ctx_manager.get_any_pending_catchup_context().await {
-            Some(context_id) => context_id,
-            None => return,
+        let Some(context_id) = self.ctx_manager.get_any_pending_catchup_context().await else {
+            return;
         };
 
         let peers = self
             .network_client
             .mesh_peers(TopicHash::from_raw(context_id))
             .await;
-        let peer_id = match peers.choose(&mut rand::thread_rng()) {
-            Some(peer_id) => peer_id,
-            None => return,
+        let Some(peer_id) = peers.choose(&mut rand::thread_rng()) else {
+            return;
         };
 
         info!(%context_id, %peer_id, "Attempting to perform interval triggered catchup");

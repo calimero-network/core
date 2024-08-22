@@ -21,9 +21,8 @@ pub fn verify_near_public_key(
 }
 
 pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> eyre::Result<bool> {
-    let signature_bytes = match hex::decode(signature.trim_start_matches("0x")) {
-        Ok(bytes) => bytes,
-        Err(_) => eyre::bail!("Cannot decode signature."),
+    let Ok(signature_bytes) = hex::decode(signature.trim_start_matches("0x")) else {
+        eyre::bail!("Cannot decode signature.")
     };
 
     // Ensure the signature is the correct length (65 bytes)

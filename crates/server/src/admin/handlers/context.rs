@@ -140,15 +140,13 @@ pub async fn delete_context_handler(
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
-        Ok(context_id) => context_id,
-        Err(_) => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid context id".into(),
-            }
-            .into_response();
+    let Ok(context_id_result) = calimero_primitives::context::ContextId::from_str(&context_id)
+    else {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid context id".into(),
         }
+        .into_response();
     };
 
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
@@ -224,15 +222,13 @@ pub async fn join_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     request: Option<Json<JoinContextRequest>>,
 ) -> impl IntoResponse {
-    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
-        Ok(context_id) => context_id,
-        Err(_) => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid context id".into(),
-            }
-            .into_response();
+    let Ok(context_id_result) = calimero_primitives::context::ContextId::from_str(&context_id)
+    else {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid context id".into(),
         }
+        .into_response();
     };
 
     let private_key = if let Some(Json(json_body)) = request {
@@ -268,15 +264,13 @@ pub async fn update_application_id(
     Path(context_id): Path<String>,
     Json(req): Json<calimero_server_primitives::admin::UpdateContextApplicationRequest>,
 ) -> impl IntoResponse {
-    let context_id_result = match calimero_primitives::context::ContextId::from_str(&context_id) {
-        Ok(context_id) => context_id,
-        Err(_) => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid context id".into(),
-            }
-            .into_response();
+    let Ok(context_id_result) = calimero_primitives::context::ContextId::from_str(&context_id)
+    else {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid context id".into(),
         }
+        .into_response();
     };
 
     let result = state

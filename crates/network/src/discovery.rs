@@ -33,12 +33,9 @@ impl EventLoop {
             .get_rendezvous_peer_ids()
             .collect::<Vec<_>>()
         {
-            let peer_info = match self.discovery.state.get_peer_info(&peer_id) {
-                Some(info) => info,
-                None => {
-                    error!(%peer_id, "Failed to lookup peer info");
-                    continue;
-                }
+            let Some(peer_info) = self.discovery.state.get_peer_info(&peer_id) else {
+                error!(%peer_id, "Failed to lookup peer info");
+                continue;
             };
 
             if peer_info
@@ -103,12 +100,9 @@ impl EventLoop {
             .get_rendezvous_peer_ids()
             .collect::<Vec<_>>()
         {
-            let peer_info = match self.discovery.state.get_peer_info(&peer_id) {
-                Some(info) => info,
-                None => {
-                    error!(%peer_id, "Failed to lookup peer info");
-                    continue;
-                }
+            let Some(peer_info) = self.discovery.state.get_peer_info(&peer_id) else {
+                error!(%peer_id, "Failed to lookup peer info");
+                continue;
             };
 
             if !peer_info.is_rendezvous_registration_required() {

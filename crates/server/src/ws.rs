@@ -153,12 +153,9 @@ async fn handle_node_events(
 ) {
     while let Ok(event) = node_events_receiver.recv().await {
         let connections = state.connections.read().await;
-        let connection_state = match connections.get(&connection_id) {
-            Some(state) => state,
-            None => {
-                error!(%connection_id, "Unexpected state, client_id not found in client state map");
-                return;
-            }
+        let Some(connection_state) = connections.get(&connection_id) else {
+            error!(%connection_id, "Unexpected state, client_id not found in client state map");
+            return;
         };
 
         debug!(
@@ -259,12 +256,9 @@ async fn handle_text_message(
 ) {
     debug!(%connection_id, %message, "Received text message");
     let connections = state.connections.read().await;
-    let connection_state = match connections.get(&connection_id) {
-        Some(state) => state,
-        None => {
-            error!(%connection_id, "Unexpected state, client_id not found in client state map");
-            return;
-        }
+    let Some(connection_state) = connections.get(&connection_id) else {
+        error!(%connection_id, "Unexpected state, client_id not found in client state map");
+        return;
     };
 
     if state.connections.read().await.get(&connection_id).is_none() {
