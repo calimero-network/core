@@ -32,6 +32,7 @@ pub async fn get_context_handler(
         .get_context(&context_id)
         .map_err(|err| parse_api_error(err).into_response());
 
+    #[allow(clippy::option_if_let_else)]
     match context {
         Ok(ctx) => match ctx {
             Some(context) => ApiResponse {

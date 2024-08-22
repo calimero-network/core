@@ -199,6 +199,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                             Ok(result) => match result {
                                                 Some(result) => {
                                                     println!("{IND}   Return Value:");
+                                                    #[allow(clippy::option_if_let_else)]
                                                     let result = if let Ok(value) =
                                                         serde_json::from_slice::<serde_json::Value>(
                                                             &result,
@@ -281,6 +282,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 println!("{IND}     Sender: {}", entry.sender.cyan());
                 println!("{IND}     Method: {:?}", entry.transaction.method.cyan());
                 println!("{IND}     Payload:");
+                #[allow(clippy::option_if_let_else)]
                 let payload = if let Ok(value) =
                     serde_json::from_slice::<serde_json::Value>(&entry.transaction.payload)
                 {

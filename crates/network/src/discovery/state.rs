@@ -85,10 +85,9 @@ impl DiscoveryState {
         peer_id: &PeerId,
         mechanism: PeerDiscoveryMechanism,
     ) -> bool {
-        match self.peers.get(peer_id) {
-            Some(info) => info.discoveries.contains(&mechanism),
-            None => false,
-        }
+        self.peers
+            .get(peer_id)
+            .map_or(false, |info| info.discoveries.contains(&mechanism))
     }
 
     pub(crate) fn add_peer_discovery_mechanism(

@@ -39,12 +39,13 @@ pub fn get_executor_identity() -> [u8; 32] {
 
 pub fn setup_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
+        #[allow(clippy::option_if_let_else)]
         let message = match info.payload().downcast_ref::<&'static str>() {
             Some(message) => *message,
-            None => match info.payload().downcast_ref::<String>() {
-                Some(message) => &**message,
-                None => "<no message>",
-            },
+            None => info
+                .payload()
+                .downcast_ref::<String>()
+                .map_or("<no message>", |message| &**message),
         };
 
         unsafe {

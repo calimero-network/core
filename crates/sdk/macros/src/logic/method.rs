@@ -86,6 +86,7 @@ impl ToTokens for PublicLogicMethod<'_> {
             }
         };
 
+        #[allow(clippy::option_if_let_else)]
         let (def, mut call) = match &self.self_type {
             Some(type_) => (
                 {
