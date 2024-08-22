@@ -23,6 +23,7 @@ pub mod ws;
 
 // TODO: Consider splitting this long function into multiple parts.
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::print_stderr)]
 pub async fn start(
     config: ServerConfig,
     server_sender: calimero_node_primitives::ServerSender,

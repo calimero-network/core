@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use camino::Utf8PathBuf;
 use clap::Parser;
 use libp2p::Multiaddr;

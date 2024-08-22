@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout)]
+
 use calimero_primitives::events::OutcomeEvent;
 use calimero_runtime::logic::VMLimits;
 use calimero_runtime::Constraint;

@@ -256,6 +256,7 @@ async fn list_applications_handler(
 }
 
 async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
+    #[allow(clippy::print_stderr)]
     let certificate = match get_ssl(&state.store) {
         Ok(Some(cert)) => Some(cert),
         Ok(None) => None,

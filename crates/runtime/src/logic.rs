@@ -1,4 +1,5 @@
 #![allow(single_use_lifetimes, unused_lifetimes)]
+#![allow(clippy::mem_forget)]
 
 use std::num::NonZeroU64;
 

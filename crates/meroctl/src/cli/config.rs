@@ -79,6 +79,7 @@ impl ConfigCommand {
             .map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
         let mut doc = toml_str.parse::<DocumentMut>()?;
 
+        #[allow(clippy::print_stdout)]
         if self.print {
             println!("{doc}");
             return Ok(());
