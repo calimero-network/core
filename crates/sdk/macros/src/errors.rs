@@ -214,14 +214,13 @@ impl<T> Drop for Errors<'_, T> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
             if let Some(inner) = &*self.inner.borrow() {
-                if inner.errors.is_some() {
-                    panic!(
-                        "dropped non-empty error accumulator defined at: {}:{}:{}",
-                        inner.defined_at.file(),
-                        inner.defined_at.line(),
-                        inner.defined_at.column()
-                    );
-                }
+                assert!(
+                    inner.errors.is_none(),
+                    "dropped non-empty error accumulator defined at: {}:{}:{}",
+                    inner.defined_at.file(),
+                    inner.defined_at.line(),
+                    inner.defined_at.column()
+                );
             }
         }
     }

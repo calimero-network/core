@@ -98,9 +98,10 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
 
         if let Some(idx) = column.insert(key, Arc::new(idx)) {
             if let Ok(idx) = Arc::try_unwrap(idx) {
-                if self.arena.write()?.remove(idx).is_none() {
-                    panic!("inconsistent state, index points to non-existent value");
-                };
+                assert!(
+                    self.arena.write()?.remove(idx).is_some(),
+                    "inconsistent state, index points to non-existent value"
+                );
             }
         }
 
