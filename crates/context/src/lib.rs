@@ -7,8 +7,7 @@ use camino::Utf8PathBuf;
 use futures_util::TryStreamExt;
 use reqwest::Url;
 use tokio::fs;
-use tokio::sync::oneshot;
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 use tracing::info;
 
 pub mod config;

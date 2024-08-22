@@ -29,6 +29,11 @@ pub struct ListApplicationsResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct GetApplicationDetailsResponse {
+    pub data: calimero_primitives::application::Application,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct InstallApplicationResponse {
     pub data: ApplicationInstallResult,
 }
