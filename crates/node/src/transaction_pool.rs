@@ -29,8 +29,12 @@ impl TransactionPool {
             >,
         >,
     ) -> eyre::Result<calimero_primitives::hash::Hash> {
-        let transaction_hash = calimero_primitives::hash::Hash::hash_json(&transaction)
-            .expect("Failed to hash transaction. This is a bug and should be reported.");
+        let transaction_hash =
+            calimero_primitives::hash::Hash::hash_json(&transaction).map_err(|err| {
+                eyre::eyre!(
+                    "Failed to hash transaction: {err}. This is a bug and should be reported."
+                )
+            })?;
 
         drop(self.transactions.insert(
             transaction_hash,

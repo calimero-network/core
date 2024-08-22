@@ -83,7 +83,9 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         };
 
         let Some(value) = self.arena.read()?.get(**idx).cloned() else {
-            panic!("inconsistent state, index points to non-existent value");
+            return Err(eyre::eyre!(
+                "inconsistent state, index points to non-existent value"
+            ));
         };
 
         Ok(Some(value))
@@ -96,10 +98,11 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
 
         if let Some(idx) = column.insert(key, Arc::new(idx)) {
             if let Ok(idx) = Arc::try_unwrap(idx) {
-                assert!(
-                    self.arena.write()?.remove(idx).is_some(),
-                    "inconsistent state, index points to non-existent value"
-                );
+                if self.arena.write()?.remove(idx).is_none() {
+                    return Err(eyre::eyre!(
+                        "inconsistent state, index points to non-existent value"
+                    ));
+                }
             }
         }
 
@@ -114,7 +117,9 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         if let Some(idx) = column.remove(key) {
             if let Ok(idx) = Arc::try_unwrap(idx) {
                 let Some(_value) = self.arena.write()?.remove(idx) else {
-                    panic!("inconsistent state, index points to non-existent value")
+                    return Err(eyre::eyre!(
+                        "inconsistent state, index points to non-existent value"
+                    ));
                 };
             }
         }
@@ -207,12 +212,11 @@ where
             return Ok(None);
         };
 
-        let value = self
-            .arena
-            .read()?
-            .get(**idx)
-            .cloned()
-            .expect("inconsistent state, index points to non-existent value");
+        let Some(value) = self.arena.read()?.get(**idx).cloned() else {
+            return Err(eyre::eyre!(
+                "inconsistent state, index points to non-existent value"
+            ));
+        };
 
         state.value = Some(value);
 
