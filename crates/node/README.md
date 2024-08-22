@@ -1,8 +1,11 @@
 # Calimero Node
-
 - [Introduction](#introduction)
 - [Core components](#core-components)
+  - [NodeType](#nodetype)
+  - [Store](#store)
+  - [TransactionPool](#transactionpool)
 - [Core flows](#core-flows)
+  - [Transaction handling](#transaction-handling)
   - [Coordinator joining ceremony](#coordinator-joining-ceremony)
   - [Catchup](#catchup)
 
