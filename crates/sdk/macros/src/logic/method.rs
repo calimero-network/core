@@ -281,9 +281,9 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         match (is_init, &self_type) {
             (true, Some(self_type)) => errors.subsume(syn::Error::new_spanned(
                 match self_type {
-                    arg::SelfType::Owned(ty) => ty,
-                    arg::SelfType::Mutable(ty) => ty,
-                    arg::SelfType::Immutable(ty) => ty,
+                    arg::SelfType::Owned(ty)
+                    | arg::SelfType::Mutable(ty)
+                    | arg::SelfType::Immutable(ty) => ty,
                 },
                 errors::ParseError::NoSelfReceiverAtInit,
             )),

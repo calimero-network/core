@@ -7,7 +7,7 @@ mod create;
 mod join;
 mod list;
 
-pub const EXAMPLES: &str = r#"
+pub const EXAMPLES: &str = r"
   # List all contexts
   $ meroctl --home data/ --node-name node1 context ls
 
@@ -16,7 +16,7 @@ pub const EXAMPLES: &str = r#"
 
   # Create a new context in dev mode
   $ meroctl --home data/ --node-name node1 context create --dev --path /path/to/app --version 1.0.0
-"#;
+";
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage contexts")]

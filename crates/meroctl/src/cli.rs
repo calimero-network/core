@@ -9,7 +9,7 @@ mod context;
 mod init;
 mod run;
 
-pub const EXAMPLES: &str = r#"
+pub const EXAMPLES: &str = r"
   # Initialize a new node
   $ meroctl --home data/ --node-name node1 init
 
@@ -21,7 +21,7 @@ pub const EXAMPLES: &str = r#"
 
   # Run a node as a coordinator
   $ meroctl --home data/ --node-name node1 run --node-type coordinator
-"#;
+";
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]

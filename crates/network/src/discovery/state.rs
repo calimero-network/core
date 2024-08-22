@@ -38,7 +38,7 @@ impl DiscoveryState {
     }
 
     pub(crate) fn update_peer_protocols(&mut self, peer_id: &PeerId, protocols: &[StreamProtocol]) {
-        protocols.iter().for_each(|protocol| {
+        for protocol in protocols {
             if protocol == &libp2p::relay::HOP_PROTOCOL_NAME {
                 let _ = self.relay_index.insert(*peer_id);
 
@@ -77,7 +77,7 @@ impl DiscoveryState {
                     }
                 };
             }
-        });
+        }
     }
 
     pub(crate) fn is_peer_discovered_via(

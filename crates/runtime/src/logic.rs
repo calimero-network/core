@@ -109,6 +109,7 @@ pub struct Event {
 }
 
 impl VMLogic<'_> {
+    #[must_use]
     pub fn finish(self, err: Option<FunctionCallError>) -> Outcome {
         let returns = match err {
             Some(err) => Err(err),

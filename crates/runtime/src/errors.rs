@@ -66,7 +66,7 @@ pub enum HostError {
             PanicContext::Host => "host",
         },
         match .location {
-            Location::Unknown => "".to_owned(),
+            Location::Unknown => String::new(),
             Location::At { file, line, column } => format!(" at {file}:{line}:{column}"),
         }
     )]

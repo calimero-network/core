@@ -40,7 +40,7 @@ static TAG: &str = "(calimero)>";
 // positive warning.
 #[allow(single_use_lifetimes)]
 mod parse_error {
-    use super::*;
+    use super::{Error, Pretty};
 
     #[derive(Debug, Error)]
     pub enum ParseError<'a> {

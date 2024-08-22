@@ -350,6 +350,7 @@ impl ContextManager {
         self.install_application(blob_id, &(uri.as_str().parse()?), version, metadata)
     }
 
+    #[allow(clippy::similar_names)]
     pub async fn install_application_from_url(
         &self,
         url: Url,
