@@ -31,12 +31,12 @@ impl Location<'_> {
     }
 
     #[inline]
-    pub fn line(&self) -> u32 {
+    pub const fn line(&self) -> u32 {
         self.line
     }
 
     #[inline]
-    pub fn column(&self) -> u32 {
+    pub const fn column(&self) -> u32 {
         self.column
     }
 }

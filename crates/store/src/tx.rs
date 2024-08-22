@@ -96,11 +96,11 @@ pub struct Entry<'a> {
 }
 
 impl<'a> Entry<'a> {
-    pub fn key(&self) -> &'a [u8] {
+    pub const fn key(&self) -> &'a [u8] {
         self.key
     }
 
-    pub fn column(&self) -> Column {
+    pub const fn column(&self) -> Column {
         self.column
     }
 }

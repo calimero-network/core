@@ -25,7 +25,7 @@ enum MaybeOwned<'a, T> {
 
 // couldn't use Cow because `<Cow<'a, T> as AsRef>::as_ref` doesn't return `&'a T`
 impl<'a, T> MaybeOwned<'a, T> {
-    fn as_ref(&'a self) -> &'a T {
+    const fn as_ref(&'a self) -> &'a T {
         match self {
             MaybeOwned::Borrowed(t) => t,
             MaybeOwned::Owned(t) => t,

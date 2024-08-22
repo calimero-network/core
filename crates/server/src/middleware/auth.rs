@@ -23,7 +23,7 @@ pub struct AuthSignatureLayer {
 }
 
 impl AuthSignatureLayer {
-    pub fn new(store: Store) -> Self {
+    pub const fn new(store: Store) -> Self {
         Self { store }
     }
 }
@@ -183,7 +183,7 @@ pub struct UnauthorizedError<'a> {
 }
 
 impl<'a> UnauthorizedError<'a> {
-    pub fn new(reason: &'a str) -> Self {
+    pub const fn new(reason: &'a str) -> Self {
         Self { reason }
     }
 }

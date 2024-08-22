@@ -221,7 +221,7 @@ impl PeerInfo {
         })
     }
 
-    pub(crate) fn rendezvous(&self) -> Option<&PeerRendezvousInfo> {
+    pub(crate) const fn rendezvous(&self) -> Option<&PeerRendezvousInfo> {
         self.rendezvous.as_ref()
     }
 
@@ -260,7 +260,7 @@ pub(crate) struct PeerRelayInfo {
 }
 
 impl PeerRelayInfo {
-    pub(crate) fn reservation_status(&self) -> RelayReservationStatus {
+    pub(crate) const fn reservation_status(&self) -> RelayReservationStatus {
         self.reservation_status
     }
 
@@ -295,11 +295,11 @@ pub(crate) enum RendezvousRegistrationStatus {
 }
 
 impl PeerRendezvousInfo {
-    pub(crate) fn cookie(&self) -> Option<&rendezvous::Cookie> {
+    pub(crate) const fn cookie(&self) -> Option<&rendezvous::Cookie> {
         self.cookie.as_ref()
     }
 
-    pub(crate) fn last_discovery_at(&self) -> Option<time::Instant> {
+    pub(crate) const fn last_discovery_at(&self) -> Option<time::Instant> {
         self.last_discovery_at
     }
 
@@ -308,7 +308,7 @@ impl PeerRendezvousInfo {
         self.last_discovery_at = Some(time::Instant::now());
     }
 
-    pub(crate) fn registration_status(&self) -> RendezvousRegistrationStatus {
+    pub(crate) const fn registration_status(&self) -> RendezvousRegistrationStatus {
         self.registration_status
     }
 

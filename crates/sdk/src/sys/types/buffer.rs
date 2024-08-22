@@ -40,12 +40,12 @@ impl<'a, T> Slice<'a, T> {
     // TODO: assessment.
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len as _
     }
 
     #[inline]
-    fn as_slice(&self) -> &'a [T] {
+    const fn as_slice(&self) -> &'a [T] {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len()) }
     }
 

@@ -11,7 +11,7 @@ pub struct Handle<L> {
 }
 
 impl<L: Layer> Handle<L> {
-    pub fn new(inner: L) -> Self {
+    pub const fn new(inner: L) -> Self {
         Self { inner }
     }
 

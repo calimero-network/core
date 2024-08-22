@@ -22,7 +22,7 @@ pub struct BlobManager {
 
 impl BlobManager {
     #[must_use]
-    pub fn new(data_store: DataStore, blob_store: FileSystem) -> Self {
+    pub const fn new(data_store: DataStore, blob_store: FileSystem) -> Self {
         Self {
             data_store,
             blob_store,

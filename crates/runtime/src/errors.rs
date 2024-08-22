@@ -136,7 +136,7 @@ pub enum Location {
 }
 
 impl Location {
-    fn is_unknown(&self) -> bool {
+    const fn is_unknown(&self) -> bool {
         matches!(self, Self::Unknown)
     }
 }

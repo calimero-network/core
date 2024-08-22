@@ -202,7 +202,7 @@ impl TryFrom<&Multiaddr> for RelayedMultiaddr {
 }
 
 impl RelayedMultiaddr {
-    fn relay_peer_id(&self) -> &PeerId {
+    const fn relay_peer_id(&self) -> &PeerId {
         &self.relay_peer
     }
 }

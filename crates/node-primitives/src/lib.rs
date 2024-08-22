@@ -10,7 +10,7 @@ pub enum NodeType {
 
 impl NodeType {
     #[must_use]
-    pub fn is_coordinator(&self) -> bool {
+    pub const fn is_coordinator(&self) -> bool {
         match *self {
             Self::Coordinator => true,
             Self::Peer => false,

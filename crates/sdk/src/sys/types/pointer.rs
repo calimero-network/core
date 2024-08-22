@@ -55,12 +55,12 @@ impl<T> Pointer<T> {
     }
 
     #[inline]
-    pub fn as_ptr(&self) -> *const T {
+    pub const fn as_ptr(&self) -> *const T {
         self.value.as_usize() as _
     }
 
     #[inline]
-    pub fn as_mut_ptr(&self) -> *mut T {
+    pub const fn as_mut_ptr(&self) -> *mut T {
         self.value.as_usize() as _
     }
 }

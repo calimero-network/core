@@ -33,7 +33,7 @@ pub struct WrappedReturn<T>(T);
 
 impl<T> WrappedReturn<T> {
     #[inline]
-    pub fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         Self(value)
     }
 }

@@ -176,7 +176,7 @@ impl PackageManager {
 }
 
 impl Package {
-    fn new(
+    const fn new(
         id: String,
         name: String,
         description: String,

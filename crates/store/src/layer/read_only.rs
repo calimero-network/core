@@ -12,7 +12,7 @@ impl<'base, L> ReadOnly<'base, L>
 where
     L: ReadLayer,
 {
-    pub fn new(layer: &'base L) -> Self {
+    pub const fn new(layer: &'base L) -> Self {
         Self { inner: layer }
     }
 }
