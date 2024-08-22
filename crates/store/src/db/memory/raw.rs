@@ -124,6 +124,8 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         Ok(())
     }
 
+    // TODO: We should consider returning Iterator here.
+    #[allow(clippy::iter_not_returning_iterator)]
     pub fn iter<'a>(&self, col: Column) -> InMemoryIterInner<'a, K, V> {
         InMemoryIterInner {
             arena: self.arena.clone(),

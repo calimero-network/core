@@ -33,6 +33,9 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>>;
     fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()>;
     fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()>;
+
+    // TODO: We should consider returning Iterator here.
+    #[allow(clippy::iter_not_returning_iterator)]
     fn iter(&self, col: Column) -> eyre::Result<Iter<'_>>;
 
     // todo! redesign this, each DB should return a transaction

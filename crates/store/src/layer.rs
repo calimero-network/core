@@ -17,6 +17,9 @@ pub trait Layer {
 pub trait ReadLayer: Layer {
     fn has<K: AsKeyParts>(&self, key: &K) -> eyre::Result<bool>;
     fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice<'_>>>;
+
+    // TODO: We should consider returning Iterator here.
+    #[allow(clippy::iter_not_returning_iterator)]
     fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<'_, Structured<K>>>;
 }
 

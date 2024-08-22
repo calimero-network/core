@@ -43,6 +43,8 @@ impl<L: ReadLayer> Handle<L> {
         }
     }
 
+    // TODO: We should consider returning Iterator here.
+    #[allow(clippy::iter_not_returning_iterator)]
     #[allow(clippy::type_complexity)]
     pub fn iter<E: Entry<Key: FromKeyParts>>(
         &self,
