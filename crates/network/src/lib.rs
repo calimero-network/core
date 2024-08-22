@@ -301,7 +301,7 @@ impl EventLoop {
                             .behaviour_mut()
                             .gossipsub
                             .mesh_peers(&topic)
-                            .cloned()
+                            .copied()
                             .collect(),
                     ),
                 );

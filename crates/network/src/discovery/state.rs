@@ -152,7 +152,7 @@ impl DiscoveryState {
     }
 
     pub(crate) fn get_rendezvous_peer_ids(&self) -> impl Iterator<Item = PeerId> + '_ {
-        self.rendezvous_index.iter().cloned()
+        self.rendezvous_index.iter().copied()
     }
 
     pub(crate) fn is_peer_relay(&self, peer_id: &PeerId) -> bool {

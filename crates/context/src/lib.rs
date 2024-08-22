@@ -173,7 +173,7 @@ impl ContextManager {
             .pending_catchup
             .iter()
             .next()
-            .cloned()
+            .copied()
     }
 
     pub async fn clear_context_pending_catchup(
