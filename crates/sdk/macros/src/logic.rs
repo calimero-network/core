@@ -35,6 +35,8 @@ pub struct LogicImplInput<'a> {
 impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
     type Error = errors::Errors<'a, syn::ItemImpl>;
 
+    // TODO: This unwrap() call needs to be corrected to return an error.
+    #[allow(clippy::unwrap_in_result)]
     fn try_from(input: LogicImplInput<'a>) -> Result<Self, Self::Error> {
         let errors = errors::Errors::new(input.item);
 

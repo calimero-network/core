@@ -23,6 +23,8 @@ pub struct LogicTyInput<'a, 'b> {
 impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
     type Error = errors::Errors<'a, syn::Type>;
 
+    // TODO: This unwrap() call needs to be corrected to return an error.
+    #[allow(clippy::unwrap_in_result)]
     fn try_from(input: LogicTyInput<'a, 'b>) -> Result<Self, Self::Error> {
         let errors = errors::Errors::new(input.ty);
 
