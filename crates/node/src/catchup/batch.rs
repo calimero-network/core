@@ -2,7 +2,7 @@ use futures_util::SinkExt;
 
 use crate::types;
 
-pub(crate) struct CatchupBatchSender {
+pub struct CatchupBatchSender {
     batch_size: u8,
     batch: Vec<types::TransactionWithStatus>,
     stream: Box<calimero_network::stream::Stream>,

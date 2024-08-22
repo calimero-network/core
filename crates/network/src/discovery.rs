@@ -4,12 +4,12 @@ use tracing::{debug, error};
 
 use crate::discovery::state::DiscoveryState;
 
-pub(crate) mod state;
+pub mod state;
 
 use super::{config, EventLoop};
 
 #[derive(Debug)]
-pub(crate) struct Discovery {
+pub struct Discovery {
     pub(crate) state: DiscoveryState,
     pub(crate) rendezvous_config: config::RendezvousConfig,
 }

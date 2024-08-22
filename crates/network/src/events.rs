@@ -161,7 +161,7 @@ impl EventLoop {
 }
 
 #[derive(Debug)]
-pub(crate) struct RelayedMultiaddr {
+pub struct RelayedMultiaddr {
     relay_peer: PeerId,
 }
 

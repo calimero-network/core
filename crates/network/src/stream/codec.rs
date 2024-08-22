@@ -20,7 +20,7 @@ pub enum CodecError {
 }
 
 #[derive(Debug)]
-pub(crate) struct MessageJsonCodec {
+pub struct MessageJsonCodec {
     length_codec: LengthDelimitedCodec,
 }
 

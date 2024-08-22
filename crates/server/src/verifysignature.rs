@@ -31,7 +31,7 @@ fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     hash_array
 }
 
-pub(crate) fn verify_near_signature(
+pub fn verify_near_signature(
     challenge: &str,
     message: &str,
     app: &str,

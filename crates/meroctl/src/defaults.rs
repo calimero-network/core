@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 
-pub(crate) const DEFAULT_CALIMERO_HOME: &str = ".calimero";
+pub const DEFAULT_CALIMERO_HOME: &str = ".calimero";
 
 pub fn default_node_dir() -> Utf8PathBuf {
     if let Some(home) = dirs::home_dir() {

@@ -77,7 +77,7 @@ impl<'a> Transaction<'a> {
     }
 }
 
-pub(crate) struct ColRange<'this, 'a> {
+pub struct ColRange<'this, 'a> {
     iter: Option<btree_map::Range<'this, Slice<'a>, Operation<'a>>>,
 }
 

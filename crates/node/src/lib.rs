@@ -101,6 +101,7 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         config.network.catchup.interval,
     );
 
+    #[allow(clippy::redundant_pub_crate)]
     loop {
         tokio::select! {
             event = network_events.recv() => {

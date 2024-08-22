@@ -15,7 +15,7 @@ const RENDEZVOUS_PROTOCOL_NAME: StreamProtocol = StreamProtocol::new("/rendezvou
 /// It holds the relay and rendezvous indexes to quickly check if a peer is a relay or rendezvous.
 /// It offers mutable methods for managing the state of the peers.
 #[derive(Debug, Default)]
-pub(crate) struct DiscoveryState {
+pub struct DiscoveryState {
     peers: BTreeMap<PeerId, PeerInfo>,
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
@@ -167,7 +167,7 @@ impl DiscoveryState {
 /// PeerInfo is a struct that holds information about a peer.
 /// It offers immutable methods for accessing the information.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PeerInfo {
+pub struct PeerInfo {
     addrs: HashSet<Multiaddr>,
     discoveries: HashSet<PeerDiscoveryMechanism>,
     relay: Option<PeerRelayInfo>,
@@ -249,13 +249,13 @@ impl PeerInfo {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum PeerDiscoveryMechanism {
+pub enum PeerDiscoveryMechanism {
     Mdns,
     Rendezvous,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PeerRelayInfo {
+pub struct PeerRelayInfo {
     reservation_status: RelayReservationStatus,
 }
 
@@ -270,7 +270,7 @@ impl PeerRelayInfo {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum RelayReservationStatus {
+pub enum RelayReservationStatus {
     #[default]
     Discovered,
     Requested,
@@ -279,14 +279,14 @@ pub(crate) enum RelayReservationStatus {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PeerRendezvousInfo {
+pub struct PeerRendezvousInfo {
     cookie: Option<rendezvous::Cookie>,
     last_discovery_at: Option<time::Instant>,
     registration_status: RendezvousRegistrationStatus,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum RendezvousRegistrationStatus {
+pub enum RendezvousRegistrationStatus {
     #[default]
     Discovered,
     Requested,

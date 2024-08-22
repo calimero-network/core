@@ -205,6 +205,7 @@ impl EventLoop {
         let mut rendezvous_discover_tick =
             tokio::time::interval(self.discovery.rendezvous_config.discovery_interval);
 
+        #[allow(clippy::redundant_pub_crate)]
         loop {
             tokio::select! {
                 event = self.swarm.next() => {
