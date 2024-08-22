@@ -174,7 +174,12 @@ where
 
         self.state = Some(State {
             // safety: range lives as long as self
-            range: unsafe { std::mem::transmute(range) },
+            range: unsafe {
+                std::mem::transmute::<
+                    std::collections::btree_map::Range<'_, K, Arc<thunderdome::Index>>,
+                    std::collections::btree_map::Range<'_, K, Arc<thunderdome::Index>>,
+                >(range)
+            },
             value: None,
         });
 
@@ -188,7 +193,12 @@ where
 
         let state = self.state.get_or_insert_with(|| State {
             // safety: range lives as long as self
-            range: unsafe { std::mem::transmute(column.range(..)) },
+            range: unsafe {
+                std::mem::transmute::<
+                    std::collections::btree_map::Range<'_, K, Arc<thunderdome::Index>>,
+                    std::collections::btree_map::Range<'_, K, Arc<thunderdome::Index>>,
+                >(column.range(..))
+            },
             value: None,
         });
 

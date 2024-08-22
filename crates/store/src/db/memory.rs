@@ -114,7 +114,7 @@ impl ArcSlice<'_> {
     fn new<'a, T: CastsTo<Slice<'a>>>(value: Arc<T>) -> Self {
         Self {
             // safety: T: CastsTo<Slice>
-            inner: unsafe { std::mem::transmute(value) },
+            inner: unsafe { std::mem::transmute::<Arc<T>, Arc<Slice<'_>>>(value) },
         }
     }
 }
@@ -204,7 +204,12 @@ impl InMemoryDBIter<'_> {
     {
         InMemoryDBIter {
             // safety: {K, V}: CastsTo<Slice>
-            inner: unsafe { std::mem::transmute(inner) },
+            inner: unsafe {
+                std::mem::transmute::<
+                    InMemoryIterInner<'_, K, V>,
+                    InMemoryIterInner<'_, Slice<'_>, Slice<'_>>,
+                >(inner)
+            },
         }
     }
 }

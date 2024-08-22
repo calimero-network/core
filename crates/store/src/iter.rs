@@ -160,7 +160,7 @@ where
             match self.iter.inner.next() {
                 Ok(Some(key)) => {
                     // safety: key only needs to live as long as the iterator, not it's reference
-                    let key = unsafe { std::mem::transmute(key) };
+                    let key = unsafe { std::mem::transmute::<Slice<'_>, Slice<'_>>(key) };
                     return Some(K::try_into_key(key).map_err(Into::into));
                 }
                 Err(e) => return Some(Err(e)),
@@ -199,7 +199,7 @@ where
             };
 
             // safety: key only needs to live as long as the iterator, not it's reference
-            let key = unsafe { std::mem::transmute(key) };
+            let key = unsafe { std::mem::transmute::<Slice<'_>, Slice<'_>>(key) };
 
             K::try_into_key(key).map_err(Into::into)
         };
@@ -211,7 +211,7 @@ where
             };
 
             // safety: value only needs to live as long as the iterator, not it's reference
-            let value = unsafe { std::mem::transmute(value) };
+            let value = unsafe { std::mem::transmute::<Slice<'_>, Slice<'_>>(value) };
 
             V::try_into_value(value).map_err(Into::into)
         };
