@@ -12,7 +12,9 @@ impl PtrSizedInt {
 
     #[inline]
     pub const fn new(value: usize) -> Self {
-        Self { value: value as _ }
+        Self {
+            value: value as u64,
+        }
     }
 
     // TODO: This converts from u64 to usize, which may fail on 32-bit systems,
@@ -22,7 +24,7 @@ impl PtrSizedInt {
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub const fn as_usize(self) -> usize {
-        self.value as _
+        self.value as usize
     }
 }
 
@@ -44,7 +46,7 @@ impl<T> Pointer<T> {
     #[inline]
     pub fn new(ptr: *const T) -> Self {
         Self {
-            value: PtrSizedInt::new(ptr as _),
+            value: PtrSizedInt::new(ptr as usize),
             _phantom: PhantomData,
         }
     }
@@ -56,12 +58,12 @@ impl<T> Pointer<T> {
 
     #[inline]
     pub const fn as_ptr(&self) -> *const T {
-        self.value.as_usize() as _
+        self.value.as_usize() as *const T
     }
 
     #[inline]
     pub const fn as_mut_ptr(&self) -> *mut T {
-        self.value.as_usize() as _
+        self.value.as_usize() as *mut T
     }
 }
 

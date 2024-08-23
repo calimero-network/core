@@ -23,7 +23,7 @@ impl<'a, T> Slice<'a, T> {
         let slice = value.as_ref();
         Self {
             ptr: Pointer::new(slice.as_ptr()),
-            len: slice.len() as _,
+            len: slice.len() as u64,
             _phantom: PhantomData,
         }
     }
@@ -44,7 +44,7 @@ impl<'a, T> Slice<'a, T> {
     #[allow(clippy::cast_possible_truncation)]
     #[inline]
     pub const fn len(&self) -> usize {
-        self.len as _
+        self.len as usize
     }
 
     #[inline]
