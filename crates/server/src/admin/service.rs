@@ -37,6 +37,7 @@ pub(crate) fn setup(
     store: Store,
     ctx_manager: calimero_context::ContextManager,
 ) -> eyre::Result<Option<(&'static str, Router)>> {
+    let listen = config.listen.clone();
     match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
@@ -107,7 +108,7 @@ pub(crate) fn setup(
             "/identity/keys",
             delete(handlers::root_keys::delete_auth_keys_handler),
         )
-        .layer(middleware::auth::AuthSignatureLayer::new(store))
+        .layer(middleware::auth::AuthSignatureLayer::new(store.clone()))
         .layer(Extension(shared_state.clone()));
 
     let unprotected_router = Router::new()
@@ -151,7 +152,8 @@ pub(crate) fn setup(
     let admin_router = Router::new()
         .nest("/", unprotected_router)
         .nest("/", protected_router)
-        .layer(session_layer);
+        .layer(session_layer)
+        .layer(middleware::host::HostLayer::new(listen));
 
     Ok(Some((admin_path, admin_router)))
 }
