@@ -11,6 +11,8 @@ use calimero_store::Store;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
@@ -152,6 +154,26 @@ pub(crate) fn setup(
         .layer(session_layer);
 
     Ok(Some((admin_path, admin_router)))
+}
+
+pub(crate) fn site(
+    config: &crate::config::ServerConfig,
+) -> eyre::Result<Option<(&'static str, ServeDir<SetStatus<ServeFile>>)>> {
+    let _config = match &config.admin {
+        Some(config) if config.enabled => config,
+        _ => {
+            info!("Admin site is disabled");
+            return Ok(None);
+        }
+    };
+    let path = "/admin-dashboard";
+
+    let react_static_files_path = "./node-ui/build";
+    let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
+        ServeFile::new(format!("{}/index.html", react_static_files_path)),
+    );
+
+    Ok(Some((path, react_app_serve_dir)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]

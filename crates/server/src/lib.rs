@@ -89,13 +89,16 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) =
-            admin::service::setup(&config, store.clone(), ctx_manager)?
-        {
+        if let Some((api_path, router)) = admin::service::setup(&config, store.clone(), ctx_manager)? {
+            if let Some((site_path, serve_dir)) = admin::service::site(&config)? {
+                app = app.nest_service(site_path, serve_dir);
+            }
+
             app = app.nest(api_path, router);
             serviced = true;
         }
     }
+    
 
     if !serviced {
         warn!("No services enabled, enable at least one service to start the server");
