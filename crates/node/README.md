@@ -60,6 +60,7 @@ Setup:
 - Context creator sends a message to the topic requesting a coordinator.
 - Interested coordinators send a message to the topic replying with the intent to coordinate.
 - Context creator selects a coordinator from the interested coordinators.
+- Context creator stores `PeerId` of the selected coordinator.
 - Context creator sends a message to the topic with the information about the selected coordinator.
 - Selected coordinator joins the context topic, while other coordinators clear pending request.
 
@@ -82,6 +83,7 @@ sequenceDiagram
     Peer->>+Peer:Handle [Offer]
     alt If pending request exists
         Peer->>Coordinator: Send [OfferAccepted]
+        Peer->>Peer:Update context with the coordinator `PeerId`
         Peer->>Peer:Clear pending request
     else
         Peer->>-Coordinator: Send [OfferDeclined]
