@@ -1,3 +1,12 @@
+use std::io::Error as IoError;
+
+use borsh::{
+    from_slice as from_borsh_slice, to_vec as to_borsh_vec, BorshDeserialize, BorshSerialize,
+};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec, Error as JsonError};
+
 use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
@@ -50,16 +59,16 @@ pub enum Json {}
 #[cfg(feature = "serde")]
 impl<T> Codec<'_, T> for Json
 where
-    T: serde::Serialize + serde::de::DeserializeOwned,
+    T: Serialize + DeserializeOwned,
 {
-    type Error = serde_json::Error;
+    type Error = JsonError;
 
     fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
-        serde_json::to_vec(value).map(Into::into)
+        to_json_vec(value).map(Into::into)
     }
 
     fn decode(bytes: Slice<'_>) -> Result<T, Self::Error> {
-        serde_json::from_slice(&bytes)
+        from_json_slice(&bytes)
     }
 }
 
@@ -71,15 +80,15 @@ pub enum Borsh {}
 #[cfg(feature = "borsh")]
 impl<T> Codec<'_, T> for Borsh
 where
-    T: borsh::BorshSerialize + borsh::BorshDeserialize,
+    T: BorshSerialize + BorshDeserialize,
 {
-    type Error = std::io::Error;
+    type Error = IoError;
 
     fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
-        borsh::to_vec(&value).map(Into::into)
+        to_borsh_vec(&value).map(Into::into)
     }
 
     fn decode(bytes: Slice<'_>) -> Result<T, Self::Error> {
-        borsh::from_slice(&bytes)
+        from_borsh_slice(&bytes)
     }
 }

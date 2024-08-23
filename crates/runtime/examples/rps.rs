@@ -1,11 +1,14 @@
 #![allow(dead_code)]
 
+use calimero_runtime::logic::{VMContext, VMLimits};
+use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::{logic, run, store, Constraint};
+use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use rand::distributions::{Distribution, Standard};
-use rand::Rng;
+use rand::{random, thread_rng, Rng};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{from_slice as from_json_slice, json, to_vec as to_json_vec};
 
 #[derive(Debug, Deserialize)]
 struct KeyComponents {
@@ -41,12 +44,12 @@ struct GameOver {
     winner: Option<usize>,
 }
 
-fn main() -> eyre::Result<()> {
+fn main() -> EyreResult<()> {
     let file = include_bytes!("../../../apps/rock-paper-scissors/res/rock_paper_scissors.wasm");
 
-    let mut storage = store::InMemoryStorage::default();
+    let mut storage = InMemoryStorage::default();
 
-    let limits = logic::VMLimits {
+    let limits = VMLimits {
         max_stack_size: 200 << 10, // 200 KiB
         max_memory_pages: 1 << 10, // 1 KiB
         max_registers: 100,
@@ -65,10 +68,10 @@ fn main() -> eyre::Result<()> {
     println!("{:>35}", "First, we create a keypair for Joe".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let joe_seed: [u8; 32] = rand::thread_rng().gen();
+    let joe_seed: [u8; 32] = thread_rng().gen();
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "seed": joe_seed,
         }))?,
         executor_public_key: [0; 32],
@@ -76,7 +79,7 @@ fn main() -> eyre::Result<()> {
     let create_keypair_outcome = run(file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
 
-    let joe_keypair = serde_json::from_slice::<KeyComponents>(
+    let joe_keypair = from_json_slice::<KeyComponents>(
         &create_keypair_outcome
             .returns?
             .expect("Expected a return value"),
@@ -88,10 +91,10 @@ fn main() -> eyre::Result<()> {
     println!("{:>35}", "Next, we create a keypair for Melissa".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let melissa_seed: [u8; 32] = rand::thread_rng().gen();
+    let melissa_seed: [u8; 32] = thread_rng().gen();
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "seed": melissa_seed,
         }))?,
         executor_public_key: [0; 32],
@@ -99,7 +102,7 @@ fn main() -> eyre::Result<()> {
     let create_keypair_outcome = run(file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
 
-    let melissa_keypair = serde_json::from_slice::<KeyComponents>(
+    let melissa_keypair = from_json_slice::<KeyComponents>(
         &create_keypair_outcome
             .returns?
             .expect("Expected a return value"),
@@ -111,8 +114,8 @@ fn main() -> eyre::Result<()> {
     println!("{:>35}", "Now, Joe joins the game".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "player_name": "Joe",
             "public_key": joe_keypair.pk,
         }))?,
@@ -122,7 +125,7 @@ fn main() -> eyre::Result<()> {
     dbg!(&join_outcome);
 
     let joe_idx =
-        serde_json::from_slice::<usize>(&join_outcome.returns?.expect("Expected a return value"))?;
+        from_json_slice::<usize>(&join_outcome.returns?.expect("Expected a return value"))?;
 
     dbg!(&joe_idx);
 
@@ -130,8 +133,8 @@ fn main() -> eyre::Result<()> {
     println!("{:>35}", "Now, Melissa joins the game".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "player_name": "Melissa",
             "public_key": melissa_keypair.pk,
         }))?,
@@ -141,7 +144,7 @@ fn main() -> eyre::Result<()> {
     dbg!(&join_outcome);
 
     let melissa_idx =
-        serde_json::from_slice::<usize>(&join_outcome.returns?.expect("Expected a return value"))?;
+        from_json_slice::<usize>(&join_outcome.returns?.expect("Expected a return value"))?;
 
     dbg!(&melissa_idx);
 
@@ -152,14 +155,14 @@ fn main() -> eyre::Result<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext {
+    let cx = VMContext {
         input: vec![],
         executor_public_key: [0; 32],
     };
     let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
-    let game_state = serde_json::from_slice::<[Option<(String, State)>; 2]>(
+    let game_state = from_json_slice::<[Option<(String, State)>; 2]>(
         &state_outcome.returns?.expect("Expected a return value"),
     )?;
 
@@ -169,11 +172,11 @@ fn main() -> eyre::Result<()> {
     println!("{:>35}", "Now, Joe makes a choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let joe_nonce: [u8; 32] = rand::thread_rng().gen();
-    let joe_choice: Choice = rand::random();
+    let joe_nonce: [u8; 32] = thread_rng().gen();
+    let joe_choice: Choice = random();
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "signing_key": joe_keypair.sk,
             "choice": joe_choice,
             "nonce": joe_nonce,
@@ -183,7 +186,7 @@ fn main() -> eyre::Result<()> {
     let prepare_outcome = run(file, "prepare", cx, &mut storage, &limits)?;
     dbg!(&prepare_outcome);
 
-    let (joe_commitment, joe_signature) = serde_json::from_slice::<(String, String)>(
+    let (joe_commitment, joe_signature) = from_json_slice::<(String, String)>(
         &prepare_outcome.returns?.expect("Expected a return value"),
     )?;
 
@@ -193,11 +196,11 @@ fn main() -> eyre::Result<()> {
     println!("{:>35}", "Now, Melissa makes a choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let melissa_nonce: [u8; 32] = rand::thread_rng().gen();
-    let melissa_choice: Choice = rand::random();
+    let melissa_nonce: [u8; 32] = thread_rng().gen();
+    let melissa_choice: Choice = random();
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "signing_key": melissa_keypair.sk,
             "choice": melissa_choice,
             "nonce": melissa_nonce,
@@ -207,7 +210,7 @@ fn main() -> eyre::Result<()> {
     let prepare_outcome = run(file, "prepare", cx, &mut storage, &limits)?;
     dbg!(&prepare_outcome);
 
-    let (melissa_commitment, melissa_signature) = serde_json::from_slice::<(String, String)>(
+    let (melissa_commitment, melissa_signature) = from_json_slice::<(String, String)>(
         &prepare_outcome.returns?.expect("Expected a return value"),
     )?;
 
@@ -217,8 +220,8 @@ fn main() -> eyre::Result<()> {
     println!("{:>35}", "Now, Joe commits to his choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "player_idx": joe_idx,
             "commitment": joe_commitment,
             "signature": joe_signature,
@@ -228,14 +231,14 @@ fn main() -> eyre::Result<()> {
     let commit_outcome = run(file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
 
-    serde_json::from_slice::<()>(&commit_outcome.returns?.expect("Expected a return value"))?;
+    from_json_slice::<()>(&commit_outcome.returns?.expect("Expected a return value"))?;
 
     println!("{}", "--".repeat(20).dimmed());
     println!("{:>35}", "Now, Melissa commits to her choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "player_idx": melissa_idx,
             "commitment": melissa_commitment,
             "signature": melissa_signature,
@@ -245,14 +248,14 @@ fn main() -> eyre::Result<()> {
     let commit_outcome = run(file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
 
-    serde_json::from_slice::<()>(&commit_outcome.returns?.expect("Expected a return value"))?;
+    from_json_slice::<()>(&commit_outcome.returns?.expect("Expected a return value"))?;
 
     println!("{}", "--".repeat(20).dimmed());
     println!("{:>35}", "Now, Joe reveals his choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "player_idx": joe_idx,
             "nonce": joe_nonce,
         }))?,
@@ -261,14 +264,14 @@ fn main() -> eyre::Result<()> {
     let reveal_outcome = run(file, "reveal", cx, &mut storage, &limits)?;
     dbg!(&reveal_outcome);
 
-    serde_json::from_slice::<()>(&reveal_outcome.returns?.expect("Expected a return value"))?;
+    from_json_slice::<()>(&reveal_outcome.returns?.expect("Expected a return value"))?;
 
     println!("{}", "--".repeat(20).dimmed());
     println!("{:>35}", "Now, Melissa reveals her choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "player_idx": melissa_idx,
             "nonce": melissa_nonce,
         }))?,
@@ -277,7 +280,7 @@ fn main() -> eyre::Result<()> {
     let reveal_outcome = run(file, "reveal", cx, &mut storage, &limits)?;
     dbg!(&reveal_outcome);
 
-    serde_json::from_slice::<()>(&reveal_outcome.returns?.expect("Expected a return value"))?;
+    from_json_slice::<()>(&reveal_outcome.returns?.expect("Expected a return value"))?;
 
     println!("{}", "--".repeat(20).dimmed());
     println!(
@@ -286,14 +289,14 @@ fn main() -> eyre::Result<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext {
+    let cx = VMContext {
         input: vec![],
         executor_public_key: [0; 32],
     };
     let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
-    let game_state = serde_json::from_slice::<[Option<(String, State)>; 2]>(
+    let game_state = from_json_slice::<[Option<(String, State)>; 2]>(
         &state_outcome.returns?.expect("Expected a return value"),
     )?;
 
@@ -309,8 +312,8 @@ fn main() -> eyre::Result<()> {
     println!("{:>35}", "Now, let's reset the state".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "player_idx": melissa_idx,
             "commitment": melissa_commitment,
             "signature": melissa_signature,
@@ -320,16 +323,16 @@ fn main() -> eyre::Result<()> {
     let reset_outcome = run(file, "reset", cx, &mut storage, &limits)?;
     dbg!(&reset_outcome);
 
-    serde_json::from_slice::<()>(&reset_outcome.returns?.expect("Expected a return value"))?;
+    from_json_slice::<()>(&reset_outcome.returns?.expect("Expected a return value"))?;
 
-    let cx = logic::VMContext {
+    let cx = VMContext {
         input: vec![],
         executor_public_key: [0; 32],
     };
     let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
-    let game_state = serde_json::from_slice::<[Option<(String, State)>; 2]>(
+    let game_state = from_json_slice::<[Option<(String, State)>; 2]>(
         &state_outcome.returns?.expect("Expected a return value"),
     )?;
 
@@ -343,7 +346,7 @@ fn main() -> eyre::Result<()> {
 
     for event in reveal_outcome.events {
         if event.kind == "GameOver" {
-            let winner = serde_json::from_slice::<GameOver>(&event.data)?.winner;
+            let winner = from_json_slice::<GameOver>(&event.data)?.winner;
             match winner {
                 Some(0) => println!("[{:?} x {:?}] Joe won!", joe_choice, melissa_choice),
                 Some(1) => println!("[{:?} x {:?}] Melissa won!", joe_choice, melissa_choice),

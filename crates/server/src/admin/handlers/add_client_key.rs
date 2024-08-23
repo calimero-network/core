@@ -11,6 +11,7 @@ use calimero_server_primitives::admin::{
 use calimero_store::Store;
 use chrono::Utc;
 use serde::Serialize;
+use serde_json::from_value as from_json_value;
 use tracing::info;
 
 use crate::admin::handlers::root_keys::store_root_key;
@@ -24,23 +25,21 @@ pub fn transform_request(
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let metadata_enum = match intermediate.wallet_metadata.wallet_type {
         WalletType::NEAR { .. } => {
-            let metadata = serde_json::from_value::<NearSignatureMessageMetadata>(
-                intermediate.payload.metadata,
-            )
-            .map_err(|_| ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid metadata.".into(),
-            })?;
+            let metadata =
+                from_json_value::<NearSignatureMessageMetadata>(intermediate.payload.metadata)
+                    .map_err(|_| ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid metadata.".into(),
+                    })?;
             SignatureMetadataEnum::NEAR(metadata)
         }
         WalletType::ETH { .. } => {
-            let metadata = serde_json::from_value::<EthSignatureMessageMetadata>(
-                intermediate.payload.metadata,
-            )
-            .map_err(|_| ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid metadata.".into(),
-            })?;
+            let metadata =
+                from_json_value::<EthSignatureMessageMetadata>(intermediate.payload.metadata)
+                    .map_err(|_| ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid metadata.".into(),
+                    })?;
             SignatureMetadataEnum::ETH(metadata)
         }
         _ => {

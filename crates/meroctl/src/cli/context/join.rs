@@ -1,4 +1,5 @@
 use clap::Parser;
+use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 use tracing::info;
 
@@ -13,16 +14,16 @@ pub struct JoinCommand {
 }
 
 impl JoinCommand {
-    pub async fn run(self, root_args: RootArgs) -> eyre::Result<()> {
+    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
         if !ConfigFile::exists(&path) {
-            eyre::bail!("Config file does not exist")
+            bail!("Config file does not exist")
         }
         let Ok(config) = ConfigFile::load(&path) else {
-            eyre::bail!("Failed to load config file");
+            bail!("Failed to load config file");
         };
         let Some(multiaddr) = config.network.server.listen.first() else {
-            eyre::bail!("No address.")
+            bail!("No address.")
         };
 
         let url = multiaddr_to_url(
@@ -33,7 +34,7 @@ impl JoinCommand {
         let response = client.post(url).send().await?;
 
         if !response.status().is_success() {
-            eyre::bail!("Request failed with status: {}", response.status())
+            bail!("Request failed with status: {}", response.status())
         }
 
         info!("Context {} sucesfully joined", self.context_id);

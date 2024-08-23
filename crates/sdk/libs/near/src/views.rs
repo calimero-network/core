@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use calimero_primitives::hash::Hash;
 use serde::{Deserialize, Serialize};
 use serde_with::base64::Base64;
 use serde_with::{serde_as, DisplayFromStr};
@@ -44,7 +45,7 @@ pub struct AccountView {
     pub amount: Balance,
     #[serde_as(as = "DisplayFromStr")]
     pub locked: Balance,
-    pub code_hash: calimero_primitives::hash::Hash,
+    pub code_hash: Hash,
     pub storage_usage: StorageUsage,
     pub storage_paid_at: BlockHeight,
 }

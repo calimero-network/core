@@ -1,4 +1,7 @@
+use std::any::TypeId;
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::mem::transmute;
 
 use crate::env;
 use crate::state::AppState;
@@ -16,7 +19,7 @@ pub struct EncodedAppEvent<'a> {
 }
 
 thread_local! {
-    static HANDLER: std::cell::RefCell<fn(Box<dyn AppEventExt>)> = panic!("uninitialized handler");
+    static HANDLER: RefCell<fn(Box<dyn AppEventExt>)> = panic!("uninitialized handler");
 }
 
 #[track_caller]
@@ -37,12 +40,12 @@ where
 #[track_caller]
 pub fn emit<'a, E: AppEventExt + 'a>(event: E) {
     let f = HANDLER.with_borrow(|handler| *handler);
-    let f: fn(Box<dyn AppEventExt + 'a>) = unsafe { std::mem::transmute::<_, _>(f) };
+    let f: fn(Box<dyn AppEventExt + 'a>) = unsafe { transmute::<_, _>(f) };
     f(Box::new(event));
 }
 
 mod reflect {
-    pub use std::any::TypeId;
+    use std::any::{type_name, TypeId};
 
     pub trait Reflect {
         fn id(&self) -> TypeId
@@ -53,7 +56,7 @@ mod reflect {
         }
 
         fn name(&self) -> &'static str {
-            std::any::type_name::<Self>()
+            type_name::<Self>()
         }
     }
 
@@ -76,7 +79,7 @@ pub trait AppEventExt: AppEvent + Reflect {
 
 impl dyn AppEventExt {
     pub fn is<T: AppEventExt + 'static>(&self) -> bool {
-        self.id() == reflect::TypeId::of::<T>()
+        self.id() == TypeId::of::<T>()
     }
 }
 

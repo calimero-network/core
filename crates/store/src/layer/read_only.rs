@@ -1,3 +1,5 @@
+use eyre::Result as EyreResult;
+
 use crate::iter::{Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
 use crate::layer::{Layer, ReadLayer};
@@ -25,15 +27,15 @@ impl<L> ReadLayer for ReadOnly<'_, L>
 where
     L: ReadLayer,
 {
-    fn has<K: AsKeyParts>(&self, key: &K) -> eyre::Result<bool> {
+    fn has<K: AsKeyParts>(&self, key: &K) -> EyreResult<bool> {
         self.inner.has(key)
     }
 
-    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice<'_>>> {
+    fn get<K: AsKeyParts>(&self, key: &K) -> EyreResult<Option<Slice<'_>>> {
         self.inner.get(key)
     }
 
-    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<'_, Structured<K>>> {
+    fn iter<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>> {
         self.inner.iter()
     }
 }

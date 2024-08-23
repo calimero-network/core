@@ -1,14 +1,15 @@
 use calimero_store::entry::{Entry, Json};
-use calimero_store::key::Generic;
+use calimero_store::key::Generic as GenericKey;
 use calimero_store::Store;
+use eyre::Result as EyreResult;
 use serde::{Deserialize, Serialize};
 
 struct SSLEntry {
-    key: Generic,
+    key: GenericKey,
 }
 
 impl Entry for SSLEntry {
-    type Key = Generic;
+    type Key = GenericKey;
     type Codec = Json;
     type DataType<'a> = SSLCert;
 
@@ -20,7 +21,7 @@ impl Entry for SSLEntry {
 impl SSLEntry {
     fn new() -> Self {
         Self {
-            key: Generic::new(*b"ssl_certs:server", [0; 32]),
+            key: GenericKey::new(*b"ssl_certs:server", [0; 32]),
         }
     }
 }
@@ -43,7 +44,7 @@ impl SSLCert {
     }
 }
 
-pub fn insert_or_update_ssl(store: &Store, cert: &[u8], key: &[u8]) -> eyre::Result<SSLCert> {
+pub fn insert_or_update_ssl(store: &Store, cert: &[u8], key: &[u8]) -> EyreResult<SSLCert> {
     let ssl_cert = SSLCert {
         cert: cert.to_vec(),
         key: key.to_vec(),
@@ -56,7 +57,7 @@ pub fn insert_or_update_ssl(store: &Store, cert: &[u8], key: &[u8]) -> eyre::Res
     Ok(ssl_cert)
 }
 
-pub fn get_ssl(store: &Store) -> eyre::Result<Option<SSLCert>> {
+pub fn get_ssl(store: &Store) -> EyreResult<Option<SSLCert>> {
     let entry = SSLEntry::new();
     let handle = store.handle();
 

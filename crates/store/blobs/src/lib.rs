@@ -1,14 +1,19 @@
 use std::fmt::{self, Debug, Formatter};
+use std::io::ErrorKind as IoErrorKind;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;
+use calimero_store::key::BlobMeta as BlobMetaKey;
+use calimero_store::types::BlobMeta;
 use calimero_store::Store as DataStore;
+use camino::{Utf8Path, Utf8PathBuf};
+use eyre::{Report, Result as EyreResult};
 use futures_util::{pin_mut, Stream, StreamExt, TryStreamExt};
-use sha2::Digest;
-use thiserror::Error;
-use tokio::fs;
+use sha2::{Digest, Sha256};
+use thiserror::Error as ThisError;
+use tokio::fs::{create_dir_all, read as async_read, try_exists, write as async_write};
 
 const CHUNK_SIZE: usize = 1 << 18; // 256 KiB
 
@@ -29,26 +34,23 @@ impl BlobManager {
         }
     }
 
-    pub fn has(&self, id: BlobId) -> eyre::Result<bool> {
-        Ok(self
-            .data_store
-            .handle()
-            .has(&calimero_store::key::BlobMeta::new(id))?)
+    pub fn has(&self, id: BlobId) -> EyreResult<bool> {
+        Ok(self.data_store.handle().has(&BlobMetaKey::new(id))?)
     }
 
     // return a concrete type that resolves to the content of the file
-    pub fn get(&self, id: BlobId) -> eyre::Result<Option<Blob>> {
+    pub fn get(&self, id: BlobId) -> EyreResult<Option<Blob>> {
         Blob::new(id, self.clone())
     }
 
-    pub async fn put<S, T, E>(&self, stream: S) -> eyre::Result<BlobId>
+    pub async fn put<S, T, E>(&self, stream: S) -> EyreResult<BlobId>
     where
         // todo! change this to AsyncRead
         S: Stream<Item = Result<T, E>>,
         T: AsRef<[u8]>,
-        E: Into<eyre::Report>,
+        E: Into<Report>,
     {
-        let chunks = typed_stream::<eyre::Result<_>>(try_stream!({
+        let chunks = typed_stream::<EyreResult<_>>(try_stream!({
             pin_mut!(stream);
 
             // todo! use a bufreader
@@ -59,8 +61,8 @@ impl BlobManager {
                     let id = BlobId::hash(chunk);
 
                     self.data_store.handle().put(
-                        &calimero_store::key::BlobMeta::new(id),
-                        &calimero_store::types::BlobMeta::new(0, Vec::new().into_boxed_slice()),
+                        &BlobMetaKey::new(id),
+                        &BlobMeta::new(0, Vec::new().into_boxed_slice()),
                     )?;
                     self.blob_store.put(id, chunk).await?;
 
@@ -80,18 +82,18 @@ impl BlobManager {
         pin_mut!(chunks);
 
         let mut links = Vec::new();
-        let mut digest = sha2::Sha256::new();
+        let mut digest = Sha256::new();
 
         while let Some(id) = chunks.try_next().await? {
-            links.push(calimero_store::key::BlobMeta::new(id));
+            links.push(BlobMetaKey::new(id));
             digest.update(id.as_ref());
         }
 
         let id = BlobId::from(*(AsRef::<[u8; 32]>::as_ref(&digest.finalize())));
 
         self.data_store.handle().put(
-            &calimero_store::key::BlobMeta::new(id),
-            &calimero_store::types::BlobMeta::new(
+            &BlobMetaKey::new(id),
+            &BlobMeta::new(
                 0,
                 links.into_boxed_slice(),
                 // todo! hash of the blob data
@@ -108,7 +110,7 @@ fn typed_stream<T>(s: impl Stream<Item = T>) -> impl Stream<Item = T> {
 
 pub struct Blob {
     // id: BlobId,
-    // meta: calimero_store::types::BlobMeta,
+    // meta: BlobMeta,
 
     // blob_mgr: BlobManager,
     #[allow(clippy::type_complexity)]
@@ -116,12 +118,8 @@ pub struct Blob {
 }
 
 impl Blob {
-    fn new(id: BlobId, blob_mgr: BlobManager) -> eyre::Result<Option<Self>> {
-        let Some(blob_meta) = blob_mgr
-            .data_store
-            .handle()
-            .get(&calimero_store::key::BlobMeta::new(id))?
-        else {
+    fn new(id: BlobId, blob_mgr: BlobManager) -> EyreResult<Option<Self>> {
+        let Some(blob_meta) = blob_mgr.data_store.handle().get(&BlobMetaKey::new(id))? else {
             return Ok(None);
         };
 
@@ -155,14 +153,14 @@ impl Debug for Blob {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 #[allow(variant_size_differences)]
 #[non_exhaustive]
 pub enum BlobError {
     #[error("encountered a dangling Blob ID: `{id}`, the blob store may be corrupt")]
     DanglingBlob { id: BlobId },
     #[error(transparent)]
-    RepoError(eyre::Report),
+    RepoError(Report),
 }
 
 impl Stream for Blob {
@@ -175,14 +173,14 @@ impl Stream for Blob {
 
 trait BlobRepository {
     #[allow(dead_code)]
-    async fn has(&self, id: BlobId) -> eyre::Result<bool>;
-    async fn get(&self, id: BlobId) -> eyre::Result<Option<Box<[u8]>>>;
-    async fn put(&self, id: BlobId, data: &[u8]) -> eyre::Result<()>;
+    async fn has(&self, id: BlobId) -> EyreResult<bool>;
+    async fn get(&self, id: BlobId) -> EyreResult<Option<Box<[u8]>>>;
+    async fn put(&self, id: BlobId, data: &[u8]) -> EyreResult<()>;
 }
 
 #[derive(Clone, Debug)]
 pub struct FileSystem {
-    root: camino::Utf8PathBuf,
+    root: Utf8PathBuf,
     // strategy: ShardingStrategy,
 }
 
@@ -191,33 +189,33 @@ pub struct FileSystem {
 // }
 
 impl FileSystem {
-    pub async fn new(root: &camino::Utf8Path) -> eyre::Result<Self> {
-        fs::create_dir_all(&root).await?;
+    pub async fn new(root: &Utf8Path) -> EyreResult<Self> {
+        create_dir_all(&root).await?;
 
         Ok(Self {
             root: root.to_owned(),
         })
     }
 
-    fn path(&self, id: BlobId) -> camino::Utf8PathBuf {
+    fn path(&self, id: BlobId) -> Utf8PathBuf {
         self.root.join(id.as_str())
     }
 }
 
 impl BlobRepository for FileSystem {
-    async fn has(&self, id: BlobId) -> eyre::Result<bool> {
-        fs::try_exists(self.path(id)).await.map_err(Into::into)
+    async fn has(&self, id: BlobId) -> EyreResult<bool> {
+        try_exists(self.path(id)).await.map_err(Into::into)
     }
 
-    async fn get(&self, id: BlobId) -> eyre::Result<Option<Box<[u8]>>> {
-        match fs::read(self.path(id)).await {
+    async fn get(&self, id: BlobId) -> EyreResult<Option<Box<[u8]>>> {
+        match async_read(self.path(id)).await {
             Ok(file) => Ok(Some(file.into_boxed_slice())),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) if err.kind() == IoErrorKind::NotFound => Ok(None),
             Err(err) => Err(err.into()),
         }
     }
 
-    async fn put(&self, id: BlobId, data: &[u8]) -> eyre::Result<()> {
-        fs::write(self.path(id), data).await.map_err(Into::into)
+    async fn put(&self, id: BlobId, data: &[u8]) -> EyreResult<()> {
+        async_write(self.path(id), data).await.map_err(Into::into)
     }
 }

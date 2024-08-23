@@ -1,3 +1,4 @@
+use borsh::{BorshDeserialize, BorshSerialize};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -13,10 +14,7 @@ pub struct KeyPair {
 // This could use a Hash, but we need to be able to serialize the PublicKey and
 // create::hash::Hash does not currently implement Borsh.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[allow(clippy::exhaustive_structs)]
 pub struct PublicKey(pub [u8; 32]);
 
@@ -151,6 +149,7 @@ pub enum NearNetworkId {
 
 pub mod serde_identity {
     use std::fmt;
+    use std::fmt::Formatter;
 
     use libp2p_identity::Keypair;
     use serde::de::{self, MapAccess};
@@ -179,7 +178,7 @@ pub mod serde_identity {
         impl<'de> de::Visitor<'de> for IdentityVisitor {
             type Value = Keypair;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
                 formatter.write_str("an identity")
             }
 

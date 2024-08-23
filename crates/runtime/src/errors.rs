@@ -2,11 +2,14 @@
 #[path = "tests/errors.rs"]
 mod tests;
 
-use serde::Serialize;
-use thiserror::Error;
-use wasmer_types::TrapCode;
+use std::panic::Location as PanicLocation;
 
-#[derive(Debug, Error)]
+use serde::Serialize;
+use thiserror::Error as ThisError;
+use wasmer::{ExportError, InstantiationError, LinkError, RuntimeError};
+use wasmer_types::{CompileError, TrapCode};
+
+#[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum VMRuntimeError {
     #[error(transparent)]
@@ -16,11 +19,11 @@ pub enum VMRuntimeError {
     HostError(HostError),
 }
 
-#[derive(Copy, Clone, Debug, Error)]
+#[derive(Copy, Clone, Debug, ThisError)]
 #[non_exhaustive]
 pub enum StorageError {}
 
-#[derive(Debug, Error, Serialize)]
+#[derive(Debug, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum FunctionCallError {
@@ -28,13 +31,13 @@ pub enum FunctionCallError {
     CompilationError {
         #[from]
         #[serde(skip)]
-        source: wasmer::CompileError,
+        source: CompileError,
     },
     #[error("link error: {}", .source)]
     LinkError {
         #[from]
         #[serde(skip)]
-        source: wasmer::LinkError,
+        source: LinkError,
     },
     #[error(transparent)]
     MethodResolutionError(MethodResolutionError),
@@ -46,7 +49,7 @@ pub enum FunctionCallError {
     ExecutionError(Vec<u8>),
 }
 
-#[derive(Debug, Error, Serialize)]
+#[derive(Debug, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum MethodResolutionError {
@@ -56,7 +59,7 @@ pub enum MethodResolutionError {
     MethodNotFound { name: String },
 }
 
-#[derive(Debug, Error, Serialize)]
+#[derive(Debug, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum HostError {
@@ -108,7 +111,7 @@ pub enum PanicContext {
     Host,
 }
 
-#[derive(Copy, Clone, Debug, Error, Serialize)]
+#[derive(Copy, Clone, Debug, Serialize, ThisError)]
 #[non_exhaustive]
 pub enum WasmTrap {
     #[error("stack overflow")]
@@ -151,8 +154,8 @@ impl Location {
     }
 }
 
-impl From<&std::panic::Location<'_>> for Location {
-    fn from(location: &std::panic::Location<'_>) -> Self {
+impl From<&PanicLocation<'_>> for Location {
+    fn from(location: &PanicLocation<'_>) -> Self {
         Self::At {
             file: location.file().to_owned(),
             line: location.line(),
@@ -161,39 +164,39 @@ impl From<&std::panic::Location<'_>> for Location {
     }
 }
 
-impl From<wasmer::ExportError> for FunctionCallError {
-    fn from(err: wasmer::ExportError) -> Self {
+impl From<ExportError> for FunctionCallError {
+    fn from(err: ExportError) -> Self {
         match err {
-            wasmer::ExportError::Missing(name) => {
+            ExportError::Missing(name) => {
                 Self::MethodResolutionError(MethodResolutionError::MethodNotFound { name })
             }
-            wasmer::ExportError::IncompatibleType => unreachable!(),
+            ExportError::IncompatibleType => unreachable!(),
         }
     }
 }
 
 // TODO: We should change this to use TryFrom instead of panicking in a From.
 #[allow(clippy::fallible_impl_from)]
-impl From<wasmer::InstantiationError> for FunctionCallError {
-    fn from(err: wasmer::InstantiationError) -> Self {
+impl From<InstantiationError> for FunctionCallError {
+    fn from(err: InstantiationError) -> Self {
         match err {
-            wasmer::InstantiationError::Link(err) => err.into(),
-            wasmer::InstantiationError::Start(err) => err.into(),
-            wasmer::InstantiationError::CpuFeature(err) => {
+            InstantiationError::Link(err) => err.into(),
+            InstantiationError::Start(err) => err.into(),
+            InstantiationError::CpuFeature(err) => {
                 panic!("host CPU does not support a required feature: {err}")
             }
-            wasmer::InstantiationError::DifferentStores => {
+            InstantiationError::DifferentStores => {
                 panic!("one of the imports is incompatible with this execution instance")
             }
-            wasmer::InstantiationError::DifferentArchOS => {
+            InstantiationError::DifferentArchOS => {
                 panic!("the module was compiled for a different architecture or operating system")
             }
         }
     }
 }
 
-impl From<wasmer::RuntimeError> for FunctionCallError {
-    fn from(err: wasmer::RuntimeError) -> Self {
+impl From<RuntimeError> for FunctionCallError {
+    fn from(err: RuntimeError) -> Self {
         match err.to_trap() {
             Some(TrapCode::StackOverflow) => Self::WasmTrap(WasmTrap::StackOverflow),
             Some(TrapCode::HeapAccessOutOfBounds | TrapCode::TableAccessOutOfBounds) => {

@@ -6,10 +6,12 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{NodeChallenge, NodeChallengeMessage};
+use chrono::Utc;
 use libp2p::identity::Keypair;
 use rand::{thread_rng, RngCore};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::to_vec as to_json_vec;
 use tower_sessions::Session;
 use tracing::error;
 
@@ -68,9 +70,9 @@ fn generate_challenge(
     let encoded = STANDARD.encode(random_bytes);
 
     let node_challenge_message =
-        NodeChallengeMessage::new(encoded, context_id, chrono::Utc::now().timestamp());
+        NodeChallengeMessage::new(encoded, context_id, Utc::now().timestamp());
 
-    let message_vec = serde_json::to_vec(&node_challenge_message).map_err(|_| ApiError {
+    let message_vec = to_json_vec(&node_challenge_message).map_err(|_| ApiError {
         status_code: StatusCode::INTERNAL_SERVER_ERROR,
         message: "Failed to serialize challenge data".into(),
     })?;

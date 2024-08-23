@@ -4,12 +4,14 @@ mod tests;
 
 use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
+use std::iter::once;
 
-use proc_macro2::TokenTree;
+use proc_macro2::{Delimiter, Group, Punct, Spacing, Span, TokenStream, TokenTree};
 use quote::{quote_spanned, ToTokens};
-use syn::parse::Parse;
+use syn::parse::{Parse, ParseStream};
+use syn::{parse2, Error as SynError, Ident, Lifetime, Result as SynResult, Token};
 
-use crate::errors;
+use crate::errors::{Errors, ParseError};
 use crate::macros::infallible;
 
 #[derive(Debug)]
@@ -35,39 +37,39 @@ impl<'a, T> MaybeOwned<'a, T> {
 
 #[derive(Debug)]
 enum SanitizerAtom<'a> {
-    Self_(syn::Token![Self]),
-    Ident(syn::Ident),
+    Self_(Token![Self]),
+    Ident(Ident),
     Lifetime(LifetimeAtom),
     Tree(TokenTree),
-    Stream(proc_macro2::TokenStream),
+    Stream(TokenStream),
     Group {
         entry: Sanitizer<'a>,
-        delimiter: proc_macro2::Delimiter,
-        span: proc_macro2::Span,
+        delimiter: Delimiter,
+        span: Span,
     },
 }
 
 #[derive(Debug)]
 enum LifetimeAtom {
-    Elided(proc_macro2::Span),
-    Named(syn::Lifetime),
+    Elided(Span),
+    Named(Lifetime),
 }
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Case<'a> {
     Self_,
-    Ident(Option<&'a syn::Ident>),
-    Lifetime(Option<&'a syn::Lifetime>),
+    Ident(Option<&'a Ident>),
+    Lifetime(Option<&'a Lifetime>),
 }
 
 pub struct Func<'a> {
-    inner: UnsafeCell<&'a mut dyn FnMut(proc_macro2::Span) -> Action<'a>>,
+    inner: UnsafeCell<&'a mut dyn FnMut(Span) -> Action<'a>>,
 }
 
 impl<'a> Func<'a> {
     pub fn new<F>(f: &'a mut F) -> Self
     where
-        F: FnMut(proc_macro2::Span) -> Action<'a> + 'a,
+        F: FnMut(Span) -> Action<'a> + 'a,
     {
         Self {
             inner: UnsafeCell::new(f),
@@ -77,13 +79,13 @@ impl<'a> Func<'a> {
 
 pub enum Action<'a> {
     ReplaceWith(&'a dyn ToTokens),
-    Forbid(errors::ParseError<'static>),
+    Forbid(ParseError<'static>),
     Custom(Func<'a>),
     Ignore,
 }
 
 impl<'a> SanitizerAtom<'a> {
-    fn satisfies(&self, case: &Case<'a>) -> Option<proc_macro2::Span> {
+    fn satisfies(&self, case: &Case<'a>) -> Option<Span> {
         match (self, case) {
             (SanitizerAtom::Self_(self_), Case::Self_) => Some(self_.span),
             (SanitizerAtom::Ident(ident), Case::Ident(Some(case_ident))) => {
@@ -99,17 +101,16 @@ impl<'a> SanitizerAtom<'a> {
                 LifetimeAtom::Elided(span) => Some(*span),
             },
             (SanitizerAtom::Tree(TokenTree::Punct(punct)), Case::Lifetime(None)) => {
-                (punct.as_char() == '&' && punct.spacing() == proc_macro2::Spacing::Joint)
-                    .then(|| punct.span())
+                (punct.as_char() == '&' && punct.spacing() == Spacing::Joint).then(|| punct.span())
             }
             _ => None,
         }
     }
 
-    fn replace_with(&mut self, span: proc_macro2::Span, replacement: &dyn ToTokens) -> bool {
+    fn replace_with(&mut self, span: Span, replacement: &dyn ToTokens) -> bool {
         if let SanitizerAtom::Tree(TokenTree::Punct(punct)) = self {
-            if punct.as_char() == '&' && punct.spacing() == proc_macro2::Spacing::Joint {
-                *punct = proc_macro2::Punct::new('&', proc_macro2::Spacing::Alone);
+            if punct.as_char() == '&' && punct.spacing() == Spacing::Joint {
+                *punct = Punct::new('&', Spacing::Alone);
                 punct.set_span(span);
                 return false;
             }
@@ -121,13 +122,13 @@ impl<'a> SanitizerAtom<'a> {
 
     fn apply_action(
         &mut self,
-        span: proc_macro2::Span,
+        span: Span,
         action: &Action<'_>,
-        errors: &mut errors::Errors<'static>,
+        errors: &mut Errors<'static>,
     ) -> bool {
         match action {
             Action::ReplaceWith(replacement) => return self.replace_with(span, replacement),
-            Action::Forbid(error) => errors.subsume(syn::Error::new(span, error)),
+            Action::Forbid(error) => errors.subsume(SynError::new(span, error)),
             Action::Custom(func) => {
                 let func = unsafe { &mut *func.inner.get() };
                 return self.apply_action(span, &func(span), errors);
@@ -141,12 +142,12 @@ impl<'a> SanitizerAtom<'a> {
 #[derive(Debug)]
 pub struct SanitizationResult<'a> {
     counts: BTreeMap<&'a Case<'a>, usize>,
-    errors: errors::Errors<'static>,
+    errors: Errors<'static>,
 }
 
 impl<'a> SanitizationResult<'a> {
     /// panics: if this has been called before
-    pub fn check(&self) -> Result<(), syn::Error> {
+    pub fn check(&self) -> Result<(), SynError> {
         if let Some(errors) = self.errors.take() {
             return Err(errors);
         }
@@ -154,7 +155,7 @@ impl<'a> SanitizationResult<'a> {
         Ok(())
     }
 
-    pub fn errors(&mut self) -> &mut errors::Errors<'static> {
+    pub fn errors(&mut self) -> &mut Errors<'static> {
         &mut self.errors
     }
 
@@ -170,7 +171,7 @@ impl<'a> SanitizationResult<'a> {
 
 impl Sanitizer<'_> {
     pub fn sanitize<'a>(&mut self, cases: &'a [(Case<'a>, Action<'a>)]) -> SanitizationResult<'a> {
-        let mut errors = errors::Errors::default();
+        let mut errors = Errors::default();
 
         let mut counts = BTreeMap::new();
 
@@ -211,7 +212,7 @@ impl Sanitizer<'_> {
 }
 
 impl ToTokens for Sanitizer<'_> {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         let entries = self.entries.as_ref();
 
         for entry in entries {
@@ -232,9 +233,9 @@ impl ToTokens for Sanitizer<'_> {
                     let entry = Sanitizer {
                         entries: MaybeOwned::Borrowed(entry.entries.as_ref()),
                     };
-                    let mut group = proc_macro2::Group::new(*delimiter, entry.to_token_stream());
+                    let mut group = Group::new(*delimiter, entry.to_token_stream());
                     group.set_span(*span);
-                    tokens.extend(std::iter::once(TokenTree::Group(group)));
+                    tokens.extend(once(TokenTree::Group(group)));
                 }
             }
         }
@@ -242,22 +243,22 @@ impl ToTokens for Sanitizer<'_> {
 }
 
 impl Parse for Sanitizer<'_> {
-    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+    fn parse(input: ParseStream<'_>) -> SynResult<Self> {
         let sanitizer = infallible!({
             let mut entries = Vec::new();
 
             while !input.is_empty() {
-                if input.peek(syn::Token![Self]) {
+                if input.peek(Token![Self]) {
                     entries.push(SanitizerAtom::Self_(input.parse()?));
-                } else if input.peek(syn::Ident) {
+                } else if input.peek(Ident) {
                     entries.push(SanitizerAtom::Ident(input.parse()?));
-                } else if input.peek(syn::Lifetime) {
+                } else if input.peek(Lifetime) {
                     entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Named(input.parse()?)));
-                } else if input.peek(syn::Token![&]) {
+                } else if input.peek(Token![&]) {
                     let and = input.parse::<TokenTree>()?;
                     let and_span = and.span();
                     entries.push(SanitizerAtom::Tree(and));
-                    if input.peek(syn::Lifetime) {
+                    if input.peek(Lifetime) {
                         entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Named(input.parse()?)));
                     } else {
                         entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Elided(and_span)));
@@ -266,7 +267,7 @@ impl Parse for Sanitizer<'_> {
                     #[allow(clippy::wildcard_enum_match_arm)]
                     match input.parse::<TokenTree>()? {
                         TokenTree::Group(group) => {
-                            let entry = syn::parse2(group.stream())?;
+                            let entry = parse2(group.stream())?;
                             entries.push(SanitizerAtom::Group {
                                 entry,
                                 delimiter: group.delimiter(),
@@ -278,7 +279,7 @@ impl Parse for Sanitizer<'_> {
                 }
             }
 
-            syn::Result::Ok(Sanitizer {
+            SynResult::Ok(Sanitizer {
                 entries: MaybeOwned::Owned(entries.into_boxed_slice()),
             })
         });

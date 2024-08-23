@@ -1,9 +1,10 @@
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
 use crate::hash::{Hash, HashError};
 
@@ -36,8 +37,8 @@ impl Deref for BlobId {
     }
 }
 
-impl fmt::Display for BlobId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for BlobId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
@@ -54,7 +55,7 @@ impl From<&BlobId> for String {
     }
 }
 
-#[derive(Clone, Copy, Debug, Error)]
+#[derive(Clone, Copy, Debug, ThisError)]
 #[error(transparent)]
 pub struct InvalidBlobId(HashError);
 

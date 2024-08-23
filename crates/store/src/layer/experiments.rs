@@ -4,6 +4,8 @@
 // Baking expectations of interior mutability into the type system
 
 mod layer {
+    use crate::layer::experiments::layer::private::Sealed;
+
     pub struct Interior;
 
     pub struct Identity;
@@ -12,20 +14,20 @@ mod layer {
         pub trait Sealed {}
     }
 
-    pub trait Discriminant: private::Sealed {
+    pub trait Discriminant: Sealed {
         type Ref<'a, T>
         where
             T: ?Sized + 'a;
     }
 
-    impl private::Sealed for Interior {}
+    impl Sealed for Interior {}
     impl Discriminant for Interior {
         type Ref<'a, T> = &'a T
         where
             T: ?Sized + 'a;
     }
 
-    impl private::Sealed for Identity {}
+    impl Sealed for Identity {}
     impl Discriminant for Identity {
         type Ref<'a, T> = &'a mut T
         where

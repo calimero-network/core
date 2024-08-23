@@ -3,7 +3,9 @@
 mod tests;
 
 use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::fmt;
+use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 use std::rc::Rc;
 
@@ -31,8 +33,8 @@ impl<'a, T: AsRef<[u8]> + 'a> BufRef for T {
     }
 }
 
-impl fmt::Debug for dyn BufRef + '_ {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for dyn BufRef + '_ {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.type_name())
     }
 }
@@ -147,19 +149,19 @@ impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for Slice<'_> {
 }
 
 impl Ord for Slice<'_> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.as_ref().cmp(other.as_ref())
     }
 }
 
 impl<'a> PartialOrd<Slice<'a>> for Slice<'_> {
-    fn partial_cmp(&self, other: &Slice<'a>) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Slice<'a>) -> Option<Ordering> {
         self.as_ref().partial_cmp(other.as_ref())
     }
 }
 
-impl fmt::Debug for Slice<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for Slice<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_tuple("Slice").field(&self.inner).finish()
         } else {

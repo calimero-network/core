@@ -1,11 +1,11 @@
 #![allow(unused_results)]
 
-use std::fs;
+use std::fs::{read_to_string, write};
 use std::net::IpAddr;
 
 use calimero_network::config::BootstrapNodes;
 use clap::{Args, Parser, ValueEnum};
-use eyre::eyre;
+use eyre::{eyre, Result as EyreResult};
 use multiaddr::{Multiaddr, Protocol};
 use toml_edit::{DocumentMut, Value};
 use tracing::info;
@@ -68,15 +68,15 @@ pub enum BootstrapNetwork {
 impl ConfigCommand {
     // TODO: Consider splitting this long function into multiple parts.
     #[allow(clippy::too_many_lines)]
-    pub fn run(self, root_args: &cli::RootArgs) -> eyre::Result<()> {
+    pub fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
         let path = root_args
             .home
             .join(&root_args.node_name)
             .join("config.toml");
 
         // Load the existing TOML file
-        let toml_str = fs::read_to_string(&path)
-            .map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
+        let toml_str =
+            read_to_string(&path).map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
         let mut doc = toml_str.parse::<DocumentMut>()?;
 
         #[allow(clippy::print_stdout)]
@@ -191,7 +191,7 @@ impl ConfigCommand {
         }
 
         // Save the updated TOML back to the file
-        fs::write(&path, doc.to_string())?;
+        write(&path, doc.to_string())?;
 
         info!("Node configuration has been updated");
 

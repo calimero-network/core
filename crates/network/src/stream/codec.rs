@@ -2,9 +2,12 @@
 #[path = "../tests/stream/codec.rs"]
 mod tests;
 
+use std::io::Error as IoError;
+
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec, Error as JsonError};
+use thiserror::Error as ThisError;
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -20,12 +23,12 @@ impl Message {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 #[error("CodecError")]
 #[non_exhaustive]
 pub enum CodecError {
-    StdIo(#[from] std::io::Error),
-    SerDe(serde_json::Error),
+    StdIo(#[from] IoError),
+    SerDe(JsonError),
 }
 
 #[derive(Debug)]
@@ -50,9 +53,7 @@ impl Decoder for MessageJsonCodec {
             return Ok(None);
         };
 
-        serde_json::from_slice(&frame)
-            .map(Some)
-            .map_err(CodecError::SerDe)
+        from_json_slice(&frame).map(Some).map_err(CodecError::SerDe)
     }
 }
 
@@ -60,7 +61,7 @@ impl Encoder<Message> for MessageJsonCodec {
     type Error = CodecError;
 
     fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let json = serde_json::to_vec(&item).map_err(CodecError::SerDe)?;
+        let json = to_json_vec(&item).map_err(CodecError::SerDe)?;
 
         self.length_codec
             .encode(Bytes::from(json), dst)

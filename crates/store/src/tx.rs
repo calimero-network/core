@@ -1,4 +1,5 @@
-use std::collections::{btree_map, BTreeMap};
+use std::collections::btree_map::{Iter as BTreeIter, Range};
+use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use crate::db::Column;
@@ -78,7 +79,7 @@ impl<'a> Transaction<'a> {
 }
 
 pub struct ColRange<'this, 'a> {
-    iter: Option<btree_map::Range<'this, Slice<'a>, Operation<'a>>>,
+    iter: Option<Range<'this, Slice<'a>, Operation<'a>>>,
 }
 
 impl<'this, 'a> Iterator for ColRange<'this, 'a> {
@@ -107,14 +108,14 @@ impl<'a> Entry<'a> {
 
 #[derive(Debug)]
 pub struct Iter<'this, 'a> {
-    iter: btree_map::Iter<'this, Column, BTreeMap<Slice<'a>, Operation<'a>>>,
+    iter: BTreeIter<'this, Column, BTreeMap<Slice<'a>, Operation<'a>>>,
     cursor: Option<IterCursor<'this, 'a>>,
 }
 
 #[derive(Debug)]
 struct IterCursor<'this, 'a> {
     column: Column,
-    iter: btree_map::Iter<'this, Slice<'a>, Operation<'a>>,
+    iter: BTreeIter<'this, Slice<'a>, Operation<'a>>,
 }
 
 impl<'this, 'a> Iterator for Iter<'this, 'a> {

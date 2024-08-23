@@ -1,6 +1,10 @@
 use std::convert::Infallible;
 use std::fmt;
+use std::fmt::{Debug, Formatter};
 
+use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::context::ContextId as PrimitiveContextId;
+use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
 use generic_array::sequence::Concat;
 use generic_array::typenum::U32;
 use generic_array::GenericArray;
@@ -17,20 +21,17 @@ impl KeyComponent for ContextId {
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextMeta(Key<ContextId>);
 
 impl ContextMeta {
     #[must_use]
-    pub fn new(context_id: calimero_primitives::context::ContextId) -> Self {
+    pub fn new(context_id: PrimitiveContextId) -> Self {
         Self(Key((*context_id).into()))
     }
 
     #[must_use]
-    pub fn context_id(&self) -> calimero_primitives::context::ContextId {
+    pub fn context_id(&self) -> PrimitiveContextId {
         (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
     }
 }
@@ -55,8 +56,8 @@ impl FromKeyParts for ContextMeta {
     }
 }
 
-impl fmt::Debug for ContextMeta {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for ContextMeta {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContextMeta")
             .field("id", &self.context_id())
             .finish()
@@ -71,25 +72,19 @@ impl KeyComponent for PublicKey {
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextIdentity(Key<(ContextId, PublicKey)>);
 
 impl ContextIdentity {
     #[must_use]
-    pub fn new(
-        context_id: calimero_primitives::context::ContextId,
-        context_pk: calimero_primitives::identity::PublicKey,
-    ) -> Self {
+    pub fn new(context_id: PrimitiveContextId, context_pk: PrimitivePublicKey) -> Self {
         Self(Key(
             GenericArray::from(*context_id).concat(GenericArray::from(context_pk.0))
         ))
     }
 
     #[must_use]
-    pub fn context_id(&self) -> calimero_primitives::context::ContextId {
+    pub fn context_id(&self) -> PrimitiveContextId {
         let mut context_id = [0; 32];
 
         context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
@@ -127,8 +122,8 @@ impl FromKeyParts for ContextIdentity {
     }
 }
 
-impl fmt::Debug for ContextIdentity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for ContextIdentity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContextIdentity")
             .field("context_id", &self.context_id())
             .field("public_key", &self.public_key())
@@ -144,20 +139,17 @@ impl KeyComponent for StateKey {
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextState(Key<(ContextId, StateKey)>);
 
 impl ContextState {
     #[must_use]
-    pub fn new(context_id: calimero_primitives::context::ContextId, state_key: [u8; 32]) -> Self {
+    pub fn new(context_id: PrimitiveContextId, state_key: [u8; 32]) -> Self {
         Self(Key(GenericArray::from(*context_id).concat(state_key.into())))
     }
 
     #[must_use]
-    pub fn context_id(&self) -> calimero_primitives::context::ContextId {
+    pub fn context_id(&self) -> PrimitiveContextId {
         let mut context_id = [0; 32];
 
         context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
@@ -195,8 +187,8 @@ impl FromKeyParts for ContextState {
     }
 }
 
-impl fmt::Debug for ContextState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for ContextState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContextState")
             .field("context_id", &self.context_id())
             .field("state_key", &self.state_key())
@@ -212,25 +204,19 @@ impl KeyComponent for TransactionId {
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextTransaction(Key<(ContextId, TransactionId)>);
 
 impl ContextTransaction {
     #[must_use]
-    pub fn new(
-        context_id: calimero_primitives::context::ContextId,
-        transaction_id: [u8; 32],
-    ) -> Self {
+    pub fn new(context_id: PrimitiveContextId, transaction_id: [u8; 32]) -> Self {
         Self(Key(
             GenericArray::from(*context_id).concat(transaction_id.into())
         ))
     }
 
     #[must_use]
-    pub fn context_id(&self) -> calimero_primitives::context::ContextId {
+    pub fn context_id(&self) -> PrimitiveContextId {
         let mut context_id = [0; 32];
 
         context_id.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[..32]);
@@ -268,8 +254,8 @@ impl FromKeyParts for ContextTransaction {
     }
 }
 
-impl fmt::Debug for ContextTransaction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for ContextTransaction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContextTransaction")
             .field("context_id", &self.context_id())
             .field("transaction_id", &self.transaction_id())

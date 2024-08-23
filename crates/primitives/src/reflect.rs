@@ -1,5 +1,7 @@
-use std::any::TypeId;
+use std::any::{type_name, TypeId};
 use std::marker::PhantomData;
+use std::mem::{transmute, ManuallyDrop};
+use std::ptr;
 use std::rc::Rc;
 
 // https://github.com/sagebind/castaway/pull/14
@@ -24,7 +26,7 @@ fn non_static_type_id<T: ?Sized>() -> TypeId {
 
     let phantom_data = PhantomData::<T>;
     NonStaticAny::get_type_id(unsafe {
-        std::mem::transmute::<&dyn NonStaticAny, &(dyn NonStaticAny + 'static)>(&phantom_data)
+        transmute::<&dyn NonStaticAny, &(dyn NonStaticAny + 'static)>(&phantom_data)
     })
 }
 
@@ -34,7 +36,7 @@ pub trait Reflect: DynReflect {
     }
 
     fn type_name(&self) -> &'static str {
-        std::any::type_name::<Self>()
+        type_name::<Self>()
     }
 }
 
@@ -46,7 +48,7 @@ impl dyn Reflect + '_ {
     pub fn downcast_ref<T: Reflect>(&self) -> Option<&T> {
         if self.is::<T>() {
             #[allow(trivial_casts)]
-            return Some(unsafe { &*std::ptr::from_ref::<dyn Reflect>(self).cast::<T>() });
+            return Some(unsafe { &*ptr::from_ref::<dyn Reflect>(self).cast::<T>() });
         }
 
         None
@@ -122,7 +124,7 @@ where
         match f(unsafe { Box::from_raw(ptr) }.as_dyn_box()) {
             Ok(value) => Ok(value),
             Err(value) => {
-                let _ = std::mem::ManuallyDrop::new(value);
+                let _ = ManuallyDrop::new(value);
                 Err(unsafe { Box::from_raw(ptr) })
             }
         }
@@ -139,7 +141,7 @@ where
         match f(unsafe { Rc::from_raw(ptr) }.as_dyn_rc()) {
             Ok(value) => Ok(value),
             Err(value) => {
-                let _ = std::mem::ManuallyDrop::new(value);
+                let _ = ManuallyDrop::new(value);
                 Err(unsafe { Rc::from_raw(ptr) })
             }
         }

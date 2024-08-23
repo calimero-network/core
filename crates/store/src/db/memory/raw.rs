@@ -1,7 +1,11 @@
 use std::borrow::Borrow;
-use std::collections::btree_map::{BTreeMap, Range as BTreeMapRange};
+use std::collections::btree_map::{BTreeMap, Range as BTreeMapRange, Range};
+use std::mem::transmute;
 use std::ops::Bound;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+use eyre::{bail, eyre, Result as EyreResult};
+use thunderdome::{Arena, Index};
 
 use crate::db::Column;
 use crate::slice::Slice;
@@ -24,20 +28,20 @@ pub trait InMemoryDBImpl<'a> {
 #[derive(Debug)]
 pub struct DBArena<V> {
     // todo! Slice::clone points to the same object, can save one allocation here
-    inner: Arc<RwLock<thunderdome::Arena<Arc<V>>>>,
+    inner: Arc<RwLock<Arena<Arc<V>>>>,
 }
 
 impl<V> DBArena<V> {
-    fn read(&self) -> eyre::Result<RwLockReadGuard<'_, thunderdome::Arena<Arc<V>>>> {
+    fn read(&self) -> EyreResult<RwLockReadGuard<'_, Arena<Arc<V>>>> {
         self.inner
             .read()
-            .map_err(|_| eyre::eyre!("failed to acquire read lock on arena"))
+            .map_err(|_| eyre!("failed to acquire read lock on arena"))
     }
 
-    fn write(&self) -> eyre::Result<RwLockWriteGuard<'_, thunderdome::Arena<Arc<V>>>> {
+    fn write(&self) -> EyreResult<RwLockWriteGuard<'_, Arena<Arc<V>>>> {
         self.inner
             .write()
-            .map_err(|_| eyre::eyre!("failed to acquire write lock on arena"))
+            .map_err(|_| eyre!("failed to acquire write lock on arena"))
     }
 }
 
@@ -60,7 +64,7 @@ impl<V> Default for DBArena<V> {
 #[derive(Debug)]
 pub struct InMemoryDBInner<K, V> {
     arena: DBArena<V>,
-    links: BTreeMap<Column, BTreeMap<K, Arc<thunderdome::Index>>>,
+    links: BTreeMap<Column, BTreeMap<K, Arc<Index>>>,
 }
 
 impl<K, V> Default for InMemoryDBInner<K, V> {
@@ -73,7 +77,7 @@ impl<K, V> Default for InMemoryDBInner<K, V> {
 }
 
 impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
-    pub fn get(&self, col: Column, key: &[u8]) -> eyre::Result<Option<Arc<V>>> {
+    pub fn get(&self, col: Column, key: &[u8]) -> EyreResult<Option<Arc<V>>> {
         let Some(column) = self.links.get(&col) else {
             return Ok(None);
         };
@@ -83,7 +87,7 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         };
 
         let Some(value) = self.arena.read()?.get(**idx).cloned() else {
-            return Err(eyre::eyre!(
+            return Err(eyre!(
                 "inconsistent state, index points to non-existent value"
             ));
         };
@@ -91,7 +95,7 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         Ok(Some(value))
     }
 
-    pub fn insert(&mut self, col: Column, key: K, value: V) -> eyre::Result<()> {
+    pub fn insert(&mut self, col: Column, key: K, value: V) -> EyreResult<()> {
         let idx = self.arena.write()?.insert(Arc::new(value));
 
         let column = self.links.entry(col).or_default();
@@ -99,7 +103,7 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         if let Some(idx) = column.insert(key, Arc::new(idx)) {
             if let Ok(idx) = Arc::try_unwrap(idx) {
                 if self.arena.write()?.remove(idx).is_none() {
-                    return Err(eyre::eyre!(
+                    return Err(eyre!(
                         "inconsistent state, index points to non-existent value"
                     ));
                 }
@@ -109,7 +113,7 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         Ok(())
     }
 
-    pub fn remove(&mut self, col: Column, key: &[u8]) -> eyre::Result<()> {
+    pub fn remove(&mut self, col: Column, key: &[u8]) -> EyreResult<()> {
         let Some(column) = self.links.get_mut(&col) else {
             return Ok(());
         };
@@ -117,7 +121,7 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
         if let Some(idx) = column.remove(key) {
             if let Ok(idx) = Arc::try_unwrap(idx) {
                 let Some(_value) = self.arena.write()?.remove(idx) else {
-                    return Err(eyre::eyre!(
+                    return Err(eyre!(
                         "inconsistent state, index points to non-existent value"
                     ));
                 };
@@ -141,13 +145,13 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
 #[derive(Debug)]
 pub struct InMemoryIterInner<'a, K: Ord, V> {
     arena: DBArena<V>,
-    column: Option<BTreeMap<K, Arc<thunderdome::Index>>>,
+    column: Option<BTreeMap<K, Arc<Index>>>,
     state: Option<State<'a, K, V>>,
 }
 
 #[derive(Debug)]
 struct State<'a, K, V> {
-    range: BTreeMapRange<'a, K, Arc<thunderdome::Index>>,
+    range: BTreeMapRange<'a, K, Arc<Index>>,
     value: Option<Arc<V>>,
 }
 
@@ -171,7 +175,7 @@ impl<K, V> InMemoryIterInner<'_, K, V>
 where
     K: Ord + Borrow<[u8]>,
 {
-    pub fn seek(&mut self, key: &[u8]) -> eyre::Result<Option<&K>> {
+    pub fn seek(&mut self, key: &[u8]) -> EyreResult<Option<&K>> {
         let Some(column) = self.column.as_ref() else {
             return Ok(None);
         };
@@ -181,10 +185,7 @@ where
         self.state = Some(State {
             // safety: range lives as long as self
             range: unsafe {
-                std::mem::transmute::<
-                    std::collections::btree_map::Range<'_, K, Arc<thunderdome::Index>>,
-                    std::collections::btree_map::Range<'_, K, Arc<thunderdome::Index>>,
-                >(range)
+                transmute::<Range<'_, K, Arc<Index>>, Range<'_, K, Arc<Index>>>(range)
             },
             value: None,
         });
@@ -192,7 +193,7 @@ where
         self.next()
     }
 
-    pub fn next(&mut self) -> eyre::Result<Option<&K>> {
+    pub fn next(&mut self) -> EyreResult<Option<&K>> {
         let Some(column) = self.column.as_ref() else {
             return Ok(None);
         };
@@ -200,10 +201,7 @@ where
         let state = self.state.get_or_insert_with(|| State {
             // safety: range lives as long as self
             range: unsafe {
-                std::mem::transmute::<
-                    std::collections::btree_map::Range<'_, K, Arc<thunderdome::Index>>,
-                    std::collections::btree_map::Range<'_, K, Arc<thunderdome::Index>>,
-                >(column.range(..))
+                transmute::<Range<'_, K, Arc<Index>>, Range<'_, K, Arc<Index>>>(column.range(..))
             },
             value: None,
         });
@@ -213,7 +211,7 @@ where
         };
 
         let Some(value) = self.arena.read()?.get(**idx).cloned() else {
-            return Err(eyre::eyre!(
+            return Err(eyre!(
                 "inconsistent state, index points to non-existent value"
             ));
         };
@@ -223,13 +221,13 @@ where
         Ok(Some(key))
     }
 
-    pub fn read(&self) -> eyre::Result<&V> {
+    pub fn read(&self) -> EyreResult<&V> {
         let Some(state) = &self.state else {
-            eyre::bail!("attempted to read from unadvanced iterator");
+            bail!("attempted to read from unadvanced iterator");
         };
 
         let Some(value) = &state.value else {
-            eyre::bail!("missing value in iterator state");
+            bail!("missing value in iterator state");
         };
 
         Ok(value)

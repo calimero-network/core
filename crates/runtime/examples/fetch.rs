@@ -1,12 +1,15 @@
+use calimero_runtime::logic::{VMContext, VMLimits};
+use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::{logic, run, store, Constraint};
-use serde_json::json;
+use eyre::Result as EyreResult;
+use serde_json::{json, to_vec as to_json_vec};
 
-fn main() -> eyre::Result<()> {
+fn main() -> EyreResult<()> {
     let file = include_bytes!("../../../apps/gen-ext/res/gen_ext.wasm");
 
-    let mut storage = store::InMemoryStorage::default();
+    let mut storage = InMemoryStorage::default();
 
-    let limits = logic::VMLimits {
+    let limits = VMLimits {
         max_stack_size: 200 << 10, // 200 KiB
         max_memory_pages: 1 << 10, // 1 KiB
         max_registers: 100,
@@ -21,8 +24,8 @@ fn main() -> eyre::Result<()> {
         max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
     };
 
-    let cx = logic::VMContext {
-        input: serde_json::to_vec(&json!({
+    let cx = VMContext {
+        input: to_json_vec(&json!({
             "block_height": 167345193,
             "account_id": "nearkat.testnet",
         }))?,

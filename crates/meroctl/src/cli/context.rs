@@ -1,6 +1,10 @@
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
+use eyre::Result as EyreResult;
 
+use crate::cli::context::create::CreateCommand;
+use crate::cli::context::join::JoinCommand;
+use crate::cli::context::list::ListCommand;
 use crate::cli::RootArgs;
 
 mod create;
@@ -32,13 +36,13 @@ pub struct ContextCommand {
 #[derive(Debug, Subcommand)]
 pub enum ContextSubCommands {
     #[command(alias = "ls")]
-    List(list::ListCommand),
-    Create(create::CreateCommand),
-    Join(join::JoinCommand),
+    List(ListCommand),
+    Create(CreateCommand),
+    Join(JoinCommand),
 }
 
 impl ContextCommand {
-    pub async fn run(self, args: RootArgs) -> eyre::Result<()> {
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         match self.subcommand {
             ContextSubCommands::List(list) => list.run(args).await,
             ContextSubCommands::Create(create) => create.run(args).await,

@@ -1,6 +1,13 @@
+use calimero_context::config::ApplicationConfig;
+use calimero_network::config::NetworkConfig;
+use calimero_node::{start, NodeConfig};
+use calimero_node_primitives::NodeType as PrimitiveNodeType;
+use calimero_server::config::ServerConfig;
+use calimero_store::config::StoreConfig;
 use clap::{Parser, ValueEnum};
+use eyre::{bail, Result as EyreResult};
 
-use crate::cli;
+use crate::cli::RootArgs;
 use crate::config_file::ConfigFile;
 
 /// Run a node
@@ -18,7 +25,7 @@ pub enum NodeType {
     Coordinator,
 }
 
-impl From<NodeType> for calimero_node_primitives::NodeType {
+impl From<NodeType> for PrimitiveNodeType {
     fn from(value: NodeType) -> Self {
         match value {
             NodeType::Peer => Self::Peer,
@@ -28,22 +35,22 @@ impl From<NodeType> for calimero_node_primitives::NodeType {
 }
 
 impl RunCommand {
-    pub async fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
+    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(root_args.node_name);
 
         if !ConfigFile::exists(&path) {
-            eyre::bail!("Node is not initialized in {:?}", path);
+            bail!("Node is not initialized in {:?}", path);
         }
 
         let config = ConfigFile::load(&path)?;
 
-        calimero_node::start(calimero_node::NodeConfig::new(
+        start(NodeConfig::new(
             path.clone(),
             self.node_type.into(),
             config.identity.clone(),
-            calimero_store::config::StoreConfig::new(path.join(config.store.path)),
-            calimero_context::config::ApplicationConfig::new(path.join(config.application.path)),
-            calimero_network::config::NetworkConfig::new(
+            StoreConfig::new(path.join(config.store.path)),
+            ApplicationConfig::new(path.join(config.application.path)),
+            NetworkConfig::new(
                 config.identity.clone(),
                 self.node_type.into(),
                 config.network.swarm,
@@ -51,7 +58,7 @@ impl RunCommand {
                 config.network.discovery,
                 config.network.catchup,
             ),
-            calimero_server::config::ServerConfig::new(
+            ServerConfig::new(
                 config.network.server.listen,
                 config.identity.clone(),
                 config.network.server.admin,

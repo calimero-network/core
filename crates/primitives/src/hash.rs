@@ -2,13 +2,21 @@
 #[path = "tests/hash.rs"]
 mod tests;
 
-use std::fmt;
+use std::cmp::Ordering;
+use std::fmt::{self, Debug, Display, Formatter};
+use std::hash::{Hash as StdHash, Hasher};
+use std::io::Result as IoResult;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
-use std::str::FromStr;
+use std::str::{from_utf8, FromStr};
 
-use sha2::Digest;
-use thiserror::Error;
+use borsh::BorshSerialize;
+use bs58::decode::Error as Bs58Error;
+use serde::de::{Error as SerdeError, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{to_writer as to_json_writer, Result as JsonResult};
+use sha2::{Digest, Sha256};
+use thiserror::Error as ThisError;
 
 const BYTES_LEN: usize = 32;
 const MAX_STR_LEN: usize = (BYTES_LEN + 1) * 4 / 3;
@@ -30,16 +38,16 @@ impl Hash {
     #[must_use]
     pub fn new(data: &[u8]) -> Self {
         Self {
-            bytes: sha2::Sha256::digest(data).into(),
+            bytes: Sha256::digest(data).into(),
             bs58: MaybeUninit::zeroed(),
         }
     }
 
     // todo! genericize over D: Digest
-    pub fn hash_json<T: serde::Serialize>(data: &T) -> serde_json::Result<Self> {
-        let mut hasher = sha2::Sha256::default();
+    pub fn hash_json<T: Serialize>(data: &T) -> JsonResult<Self> {
+        let mut hasher = Sha256::default();
 
-        serde_json::to_writer(&mut hasher, data)?;
+        to_json_writer(&mut hasher, data)?;
 
         Ok(Self {
             bytes: hasher.finalize().into(),
@@ -48,8 +56,8 @@ impl Hash {
     }
 
     #[cfg(feature = "borsh")]
-    pub fn hash_borsh<T: borsh::BorshSerialize>(data: &T) -> std::io::Result<Self> {
-        let mut hasher = sha2::Sha256::default();
+    pub fn hash_borsh<T: BorshSerialize>(data: &T) -> IoResult<Self> {
+        let mut hasher = Sha256::default();
 
         data.serialize(&mut hasher)?;
 
@@ -69,10 +77,10 @@ impl Hash {
             *len = bs58::encode(&self.bytes).onto(&mut bs58[..]).unwrap();
         }
 
-        std::str::from_utf8(&bs58[..*len]).unwrap()
+        from_utf8(&bs58[..*len]).unwrap()
     }
 
-    fn from_str(s: &str) -> Result<Self, Option<bs58::decode::Error>> {
+    fn from_str(s: &str) -> Result<Self, Option<Bs58Error>> {
         let mut bytes = [0; BYTES_LEN];
         let mut bs58 = [0; MAX_STR_LEN];
         let len = s.len().min(MAX_STR_LEN);
@@ -121,8 +129,8 @@ impl Default for Hash {
     }
 }
 
-impl std::hash::Hash for Hash {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl StdHash for Hash {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.bytes.hash(state);
     }
 }
@@ -136,37 +144,37 @@ impl PartialEq for Hash {
 impl Eq for Hash {}
 
 impl PartialOrd for Hash {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Hash {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.bytes.cmp(&other.bytes)
     }
 }
 
-impl fmt::Display for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Hash {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
 
-impl fmt::Debug for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for Hash {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Hash").field(&self.as_str()).finish()
     }
 }
 
-#[derive(Clone, Copy, Debug, Error)]
+#[derive(Clone, Copy, Debug, ThisError)]
 #[non_exhaustive]
 pub enum HashError {
     #[error("invalid hash length")]
     InvalidLength,
 
     #[error("invalid base58")]
-    DecodeError(#[from] bs58::decode::Error),
+    DecodeError(#[from] Bs58Error),
 }
 
 impl FromStr for Hash {
@@ -181,24 +189,24 @@ impl FromStr for Hash {
     }
 }
 
-impl serde::Serialize for Hash {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl Serialize for Hash {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Hash {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+impl<'de> Deserialize<'de> for Hash {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct HashVisitor;
 
-        impl serde::de::Visitor<'_> for HashVisitor {
+        impl Visitor<'_> for HashVisitor {
             type Value = Hash;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a base58 encoded hash")
             }
 
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            fn visit_str<E: SerdeError>(self, v: &str) -> Result<Self::Value, E> {
                 match Hash::from_str(v) {
                     Ok(hash) => Ok(hash),
                     Err(None) => Err(E::invalid_length(v.len(), &self)),

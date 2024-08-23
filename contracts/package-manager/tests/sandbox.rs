@@ -1,11 +1,12 @@
 use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract};
-use serde_json::json;
+use serde_json::{json, Value};
+use tokio::fs::read as async_read;
 
 #[tokio::test]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = near_workspaces::sandbox().await?;
-    let wasm = tokio::fs::read("res/package_manager.wasm").await?;
+    let wasm = async_read("res/package_manager.wasm").await?;
     let contract = worker.dev_deploy(&wasm).await?;
 
     // create accounts
@@ -36,7 +37,7 @@ async fn test_add_package_and_release(
         .transact()
         .await?;
 
-    let package: serde_json::Value = user
+    let package: Value = user
         .view(contract.id(), "get_package")
         .args_json(json!({
             "name": "application",
@@ -59,7 +60,7 @@ async fn test_add_package_and_release(
         .transact()
         .await?;
 
-    let release: serde_json::Value = user
+    let release: Value = user
         .view(contract.id(), "get_release")
         .args_json(json!({
             "name": "application",

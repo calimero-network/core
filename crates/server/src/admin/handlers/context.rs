@@ -4,6 +4,12 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::identity::{ClientKey, ContextUser};
+use calimero_server_primitives::admin::{
+    ContextStorage, CreateContextRequest, CreateContextResponse, GetContextsResponse,
+    UpdateContextApplicationRequest,
+};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
@@ -14,7 +20,7 @@ use crate::admin::utils::context::{create_context, join_context};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ContextObject {
-    context: calimero_primitives::context::Context,
+    context: Context,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -23,7 +29,7 @@ pub struct GetContextResponse {
 }
 
 pub async fn get_context_handler(
-    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
@@ -54,7 +60,7 @@ pub async fn get_context_handler(
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientKeys {
-    client_keys: Vec<calimero_primitives::identity::ClientKey>,
+    client_keys: Vec<ClientKey>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -63,7 +69,7 @@ pub struct GetContextClientKeysResponse {
 }
 
 pub async fn get_context_client_keys_handler(
-    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
@@ -83,7 +89,7 @@ pub async fn get_context_client_keys_handler(
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextUsers {
-    context_users: Vec<calimero_primitives::identity::ContextUser>,
+    context_users: Vec<ContextUser>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -116,7 +122,7 @@ pub async fn get_contexts_handler(
 
     match contexts {
         Ok(contexts) => ApiResponse {
-            payload: calimero_server_primitives::admin::GetContextsResponse::new(contexts),
+            payload: GetContextsResponse::new(contexts),
         }
         .into_response(),
         Err(err) => err.into_response(),
@@ -139,8 +145,7 @@ pub async fn delete_context_handler(
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let Ok(context_id_result) = calimero_primitives::context::ContextId::from_str(&context_id)
-    else {
+    let Ok(context_id_result) = ContextId::from_str(&context_id) else {
         return ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: "Invalid context id".into(),
@@ -168,7 +173,7 @@ pub async fn delete_context_handler(
 
 pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<calimero_server_primitives::admin::CreateContextRequest>,
+    Json(req): Json<CreateContextRequest>,
 ) -> impl IntoResponse {
     //TODO enable providing private key in the request
     let result = create_context(&state.ctx_manager, req.application_id, None)
@@ -177,7 +182,7 @@ pub async fn create_context_handler(
 
     match result {
         Ok(context_create_result) => ApiResponse {
-            payload: calimero_server_primitives::admin::CreateContextResponse::new(
+            payload: CreateContextResponse::new(
                 context_create_result.context,
                 context_create_result.identity.public_key,
             ),
@@ -189,14 +194,14 @@ pub async fn create_context_handler(
 
 #[derive(Debug, Serialize)]
 struct GetContextStorageResponse {
-    data: calimero_server_primitives::admin::ContextStorage,
+    data: ContextStorage,
 }
 
 impl GetContextStorageResponse {
     #[must_use]
     pub const fn new(size_in_bytes: u64) -> Self {
         Self {
-            data: calimero_server_primitives::admin::ContextStorage::new(size_in_bytes),
+            data: ContextStorage::new(size_in_bytes),
         }
     }
 }
@@ -227,8 +232,7 @@ pub async fn join_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     request: Option<Json<JoinContextRequest>>,
 ) -> impl IntoResponse {
-    let Ok(context_id_result) = calimero_primitives::context::ContextId::from_str(&context_id)
-    else {
+    let Ok(context_id_result) = ContextId::from_str(&context_id) else {
         return ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: "Invalid context id".into(),
@@ -267,10 +271,9 @@ struct UpdateApplicationIdResponse {
 pub async fn update_application_id(
     Extension(state): Extension<Arc<AdminState>>,
     Path(context_id): Path<String>,
-    Json(req): Json<calimero_server_primitives::admin::UpdateContextApplicationRequest>,
+    Json(req): Json<UpdateContextApplicationRequest>,
 ) -> impl IntoResponse {
-    let Ok(context_id_result) = calimero_primitives::context::ContextId::from_str(&context_id)
-    else {
+    let Ok(context_id_result) = ContextId::from_str(&context_id) else {
         return ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: "Invalid context id".into(),

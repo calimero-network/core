@@ -1,3 +1,5 @@
+use std::panic::Location as PanicLocation;
+
 use super::Buffer;
 
 #[repr(C)]
@@ -20,7 +22,7 @@ impl Location<'_> {
     #[track_caller]
     #[inline]
     pub fn caller() -> Self {
-        std::panic::Location::caller().into()
+        PanicLocation::caller().into()
     }
 
     #[inline]
@@ -41,9 +43,9 @@ impl Location<'_> {
     }
 }
 
-impl<'a> From<&'a std::panic::Location<'_>> for Location<'a> {
+impl<'a> From<&'a PanicLocation<'_>> for Location<'a> {
     #[inline]
-    fn from(location: &'a std::panic::Location<'_>) -> Self {
+    fn from(location: &'a PanicLocation<'_>) -> Self {
         Location {
             file: Buffer::from(location.file()),
             line: location.line(),
@@ -52,9 +54,9 @@ impl<'a> From<&'a std::panic::Location<'_>> for Location<'a> {
     }
 }
 
-impl<'a> From<Option<&'a std::panic::Location<'_>>> for Location<'a> {
+impl<'a> From<Option<&'a PanicLocation<'_>>> for Location<'a> {
     #[inline]
-    fn from(location: Option<&'a std::panic::Location<'_>>) -> Self {
+    fn from(location: Option<&'a PanicLocation<'_>>) -> Self {
         location.map_or_else(Location::unknown, Location::from)
     }
 }

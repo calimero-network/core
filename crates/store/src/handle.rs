@@ -1,4 +1,5 @@
-use thiserror::Error;
+use eyre::Report;
+use thiserror::Error as ThisError;
 
 use crate::entry::{Codec, Entry};
 use crate::iter::{Iter, Structured};
@@ -20,10 +21,10 @@ impl<L: Layer> Handle<L> {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum HandleError<E> {
     #[error(transparent)]
-    LayerError(#[from] eyre::Report),
+    LayerError(#[from] Report),
     #[error(transparent)]
     CodecError(E),
 }

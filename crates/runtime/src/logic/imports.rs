@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
+use wasmer::{Imports, Store};
+
 use super::{HostError, Location, PanicContext, VMLogic};
 
 thread_local! {
@@ -14,7 +16,7 @@ thread_local! {
 impl VMLogic<'_> {
     #[allow(clippy::too_many_arguments)]
     #[allow(trivial_casts)]
-    pub fn imports(&mut self, store: &mut wasmer::Store) -> wasmer::Imports {
+    pub fn imports(&mut self, store: &mut Store) -> Imports {
         imports! {
             store;
             logic: self;

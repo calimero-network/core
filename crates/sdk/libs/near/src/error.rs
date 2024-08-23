@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use thiserror::Error;
+use serde_json::{Error as JsonError, Value};
+use thiserror::Error as ThisError;
 
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum Error<R> {
     #[error(transparent)]
-    JsonError(#[from] serde_json::Error),
+    JsonError(#[from] JsonError),
 
     #[error("Failed to fetch: {0}")]
     FetchError(String),

@@ -1,3 +1,5 @@
+use eyre::Ok as EyreOk;
+
 use super::InMemoryDB;
 use crate::db::{Column, Database};
 use crate::slice::Slice;
@@ -34,7 +36,7 @@ fn test_owned_memory() {
         for b2 in 0..10 {
             let (k, v) = entries
                 .next()
-                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .map(|(k, v)| EyreOk((k?, v?)))
                 .transpose()
                 .unwrap()
                 .map_or_else(Default::default, |(k, v)| {
@@ -88,7 +90,7 @@ fn test_ref_memory() {
         for b2 in 0..10 {
             let (k, v) = entries
                 .next()
-                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .map(|(k, v)| EyreOk((k?, v?)))
                 .transpose()
                 .unwrap()
                 .map_or_else(Default::default, |(k, v)| {

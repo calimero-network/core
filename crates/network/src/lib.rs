@@ -1,15 +1,40 @@
-use std::collections::hash_map::{self, HashMap};
+use std::collections::hash_map::{Entry, HashMap};
 use std::collections::HashSet;
 
+use client::NetworkClient;
+use config::NetworkConfig;
+use eyre::{bail, eyre, Result as EyreResult};
+use libp2p::dcutr::Behaviour as DcutrBehaviour;
 use libp2p::futures::prelude::*;
+use libp2p::gossipsub::{
+    Behaviour as GossipsubBehaviour, Config as GossipsubConfig, IdentTopic, MessageAuthenticity,
+    MessageId, TopicHash,
+};
+use libp2p::identify::{Behaviour as IdentifyBehaviour, Config as IdentifyConfig};
+use libp2p::kad::store::MemoryStore;
+use libp2p::kad::{Behaviour as KadBehaviour, Config as KadConfig, Mode, QueryId};
+use libp2p::mdns::tokio::Behaviour as MdnsTokioBehaviour;
+use libp2p::mdns::{Behaviour as MdnsBehaviour, Config as MdnsConfig};
+use libp2p::noise::Config as NoiseConfig;
+use libp2p::ping::Behaviour as PingBehaviour;
+use libp2p::relay::client::Behaviour as RelayBehaviour;
+use libp2p::rendezvous::client::Behaviour as RendezvousBehaviour;
 use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
-use libp2p::{
-    dcutr, gossipsub, identify, kad, mdns, noise, ping, relay, rendezvous, yamux, PeerId,
-};
-use multiaddr::Multiaddr;
+use libp2p::tcp::Config as TcpConfig;
+use libp2p::tls::Config as TlsConfig;
+use libp2p::yamux::Config as YamuxConfig;
+use libp2p::{PeerId, StreamProtocol, SwarmBuilder};
+use libp2p_stream::{Behaviour as StreamBehaviour, IncomingStreams};
+use multiaddr::{Multiaddr, Protocol};
+use stream::Stream;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::{interval, Duration};
+use tokio::{select, spawn};
 use tracing::{debug, trace, warn};
+
+use crate::discovery::Discovery;
+use crate::types::NetworkEvent;
 
 pub mod client;
 pub mod config;
@@ -18,34 +43,30 @@ mod events;
 pub mod stream;
 pub mod types;
 
-use client::NetworkClient;
-use config::NetworkConfig;
-
 const PROTOCOL_VERSION: &str = concat!("/", env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
-const CALIMERO_KAD_PROTO_NAME: libp2p::StreamProtocol =
-    libp2p::StreamProtocol::new("/calimero/kad/1.0.0");
+const CALIMERO_KAD_PROTO_NAME: StreamProtocol = StreamProtocol::new("/calimero/kad/1.0.0");
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
-    dcutr: dcutr::Behaviour,
-    gossipsub: gossipsub::Behaviour,
-    identify: identify::Behaviour,
-    kad: kad::Behaviour<kad::store::MemoryStore>,
-    mdns: Toggle<mdns::tokio::Behaviour>,
-    ping: ping::Behaviour,
-    rendezvous: rendezvous::client::Behaviour,
-    relay: relay::client::Behaviour,
-    stream: libp2p_stream::Behaviour,
+    dcutr: DcutrBehaviour,
+    gossipsub: GossipsubBehaviour,
+    identify: IdentifyBehaviour,
+    kad: KadBehaviour<MemoryStore>,
+    mdns: Toggle<MdnsTokioBehaviour>,
+    ping: PingBehaviour,
+    rendezvous: RendezvousBehaviour,
+    relay: RelayBehaviour,
+    stream: StreamBehaviour,
 }
 
 pub async fn run(
     config: &NetworkConfig,
-) -> eyre::Result<(NetworkClient, mpsc::Receiver<types::NetworkEvent>)> {
+) -> EyreResult<(NetworkClient, mpsc::Receiver<NetworkEvent>)> {
     let peer_id = config.identity.public().to_peer_id();
 
     let (client, event_receiver, event_loop) = init(peer_id, config)?;
 
-    drop(tokio::spawn(event_loop.run()));
+    drop(spawn(event_loop.run()));
 
     for addr in &config.swarm.listen {
         client.listen_on(addr.clone()).await?;
@@ -59,17 +80,13 @@ pub async fn run(
 fn init(
     peer_id: PeerId,
     config: &NetworkConfig,
-) -> eyre::Result<(
-    NetworkClient,
-    mpsc::Receiver<types::NetworkEvent>,
-    EventLoop,
-)> {
+) -> EyreResult<(NetworkClient, mpsc::Receiver<NetworkEvent>, EventLoop)> {
     let bootstrap_peers = {
         let mut peers = vec![];
 
         for mut addr in config.bootstrap.nodes.list.iter().cloned() {
-            let Some(multiaddr::Protocol::P2p(peer_id)) = addr.pop() else {
-                eyre::bail!("Failed to parse peer id from addr {:?}", addr);
+            let Some(Protocol::P2p(peer_id)) = addr.pop() else {
+                bail!("Failed to parse peer id from addr {:?}", addr);
             };
 
             peers.push((peer_id, addr));
@@ -78,38 +95,35 @@ fn init(
         peers
     };
 
-    let swarm = libp2p::SwarmBuilder::with_existing_identity(config.identity.clone())
+    let swarm = SwarmBuilder::with_existing_identity(config.identity.clone())
         .with_tokio()
         .with_tcp(
-            libp2p::tcp::Config::default(),
-            (libp2p::tls::Config::new, noise::Config::new),
-            yamux::Config::default,
+            TcpConfig::default(),
+            (TlsConfig::new, NoiseConfig::new),
+            YamuxConfig::default,
         )?
         .with_quic()
-        .with_relay_client(noise::Config::new, yamux::Config::default)?
+        .with_relay_client(NoiseConfig::new, YamuxConfig::default)?
         .with_behaviour(|key, relay_behaviour| Behaviour {
-            dcutr: dcutr::Behaviour::new(peer_id),
-            identify: identify::Behaviour::new(
-                identify::Config::new(PROTOCOL_VERSION.to_owned(), key.public())
+            dcutr: DcutrBehaviour::new(peer_id),
+            identify: IdentifyBehaviour::new(
+                IdentifyConfig::new(PROTOCOL_VERSION.to_owned(), key.public())
                     .with_push_listen_addr_updates(true),
             ),
             mdns: config
                 .discovery
                 .mdns
                 .then_some(())
-                .and_then(|()| mdns::Behaviour::new(mdns::Config::default(), peer_id).ok())
+                .and_then(|()| MdnsBehaviour::new(MdnsConfig::default(), peer_id).ok())
                 .into(),
             kad: {
-                let mut kad_config = kad::Config::default();
+                let mut kad_config = KadConfig::default();
                 let _ = kad_config.set_protocol_names(vec![CALIMERO_KAD_PROTO_NAME]);
 
-                let mut kad = kad::Behaviour::with_config(
-                    peer_id,
-                    kad::store::MemoryStore::new(peer_id),
-                    kad_config,
-                );
+                let mut kad =
+                    KadBehaviour::with_config(peer_id, MemoryStore::new(peer_id), kad_config);
 
-                kad.set_mode(Some(kad::Mode::Client));
+                kad.set_mode(Some(Mode::Client));
 
                 for (peer_id, addr) in bootstrap_peers {
                     let _ = kad.add_address(&peer_id, addr);
@@ -120,19 +134,17 @@ fn init(
 
                 kad
             },
-            gossipsub: gossipsub::Behaviour::new(
-                gossipsub::MessageAuthenticity::Signed(key.clone()),
-                gossipsub::Config::default(),
+            gossipsub: GossipsubBehaviour::new(
+                MessageAuthenticity::Signed(key.clone()),
+                GossipsubConfig::default(),
             )
             .expect("Valid gossipsub config."),
-            ping: ping::Behaviour::default(),
+            ping: PingBehaviour::default(),
             relay: relay_behaviour,
-            rendezvous: rendezvous::client::Behaviour::new(key.clone()),
-            stream: libp2p_stream::Behaviour::new(),
+            rendezvous: RendezvousBehaviour::new(key.clone()),
+            stream: StreamBehaviour::new(),
         })?
-        .with_swarm_config(|cfg| {
-            cfg.with_idle_connection_timeout(tokio::time::Duration::from_secs(30))
-        })
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(30)))
         .build();
 
     let incoming_streams = match swarm
@@ -143,7 +155,7 @@ fn init(
     {
         Ok(incoming_streams) => incoming_streams,
         Err(err) => {
-            eyre::bail!("Failed to setup control for stream protocol: {:?}", err)
+            bail!("Failed to setup control for stream protocol: {:?}", err)
         }
     };
 
@@ -155,7 +167,7 @@ fn init(
         sender: command_sender,
     };
 
-    let discovery = discovery::Discovery::new(&config.discovery.rendezvous);
+    let discovery = Discovery::new(&config.discovery.rendezvous);
 
     let event_loop = EventLoop::new(
         swarm,
@@ -170,24 +182,24 @@ fn init(
 
 pub(crate) struct EventLoop {
     swarm: Swarm<Behaviour>,
-    incoming_streams: libp2p_stream::IncomingStreams,
+    incoming_streams: IncomingStreams,
     command_receiver: mpsc::Receiver<Command>,
-    event_sender: mpsc::Sender<types::NetworkEvent>,
-    discovery: discovery::Discovery,
-    pending_dial: HashMap<PeerId, oneshot::Sender<eyre::Result<Option<()>>>>,
-    pending_bootstrap: HashMap<kad::QueryId, oneshot::Sender<eyre::Result<Option<()>>>>,
-    pending_start_providing: HashMap<kad::QueryId, oneshot::Sender<()>>,
-    pending_get_providers: HashMap<kad::QueryId, oneshot::Sender<HashSet<PeerId>>>,
+    event_sender: mpsc::Sender<NetworkEvent>,
+    discovery: Discovery,
+    pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<Option<()>>>>,
+    pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<Option<()>>>>,
+    pending_start_providing: HashMap<QueryId, oneshot::Sender<()>>,
+    pending_get_providers: HashMap<QueryId, oneshot::Sender<HashSet<PeerId>>>,
 }
 
 #[allow(clippy::multiple_inherent_impl)]
 impl EventLoop {
     fn new(
         swarm: Swarm<Behaviour>,
-        incoming_streams: libp2p_stream::IncomingStreams,
+        incoming_streams: IncomingStreams,
         command_receiver: mpsc::Receiver<Command>,
-        event_sender: mpsc::Sender<types::NetworkEvent>,
-        discovery: discovery::Discovery,
+        event_sender: mpsc::Sender<NetworkEvent>,
+        discovery: Discovery,
     ) -> Self {
         Self {
             swarm,
@@ -204,11 +216,11 @@ impl EventLoop {
 
     pub(crate) async fn run(mut self) {
         let mut rendezvous_discover_tick =
-            tokio::time::interval(self.discovery.rendezvous_config.discovery_interval);
+            interval(self.discovery.rendezvous_config.discovery_interval);
 
         #[allow(clippy::redundant_pub_crate)]
         loop {
-            tokio::select! {
+            select! {
                 event = self.swarm.next() => {
                     self.handle_swarm_event(event.expect("Swarm stream to be infinite.")).await;
                 },
@@ -231,7 +243,7 @@ impl EventLoop {
             Command::ListenOn { addr, sender } => {
                 drop(match self.swarm.listen_on(addr) {
                     Ok(_) => sender.send(Ok(())),
-                    Err(e) => sender.send(Err(eyre::eyre!(e))),
+                    Err(e) => sender.send(Err(eyre!(e))),
                 });
             }
             Command::Bootstrap { sender } => match self.swarm.behaviour_mut().kad.bootstrap() {
@@ -239,26 +251,23 @@ impl EventLoop {
                     drop(self.pending_bootstrap.insert(query_id, sender));
                 }
                 Err(err) => sender
-                    .send(Err(eyre::eyre!(err)))
+                    .send(Err(eyre!(err)))
                     .expect("Receiver not to be dropped."),
             },
             Command::Dial {
                 mut peer_addr,
                 sender,
             } => {
-                let Some(multiaddr::Protocol::P2p(peer_id)) = peer_addr.pop() else {
-                    drop(sender.send(Err(eyre::eyre!(format!(
-                        "No peer ID in address: {}",
-                        peer_addr
-                    )))));
+                let Some(Protocol::P2p(peer_id)) = peer_addr.pop() else {
+                    drop(sender.send(Err(eyre!(format!("No peer ID in address: {}", peer_addr)))));
                     return;
                 };
 
                 match self.pending_dial.entry(peer_id) {
-                    hash_map::Entry::Occupied(_) => {
+                    Entry::Occupied(_) => {
                         drop(sender.send(Ok(None)));
                     }
-                    hash_map::Entry::Vacant(entry) => {
+                    Entry::Vacant(entry) => {
                         let _ = self
                             .swarm
                             .behaviour_mut()
@@ -270,7 +279,7 @@ impl EventLoop {
                                 let _ = entry.insert(sender);
                             }
                             Err(e) => {
-                                drop(sender.send(Err(eyre::eyre!(e))));
+                                drop(sender.send(Err(eyre!(e))));
                             }
                         }
                     }
@@ -278,7 +287,7 @@ impl EventLoop {
             }
             Command::Subscribe { topic, sender } => {
                 if let Err(err) = self.swarm.behaviour_mut().gossipsub.subscribe(&topic) {
-                    drop(sender.send(Err(eyre::eyre!(err))));
+                    drop(sender.send(Err(eyre!(err))));
                     return;
                 }
 
@@ -286,7 +295,7 @@ impl EventLoop {
             }
             Command::Unsubscribe { topic, sender } => {
                 if let Err(err) = self.swarm.behaviour_mut().gossipsub.unsubscribe(&topic) {
-                    drop(sender.send(Err(eyre::eyre!(err))));
+                    drop(sender.send(Err(eyre!(err))));
                     return;
                 }
 
@@ -327,7 +336,7 @@ impl EventLoop {
                 let id = match self.swarm.behaviour_mut().gossipsub.publish(topic, data) {
                     Ok(id) => id,
                     Err(err) => {
-                        drop(sender.send(Err(eyre::eyre!(err))));
+                        drop(sender.send(Err(eyre!(err))));
                         return;
                     }
                 };
@@ -359,42 +368,42 @@ impl EventLoop {
 enum Command {
     ListenOn {
         addr: Multiaddr,
-        sender: oneshot::Sender<eyre::Result<()>>,
+        sender: oneshot::Sender<EyreResult<()>>,
     },
     Dial {
         peer_addr: Multiaddr,
-        sender: oneshot::Sender<eyre::Result<Option<()>>>,
+        sender: oneshot::Sender<EyreResult<Option<()>>>,
     },
     Bootstrap {
-        sender: oneshot::Sender<eyre::Result<Option<()>>>,
+        sender: oneshot::Sender<EyreResult<Option<()>>>,
     },
     Subscribe {
-        topic: gossipsub::IdentTopic,
-        sender: oneshot::Sender<eyre::Result<gossipsub::IdentTopic>>,
+        topic: IdentTopic,
+        sender: oneshot::Sender<EyreResult<IdentTopic>>,
     },
     Unsubscribe {
-        topic: gossipsub::IdentTopic,
-        sender: oneshot::Sender<eyre::Result<gossipsub::IdentTopic>>,
+        topic: IdentTopic,
+        sender: oneshot::Sender<EyreResult<IdentTopic>>,
     },
     OpenStream {
         peer_id: PeerId,
-        sender: oneshot::Sender<eyre::Result<stream::Stream>>,
+        sender: oneshot::Sender<EyreResult<Stream>>,
     },
     PeerCount {
         sender: oneshot::Sender<usize>,
     },
     MeshPeerCount {
-        topic: gossipsub::TopicHash,
+        topic: TopicHash,
         sender: oneshot::Sender<usize>,
     },
     MeshPeers {
-        topic: gossipsub::TopicHash,
+        topic: TopicHash,
         sender: oneshot::Sender<Vec<PeerId>>,
     },
     Publish {
-        topic: gossipsub::TopicHash,
+        topic: TopicHash,
         data: Vec<u8>,
-        sender: oneshot::Sender<eyre::Result<gossipsub::MessageId>>,
+        sender: oneshot::Sender<EyreResult<MessageId>>,
     },
     StartProviding {
         key: String,

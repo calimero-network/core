@@ -2,7 +2,11 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::{KeyPair, PublicKey};
 
 use crate::entry::{Borsh, Identity};
-use crate::key;
+use crate::key::{
+    ApplicationMeta as ApplicationMetaKey, ContextIdentity as ContextIdentityKey,
+    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
+    ContextTransaction as ContextTransactionKey,
+};
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
@@ -11,14 +15,14 @@ pub type TransactionHash = [u8; 32];
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextMeta {
-    pub application: key::ApplicationMeta,
+    pub application: ApplicationMetaKey,
     pub last_transaction_hash: TransactionHash,
 }
 
 impl ContextMeta {
     #[must_use]
     pub const fn new(
-        application: key::ApplicationMeta,
+        application: ApplicationMetaKey,
         last_transaction_hash: TransactionHash,
     ) -> Self {
         Self {
@@ -28,7 +32,7 @@ impl ContextMeta {
     }
 }
 
-impl PredefinedEntry for key::ContextMeta {
+impl PredefinedEntry for ContextMetaKey {
     type Codec = Borsh;
     type DataType<'a> = ContextMeta;
 }
@@ -39,7 +43,7 @@ pub struct ContextState<'a> {
     pub value: Slice<'a>,
 }
 
-impl PredefinedEntry for key::ContextState {
+impl PredefinedEntry for ContextStateKey {
     type Codec = Identity;
     type DataType<'a> = ContextState<'a>;
 }
@@ -81,7 +85,7 @@ impl From<ContextIdentity> for KeyPair {
     }
 }
 
-impl PredefinedEntry for key::ContextIdentity {
+impl PredefinedEntry for ContextIdentityKey {
     type Codec = Borsh;
     type DataType<'a> = ContextIdentity;
 }
@@ -112,7 +116,7 @@ impl ContextTransaction {
     }
 }
 
-impl PredefinedEntry for key::ContextTransaction {
+impl PredefinedEntry for ContextTransactionKey {
     type Codec = Borsh;
     type DataType<'a> = ContextTransaction;
 }

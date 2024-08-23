@@ -10,6 +10,7 @@ use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
 use libp2p::identity::Keypair;
 use reqwest::StatusCode;
+use serde_json::to_string as to_json_string;
 use tracing::info;
 
 use crate::admin::service::{parse_api_error, ApiError};
@@ -138,7 +139,7 @@ pub fn decode_signature(encoded_sig: &String) -> Result<Vec<u8>, ApiError> {
 }
 
 pub fn serialize_node_challenge(challenge: &NodeChallengeMessage) -> Result<String, ApiError> {
-    serde_json::to_string(challenge).map_err(|_| ApiError {
+    to_json_string(challenge).map_err(|_| ApiError {
         status_code: StatusCode::INTERNAL_SERVER_ERROR,
         message: "Failed to deserialize challenge data".into(),
     })

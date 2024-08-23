@@ -1,14 +1,19 @@
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::application::{Application, ApplicationId};
+use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::{PublicKey, WalletType};
 use camino::Utf8PathBuf;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use url::Url;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct InstallApplicationRequest {
-    pub url: url::Url,
-    pub version: Option<semver::Version>,
-    pub hash: Option<calimero_primitives::hash::Hash>,
+    pub url: Url,
+    pub version: Option<Version>,
+    pub hash: Option<Hash>,
     pub metadata: Vec<u8>,
 }
 
@@ -16,17 +21,13 @@ pub struct InstallApplicationRequest {
 #[non_exhaustive]
 pub struct InstallDevApplicationRequest {
     pub path: Utf8PathBuf,
-    pub version: Option<semver::Version>,
+    pub version: Option<Version>,
     pub metadata: Vec<u8>,
 }
 
 impl InstallDevApplicationRequest {
     #[must_use]
-    pub const fn new(
-        path: Utf8PathBuf,
-        version: Option<semver::Version>,
-        metadata: Vec<u8>,
-    ) -> Self {
+    pub const fn new(path: Utf8PathBuf, version: Option<Version>, metadata: Vec<u8>) -> Self {
         Self {
             path,
             version,
@@ -38,7 +39,7 @@ impl InstallDevApplicationRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ApplicationListResult {
-    pub apps: Vec<calimero_primitives::application::Application>,
+    pub apps: Vec<Application>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -49,7 +50,7 @@ pub struct ListApplicationsResponse {
 
 impl ListApplicationsResponse {
     #[must_use]
-    pub const fn new(apps: Vec<calimero_primitives::application::Application>) -> Self {
+    pub const fn new(apps: Vec<Application>) -> Self {
         Self {
             data: ApplicationListResult { apps },
         }
@@ -64,7 +65,7 @@ pub struct InstallApplicationResponse {
 
 impl InstallApplicationResponse {
     #[must_use]
-    pub const fn new(application_id: calimero_primitives::application::ApplicationId) -> Self {
+    pub const fn new(application_id: ApplicationId) -> Self {
         Self {
             data: ApplicationInstallResult { application_id },
         }
@@ -74,7 +75,7 @@ impl InstallApplicationResponse {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ApplicationInstallResult {
-    pub application_id: calimero_primitives::application::ApplicationId,
+    pub application_id: ApplicationId,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -85,7 +86,7 @@ pub struct GetApplicationResponse {
 
 impl GetApplicationResponse {
     #[must_use]
-    pub const fn new(application: Option<calimero_primitives::application::Application>) -> Self {
+    pub const fn new(application: Option<Application>) -> Self {
         Self {
             data: GetApplicationResult { application },
         }
@@ -95,7 +96,7 @@ impl GetApplicationResponse {
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct GetApplicationResult {
-    pub application: Option<calimero_primitives::application::Application>,
+    pub application: Option<Application>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,7 +106,7 @@ pub struct AddPublicKeyRequest {
     pub wallet_signature: String,
     pub payload: Payload,
     pub wallet_metadata: WalletMetadata,
-    pub context_id: Option<calimero_primitives::context::ContextId>,
+    pub context_id: Option<ContextId>,
 }
 
 impl AddPublicKeyRequest {
@@ -114,7 +115,7 @@ impl AddPublicKeyRequest {
         wallet_signature: String,
         payload: Payload,
         wallet_metadata: WalletMetadata,
-        context_id: Option<calimero_primitives::context::ContextId>,
+        context_id: Option<ContextId>,
     ) -> Self {
         Self {
             wallet_signature,
@@ -144,7 +145,7 @@ impl Payload {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct SignatureMessage {
-    pub context_id: Option<calimero_primitives::context::ContextId>,
+    pub context_id: Option<ContextId>,
     pub nonce: String,
     pub timestamp: i64,
     pub node_signature: String,
@@ -157,7 +158,7 @@ pub struct SignatureMessage {
 #[non_exhaustive]
 pub struct WalletMetadata {
     #[serde(rename = "wallet")]
-    pub wallet_type: calimero_primitives::identity::WalletType,
+    pub wallet_type: WalletType,
     pub signing_key: String,
 }
 
@@ -191,7 +192,7 @@ pub struct IntermediateAddPublicKeyRequest {
     pub wallet_signature: String,
     pub payload: IntermediatePayload,
     pub wallet_metadata: WalletMetadata, // Reuse WalletMetadata as it fits the intermediate step
-    pub context_id: Option<calimero_primitives::context::ContextId>,
+    pub context_id: Option<ContextId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,17 +227,13 @@ impl NodeChallenge {
 #[non_exhaustive]
 pub struct NodeChallengeMessage {
     pub nonce: String,
-    pub context_id: Option<calimero_primitives::context::ContextId>,
+    pub context_id: Option<ContextId>,
     pub timestamp: i64,
 }
 
 impl NodeChallengeMessage {
     #[must_use]
-    pub const fn new(
-        nonce: String,
-        context_id: Option<calimero_primitives::context::ContextId>,
-        timestamp: i64,
-    ) -> Self {
+    pub const fn new(nonce: String, context_id: Option<ContextId>, timestamp: i64) -> Self {
         Self {
             nonce,
             context_id,
@@ -262,7 +259,7 @@ impl ContextStorage {
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ContextList {
-    pub contexts: Vec<calimero_primitives::context::Context>,
+    pub contexts: Vec<Context>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -273,7 +270,7 @@ pub struct GetContextsResponse {
 
 impl GetContextsResponse {
     #[must_use]
-    pub const fn new(contexts: Vec<calimero_primitives::context::Context>) -> Self {
+    pub const fn new(contexts: Vec<Context>) -> Self {
         Self {
             data: ContextList { contexts },
         }
@@ -284,12 +281,12 @@ impl GetContextsResponse {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct CreateContextRequest {
-    pub application_id: calimero_primitives::application::ApplicationId,
+    pub application_id: ApplicationId,
 }
 
 impl CreateContextRequest {
     #[must_use]
-    pub const fn new(application_id: calimero_primitives::application::ApplicationId) -> Self {
+    pub const fn new(application_id: ApplicationId) -> Self {
         Self { application_id }
     }
 }
@@ -297,7 +294,7 @@ impl CreateContextRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ContextResponse {
-    pub context: calimero_primitives::context::Context,
+    pub context: Context,
     pub member_public_key: PublicKey,
 }
 
@@ -309,10 +306,7 @@ pub struct CreateContextResponse {
 
 impl CreateContextResponse {
     #[must_use]
-    pub const fn new(
-        context: calimero_primitives::context::Context,
-        member_public_key: PublicKey,
-    ) -> Self {
+    pub const fn new(context: Context, member_public_key: PublicKey) -> Self {
         Self {
             data: ContextResponse {
                 context,
@@ -326,12 +320,12 @@ impl CreateContextResponse {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct UpdateContextApplicationRequest {
-    pub application_id: calimero_primitives::application::ApplicationId,
+    pub application_id: ApplicationId,
 }
 
 impl UpdateContextApplicationRequest {
     #[must_use]
-    pub const fn new(application_id: calimero_primitives::application::ApplicationId) -> Self {
+    pub const fn new(application_id: ApplicationId) -> Self {
         Self { application_id }
     }
 }

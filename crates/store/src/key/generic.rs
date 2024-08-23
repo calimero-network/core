@@ -1,5 +1,7 @@
 use std::fmt;
+use std::fmt::{Debug, Formatter};
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use generic_array::sequence::Concat;
 use generic_array::typenum::{U16, U32};
 use generic_array::GenericArray;
@@ -23,10 +25,7 @@ impl KeyComponent for Fragment {
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct Generic(Key<(Scope, Fragment)>);
 
 impl Generic {
@@ -74,8 +73,8 @@ impl FromKeyParts for Generic {
     }
 }
 
-impl fmt::Debug for Generic {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for Generic {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Generic")
             .field("scope", &self.scope())
             .field("fragment", &self.fragment())

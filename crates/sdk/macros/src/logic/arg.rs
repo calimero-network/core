@@ -1,12 +1,15 @@
+use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
+use syn::{Error as SynError, FnArg, Ident, Pat, Path, Type};
 
-use super::{ty, utils};
-use crate::errors;
+use crate::errors::{Errors, ParseError, Pretty};
+use crate::logic::ty::{LogicTy, LogicTyInput};
+use crate::logic::utils::typed_path;
 
 pub enum SelfType<'a> {
-    Owned(&'a syn::Type),
-    Mutable(&'a syn::Type),
-    Immutable(&'a syn::Type),
+    Owned(&'a Type),
+    Mutable(&'a Type),
+    Immutable(&'a Type),
 }
 
 pub enum LogicArg<'a> {
@@ -15,12 +18,12 @@ pub enum LogicArg<'a> {
 }
 
 pub struct LogicArgTyped<'a> {
-    pub ident: &'a syn::Ident,
-    pub ty: ty::LogicTy,
+    pub ident: &'a Ident,
+    pub ty: LogicTy,
 }
 
 impl ToTokens for LogicArgTyped<'_> {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         let ident = &self.ident;
         let ty = &self.ty;
 
@@ -29,21 +32,21 @@ impl ToTokens for LogicArgTyped<'_> {
 }
 
 pub struct LogicArgInput<'a, 'b> {
-    pub arg: &'a syn::FnArg,
+    pub arg: &'a FnArg,
 
-    pub type_: &'b syn::Path,
+    pub type_: &'b Path,
 }
 
 impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
-    type Error = errors::Errors<'a, syn::FnArg>;
+    type Error = Errors<'a, FnArg>;
 
     fn try_from(input: LogicArgInput<'a, 'b>) -> Result<Self, Self::Error> {
-        let errors = errors::Errors::new(input.arg);
+        let errors = Errors::new(input.arg);
 
         match input.arg {
-            syn::FnArg::Receiver(receiver) => {
+            FnArg::Receiver(receiver) => {
                 'recv: {
-                    let Some(path) = utils::typed_path(&receiver.ty, true) else {
+                    let Some(path) = typed_path(&receiver.ty, true) else {
                         break 'recv;
                     };
 
@@ -51,7 +54,7 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
 
                     let mut reference = None;
 
-                    if let syn::Type::Reference(ref_) = &*receiver.ty {
+                    if let Type::Reference(ref_) = &*receiver.ty {
                         reference = ref_
                             .mutability
                             .map_or(Some(SelfType::Immutable(&receiver.ty)), |_| {
@@ -59,9 +62,9 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                             });
                     } else if is_self {
                         // todo! circumvent via `#[app::destroy]`
-                        errors.subsume(syn::Error::new_spanned(
+                        errors.subsume(SynError::new_spanned(
                             &receiver.ty,
-                            errors::ParseError::NoSelfOwnership,
+                            ParseError::NoSelfOwnership,
                         ));
                     }
 
@@ -74,20 +77,19 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                     }
                 };
 
-                Err(errors.finish(syn::Error::new_spanned(
+                Err(errors.finish(SynError::new_spanned(
                     &receiver.ty,
-                    errors::ParseError::ExpectedSelf(errors::Pretty::Path(input.type_)),
+                    ParseError::ExpectedSelf(Pretty::Path(input.type_)),
                 )))
             }
-            syn::FnArg::Typed(typed) => {
-                let syn::Pat::Ident(ident) = &*typed.pat else {
-                    return Err(errors.finish(syn::Error::new_spanned(
-                        &typed.pat,
-                        errors::ParseError::ExpectedIdent,
-                    )));
+            FnArg::Typed(typed) => {
+                let Pat::Ident(ident) = &*typed.pat else {
+                    return Err(
+                        errors.finish(SynError::new_spanned(&typed.pat, ParseError::ExpectedIdent))
+                    );
                 };
 
-                let ty = match ty::LogicTy::try_from(ty::LogicTyInput {
+                let ty = match LogicTy::try_from(LogicTyInput {
                     type_: input.type_,
                     ty: &typed.ty,
                 }) {

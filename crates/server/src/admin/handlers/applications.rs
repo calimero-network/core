@@ -4,13 +4,16 @@ use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_server_primitives::admin::{GetApplicationResponse, InstallApplicationResponse};
+use calimero_primitives::application::ApplicationId;
+use calimero_server_primitives::admin::{
+    GetApplicationResponse, InstallApplicationResponse, InstallDevApplicationRequest,
+};
 
 use crate::admin::service::{AdminState, ApiResponse};
 
 pub async fn install_dev_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<calimero_server_primitives::admin::InstallDevApplicationRequest>,
+    Json(req): Json<InstallDevApplicationRequest>,
 ) -> impl IntoResponse {
     match state
         .ctx_manager
@@ -27,7 +30,7 @@ pub async fn install_dev_application_handler(
 
 pub async fn get_application(
     Extension(state): Extension<Arc<AdminState>>,
-    Path(application_id): Path<calimero_primitives::application::ApplicationId>,
+    Path(application_id): Path<ApplicationId>,
 ) -> impl IntoResponse {
     match state.ctx_manager.get_application(&application_id) {
         Ok(application) => ApiResponse {

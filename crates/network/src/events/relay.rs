@@ -1,11 +1,11 @@
-use libp2p::relay;
+use libp2p::relay::client::Event;
 use owo_colors::OwoColorize;
 use tracing::debug;
 
 use super::{EventHandler, EventLoop};
 
-impl EventHandler<relay::client::Event> for EventLoop {
-    async fn handle(&mut self, event: relay::client::Event) {
+impl EventHandler<Event> for EventLoop {
+    async fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "relay".yellow(), event);
     }
 }

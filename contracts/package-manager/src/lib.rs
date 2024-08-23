@@ -2,6 +2,7 @@ use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::store::iterable_map::IterableMap;
 use near_sdk::{env, near_bindgen, AccountId, BorshStorageKey};
+use semver::Version;
 
 #[derive(BorshSerialize, BorshStorageKey, Debug)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -98,20 +99,16 @@ impl PackageManager {
         let last_release_version = self.releases.get(&id_hash).map(|version_map| {
             version_map
                 .keys()
-                .max_by(|a, b| {
-                    semver::Version::parse(a)
-                        .unwrap()
-                        .cmp(&semver::Version::parse(b).unwrap())
-                })
+                .max_by(|a, b| Version::parse(a).unwrap().cmp(&Version::parse(b).unwrap()))
                 .expect("No versions found for the package")
         });
 
         // Check if the last release version exists and is less than the current version
         if let Some(last_version) = last_release_version {
             let last_version =
-                semver::Version::parse(last_version).expect("Failed to parse last release version");
+                Version::parse(last_version).expect("Failed to parse last release version");
             let current_version =
-                semver::Version::parse(&version).expect("Failed to parse current version");
+                Version::parse(&version).expect("Failed to parse current version");
             if current_version <= last_version {
                 env::panic_str(
                     "New release version must be greater than the last release version.",

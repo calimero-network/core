@@ -1,5 +1,10 @@
+use calimero_node_primitives::CallError;
+use calimero_primitives::context::ContextId;
+use eyre::Error as EyreError;
+use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use thiserror::Error;
+use serde_json::Value;
+use thiserror::Error as ThisError;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -35,7 +40,7 @@ impl<'de> Deserialize<'de> for Version {
         let version_str = String::deserialize(deserializer)?;
         match version_str.as_str() {
             "2.0" => Ok(Self::TwoPointZero),
-            _ => Err(serde::de::Error::custom("Invalid JSON-RPC version")),
+            _ => Err(SerdeError::custom("Invalid JSON-RPC version")),
         }
     }
 }
@@ -88,14 +93,14 @@ pub enum ResponseBody {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::exhaustive_structs)]
-pub struct ResponseBodyResult(pub serde_json::Value);
+pub struct ResponseBodyResult(pub Value);
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum ResponseBodyError {
     ServerError(ServerResponseError),
-    HandlerError(serde_json::Value),
+    HandlerError(Value),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -105,7 +110,7 @@ pub enum ServerResponseError {
     ParseError(String),
     InternalError {
         #[serde(skip)]
-        err: Option<eyre::Error>,
+        err: Option<EyreError>,
     },
 }
 // *************************************************************************
@@ -115,9 +120,9 @@ pub enum ServerResponseError {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct QueryRequest {
-    pub context_id: calimero_primitives::context::ContextId,
+    pub context_id: ContextId,
     pub method: String,
-    pub args_json: serde_json::Value,
+    pub args_json: Value,
     pub executor_public_key: [u8; 32],
 }
 
@@ -125,23 +130,23 @@ pub struct QueryRequest {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct QueryResponse {
-    pub output: Option<serde_json::Value>,
+    pub output: Option<Value>,
 }
 
 impl QueryResponse {
     #[must_use]
-    pub const fn new(output: Option<serde_json::Value>) -> Self {
+    pub const fn new(output: Option<Value>) -> Self {
         Self { output }
     }
 }
 
-#[derive(Debug, Deserialize, Error, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ThisError)]
 #[error("QueryError")]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum QueryError {
     SerdeError { message: String },
-    CallError(calimero_node_primitives::CallError),
+    CallError(CallError),
     FunctionCallError(String),
 }
 // *************************************************************************
@@ -151,9 +156,9 @@ pub enum QueryError {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct MutateRequest {
-    pub context_id: calimero_primitives::context::ContextId,
+    pub context_id: ContextId,
     pub method: String,
-    pub args_json: serde_json::Value,
+    pub args_json: Value,
     pub executor_public_key: [u8; 32],
 }
 
@@ -161,23 +166,23 @@ pub struct MutateRequest {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct MutateResponse {
-    pub output: Option<serde_json::Value>,
+    pub output: Option<Value>,
 }
 
 impl MutateResponse {
     #[must_use]
-    pub const fn new(output: Option<serde_json::Value>) -> Self {
+    pub const fn new(output: Option<Value>) -> Self {
         Self { output }
     }
 }
 
-#[derive(Debug, Deserialize, Error, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ThisError)]
 #[error("MutateError")]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum MutateError {
     SerdeError { message: String },
-    CallError(calimero_node_primitives::CallError),
+    CallError(CallError),
     FunctionCallError(String),
 }
 // *************************************************************************

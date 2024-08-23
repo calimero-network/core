@@ -1,10 +1,19 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::ContextId;
+use calimero_server_primitives::admin::{
+    CreateContextRequest, CreateContextResponse, GetApplicationResponse,
+    InstallApplicationResponse, InstallDevApplicationRequest, UpdateContextApplicationRequest,
+};
 use camino::Utf8PathBuf;
 use clap::Parser;
+use eyre::{bail, Result as EyreResult};
 use libp2p::Multiaddr;
-use notify::Watcher;
+use notify::event::ModifyKind;
+use notify::{EventKind, RecursiveMode, Watcher};
 use reqwest::Client;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
@@ -15,7 +24,7 @@ use crate::config_file::ConfigFile;
 pub struct CreateCommand {
     /// The application ID to attach to the context
     #[clap(long, short = 'a', exclusive = true)]
-    application_id: Option<calimero_primitives::application::ApplicationId>,
+    application_id: Option<ApplicationId>,
 
     /// Path to the application file to watch and install locally
     #[clap(long, short = 'w', exclusive = true)]
@@ -24,19 +33,19 @@ pub struct CreateCommand {
 }
 
 impl CreateCommand {
-    pub async fn run(self, root_args: RootArgs) -> eyre::Result<()> {
+    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
 
         if !ConfigFile::exists(&path) {
-            eyre::bail!("Config file does not exist")
+            bail!("Config file does not exist")
         };
 
         let Ok(config) = ConfigFile::load(&path) else {
-            eyre::bail!("Failed to load config file")
+            bail!("Failed to load config file")
         };
 
         let Some(multiaddr) = config.network.server.listen.first() else {
-            eyre::bail!("No address.")
+            bail!("No address.")
         };
 
         let client = Client::new();
@@ -64,7 +73,7 @@ impl CreateCommand {
                 watch_app_and_update_context(multiaddr, context_id, path, &client, metadata)
                     .await?;
             }
-            _ => eyre::bail!("Invalid command configuration"),
+            _ => bail!("Invalid command configuration"),
         }
 
         Ok(())
@@ -73,21 +82,20 @@ impl CreateCommand {
 
 async fn create_context(
     base_multiaddr: &Multiaddr,
-    application_id: calimero_primitives::application::ApplicationId,
+    application_id: ApplicationId,
     client: &Client,
-) -> eyre::Result<calimero_primitives::context::ContextId> {
+) -> EyreResult<ContextId> {
     if !app_installed(base_multiaddr, &application_id, client).await? {
-        eyre::bail!("Application is not installed on node.")
+        bail!("Application is not installed on node.")
     }
 
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
-    let request = calimero_server_primitives::admin::CreateContextRequest::new(application_id);
+    let request = CreateContextRequest::new(application_id);
 
     let response = client.post(url).json(&request).send().await?;
 
     if response.status().is_success() {
-        let context_response: calimero_server_primitives::admin::CreateContextResponse =
-            response.json().await?;
+        let context_response: CreateContextResponse = response.json().await?;
         let context = context_response.data.context;
 
         println!("Context `\x1b[36m{}\x1b[0m` created!", context.id);
@@ -103,7 +111,7 @@ async fn create_context(
     let status = response.status();
     let error_text = response.text().await?;
 
-    eyre::bail!(
+    bail!(
         "Request failed with status: {}. Error: {}",
         status,
         error_text
@@ -112,21 +120,21 @@ async fn create_context(
 
 async fn watch_app_and_update_context(
     base_multiaddr: &Multiaddr,
-    context_id: calimero_primitives::context::ContextId,
+    context_id: ContextId,
     path: Utf8PathBuf,
     client: &Client,
     metadata: Option<Vec<u8>>,
-) -> eyre::Result<()> {
+) -> EyreResult<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
-    let handle = tokio::runtime::Handle::current();
+    let handle = Handle::current();
     let mut watcher = notify::recommended_watcher(move |evt| {
         handle.block_on(async {
             drop(tx.send(evt).await);
         });
     })?;
 
-    watcher.watch(path.as_std_path(), notify::RecursiveMode::NonRecursive)?;
+    watcher.watch(path.as_std_path(), RecursiveMode::NonRecursive)?;
 
     println!("(i) Watching for changes to \"\x1b[36m{path}\x1b[0m\"");
 
@@ -140,16 +148,16 @@ async fn watch_app_and_update_context(
         };
 
         match event.kind {
-            notify::EventKind::Modify(notify::event::ModifyKind::Data(_)) => {}
-            notify::EventKind::Remove(_) => {
+            EventKind::Modify(ModifyKind::Data(_)) => {}
+            EventKind::Remove(_) => {
                 eprintln!("\x1b[33mWARN\x1b[0m: file removed, ignoring..");
                 continue;
             }
-            notify::EventKind::Any
-            | notify::EventKind::Access(_)
-            | notify::EventKind::Create(_)
-            | notify::EventKind::Modify(_)
-            | notify::EventKind::Other => continue,
+            EventKind::Any
+            | EventKind::Access(_)
+            | EventKind::Create(_)
+            | EventKind::Modify(_)
+            | EventKind::Other => continue,
         }
 
         let application_id =
@@ -163,17 +171,16 @@ async fn watch_app_and_update_context(
 
 async fn update_context_application(
     base_multiaddr: &Multiaddr,
-    context_id: calimero_primitives::context::ContextId,
-    application_id: calimero_primitives::application::ApplicationId,
+    context_id: ContextId,
+    application_id: ApplicationId,
     client: &Client,
-) -> eyre::Result<()> {
+) -> EyreResult<()> {
     let url = multiaddr_to_url(
         base_multiaddr,
         &format!("admin-api/dev/contexts/{context_id}/application"),
     )?;
 
-    let request =
-        calimero_server_primitives::admin::UpdateContextApplicationRequest::new(application_id);
+    let request = UpdateContextApplicationRequest::new(application_id);
 
     let response = client.post(url).json(&request).send().await?;
 
@@ -188,7 +195,7 @@ async fn update_context_application(
     let status = response.status();
     let error_text = response.text().await?;
 
-    eyre::bail!(
+    bail!(
         "Request failed with status: {}. Error: {}",
         status,
         error_text
@@ -197,9 +204,9 @@ async fn update_context_application(
 
 async fn app_installed(
     base_multiaddr: &Multiaddr,
-    application_id: &calimero_primitives::application::ApplicationId,
+    application_id: &ApplicationId,
     client: &Client,
-) -> eyre::Result<bool> {
+) -> EyreResult<bool> {
     let url = multiaddr_to_url(
         base_multiaddr,
         &format!("admin-api/dev/application/{application_id}"),
@@ -207,11 +214,10 @@ async fn app_installed(
     let response = client.get(url).send().await?;
 
     if !response.status().is_success() {
-        eyre::bail!("Request failed with status: {}", response.status())
+        bail!("Request failed with status: {}", response.status())
     }
 
-    let api_response: calimero_server_primitives::admin::GetApplicationResponse =
-        response.json().await?;
+    let api_response: GetApplicationResponse = response.json().await?;
 
     Ok(api_response.data.application.is_some())
 }
@@ -221,14 +227,11 @@ async fn install_app(
     path: Utf8PathBuf,
     client: &Client,
     metadata: Option<Vec<u8>>,
-) -> eyre::Result<calimero_primitives::application::ApplicationId> {
+) -> EyreResult<ApplicationId> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
-    let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest::new(
-        path,
-        None,
-        metadata.unwrap_or_default(),
-    );
+    let install_request =
+        InstallDevApplicationRequest::new(path, None, metadata.unwrap_or_default());
 
     let install_response = client
         .post(install_url)
@@ -239,7 +242,7 @@ async fn install_app(
     if !install_response.status().is_success() {
         let status = install_response.status();
         let error_text = install_response.text().await?;
-        eyre::bail!(
+        bail!(
             "Application installation failed with status: {}. Error: {}",
             status,
             error_text
@@ -247,7 +250,7 @@ async fn install_app(
     }
 
     let response = install_response
-        .json::<calimero_server_primitives::admin::InstallApplicationResponse>()
+        .json::<InstallApplicationResponse>()
         .await?;
 
     println!(

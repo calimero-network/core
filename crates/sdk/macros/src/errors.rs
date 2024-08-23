@@ -1,27 +1,34 @@
 use std::cell::{Ref, RefCell, RefMut};
 use std::fmt;
+use std::fmt::{Display, Formatter};
+use std::hint::unreachable_unchecked;
+use std::panic::Location as PanicLocation;
+use std::thread::panicking;
 
+use prettyplease::unparse;
+use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned, ToTokens};
-use thiserror::Error;
+use syn::{parse2, Error as SynError, File, Path, Type};
+use thiserror::Error as ThisError;
 
 #[derive(Debug)]
 pub enum Pretty<'a> {
-    Path(&'a syn::Path),
-    Type(&'a syn::Type),
+    Path(&'a Path),
+    Type(&'a Type),
 }
 
-impl fmt::Display for Pretty<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Pretty<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let (tokens, (pre, post)) = match self {
             Self::Type(ty) => (quote! { impl #ty {} }, (5, 3)),
             Self::Path(path) => (quote! { impl #path {} }, (5, 3)),
         };
 
-        let item = syn::parse2(tokens).map_err(|err| {
+        let item = parse2(tokens).map_err(|err| {
             panic!("failed to parse tokens: {err}");
         })?;
 
-        let parsed = prettyplease::unparse(&syn::File {
+        let parsed = unparse(&File {
             shebang: None,
             attrs: vec![],
             items: vec![item],
@@ -40,9 +47,9 @@ static TAG: &str = "(calimero)>";
 // positive warning.
 #[allow(single_use_lifetimes)]
 mod parse_error {
-    use super::{Error, Pretty};
+    use super::{Pretty, ThisError};
 
-    #[derive(Debug, Error)]
+    #[derive(Debug, ThisError)]
     pub enum ParseError<'a> {
         #[error("trait impls are not supported")]
         NoTraitSupport,
@@ -98,8 +105,8 @@ impl AsRef<Self> for ParseError<'_> {
 #[derive(Debug)]
 pub struct ErrorsInner<'a, T> {
     item: &'a T,
-    errors: Option<syn::Error>,
-    defined_at: &'static std::panic::Location<'static>,
+    errors: Option<SynError>,
+    defined_at: &'static PanicLocation<'static>,
 }
 
 #[derive(Debug)]
@@ -121,7 +128,7 @@ impl<'a, T> Errors<'a, T> {
             inner: RefCell::new(Some(ErrorsInner {
                 item,
                 errors: None,
-                defined_at: std::panic::Location::caller(),
+                defined_at: PanicLocation::caller(),
             })),
         }
     }
@@ -151,23 +158,23 @@ impl<'a, T> Errors<'a, T> {
 }
 
 impl<'a, T> Errors<'a, T> {
-    pub fn subsume(&self, error: syn::Error) {
+    pub fn subsume(&self, error: SynError) {
         match &mut self.inner_mut().errors {
             err @ None => *err = Some(error),
             Some(err) => err.combine(error),
         }
     }
 
-    pub fn subsumed(self, other: syn::Error) -> syn::Error {
+    pub fn subsumed(self, other: SynError) -> SynError {
         self.subsume(other);
         let Some(errors) = self.inner().errors else {
             // safety: we know we have at least one error
-            unsafe { std::hint::unreachable_unchecked() }
+            unsafe { unreachable_unchecked() }
         };
         errors
     }
 
-    pub fn finish(self, error: syn::Error) -> Self {
+    pub fn finish(self, error: SynError) -> Self {
         self.subsume(error);
         self
     }
@@ -184,17 +191,17 @@ impl<'a, T> Errors<'a, T> {
     }
 
     // panics if this instance has already been consumed or "taken"
-    pub fn take(&self) -> Option<syn::Error> {
+    pub fn take(&self) -> Option<SynError> {
         self.inner().errors
     }
 
-    pub fn to_compile_error(&self) -> proc_macro2::TokenStream
+    pub fn to_compile_error(&self) -> TokenStream
     where
         T: ToTokens,
     {
         let inner = self.inner();
 
-        let mut tokens = proc_macro2::TokenStream::new();
+        let mut tokens = TokenStream::new();
 
         for err in inner.errors.into_iter().flat_map(IntoIterator::into_iter) {
             let msg = err.to_string();
@@ -212,7 +219,7 @@ impl<'a, T> Errors<'a, T> {
 
 impl<T> Drop for Errors<'_, T> {
     fn drop(&mut self) {
-        if !std::thread::panicking() {
+        if !panicking() {
             if let Some(inner) = &*self.inner.borrow() {
                 assert!(
                     inner.errors.is_none(),
@@ -232,5 +239,5 @@ pub struct Void {
 }
 
 impl ToTokens for Void {
-    fn to_tokens(&self, _: &mut proc_macro2::TokenStream) {}
+    fn to_tokens(&self, _: &mut TokenStream) {}
 }

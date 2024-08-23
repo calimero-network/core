@@ -1,4 +1,7 @@
 use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
+use std::slice::{from_raw_parts, from_raw_parts_mut};
+use std::str::{from_utf8, Utf8Error};
 
 use super::Pointer;
 
@@ -46,12 +49,12 @@ impl<'a, T> Slice<'a, T> {
 
     #[inline]
     const fn as_slice(&self) -> &'a [T] {
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len()) }
+        unsafe { from_raw_parts(self.ptr.as_ptr(), self.len()) }
     }
 
     #[inline]
     fn as_mut_slice(&mut self) -> &'a mut [T] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_mut_ptr(), self.len()) }
+        unsafe { from_raw_parts_mut(self.ptr.as_mut_ptr(), self.len()) }
     }
 }
 
@@ -83,7 +86,7 @@ impl<'a, T> From<&'a mut [T]> for Slice<'a, T> {
     }
 }
 
-impl<'a, T> std::ops::Deref for Slice<'a, T> {
+impl<'a, T> Deref for Slice<'a, T> {
     type Target = [T];
 
     #[inline]
@@ -92,7 +95,7 @@ impl<'a, T> std::ops::Deref for Slice<'a, T> {
     }
 }
 
-impl<'a, T> std::ops::DerefMut for Slice<'a, T> {
+impl<'a, T> DerefMut for Slice<'a, T> {
     #[inline]
     fn deref_mut(&mut self) -> &'a mut Self::Target {
         self.as_mut_slice()
@@ -110,9 +113,9 @@ impl<'a> From<&'a str> for Buffer<'a> {
 }
 
 impl<'a> TryFrom<Buffer<'a>> for &'a str {
-    type Error = std::str::Utf8Error;
+    type Error = Utf8Error;
 
     fn try_from(buf: Buffer<'a>) -> Result<Self, Self::Error> {
-        std::str::from_utf8(buf.as_slice())
+        from_utf8(buf.as_slice())
     }
 }

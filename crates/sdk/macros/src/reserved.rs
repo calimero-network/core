@@ -1,14 +1,21 @@
+use std::ops::Deref;
 use std::rc::Rc;
 
+use proc_macro2::{Span, TokenStream};
+use quote::ToTokens;
+use syn::{Ident, Lifetime};
+
 pub mod idents {
-    super::lazy! {syn::Ident => {
-        input = syn::Ident::new("CalimeroInput", proc_macro2::Span::call_site()),
+    use super::{lazy, Ident, Span};
+    lazy! {Ident => {
+        input = Ident::new("CalimeroInput", Span::call_site()),
     }}
 }
 
 pub mod lifetimes {
-    super::lazy! {syn::Lifetime => {
-        input = syn::Lifetime::new("'CALIMERO_INPUT", proc_macro2::Span::call_site()),
+    use super::{lazy, Lifetime, Span};
+    lazy! {Lifetime => {
+        input = Lifetime::new("'CALIMERO_INPUT", Span::call_site()),
     }}
 }
 
@@ -21,7 +28,7 @@ pub struct ReservedRef<T> {
     inner: Rc<T>,
 }
 
-impl<T> std::ops::Deref for ReservedRef<T> {
+impl<T> Deref for ReservedRef<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -35,8 +42,8 @@ impl<T> AsRef<T> for ReservedRef<T> {
     }
 }
 
-impl<T: quote::ToTokens> quote::ToTokens for ReservedRef<T> {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+impl<T: ToTokens> ToTokens for ReservedRef<T> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         self.inner.to_tokens(tokens);
     }
 }

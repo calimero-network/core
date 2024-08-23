@@ -1,6 +1,11 @@
+use eyre::eyre;
+use libp2p::core::ConnectedPoint;
+use multiaddr::Protocol;
 use tracing::error;
 
 use super::*;
+use crate::discovery::state::{PeerDiscoveryMechanism, RelayReservationStatus};
+use crate::types::NetworkEvent;
 
 mod dcutr;
 mod gossipsub;
@@ -40,9 +45,9 @@ impl EventLoop {
                 let local_peer_id = *self.swarm.local_peer_id();
                 if let Err(err) = self
                     .event_sender
-                    .send(types::NetworkEvent::ListeningOn {
+                    .send(NetworkEvent::ListeningOn {
                         listener_id,
-                        address: address.with(multiaddr::Protocol::P2p(local_peer_id)),
+                        address: address.with(Protocol::P2p(local_peer_id)),
                     })
                     .await
                 {
@@ -65,7 +70,7 @@ impl EventLoop {
                 peer_id, endpoint, ..
             } => {
                 debug!(%peer_id, ?endpoint, "Connection established");
-                if let libp2p::core::ConnectedPoint::Dialer { .. } = endpoint {
+                if let ConnectedPoint::Dialer { .. } = endpoint {
                     self.discovery
                         .state
                         .add_peer_addr(peer_id, endpoint.get_remote_address());
@@ -95,10 +100,10 @@ impl EventLoop {
                 if !self.swarm.is_connected(&peer_id)
                     && !self.discovery.state.is_peer_relay(&peer_id)
                     && !self.discovery.state.is_peer_rendezvous(&peer_id)
-                    && !self.discovery.state.is_peer_discovered_via(
-                        &peer_id,
-                        discovery::state::PeerDiscoveryMechanism::Mdns,
-                    )
+                    && !self
+                        .discovery
+                        .state
+                        .is_peer_discovered_via(&peer_id, PeerDiscoveryMechanism::Mdns)
                 {
                     self.discovery.state.remove_peer(&peer_id);
                 }
@@ -107,7 +112,7 @@ impl EventLoop {
                 debug!(?peer_id, %error, "Outgoing connection error");
                 if let Some(peer_id) = peer_id {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
-                        drop(sender.send(Err(eyre::eyre!(error))));
+                        drop(sender.send(Err(eyre!(error))));
                     }
                 }
             }
@@ -137,7 +142,7 @@ impl EventLoop {
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
                         &relayed_addr.relay_peer,
-                        discovery::state::RelayReservationStatus::Accepted,
+                        RelayReservationStatus::Accepted,
                     );
 
                     self.broadcast_rendezvous_registrations();
@@ -148,7 +153,7 @@ impl EventLoop {
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
                         relayed_addr.relay_peer_id(),
-                        discovery::state::RelayReservationStatus::Expired,
+                        RelayReservationStatus::Expired,
                     );
 
                     self.broadcast_rendezvous_registrations();
@@ -178,16 +183,16 @@ impl TryFrom<&Multiaddr> for RelayedMultiaddr {
         while let Some(protocol) = iter.next() {
             #[allow(clippy::wildcard_enum_match_arm)]
             match protocol {
-                multiaddr::Protocol::P2pCircuit => {
+                Protocol::P2pCircuit => {
                     if peer_ids.is_empty() {
                         return Err("expected at least one p2p proto before P2pCircuit");
                     }
-                    let Some(multiaddr::Protocol::P2p(id)) = iter.next() else {
+                    let Some(Protocol::P2p(id)) = iter.next() else {
                         return Err("expected p2p proto after P2pCircuit");
                     };
                     peer_ids.push(id);
                 }
-                multiaddr::Protocol::P2p(id) => {
+                Protocol::P2p(id) => {
                     peer_ids.push(id);
                 }
                 _ => {}

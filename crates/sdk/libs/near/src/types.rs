@@ -1,7 +1,8 @@
+use calimero_primitives::hash::Hash;
 use serde::{Deserialize, Serialize};
 
 pub type BlockHeight = u64;
-pub type BlockHash = calimero_primitives::hash::Hash;
+pub type BlockHash = Hash;
 pub type AccountId = near_account_id::AccountId;
 pub type StorageUsage = u64;
 pub type Nonce = u64;

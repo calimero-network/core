@@ -1,9 +1,10 @@
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
 use crate::application::ApplicationId;
 use crate::hash::{Hash, HashError};
@@ -34,8 +35,8 @@ impl ContextId {
     }
 }
 
-impl fmt::Display for ContextId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ContextId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
@@ -52,7 +53,7 @@ impl From<&ContextId> for String {
     }
 }
 
-#[derive(Clone, Copy, Debug, Error)]
+#[derive(Clone, Copy, Debug, ThisError)]
 #[error(transparent)]
 pub struct InvalidContextId(HashError);
 

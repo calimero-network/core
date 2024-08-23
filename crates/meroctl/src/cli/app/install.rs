@@ -1,6 +1,8 @@
+use calimero_server_primitives::admin::{InstallApplicationResponse, InstallDevApplicationRequest};
 use camino::Utf8PathBuf;
 use clap::Parser;
-use eyre::Result;
+use eyre::{bail, Result};
+use reqwest::Client;
 use semver::Version;
 use tracing::info;
 
@@ -25,22 +27,22 @@ impl InstallCommand {
         let path = args.home.join(&args.node_name);
 
         if !ConfigFile::exists(&path) {
-            eyre::bail!("Config file does not exist")
+            bail!("Config file does not exist")
         };
 
         let Ok(config) = ConfigFile::load(&path) else {
-            eyre::bail!("Failed to load config file")
+            bail!("Failed to load config file")
         };
 
         let Some(multiaddr) = config.network.server.listen.first() else {
-            eyre::bail!("No address.")
+            bail!("No address.")
         };
 
-        let client = reqwest::Client::new();
+        let client = Client::new();
 
         let install_url = multiaddr_to_url(multiaddr, "admin-api/dev/install-application")?;
 
-        let install_request = calimero_server_primitives::admin::InstallDevApplicationRequest::new(
+        let install_request = InstallDevApplicationRequest::new(
             self.path.canonicalize_utf8()?,
             self.version,
             self.metadata.unwrap_or_default(),
@@ -55,7 +57,7 @@ impl InstallCommand {
         if !install_response.status().is_success() {
             let status = install_response.status();
             let error_text = install_response.text().await?;
-            eyre::bail!(
+            bail!(
                 "Application installation failed with status: {}. Error: {}",
                 status,
                 error_text
@@ -63,7 +65,7 @@ impl InstallCommand {
         }
 
         let body = install_response
-            .json::<calimero_server_primitives::admin::InstallApplicationResponse>()
+            .json::<InstallApplicationResponse>()
             .await?;
 
         info!(

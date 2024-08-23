@@ -1,6 +1,7 @@
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{KeyPair, PublicKey};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand::RngCore;
+use rand::{thread_rng, RngCore};
 
 #[must_use]
 pub fn generate_identity_keypair() -> KeyPair {
@@ -14,13 +15,13 @@ pub fn generate_identity_keypair() -> KeyPair {
 }
 
 #[must_use]
-pub fn generate_context_id() -> calimero_primitives::context::ContextId {
+pub fn generate_context_id() -> ContextId {
     // Create a Send-able RNG
-    let mut rng = rand::thread_rng();
+    let mut rng = thread_rng();
     // Generate a key pair for the context ID
     let mut context_seed = [0u8; 32];
     rng.fill_bytes(&mut context_seed);
     let context_signing_key = SigningKey::from_bytes(&context_seed);
     let context_verifying_key = VerifyingKey::from(&context_signing_key);
-    calimero_primitives::context::ContextId::from(*context_verifying_key.as_bytes())
+    ContextId::from(*context_verifying_key.as_bytes())
 }

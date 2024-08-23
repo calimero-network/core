@@ -1,31 +1,34 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use eyre::{bail, Result as EyreResult};
 use futures_util::{Sink as FuturesSink, SinkExt, Stream as FuturesStream};
-use libp2p::PeerId;
+use libp2p::{PeerId, Stream as P2pStream, StreamProtocol};
 use tokio::io::BufStream;
 use tokio_util::codec::Framed;
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 
-use super::{types, EventLoop};
+use super::EventLoop;
+use crate::stream::codec::MessageJsonCodec;
+use crate::types::NetworkEvent;
 
 mod codec;
 
 pub use codec::{CodecError, Message};
 
-pub(crate) const CALIMERO_STREAM_PROTOCOL: libp2p::StreamProtocol =
-    libp2p::StreamProtocol::new("/calimero/stream/0.0.1");
+pub(crate) const CALIMERO_STREAM_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/calimero/stream/0.0.1");
 
 #[derive(Debug)]
 pub struct Stream {
-    inner: Framed<BufStream<Compat<libp2p::Stream>>, codec::MessageJsonCodec>,
+    inner: Framed<BufStream<Compat<P2pStream>>, MessageJsonCodec>,
 }
 
 impl Stream {
     #[must_use]
-    pub fn new(stream: libp2p::Stream) -> Self {
+    pub fn new(stream: P2pStream) -> Self {
         let stream = BufStream::new(stream.compat());
-        let stream = Framed::new(stream, codec::MessageJsonCodec::new());
+        let stream = Framed::new(stream, MessageJsonCodec::new());
         Self { inner: stream }
     }
 }
@@ -65,12 +68,9 @@ impl FuturesSink<Message> for Stream {
 #[allow(clippy::needless_pass_by_ref_mut)]
 #[allow(clippy::multiple_inherent_impl)]
 impl EventLoop {
-    pub(crate) async fn handle_incoming_stream(
-        &mut self,
-        (peer, stream): (PeerId, libp2p::Stream),
-    ) {
+    pub(crate) async fn handle_incoming_stream(&mut self, (peer, stream): (PeerId, P2pStream)) {
         self.event_sender
-            .send(types::NetworkEvent::StreamOpened {
+            .send(NetworkEvent::StreamOpened {
                 peer_id: peer,
                 stream: Box::new(Stream::new(stream)),
             })
@@ -78,7 +78,7 @@ impl EventLoop {
             .expect("Failed to send stream opened event");
     }
 
-    pub(crate) async fn open_stream(&mut self, peer_id: PeerId) -> eyre::Result<Stream> {
+    pub(crate) async fn open_stream(&mut self, peer_id: PeerId) -> EyreResult<Stream> {
         let stream = match self
             .swarm
             .behaviour()
@@ -89,7 +89,7 @@ impl EventLoop {
         {
             Ok(stream) => stream,
             Err(err) => {
-                eyre::bail!("Failed to open stream: {:?}", err);
+                bail!("Failed to open stream: {:?}", err);
             }
         };
 

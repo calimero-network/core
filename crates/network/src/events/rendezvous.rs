@@ -1,15 +1,16 @@
-use libp2p::rendezvous;
+use libp2p::rendezvous::client::Event;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
-use super::{discovery, EventHandler, EventLoop};
+use super::{EventHandler, EventLoop};
+use crate::discovery::state::{PeerDiscoveryMechanism, RendezvousRegistrationStatus};
 
-impl EventHandler<rendezvous::client::Event> for EventLoop {
-    async fn handle(&mut self, event: rendezvous::client::Event) {
+impl EventHandler<Event> for EventLoop {
+    async fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "rendezvous".yellow(), event);
 
         match event {
-            rendezvous::client::Event::Discovered {
+            Event::Discovered {
                 rendezvous_node,
                 registrations,
                 cookie,
@@ -25,16 +26,15 @@ impl EventHandler<rendezvous::client::Event> for EventLoop {
                         continue;
                     }
 
-                    self.discovery.state.add_peer_discovery_mechanism(
-                        &peer_id,
-                        discovery::state::PeerDiscoveryMechanism::Rendezvous,
-                    );
+                    self.discovery
+                        .state
+                        .add_peer_discovery_mechanism(&peer_id, PeerDiscoveryMechanism::Rendezvous);
 
                     if self.swarm.is_connected(&peer_id)
-                        || self.discovery.state.is_peer_discovered_via(
-                            &peer_id,
-                            discovery::state::PeerDiscoveryMechanism::Mdns,
-                        )
+                        || self
+                            .discovery
+                            .state
+                            .is_peer_discovered_via(&peer_id, PeerDiscoveryMechanism::Mdns)
                     {
                         continue;
                     }
@@ -53,12 +53,12 @@ impl EventHandler<rendezvous::client::Event> for EventLoop {
                     }
                 }
             }
-            rendezvous::client::Event::Registered {
+            Event::Registered {
                 rendezvous_node, ..
             } => {
                 self.discovery.state.update_rendezvous_registration_status(
                     &rendezvous_node,
-                    discovery::state::RendezvousRegistrationStatus::Registered,
+                    RendezvousRegistrationStatus::Registered,
                 );
 
                 if let Some(peer_info) = self.discovery.state.get_peer_info(&rendezvous_node) {
@@ -74,24 +74,24 @@ impl EventHandler<rendezvous::client::Event> for EventLoop {
                     }
                 }
             }
-            rendezvous::client::Event::DiscoverFailed {
+            Event::DiscoverFailed {
                 rendezvous_node,
                 namespace,
                 error,
             } => {
                 error!(?rendezvous_node, ?namespace, error_code=?error, "Rendezvous discovery failed");
             }
-            rendezvous::client::Event::RegisterFailed {
+            Event::RegisterFailed {
                 rendezvous_node,
                 namespace,
                 error,
             } => {
                 error!(?rendezvous_node, ?namespace, error_code=?error, "Rendezvous registration failed");
             }
-            rendezvous::client::Event::Expired { peer } => {
+            Event::Expired { peer } => {
                 self.discovery.state.update_rendezvous_registration_status(
                     &peer,
-                    discovery::state::RendezvousRegistrationStatus::Expired,
+                    RendezvousRegistrationStatus::Expired,
                 );
             }
         }

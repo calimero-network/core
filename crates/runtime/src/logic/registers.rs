@@ -1,7 +1,7 @@
 use std::collections::hash_map::{Entry, HashMap};
 
 use crate::errors::HostError;
-use crate::logic::{Result, VMLimits};
+use crate::logic::{VMLimits, VMLogicResult};
 
 const REGISTER_SIZE: u64 = size_of::<u64>() as _;
 
@@ -12,7 +12,7 @@ pub struct Registers {
 }
 
 impl Registers {
-    pub fn get(&self, id: u64) -> Result<&[u8]> {
+    pub fn get(&self, id: u64) -> VMLogicResult<&[u8]> {
         self.inner
             .get(&id)
             .map(|v| &**v)
@@ -23,7 +23,7 @@ impl Registers {
         self.inner.get(&id).map(|v| v.len() as _)
     }
 
-    pub fn set<T>(&mut self, limits: &VMLimits, id: u64, data: T) -> Result<()>
+    pub fn set<T>(&mut self, limits: &VMLimits, id: u64, data: T) -> VMLogicResult<()>
     where
         T: Into<Box<[u8]>> + AsRef<[u8]>,
     {

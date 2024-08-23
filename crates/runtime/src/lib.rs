@@ -1,4 +1,9 @@
-use wasmer::{Instance, Module, NativeEngineExt, Store};
+use wasmer::{Engine, Instance, Module, NativeEngineExt, Store};
+
+use crate::errors::{FunctionCallError, VMRuntimeError};
+use crate::logic::{Outcome, VMContext, VMLimits, VMLogic, VMLogicError};
+use crate::memory::WasmerTunables;
+use crate::store::Storage;
 
 mod constraint;
 pub mod errors;
@@ -8,24 +13,24 @@ pub mod store;
 
 pub use constraint::Constraint;
 
-pub type Result<T, E = errors::VMRuntimeError> = std::result::Result<T, E>;
+pub type RuntimeResult<T, E = VMRuntimeError> = Result<T, E>;
 
 pub fn run(
     code: &[u8],
     method_name: &str,
-    context: logic::VMContext,
-    storage: &mut dyn store::Storage,
-    limits: &logic::VMLimits,
-) -> Result<logic::Outcome> {
+    context: VMContext,
+    storage: &mut dyn Storage,
+    limits: &VMLimits,
+) -> RuntimeResult<Outcome> {
     // todo! calculate storage key for cached precompiled
     // todo! module, execute that, instead of recompiling
-    let mut engine = wasmer::Engine::default();
+    let mut engine = Engine::default();
 
-    engine.set_tunables(memory::WasmerTunables::new(limits));
+    engine.set_tunables(WasmerTunables::new(limits));
 
     let mut store = Store::new(engine);
 
-    let mut logic = logic::VMLogic::new(storage, context, limits);
+    let mut logic = VMLogic::new(storage, context, limits);
 
     // todo! apply a prepare step
     // todo! - parse the wasm blob, validate and apply transformations
@@ -63,17 +68,15 @@ pub fn run(
     let signature = function.ty(&store);
 
     if !(signature.params().is_empty() && signature.results().is_empty()) {
-        return Ok(
-            logic.finish(Some(errors::FunctionCallError::MethodResolutionError(
-                errors::MethodResolutionError::InvalidSignature {
-                    name: method_name.to_owned(),
-                },
-            ))),
-        );
+        return Ok(logic.finish(Some(FunctionCallError::MethodResolutionError(
+            errors::MethodResolutionError::InvalidSignature {
+                name: method_name.to_owned(),
+            },
+        ))));
     }
 
     if let Err(err) = function.call(&mut store, &[]) {
-        return match err.downcast::<logic::VMLogicError>() {
+        return match err.downcast::<VMLogicError>() {
             Ok(err) => Ok(logic.finish(Some(err.try_into()?))),
             Err(err) => Ok(logic.finish(Some(err.into()))),
         };

@@ -2,32 +2,29 @@
 #[path = "tests/auth.rs"]
 mod tests;
 
+use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::identity::PublicKey;
 use web3::signing::{keccak256, recover};
 
-pub fn verify_near_public_key(
-    public_key: &str,
-    msg: &[u8],
-    signature: &[u8],
-) -> eyre::Result<bool> {
+pub fn verify_near_public_key(public_key: &str, msg: &[u8], signature: &[u8]) -> EyreResult<bool> {
     let public_key = bs58::decode(public_key)
         .into_vec()
-        .map_err(|_| eyre::eyre!("Invalid public key: Base58 encoding error"))?;
+        .map_err(|_| eyre!("Invalid public key: Base58 encoding error"))?;
 
     let public_key = PublicKey::try_decode_protobuf(&public_key)
-        .map_err(|_| eyre::eyre!("Invalid public key: Protobuf encoding error"))?;
+        .map_err(|_| eyre!("Invalid public key: Protobuf encoding error"))?;
 
     Ok(public_key.verify(msg, signature))
 }
 
-pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> eyre::Result<bool> {
+pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> EyreResult<bool> {
     let Ok(signature_bytes) = hex::decode(signature.trim_start_matches("0x")) else {
-        eyre::bail!("Cannot decode signature.")
+        bail!("Cannot decode signature.")
     };
 
     // Ensure the signature is the correct length (65 bytes)
     if signature_bytes.len() != 65 {
-        eyre::bail!("Signature must be 65 bytes long.")
+        bail!("Signature must be 65 bytes long.")
     }
 
     let message_hash = eth_message(message);
@@ -41,11 +38,11 @@ pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> ey
             // Compare the recovered public key with the account address in a case-insensitive manner
             let result = account.eq_ignore_ascii_case(&pubkey_hex);
             if !result {
-                eyre::bail!("Public key and account does not match.")
+                bail!("Public key and account does not match.")
             }
             Ok(true)
         }
-        Err(_) => eyre::bail!("Cannot recover public key."),
+        Err(_) => bail!("Cannot recover public key."),
     }
 }
 

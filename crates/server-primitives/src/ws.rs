@@ -1,4 +1,7 @@
+use calimero_primitives::context::ContextId;
+use eyre::Error as EyreError;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Client ID is a locally unique identifier of a WebSocket client connection.
 pub type ConnectionId = u64;
@@ -45,7 +48,7 @@ impl Response {
 #[serde(rename_all = "camelCase")]
 #[allow(clippy::exhaustive_enums)]
 pub enum ResponseBody {
-    Result(serde_json::Value),
+    Result(Value),
     Error(ResponseBodyError),
 }
 
@@ -54,7 +57,7 @@ pub enum ResponseBody {
 #[non_exhaustive]
 pub enum ResponseBodyError {
     ServerError(ServerResponseError),
-    HandlerError(serde_json::Value),
+    HandlerError(Value),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -64,7 +67,7 @@ pub enum ServerResponseError {
     ParseError(String),
     InternalError {
         #[serde(skip)]
-        err: Option<eyre::Error>,
+        err: Option<EyreError>,
     },
 }
 // *************************************************************************
@@ -74,19 +77,19 @@ pub enum ServerResponseError {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct SubscribeRequest {
-    pub context_ids: Vec<calimero_primitives::context::ContextId>,
+    pub context_ids: Vec<ContextId>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct SubscribeResponse {
-    pub context_ids: Vec<calimero_primitives::context::ContextId>,
+    pub context_ids: Vec<ContextId>,
 }
 
 impl SubscribeResponse {
     #[must_use]
-    pub fn new(context_ids: Vec<calimero_primitives::context::ContextId>) -> Self {
+    pub fn new(context_ids: Vec<ContextId>) -> Self {
         Self { context_ids }
     }
 }
@@ -97,19 +100,19 @@ impl SubscribeResponse {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct UnsubscribeRequest {
-    pub context_ids: Vec<calimero_primitives::context::ContextId>,
+    pub context_ids: Vec<ContextId>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct UnsubscribeResponse {
-    pub context_ids: Vec<calimero_primitives::context::ContextId>,
+    pub context_ids: Vec<ContextId>,
 }
 
 impl UnsubscribeResponse {
     #[must_use]
-    pub fn new(context_ids: Vec<calimero_primitives::context::ContextId>) -> Self {
+    pub fn new(context_ids: Vec<ContextId>) -> Self {
         Self { context_ids }
     }
 }

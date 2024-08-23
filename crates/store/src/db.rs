@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use eyre::Result as EyreResult;
 use strum::{AsRefStr, EnumIter};
 
 use crate::config::StoreConfig;
@@ -26,20 +27,20 @@ pub enum Column {
 }
 
 pub trait Database<'a>: Debug + Send + Sync + 'static {
-    fn open(config: &StoreConfig) -> eyre::Result<Self>
+    fn open(config: &StoreConfig) -> EyreResult<Self>
     where
         Self: Sized;
 
-    fn has(&self, col: Column, key: Slice<'_>) -> eyre::Result<bool>;
-    fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>>;
-    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()>;
-    fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()>;
+    fn has(&self, col: Column, key: Slice<'_>) -> EyreResult<bool>;
+    fn get(&self, col: Column, key: Slice<'_>) -> EyreResult<Option<Slice<'_>>>;
+    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> EyreResult<()>;
+    fn delete(&self, col: Column, key: Slice<'_>) -> EyreResult<()>;
 
     // TODO: We should consider returning Iterator here.
     #[allow(clippy::iter_not_returning_iterator)]
-    fn iter(&self, col: Column) -> eyre::Result<Iter<'_>>;
+    fn iter(&self, col: Column) -> EyreResult<Iter<'_>>;
 
     // todo! redesign this, each DB should return a transaction
     // todo! modelled similar to Iter - {put, delete, clear}
-    fn apply(&self, tx: &Transaction<'a>) -> eyre::Result<()>;
+    fn apply(&self, tx: &Transaction<'a>) -> EyreResult<()>;
 }

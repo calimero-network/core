@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::ptr;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -50,7 +51,7 @@ impl<T> Pointer<T> {
 
     #[inline]
     pub fn null() -> Self {
-        Self::new(std::ptr::null())
+        Self::new(ptr::null())
     }
 
     #[inline]

@@ -1,6 +1,11 @@
-use std::fs;
+use std::fs::{read_to_string, write};
 
-use eyre::WrapErr;
+use calimero_network::config::{BootstrapConfig, CatchupConfig, DiscoveryConfig, SwarmConfig};
+use calimero_server::admin::service::AdminConfig;
+use calimero_server::jsonrpc::JsonRpcConfig;
+use calimero_server::ws::WsConfig;
+use camino::{Utf8Path, Utf8PathBuf};
+use eyre::{Result as EyreResult, WrapErr};
 use libp2p::{identity, Multiaddr};
 use serde::{Deserialize, Serialize};
 
@@ -24,17 +29,17 @@ pub struct ConfigFile {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct NetworkConfig {
-    pub swarm: calimero_network::config::SwarmConfig,
+    pub swarm: SwarmConfig,
 
     pub server: ServerConfig,
 
     #[serde(default)]
-    pub bootstrap: calimero_network::config::BootstrapConfig,
+    pub bootstrap: BootstrapConfig,
 
     #[serde(default)]
-    pub discovery: calimero_network::config::DiscoveryConfig,
+    pub discovery: DiscoveryConfig,
 
-    pub catchup: calimero_network::config::CatchupConfig,
+    pub catchup: CatchupConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -42,33 +47,33 @@ pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
     #[serde(default)]
-    pub admin: Option<calimero_server::admin::service::AdminConfig>,
+    pub admin: Option<AdminConfig>,
 
     #[serde(default)]
-    pub jsonrpc: Option<calimero_server::jsonrpc::JsonRpcConfig>,
+    pub jsonrpc: Option<JsonRpcConfig>,
 
     #[serde(default)]
-    pub websocket: Option<calimero_server::ws::WsConfig>,
+    pub websocket: Option<WsConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StoreConfig {
-    pub path: camino::Utf8PathBuf,
+    pub path: Utf8PathBuf,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ApplicationConfig {
-    pub path: camino::Utf8PathBuf,
+    pub path: Utf8PathBuf,
 }
 
 impl ConfigFile {
-    pub(crate) fn exists(dir: &camino::Utf8Path) -> bool {
+    pub(crate) fn exists(dir: &Utf8Path) -> bool {
         dir.join(CONFIG_FILE).is_file()
     }
 
-    pub(crate) fn load(dir: &camino::Utf8Path) -> eyre::Result<Self> {
+    pub(crate) fn load(dir: &Utf8Path) -> EyreResult<Self> {
         let path = dir.join(CONFIG_FILE);
-        let content = fs::read_to_string(&path).wrap_err_with(|| {
+        let content = read_to_string(&path).wrap_err_with(|| {
             format!(
                 "failed to read configuration from {:?}",
                 dir.join(CONFIG_FILE)
@@ -78,11 +83,11 @@ impl ConfigFile {
         toml::from_str(&content).map_err(Into::into)
     }
 
-    pub(crate) fn save(&self, dir: &camino::Utf8Path) -> eyre::Result<()> {
+    pub(crate) fn save(&self, dir: &Utf8Path) -> EyreResult<()> {
         let path = dir.join(CONFIG_FILE);
         let content = toml::to_string_pretty(self)?;
 
-        fs::write(&path, content).wrap_err_with(|| {
+        write(&path, content).wrap_err_with(|| {
             format!(
                 "failed to write configuration to {:?}",
                 dir.join(CONFIG_FILE)

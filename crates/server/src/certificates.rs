@@ -1,14 +1,16 @@
+use std::net::IpAddr;
 use std::str::from_utf8;
 
 use calimero_store::Store;
+use eyre::Result as EyreResult;
 use local_ip_address::local_ip;
-use rcgen::{CertificateParams, DnType};
+use rcgen::{CertificateParams, DnType, KeyPair};
 use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{parse_x509_pem, ParsedExtension};
 
 use crate::admin::storage::ssl::{get_ssl, insert_or_update_ssl, SSLCert};
 
-pub fn get_certificate(store: &Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+pub fn get_certificate(store: &Store) -> EyreResult<(Vec<u8>, Vec<u8>)> {
     let certificate = match get_ssl(store)? {
         Some(cert) => check_certificate(store, &cert)?,
         None => generate_certificate(store)?,
@@ -17,7 +19,7 @@ pub fn get_certificate(store: &Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     Ok(certificate)
 }
 
-fn generate_certificate(store: &Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+fn generate_certificate(store: &Store) -> EyreResult<(Vec<u8>, Vec<u8>)> {
     // Get the local IP address
     let local_ip = local_ip()?;
 
@@ -44,9 +46,9 @@ fn generate_certificate(store: &Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     let key_pair = match get_ssl(store)? {
         Some(ssl) => {
             let key = from_utf8(ssl.key())?;
-            rcgen::KeyPair::from_pem(key)?
+            KeyPair::from_pem(key)?
         }
-        None => rcgen::KeyPair::generate()?,
+        None => KeyPair::generate()?,
     };
 
     // Generate the certificate with the customized parameters
@@ -60,7 +62,7 @@ fn generate_certificate(store: &Store) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
     Ok((cert_pem, key_pem))
 }
 
-fn check_certificate(store: &Store, cert: &SSLCert) -> eyre::Result<(Vec<u8>, Vec<u8>)> {
+fn check_certificate(store: &Store, cert: &SSLCert) -> EyreResult<(Vec<u8>, Vec<u8>)> {
     let (cert_pem, key_pem) = (cert.cert(), cert.key());
     let (_, pem) = parse_x509_pem(cert_pem)?;
     let x509_cert = pem.parse_x509()?;
@@ -82,8 +84,8 @@ fn check_certificate(store: &Store, cert: &SSLCert) -> eyre::Result<(Vec<u8>, Ve
                 // Check if the general name is an IP address
                 if let GeneralName::IPAddress(dns_name) = gn {
                     ip_found = match local_ip {
-                        std::net::IpAddr::V4(ip) => ip.octets() == *dns_name,
-                        std::net::IpAddr::V6(ip) => ip.octets() == *dns_name,
+                        IpAddr::V4(ip) => ip.octets() == *dns_name,
+                        IpAddr::V6(ip) => ip.octets() == *dns_name,
                     };
                     if ip_found {
                         break;

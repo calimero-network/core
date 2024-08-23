@@ -6,6 +6,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::engine::Engine;
 use borsh::BorshSerialize;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use eyre::{eyre, Report, Result as EyreResult};
 use sha2::{Digest, Sha256};
 
 fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url: &str) -> Payload {
@@ -59,32 +60,32 @@ enum Encoding {
 fn decode_to_fixed_array<const N: usize>(
     encoding: &Encoding,
     encoded: &str,
-) -> eyre::Result<[u8; N]> {
+) -> EyreResult<[u8; N]> {
     let decoded_vec = match encoding {
         Encoding::Base58 => bs58::decode(encoded)
             .into_vec()
-            .map_err(|e| eyre::Report::new(e))?,
-        Encoding::Base64 => STANDARD.decode(encoded).map_err(|e| eyre::Report::new(e))?,
+            .map_err(|e| Report::new(e))?,
+        Encoding::Base64 => STANDARD.decode(encoded).map_err(|e| Report::new(e))?,
     };
 
     let fixed_array: [u8; N] = decoded_vec
         .try_into()
-        .map_err(|_| eyre::Report::msg("Incorrect length"))?;
+        .map_err(|_| Report::msg("Incorrect length"))?;
     Ok(fixed_array)
 }
 
-fn verify(public_key_str: &str, message: &[u8], signature: &str) -> eyre::Result<()> {
+fn verify(public_key_str: &str, message: &[u8], signature: &str) -> EyreResult<()> {
     let encoded_key = public_key_str.trim_start_matches("ed25519:");
 
     let decoded_key: [u8; 32] =
-        decode_to_fixed_array(&Encoding::Base58, encoded_key).map_err(|e| eyre::eyre!(e))?;
-    let vk = VerifyingKey::from_bytes(&decoded_key).map_err(|e| eyre::eyre!(e))?;
+        decode_to_fixed_array(&Encoding::Base58, encoded_key).map_err(|e| eyre!(e))?;
+    let vk = VerifyingKey::from_bytes(&decoded_key).map_err(|e| eyre!(e))?;
 
     let decoded_signature: [u8; 64] =
-        decode_to_fixed_array(&Encoding::Base64, signature).map_err(|e| eyre::eyre!(e))?;
+        decode_to_fixed_array(&Encoding::Base64, signature).map_err(|e| eyre!(e))?;
     let signature = Signature::from_bytes(&decoded_signature);
 
-    vk.verify(message, &signature).map_err(|e| eyre::eyre!(e))?;
+    vk.verify(message, &signature).map_err(|e| eyre!(e))?;
 
     Ok(())
 }

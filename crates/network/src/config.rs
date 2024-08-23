@@ -1,8 +1,13 @@
-use std::{fmt, time};
+use std::fmt;
+use std::fmt::Formatter;
+use std::time::Duration;
 
-use libp2p::{identity, rendezvous};
-use multiaddr::Multiaddr;
-use serde::{Deserialize, Serialize};
+use calimero_node_primitives::NodeType;
+use libp2p::identity::Keypair;
+use libp2p::rendezvous::Namespace;
+use multiaddr::{Multiaddr, Protocol};
+use serde::de::{Error as SerdeError, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub const DEFAULT_PORT: u16 = 2428; // CHAT in T9
 
@@ -24,8 +29,8 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct NetworkConfig {
-    pub identity: identity::Keypair,
-    pub node_type: calimero_node_primitives::NodeType,
+    pub identity: Keypair,
+    pub node_type: NodeType,
 
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
@@ -36,8 +41,8 @@ pub struct NetworkConfig {
 impl NetworkConfig {
     #[must_use]
     pub const fn new(
-        identity: identity::Keypair,
-        node_type: calimero_node_primitives::NodeType,
+        identity: Keypair,
+        node_type: NodeType,
         swarm: SwarmConfig,
         bootstrap: BootstrapConfig,
         discovery: DiscoveryConfig,
@@ -148,19 +153,19 @@ pub struct RendezvousConfig {
         serialize_with = "serialize_rendezvous_namespace",
         deserialize_with = "deserialize_rendezvous_namespace"
     )]
-    pub namespace: rendezvous::Namespace,
+    pub namespace: Namespace,
 
     pub discovery_rpm: f32,
 
-    pub discovery_interval: time::Duration,
+    pub discovery_interval: Duration,
 }
 
 impl Default for RendezvousConfig {
     fn default() -> Self {
         Self {
-            namespace: rendezvous::Namespace::from_static("/calimero/devnet/global"),
+            namespace: Namespace::from_static("/calimero/devnet/global"),
             discovery_rpm: 0.5,
-            discovery_interval: time::Duration::from_secs(90),
+            discovery_interval: Duration::from_secs(90),
         }
     }
 }
@@ -170,20 +175,20 @@ impl Default for RendezvousConfig {
 pub struct CatchupConfig {
     pub batch_size: u8,
 
-    pub receive_timeout: time::Duration,
+    pub receive_timeout: Duration,
 
-    pub interval: time::Duration,
+    pub interval: Duration,
 
-    pub initial_delay: time::Duration,
+    pub initial_delay: Duration,
 }
 
 impl CatchupConfig {
     #[must_use]
     pub const fn new(
         batch_size: u8,
-        receive_timeout: time::Duration,
-        interval: time::Duration,
-        initial_delay: time::Duration,
+        receive_timeout: Duration,
+        interval: Duration,
+        initial_delay: Duration,
     ) -> Self {
         Self {
             batch_size,
@@ -195,50 +200,46 @@ impl CatchupConfig {
 }
 
 fn serialize_rendezvous_namespace<S>(
-    namespace: &rendezvous::Namespace,
+    namespace: &Namespace,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
-    S: serde::Serializer,
+    S: Serializer,
 {
     let namespace_str = namespace.to_string();
     serializer.serialize_str(&namespace_str)
 }
 
-fn deserialize_rendezvous_namespace<'de, D>(
-    deserializer: D,
-) -> Result<rendezvous::Namespace, D::Error>
+fn deserialize_rendezvous_namespace<'de, D>(deserializer: D) -> Result<Namespace, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
     let namespace_str = String::deserialize(deserializer)?;
-    rendezvous::Namespace::new(namespace_str).map_err(serde::de::Error::custom)
+    Namespace::new(namespace_str).map_err(SerdeError::custom)
 }
 
 fn deserialize_bootstrap<'de, D>(deserializer: D) -> Result<Vec<Multiaddr>, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
-    use serde::de;
-
     struct BootstrapVisitor;
 
-    impl<'de> de::Visitor<'de> for BootstrapVisitor {
+    impl<'de> Visitor<'de> for BootstrapVisitor {
         type Value = Vec<Multiaddr>;
 
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
             formatter.write_str("a list of multiaddresses")
         }
 
         fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
         where
-            A: de::SeqAccess<'de>,
+            A: SeqAccess<'de>,
         {
             let mut addrs = Vec::new();
 
             while let Some(addr) = seq.next_element::<Multiaddr>()? {
-                let Some(multiaddr::Protocol::P2p(_)) = addr.iter().last() else {
-                    return Err(de::Error::custom("peer ID not allowed"));
+                let Some(Protocol::P2p(_)) = addr.iter().last() else {
+                    return Err(SerdeError::custom("peer ID not allowed"));
                 };
 
                 addrs.push(addr);

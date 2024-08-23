@@ -1,4 +1,7 @@
 use std::convert::Infallible;
+use std::error::Error;
+use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::task::{Context, Poll};
 
 use axum::body::Body;
@@ -11,6 +14,7 @@ use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_store::Store;
 use chrono::Utc;
 use libp2p::futures::future::BoxFuture;
+use serde_json::from_slice as from_json_slice;
 use tower::{Layer, Service};
 use tracing::debug;
 
@@ -139,7 +143,7 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .get("wallet_type")
         .ok_or_else(|| UnauthorizedError::new("Missing wallet_type header"))?;
 
-    let wallet_type: WalletType = serde_json::from_slice(wallet_type.as_bytes())
+    let wallet_type: WalletType = from_json_slice(wallet_type.as_bytes())
         .map_err(|_| UnauthorizedError::new("Failed to parse wallet_type"))?;
 
     let signature = headers
@@ -188,13 +192,13 @@ impl<'a> UnauthorizedError<'a> {
     }
 }
 
-impl std::fmt::Display for UnauthorizedError<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for UnauthorizedError<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.reason)
     }
 }
 
-impl std::error::Error for UnauthorizedError<'_> {}
+impl Error for UnauthorizedError<'_> {}
 
 impl IntoResponse for UnauthorizedError<'_> {
     fn into_response(self) -> Response<Body> {

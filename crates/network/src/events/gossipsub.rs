@@ -1,39 +1,40 @@
+use gossipsub::Event;
 use libp2p::gossipsub;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
-use super::{types, EventHandler, EventLoop};
+use super::{EventHandler, EventLoop};
+use crate::types::NetworkEvent;
 
-impl EventHandler<gossipsub::Event> for EventLoop {
-    async fn handle(&mut self, event: gossipsub::Event) {
+impl EventHandler<Event> for EventLoop {
+    async fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "gossipsub".yellow(), event);
 
         match event {
-            gossipsub::Event::Message {
+            Event::Message {
                 message_id: id,
                 message,
                 ..
             } => {
                 if let Err(err) = self
                     .event_sender
-                    .send(types::NetworkEvent::Message { id, message })
+                    .send(NetworkEvent::Message { id, message })
                     .await
                 {
                     error!("Failed to send message event: {:?}", err);
                 }
             }
-            gossipsub::Event::Subscribed { peer_id, topic } => {
+            Event::Subscribed { peer_id, topic } => {
                 if (self
                     .event_sender
-                    .send(types::NetworkEvent::Subscribed { peer_id, topic })
+                    .send(NetworkEvent::Subscribed { peer_id, topic })
                     .await)
                     .is_err()
                 {
                     error!("Failed to send subscribed event");
                 }
             }
-            gossipsub::Event::GossipsubNotSupported { .. }
-            | gossipsub::Event::Unsubscribed { .. } => {}
+            Event::GossipsubNotSupported { .. } | Event::Unsubscribed { .. } => {}
         }
     }
 }

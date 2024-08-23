@@ -2,9 +2,16 @@ use std::sync::Arc;
 
 use axum::routing::{post, MethodRouter};
 use axum::{Extension, Json};
-use calimero_server_primitives::jsonrpc as jsonrpc_primitives;
+use calimero_node_primitives::{CallError as PrimitiveCallError, ServerSender};
+use calimero_primitives::context::ContextId;
+use calimero_server_primitives::jsonrpc::{
+    Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
+    ResponseBodyError, ResponseBodyResult, ServerResponseError,
+};
+use eyre::{eyre, Error as EyreError};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use serde_json::{from_value as from_json_value, to_value as to_json_value, Value};
+use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info};
 
@@ -26,12 +33,12 @@ impl JsonRpcConfig {
 }
 
 pub(crate) struct ServiceState {
-    server_sender: calimero_node_primitives::ServerSender,
+    server_sender: ServerSender,
 }
 
 pub(crate) fn service(
-    config: &crate::config::ServerConfig,
-    server_sender: calimero_node_primitives::ServerSender,
+    config: &ServerConfig,
+    server_sender: ServerSender,
 ) -> Option<(&'static str, MethodRouter)> {
     let _config = match &config.jsonrpc {
         Some(config) if config.enabled => config,
@@ -54,35 +61,29 @@ pub(crate) fn service(
 
 async fn handle_request(
     Extension(state): Extension<Arc<ServiceState>>,
-    Json(request): Json<jsonrpc_primitives::Request<serde_json::Value>>,
-) -> Json<jsonrpc_primitives::Response> {
+    Json(request): Json<PrimitiveRequest<Value>>,
+) -> Json<PrimitiveResponse> {
     debug!(?request, "Received request");
-    let body = match serde_json::from_value::<jsonrpc_primitives::RequestPayload>(request.payload) {
+    let body = match from_json_value::<RequestPayload>(request.payload) {
         Ok(payload) => match payload {
-            jsonrpc_primitives::RequestPayload::Query(request) => {
-                request.handle(state).await.to_res_body()
-            }
-            jsonrpc_primitives::RequestPayload::Mutate(request) => {
-                request.handle(state).await.to_res_body()
-            }
+            RequestPayload::Query(request) => request.handle(state).await.to_res_body(),
+            RequestPayload::Mutate(request) => request.handle(state).await.to_res_body(),
             _ => unreachable!("Unsupported JSON RPC method"),
         },
         Err(err) => {
-            error!(%err, "Failed to deserialize jsonrpc_primitives::RequestPayload");
+            error!(%err, "Failed to deserialize RequestPayload");
 
-            jsonrpc_primitives::ResponseBody::Error(
-                jsonrpc_primitives::ResponseBodyError::ServerError(
-                    jsonrpc_primitives::ServerResponseError::ParseError(err.to_string()),
-                ),
-            )
+            ResponseBody::Error(ResponseBodyError::ServerError(
+                ServerResponseError::ParseError(err.to_string()),
+            ))
         }
     };
 
-    if let jsonrpc_primitives::ResponseBody::Error(err) = &body {
+    if let ResponseBody::Error(err) = &body {
         error!(?err, "Failed to execute JSON RPC method");
     }
 
-    let response = jsonrpc_primitives::Response::new(request.jsonrpc, request.id, body);
+    let response = PrimitiveResponse::new(request.jsonrpc, request.id, body);
     Json(response)
 }
 
@@ -100,61 +101,53 @@ pub(crate) trait Request {
 #[non_exhaustive]
 pub enum RpcError<E> {
     MethodCallError(E),
-    InternalError(eyre::Error),
+    InternalError(EyreError),
 }
 
 trait ToResponseBody {
-    fn to_res_body(self) -> jsonrpc_primitives::ResponseBody;
+    fn to_res_body(self) -> ResponseBody;
 }
 
 impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
-    fn to_res_body(self) -> jsonrpc_primitives::ResponseBody {
+    fn to_res_body(self) -> ResponseBody {
         match self {
-            Ok(r) => match serde_json::to_value(r) {
-                Ok(v) => jsonrpc_primitives::ResponseBody::Result(
-                    jsonrpc_primitives::ResponseBodyResult(v),
-                ),
-                Err(err) => jsonrpc_primitives::ResponseBody::Error(
-                    jsonrpc_primitives::ResponseBodyError::ServerError(
-                        jsonrpc_primitives::ServerResponseError::InternalError {
-                            err: Some(err.into()),
-                        },
-                    ),
-                ),
+            Ok(r) => match to_json_value(r) {
+                Ok(v) => ResponseBody::Result(ResponseBodyResult(v)),
+                Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError {
+                        err: Some(err.into()),
+                    },
+                )),
             },
-            Err(RpcError::MethodCallError(err)) => match serde_json::to_value(err) {
-                Ok(v) => jsonrpc_primitives::ResponseBody::Error(
-                    jsonrpc_primitives::ResponseBodyError::HandlerError(v),
-                ),
-                Err(err) => jsonrpc_primitives::ResponseBody::Error(
-                    jsonrpc_primitives::ResponseBodyError::ServerError(
-                        jsonrpc_primitives::ServerResponseError::InternalError {
-                            err: Some(err.into()),
-                        },
-                    ),
-                ),
+            Err(RpcError::MethodCallError(err)) => match to_json_value(err) {
+                Ok(v) => ResponseBody::Error(ResponseBodyError::HandlerError(v)),
+                Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError {
+                        err: Some(err.into()),
+                    },
+                )),
             },
-            Err(RpcError::InternalError(err)) => jsonrpc_primitives::ResponseBody::Error(
-                jsonrpc_primitives::ResponseBodyError::ServerError(
-                    jsonrpc_primitives::ServerResponseError::InternalError { err: Some(err) },
-                ),
-            ),
+            Err(RpcError::InternalError(err)) => {
+                ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError { err: Some(err) },
+                ))
+            }
         }
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 #[error("CallError")]
 #[allow(clippy::enum_variant_names)]
 pub(crate) enum CallError {
-    UpstreamCallError(calimero_node_primitives::CallError),
+    UpstreamCallError(PrimitiveCallError),
     UpstreamFunctionCallError(String), // TODO use FunctionCallError from runtime-primitives once they are migrated
-    InternalError(eyre::Error),
+    InternalError(EyreError),
 }
 
 pub(crate) async fn call(
-    sender: calimero_node_primitives::ServerSender,
-    context_id: calimero_primitives::context::ContextId,
+    sender: ServerSender,
+    context_id: ContextId,
     method: String,
     args: Vec<u8>,
     writes: bool,
@@ -172,10 +165,10 @@ pub(crate) async fn call(
             outcome_sender,
         ))
         .await
-        .map_err(|e| CallError::InternalError(eyre::eyre!("Failed to send call message: {}", e)))?;
+        .map_err(|e| CallError::InternalError(eyre!("Failed to send call message: {}", e)))?;
 
     match outcome_receiver.await.map_err(|e| {
-        CallError::InternalError(eyre::eyre!("Failed to receive call outcome result: {}", e))
+        CallError::InternalError(eyre!("Failed to receive call outcome result: {}", e))
     })? {
         Ok(outcome) => {
             for log in outcome.logs {
@@ -190,10 +183,7 @@ pub(crate) async fn call(
             };
 
             Ok(Some(String::from_utf8(returns).map_err(|e| {
-                CallError::InternalError(eyre::eyre!(
-                    "Failed to convert call result to string: {}",
-                    e
-                ))
+                CallError::InternalError(eyre!("Failed to convert call result to string: {}", e))
             })?))
         }
         Err(err) => Err(CallError::UpstreamCallError(err)),
@@ -213,8 +203,8 @@ macro_rules! mount_method {
                 match $handle(self, state).await {
                     Ok(response) => Ok(response),
                     Err(err) => match err.downcast::<Self::Error>() {
-                        Ok(err) => Err(jsonrpc::RpcError::MethodCallError(err)),
-                        Err(err) => Err(jsonrpc::RpcError::InternalError(err)),
+                        Ok(err) => Err(crate::jsonrpc::RpcError::MethodCallError(err)),
+                        Err(err) => Err(crate::jsonrpc::RpcError::InternalError(err)),
                     },
                 }
             }
@@ -223,3 +213,5 @@ macro_rules! mount_method {
 }
 
 pub(crate) use mount_method;
+
+use crate::config::ServerConfig;

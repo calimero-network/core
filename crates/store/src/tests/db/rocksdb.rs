@@ -1,3 +1,4 @@
+use eyre::Ok as EyreOk;
 use tempdir::TempDir;
 
 use super::RocksDB;
@@ -43,7 +44,7 @@ fn test_rocksdb() {
         for b2 in 0..10 {
             let (k, v) = entries
                 .next()
-                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .map(|(k, v)| EyreOk((k?, v?)))
                 .transpose()
                 .unwrap()
                 .map_or_else(Default::default, |(k, v)| {

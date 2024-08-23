@@ -1,3 +1,5 @@
+use serde_json::{from_value as from_json_value, json, to_string as to_json_string};
+
 use super::*;
 
 #[test]
@@ -41,15 +43,12 @@ fn test_serde() {
     let hash = Hash::new(b"Hello World");
 
     assert_eq!(
-        serde_json::to_string(&hash).unwrap(),
+        to_json_string(&hash).unwrap(),
         "\"C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK\""
     );
 
     assert_eq!(
-        serde_json::from_value::<Hash>(serde_json::json!(
-            "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
-        ))
-        .unwrap(),
+        from_json_value::<Hash>(json!("C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK")).unwrap(),
         hash
     );
 }

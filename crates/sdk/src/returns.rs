@@ -1,10 +1,13 @@
 use serde::Serialize;
+use serde_json::{to_vec as to_json_vec, Result as JsonResult};
+
+use crate::returns::private::Sealed;
 
 mod private {
     pub trait Sealed {}
 }
 
-pub trait IntoResult: private::Sealed {
+pub trait IntoResult: Sealed {
     type Ok;
     type Err;
 
@@ -20,10 +23,10 @@ where
     E: Serialize,
 {
     #[inline]
-    pub fn to_json(&self) -> serde_json::Result<Result<Vec<u8>, Vec<u8>>> {
+    pub fn to_json(&self) -> JsonResult<Result<Vec<u8>, Vec<u8>>> {
         Ok(match self {
-            Self(Ok(ok)) => Ok(serde_json::to_vec(&ok)?),
-            Self(Err(err)) => Err(serde_json::to_vec(&err)?),
+            Self(Ok(ok)) => Ok(to_json_vec(&ok)?),
+            Self(Err(err)) => Err(to_json_vec(&err)?),
         })
     }
 }
@@ -49,7 +52,7 @@ impl<T, E> WrappedReturn<Result<T, E>> {
 #[derive(Clone, Copy, Debug, Serialize)]
 pub enum Infallible {}
 
-impl<T> private::Sealed for WrappedReturn<T> {}
+impl<T> Sealed for WrappedReturn<T> {}
 impl<T> IntoResult for WrappedReturn<T>
 where
     T: Serialize,

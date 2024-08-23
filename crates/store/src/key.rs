@@ -1,5 +1,10 @@
-use std::fmt;
+use std::cmp::Ordering;
+use std::fmt::{Debug, Formatter};
+use std::io::{Read, Result as IoResult, Write};
+use std::{fmt, ptr};
 
+use borsh::{BorshDeserialize, BorshSerialize};
+use component::KeyComponents;
 use generic_array::typenum::Const;
 use generic_array::{GenericArray, IntoArrayLength};
 
@@ -14,7 +19,6 @@ mod generic;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
-use component::KeyComponents;
 pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction};
 pub use generic::Generic;
 
@@ -27,8 +31,8 @@ impl<T: KeyComponents> Clone for Key<T> {
     }
 }
 
-impl<T: KeyComponents> fmt::Debug for Key<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<T: KeyComponents> Debug for Key<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Key").field(&self.0).finish()
     }
 }
@@ -47,7 +51,7 @@ impl<T: KeyComponents> Ord for Key<T>
 where
     GenericArray<u8, T::LEN>: Ord,
 {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.0.cmp(&other.0)
     }
 }
@@ -56,7 +60,7 @@ impl<T: KeyComponents> PartialOrd for Key<T>
 where
     GenericArray<u8, T::LEN>: PartialOrd,
 {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
@@ -100,7 +104,7 @@ where
     fn from(key: &Key<T>) -> Self {
         #[allow(trivial_casts)]
         unsafe {
-            &*std::ptr::from_ref(key).cast()
+            &*ptr::from_ref(key).cast()
         }
     }
 }
@@ -113,7 +117,7 @@ where
     fn from(key: &Key<(T,)>) -> Self {
         #[allow(trivial_casts)]
         unsafe {
-            &*std::ptr::from_ref(key).cast()
+            &*ptr::from_ref(key).cast()
         }
     }
 }
@@ -134,18 +138,14 @@ pub trait FromKeyParts: AsKeyParts {
 
 #[cfg(feature = "borsh")]
 const _: () = {
-    use std::io;
-
-    use borsh::{BorshDeserialize, BorshSerialize};
-
     impl<T: KeyComponents> BorshSerialize for Key<T> {
-        fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        fn serialize<W: Write>(&self, writer: &mut W) -> IoResult<()> {
             writer.write_all(&self.0)
         }
     }
 
     impl<T: KeyComponents> BorshDeserialize for Key<T> {
-        fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        fn deserialize_reader<R: Read>(reader: &mut R) -> IoResult<Self> {
             let mut key = GenericArray::default();
 
             reader.read_exact(&mut key)?;

@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::ops::Deref;
 
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
 #[derive(Debug)]
 pub struct Constrained<T, R> {
@@ -39,7 +39,7 @@ impl<T> Constraint for T {
 #[derive(Debug)]
 pub struct MaxU64<const MAX: u64>;
 
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 #[error("value {0} is greater than the maximum {MAX}")]
 pub struct MaxU64Error<const MAX: u64>(u64);
 

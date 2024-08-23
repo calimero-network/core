@@ -1,3 +1,4 @@
+use libp2p_identity::PeerId;
 use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
@@ -56,12 +57,12 @@ impl ExecutedTransactionPayload {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct PeerJoinedPayload {
-    pub peer_id: libp2p_identity::PeerId,
+    pub peer_id: PeerId,
 }
 
 impl PeerJoinedPayload {
     #[must_use]
-    pub const fn new(peer_id: libp2p_identity::PeerId) -> Self {
+    pub const fn new(peer_id: PeerId) -> Self {
         Self { peer_id }
     }
 }

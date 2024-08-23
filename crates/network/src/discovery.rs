@@ -1,21 +1,25 @@
-use eyre::ContextCompat;
+use eyre::{bail, ContextCompat, Result as EyreResult};
+use libp2p::rendezvous::client::RegisterError;
 use libp2p::PeerId;
+use multiaddr::Protocol;
 use tracing::{debug, error};
 
-use crate::discovery::state::DiscoveryState;
+use super::EventLoop;
+use crate::config::RendezvousConfig;
+use crate::discovery::state::{
+    DiscoveryState, RelayReservationStatus, RendezvousRegistrationStatus,
+};
 
 pub mod state;
-
-use super::{config, EventLoop};
 
 #[derive(Debug)]
 pub struct Discovery {
     pub(crate) state: DiscoveryState,
-    pub(crate) rendezvous_config: config::RendezvousConfig,
+    pub(crate) rendezvous_config: RendezvousConfig,
 }
 
 impl Discovery {
-    pub(crate) fn new(rendezvous_config: &config::RendezvousConfig) -> Self {
+    pub(crate) fn new(rendezvous_config: &RendezvousConfig) -> Self {
         Self {
             state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
@@ -61,7 +65,7 @@ impl EventLoop {
 
     // Sends rendezvous discovery request to the rendezvous peer if not throttled.
     // This function expectes that the rendezvous peer is already connected.
-    pub(crate) fn rendezvous_discover(&mut self, rendezvous_peer: &PeerId) -> eyre::Result<()> {
+    pub(crate) fn rendezvous_discover(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
         let peer_info = self
             .discovery
             .state
@@ -130,7 +134,7 @@ impl EventLoop {
     // Sends rendezvous registration request to rendezvous peer if one is required.
     // If there are no external addresses for the node, the registration is considered successful.
     // This function expectes that the rendezvous peer is already connected.
-    pub(crate) fn rendezvous_register(&mut self, rendezvous_peer: &PeerId) -> eyre::Result<()> {
+    pub(crate) fn rendezvous_register(&mut self, rendezvous_peer: &PeerId) -> EyreResult<()> {
         let peer_info = self
             .discovery
             .state
@@ -147,11 +151,11 @@ impl EventLoop {
             None,
         ) {
             match err {
-                libp2p::rendezvous::client::RegisterError::NoExternalAddresses => {
+                RegisterError::NoExternalAddresses => {
                     return Ok(());
                 }
-                err @ libp2p::rendezvous::client::RegisterError::FailedToMakeRecord(_) => {
-                    eyre::bail!(err)
+                err @ RegisterError::FailedToMakeRecord(_) => {
+                    bail!(err)
                 }
             }
         }
@@ -165,7 +169,7 @@ impl EventLoop {
 
         self.discovery.state.update_rendezvous_registration_status(
             rendezvous_peer,
-            state::RendezvousRegistrationStatus::Requested,
+            RendezvousRegistrationStatus::Requested,
         );
 
         Ok(())
@@ -173,7 +177,7 @@ impl EventLoop {
 
     // Requests relay reservation on relay peer if one is required.
     // This function expectes that the relay peer is already connected.
-    pub(crate) fn create_relay_reservation(&mut self, relay_peer: &PeerId) -> eyre::Result<()> {
+    pub(crate) fn create_relay_reservation(&mut self, relay_peer: &PeerId) -> EyreResult<()> {
         let peer_info = self
             .discovery
             .state
@@ -196,12 +200,12 @@ impl EventLoop {
 
         let relayed_addr = match preferred_addr
             .clone()
-            .with(multiaddr::Protocol::P2pCircuit)
+            .with(Protocol::P2pCircuit)
             .with_p2p(*self.swarm.local_peer_id())
         {
             Ok(addr) => addr,
             Err(err) => {
-                eyre::bail!("Failed to construct relayed addr for relay peer: {:?}", err)
+                bail!("Failed to construct relayed addr for relay peer: {:?}", err)
             }
         };
 
@@ -209,7 +213,7 @@ impl EventLoop {
 
         self.discovery
             .state
-            .update_relay_reservation_status(relay_peer, state::RelayReservationStatus::Requested);
+            .update_relay_reservation_status(relay_peer, RelayReservationStatus::Requested);
 
         Ok(())
     }

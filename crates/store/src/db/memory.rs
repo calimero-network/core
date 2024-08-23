@@ -4,7 +4,11 @@ mod tests;
 
 use std::borrow::Borrow;
 use std::fmt::Debug;
+use std::mem::transmute;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+use eyre::{eyre, Result as EyreResult};
+use raw::{CastsTo, InMemoryDBImpl, InMemoryDBInner, InMemoryIterInner};
 
 use crate::config::StoreConfig;
 use crate::db::{Column, Database};
@@ -13,8 +17,6 @@ use crate::slice::Slice;
 use crate::tx::{Operation, Transaction};
 
 mod raw;
-
-use raw::{CastsTo, InMemoryDBImpl, InMemoryDBInner, InMemoryIterInner};
 
 #[derive(Debug)]
 pub struct Ref<'a> {
@@ -91,18 +93,18 @@ impl InMemoryDB<()> {
 }
 
 impl<'a, T: InMemoryDBImpl<'a> + Debug> InMemoryDB<T> {
-    fn db(&self) -> eyre::Result<RwLockReadGuard<'_, InMemoryDBInner<T::Key, T::Value>>> {
+    fn db(&self) -> EyreResult<RwLockReadGuard<'_, InMemoryDBInner<T::Key, T::Value>>> {
         self.inner
             .db()
             .read()
-            .map_err(|_| eyre::eyre!("failed to acquire read lock on db"))
+            .map_err(|_| eyre!("failed to acquire read lock on db"))
     }
 
-    fn db_mut(&self) -> eyre::Result<RwLockWriteGuard<'_, InMemoryDBInner<T::Key, T::Value>>> {
+    fn db_mut(&self) -> EyreResult<RwLockWriteGuard<'_, InMemoryDBInner<T::Key, T::Value>>> {
         self.inner
             .db()
             .write()
-            .map_err(|_| eyre::eyre!("failed to acquire write lock on db"))
+            .map_err(|_| eyre!("failed to acquire write lock on db"))
     }
 }
 
@@ -114,7 +116,7 @@ impl ArcSlice<'_> {
     fn new<'a, T: CastsTo<Slice<'a>>>(value: Arc<T>) -> Self {
         Self {
             // safety: T: CastsTo<Slice>
-            inner: unsafe { std::mem::transmute::<Arc<T>, Arc<Slice<'_>>>(value) },
+            inner: unsafe { transmute::<Arc<T>, Arc<Slice<'_>>>(value) },
         }
     }
 }
@@ -129,15 +131,15 @@ impl<'a, T: InMemoryDBImpl<'a> + Debug + Send + Sync + 'static> Database<'a> for
 where
     T::Key: Ord + Clone + Borrow<[u8]>,
 {
-    fn open(_config: &StoreConfig) -> eyre::Result<Self> {
+    fn open(_config: &StoreConfig) -> EyreResult<Self> {
         todo!("phase this out, please. it's not even worth writing an accomodation for")
     }
 
-    fn has(&self, col: Column, key: Slice<'_>) -> eyre::Result<bool> {
+    fn has(&self, col: Column, key: Slice<'_>) -> EyreResult<bool> {
         self.get(col, key).map(|v| v.is_some())
     }
 
-    fn get(&self, col: Column, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
+    fn get(&self, col: Column, key: Slice<'_>) -> EyreResult<Option<Slice<'_>>> {
         let Some(value) = self.db()?.get(col, &key)? else {
             return Ok(None);
         };
@@ -145,26 +147,26 @@ where
         Ok(Some(Slice::from_owned(ArcSlice::new(value))))
     }
 
-    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> eyre::Result<()> {
+    fn put(&self, col: Column, key: Slice<'a>, value: Slice<'a>) -> EyreResult<()> {
         self.db_mut()?
             .insert(col, T::key_from_slice(key), T::value_from_slice(value))?;
 
         Ok(())
     }
 
-    fn delete(&self, col: Column, key: Slice<'_>) -> eyre::Result<()> {
+    fn delete(&self, col: Column, key: Slice<'_>) -> EyreResult<()> {
         self.db_mut()?.remove(col, &key)?;
 
         Ok(())
     }
 
-    fn iter(&self, col: Column) -> eyre::Result<Iter<'_>> {
+    fn iter(&self, col: Column) -> EyreResult<Iter<'_>> {
         let db = self.db()?;
 
         Ok(Iter::new(InMemoryDBIter::new(db.iter(col))))
     }
 
-    fn apply(&self, tx: &Transaction<'_>) -> eyre::Result<()> {
+    fn apply(&self, tx: &Transaction<'_>) -> EyreResult<()> {
         let mut db = self.db_mut()?;
 
         for (entry, op) in tx.iter() {
@@ -201,17 +203,16 @@ impl InMemoryDBIter<'_> {
         InMemoryDBIter {
             // safety: {K, V}: CastsTo<Slice>
             inner: unsafe {
-                std::mem::transmute::<
-                    InMemoryIterInner<'_, K, V>,
-                    InMemoryIterInner<'_, Slice<'_>, Slice<'_>>,
-                >(inner)
+                transmute::<InMemoryIterInner<'_, K, V>, InMemoryIterInner<'_, Slice<'_>, Slice<'_>>>(
+                    inner,
+                )
             },
         }
     }
 }
 
 impl DBIter for InMemoryDBIter<'_> {
-    fn seek(&mut self, key: Slice<'_>) -> eyre::Result<Option<Slice<'_>>> {
+    fn seek(&mut self, key: Slice<'_>) -> EyreResult<Option<Slice<'_>>> {
         let Some(key) = self.inner.seek(&key)? else {
             return Ok(None);
         };
@@ -219,7 +220,7 @@ impl DBIter for InMemoryDBIter<'_> {
         Ok(Some(key.into()))
     }
 
-    fn next(&mut self) -> eyre::Result<Option<Slice<'_>>> {
+    fn next(&mut self) -> EyreResult<Option<Slice<'_>>> {
         let Some(key) = self.inner.next()? else {
             return Ok(None);
         };
@@ -227,7 +228,7 @@ impl DBIter for InMemoryDBIter<'_> {
         Ok(Some(key.into()))
     }
 
-    fn read(&self) -> eyre::Result<Slice<'_>> {
+    fn read(&self) -> EyreResult<Slice<'_>> {
         self.inner.read().map(Into::into)
     }
 }

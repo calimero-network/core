@@ -1,7 +1,11 @@
+use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
+use syn::{Error as SynError, GenericParam, Ident, ImplItemFn, Path, ReturnType, Visibility};
 
-use super::{arg, ty};
-use crate::{errors, reserved};
+use crate::errors::{Errors, ParseError};
+use crate::logic::arg::{LogicArg, LogicArgInput, LogicArgTyped, SelfType};
+use crate::logic::ty::{LogicTy, LogicTyInput};
+use crate::reserved::{idents, lifetimes};
 
 pub enum LogicMethod<'a> {
     Public(PublicLogicMethod<'a>),
@@ -13,12 +17,12 @@ pub enum Modifer {
 }
 
 pub struct PublicLogicMethod<'a> {
-    self_: syn::Path,
+    self_: Path,
 
-    name: &'a syn::Ident,
-    self_type: Option<arg::SelfType<'a>>,
-    args: Vec<arg::LogicArgTyped<'a>>,
-    ret: Option<ty::LogicTy>,
+    name: &'a Ident,
+    self_type: Option<SelfType<'a>>,
+    args: Vec<LogicArgTyped<'a>>,
+    ret: Option<LogicTy>,
 
     has_refs: bool,
 
@@ -26,7 +30,7 @@ pub struct PublicLogicMethod<'a> {
 }
 
 impl ToTokens for LogicMethod<'_> {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         match self {
             LogicMethod::Public(method) => method.to_tokens(tokens),
             LogicMethod::Private => {}
@@ -37,7 +41,7 @@ impl ToTokens for LogicMethod<'_> {
 impl ToTokens for PublicLogicMethod<'_> {
     // TODO: Consider splitting this long function into multiple parts.
     #[allow(clippy::too_many_lines)]
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         let self_ = &self.self_;
         let name = &self.name;
         let args = &self.args;
@@ -53,10 +57,10 @@ impl ToTokens for PublicLogicMethod<'_> {
         let input = if args.is_empty() {
             quote! {}
         } else {
-            let input_ident = reserved::idents::input();
+            let input_ident = idents::input();
 
             let input_lifetime = if self.has_refs {
-                let lifetime = reserved::lifetimes::input();
+                let lifetime = lifetimes::input();
                 quote! { <#lifetime> }
             } else {
                 quote! {}
@@ -91,8 +95,8 @@ impl ToTokens for PublicLogicMethod<'_> {
             Some(type_) => (
                 {
                     let mutability = match type_ {
-                        arg::SelfType::Mutable(_) => Some(quote! {mut}),
-                        arg::SelfType::Owned(_) | arg::SelfType::Immutable(_) => None,
+                        SelfType::Mutable(_) => Some(quote! {mut}),
+                        SelfType::Owned(_) | SelfType::Immutable(_) => None,
                     };
                     quote! {
                         let Some(#mutability app) = ::calimero_sdk::env::state_read::<#self_>() else {
@@ -140,7 +144,7 @@ impl ToTokens for PublicLogicMethod<'_> {
         }
 
         let state_finalizer = match (&self.self_type, init_method) {
-            (Some(arg::SelfType::Mutable(_)), _) | (_, true) => quote! {
+            (Some(SelfType::Mutable(_)), _) | (_, true) => quote! {
                 ::calimero_sdk::env::state_write(&app);
             },
             _ => quote! {},
@@ -181,18 +185,18 @@ impl ToTokens for PublicLogicMethod<'_> {
 }
 
 pub struct LogicMethodImplInput<'a, 'b> {
-    pub item: &'a syn::ImplItemFn,
+    pub item: &'a ImplItemFn,
 
-    pub type_: &'b syn::Path,
+    pub type_: &'b Path,
 }
 
 impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
-    type Error = errors::Errors<'a, syn::ImplItemFn>;
+    type Error = Errors<'a, ImplItemFn>;
 
     // TODO: Consider splitting this long function into multiple parts.
     #[allow(clippy::too_many_lines)]
     fn try_from(input: LogicMethodImplInput<'a, 'b>) -> Result<Self, Self::Error> {
-        let errors = errors::Errors::new(input.item);
+        let errors = Errors::new(input.item);
 
         let mut modifiers = vec![];
         let mut is_init = false;
@@ -208,11 +212,11 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         }
 
         match (&input.item.vis, is_init) {
-            (syn::Visibility::Public(_), _) => {}
+            (Visibility::Public(_), _) => {}
             (_, true) => {
-                errors.subsume(syn::Error::new_spanned(
+                errors.subsume(SynError::new_spanned(
                     &input.item.vis,
-                    errors::ParseError::NoPrivateInit,
+                    ParseError::NoPrivateInit,
                 ));
             }
             (_, false) => {
@@ -221,39 +225,30 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         }
 
         if let Some(abi) = &input.item.sig.abi {
-            errors.subsume(syn::Error::new_spanned(
-                abi,
-                errors::ParseError::NoExplicitAbi,
-            ));
+            errors.subsume(SynError::new_spanned(abi, ParseError::NoExplicitAbi));
         }
 
         if let Some(asyncness) = &input.item.sig.asyncness {
-            errors.subsume(syn::Error::new_spanned(
-                asyncness,
-                errors::ParseError::NoAsyncSupport,
-            ));
+            errors.subsume(SynError::new_spanned(asyncness, ParseError::NoAsyncSupport));
         }
 
         if let Some(unsafety) = &input.item.sig.unsafety {
-            errors.subsume(syn::Error::new_spanned(
-                unsafety,
-                errors::ParseError::NoUnsafeSupport,
-            ));
+            errors.subsume(SynError::new_spanned(unsafety, ParseError::NoUnsafeSupport));
         }
 
         for generic in &input.item.sig.generics.params {
-            if let syn::GenericParam::Lifetime(params) = generic {
-                if params.lifetime == *reserved::lifetimes::input() {
-                    errors.subsume(syn::Error::new(
+            if let GenericParam::Lifetime(params) = generic {
+                if params.lifetime == *lifetimes::input() {
+                    errors.subsume(SynError::new(
                         params.lifetime.span(),
-                        errors::ParseError::UseOfReservedLifetime,
+                        ParseError::UseOfReservedLifetime,
                     ));
                 }
                 continue;
             }
-            errors.subsume(syn::Error::new_spanned(
+            errors.subsume(SynError::new_spanned(
                 generic,
-                errors::ParseError::NoGenericTypeSupport,
+                ParseError::NoGenericTypeSupport,
             ));
         }
 
@@ -261,14 +256,14 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         let mut self_type = None;
         let mut args = vec![];
         for arg in &input.item.sig.inputs {
-            match arg::LogicArg::try_from(arg::LogicArgInput {
+            match LogicArg::try_from(LogicArgInput {
                 type_: input.type_,
                 arg,
             }) {
                 Ok(arg) => match (arg, &self_type) {
-                    (arg::LogicArg::Receiver(type_), None) => self_type = Some(type_),
-                    (arg::LogicArg::Receiver(_), Some(_)) => { /* handled by rustc */ }
-                    (arg::LogicArg::Typed(arg), _) => {
+                    (LogicArg::Receiver(type_), None) => self_type = Some(type_),
+                    (LogicArg::Receiver(_), Some(_)) => { /* handled by rustc */ }
+                    (LogicArg::Typed(arg), _) => {
                         has_refs |= arg.ty.ref_;
                         args.push(arg);
                     }
@@ -280,28 +275,26 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
         let name = &input.item.sig.ident;
 
         match (is_init, &self_type) {
-            (true, Some(self_type)) => errors.subsume(syn::Error::new_spanned(
+            (true, Some(self_type)) => errors.subsume(SynError::new_spanned(
                 match self_type {
-                    arg::SelfType::Owned(ty)
-                    | arg::SelfType::Mutable(ty)
-                    | arg::SelfType::Immutable(ty) => ty,
+                    SelfType::Owned(ty) | SelfType::Mutable(ty) | SelfType::Immutable(ty) => ty,
                 },
-                errors::ParseError::NoSelfReceiverAtInit,
+                ParseError::NoSelfReceiverAtInit,
             )),
-            (true, None) if name != "init" => errors.subsume(syn::Error::new_spanned(
+            (true, None) if name != "init" => errors.subsume(SynError::new_spanned(
                 name,
-                errors::ParseError::AppInitMethodNotNamedInit,
+                ParseError::AppInitMethodNotNamedInit,
             )),
-            (false, _) if name == "init" => errors.subsume(syn::Error::new_spanned(
+            (false, _) if name == "init" => errors.subsume(SynError::new_spanned(
                 name,
-                errors::ParseError::InitMethodWithoutInitAttribute,
+                ParseError::InitMethodWithoutInitAttribute,
             )),
             _ => {}
         }
 
         let mut ret = None;
-        if let syn::ReturnType::Type(_, ret_type) = &input.item.sig.output {
-            match ty::LogicTy::try_from(ty::LogicTyInput {
+        if let ReturnType::Type(_, ret_type) = &input.item.sig.output {
+            match LogicTy::try_from(LogicTyInput {
                 type_: input.type_,
                 ty: ret_type,
             }) {

@@ -1,9 +1,12 @@
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::str::FromStr;
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use thiserror::Error as ThisError;
+use url::{ParseError, Url};
 
 use crate::blobs::BlobId;
 use crate::hash::{Hash, HashError};
@@ -34,8 +37,8 @@ impl ApplicationId {
     }
 }
 
-impl fmt::Display for ApplicationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ApplicationId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
@@ -52,7 +55,7 @@ impl From<&ApplicationId> for String {
     }
 }
 
-#[derive(Clone, Copy, Debug, Error)]
+#[derive(Clone, Copy, Debug, ThisError)]
 #[error(transparent)]
 pub struct InvalidApplicationId(HashError);
 
@@ -65,31 +68,31 @@ impl FromStr for ApplicationId {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ApplicationSource(url::Url);
+pub struct ApplicationSource(Url);
 
 impl FromStr for ApplicationSource {
-    type Err = url::ParseError;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.parse().map(Self)
     }
 }
 
-impl From<url::Url> for ApplicationSource {
-    fn from(value: url::Url) -> Self {
+impl From<Url> for ApplicationSource {
+    fn from(value: Url) -> Self {
         Self(value)
     }
 }
 
-impl From<ApplicationSource> for url::Url {
+impl From<ApplicationSource> for Url {
     fn from(value: ApplicationSource) -> Self {
         value.0
     }
 }
 
-impl fmt::Display for ApplicationSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
+impl Display for ApplicationSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
     }
 }
 
@@ -98,7 +101,7 @@ impl fmt::Display for ApplicationSource {
 pub struct Application {
     pub id: ApplicationId,
     pub blob: BlobId,
-    pub version: Option<semver::Version>,
+    pub version: Option<Version>,
     pub source: ApplicationSource,
     pub metadata: Vec<u8>,
 }
@@ -108,7 +111,7 @@ impl Application {
     pub fn new(
         id: ApplicationId,
         blob: BlobId,
-        version: Option<semver::Version>,
+        version: Option<Version>,
         source: ApplicationSource,
         metadata: Vec<u8>,
     ) -> Self {
@@ -125,7 +128,7 @@ impl Application {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct Release {
-    pub version: semver::Version,
+    pub version: Version,
     pub notes: String,
     pub path: String,
     pub hash: String,
