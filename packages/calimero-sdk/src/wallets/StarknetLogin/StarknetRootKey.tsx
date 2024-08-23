@@ -118,18 +118,39 @@ export function StarknetRootKey({
     }
   }, [contextId, rpcBaseUrl]);
 
+  const changeMetamaskNetwork = useCallback(async (networkId: string) => {
+    try {
+      setLoading(true);
+      setErrorMessage(null);
+      await starknetInstance.request({
+        type: "wallet_switchStarknetChain",
+        params: {
+          id: starknetInstance.id,
+          chainId: networkId === constants.NetworkName.SN_MAIN ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA,
+          baseUrl: networkId === constants.NetworkName.SN_MAIN ? constants.BaseUrl.SN_MAIN : constants.BaseUrl.SN_SEPOLIA,
+          chainName: networkId === constants.NetworkName.SN_MAIN ? constants.NetworkName.SN_MAIN : constants.NetworkName.SN_SEPOLIA,
+        }
+      })
+    } catch (error) {
+      console.error('Error changing network:', error);
+      setErrorMessage('Error changing network');
+    }
+    setLoading(false);
+  }, [starknetInstance]);
+
   const signMessage = useCallback(async () => {
     try {
       setErrorMessage(null);
       setLoading(true);
       if (starknetInstance) {
+        let chainId: string = starknetInstance.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA;
+        if(starknetInstance.id !== argentXId) {
+          chainId = starknetInstance.chainId === constants.StarknetChainId.SN_MAIN ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA;
+        }
         const message = {
           domain: {
             name: 'ServerChallenge',
-            chainId:
-              starknetInstance.chainId === 'SN_MAIN'
-                ? constants.StarknetChainId.SN_MAIN
-                : constants.StarknetChainId.SN_SEPOLIA,
+            chainId: chainId,
             version: '1',
             revision: '1',
           },
@@ -181,6 +202,12 @@ export function StarknetRootKey({
         console.error('address is empty');
         setErrorMessage('Address is empty');
       } else {
+        let chainId: string = starknetInstance.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA;
+        let rpcUrl: string = starknetInstance.chainId === 'SN_MAIN' ? constants.RPC_NODES.SN_MAIN[0] : constants.RPC_NODES.SN_SEPOLIA[0];
+        if(starknetInstance.id !== argentXId) {
+          chainId = starknetInstance.chainId === constants.StarknetChainId.SN_MAIN ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA;
+          rpcUrl = starknetInstance.chainId === constants.StarknetChainId.SN_MAIN ? constants.RPC_NODES.SN_MAIN[0] : constants.RPC_NODES.SN_SEPOLIA[0];
+        }
         const walletMetadata: WalletMetadata = {
           wallet: getWalletType(starknetInstance?.id),
           signingKey:
@@ -189,14 +216,8 @@ export function StarknetRootKey({
               : await starknetInstance?.account.signer.getPubKey(),
           walletAddress: starknetInstance.account.address,
           networkMetadata: {
-            chainId:
-              starknetInstance.chainId === 'SN_MAIN'
-                ? constants.StarknetChainId.SN_MAIN
-                : constants.StarknetChainId.SN_SEPOLIA,
-            rpcUrl:
-              starknetInstance?.chainId === 'SN_MAIN'
-                ? constants.RPC_NODES.SN_MAIN[0]
-                : constants.RPC_NODES.SN_SEPOLIA[0],
+            chainId: chainId,
+            rpcUrl: rpcUrl,
           },
         };
         const rootKeyRequest: RootKeyRequest = {
@@ -353,6 +374,22 @@ export function StarknetRootKey({
         )}
         {starknetInstance && walletSignatureData && (
           <>
+           {starknetInstance?.id !== argentXId && (
+              <div
+                style={{
+                  marginTop: '1.5rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                }}
+              >
+                <label htmlFor="network" style={{ marginRight: 'auto' }}>Current network:</label>
+                <select name="network" style={{ width: '100%', height: '46px' }} defaultValue={ starknetInstance.chainId === constants.StarknetChainId.SN_MAIN ? constants.NetworkName.SN_MAIN : constants.NetworkName.SN_SEPOLIA } onChange={(e) => changeMetamaskNetwork(e.target.value)}>
+                  <option value={constants.NetworkName.SN_MAIN}>Mainnet</option>
+                  <option value={constants.NetworkName.SN_SEPOLIA}>Sepolia</option>
+                </select>
+              </div>
+            )}
             <div style={{ marginTop: '20px' }}>
               <button
                 style={{
