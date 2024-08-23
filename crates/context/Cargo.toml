@@ -21,3 +21,6 @@ calimero-blobstore = { path = "../store/blobs" }
 calimero-primitives = { path = "../primitives", features = ["borsh"] }
 calimero-network = { path = "../network" }
 calimero-store = { path = "../store", features = ["datatypes"] }
+
+[lints]
+workspace = true

@@ -26,3 +26,6 @@ tokio-util.workspace = true
 
 [features]
 examples = ["tokio/io-std", "tokio/io-util", "tokio/macros", "tokio/rt-multi-thread", "tokio-util/io"]
+
+[lints]
+workspace = true

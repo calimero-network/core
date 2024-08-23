@@ -19,3 +19,6 @@ near-sdk = { workspace = true, features = ["unit-testing"] }
 near-workspaces.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[lints]
+workspace = true

@@ -29,3 +29,6 @@ rand.workspace = true
 
 [features]
 host-traces = ["owo-colors"]
+
+[lints]
+workspace = true

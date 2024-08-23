@@ -20,3 +20,6 @@ url = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 hex.workspace = true
+
+[lints]
+workspace = true

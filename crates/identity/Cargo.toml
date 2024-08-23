@@ -16,3 +16,6 @@ libp2p = { workspace = true }
 web3.workspace = true
 
 calimero-primitives = { path = "../primitives" }
+
+[lints]
+workspace = true
