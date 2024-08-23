@@ -154,7 +154,9 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
     };
 
     let mut catchup_interval_tick = interval_at(
-        Instant::now() + config.network.catchup.initial_delay,
+        Instant::now()
+            .checked_add(config.network.catchup.initial_delay)
+            .ok_or_else(|| eyre!("Overflow when calculating initial catchup interval delay"))?,
         config.network.catchup.interval,
     );
 
@@ -902,7 +904,7 @@ impl Node {
         transaction_hash: Hash,
     ) -> EyreResult<bool> {
         if context.last_transaction_hash == transaction.prior_hash {
-            self.nonce += 1;
+            self.nonce = self.nonce.saturating_add(1);
 
             self.push_action(
                 transaction.context_id,

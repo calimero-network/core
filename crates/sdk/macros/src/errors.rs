@@ -38,7 +38,7 @@ impl Display for Pretty<'_> {
 
         f.pad(
             parsed
-                .get(pre..parsed.len() - post)
+                .get(pre..parsed.len().saturating_sub(post))
                 .ok_or_else(|| panic!("Invalid string slice range"))?,
         )
     }

@@ -28,7 +28,7 @@ pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> Ey
     }
 
     let message_hash = eth_message(message);
-    let recovery_id = i32::from(signature_bytes[64]) - 27_i32;
+    let recovery_id = i32::from(signature_bytes[64]).saturating_sub(27_i32);
 
     // Attempt to recover the public key, returning false if recovery fails
     match recover(&message_hash, &signature_bytes[..64], recovery_id) {

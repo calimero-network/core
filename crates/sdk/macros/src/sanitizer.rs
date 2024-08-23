@@ -189,7 +189,10 @@ impl Sanitizer<'_> {
                     } = entry.sanitize(cases);
 
                     for (case, count) in sub_counts {
-                        *counts.entry(case).or_insert(0) += count;
+                        let _ = counts
+                            .entry(case)
+                            .and_modify(|e: &mut usize| *e = e.saturating_add(count))
+                            .or_insert(count);
                     }
 
                     errors.combine(&err);
@@ -198,7 +201,10 @@ impl Sanitizer<'_> {
                     for (case, action) in cases {
                         if let Some(span) = entry.satisfies(case) {
                             if entry.apply_action(span, action, &mut errors) {
-                                *counts.entry(case).or_insert(0) += 1;
+                                let _ = counts
+                                    .entry(case)
+                                    .and_modify(|e| *e = e.saturating_add(1))
+                                    .or_insert(1);
                             }
                             break;
                         }
