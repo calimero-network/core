@@ -36,7 +36,11 @@ impl Display for Pretty<'_> {
 
         let parsed = parsed.trim();
 
-        f.pad(&parsed[pre..parsed.len() - post])
+        f.pad(
+            parsed
+                .get(pre..parsed.len() - post)
+                .ok_or_else(|| panic!("Invalid string slice range"))?,
+        )
     }
 }
 

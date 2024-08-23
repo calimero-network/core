@@ -305,7 +305,7 @@ impl EventLoop {
                 drop(sender.send(self.open_stream(peer_id).await.map_err(Into::into)));
             }
             Command::PeerCount { sender } => {
-                let _ = sender.send(self.swarm.connected_peers().count());
+                let _ignore = sender.send(self.swarm.connected_peers().count());
             }
             Command::MeshPeers { topic, sender } => {
                 drop(
@@ -320,7 +320,7 @@ impl EventLoop {
                 );
             }
             Command::MeshPeerCount { topic, sender } => {
-                let _ = sender.send(
+                let _ignore = sender.send(
                     self.swarm
                         .behaviour_mut()
                         .gossipsub

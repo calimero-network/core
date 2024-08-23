@@ -255,7 +255,7 @@ impl VMHostFunctions<'_> {
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(logic.limits, register_id, &logic.context.input[..])
+                .set(logic.limits, register_id, &*logic.context.input)
         })?;
 
         Ok(())
@@ -394,7 +394,7 @@ impl VMHostFunctions<'_> {
         let method = self.get_string(method_ptr, method_len)?;
         let headers = self.read_guest_memory(headers_ptr, headers_len)?;
 
-        // Safety: The `fetch` function cannot be directly called by applications.
+        // Note: The `fetch` function cannot be directly called by applications.
         // Therefore, the headers are generated exclusively by our code, ensuring
         // that it is safe to deserialize them.
         let headers: Vec<(String, String)> =

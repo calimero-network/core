@@ -54,7 +54,7 @@ impl CreateCommand {
             Self {
                 application_id: Some(app_id),
                 watch: None,
-                metadata: _,
+                ..
             } => {
                 let _ = create_context(multiaddr, app_id, &client).await?;
             }

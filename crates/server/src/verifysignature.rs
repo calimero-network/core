@@ -43,7 +43,7 @@ pub fn verify_near_signature(
     let Ok(nonce) = decode_to_fixed_array::<32>(&Encoding::Base64, challenge) else {
         return false;
     };
-    let payload: Payload = create_payload(message, nonce, app, callback_url);
+    let payload = create_payload(message, nonce, app, callback_url);
     let mut borsh_payload: Vec<u8> = Vec::new();
     payload.serialize(&mut borsh_payload).unwrap();
 

@@ -489,7 +489,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 }
 
                 break 'done;
-            }
+            };
             println!("{IND} Usage: application [ls|install]");
         }
         "context" => 'done: {

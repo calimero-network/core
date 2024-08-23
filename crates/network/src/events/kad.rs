@@ -25,7 +25,7 @@ impl EventHandler<Event> for EventLoop {
                 result: QueryResult::StartProviding(_),
                 ..
             } => {
-                let _ = self
+                let _ignore = self
                     .pending_start_providing
                     .remove(&id)
                     .expect("Completed query to be previously pending.")

@@ -124,7 +124,7 @@ where
         match f(unsafe { Box::from_raw(ptr) }.as_dyn_box()) {
             Ok(value) => Ok(value),
             Err(value) => {
-                let _ = ManuallyDrop::new(value);
+                let _ignore = ManuallyDrop::new(value);
                 Err(unsafe { Box::from_raw(ptr) })
             }
         }
@@ -141,7 +141,7 @@ where
         match f(unsafe { Rc::from_raw(ptr) }.as_dyn_rc()) {
             Ok(value) => Ok(value),
             Err(value) => {
-                let _ = ManuallyDrop::new(value);
+                let _ignore = ManuallyDrop::new(value);
                 Err(unsafe { Rc::from_raw(ptr) })
             }
         }
