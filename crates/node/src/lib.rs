@@ -1,7 +1,7 @@
 #![allow(clippy::print_stdout)]
 
-use std::future::{pending, Future};
-use std::pin::Pin;
+use core::future::{pending, Future};
+use core::pin::Pin;
 
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ApplicationConfig;

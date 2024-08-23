@@ -1,5 +1,5 @@
-use std::marker::PhantomData;
-use std::ops::Deref;
+use core::marker::PhantomData;
+use core::ops::Deref;
 
 use thiserror::Error as ThisError;
 

@@ -1,7 +1,7 @@
 #![allow(single_use_lifetimes, unused_lifetimes)]
 #![allow(clippy::mem_forget)]
 
-use std::num::NonZeroU64;
+use core::num::NonZeroU64;
 
 use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;

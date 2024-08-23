@@ -2,13 +2,13 @@
 #[path = "tests/hash.rs"]
 mod tests;
 
-use std::cmp::Ordering;
-use std::fmt::{self, Debug, Display, Formatter};
-use std::hash::{Hash as StdHash, Hasher};
+use core::cmp::Ordering;
+use core::fmt::{self, Debug, Display, Formatter};
+use core::hash::{Hash as StdHash, Hasher};
+use core::mem::MaybeUninit;
+use core::ops::Deref;
+use core::str::{from_utf8, FromStr};
 use std::io::Result as IoResult;
-use std::mem::MaybeUninit;
-use std::ops::Deref;
-use std::str::{from_utf8, FromStr};
 
 use borsh::BorshSerialize;
 use bs58::decode::Error as Bs58Error;

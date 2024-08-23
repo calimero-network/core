@@ -1,4 +1,4 @@
-use std::ptr::NonNull;
+use core::ptr::NonNull;
 
 use wasmer::sys::{BaseTunables, VMConfig};
 use wasmer::vm::{VMMemory, VMMemoryDefinition, VMTable, VMTableDefinition};

@@ -1,6 +1,6 @@
-use std::convert::Infallible;
+use core::convert::Infallible;
+use core::fmt::{Debug, Formatter};
 use std::fmt;
-use std::fmt::{Debug, Formatter};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::blobs::BlobId as PrimitiveBlobId;

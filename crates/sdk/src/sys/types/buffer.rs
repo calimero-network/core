@@ -1,7 +1,7 @@
-use std::marker::PhantomData;
-use std::ops::{Deref, DerefMut};
-use std::slice::{from_raw_parts, from_raw_parts_mut};
-use std::str::{from_utf8, Utf8Error};
+use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
+use core::slice::{from_raw_parts, from_raw_parts_mut};
+use core::str::{from_utf8, Utf8Error};
 
 use super::Pointer;
 

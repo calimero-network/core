@@ -2,9 +2,10 @@
 #[path = "../tests/discovery/state.rs"]
 mod tests;
 
+use core::time::Duration;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use libp2p::relay::HOP_PROTOCOL_NAME;
 use libp2p::rendezvous::Cookie;

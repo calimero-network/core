@@ -1,7 +1,7 @@
-use std::borrow::Borrow;
+use core::borrow::Borrow;
+use core::ops::Bound;
 use std::collections::btree_map::{BTreeMap, Range as BTreeMapRange, Range};
 use std::mem::transmute;
-use std::ops::Bound;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use eyre::{bail, eyre, Result as EyreResult};

@@ -1,4 +1,4 @@
-use std::panic::Location as PanicLocation;
+use core::panic::Location as PanicLocation;
 
 use super::Buffer;
 

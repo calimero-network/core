@@ -1,5 +1,5 @@
-use std::net::IpAddr;
-use std::str::from_utf8;
+use core::net::IpAddr;
+use core::str::from_utf8;
 
 use calimero_store::Store;
 use eyre::Result as EyreResult;

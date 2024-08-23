@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use core::ops::Deref;
 use std::rc::Rc;
 
 use proc_macro2::{Span, TokenStream};
@@ -50,7 +50,7 @@ impl<T: ToTokens> ToTokens for ReservedRef<T> {
 
 macro_rules! _lazy {
     ($ty:ty => {$($name:ident = $init:expr,)*}) => {
-        use std::cell::RefCell;
+        use core::cell::RefCell;
         use std::rc::Rc;
 
         mod locals {

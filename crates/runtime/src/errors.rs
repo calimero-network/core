@@ -2,7 +2,7 @@
 #[path = "tests/errors.rs"]
 mod tests;
 
-use std::panic::Location as PanicLocation;
+use core::panic::Location as PanicLocation;
 
 use serde::Serialize;
 use thiserror::Error as ThisError;

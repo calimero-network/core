@@ -1,5 +1,5 @@
-use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
 use wasmer::{Imports, Store};
@@ -98,7 +98,7 @@ macro_rules! _imports {
                     };
 
                     HOST_CTX.with(|ctx| ctx.store(true, Ordering::Relaxed));
-                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let res = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
                         let (data, store) = env.data_and_store_mut();
                         let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
 
@@ -162,7 +162,7 @@ macro_rules! _imports {
                 });
             });
 
-            let env = wasmer::FunctionEnv::new(&mut store, fragile::Fragile::new(std::ptr::from_mut(logic).cast::<()>()));
+            let env = wasmer::FunctionEnv::new(&mut store, fragile::Fragile::new(core::ptr::from_mut(logic).cast::<()>()));
 
             wasmer::imports! {
                 "env" => {

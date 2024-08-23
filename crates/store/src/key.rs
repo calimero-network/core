@@ -1,7 +1,7 @@
-use std::cmp::Ordering;
-use std::fmt::{Debug, Formatter};
+use core::cmp::Ordering;
+use core::fmt::{Debug, Formatter};
+use core::{fmt, ptr};
 use std::io::{Read, Result as IoResult, Write};
-use std::{fmt, ptr};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use component::KeyComponents;

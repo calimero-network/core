@@ -1,7 +1,7 @@
 #![allow(unused_results)]
 
+use core::net::IpAddr;
 use std::fs::{read_to_string, write};
-use std::net::IpAddr;
 
 use calimero_network::config::BootstrapNodes;
 use clap::{Args, Parser, ValueEnum};

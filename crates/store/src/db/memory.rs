@@ -2,8 +2,8 @@
 #[path = "../tests/db/memory.rs"]
 mod tests;
 
-use std::borrow::Borrow;
-use std::fmt::Debug;
+use core::borrow::Borrow;
+use core::fmt::Debug;
 use std::mem::transmute;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 

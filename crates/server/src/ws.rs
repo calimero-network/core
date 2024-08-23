@@ -386,7 +386,7 @@ macro_rules! mount_method {
                 self,
                 state: std::sync::Arc<crate::ws::ServiceState>,
                 connection_state: crate::ws::ConnectionState,
-            ) -> std::result::Result<Self::Response, crate::ws::WsError<Self::Error>> {
+            ) -> core::result::Result<Self::Response, crate::ws::WsError<Self::Error>> {
                 match $handle(self, state, connection_state).await {
                     Ok(response) => Ok(response),
                     Err(err) => match err.downcast::<Self::Error>() {

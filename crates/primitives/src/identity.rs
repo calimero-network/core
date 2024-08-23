@@ -148,8 +148,8 @@ pub enum NearNetworkId {
 }
 
 pub mod serde_identity {
+    use core::fmt::Formatter;
     use std::fmt;
-    use std::fmt::Formatter;
 
     use libp2p_identity::Keypair;
     use serde::de::{self, MapAccess};

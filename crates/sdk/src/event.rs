@@ -1,6 +1,6 @@
-use std::any::TypeId;
+use core::any::TypeId;
+use core::cell::RefCell;
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::mem::transmute;
 
 use crate::env;
@@ -45,7 +45,7 @@ pub fn emit<'a, E: AppEventExt + 'a>(event: E) {
 }
 
 mod reflect {
-    use std::any::{type_name, TypeId};
+    use core::any::{type_name, TypeId};
 
     pub trait Reflect {
         fn id(&self) -> TypeId

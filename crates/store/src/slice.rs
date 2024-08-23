@@ -2,11 +2,11 @@
 #[path = "tests/slice.rs"]
 mod tests;
 
-use std::borrow::Borrow;
-use std::cmp::Ordering;
+use core::borrow::Borrow;
+use core::cmp::Ordering;
+use core::fmt::{Debug, Formatter};
+use core::ops::Deref;
 use std::fmt;
-use std::fmt::{Debug, Formatter};
-use std::ops::Deref;
 use std::rc::Rc;
 
 use calimero_primitives::reflect::{DynReflect, Reflect, ReflectExt};

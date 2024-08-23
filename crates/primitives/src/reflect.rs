@@ -1,7 +1,7 @@
-use std::any::{type_name, TypeId};
-use std::marker::PhantomData;
-use std::mem::{transmute, ManuallyDrop};
-use std::ptr;
+use core::any::{type_name, TypeId};
+use core::marker::PhantomData;
+use core::mem::{transmute, ManuallyDrop};
+use core::ptr;
 use std::rc::Rc;
 
 // https://github.com/sagebind/castaway/pull/14

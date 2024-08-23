@@ -1,5 +1,5 @@
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use eyre::{bail, Result as EyreResult};
 use futures_util::{Sink as FuturesSink, SinkExt, Stream as FuturesStream};

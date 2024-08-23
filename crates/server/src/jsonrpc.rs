@@ -199,7 +199,7 @@ macro_rules! mount_method {
             async fn handle(
                 self,
                 state: std::sync::Arc<crate::jsonrpc::ServiceState>,
-            ) -> std::result::Result<Self::Response, crate::jsonrpc::RpcError<Self::Error>> {
+            ) -> core::result::Result<Self::Response, crate::jsonrpc::RpcError<Self::Error>> {
                 match $handle(self, state).await {
                     Ok(response) => Ok(response),
                     Err(err) => match err.downcast::<Self::Error>() {

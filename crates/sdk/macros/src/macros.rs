@@ -24,11 +24,11 @@ macro_rules! infallible {
     ($body:block) => {{
         #[track_caller]
         #[inline]
-        fn infallible<T, E: std::fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> T {
+        fn infallible<T, E: core::fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> T {
             match f() {
                 Ok(value) => value,
                 Err(err) => {
-                    let location = std::panic::Location::caller();
+                    let location = core::panic::Location::caller();
                     unreachable!(
                         "infallible block failed: {:?} at {}:{}:{}",
                         err,

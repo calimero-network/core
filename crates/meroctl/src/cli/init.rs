@@ -1,6 +1,6 @@
+use core::net::IpAddr;
+use core::time::Duration;
 use std::fs::{create_dir, create_dir_all};
-use std::net::IpAddr;
-use std::time::Duration;
 
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RendezvousConfig, SwarmConfig,

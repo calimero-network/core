@@ -1,9 +1,9 @@
-use std::convert::Infallible;
-use std::fmt::{Debug, Formatter};
-use std::hint::unreachable_unchecked;
-use std::marker::PhantomData;
-use std::mem::{replace, transmute};
-use std::{fmt, ptr};
+use core::convert::Infallible;
+use core::fmt::{Debug, Formatter};
+use core::hint::unreachable_unchecked;
+use core::marker::PhantomData;
+use core::mem::{replace, transmute};
+use core::{fmt, ptr};
 
 use calimero_primitives::reflect::Reflect;
 use eyre::{Report, Result as EyreResult};

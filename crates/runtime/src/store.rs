@@ -1,5 +1,5 @@
+use core::fmt::Debug;
 use std::collections::BTreeMap;
-use std::fmt::Debug;
 
 pub type Key = Vec<u8>;
 pub type Value = Vec<u8>;

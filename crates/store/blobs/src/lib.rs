@@ -1,7 +1,7 @@
-use std::fmt::{self, Debug, Formatter};
+use core::fmt::{self, Debug, Formatter};
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::io::ErrorKind as IoErrorKind;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 
 use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;

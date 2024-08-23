@@ -1,5 +1,5 @@
+use core::net::{IpAddr, SocketAddr};
 use std::io::Error as IoError;
-use std::net::{IpAddr, SocketAddr};
 
 use axum::http::Method;
 use axum::Router;

@@ -2,9 +2,9 @@
 #[path = "tests/sanitizer.rs"]
 mod tests;
 
-use std::cell::UnsafeCell;
+use core::cell::UnsafeCell;
+use core::iter::once;
 use std::collections::BTreeMap;
-use std::iter::once;
 
 use proc_macro2::{Delimiter, Group, Punct, Spacing, Span, TokenStream, TokenTree};
 use quote::{quote_spanned, ToTokens};

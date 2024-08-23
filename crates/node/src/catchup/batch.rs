@@ -1,4 +1,4 @@
-use std::mem::take;
+use core::mem::take;
 
 use calimero_network::stream::{Message, Stream};
 use eyre::Result as EyreResult;
