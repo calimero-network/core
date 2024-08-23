@@ -17,6 +17,7 @@ chrono.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util = { workspace = true, optional = true }
+jsonwebtoken.workspace = true
 libp2p.workspace = true
 local-ip-address.workspace = true
 multiaddr.workspace = true

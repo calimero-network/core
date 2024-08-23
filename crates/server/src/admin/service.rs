@@ -119,6 +119,10 @@ pub(crate) fn setup(
             post(handlers::add_client_key::add_client_key_handler),
         )
         .route(
+            "/refresh-token",
+            post(handlers::add_client_key::refresh_token_handler),
+        )
+        .route(
             "/dev/install-application",
             post(handlers::applications::install_dev_application_handler),
         )

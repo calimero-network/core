@@ -6,7 +6,7 @@ use axum::{Extension, Json};
 use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_server_primitives::admin::{
     AddPublicKeyRequest, EthSignatureMessageMetadata, IntermediateAddPublicKeyRequest,
-    NearSignatureMessageMetadata, Payload, SignatureMetadataEnum,
+    JwtRefreshRequest, NearSignatureMessageMetadata, Payload, SignatureMetadataEnum,
 };
 use calimero_store::Store;
 use chrono::Utc;
@@ -18,6 +18,7 @@ use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
 use crate::admin::storage::client_keys::add_client_key;
 use crate::admin::storage::root_key::exists_root_keys;
 use crate::admin::utils::auth::{validate_challenge, validate_root_key_exists};
+use crate::admin::utils::jwt::{generate_jwt_tokens, refresh_access_token, JwtToken};
 
 pub fn transform_request(
     intermediate: IntermediateAddPublicKeyRequest,
@@ -60,6 +61,11 @@ pub fn transform_request(
 struct AddClientKeyResponse {
     data: String,
 }
+#[derive(Debug, Serialize)]
+struct JwtResponse {
+    access_token: String,
+    refresh_token: String,
+}
 
 //* Register client key to authenticate client requests  */
 pub async fn add_client_key_handler(
@@ -74,14 +80,44 @@ pub async fn add_client_key_handler(
         .and_then(|req| store_client_key(req, &mut state.store.clone()))
         .map_or_else(
             |err| err.into_response(),
-            |_| {
-                let data: String = "Client key stored".to_string();
-                ApiResponse {
-                    payload: AddClientKeyResponse { data },
+            |req| {
+                // Create the JSON response
+                let client_id = req.wallet_metadata.signing_key.clone();
+                let context_id = "context_id".to_string();
+                match generate_jwt_tokens(&client_id, &context_id, state.store.clone()) {
+                    Ok(jwt_tokens) => {
+                        let response = JwtResponse {
+                            access_token: jwt_tokens.access_token,
+                            refresh_token: jwt_tokens.refresh_token,
+                        };
+                        ApiResponse { payload: response }.into_response()
+                    }
+                    Err(err) => {
+                        eprintln!("Error generating JWT tokens: {}", err.message);
+                        err.into_response()
+                    }
                 }
-                .into_response()
             },
         )
+}
+
+pub async fn refresh_token_handler(
+    Extension(state): Extension<Arc<AdminState>>,
+    Json(payload): Json<JwtRefreshRequest>,
+) -> impl IntoResponse {
+    match refresh_access_token(&payload.refresh_token, state.store.clone()) {
+        Ok(jwt_tokens) => {
+            let response = JwtResponse {
+                access_token: jwt_tokens.access_token,
+                refresh_token: jwt_tokens.refresh_token,
+            };
+            ApiResponse { payload: response }.into_response()
+        }
+        Err(err) => {
+            eprintln!("Error refreshing token: {}", err.message);
+            err.into_response()
+        }
+    }
 }
 
 pub fn store_client_key(
