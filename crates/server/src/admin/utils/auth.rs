@@ -18,7 +18,7 @@ use crate::admin::storage::root_key::get_root_key;
 use crate::verifywalletsignatures::near::verify_near_signature;
 use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
-pub fn verify_node_signature(
+pub async fn verify_node_signature(
     wallet_metadata: &WalletMetadata,
     wallet_signature: &WalletSignature,
     payload: &Payload,
@@ -131,18 +131,17 @@ pub fn verify_node_signature(
             let chain_id = network_metadata.chain_id.clone();
 
             let result = match wallet_name.as_str() {
-                "argentX" => tokio::task::block_in_place(|| {
-                    tokio::runtime::Runtime::new()
-                        .unwrap()
-                        .block_on(verify_argent_signature(
-                            message_hash,
-                            signature,
-                            &wallet_metadata.signing_key.clone(),
-                            &payload.message.message,
-                            &rpc_node_url,
-                            &chain_id,
-                        ))
-                }),
+                "argentX" => {
+                    verify_argent_signature(
+                        message_hash,
+                        signature,
+                        &wallet_metadata.signing_key.clone(),
+                        &payload.message.message,
+                        &rpc_node_url,
+                        &chain_id,
+                    )
+                    .await
+                }
                 "metamask" => {
                     let wallet_address: &str = match &wallet_metadata.wallet_address {
                         Some(s) => s,
@@ -180,14 +179,14 @@ pub fn verify_node_signature(
 }
 
 //Check if challenge is valid
-pub fn validate_challenge(
+pub async fn validate_challenge(
     req: AddPublicKeyRequest,
     keypair: &Keypair,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     validate_challenge_content(&req.payload, keypair)?;
 
     // Check if node has created signature
-    verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload)?;
+    verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload).await?;
 
     // Check challenge to verify if it has expired or not
     if is_older_than_15_minutes(req.payload.message.timestamp) {

@@ -6,6 +6,7 @@ use calimero_primitives::identity::{RootKey, WalletType};
 use calimero_server_primitives::admin::{AddPublicKeyRequest, IntermediateAddPublicKeyRequest};
 use calimero_store::Store;
 use chrono::Utc;
+use futures_util::TryFutureExt;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
@@ -23,9 +24,10 @@ pub async fn create_root_key_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(intermediate_req): Json<IntermediateAddPublicKeyRequest>,
 ) -> impl IntoResponse {
-    transform_request(intermediate_req)
+    async {transform_request(intermediate_req)}
         .and_then(|req| validate_challenge(req, &state.keypair))
-        .and_then(|req| store_root(req, &mut state.store.clone()))
+        .and_then(|req| async {store_root(req, &mut state.store.clone())})
+        .await
         .map_or_else(
             |err| err.into_response(),
             |_| {

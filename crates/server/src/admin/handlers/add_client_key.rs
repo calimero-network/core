@@ -10,6 +10,7 @@ use calimero_server_primitives::admin::{
 };
 use calimero_store::Store;
 use chrono::Utc;
+use futures_util::TryFutureExt;
 use serde::Serialize;
 use tracing::info;
 
@@ -76,12 +77,13 @@ pub async fn add_client_key_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(intermediate_req): Json<IntermediateAddPublicKeyRequest>,
 ) -> impl IntoResponse {
-    transform_request(intermediate_req)
+    async {transform_request(intermediate_req)}
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        .and_then(|req| check_root_key(req, &mut state.store.clone()))
+        .and_then(|req| async {check_root_key(req, &mut state.store.clone())})
         .and_then(|req| validate_challenge(req, &state.keypair))
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        .and_then(|req| store_client_key(req, &mut state.store.clone()))
+        .and_then(|req| async {store_client_key(req, &mut state.store.clone())})
+        .await
         .map_or_else(
             |err| err.into_response(),
             |_| {
