@@ -9,6 +9,7 @@ pub struct BlobMeta {
     // todo! impl proper entry reference count
     // pub refs: usize,
     pub size: usize,
+    pub hash: [u8; 32],
     pub links: Box<[key::BlobMeta]>,
 }
 

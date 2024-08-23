@@ -10,12 +10,6 @@ use crate::hash::{Error as HashError, Hash};
 #[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BlobId(Hash);
 
-impl BlobId {
-    pub fn hash(bytes: &[u8]) -> Self {
-        Self(Hash::new(bytes))
-    }
-}
-
 impl From<[u8; 32]> for BlobId {
     fn from(id: [u8; 32]) -> Self {
         Self(id.into())

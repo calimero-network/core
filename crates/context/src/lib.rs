@@ -8,6 +8,7 @@ use futures_util::TryStreamExt;
 use reqwest::Url;
 use tokio::fs;
 use tokio::sync::{oneshot, RwLock};
+use tokio_util::compat::TokioAsyncReadCompatExt;
 use tracing::info;
 
 pub mod config;
@@ -412,9 +413,11 @@ impl ContextManager {
     ) -> eyre::Result<calimero_primitives::application::ApplicationId> {
         let file = fs::File::open(&path).await?;
 
+        let meta = file.metadata().await?;
+
         let blob_id = self
             .blob_manager
-            .put(tokio_util::io::ReaderStream::new(file))
+            .put_sized(Some(meta.len()), file.compat())
             .await?;
 
         let Ok(uri) = reqwest::Url::from_file_path(path) else {
@@ -436,7 +439,16 @@ impl ContextManager {
 
         let response = reqwest::Client::new().get(url).send().await?;
 
-        let blob_id = self.blob_manager.put(response.bytes_stream()).await?;
+        let blob_id = self
+            .blob_manager
+            .put_sized(
+                response.content_length(),
+                response
+                    .bytes_stream()
+                    .map_err(std::io::Error::other)
+                    .into_async_read(),
+            )
+            .await?;
 
         // todo! if blob hash doesn't match, remove it
 

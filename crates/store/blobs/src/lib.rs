@@ -3,20 +3,34 @@ use std::task::{Context, Poll};
 
 use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;
+use calimero_primitives::hash::Hash;
 use calimero_store::Store as DataStore;
-use futures_util::{pin_mut, Stream, StreamExt, TryStreamExt};
+use futures_util::io::BufReader;
+use futures_util::{pin_mut, AsyncRead, AsyncReadExt, Stream, StreamExt, TryStreamExt};
 use sha2::Digest;
 use thiserror::Error;
 use tokio::fs;
 
-const CHUNK_SIZE: usize = 1 << 18; // 256 KiB
+const CHUNK_SIZE: usize = 1 << 20; // 1MiB
 
-// const MAX_LINKS_PER_BLOB: usize = 256;
+// const MAX_LINKS_PER_BLOB: usize = 128;
 
 #[derive(Clone)]
 pub struct BlobManager {
     data_store: DataStore,
     blob_store: FileSystem, // Arc<dyn BlobRepository>
+}
+
+#[derive(Debug)]
+enum Value {
+    Full { hash: Hash, size: usize },
+    Part { id: BlobId, _size: usize },
+}
+
+#[derive(Default)]
+struct State {
+    digest: sha2::Sha256,
+    size: usize,
 }
 
 impl BlobManager {
@@ -39,67 +53,122 @@ impl BlobManager {
         Blob::new(id, self.clone()).await
     }
 
-    pub async fn put<S, T, E>(&self, stream: S) -> eyre::Result<BlobId>
+    pub async fn put<T>(&self, stream: T) -> eyre::Result<BlobId>
     where
-        // todo! change this to AsyncRead
-        S: Stream<Item = Result<T, E>>,
-        T: AsRef<[u8]>,
-        E: Into<eyre::Report>,
+        T: AsyncRead,
     {
-        let chunks = typed_stream::<eyre::Result<_>>(try_stream!({
-            pin_mut!(stream);
+        self.put_sized(None, stream).await
+    }
 
-            // todo! use a bufreader
-            while let Some(blob) = stream.try_next().await? {
-                let blob = blob.as_ref();
+    pub async fn put_sized<T>(&self, size_hint: Option<u64>, stream: T) -> eyre::Result<BlobId>
+    where
+        T: AsyncRead,
+    {
+        let stream = BufReader::new(stream);
 
-                for chunk in blob.chunks(CHUNK_SIZE) {
-                    let id = BlobId::hash(&chunk);
+        pin_mut!(stream);
 
-                    self.data_store.handle().put(
-                        &calimero_store::key::BlobMeta::new(id),
-                        &calimero_store::types::BlobMeta {
-                            size: 0,
-                            links: Vec::new().into_boxed_slice(),
-                        },
-                    )?;
-                    self.blob_store.put(id, chunk).await?;
+        let blobs = try_stream!({
+            let mut buf = {
+                let mut buf = Vec::with_capacity(CHUNK_SIZE);
+                unsafe { buf.set_len(CHUNK_SIZE) };
+                buf.into_boxed_slice()
+            };
 
-                    yield id;
+            let mut file = State::default();
+            let mut blob = State::default();
+
+            loop {
+                let bytes = stream.read(&mut buf[blob.size..]).await?;
+
+                let finished = bytes == 0;
+
+                if !finished {
+                    let chunk = &buf[blob.size..blob.size + bytes];
+
+                    file.digest.update(chunk);
+                    blob.digest.update(chunk);
+
+                    blob.size += bytes;
+
+                    if blob.size != buf.len() {
+                        continue;
+                    }
                 }
 
-                // let mut chunks = blob
-                //     .chunks(CHUNK_SIZE)
-                //     .map(|chunk| self.blob_store.put(BlobId::hash(&chunk), chunk))
-                //     .collect::<FuturesUnordered<_>>();
+                if blob.size == 0 {
+                    break;
+                }
 
-                // while let Some(_) = chunks.try_next().await? {}
+                let id = BlobId::from(*AsRef::<[u8; 32]>::as_ref(&blob.digest.finalize()));
+
+                self.data_store.handle().put(
+                    &calimero_store::key::BlobMeta::new(id),
+                    &calimero_store::types::BlobMeta {
+                        size: blob.size,
+                        hash: *id,
+                        links: Default::default(),
+                    },
+                )?;
+
+                self.blob_store.put(id, &buf[..blob.size]).await?;
+
+                file.size += blob.size;
+
+                yield Value::Part {
+                    id,
+                    _size: blob.size,
+                };
+
+                if finished {
+                    break;
+                }
+
+                blob = State::default();
             }
-        }));
 
-        // let ids = ids.chunks(MAX_LINKS_PER_BLOB);
-        pin_mut!(chunks);
+            yield Value::Full {
+                hash: Hash::from(*(AsRef::<[u8; 32]>::as_ref(&file.digest.finalize()))),
+                size: file.size,
+            };
+        });
 
-        let mut links = Vec::new();
+        let blobs = typed_stream::<eyre::Result<_>>(blobs).peekable();
+        pin_mut!(blobs);
+
+        let mut links = Vec::with_capacity(
+            size_hint
+                .and_then(|s| usize::try_from(s).map(|s| s / CHUNK_SIZE).ok())
+                .unwrap_or_default(),
+        );
         let mut digest = sha2::Sha256::new();
 
-        while let Some(id) = chunks.try_next().await? {
+        while let Some(Value::Part { id, _size }) = blobs
+            .as_mut()
+            .next_if(|v| matches!(v, Ok(Value::Part { .. })))
+            .await
+            .transpose()?
+        {
             links.push(calimero_store::key::BlobMeta::new(id));
             digest.update(id.as_ref());
         }
+
+        let Some(Value::Full { hash, size }) = blobs.try_next().await? else {
+            unreachable!("the root should always be emitted");
+        };
 
         let id = BlobId::from(*(AsRef::<[u8; 32]>::as_ref(&digest.finalize())));
 
         self.data_store.handle().put(
             &calimero_store::key::BlobMeta::new(id),
             &calimero_store::types::BlobMeta {
-                size: 0,
+                size,
+                hash: *hash,
                 links: links.into_boxed_slice(),
-                // todo! hash of the blob data
             },
         )?;
 
-        Ok(id) // todo!: Ok((id, Blob { size, hash }::{fn stream()}))
+        Ok(id) // todo!: Ok(Blob { id, size, hash }::{fn stream()})
     }
 }
 
