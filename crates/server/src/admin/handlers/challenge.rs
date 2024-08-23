@@ -91,7 +91,7 @@ fn generate_challenge(
 
 fn generate_random_bytes() -> [u8; 32] {
     let mut rng = thread_rng();
-    let mut buf = [0u8; 32];
+    let mut buf = [0_u8; 32];
     rng.fill_bytes(&mut buf);
     buf
 }

@@ -26,7 +26,7 @@ fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
 
     let result = hasher.finalize();
 
-    let mut hash_array = [0u8; 32];
+    let mut hash_array = [0_u8; 32];
     hash_array.copy_from_slice(&result);
 
     hash_array
