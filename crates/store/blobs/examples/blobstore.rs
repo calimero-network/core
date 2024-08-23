@@ -1,6 +1,7 @@
 use calimero_blobstore::{BlobManager, FileSystem};
 use futures_util::TryStreamExt;
 use tokio::io::{self, AsyncWriteExt};
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
 const DATA_DIR: &'static str = "blob-tests/data";
 const BLOB_DIR: &'static str = "blob-tests/blob";
@@ -34,11 +35,9 @@ async fn main() -> eyre::Result<()> {
             }
         },
         None => {
-            let stdin = io::stdin();
+            let stdin = io::stdin().compat();
 
-            let stdin = tokio_util::io::ReaderStream::new(stdin);
-
-            println!("{}", blob_mgr.put(stdin).await?);
+            println!("{}", blob_mgr.put_sized(None, stdin).await?);
         }
     }
 
