@@ -1,7 +1,6 @@
-use core::fmt::{Display, Formatter};
+use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::str::FromStr;
-use std::fmt;
 
 use semver::Version;
 use serde::{Deserialize, Serialize};

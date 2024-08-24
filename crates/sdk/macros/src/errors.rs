@@ -1,8 +1,7 @@
 use core::cell::{Ref, RefCell, RefMut};
-use core::fmt::{Display, Formatter};
+use core::fmt::{self, Display, Formatter};
 use core::hint::unreachable_unchecked;
 use core::panic::Location as PanicLocation;
-use std::fmt;
 use std::thread::panicking;
 
 use prettyplease::unparse;

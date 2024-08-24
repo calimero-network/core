@@ -1,8 +1,7 @@
 use core::convert::Infallible;
-use core::fmt::{Display, Formatter};
+use core::fmt::{self, Display, Formatter};
 use core::task::{Context, Poll};
 use std::error::Error;
-use std::fmt;
 
 use axum::body::Body;
 use axum::extract::Request;

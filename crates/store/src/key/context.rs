@@ -1,6 +1,5 @@
 use core::convert::Infallible;
-use core::fmt::{Debug, Formatter};
-use std::fmt;
+use core::fmt::{self, Debug, Formatter};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::context::ContextId as PrimitiveContextId;

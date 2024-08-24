@@ -1,7 +1,6 @@
-use core::fmt::{Display, Formatter};
+use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::str::FromStr;
-use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;

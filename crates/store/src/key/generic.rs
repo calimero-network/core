@@ -1,5 +1,4 @@
-use core::fmt::{Debug, Formatter};
-use std::fmt;
+use core::fmt::{self, Debug, Formatter};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use generic_array::sequence::Concat;

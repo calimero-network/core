@@ -1,6 +1,5 @@
-use core::fmt::Formatter;
+use core::fmt::{self, Formatter};
 use core::time::Duration;
-use std::fmt;
 
 use calimero_node_primitives::NodeType;
 use libp2p::identity::Keypair;

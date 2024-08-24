@@ -4,9 +4,8 @@ mod tests;
 
 use core::borrow::Borrow;
 use core::cmp::Ordering;
-use core::fmt::{Debug, Formatter};
+use core::fmt::{self, Debug, Formatter};
 use core::ops::Deref;
-use std::fmt;
 use std::rc::Rc;
 
 use calimero_primitives::reflect::{DynReflect, Reflect, ReflectExt};
