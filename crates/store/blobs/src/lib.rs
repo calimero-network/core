@@ -73,12 +73,7 @@ impl BlobManager {
         pin_mut!(stream);
 
         let blobs = try_stream!({
-            let mut buf = {
-                let mut buf = Vec::with_capacity(CHUNK_SIZE);
-                unsafe { buf.set_len(CHUNK_SIZE) };
-                buf.into_boxed_slice()
-            };
-
+            let mut buf = vec![0_u8; CHUNK_SIZE].into_boxed_slice();
             let mut file = State::default();
             let mut blob = State::default();
 
