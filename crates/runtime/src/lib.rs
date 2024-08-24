@@ -84,3 +84,8 @@ pub fn run(
 
     Ok(logic.finish(None))
 }
+
+#[cfg(test)]
+mod integration_tests_package_usage {
+    use {eyre as _, owo_colors as _, rand as _};
+}

@@ -282,3 +282,8 @@ impl BlobRepository for FileSystem {
         async_write(self.path(id), data).await.map_err(Into::into)
     }
 }
+
+#[cfg(test)]
+mod integration_tests_package_usage {
+    use tokio_util as _;
+}

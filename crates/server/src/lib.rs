@@ -170,3 +170,8 @@ pub async fn start(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod integration_tests_package_usage {
+    use {color_eyre as _, tracing_subscriber as _};
+}
