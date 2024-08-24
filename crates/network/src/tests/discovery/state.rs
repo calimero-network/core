@@ -11,7 +11,7 @@ fn test_get_preferred_addr() {
 
     assert_eq!(peer_info.get_preferred_addr(), None);
 
-    peer_info.addrs.insert(tcp_addr_1.clone());
+    let _ = peer_info.addrs.insert(tcp_addr_1.clone());
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -22,7 +22,7 @@ fn test_get_preferred_addr() {
         Protocol::Tcp(4001)
     );
 
-    peer_info.addrs.insert(quic_addr.clone());
+    let _ = peer_info.addrs.insert(quic_addr.clone());
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -33,7 +33,7 @@ fn test_get_preferred_addr() {
         Protocol::Udp(4001)
     );
 
-    peer_info.addrs.insert(tcp_addr_2.clone());
+    let _ = peer_info.addrs.insert(tcp_addr_2.clone());
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -165,7 +165,7 @@ fn test_state_mutations() {
     assert!(state.is_peer_discovered_via(&peer_id, mdns_discovery));
     assert!(state.is_peer_discovered_via(&peer_id, rendezvous_discovery));
 
-    state.update_rendezvous_cookie(&peer_id, cookie.clone());
+    state.update_rendezvous_cookie(&peer_id, &cookie);
     state.update_rendezvous_registration_status(&peer_id, rendezvous_status);
     state.update_relay_reservation_status(&peer_id, relay_status);
     assert_eq!(

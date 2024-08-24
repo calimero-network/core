@@ -111,7 +111,6 @@ pub(crate) fn setup(
             get(get_context_identities_handler),
         )
         .route("/contexts/:context_id/join", post(join_context_handler))
-        .route("/contexts/:context_id/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .layer(AuthSignatureLayer::new(store))

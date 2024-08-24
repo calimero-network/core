@@ -49,20 +49,20 @@ fn main() -> EyreResult<()> {
 
     let mut storage = InMemoryStorage::default();
 
-    let limits = VMLimits {
-        max_stack_size: 200 << 10, // 200 KiB
-        max_memory_pages: 1 << 10, // 1 KiB
-        max_registers: 100,
-        max_register_size: (100 << 20).validate()?, // 100 MiB
-        max_registers_capacity: 1 << 30,            // 1 GiB
-        max_logs: 100,
-        max_log_size: 16 << 10, // 16 KiB
-        max_events: 100,
-        max_event_kind_size: 100,
-        max_event_data_size: 16 << 10,                  // 16 KiB
-        max_storage_key_size: (1 << 20).try_into()?,    // 1 MiB
-        max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
-    };
+    let limits = VMLimits::new(
+        /*max_stack_size:*/ 200 << 10, // 200 KiB
+        /*max_memory_pages:*/ 1 << 10, // 1 KiB
+        /*max_registers:*/ 100,
+        /*max_register_size:*/ (100 << 20).validate()?, // 100 MiB
+        /*max_registers_capacity:*/ 1 << 30, // 1 GiB
+        /*max_logs:*/ 100,
+        /*max_log_size:*/ 16 << 10, // 16 KiB
+        /*max_events:*/ 100,
+        /*max_event_kind_size:*/ 100,
+        /*max_event_data_size:*/ 16 << 10, // 16 KiB
+        /*max_storage_key_size:*/ (1 << 20).try_into()?, // 1 MiB
+        /*max_storage_value_size:*/ (10 << 20).try_into()?, // 10 MiB
+    );
 
     println!("{}", "--".repeat(20).dimmed());
     println!("{:>35}", "First, we create a keypair for Joe".bold());
@@ -70,12 +70,12 @@ fn main() -> EyreResult<()> {
 
     let joe_seed: [u8; 32] = thread_rng().gen();
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "seed": joe_seed,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let create_keypair_outcome = run(file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
 
@@ -93,12 +93,12 @@ fn main() -> EyreResult<()> {
 
     let melissa_seed: [u8; 32] = thread_rng().gen();
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "seed": melissa_seed,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let create_keypair_outcome = run(file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
 
@@ -114,13 +114,13 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Now, Joe joins the game".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "player_name": "Joe",
             "public_key": joe_keypair.pk,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let join_outcome = run(file, "join", cx, &mut storage, &limits)?;
     dbg!(&join_outcome);
 
@@ -133,13 +133,13 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Now, Melissa joins the game".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "player_name": "Melissa",
             "public_key": melissa_keypair.pk,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let join_outcome = run(file, "join", cx, &mut storage, &limits)?;
     dbg!(&join_outcome);
 
@@ -155,10 +155,7 @@ fn main() -> EyreResult<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext {
-        input: vec![],
-        executor_public_key: [0; 32],
-    };
+    let cx = VMContext::new(vec![], [0; 32]);
     let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
@@ -175,14 +172,14 @@ fn main() -> EyreResult<()> {
     let joe_nonce: [u8; 32] = thread_rng().gen();
     let joe_choice: Choice = random();
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "signing_key": joe_keypair.sk,
             "choice": joe_choice,
             "nonce": joe_nonce,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let prepare_outcome = run(file, "prepare", cx, &mut storage, &limits)?;
     dbg!(&prepare_outcome);
 
@@ -199,14 +196,14 @@ fn main() -> EyreResult<()> {
     let melissa_nonce: [u8; 32] = thread_rng().gen();
     let melissa_choice: Choice = random();
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "signing_key": melissa_keypair.sk,
             "choice": melissa_choice,
             "nonce": melissa_nonce,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let prepare_outcome = run(file, "prepare", cx, &mut storage, &limits)?;
     dbg!(&prepare_outcome);
 
@@ -220,14 +217,14 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Now, Joe commits to his choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "player_idx": joe_idx,
             "commitment": joe_commitment,
             "signature": joe_signature,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let commit_outcome = run(file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
 
@@ -237,14 +234,14 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Now, Melissa commits to her choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "player_idx": melissa_idx,
             "commitment": melissa_commitment,
             "signature": melissa_signature,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let commit_outcome = run(file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
 
@@ -254,13 +251,13 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Now, Joe reveals his choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "player_idx": joe_idx,
             "nonce": joe_nonce,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let reveal_outcome = run(file, "reveal", cx, &mut storage, &limits)?;
     dbg!(&reveal_outcome);
 
@@ -270,13 +267,13 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Now, Melissa reveals her choice".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "player_idx": melissa_idx,
             "nonce": melissa_nonce,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let reveal_outcome = run(file, "reveal", cx, &mut storage, &limits)?;
     dbg!(&reveal_outcome);
 
@@ -289,10 +286,7 @@ fn main() -> EyreResult<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext {
-        input: vec![],
-        executor_public_key: [0; 32],
-    };
+    let cx = VMContext::new(vec![], [0; 32]);
     let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
@@ -312,23 +306,20 @@ fn main() -> EyreResult<()> {
     println!("{:>35}", "Now, let's reset the state".bold());
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext {
-        input: to_json_vec(&json!({
+    let cx = VMContext::new(
+        to_json_vec(&json!({
             "player_idx": melissa_idx,
             "commitment": melissa_commitment,
             "signature": melissa_signature,
         }))?,
-        executor_public_key: [0; 32],
-    };
+        [0; 32],
+    );
     let reset_outcome = run(file, "reset", cx, &mut storage, &limits)?;
     dbg!(&reset_outcome);
 
     from_json_slice::<()>(&reset_outcome.returns?.expect("Expected a return value"))?;
 
-    let cx = VMContext {
-        input: vec![],
-        executor_public_key: [0; 32],
-    };
+    let cx = VMContext::new(vec![], [0; 32]);
     let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 

@@ -1,4 +1,3 @@
-use std::fs;
 use std::fs::{remove_dir_all, remove_file};
 
 use calimero_store::key::{ContextIdentity as ContextIdentityKey, ContextState as ContextStateKey};
@@ -8,9 +7,7 @@ use eyre::Ok as EyreOk;
 
 #[test]
 fn rocks_store() {
-    let config = config::StoreConfig {
-        path: "corpus/rocks".into(),
-    };
+    let config = config::StoreConfig::new("corpus/rocks".into());
 
     if config.path.exists() {
         if config.path.metadata().unwrap().is_dir() {

@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn compilation_error() {
     let error = FunctionCallError::CompilationError {
-        source: wasmer::CompileError::Validate("invalid wasm".to_string()),
+        source: CompileError::Validate("invalid wasm".to_string()),
     };
 
     let expected = json!({
@@ -24,7 +24,7 @@ fn compilation_error() {
 #[test]
 fn link_error() {
     let error = FunctionCallError::LinkError {
-        source: wasmer::LinkError::Resource("missing function".to_string()),
+        source: LinkError::Resource("missing function".to_string()),
     };
 
     let expected = json!({

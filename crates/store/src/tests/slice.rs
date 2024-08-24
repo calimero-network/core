@@ -102,7 +102,7 @@ fn test_owned_any() {
     let data = Buf(b"hello");
     let slice = Slice::from_owned(data);
 
-    let slice = slice.take_owned::<Buf>().unwrap();
+    let slice = slice.take_owned::<Buf<'_>>().unwrap();
 
     assert_eq!(slice.0, b"hello");
 }

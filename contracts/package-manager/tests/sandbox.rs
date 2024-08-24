@@ -27,15 +27,16 @@ async fn test_add_package_and_release(
     user: &Account,
     contract: &Contract,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = user
-        .call(contract.id(), "add_package")
-        .args_json(json!({
-            "name": "application",
-            "description": "Demo Application",
-            "repository": "https://github.com/application",
-        }))
-        .transact()
-        .await?;
+    drop(
+        user.call(contract.id(), "add_package")
+            .args_json(json!({
+                "name": "application",
+                "description": "Demo Application",
+                "repository": "https://github.com/application",
+            }))
+            .transact()
+            .await?,
+    );
 
     let package: Value = user
         .view(contract.id(), "get_package")
@@ -48,17 +49,18 @@ async fn test_add_package_and_release(
     assert_eq!(package["name"], "application".to_string());
     assert_eq!(package["owner"], user.id().to_string());
 
-    let _ = user
-        .call(contract.id(), "add_release")
-        .args_json(json!({
-            "name": "application",
-            "version": "0.1.0",
-            "notes": "",
-            "path": "https://gateway/ipfs/CID",
-            "hash": "123456789",
-        }))
-        .transact()
-        .await?;
+    drop(
+        user.call(contract.id(), "add_release")
+            .args_json(json!({
+                "name": "application",
+                "version": "0.1.0",
+                "notes": "",
+                "path": "https://gateway/ipfs/CID",
+                "hash": "123456789",
+            }))
+            .transact()
+            .await?,
+    );
 
     let release: Value = user
         .view(contract.id(), "get_release")

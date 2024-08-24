@@ -8,7 +8,7 @@ fn test_self_sanitizer_simple() {
     let ty = quote! { Self };
     let my_custom_type: Path = parse_quote! { crate::MyCustomType<'a> };
 
-    let mut sanitizer = parse2::<Sanitizer>(ty).unwrap();
+    let mut sanitizer = parse2::<Sanitizer<'_>>(ty).unwrap();
 
     let cases = [(Case::Self_, Action::ReplaceWith(&my_custom_type))];
 
@@ -36,7 +36,7 @@ fn test_ident_sanitizer_complex() {
     let really_type: Ident = parse_quote! { Really };
     let deep_type: Ident = parse_quote! { Deep };
 
-    let mut sanitizer = parse2::<Sanitizer>(ty).unwrap();
+    let mut sanitizer = parse2::<Sanitizer<'_>>(ty).unwrap();
 
     let cases = [
         (Case::Self_, Action::ReplaceWith(&my_custom_type)),
@@ -51,7 +51,7 @@ fn test_ident_sanitizer_complex() {
         (Case::Ident(None), Action::ReplaceWith(&really_type)),
         (
             Case::Ident(Some(&deep_type)),
-            Action::Forbid(errors::ParseError::UseOfReservedIdent),
+            Action::Forbid(ParseError::UseOfReservedIdent),
         ),
     ];
 
@@ -61,7 +61,7 @@ fn test_ident_sanitizer_complex() {
         let mut errs = err.into_iter();
         assert_eq!(
             errs.next().unwrap().to_string(),
-            errors::ParseError::UseOfReservedIdent.to_string()
+            ParseError::UseOfReservedIdent.to_string()
         );
     }
 
@@ -97,7 +97,7 @@ fn test_ident_sanitizer_complex() {
 fn test_self_sanitizer_noop() {
     let ty = quote! { &Some<Really<[Complex, Deep, Self, Type], Of, &mut Self>> };
 
-    let mut sanitizer = parse2::<Sanitizer>(ty.clone()).unwrap();
+    let mut sanitizer = parse2::<Sanitizer<'_>>(ty.clone()).unwrap();
 
     let outcome = sanitizer.sanitize(&[]);
 
@@ -113,7 +113,7 @@ fn test_lifetime_sanitizer_simple() {
     let ty = quote! { &'a Some<'a, Complex<&&&Deep, &Type>> };
     let replace_with = Lifetime::new("'static", Span::call_site());
 
-    let mut sanitizer = parse2::<Sanitizer>(ty).unwrap();
+    let mut sanitizer = parse2::<Sanitizer<'_>>(ty).unwrap();
 
     let cases = [(Case::Lifetime(None), Action::ReplaceWith(&replace_with))];
 
@@ -140,7 +140,7 @@ fn test_lifetime_sanitizer_specialized() {
     let b_lifetime = Lifetime::new("'b", Span::call_site());
     let static_lifetime = Lifetime::new("'static", Span::call_site());
 
-    let mut sanitizer = parse2::<Sanitizer>(ty).unwrap();
+    let mut sanitizer = parse2::<Sanitizer<'_>>(ty).unwrap();
 
     let cases = [
         (
@@ -178,7 +178,7 @@ fn test_lifetime_sanitizer_complex() {
     let b_lifetime = Lifetime::new("'b", Span::call_site());
     let static_lifetime = Lifetime::new("'static", Span::call_site());
 
-    let mut sanitizer = parse2::<Sanitizer>(ty).unwrap();
+    let mut sanitizer = parse2::<Sanitizer<'_>>(ty).unwrap();
 
     let cases = [
         (
@@ -227,7 +227,7 @@ fn test_lifetime_sanitizer_complex() {
 fn test_lifetime_sanitizer_noop() {
     let ty = quote! { &'a Some<'a, Complex<&&&Deep, &Type>> };
 
-    let mut sanitizer = parse2::<Sanitizer>(ty.clone()).unwrap();
+    let mut sanitizer = parse2::<Sanitizer<'_>>(ty.clone()).unwrap();
 
     let outcome = sanitizer.sanitize(&[]);
 
