@@ -1,14 +1,14 @@
-use std::fmt;
-use std::ops::Deref;
-use std::str::FromStr;
+use core::fmt::{self, Display, Formatter};
+use core::ops::Deref;
+use core::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
 use crate::application::ApplicationId;
-use crate::hash::{Error as HashError, Hash};
+use crate::hash::{Hash, HashError};
 
-#[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 // todo! define macros that construct newtypes
 // todo! wrapping Hash<N> with this interface
 pub struct ContextId(Hash);
@@ -28,30 +28,31 @@ impl Deref for ContextId {
 }
 
 impl ContextId {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
 }
 
-impl fmt::Display for ContextId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ContextId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
 
 impl From<ContextId> for String {
     fn from(id: ContextId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
 impl From<&ContextId> for String {
     fn from(id: &ContextId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, ThisError)]
 #[error(transparent)]
 pub struct InvalidContextId(HashError);
 
@@ -63,10 +64,26 @@ impl FromStr for ContextId {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct Context {
     pub id: ContextId,
     pub application_id: ApplicationId,
     pub last_transaction_hash: Hash,
+}
+
+impl Context {
+    #[must_use]
+    pub const fn new(
+        id: ContextId,
+        application_id: ApplicationId,
+        last_transaction_hash: Hash,
+    ) -> Self {
+        Self {
+            id,
+            application_id,
+            last_transaction_hash,
+        }
+    }
 }

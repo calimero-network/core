@@ -10,7 +10,6 @@ license.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
 futures-util.workspace = true
-http.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 semver.workspace = true
 serde.workspace = true
@@ -23,3 +22,6 @@ calimero-primitives = { path = "../primitives", features = ["borsh"] }
 calimero-network = { path = "../network" }
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-store = { path = "../store", features = ["datatypes"] }
+
+[lints]
+workspace = true

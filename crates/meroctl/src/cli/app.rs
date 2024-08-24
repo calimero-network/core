@@ -1,11 +1,14 @@
 use clap::{Parser, Subcommand};
+use eyre::Result as EyreResult;
 
 use super::RootArgs;
+use crate::cli::app::install::InstallCommand;
+use crate::cli::app::list::ListCommand;
 
 mod install;
 mod list;
 
-#[derive(Parser, Debug)]
+#[derive(Debug, Parser)]
 pub struct AppCommand {
     #[command(subcommand)]
     pub subcommand: AppSubCommands,
@@ -13,13 +16,13 @@ pub struct AppCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AppSubCommands {
-    Install(install::InstallCommand),
+    Install(InstallCommand),
     #[command(alias = "ls")]
-    List(list::ListCommand),
+    List(ListCommand),
 }
 
 impl AppCommand {
-    pub async fn run(self, args: RootArgs) -> eyre::Result<()> {
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         match self.subcommand {
             AppSubCommands::Install(install) => install.run(args).await,
             AppSubCommands::List(list) => list.run(args).await,

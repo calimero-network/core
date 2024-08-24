@@ -1,20 +1,21 @@
-use std::fs;
+#![allow(unused_crate_dependencies)]
 
-use calimero_store::key::{ContextIdentity, ContextState};
+use std::fs::{remove_dir_all, remove_file};
+
+use calimero_store::key::{ContextIdentity as ContextIdentityKey, ContextState as ContextStateKey};
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::{config, db, Store};
+use eyre::Ok as EyreOk;
 
 #[test]
 fn rocks_store() {
-    let config = config::StoreConfig {
-        path: "corpus/rocks".into(),
-    };
+    let config = config::StoreConfig::new("corpus/rocks".into());
 
     if config.path.exists() {
         if config.path.metadata().unwrap().is_dir() {
-            fs::remove_dir_all(&config.path).unwrap();
+            remove_dir_all(&config.path).unwrap();
         } else {
-            fs::remove_file(&config.path).unwrap();
+            remove_file(&config.path).unwrap();
         }
     }
 
@@ -22,7 +23,7 @@ fn rocks_store() {
 
     let context_id1 = [0u8; 32].into();
     let state_key1 = [0u8; 32];
-    let key1 = ContextState::new(context_id1, state_key1);
+    let key1 = ContextStateKey::new(context_id1, state_key1);
 
     assert!(!store.has(&key1).unwrap());
     assert_eq!(None, store.get(&key1).unwrap());
@@ -39,7 +40,7 @@ fn rocks_store() {
     assert_eq!(Some(b"Some Other Value".into()), store.get(&key1).unwrap());
 
     let state_key2 = [1u8; 32];
-    let key2 = ContextState::new(context_id1, state_key2);
+    let key2 = ContextStateKey::new(context_id1, state_key2);
 
     assert!(store.has(&key1).unwrap());
     assert!(!store.has(&key2).unwrap());
@@ -78,21 +79,21 @@ fn rocks_store() {
         assert_eq!(
             Some((key1, b"Hello, World".into())),
             keys.next()
-                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .map(|(k, v)| EyreOk((k?, v?)))
                 .transpose()
                 .unwrap()
         );
         assert_eq!(
             Some((key2, b"Another Value".into())),
             keys.next()
-                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .map(|(k, v)| EyreOk((k?, v?)))
                 .transpose()
                 .unwrap()
         );
         assert_eq!(
             None,
             keys.next()
-                .map(|(k, v)| eyre::Ok((k?, v?)))
+                .map(|(k, v)| EyreOk((k?, v?)))
                 .transpose()
                 .unwrap()
         );
@@ -100,13 +101,13 @@ fn rocks_store() {
 
     let public_key1 = [0u8; 32];
 
-    let key3 = ContextIdentity::new(context_id1, public_key1.into());
+    let key3 = ContextIdentityKey::new(context_id1, public_key1.into());
 
     store.put(&key3, b"Some Associated Value".into()).unwrap();
 
     let public_key2 = [1u8; 32];
 
-    let key4 = ContextIdentity::new(context_id1, public_key2.into());
+    let key4 = ContextIdentityKey::new(context_id1, public_key2.into());
 
     store
         .put(&key4, b"Another Associated Value".into())
@@ -141,19 +142,19 @@ fn rocks_store() {
 
 //     if config.path.exists() {
 //         if config.path.metadata().unwrap().is_dir() {
-//             fs::remove_dir_all(&config.path).unwrap();
+//             remove_dir_all(&config.path).unwrap();
 //         } else {
-//             fs::remove_file(&config.path).unwrap();
+//             remove_file(&config.path).unwrap();
 //         }
 //     }
 
 //     let mut store = Store::open::<db::RocksDB>(&config).unwrap();
 
-//     let mut store = temporal::Temporal::new(&mut store);
+//     let mut store = Temporal::new(&mut store);
 
 //     let context_id1 = [0u8; 32].into();
 //     let state_key1 = [0u8; 32];
-//     let key1 = ContextState::new(context_id1, state_key1);
+//     let key1 = ContextStateKey::new(context_id1, state_key1);
 
 //     assert!(!store.has(&key1).unwrap());
 //     assert_eq!(None, store.get(&key1).unwrap());
@@ -170,7 +171,7 @@ fn rocks_store() {
 //     assert_eq!(Some(b"Some Other Value".into()), store.get(&key1).unwrap());
 
 //     let state_key2 = [1u8; 32];
-//     let key2 = ContextState::new(context_id1, state_key2);
+//     let key2 = ContextStateKey::new(context_id1, state_key2);
 
 //     assert!(store.has(&key1).unwrap());
 //     assert!(!store.has(&key2).unwrap());
@@ -209,21 +210,21 @@ fn rocks_store() {
 //         assert_eq!(
 //             Some((key1, b"Hello, World".into())),
 //             keys.next()
-//                 .map(|(k, v)| eyre::Ok((k?, v?)))
+//                 .map(|(k, v)| EyreOk((k?, v?)))
 //                 .transpose()
 //                 .unwrap()
 //         );
 //         assert_eq!(
 //             Some((key2, b"Another Value".into())),
 //             keys.next()
-//                 .map(|(k, v)| eyre::Ok((k?, v?)))
+//                 .map(|(k, v)| EyreOk((k?, v?)))
 //                 .transpose()
 //                 .unwrap()
 //         );
 //         assert_eq!(
 //             None,
 //             keys.next()
-//                 .map(|(k, v)| eyre::Ok((k?, v?)))
+//                 .map(|(k, v)| EyreOk((k?, v?)))
 //                 .transpose()
 //                 .unwrap()
 //         );
@@ -231,13 +232,13 @@ fn rocks_store() {
 
 //     let public_key1 = [0u8; 32];
 
-//     let key3 = ContextIdentity::new(context_id1, public_key1.into());
+//     let key3 = ContextIdentityKey::new(context_id1, public_key1.into());
 
 //     store.put(&key3, b"Some Associated Value".into()).unwrap();
 
 //     let public_key2 = [1u8; 32];
 
-//     let key4 = ContextIdentity::new(context_id1, public_key2.into());
+//     let key4 = ContextIdentityKey::new(context_id1, public_key2.into());
 
 //     store
 //         .put(&key4, b"Another Associated Value".into())

@@ -1,16 +1,18 @@
-use thiserror::Error;
+use eyre::Report;
+use thiserror::Error as ThisError;
 
 use crate::entry::{Codec, Entry};
 use crate::iter::{Iter, Structured};
 use crate::key::FromKeyParts;
 use crate::layer::{Layer, ReadLayer, WriteLayer};
 
+#[derive(Debug)]
 pub struct Handle<L> {
     pub(crate) inner: L,
 }
 
 impl<L: Layer> Handle<L> {
-    pub fn new(inner: L) -> Self {
+    pub const fn new(inner: L) -> Self {
         Self { inner }
     }
 
@@ -19,34 +21,40 @@ impl<L: Layer> Handle<L> {
     }
 }
 
-#[derive(Error, Debug)]
-pub enum Error<E> {
+#[derive(Debug, ThisError)]
+pub enum HandleError<E> {
     #[error(transparent)]
-    LayerError(#[from] eyre::Report),
+    LayerError(#[from] Report),
     #[error(transparent)]
     CodecError(E),
 }
 
 type EntryError<'a, E> =
-    Error<<<E as Entry>::Codec as Codec<'a, <E as Entry>::DataType<'a>>>::Error>;
+    HandleError<<<E as Entry>::Codec as Codec<'a, <E as Entry>::DataType<'a>>>::Error>;
 
 impl<L: ReadLayer> Handle<L> {
-    pub fn has<E: Entry>(&self, entry: &E) -> Result<bool, EntryError<E>> {
+    pub fn has<E: Entry>(&self, entry: &E) -> Result<bool, EntryError<'_, E>> {
         Ok(self.inner.has(entry.key())?)
     }
 
-    pub fn get<E: Entry>(&self, entry: &E) -> Result<Option<E::DataType<'_>>, EntryError<E>> {
+    pub fn get<E: Entry>(&self, entry: &E) -> Result<Option<E::DataType<'_>>, EntryError<'_, E>> {
         match self.inner.get(entry.key())? {
-            Some(value) => Ok(Some(E::Codec::decode(value).map_err(Error::CodecError)?)),
+            Some(value) => Ok(Some(
+                E::Codec::decode(value).map_err(HandleError::CodecError)?,
+            )),
             None => Ok(None),
         }
     }
 
+    // TODO: We should consider returning Iterator here.
+    #[allow(clippy::iter_not_returning_iterator)]
     #[allow(clippy::type_complexity)]
     pub fn iter<E: Entry<Key: FromKeyParts>>(
         &self,
-    ) -> Result<Iter<Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>, EntryError<E>>
-    {
+    ) -> Result<
+        Iter<'_, Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>,
+        EntryError<'_, E>,
+    > {
         Ok(self.inner.iter()?.structured_value())
     }
 }
@@ -60,13 +68,15 @@ impl<'a, L: WriteLayer<'a>> Handle<L> {
         self.inner
             .put(
                 entry.key(),
-                E::Codec::encode(value).map_err(Error::CodecError)?,
+                E::Codec::encode(value).map_err(HandleError::CodecError)?,
             )
-            .map_err(Error::LayerError)
+            .map_err(HandleError::LayerError)
     }
 
-    pub fn delete<E: Entry>(&'a mut self, entry: &'a E) -> Result<(), EntryError<E>> {
-        self.inner.delete(entry.key()).map_err(Error::LayerError)
+    pub fn delete<E: Entry>(&'a mut self, entry: &'a E) -> Result<(), EntryError<'_, E>> {
+        self.inner
+            .delete(entry.key())
+            .map_err(HandleError::LayerError)
     }
 }
 

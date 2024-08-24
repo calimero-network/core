@@ -1,31 +1,33 @@
-use std::convert::Infallible;
-use std::fmt;
+use core::convert::Infallible;
+use core::fmt::{self, Debug, Formatter};
 
+use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::blobs::BlobId as PrimitiveBlobId;
 use generic_array::typenum::U32;
 
 use crate::db::Column;
 use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 
+#[derive(Clone, Copy, Debug)]
 pub struct BlobId;
 
 impl KeyComponent for BlobId {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct BlobMeta(Key<BlobId>);
 
 impl BlobMeta {
-    pub fn new(blob_id: calimero_primitives::blobs::BlobId) -> Self {
+    #[must_use]
+    pub fn new(blob_id: PrimitiveBlobId) -> Self {
         Self(Key((*blob_id).into()))
     }
 
-    pub fn blob_id(&self) -> calimero_primitives::blobs::BlobId {
+    #[must_use]
+    pub fn blob_id(&self) -> PrimitiveBlobId {
         (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
     }
 }
@@ -50,8 +52,8 @@ impl FromKeyParts for BlobMeta {
     }
 }
 
-impl fmt::Debug for BlobMeta {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for BlobMeta {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlobMeta")
             .field("id", &self.blob_id())
             .finish()

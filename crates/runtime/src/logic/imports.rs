@@ -1,6 +1,8 @@
-use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
+
+use wasmer::{Imports, Store};
 
 use super::{HostError, Location, PanicContext, VMLogic};
 
@@ -11,9 +13,10 @@ thread_local! {
     static HOST_CTX: AtomicBool = const { AtomicBool::new(false) };
 }
 
-impl<'a> VMLogic<'a> {
+impl VMLogic<'_> {
     #[allow(clippy::too_many_arguments)]
-    pub fn imports(&mut self, store: &mut wasmer::Store) -> wasmer::Imports {
+    #[allow(trivial_casts)]
+    pub fn imports(&mut self, store: &mut Store) -> Imports {
         imports! {
             store;
             logic: self;
@@ -64,40 +67,10 @@ impl<'a> VMLogic<'a> {
 macro_rules! _imports {
     ($store:ident; logic: $logic:ident; $(fn $func:ident($($arg:ident: $arg_ty:ty),*$(,)?) $(-> $returns:ty)?;)*) => {
         {
-            let mut store = $store;
-            let logic = $logic;
-
-            HOOKER.with(|hooker| {
-                hooker.call_once(|| {
-                    let prev_hook = std::panic::take_hook();
-                    std::panic::set_hook(Box::new(move |info| {
-                        if !HOST_CTX.with(|ctx| ctx.load(Ordering::Relaxed)) {
-                            return prev_hook(info);
-                        }
-                        PAYLOAD.with(|payload| {
-                            let message = match info.payload().downcast_ref::<&'static str>() {
-                                Some(message) => *message,
-                                None => match info.payload().downcast_ref::<String>() {
-                                    Some(message) => &**message,
-                                    None => "<no message>",
-                                },
-                            };
-
-                            *payload.borrow_mut() = Some(match info.location() {
-                                Some(location) => (message.to_owned(), Location::from(location)),
-                                None => (message.to_owned(), Location::Unknown),
-                            });
-                        });
-
-                        prev_hook(info);
-                    }));
-                });
-            });
-
             $(
                 #[allow(unused_parens)]
                 fn $func(
-                    mut env: wasmer::FunctionEnvMut<fragile::Fragile<*mut ()>>,
+                    mut env: wasmer::FunctionEnvMut<'_, fragile::Fragile<*mut ()>>,
                     $($arg: $arg_ty),*
                 ) -> Result<($( $returns )?), wasmer::RuntimeError> {
                     #[cfg(feature = "host-traces")]
@@ -125,9 +98,9 @@ macro_rules! _imports {
                     };
 
                     HOST_CTX.with(|ctx| ctx.store(true, Ordering::Relaxed));
-                    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let res = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
                         let (data, store) = env.data_and_store_mut();
-                        let data = unsafe { &mut *(*data.get_mut() as *mut VMLogic) };
+                        let data = unsafe { &mut *(*data.get_mut()).cast::<VMLogic<'_>>() };
 
                         data.host_functions(store).$func($($arg),*)
                     })).unwrap_or_else(|_| {
@@ -159,7 +132,37 @@ macro_rules! _imports {
                 }
             )*
 
-            let env = wasmer::FunctionEnv::new(&mut store, fragile::Fragile::new(logic as *mut _ as *mut ()));
+            let mut store = $store;
+            let logic = $logic;
+
+            HOOKER.with(|hooker| {
+                hooker.call_once(|| {
+                    let prev_hook = std::panic::take_hook();
+                    std::panic::set_hook(Box::new(move |info| {
+                        if !HOST_CTX.with(|ctx| ctx.load(Ordering::Relaxed)) {
+                            return prev_hook(info);
+                        }
+                        PAYLOAD.with(|payload| {
+                            let message = match info.payload().downcast_ref::<&'static str>() {
+                                Some(message) => *message,
+                                None => match info.payload().downcast_ref::<String>() {
+                                    Some(message) => &**message,
+                                    None => "<no message>",
+                                },
+                            };
+
+                            *payload.borrow_mut() = Some(match info.location() {
+                                Some(location) => (message.to_owned(), Location::from(location)),
+                                None => (message.to_owned(), Location::Unknown),
+                            });
+                        });
+
+                        prev_hook(info);
+                    }));
+                });
+            });
+
+            let env = wasmer::FunctionEnv::new(&mut store, fragile::Fragile::new(core::ptr::from_mut(logic).cast::<()>()));
 
             wasmer::imports! {
                 "env" => {

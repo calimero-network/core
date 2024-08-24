@@ -1,5 +1,9 @@
-use std::num::NonZeroU64;
+#![allow(single_use_lifetimes, unused_lifetimes)]
+#![allow(clippy::mem_forget)]
 
+use core::num::NonZeroU64;
+
+use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;
 use serde::Serialize;
 
@@ -14,13 +18,27 @@ mod registers;
 pub use errors::VMLogicError;
 use registers::Registers;
 
-pub type Result<T, E = errors::VMLogicError> = std::result::Result<T, E>;
+pub type VMLogicResult<T, E = VMLogicError> = Result<T, E>;
 
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct VMContext {
     pub input: Vec<u8>,
     pub executor_public_key: [u8; 32],
 }
 
+impl VMContext {
+    #[must_use]
+    pub fn new(input: Vec<u8>, executor_public_key: [u8; 32]) -> Self {
+        Self {
+            input,
+            executor_public_key,
+        }
+    }
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -40,13 +58,48 @@ pub struct VMLimits {
     // number of functions per contract
 }
 
+impl VMLimits {
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub const fn new(
+        max_memory_pages: u32,
+        max_stack_size: usize,
+        max_registers: u64,
+        max_register_size: Constrained<u64, MaxU64<{ u64::MAX - 1 }>>,
+        max_registers_capacity: u64,
+        max_logs: u64,
+        max_log_size: u64,
+        max_events: u64,
+        max_event_kind_size: u64,
+        max_event_data_size: u64,
+        max_storage_key_size: NonZeroU64,
+        max_storage_value_size: NonZeroU64,
+    ) -> Self {
+        Self {
+            max_memory_pages,
+            max_stack_size,
+            max_registers,
+            max_register_size,
+            max_registers_capacity,
+            max_logs,
+            max_log_size,
+            max_events,
+            max_event_kind_size,
+            max_event_data_size,
+            max_storage_key_size,
+            max_storage_value_size,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct VMLogic<'a> {
     storage: &'a mut dyn Storage,
     memory: Option<wasmer::Memory>,
     context: VMContext,
     limits: &'a VMLimits,
     registers: Registers,
-    returns: Option<Result<Vec<u8>, Vec<u8>>>,
+    returns: Option<VMLogicResult<Vec<u8>, Vec<u8>>>,
     logs: Vec<String>,
     events: Vec<Event>,
 }
@@ -82,15 +135,16 @@ impl<'a> VMLogic<'a> {
         .build()
     }
 
-    pub fn get_executor_identity(&mut self, register_id: u64) -> Result<()> {
+    pub fn get_executor_identity(&mut self, register_id: u64) -> VMLogicResult<()> {
         self.registers
             .set(self.limits, register_id, self.context.executor_public_key)
     }
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct Outcome {
-    pub returns: Result<Option<Vec<u8>>, FunctionCallError>,
+    pub returns: VMLogicResult<Option<Vec<u8>>, FunctionCallError>,
     pub logs: Vec<String>,
     pub events: Vec<Event>,
     // execution runtime
@@ -98,12 +152,14 @@ pub struct Outcome {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct Event {
     pub kind: String,
     pub data: Vec<u8>,
 }
 
-impl<'a> VMLogic<'a> {
+impl VMLogic<'_> {
+    #[must_use]
     pub fn finish(self, err: Option<FunctionCallError>) -> Outcome {
         let returns = match err {
             Some(err) => Err(err),
@@ -131,24 +187,24 @@ pub struct VMHostFunctions<'a> {
     memory: wasmer::MemoryView<'this>,
 }
 
-impl<'a> VMHostFunctions<'a> {
-    fn read_guest_memory(&self, ptr: u64, len: u64) -> Result<Vec<u8>> {
-        let mut buf = vec![0; len as usize];
+impl VMHostFunctions<'_> {
+    fn read_guest_memory(&self, ptr: u64, len: u64) -> VMLogicResult<Vec<u8>> {
+        let mut buf = vec![0; usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?];
 
         self.borrow_memory().read(ptr, &mut buf)?;
 
         Ok(buf)
     }
 
-    fn get_string(&self, ptr: u64, len: u64) -> Result<String> {
+    fn get_string(&self, ptr: u64, len: u64) -> VMLogicResult<String> {
         let buf = self.read_guest_memory(ptr, len)?;
 
         String::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
     }
 }
 
-impl<'a> VMHostFunctions<'a> {
-    pub fn panic(&self, file_ptr: u64, file_len: u64, line: u32, column: u32) -> Result<()> {
+impl VMHostFunctions<'_> {
+    pub fn panic(&self, file_ptr: u64, file_len: u64, line: u32, column: u32) -> VMLogicResult<()> {
         let file = self.get_string(file_ptr, file_len)?;
         Err(HostError::Panic {
             context: PanicContext::Guest,
@@ -166,7 +222,7 @@ impl<'a> VMHostFunctions<'a> {
         file_len: u64,
         line: u32,
         column: u32,
-    ) -> Result<()> {
+    ) -> VMLogicResult<()> {
         let message = self.get_string(msg_ptr, msg_len)?;
         let file = self.get_string(file_ptr, file_len)?;
 
@@ -178,7 +234,7 @@ impl<'a> VMHostFunctions<'a> {
         .into())
     }
 
-    pub fn register_len(&self, register_id: u64) -> Result<u64> {
+    pub fn register_len(&self, register_id: u64) -> VMLogicResult<u64> {
         Ok(self
             .borrow_logic()
             .registers
@@ -186,26 +242,26 @@ impl<'a> VMHostFunctions<'a> {
             .unwrap_or(u64::MAX))
     }
 
-    pub fn read_register(&mut self, register_id: u64, ptr: u64, len: u64) -> Result<u32> {
+    pub fn read_register(&self, register_id: u64, ptr: u64, len: u64) -> VMLogicResult<u32> {
         let data = self.borrow_logic().registers.get(register_id)?;
-        if data.len() != len as usize {
+        if data.len() != usize::try_from(len).map_err(|_| HostError::IntegerOverflow)? {
             return Ok(0);
         }
         self.borrow_memory().write(ptr, data)?;
         Ok(1)
     }
 
-    pub fn input(&mut self, register_id: u64) -> Result<()> {
+    pub fn input(&mut self, register_id: u64) -> VMLogicResult<()> {
         self.with_logic_mut(|logic| {
             logic
                 .registers
-                .set(logic.limits, register_id, &logic.context.input[..])
+                .set(logic.limits, register_id, &*logic.context.input)
         })?;
 
         Ok(())
     }
 
-    pub fn value_return(&mut self, tag: u64, ptr: u64, len: u64) -> Result<()> {
+    pub fn value_return(&mut self, tag: u64, ptr: u64, len: u64) -> VMLogicResult<()> {
         let buf = self.read_guest_memory(ptr, len)?;
 
         let result = match tag {
@@ -219,10 +275,12 @@ impl<'a> VMHostFunctions<'a> {
         Ok(())
     }
 
-    pub fn log_utf8(&mut self, ptr: u64, len: u64) -> Result<()> {
+    pub fn log_utf8(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
         let logic = self.borrow_logic();
 
-        if logic.logs.len() >= logic.limits.max_logs as usize {
+        if logic.logs.len()
+            >= usize::try_from(logic.limits.max_logs).map_err(|_| HostError::IntegerOverflow)?
+        {
             return Err(HostError::LogsOverflow.into());
         }
 
@@ -239,7 +297,7 @@ impl<'a> VMHostFunctions<'a> {
         kind_len: u64,
         data_ptr: u64,
         data_len: u64,
-    ) -> Result<()> {
+    ) -> VMLogicResult<()> {
         let logic = self.borrow_logic();
 
         if kind_len > logic.limits.max_event_kind_size {
@@ -250,7 +308,9 @@ impl<'a> VMHostFunctions<'a> {
             return Err(HostError::EventDataSizeOverflow.into());
         }
 
-        if logic.events.len() >= logic.limits.max_events as usize {
+        if logic.events.len()
+            >= usize::try_from(logic.limits.max_events).map_err(|_| HostError::IntegerOverflow)?
+        {
             return Err(HostError::EventsOverflow.into());
         }
 
@@ -262,7 +322,12 @@ impl<'a> VMHostFunctions<'a> {
         Ok(())
     }
 
-    pub fn storage_read(&mut self, key_ptr: u64, key_len: u64, register_id: u64) -> Result<u32> {
+    pub fn storage_read(
+        &mut self,
+        key_ptr: u64,
+        key_len: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
         let logic = self.borrow_logic();
 
         if key_len > logic.limits.max_storage_key_size.get() {
@@ -287,7 +352,7 @@ impl<'a> VMHostFunctions<'a> {
         value_ptr: u64,
         value_len: u64,
         register_id: u64,
-    ) -> Result<u32> {
+    ) -> VMLogicResult<u32> {
         let logic = self.borrow_logic();
 
         if key_len > logic.limits.max_storage_key_size.get() {
@@ -324,26 +389,27 @@ impl<'a> VMHostFunctions<'a> {
         body_ptr: u64,
         body_len: u64,
         register_id: u64,
-    ) -> Result<u32> {
+    ) -> VMLogicResult<u32> {
         let url = self.get_string(url_ptr, url_len)?;
         let method = self.get_string(method_ptr, method_len)?;
         let headers = self.read_guest_memory(headers_ptr, headers_len)?;
 
-        // Safety: The `fetch` function cannot be directly called by applications.
+        // Note: The `fetch` function cannot be directly called by applications.
         // Therefore, the headers are generated exclusively by our code, ensuring
         // that it is safe to deserialize them.
-        let headers: Vec<(String, String)> = borsh::from_slice(&headers).unwrap();
+        let headers: Vec<(String, String)> =
+            from_borsh_slice(&headers).map_err(|_| HostError::DeserializationError)?;
         let body = self.read_guest_memory(body_ptr, body_len)?;
         let mut request = ureq::request(&method, &url);
 
-        for (key, value) in headers.iter() {
+        for (key, value) in &headers {
             request = request.set(key, value);
         }
 
-        let response = if !body.is_empty() {
-            request.send_bytes(&body)
-        } else {
+        let response = if body.is_empty() {
             request.call()
+        } else {
+            request.send_bytes(&body)
         };
 
         let (status, data) = match response {

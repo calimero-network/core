@@ -4,7 +4,7 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, env};
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Default, BorshSerialize, BorshDeserialize)]
+#[derive(BorshDeserialize, BorshSerialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
     items: HashMap<String, String>,
