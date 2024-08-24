@@ -2,6 +2,7 @@
 
 use core::future::{pending, Future};
 use core::pin::Pin;
+use std::str::FromStr;
 
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ApplicationConfig;
@@ -9,7 +10,9 @@ use calimero_context::ContextManager;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
-use calimero_node_primitives::{CallError, MutateCallError, NodeType, QueryCallError};
+use calimero_node_primitives::{
+    CallError, ExecutionRequest, Finality, MutateCallError, NodeType, QueryCallError,
+};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ApplicationEvent, ApplicationEventPayload, ExecutedTransactionPayload, NodeEvent, OutcomeEvent,
@@ -118,8 +121,15 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         FileSystem::new(&config.application.dir).await?,
     );
 
-    let ctx_manager =
-        ContextManager::start(store.clone(), blob_manager, network_client.clone()).await?;
+    let (server_sender, mut server_receiver) = mpsc::channel(32);
+
+    let ctx_manager = ContextManager::start(
+        store.clone(),
+        blob_manager,
+        server_sender.clone(),
+        network_client.clone(),
+    )
+    .await?;
 
     let mut node = Node::new(
         &config,
@@ -128,8 +138,6 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         ctx_manager.clone(),
         store.clone(),
     );
-
-    let (server_sender, mut server_receiver) = mpsc::channel(32);
 
     #[allow(trivial_casts)]
     let mut server = Box::pin(calimero_server::start(
@@ -179,9 +187,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
                 server = Box::pin(pending());
                 continue;
             }
-            Some((context_id, method, payload, write, executor_public_key, outcome_sender)) = server_receiver.recv() => {
-                node.handle_call(context_id, method, payload, write, executor_public_key, outcome_sender).await;
-            }
+            Some(request) = server_receiver.recv() => node.handle_call(request).await,
             _ = catchup_interval_tick.tick() => node.handle_interval_catchup().await,
         }
     }
@@ -229,16 +235,15 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 .map_err(|_| eyre!("Executor public key must be 32 bytes"))?
                         };
 
-                        let tx_hash = match node
-                            .call_mutate(
-                                context,
-                                method.to_owned(),
-                                payload.as_bytes().to_owned(),
-                                executor_public_key,
-                                outcome_sender,
-                            )
-                            .await
-                        {
+                        let tx = Transaction::new(
+                            context.id,
+                            method.to_owned(),
+                            payload.as_bytes().to_owned(),
+                            context.last_transaction_hash,
+                            executor_public_key,
+                        );
+
+                        let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {
                             Ok(tx_hash) => tx_hash,
                             Err(e) => {
                                 println!("{IND} Failed to execute transaction: {e}");
@@ -415,18 +420,18 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             let mut iter = args.split(' ');
                             let type_ = iter.next()?;
                             let resource = iter.next()?;
-                            let version = iter.next();
-                            let metadata = iter.next()?.as_bytes().to_vec();
+                            let version = iter.next()?;
+                            let metadata = iter.next();
 
                             Some((type_, resource, version, metadata))
                         }) else {
                             println!(
-                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [version] <metadata>"
+                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> <version> [metadata]"
                             );
                             break 'done;
                         };
 
-                        let Ok(version) = version.map(str::parse).transpose() else {
+                        let Ok(version) = version.parse() else {
                             println!("{IND} Invalid version: {version:?}");
                             break 'done;
                         };
@@ -441,14 +446,20 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 println!("{IND} Downloading application..");
 
                                 node.ctx_manager
-                                    .install_application_from_url(url, version, Vec::new())
+                                    .install_application_from_url(url, Some(version), Vec::new())
                                     .await?
                             }
                             "file" => {
                                 let path = Utf8PathBuf::from(resource);
 
                                 node.ctx_manager
-                                    .install_application_from_path(path, version, metadata)
+                                    .install_application_from_path(
+                                        path,
+                                        Some(version),
+                                        metadata
+                                            .map(|x| x.as_bytes().to_owned())
+                                            .unwrap_or_default(),
+                                    )
                                     .await?
                             }
                             unknown => {
@@ -571,13 +582,16 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         println!("{IND} Left context {context_id}");
                     }
                     "create" => {
-                        let Some((application_id, private_key)) = args.and_then(|args| {
-                            let mut iter = args.split(' ');
-                            let application = iter.next()?;
-                            let private_key = iter.next();
-                            Some((application, private_key))
-                        }) else {
-                            println!("{IND} Usage: context create <application_id> [private_key]");
+                        let Some((application_id, context_id, mut params)) =
+                            args.and_then(|args| {
+                                let mut iter = args.split(' ');
+                                let application = iter.next()?;
+                                let context_id = iter.next();
+                                let params = iter.next();
+                                Some((application, context_id, params))
+                            })
+                        else {
+                            println!("{IND} Usage: context create <application_id> [context_id] [initialization params]");
                             break 'done;
                         };
 
@@ -586,8 +600,35 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             break 'done;
                         };
 
-                        let context_create_result =
-                            create_context(&node.ctx_manager, application_id, private_key).await?;
+                        let (context_id, params) = 'infer: {
+                            let Some(context_id) = context_id else {
+                                break 'infer (None, None);
+                            };
+
+                            if let Ok(context_id) = context_id.parse() {
+                                break 'infer (Some(context_id), params);
+                            };
+
+                            match std::mem::replace(&mut params, Some(context_id))
+                                .map(FromStr::from_str)
+                            {
+                                Some(Ok(context_id)) => break 'infer (Some(context_id), params),
+                                None => break 'infer (None, params),
+                                _ => {}
+                            };
+
+                            println!("{IND} Invalid context ID: {}", context_id);
+                            break 'done;
+                        };
+
+                        let context_create_result = create_context(
+                            &node.ctx_manager,
+                            application_id,
+                            None,
+                            context_id,
+                            params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                        )
+                        .await?;
 
                         println!("{IND} Created context {}", context_create_result.context.id);
                     }
@@ -847,7 +888,7 @@ impl Node {
 
                     let _ = self
                         .validate_pending_transaction(
-                            context,
+                            &context,
                             pool_entry.transaction,
                             transaction_hash,
                         )
@@ -899,7 +940,7 @@ impl Node {
 
     async fn validate_pending_transaction(
         &mut self,
-        context: Context,
+        context: &Context,
         transaction: Transaction,
         transaction_hash: Hash,
     ) -> EyreResult<bool> {
@@ -918,7 +959,7 @@ impl Node {
             )
             .await?;
 
-            self.persist_transaction(&context, transaction.clone(), transaction_hash)?;
+            self.persist_transaction(context, transaction, transaction_hash)?;
 
             Ok(true)
         } else {
@@ -945,66 +986,87 @@ impl Node {
         Ok(())
     }
 
-    pub async fn handle_call(
-        &mut self,
-        context_id: ContextId,
-        method: String,
-        payload: Vec<u8>,
-        write: bool,
-        executor_public_key: [u8; 32],
-        outcome_sender: oneshot::Sender<Result<Outcome, CallError>>,
-    ) {
-        let Ok(Some(context)) = self.ctx_manager.get_context(&context_id) else {
-            drop(outcome_sender.send(Err(CallError::ContextNotFound { context_id })));
+    pub async fn handle_call(&mut self, request: ExecutionRequest) {
+        let Ok(Some(context)) = self.ctx_manager.get_context(&request.context_id) else {
+            drop(request.outcome_sender.send(Err(CallError::ContextNotFound {
+                context_id: request.context_id,
+            })));
             return;
         };
 
-        if write {
-            let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
+        if let Some(finality) = request.finality {
+            let transaction = Transaction::new(
+                context.id,
+                request.method,
+                request.payload,
+                context.last_transaction_hash,
+                request.executor_public_key,
+            );
 
-            if let Err(err) = self
-                .call_mutate(
-                    context,
-                    method,
-                    payload,
-                    executor_public_key,
-                    inner_outcome_sender,
+            match finality {
+                Finality::Local => {
+                    let task = async {
+                        let hash = Hash::hash_json(&transaction)?;
+
+                        self.execute_transaction(&context, transaction, hash).await
+                    };
+
+                    drop(request.outcome_sender.send(task.await.map_err(|err| {
+                        error!(%err, "failed to execute local transaction");
+
+                        CallError::Mutate(MutateCallError::InternalError)
+                    })));
+
+                    return;
+                }
+                Finality::Global => {
+                    let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
+
+                    if let Err(err) = self
+                        .call_mutate(&context, transaction, inner_outcome_sender)
+                        .await
+                    {
+                        drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
+                        return;
+                    }
+
+                    drop(spawn(async move {
+                        match inner_outcome_receiver.await {
+                            Ok(outcome) => match outcome {
+                                Ok(outcome) => {
+                                    drop(request.outcome_sender.send(Ok(outcome)));
+                                }
+                                Err(err) => {
+                                    drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
+                                }
+                            },
+                            Err(err) => {
+                                error!("Failed to receive inner outcome of a transaction: {}", err);
+                                drop(
+                                    request.outcome_sender.send(Err(CallError::Mutate(
+                                        MutateCallError::InternalError,
+                                    ))),
+                                );
+                            }
+                        }
+                    }));
+                }
+            }
+        } else {
+            match self
+                .call_query(
+                    &context,
+                    request.method,
+                    request.payload,
+                    request.executor_public_key,
                 )
                 .await
             {
-                drop(outcome_sender.send(Err(CallError::Mutate(err))));
-                return;
-            }
-
-            drop(spawn(async move {
-                match inner_outcome_receiver.await {
-                    Ok(outcome) => match outcome {
-                        Ok(outcome) => {
-                            drop(outcome_sender.send(Ok(outcome)));
-                        }
-                        Err(err) => {
-                            drop(outcome_sender.send(Err(CallError::Mutate(err))));
-                        }
-                    },
-                    Err(err) => {
-                        error!("Failed to receive inner outcome of a transaction: {}", err);
-                        drop(
-                            outcome_sender
-                                .send(Err(CallError::Mutate(MutateCallError::InternalError))),
-                        );
-                    }
-                }
-            }));
-        } else {
-            match self
-                .call_query(context, method, payload, executor_public_key)
-                .await
-            {
                 Ok(outcome) => {
-                    drop(outcome_sender.send(Ok(outcome)));
+                    drop(request.outcome_sender.send(Ok(outcome)));
                 }
                 Err(err) => {
-                    drop(outcome_sender.send(Err(CallError::Query(err))));
+                    drop(request.outcome_sender.send(Err(CallError::Query(err))));
                 }
             };
         }
@@ -1012,7 +1074,7 @@ impl Node {
 
     async fn call_query(
         &mut self,
-        context: Context,
+        context: &Context,
         method: String,
         payload: Vec<u8>,
         executor_public_key: [u8; 32],
@@ -1037,12 +1099,14 @@ impl Node {
 
     async fn call_mutate(
         &mut self,
-        context: Context,
-        method: String,
-        payload: Vec<u8>,
-        executor_public_key: [u8; 32],
+        context: &Context,
+        transaction: Transaction,
         outcome_sender: oneshot::Sender<Result<Outcome, MutateCallError>>,
     ) -> Result<Hash, MutateCallError> {
+        if context.id != transaction.context_id {
+            return Err(MutateCallError::TransactionRejected);
+        }
+
         if self.typ.is_coordinator() {
             return Err(MutateCallError::InvalidNodeType {
                 node_type: self.typ,
@@ -1067,14 +1131,6 @@ impl Node {
         {
             return Err(MutateCallError::NoConnectedPeers);
         }
-
-        let transaction = Transaction::new(
-            context.id,
-            method,
-            payload,
-            context.last_transaction_hash,
-            executor_public_key,
-        );
 
         self.push_action(context.id, PeerAction::Transaction(transaction.clone()))
             .await
@@ -1122,7 +1178,7 @@ impl Node {
         }
 
         let outcome = self
-            .execute_transaction(context, transaction, transaction_hash)
+            .execute_transaction(&context, transaction, transaction_hash)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute transaction");
@@ -1134,13 +1190,13 @@ impl Node {
 
     async fn execute_transaction(
         &mut self,
-        context: Context,
+        context: &Context,
         transaction: Transaction,
         hash: Hash,
     ) -> EyreResult<Outcome> {
         let outcome = self
             .execute(
-                context.clone(),
+                context,
                 Some(hash),
                 transaction.method.clone(),
                 transaction.payload.clone(),
@@ -1148,7 +1204,7 @@ impl Node {
             )
             .await?;
 
-        self.persist_transaction(&context, transaction, hash)?;
+        self.persist_transaction(context, transaction, hash)?;
 
         Ok(outcome)
     }
@@ -1194,7 +1250,7 @@ impl Node {
 
     pub async fn execute(
         &mut self,
-        context: Context,
+        context: &Context,
         hash: Option<Hash>,
         method: String,
         payload: Vec<u8>,

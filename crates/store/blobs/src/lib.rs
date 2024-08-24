@@ -5,24 +5,38 @@ use std::io::ErrorKind as IoErrorKind;
 
 use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;
+use calimero_primitives::hash::Hash;
 use calimero_store::key::BlobMeta as BlobMetaKey;
 use calimero_store::types::BlobMeta;
 use calimero_store::Store as DataStore;
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Report, Result as EyreResult};
-use futures_util::{pin_mut, Stream, StreamExt, TryStreamExt};
+use futures_util::io::BufReader;
+use futures_util::{pin_mut, AsyncRead, AsyncReadExt, Stream, StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 use tokio::fs::{create_dir_all, read as async_read, try_exists, write as async_write};
 
-const CHUNK_SIZE: usize = 1 << 18; // 256 KiB
+const CHUNK_SIZE: usize = 1 << 20; // 1MiB
 
-// const MAX_LINKS_PER_BLOB: usize = 256;
+// const MAX_LINKS_PER_BLOB: usize = 128;
 
 #[derive(Clone, Debug)]
 pub struct BlobManager {
     data_store: DataStore,
     blob_store: FileSystem, // Arc<dyn BlobRepository>
+}
+
+#[derive(Debug)]
+enum Value {
+    Full { hash: Hash, size: usize },
+    Part { id: BlobId, _size: usize },
+}
+
+#[derive(Default)]
+struct State {
+    digest: Sha256,
+    size: usize,
 }
 
 impl BlobManager {
@@ -43,64 +57,114 @@ impl BlobManager {
         Blob::new(id, self.clone())
     }
 
-    pub async fn put<S, T, E>(&self, stream: S) -> EyreResult<BlobId>
+    pub async fn put<T>(&self, stream: T) -> EyreResult<BlobId>
     where
-        // todo! change this to AsyncRead
-        S: Stream<Item = Result<T, E>>,
-        T: AsRef<[u8]>,
-        E: Into<Report>,
+        T: AsyncRead,
     {
-        let chunks = typed_stream::<EyreResult<_>>(try_stream!({
-            pin_mut!(stream);
+        self.put_sized(None, stream).await
+    }
 
-            // todo! use a bufreader
-            while let Some(blob) = stream.try_next().await? {
-                let blob = blob.as_ref();
+    pub async fn put_sized<T>(&self, size_hint: Option<u64>, stream: T) -> EyreResult<BlobId>
+    where
+        T: AsyncRead,
+    {
+        let stream = BufReader::new(stream);
 
-                for chunk in blob.chunks(CHUNK_SIZE) {
-                    let id = BlobId::hash(chunk);
+        pin_mut!(stream);
 
-                    self.data_store.handle().put(
-                        &BlobMetaKey::new(id),
-                        &BlobMeta::new(0, Vec::new().into_boxed_slice()),
-                    )?;
-                    self.blob_store.put(id, chunk).await?;
+        let blobs = try_stream!({
+            let mut buf = {
+                let mut buf = Vec::with_capacity(CHUNK_SIZE);
+                unsafe { buf.set_len(CHUNK_SIZE) };
+                buf.into_boxed_slice()
+            };
 
-                    yield id;
+            let mut file = State::default();
+            let mut blob = State::default();
+
+            loop {
+                let bytes = stream.read(&mut buf[blob.size..]).await?;
+
+                let finished = bytes == 0;
+
+                if !finished {
+                    let chunk = &buf[blob.size..blob.size + bytes];
+
+                    file.digest.update(chunk);
+                    blob.digest.update(chunk);
+
+                    blob.size += bytes;
+
+                    if blob.size != buf.len() {
+                        continue;
+                    }
                 }
 
-                // let mut chunks = blob
-                //     .chunks(CHUNK_SIZE)
-                //     .map(|chunk| self.blob_store.put(BlobId::hash(&chunk), chunk))
-                //     .collect::<FuturesUnordered<_>>();
+                if blob.size == 0 {
+                    break;
+                }
 
-                // while let Some(_) = chunks.try_next().await? {}
+                let id = BlobId::from(*AsRef::<[u8; 32]>::as_ref(&blob.digest.finalize()));
+
+                self.data_store.handle().put(
+                    &BlobMetaKey::new(id),
+                    &BlobMeta::new(blob.size, *id, Default::default()),
+                )?;
+
+                self.blob_store.put(id, &buf[..blob.size]).await?;
+
+                file.size += blob.size;
+
+                yield Value::Part {
+                    id,
+                    _size: blob.size,
+                };
+
+                if finished {
+                    break;
+                }
+
+                blob = State::default();
             }
-        }));
 
-        // let ids = ids.chunks(MAX_LINKS_PER_BLOB);
-        pin_mut!(chunks);
+            yield Value::Full {
+                hash: Hash::from(*(AsRef::<[u8; 32]>::as_ref(&file.digest.finalize()))),
+                size: file.size,
+            };
+        });
 
-        let mut links = Vec::new();
+        let blobs = typed_stream::<EyreResult<_>>(blobs).peekable();
+        pin_mut!(blobs);
+
+        let mut links = Vec::with_capacity(
+            size_hint
+                .and_then(|s| usize::try_from(s).map(|s| s / CHUNK_SIZE).ok())
+                .unwrap_or_default(),
+        );
         let mut digest = Sha256::new();
 
-        while let Some(id) = chunks.try_next().await? {
+        while let Some(Value::Part { id, _size }) = blobs
+            .as_mut()
+            .next_if(|v| matches!(v, Ok(Value::Part { .. })))
+            .await
+            .transpose()?
+        {
             links.push(BlobMetaKey::new(id));
             digest.update(id.as_ref());
         }
+
+        let Some(Value::Full { hash, size }) = blobs.try_next().await? else {
+            unreachable!("the root should always be emitted");
+        };
 
         let id = BlobId::from(*(AsRef::<[u8; 32]>::as_ref(&digest.finalize())));
 
         self.data_store.handle().put(
             &BlobMetaKey::new(id),
-            &BlobMeta::new(
-                0,
-                links.into_boxed_slice(),
-                // todo! hash of the blob data
-            ),
+            &BlobMeta::new(size, *hash, links.into_boxed_slice()),
         )?;
 
-        Ok(id) // todo!: Ok((id, Blob { size, hash }::{fn stream()}))
+        Ok(id) // todo!: Ok(Blob { id, size, hash }::{fn stream()})
     }
 }
 

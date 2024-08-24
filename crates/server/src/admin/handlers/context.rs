@@ -13,12 +13,14 @@ use calimero_server_primitives::admin::{
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
+use tracing::error;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
 use crate::admin::utils::context::{create_context, join_context};
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContextObject {
     context: Context,
 }
@@ -47,6 +49,70 @@ pub async fn get_context_handler(
                 },
             }
             .into_response(),
+            None => ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "Context not found".into(),
+            }
+            .into_response(),
+        },
+        Err(err) => err.into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GetContextIdentitiesResponse {
+    data: ContextIdentities,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextIdentities {
+    identities: Vec<String>,
+}
+
+pub async fn get_context_identities_handler(
+    Path(context_id): Path<ContextId>,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    let context = state
+        .ctx_manager
+        .get_context(&context_id)
+        .map_err(|err| parse_api_error(err).into_response());
+
+    match context {
+        Ok(ctx) => match ctx {
+            Some(context) => {
+                let context_identities = state
+                    .ctx_manager
+                    .get_context_owned_identities(context.id)
+                    .map_err(|err| parse_api_error(err).into_response());
+
+                match context_identities {
+                    Ok(identities) => {
+                        let context_identities = identities
+                            .into_iter()
+                            .map(|identity| bs58::encode(identity.0).into_string())
+                            .collect::<Vec<String>>();
+
+                        ApiResponse {
+                            payload: GetContextIdentitiesResponse {
+                                data: ContextIdentities {
+                                    identities: context_identities,
+                                },
+                            },
+                        }
+                        .into_response()
+                    }
+                    Err(err) => {
+                        error!("Error getting context identities: {:?}", err);
+                        ApiError {
+                            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                            message: "Something went wrong".into(),
+                        }
+                        .into_response()
+                    }
+                }
+            }
             None => ApiError {
                 status_code: StatusCode::NOT_FOUND,
                 message: "Context not found".into(),
@@ -176,9 +242,15 @@ pub async fn create_context_handler(
     Json(req): Json<CreateContextRequest>,
 ) -> impl IntoResponse {
     //TODO enable providing private key in the request
-    let result = create_context(&state.ctx_manager, req.application_id, None)
-        .await
-        .map_err(parse_api_error);
+    let result = create_context(
+        &state.ctx_manager,
+        req.application_id,
+        None,
+        req.context_id,
+        req.initialization_params,
+    )
+    .await
+    .map_err(parse_api_error);
 
     match result {
         Ok(context_create_result) => ApiResponse {

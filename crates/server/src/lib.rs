@@ -18,7 +18,7 @@ use tokio::task::JoinSet;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
 
-use crate::admin::service::setup;
+use crate::admin::service::{setup, site};
 use crate::certificates::get_certificate;
 
 pub mod certificates;
@@ -106,6 +106,10 @@ pub async fn start(
     #[cfg(feature = "admin")]
     {
         if let Some((api_path, router)) = setup(&config, store.clone(), ctx_manager) {
+            if let Some((site_path, serve_dir)) = site(&config)? {
+                app = app.nest_service(site_path, serve_dir);
+            }
+
             app = app.nest(api_path, router);
             serviced = true;
         }

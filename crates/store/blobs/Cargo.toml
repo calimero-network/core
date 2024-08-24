@@ -8,12 +8,13 @@ license.workspace = true
 
 [[example]]
 name = "blobstore"
+required-features = ["examples"]
 
 [dependencies]
 async-stream.workspace = true
 camino.workspace = true
 eyre.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, features = ["io"] }
 sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs"] }
@@ -25,7 +26,14 @@ calimero-store = { path = "..", features = ["datatypes"] }
 tokio-util.workspace = true
 
 [features]
-examples = ["tokio/io-std", "tokio/io-util", "tokio/macros", "tokio/rt-multi-thread", "tokio-util/io"]
+examples = [
+  "tokio/io-std",
+  "tokio/io-util",
+  "tokio/macros",
+  "tokio/rt-multi-thread",
+  "tokio-util/io",
+  "tokio-util/compat",
+]
 
 [lints]
 workspace = true

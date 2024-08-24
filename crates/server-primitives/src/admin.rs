@@ -57,6 +57,11 @@ impl ListApplicationsResponse {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GetApplicationDetailsResponse {
+    pub data: Application,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct InstallApplicationResponse {
@@ -277,17 +282,27 @@ impl GetContextsResponse {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct CreateContextRequest {
     pub application_id: ApplicationId,
+    pub context_id: Option<ContextId>,
+    pub initialization_params: Vec<u8>,
 }
 
 impl CreateContextRequest {
     #[must_use]
-    pub const fn new(application_id: ApplicationId) -> Self {
-        Self { application_id }
+    pub const fn new(
+        application_id: ApplicationId,
+        context_id: Option<ContextId>,
+        initialization_params: Vec<u8>,
+    ) -> Self {
+        Self {
+            application_id,
+            context_id,
+            initialization_params,
+        }
     }
 }
 

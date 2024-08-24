@@ -8,27 +8,29 @@ use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
-use axum::{Extension, Json, Router};
+use axum::{Extension, Router};
 use calimero_context::ContextManager;
-use calimero_server_primitives::admin::{
-    InstallApplicationRequest, InstallApplicationResponse, ListApplicationsResponse,
-};
 use calimero_store::Store;
-use eyre::Report;
+use eyre::{Report, Result as EyreResult};
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
+use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::add_client_key::add_client_key_handler;
-use crate::admin::handlers::applications::{get_application, install_dev_application_handler};
+use crate::admin::handlers::applications::{
+    get_application, get_application_details_handler, install_application_handler,
+    install_dev_application_handler, list_applications_handler,
+};
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
     create_context_handler, delete_context_handler, get_context_client_keys_handler,
-    get_context_handler, get_context_storage_handler, get_context_users_handler,
-    get_contexts_handler, join_context_handler, update_application_id,
+    get_context_handler, get_context_identities_handler, get_context_storage_handler,
+    get_context_users_handler, get_contexts_handler, join_context_handler, update_application_id,
 };
 use crate::admin::handlers::fetch_did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
@@ -84,6 +86,10 @@ pub(crate) fn setup(
         .route("/root-key", post(create_root_key_handler))
         .route("/install-application", post(install_application_handler))
         .route("/applications", get(list_applications_handler))
+        .route(
+            "/applications/:app_id",
+            get(get_application_details_handler),
+        )
         .route("/did", get(fetch_did_handler))
         .route("/contexts", post(create_context_handler))
         .route("/contexts/:context_id", delete(delete_context_handler))
@@ -100,6 +106,11 @@ pub(crate) fn setup(
             "/contexts/:context_id/storage",
             get(get_context_storage_handler),
         )
+        .route(
+            "/contexts/:context_id/identities",
+            get(get_context_identities_handler),
+        )
+        .route("/contexts/:context_id/join", post(join_context_handler))
         .route("/contexts/:context_id/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
@@ -134,6 +145,26 @@ pub(crate) fn setup(
         .layer(session_layer);
 
     Some((admin_path, admin_router))
+}
+
+pub(crate) fn site(
+    config: &ServerConfig,
+) -> EyreResult<Option<(&'static str, ServeDir<SetStatus<ServeFile>>)>> {
+    let _config = match &config.admin {
+        Some(config) if config.enabled => config,
+        _ => {
+            info!("Admin site is disabled");
+            return Ok(None);
+        }
+    };
+    let path = "/admin-dashboard";
+
+    let react_static_files_path = "./node-ui/build";
+    let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
+        ServeFile::new(format!("{}/index.html", react_static_files_path)),
+    );
+
+    Ok(Some((path, react_app_serve_dir)))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -215,35 +246,6 @@ async fn health_check_handler() -> impl IntoResponse {
         },
     }
     .into_response()
-}
-
-async fn install_application_handler(
-    Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<InstallApplicationRequest>,
-) -> impl IntoResponse {
-    match state
-        .ctx_manager
-        .install_application_from_url(req.url, req.version, req.metadata /*, req.hash */)
-        .await
-    {
-        Ok(application_id) => ApiResponse {
-            payload: InstallApplicationResponse::new(application_id),
-        }
-        .into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
-}
-
-async fn list_applications_handler(
-    Extension(state): Extension<Arc<AdminState>>,
-) -> impl IntoResponse {
-    match state.ctx_manager.list_installed_applications() {
-        Ok(applications) => ApiResponse {
-            payload: ListApplicationsResponse::new(applications),
-        }
-        .into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
 }
 
 async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {

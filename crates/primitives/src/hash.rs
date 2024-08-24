@@ -72,13 +72,16 @@ impl Hash {
     // todo! as_str(&self, buf: &mut [u8; N]) -> &str
     #[must_use]
     pub fn as_str(&self) -> &str {
-        let (len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
+        let (_len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
 
-        if *len == 0 {
-            *len = bs58::encode(&self.bytes).onto(&mut bs58[..]).unwrap();
+        let mut len = *_len;
+
+        if len == 0 {
+            len = bs58::encode(&self.bytes).onto(&mut bs58[..]).unwrap();
+            *_len = len;
         }
 
-        from_utf8(&bs58[..*len]).unwrap()
+        from_utf8(&bs58[..len]).unwrap()
     }
 
     fn from_str(s: &str) -> Result<Self, Option<Bs58Error>> {

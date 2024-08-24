@@ -18,8 +18,13 @@ pub async fn create_context(
     ctx_manager: &ContextManager,
     application_id: ApplicationId,
     private_key: Option<&str>,
+    context_id: Option<ContextId>,
+    initialization_params: Vec<u8>,
 ) -> Result<ContextCreateResult, EyreError> {
-    let context_id = generate_context_id();
+    let context_id = match context_id {
+        Some(context_id) => context_id,
+        None => generate_context_id(),
+    };
     let context = Context::new(context_id, application_id, Hash::default());
 
     let initial_identity = if let Some(private_key) = private_key {
@@ -43,7 +48,7 @@ pub async fn create_context(
     };
 
     ctx_manager
-        .create_context(&context, initial_identity)
+        .create_context(&context, initial_identity, initialization_params)
         .await?;
 
     let context_create_result = ContextCreateResult {

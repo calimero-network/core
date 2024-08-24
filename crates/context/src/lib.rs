@@ -4,11 +4,12 @@ use std::sync::Arc;
 use calimero_blobstore::BlobManager;
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
+use calimero_node_primitives::{ExecutionRequest, Finality, ServerSender};
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::KeyPair;
+use calimero_primitives::identity::{KeyPair, PublicKey};
 use calimero_store::key::{
     ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
@@ -21,8 +22,8 @@ use futures_util::TryStreamExt;
 use reqwest::{Client, Url};
 use semver::Version;
 use tokio::fs::File;
-use tokio::sync::RwLock;
-use tokio_util::io::ReaderStream;
+use tokio::sync::{oneshot, RwLock};
+use tokio_util::compat::TokioAsyncReadCompatExt;
 use tracing::info;
 
 pub mod config;
@@ -31,7 +32,8 @@ pub mod config;
 pub struct ContextManager {
     pub store: Store,
     pub blob_manager: BlobManager,
-    pub network_client: NetworkClient,
+    network_client: NetworkClient,
+    server_sender: ServerSender,
     state: Arc<RwLock<State>>,
 }
 
@@ -44,12 +46,14 @@ impl ContextManager {
     pub async fn start(
         store: Store,
         blob_manager: BlobManager,
+        server_sender: ServerSender,
         network_client: NetworkClient,
     ) -> EyreResult<Self> {
         let this = Self {
             store,
             blob_manager,
             network_client,
+            server_sender,
             state: Arc::default(),
         };
 
@@ -107,8 +111,22 @@ impl ContextManager {
         &self,
         context: &Context,
         initial_identity: KeyPair,
+        initialization_params: Vec<u8>,
     ) -> EyreResult<()> {
         self.add_context(context)?;
+
+        let (tx, _) = oneshot::channel();
+
+        self.server_sender
+            .send(ExecutionRequest {
+                context_id: context.id,
+                method: "init".to_owned(),
+                payload: initialization_params,
+                executor_public_key: initial_identity.public_key.0,
+                outcome_sender: tx,
+                finality: Some(Finality::Local),
+            })
+            .await?;
 
         let mut handle = self.store.handle();
 
@@ -212,7 +230,7 @@ impl ContextManager {
         Ok(true)
     }
 
-    pub fn get_context_ids(&self, start: Option<ContextId>) -> EyreResult<Vec<ContextId>> {
+    pub fn get_contexts_ids(&self, start: Option<ContextId>) -> EyreResult<Vec<ContextId>> {
         let handle = self.store.handle();
 
         let mut iter = handle.iter::<ContextMetaKey>()?;
@@ -230,6 +248,58 @@ impl ContextManager {
         }
 
         Ok(ids)
+    }
+
+    fn get_context_identities(
+        &self,
+        context_id: ContextId,
+        only_owned_identities: bool,
+    ) -> EyreResult<Vec<PublicKey>> {
+        let handle = self.store.handle();
+
+        let mut iter = handle.iter::<ContextIdentityKey>()?;
+        let mut ids = Vec::<PublicKey>::new();
+
+        let first = 'first: {
+            let Some(k) = iter
+                .seek(ContextIdentityKey::new(context_id, PublicKey([0; 32])))
+                .transpose()
+            else {
+                break 'first None;
+            };
+
+            Some((k, iter.read()))
+        };
+
+        for (k, v) in first.into_iter().chain(iter.entries()) {
+            let (k, v) = (k?, v?);
+
+            if k.context_id() != context_id {
+                break;
+            }
+
+            if !only_owned_identities || v.private_key.is_some() {
+                ids.push(PublicKey(k.public_key()));
+            }
+        }
+        Ok(ids)
+    }
+
+    pub fn get_context_members_identities(
+        &self,
+        context_id: ContextId,
+    ) -> EyreResult<Vec<PublicKey>> {
+        Ok(self.get_context_identities(context_id, false)?)
+    }
+
+    // Iterate over all identities in a context (from members and mine)
+    // and return only public key of identities which contains private key (in value)
+    // If there is private key then it means that identity is mine.
+    pub fn get_context_owned_identities(
+        &self,
+        context_id: ContextId,
+    ) -> EyreResult<Vec<PublicKey>> {
+        Ok(self.get_context_identities(context_id, true)?)
     }
 
     pub fn get_contexts(&self, start: Option<ContextId>) -> EyreResult<Vec<Context>> {
@@ -317,7 +387,12 @@ impl ContextManager {
     ) -> EyreResult<ApplicationId> {
         let file = File::open(&path).await?;
 
-        let blob_id = self.blob_manager.put(ReaderStream::new(file)).await?;
+        let meta = file.metadata().await?;
+
+        let blob_id = self
+            .blob_manager
+            .put_sized(Some(meta.len()), file.compat())
+            .await?;
 
         let Ok(uri) = Url::from_file_path(path) else {
             bail!("non-absolute path")
@@ -339,7 +414,16 @@ impl ContextManager {
 
         let response = Client::new().get(url).send().await?;
 
-        let blob_id = self.blob_manager.put(response.bytes_stream()).await?;
+        let blob_id = self
+            .blob_manager
+            .put_sized(
+                response.content_length(),
+                response
+                    .bytes_stream()
+                    .map_err(std::io::Error::other)
+                    .into_async_read(),
+            )
+            .await?;
 
         // todo! if blob hash doesn't match, remove it
 

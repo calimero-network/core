@@ -335,7 +335,7 @@ impl Node {
                             NodeType::Coordinator => {
                                 let _ = self
                                     .validate_pending_transaction(
-                                        context_.clone(),
+                                        context_,
                                         transaction,
                                         transaction_hash,
                                     )
@@ -349,8 +349,8 @@ impl Node {
                             NodeType::Peer => {
                                 drop(
                                     self.execute_transaction(
-                                        context_.clone(),
-                                        transaction.clone(),
+                                        context_,
+                                        transaction,
                                         transaction_hash,
                                     )
                                     .await?,
@@ -359,11 +359,7 @@ impl Node {
                                 drop(self.tx_pool.remove(&transaction_hash));
                             }
                             NodeType::Coordinator => {
-                                self.persist_transaction(
-                                    context_,
-                                    transaction.clone(),
-                                    transaction_hash,
-                                )?;
+                                self.persist_transaction(context_, transaction, transaction_hash)?;
                             }
                             _ => bail!("Unexpected node type"),
                         },

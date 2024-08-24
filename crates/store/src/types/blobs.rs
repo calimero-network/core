@@ -10,13 +10,14 @@ pub struct BlobMeta {
     // todo! impl proper entry reference count
     // pub refs: usize,
     pub size: usize,
+    pub hash: [u8; 32],
     pub links: Box<[BlobMetaKey]>,
 }
 
 impl BlobMeta {
     #[must_use]
-    pub const fn new(size: usize, links: Box<[BlobMetaKey]>) -> Self {
-        Self { size, links }
+    pub const fn new(size: usize, hash: [u8; 32], links: Box<[BlobMetaKey]>) -> Self {
+        Self { size, hash, links }
     }
 }
 

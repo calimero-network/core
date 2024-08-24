@@ -8,6 +8,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 use futures_util::TryStreamExt;
 use tokio::io::{stdin, stdout, AsyncWriteExt};
+use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_util::io::ReaderStream;
 
 const DATA_DIR: &'static str = "blob-tests/data";
@@ -42,11 +43,9 @@ async fn main() -> EyreResult<()> {
             }
         },
         None => {
-            let stdin = stdin();
+            let stdin = stdin().compat();
 
-            let stdin = ReaderStream::new(stdin);
-
-            println!("{}", blob_mgr.put(stdin).await?);
+            println!("{}", blob_mgr.put_sized(None, stdin).await?);
         }
     }
 

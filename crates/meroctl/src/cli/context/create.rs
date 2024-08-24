@@ -23,13 +23,20 @@ use crate::config_file::ConfigFile;
 #[derive(Debug, Parser)]
 pub struct CreateCommand {
     /// The application ID to attach to the context
-    #[clap(long, short = 'a', exclusive = true)]
+    #[clap(long, short = 'a', conflicts_with = "watch")]
     application_id: Option<ApplicationId>,
 
     /// Path to the application file to watch and install locally
-    #[clap(long, short = 'w', exclusive = true)]
+    #[clap(long, short = 'w')]
     watch: Option<Utf8PathBuf>,
+    #[clap(requires = "watch")]
     metadata: Option<Vec<u8>>,
+
+    #[clap(long, short = 'c', requires = "watch")]
+    context_id: Option<ContextId>,
+
+    #[clap(long, short = 'p')]
+    params: Option<String>,
 }
 
 impl CreateCommand {
@@ -54,23 +61,32 @@ impl CreateCommand {
             Self {
                 application_id: Some(app_id),
                 watch: None,
-                ..
+                context_id: None,
+                metadata: None,
+                params,
             } => {
-                let _ = create_context(multiaddr, app_id, &client).await?;
+                let _ = create_context(&client, multiaddr, app_id, None, params).await?;
             }
             Self {
                 application_id: None,
                 watch: Some(path),
+                context_id,
                 metadata,
+                params,
             } => {
                 let path = path.canonicalize_utf8()?;
-
                 let application_id =
-                    install_app(multiaddr, path.clone(), &client, metadata.clone()).await?;
-
-                let context_id = create_context(multiaddr, application_id, &client).await?;
-
-                watch_app_and_update_context(multiaddr, context_id, path, &client, metadata)
+                    install_app(&client, multiaddr, path.clone(), metadata.clone()).await?;
+                let context_id = match context_id {
+                    Some(context_id) => {
+                        create_context(&client, multiaddr, application_id, Some(context_id), params)
+                            .await?
+                    }
+                    None => {
+                        create_context(&client, multiaddr, application_id, None, params).await?
+                    }
+                };
+                watch_app_and_update_context(&client, multiaddr, context_id, path, metadata)
                     .await?;
             }
             _ => bail!("Invalid command configuration"),
@@ -81,16 +97,22 @@ impl CreateCommand {
 }
 
 async fn create_context(
+    client: &Client,
     base_multiaddr: &Multiaddr,
     application_id: ApplicationId,
-    client: &Client,
+    context_id: Option<ContextId>,
+    params: Option<String>,
 ) -> EyreResult<ContextId> {
     if !app_installed(base_multiaddr, &application_id, client).await? {
         bail!("Application is not installed on node.")
     }
 
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
-    let request = CreateContextRequest::new(application_id);
+    let request = CreateContextRequest::new(
+        application_id,
+        context_id,
+        params.map(String::into_bytes).unwrap_or_default(),
+    );
 
     let response = client.post(url).json(&request).send().await?;
 
@@ -119,10 +141,10 @@ async fn create_context(
 }
 
 async fn watch_app_and_update_context(
+    client: &Client,
     base_multiaddr: &Multiaddr,
     context_id: ContextId,
     path: Utf8PathBuf,
-    client: &Client,
     metadata: Option<Vec<u8>>,
 ) -> EyreResult<()> {
     let (tx, mut rx) = mpsc::channel(1);
@@ -161,19 +183,19 @@ async fn watch_app_and_update_context(
         }
 
         let application_id =
-            install_app(base_multiaddr, path.clone(), client, metadata.clone()).await?;
+            install_app(client, base_multiaddr, path.clone(), metadata.clone()).await?;
 
-        update_context_application(base_multiaddr, context_id, application_id, client).await?;
+        update_context_application(client, base_multiaddr, context_id, application_id).await?;
     }
 
     Ok(())
 }
 
 async fn update_context_application(
+    client: &Client,
     base_multiaddr: &Multiaddr,
     context_id: ContextId,
     application_id: ApplicationId,
-    client: &Client,
 ) -> EyreResult<()> {
     let url = multiaddr_to_url(
         base_multiaddr,
@@ -223,9 +245,9 @@ async fn app_installed(
 }
 
 async fn install_app(
+    client: &Client,
     base_multiaddr: &Multiaddr,
     path: Utf8PathBuf,
-    client: &Client,
     metadata: Option<Vec<u8>>,
 ) -> EyreResult<ApplicationId> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;

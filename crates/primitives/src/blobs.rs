@@ -16,11 +16,6 @@ impl BlobId {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
-
-    #[must_use]
-    pub fn hash(bytes: &[u8]) -> Self {
-        Self(Hash::new(bytes))
-    }
 }
 
 impl From<[u8; 32]> for BlobId {
