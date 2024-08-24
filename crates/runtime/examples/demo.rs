@@ -1,3 +1,5 @@
+#![allow(unused_crate_dependencies)]
+
 use calimero_runtime::logic::{VMContext, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::{run, Constraint};

@@ -1,3 +1,4 @@
+#![allow(unused_crate_dependencies)]
 #![allow(dead_code)]
 
 use calimero_runtime::logic::{VMContext, VMLimits};

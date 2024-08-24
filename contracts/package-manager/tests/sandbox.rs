@@ -1,3 +1,5 @@
+#![allow(unused_crate_dependencies)]
+
 use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract};
 use serde_json::{json, Value};

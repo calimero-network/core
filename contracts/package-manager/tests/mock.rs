@@ -1,4 +1,5 @@
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(unused_crate_dependencies)]
 
 use near_sdk::test_utils::VMContextBuilder;
 use near_sdk::{testing_env, VMContext};

@@ -1,3 +1,5 @@
+#![allow(unused_crate_dependencies)]
+
 use std::fs::{remove_dir_all, remove_file};
 
 use calimero_store::key::{ContextIdentity as ContextIdentityKey, ContextState as ContextStateKey};

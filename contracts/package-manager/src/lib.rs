@@ -206,7 +206,7 @@ impl Package {
     }
 }
 
-#[cfg(any(test))]
+#[cfg(test)]
 mod integration_tests_package_usage {
     use {near_workspaces as _, serde_json as _, tokio as _};
 }
