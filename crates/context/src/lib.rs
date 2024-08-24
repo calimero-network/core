@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::Error as IoError;
 use std::sync::Arc;
 
 use calimero_blobstore::BlobManager;
@@ -118,14 +119,14 @@ impl ContextManager {
         let (tx, _) = oneshot::channel();
 
         self.server_sender
-            .send(ExecutionRequest {
-                context_id: context.id,
-                method: "init".to_owned(),
-                payload: initialization_params,
-                executor_public_key: initial_identity.public_key.0,
-                outcome_sender: tx,
-                finality: Some(Finality::Local),
-            })
+            .send(ExecutionRequest::new(
+                context.id,
+                "init".to_owned(),
+                initialization_params,
+                initial_identity.public_key.0,
+                tx,
+                Some(Finality::Local),
+            ))
             .await?;
 
         let mut handle = self.store.handle();
@@ -289,7 +290,7 @@ impl ContextManager {
         &self,
         context_id: ContextId,
     ) -> EyreResult<Vec<PublicKey>> {
-        Ok(self.get_context_identities(context_id, false)?)
+        self.get_context_identities(context_id, false)
     }
 
     // Iterate over all identities in a context (from members and mine)
@@ -299,7 +300,7 @@ impl ContextManager {
         &self,
         context_id: ContextId,
     ) -> EyreResult<Vec<PublicKey>> {
-        Ok(self.get_context_identities(context_id, true)?)
+        self.get_context_identities(context_id, true)
     }
 
     pub fn get_contexts(&self, start: Option<ContextId>) -> EyreResult<Vec<Context>> {
@@ -420,7 +421,7 @@ impl ContextManager {
                 response.content_length(),
                 response
                     .bytes_stream()
-                    .map_err(std::io::Error::other)
+                    .map_err(IoError::other)
                     .into_async_read(),
             )
             .await?;

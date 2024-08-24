@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use axum::routing::{post, MethodRouter};
 use axum::{Extension, Json};
-use calimero_node_primitives::{CallError as PrimitiveCallError, ServerSender};
+use calimero_node_primitives::{
+    CallError as PrimitiveCallError, ExecutionRequest, Finality, ServerSender,
+};
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
     Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
@@ -156,14 +158,14 @@ pub(crate) async fn call(
     let (outcome_sender, outcome_receiver) = oneshot::channel();
 
     sender
-        .send(calimero_node_primitives::ExecutionRequest {
+        .send(ExecutionRequest::new(
             context_id,
             method,
-            payload: args,
-            finality: writes.then_some(calimero_node_primitives::Finality::Global),
+            args,
             executor_public_key,
             outcome_sender,
-        })
+            writes.then_some(Finality::Global),
+        ))
         .await
         .map_err(|e| CallError::InternalError(eyre!("Failed to send call message: {}", e)))?;
 

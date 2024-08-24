@@ -58,8 +58,16 @@ impl ListApplicationsResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct GetApplicationDetailsResponse {
     pub data: Application,
+}
+
+impl GetApplicationDetailsResponse {
+    #[must_use]
+    pub const fn new(application: Application) -> Self {
+        Self { data: application }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

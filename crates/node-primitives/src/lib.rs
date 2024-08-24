@@ -23,6 +23,7 @@ impl NodeType {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ExecutionRequest {
     pub context_id: ContextId,
     pub method: String,
@@ -32,7 +33,29 @@ pub struct ExecutionRequest {
     pub finality: Option<Finality>,
 }
 
-#[derive(Clone, Copy, Debug)]
+impl ExecutionRequest {
+    #[must_use]
+    pub const fn new(
+        context_id: ContextId,
+        method: String,
+        payload: Vec<u8>,
+        executor_public_key: [u8; 32],
+        outcome_sender: oneshot::Sender<Result<Outcome, CallError>>,
+        finality: Option<Finality>,
+    ) -> Self {
+        Self {
+            context_id,
+            method,
+            payload,
+            executor_public_key,
+            outcome_sender,
+            finality,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::exhaustive_enums)]
 pub enum Finality {
     Local,
     Global,

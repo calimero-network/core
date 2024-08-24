@@ -21,10 +21,7 @@ pub async fn create_context(
     context_id: Option<ContextId>,
     initialization_params: Vec<u8>,
 ) -> Result<ContextCreateResult, EyreError> {
-    let context_id = match context_id {
-        Some(context_id) => context_id,
-        None => generate_context_id(),
-    };
+    let context_id = context_id.map_or_else(generate_context_id, |context_id| context_id);
     let context = Context::new(context_id, application_id, Hash::default());
 
     let initial_identity = if let Some(private_key) = private_key {

@@ -80,6 +80,7 @@ pub async fn get_context_identities_handler(
         .map_err(|err| parse_api_error(err).into_response());
 
     match context {
+        #[allow(clippy::option_if_let_else)]
         Ok(ctx) => match ctx {
             Some(context) => {
                 let context_identities = state

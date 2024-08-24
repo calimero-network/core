@@ -6,8 +6,8 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
-    GetApplicationDetailsResponse, GetApplicationResponse, InstallApplicationResponse,
-    InstallDevApplicationRequest, ListApplicationsResponse,
+    GetApplicationDetailsResponse, GetApplicationResponse, InstallApplicationRequest,
+    InstallApplicationResponse, InstallDevApplicationRequest, ListApplicationsResponse,
 };
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
@@ -44,7 +44,7 @@ pub async fn get_application(
 
 pub async fn install_application_handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<calimero_server_primitives::admin::InstallApplicationRequest>,
+    Json(req): Json<InstallApplicationRequest>,
 ) -> impl IntoResponse {
     match state
         .ctx_manager
@@ -81,15 +81,12 @@ pub async fn get_application_details_handler(
     Path(app_id): Path<String>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    let app_id_result = match app_id.parse() {
-        Ok(app_id) => app_id,
-        Err(_) => {
-            return ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Invalid app id".into(),
-            }
-            .into_response();
+    let Ok(app_id_result) = app_id.parse() else {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid app id".into(),
         }
+        .into_response();
     };
 
     let application = state
@@ -97,10 +94,11 @@ pub async fn get_application_details_handler(
         .get_application(&app_id_result)
         .map_err(|err| parse_api_error(err).into_response());
 
+    #[allow(clippy::option_if_let_else)]
     match application {
         Ok(application) => match application {
             Some(application) => ApiResponse {
-                payload: GetApplicationDetailsResponse { data: application },
+                payload: GetApplicationDetailsResponse::new(application),
             }
             .into_response(),
             None => ApiError {

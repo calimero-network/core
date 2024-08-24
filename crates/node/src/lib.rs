@@ -1,8 +1,9 @@
 #![allow(clippy::print_stdout)]
 
 use core::future::{pending, Future};
+use core::mem::replace;
 use core::pin::Pin;
-use std::str::FromStr;
+use core::str::FromStr;
 
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ApplicationConfig;
@@ -609,15 +610,13 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 break 'infer (Some(context_id), params);
                             };
 
-                            match std::mem::replace(&mut params, Some(context_id))
-                                .map(FromStr::from_str)
-                            {
+                            match replace(&mut params, Some(context_id)).map(FromStr::from_str) {
                                 Some(Ok(context_id)) => break 'infer (Some(context_id), params),
                                 None => break 'infer (None, params),
                                 _ => {}
                             };
 
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
@@ -1016,8 +1015,6 @@ impl Node {
 
                         CallError::Mutate(MutateCallError::InternalError)
                     })));
-
-                    return;
                 }
                 Finality::Global => {
                     let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();

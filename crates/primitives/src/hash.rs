@@ -72,13 +72,13 @@ impl Hash {
     // todo! as_str(&self, buf: &mut [u8; N]) -> &str
     #[must_use]
     pub fn as_str(&self) -> &str {
-        let (_len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
+        let (stored_len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
 
-        let mut len = *_len;
+        let mut len = *stored_len;
 
         if len == 0 {
             len = bs58::encode(&self.bytes).onto(&mut bs58[..]).unwrap();
-            *_len = len;
+            *stored_len = len;
         }
 
         from_utf8(&bs58[..len]).unwrap()

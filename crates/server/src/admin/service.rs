@@ -11,7 +11,7 @@ use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
 use calimero_context::ContextManager;
 use calimero_store::Store;
-use eyre::{Report, Result as EyreResult};
+use eyre::Report;
 use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
@@ -149,22 +149,22 @@ pub(crate) fn setup(
 
 pub(crate) fn site(
     config: &ServerConfig,
-) -> EyreResult<Option<(&'static str, ServeDir<SetStatus<ServeFile>>)>> {
+) -> Option<(&'static str, ServeDir<SetStatus<ServeFile>>)> {
     let _config = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
             info!("Admin site is disabled");
-            return Ok(None);
+            return None;
         }
     };
     let path = "/admin-dashboard";
 
     let react_static_files_path = "./node-ui/build";
     let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
-        ServeFile::new(format!("{}/index.html", react_static_files_path)),
+        ServeFile::new(format!("{react_static_files_path}/index.html")),
     );
 
-    Ok(Some((path, react_app_serve_dir)))
+    Some((path, react_app_serve_dir))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

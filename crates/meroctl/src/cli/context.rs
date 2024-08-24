@@ -37,7 +37,7 @@ pub struct ContextCommand {
 pub enum ContextSubCommands {
     #[command(alias = "ls")]
     List(ListCommand),
-    Create(CreateCommand),
+    Create(Box<CreateCommand>),
     Join(JoinCommand),
 }
 

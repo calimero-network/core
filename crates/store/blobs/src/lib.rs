@@ -27,13 +27,13 @@ pub struct BlobManager {
     blob_store: FileSystem, // Arc<dyn BlobRepository>
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Value {
     Full { hash: Hash, size: usize },
     Part { id: BlobId, _size: usize },
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 struct State {
     digest: Sha256,
     size: usize,
@@ -88,12 +88,12 @@ impl BlobManager {
                 let finished = bytes == 0;
 
                 if !finished {
-                    let chunk = &buf[blob.size..blob.size + bytes];
+                    let chunk = &buf[blob.size..blob.size.saturating_add(bytes)];
 
                     file.digest.update(chunk);
                     blob.digest.update(chunk);
 
-                    blob.size += bytes;
+                    blob.size = blob.size.saturating_add(bytes);
 
                     if blob.size != buf.len() {
                         continue;
@@ -108,12 +108,12 @@ impl BlobManager {
 
                 self.data_store.handle().put(
                     &BlobMetaKey::new(id),
-                    &BlobMeta::new(blob.size, *id, Default::default()),
+                    &BlobMeta::new(blob.size, *id, Box::default()),
                 )?;
 
                 self.blob_store.put(id, &buf[..blob.size]).await?;
 
-                file.size += blob.size;
+                file.size = file.size.saturating_add(blob.size);
 
                 yield Value::Part {
                     id,
@@ -138,7 +138,11 @@ impl BlobManager {
 
         let mut links = Vec::with_capacity(
             size_hint
-                .and_then(|s| usize::try_from(s).map(|s| s / CHUNK_SIZE).ok())
+                .and_then(|s| {
+                    usize::try_from(s)
+                        .map(|s| s.saturating_div(CHUNK_SIZE))
+                        .ok()
+                })
                 .unwrap_or_default(),
         );
         let mut digest = Sha256::new();
