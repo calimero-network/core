@@ -26,7 +26,7 @@ pub async fn create_root_key_handler(
 ) -> impl IntoResponse {
     async { transform_request(intermediate_req) }
         .and_then(|req| validate_challenge(req, &state.keypair))
-        .and_then(|req| async { store_root(req, &mut state.store.clone()) })
+        .and_then(|req| async { store_root(req, &state.store.clone()) })
         .await
         .map_or_else(IntoResponse::into_response, |_| {
             let data: String = "Root key stored".to_owned();

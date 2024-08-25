@@ -179,6 +179,7 @@ pub struct WalletMetadata {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct NetworkMetadata {
     pub chain_id: String,
     pub rpc_url: String,
@@ -207,9 +208,10 @@ pub struct NearSignatureMessageMetadata {
 #[non_exhaustive]
 pub struct EthSignatureMessageMetadata;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StarknetSignatureMessageMetadata {}
+#[allow(clippy::exhaustive_structs)]
+pub struct StarknetSignatureMessageMetadata;
 
 // Intermediate structs for initial parsing
 #[derive(Debug, Deserialize)]
@@ -224,6 +226,7 @@ pub struct IntermediateAddPublicKeyRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum WalletSignature {
     String(String),
     StarknetPayload(StarknetPayload),
@@ -231,6 +234,7 @@ pub enum WalletSignature {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct StarknetPayload {
     pub signature: Vec<String>,
     pub message_hash: String,

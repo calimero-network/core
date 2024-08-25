@@ -19,6 +19,8 @@ use crate::admin::storage::root_key::get_root_key;
 use crate::verifywalletsignatures::near::verify_near_signature;
 use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
+// TODO: Consider breaking this function up into pieces.
+#[allow(clippy::too_many_lines)]
 pub async fn verify_node_signature(
     wallet_metadata: &WalletMetadata,
     wallet_signature: &WalletSignature,
@@ -26,6 +28,7 @@ pub async fn verify_node_signature(
 ) -> Result<bool, ApiError> {
     match wallet_metadata.wallet_type {
         WalletType::NEAR { .. } => {
+            #[allow(clippy::wildcard_enum_match_arm)]
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::NEAR(metadata) => metadata,
                 SignatureMetadataEnum::ETH(_) => {
@@ -42,14 +45,11 @@ pub async fn verify_node_signature(
                 }
             };
 
-            let signature_str = match wallet_signature {
-                WalletSignature::String(sig) => sig,
-                _ => {
-                    return Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Invalid wallet signature type.".into(),
-                    })
-                }
+            let WalletSignature::String(signature_str) = wallet_signature else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid wallet signature type.".into(),
+                });
             };
 
             let result = verify_near_signature(
@@ -57,7 +57,7 @@ pub async fn verify_node_signature(
                 &payload.message.message,
                 &near_metadata.recipient,
                 &near_metadata.callback_url,
-                &signature_str,
+                signature_str,
                 &wallet_metadata.signing_key,
             );
 
@@ -70,6 +70,7 @@ pub async fn verify_node_signature(
             Ok(true)
         }
         WalletType::ETH { .. } => {
+            #[allow(clippy::wildcard_enum_match_arm)]
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
                 SignatureMetadataEnum::NEAR(_) => {
@@ -86,14 +87,11 @@ pub async fn verify_node_signature(
                 }
             };
 
-            let signature_str = match wallet_signature {
-                WalletSignature::String(sig) => sig,
-                _ => {
-                    return Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Invalid wallet signature type.".into(),
-                    })
-                }
+            let WalletSignature::String(signature_str) = wallet_signature else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid wallet signature type.".into(),
+                });
             };
 
             if let Err(err) = verify_eth_signature(
@@ -107,6 +105,7 @@ pub async fn verify_node_signature(
             Ok(true)
         }
         WalletType::STARKNET { ref wallet_name } => {
+            #[allow(clippy::wildcard_enum_match_arm)]
             let _sn_metadata: &StarknetSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::STARKNET(metadata) => metadata,
                 _ => {
@@ -117,6 +116,7 @@ pub async fn verify_node_signature(
                 }
             };
 
+            #[allow(clippy::wildcard_enum_match_arm)]
             let (message_hash, signature) = match wallet_signature {
                 WalletSignature::StarknetPayload(payload) => {
                     (&payload.message_hash, payload.signature.clone())
@@ -129,14 +129,11 @@ pub async fn verify_node_signature(
                 }
             };
 
-            let network_metadata = match &wallet_metadata.network_metadata {
-                Some(network_metadata) => network_metadata,
-                None => {
-                    return Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Missing network_metadata for Starknet.".into(),
-                    });
-                }
+            let Some(network_metadata) = &wallet_metadata.network_metadata else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Missing network_metadata for Starknet.".into(),
+                });
             };
 
             // Now extract `rpc_url` and `chain_id` from the `network_metadata`
@@ -166,8 +163,8 @@ pub async fn verify_node_signature(
                         }
                     };
                     verify_metamask_signature(
-                        &message_hash,
-                        signature,
+                        message_hash,
+                        &signature,
                         &wallet_metadata.signing_key,
                         &payload.message.message,
                         wallet_address,

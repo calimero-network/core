@@ -1,8 +1,10 @@
-use std::str::FromStr;
+use core::fmt::Write;
+use core::str::FromStr;
 use std::vec;
 
+use eyre::{bail, eyre, Result as EyreResult};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{from_str as from_json_str, json, Value};
 use starknet_core::types::{BlockId, BlockTag, Felt, FunctionCall};
 use starknet_core::utils::get_selector_from_name;
 use starknet_crypto::{poseidon_hash_many, verify};
@@ -10,7 +12,7 @@ use starknet_providers::jsonrpc::HttpTransport;
 use starknet_providers::{JsonRpcClient, Provider, Url};
 
 // Structure representing a field in a StarkNet type with a name and type
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 struct FieldType {
     name: String,
     #[serde(rename = "type")]
@@ -32,7 +34,7 @@ pub async fn verify_argent_signature(
     message: &str,
     rpc_node_url: &str,
     chain_id: &str,
-) -> eyre::Result<bool> {
+) -> EyreResult<bool> {
     // Convert inputs from strings to StarkNet-compatible types
     let wallet_address = Felt::from_str(wallet_address)?;
     let message_hash = Felt::from_str(message_hash)?;
@@ -73,10 +75,10 @@ pub async fn verify_argent_signature(
             if verify.is_ok() {
                 return Ok(true);
             }
-            eyre::bail!("Invalid message hash");
+            bail!("Invalid message hash");
         }
         Err(err) => {
-            eyre::bail!("Error verifying signature: {:?}", err);
+            bail!("Error verifying signature: {:?}", err);
         }
     }
 }
@@ -84,23 +86,31 @@ pub async fn verify_argent_signature(
 // Function to verify a MetaMask Snap wallet signature off chain
 pub fn verify_metamask_signature(
     message_hash: &str,
-    signature: Vec<String>,
+    signature: &[String],
     signing_key: &str,
     message: &str,
     wallet_address: &str,
     chain_id: &str,
-) -> eyre::Result<bool> {
+) -> EyreResult<bool> {
     // Convert inputs to Felt types
-    let signing_key = Felt::from_str(&signing_key)?;
-    let message_hash = Felt::from_str(&message_hash)?;
-    let wallet_address = Felt::from_str(&wallet_address)?;
+    let signing_key = Felt::from_str(signing_key)?;
+    let message_hash = Felt::from_str(message_hash)?;
+    let wallet_address = Felt::from_str(wallet_address)?;
 
     // Verify the signature using the StarkNet crypto library
     let result = verify(
         &signing_key,
         &message_hash,
-        &Felt::from_str(&signature[0])?,
-        &Felt::from_str(&signature[1])?,
+        &Felt::from_str(
+            signature
+                .first()
+                .ok_or_else(|| eyre!("Invalid signature length"))?,
+        )?,
+        &Felt::from_str(
+            signature
+                .get(1)
+                .ok_or_else(|| eyre!("Invalid signature length"))?,
+        )?,
     );
     match result {
         // If the signature is valid, verify the hash
@@ -109,13 +119,13 @@ pub fn verify_metamask_signature(
             if verify.is_ok() {
                 return Ok(true);
             }
-            eyre::bail!("Invalid message hash");
+            bail!("Invalid message hash");
         }
         Ok(false) => {
-            eyre::bail!("Invalid signature");
+            bail!("Invalid signature");
         }
         Err(err) => {
-            eyre::bail!("Error verifying signature: {:?}", err);
+            bail!("Error verifying signature: {:?}", err);
         }
     }
 }
@@ -126,48 +136,50 @@ fn verify_signature_hash(
     wallet_address: Felt,
     message: &str,
     chain_id: &str,
-) -> eyre::Result<()> {
+) -> EyreResult<()> {
     let types = Types {
         stark_net_domain: vec![
             FieldType {
-                name: "name".to_string(),
-                field_type: "shortstring".to_string(),
+                name: "name".to_owned(),
+                field_type: "shortstring".to_owned(),
             },
             FieldType {
-                name: "chainId".to_string(),
-                field_type: "felt".to_string(),
+                name: "chainId".to_owned(),
+                field_type: "felt".to_owned(),
             },
             FieldType {
-                name: "version".to_string(),
-                field_type: "shortstring".to_string(),
+                name: "version".to_owned(),
+                field_type: "shortstring".to_owned(),
             },
             FieldType {
-                name: "revision".to_string(),
-                field_type: "shortstring".to_string(),
+                name: "revision".to_owned(),
+                field_type: "shortstring".to_owned(),
             },
         ],
         challenge: vec![
             FieldType {
-                name: "nodeSignature".to_string(),
-                field_type: "string".to_string(),
+                name: "nodeSignature".to_owned(),
+                field_type: "string".to_owned(),
             },
             FieldType {
-                name: "publicKey".to_string(),
-                field_type: "string".to_string(),
+                name: "publicKey".to_owned(),
+                field_type: "string".to_owned(),
             },
         ],
     };
 
     // Parse the JSON message into a structured format
-    let challenge: Value = serde_json::from_str(message)?;
+    let challenge: Value = from_json_str(message)?;
 
     // Calculate the prefix for the message to be verified
     let message_prefix: Felt = Felt::from_str(&format!(
         "0x{}",
         "StarkNet Message"
             .chars()
-            .map(|c| format!("{:x}", c as u32))
-            .collect::<String>()
+            .fold(String::new(), |mut acc, c| {
+                write!(acc, "{:x}", c as u32).expect("Unable to write");
+                acc
+            })
     ))?;
 
     // Encode the StarkNet domain data and calculate its hash
@@ -180,10 +192,9 @@ fn verify_signature_hash(
             .collect::<Vec<String>>()
             .join(",")
     );
-    let domain_felt: Felt =
-        get_selector_from_name(&sn_domain_types.to_string()).expect("wrong type");
+    let domain_felt: Felt = get_selector_from_name(&sn_domain_types).expect("wrong type");
 
-    let domain_data = serde_json::json!({
+    let domain_data = json!({
         "name": "ServerChallenge",
         "chainId": chain_id,
         "version": "1",
@@ -222,19 +233,19 @@ fn verify_signature_hash(
     if server_message_hash == message_hash {
         Ok(())
     } else {
-        eyre::bail!("Signature is invalid");
+        bail!("Signature is invalid");
     }
 }
 
 // Function to encode a value based on its type into a StarkNet-compatible format
-fn encode_value(field_type: &str, value: &str) -> eyre::Result<String> {
+fn encode_value(field_type: &str, value: &str) -> EyreResult<String> {
     match field_type {
         "felt" => {
             if value.chars().all(char::is_numeric) {
                 // Convert numeric strings to actual numbers
-                Ok(format!("0x{}", u64::from_str(value)?.to_string()))
+                Ok(format!("0x{}", u64::from_str(value)?))
             } else {
-                Ok(value.to_string())
+                Ok(value.to_owned())
             }
         }
         "string" => {
@@ -244,15 +255,15 @@ fn encode_value(field_type: &str, value: &str) -> eyre::Result<String> {
             let mut pending_word_len = 0;
 
             for (i, chunk) in value.as_bytes().chunks(31).enumerate() {
-                let chunk_string = chunk
-                    .iter()
-                    .map(|&c| format!("{:02x}", c))
-                    .collect::<String>();
+                let chunk_string = chunk.iter().fold(String::new(), |mut acc, &c| {
+                    write!(acc, "{c:02x}").expect("Unable to write");
+                    acc
+                });
 
-                if i < value.len() / 31 {
-                    elements.push(format!("0x{}", chunk_string)); // Prefix with "0x"
+                if i < value.len().saturating_div(31) {
+                    elements.push(format!("0x{chunk_string}")); // Prefix with "0x"
                 } else {
-                    pending_word = format!("0x{}", chunk_string); // Prefix with "0x"
+                    pending_word = format!("0x{chunk_string}"); // Prefix with "0x"
                     pending_word_len = chunk.len();
                 }
             }
@@ -280,38 +291,36 @@ fn encode_value(field_type: &str, value: &str) -> eyre::Result<String> {
             if value.chars().all(char::is_numeric) {
                 // Attempt to convert the string to a u64, returning an error if it fails
                 let num_value = u64::from_str(value)
-                    .map_err(|_| eyre::eyre!("Failed to parse numeric string into u64"))?;
-                Ok(format!("0x{:x}", num_value))
+                    .map_err(|_| eyre!("Failed to parse numeric string into u64"))?;
+                Ok(format!("0x{num_value:x}"))
             } else {
                 // Otherwise, convert each character to its ASCII value in hexadecimal
-                let hex_string: String =
-                    value.chars().map(|c| format!("{:02x}", c as u8)).collect();
-                Ok(format!("0x{}", hex_string))
+                let hex_string: String = value.chars().fold(String::new(), |mut acc, c| {
+                    write!(acc, "{:02x}", c as u8).expect("Unable to write");
+                    acc
+                });
+                Ok(format!("0x{hex_string}"))
             }
         }
-        _ => Err(eyre::eyre!("Unsupported field type")),
+        _ => Err(eyre!("Unsupported field type")),
     }
 }
 
 // Function to encode data fields into a vector of Felt values based on their types
-fn encode_data(
-    types: &Types,
-    type_name: &str,
-    data: &serde_json::Value,
-) -> eyre::Result<Vec<Felt>> {
+fn encode_data(types: &Types, type_name: &str, data: &Value) -> EyreResult<Vec<Felt>> {
     let target_type = match type_name {
         "StarknetDomain" => &types.stark_net_domain,
         "Challenge" => &types.challenge,
-        _ => panic!("Type not found"),
+        _ => bail!("Type not found"),
     };
 
     let mut values = vec![];
     for field in target_type {
         let field_value = data
             .get(&field.name)
-            .ok_or_else(|| eyre::eyre!("Field not found"))?
+            .ok_or_else(|| eyre!("Field not found"))?
             .as_str()
-            .ok_or_else(|| eyre::eyre!("Invalid field value"))?;
+            .ok_or_else(|| eyre!("Invalid field value"))?;
         let encoded_value = encode_value(&field.field_type, field_value)?;
         values.push(Felt::from_str(&encoded_value)?);
     }

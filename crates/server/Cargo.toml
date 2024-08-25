@@ -28,7 +28,6 @@ serde_json.workspace = true
 sha2.workspace = true
 starknet-core.workspace = true
 starknet-crypto.workspace = true
-starknet-macros.workspace = true
 starknet-providers.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

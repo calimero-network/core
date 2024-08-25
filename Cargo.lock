@@ -1273,7 +1273,6 @@ dependencies = [
  "sha2 0.10.8",
  "starknet-core",
  "starknet-crypto",
- "starknet-macros",
  "starknet-providers",
  "thiserror",
  "tokio",
@@ -8124,16 +8123,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56935b306dcf0b8f14bb2a1257164b8478bb8be4801dfae0923f5b266d1b457c"
 dependencies = [
  "starknet-types-core",
-]
-
-[[package]]
-name = "starknet-macros"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4fe4f8d615329410578cbedcdbaa4a36c7f28f68c3f3ac56006cfbdaeaa2b41"
-dependencies = [
- "starknet-core",
- "syn 2.0.72",
 ]
 
 [[package]]
