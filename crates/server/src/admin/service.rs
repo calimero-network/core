@@ -62,7 +62,7 @@ pub struct AdminState {
 
 pub(crate) fn setup(
     config: &ServerConfig,
-    store: Store,
+    store: &Store,
     ctx_manager: ContextManager,
 ) -> Option<(&'static str, Router)> {
     let listen = config.listen.clone();

@@ -1,12 +1,13 @@
-use std::convert::Infallible;
-use std::task::{Context, Poll};
-
+use core::convert::Infallible;
+use core::task::{Context, Poll};
+use std::error::Error;
+use core::fmt::{Display, Formatter, self};
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use libp2p::futures::future::BoxFuture;
-use multiaddr::Multiaddr;
+use multiaddr::{Multiaddr, Protocol};
 use tower::{Layer, Service};
 
 #[derive(Clone)]
@@ -51,7 +52,7 @@ where
     }
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
-        let result = host(request.headers(), self.listen.clone());
+        let result = host(request.headers(), &self.listen);
 
         if let Err(err) = result {
             let error_response = err.into_response();
@@ -67,7 +68,7 @@ where
     }
 }
 
-pub fn host(headers: &HeaderMap, listen: Vec<Multiaddr>) -> Result<(), UnauthorizedError<'static>> {
+pub fn host(headers: &HeaderMap, listen: &[Multiaddr]) -> Result<(), UnauthorizedError<'static>> {
     let caller_host = headers
         .get("referer")
         .ok_or_else(|| UnauthorizedError::new("Missing referer header"))?
@@ -81,17 +82,17 @@ pub fn host(headers: &HeaderMap, listen: Vec<Multiaddr>) -> Result<(), Unauthori
         .filter_map(|addr| {
             let mut components = addr.iter();
             let host = match components.next() {
-                Some(multiaddr::Protocol::Ip4(host)) => host.to_string(),
-                Some(multiaddr::Protocol::Ip6(host)) => format!("[{}]", host),
+                Some(Protocol::Ip4(host)) => host.to_string(),
+                Some(Protocol::Ip6(host)) => format!("[{host}]"),
                 _ => return None,
             };
 
             let port = match components.next() {
-                Some(multiaddr::Protocol::Tcp(port)) => port.to_string(),
+                Some(Protocol::Tcp(port)) => port.to_string(),
                 _ => return None,
             };
 
-            Some(format!("{}:{}", host, port))
+            Some(format!("{host}:{port}"))
         })
         .collect();
 
@@ -109,14 +110,14 @@ fn normalize_origin(origin: &str) -> String {
     let parts: Vec<&str> = host[1].split(':').collect();
 
     let normalized_origin = if parts[0] == "localhost" {
-        "127.0.0.1".to_string()
+        "127.0.0.1".to_owned()
     } else {
-        parts[0].to_string()
+        parts[0].to_owned()
     };
 
     if parts.len() > 1 {
-        let port = parts[1].split("/").next().unwrap();
-        format!("{}:{}", normalized_origin, port)
+        let port = parts[1].split('/').next().unwrap();
+        format!("{normalized_origin}:{port}")
     } else {
         normalized_origin
     }
@@ -128,21 +129,21 @@ pub struct UnauthorizedError<'a> {
 }
 
 impl<'a> UnauthorizedError<'a> {
-    pub fn new(reason: &'a str) -> Self {
+    pub const fn new(reason: &'a str) -> Self {
         Self { reason }
     }
 }
 
-impl std::fmt::Display for UnauthorizedError<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for UnauthorizedError<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.reason)
     }
 }
 
-impl std::error::Error for UnauthorizedError<'_> {}
+impl Error for UnauthorizedError<'_> {}
 
 impl IntoResponse for UnauthorizedError<'_> {
     fn into_response(self) -> Response<Body> {
-        (StatusCode::UNAUTHORIZED, self.reason.to_string()).into_response()
+        (StatusCode::UNAUTHORIZED, self.reason.to_owned()).into_response()
     }
 }
