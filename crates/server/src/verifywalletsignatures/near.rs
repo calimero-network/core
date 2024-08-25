@@ -1,5 +1,5 @@
 #[cfg(test)]
-#[path = "tests/verifysignature.rs"]
+#[path = "../tests/verifywalletsignatures/near.rs"]
 mod tests;
 
 use base64::engine::general_purpose::STANDARD;
