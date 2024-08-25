@@ -11,7 +11,7 @@ use starknet_crypto::{poseidon_hash_many, verify};
 use starknet_providers::jsonrpc::HttpTransport;
 use starknet_providers::{JsonRpcClient, Provider, Url};
 
-// Structure representing a field in a StarkNet type with a name and type
+/// A field in a StarkNet type with a name and type.
 #[derive(Debug, Deserialize, Serialize)]
 struct FieldType {
     name: String,
@@ -19,14 +19,17 @@ struct FieldType {
     field_type: String,
 }
 
-// Structure holding definitions of StarkNet types: StarknetDomain and Challenge
+/// Definitions of StarkNet types.
+///
+/// This struct holds definitions of the StarknetDomain and Challenge types.
+///
 #[derive(Debug)]
 struct Types {
     stark_net_domain: Vec<FieldType>,
     challenge: Vec<FieldType>,
 }
 
-// Asynchronous function to verify an Argent wallet signature on chain
+/// Verify an Argent wallet signature on chain.
 pub async fn verify_argent_signature(
     message_hash: &str,
     signature: Vec<String>,
@@ -83,7 +86,7 @@ pub async fn verify_argent_signature(
     }
 }
 
-// Function to verify a MetaMask Snap wallet signature off chain
+/// Verify a MetaMask Snap wallet signature off chain.
 pub fn verify_metamask_signature(
     message_hash: &str,
     signature: &[String],
@@ -130,7 +133,11 @@ pub fn verify_metamask_signature(
     }
 }
 
-// Function to verify the integrity of a message hash by hashing the message and comparing it to the provided hash
+/// Verify the integrity of a message hash.
+///
+/// This function verifies the integrity of a message hash by hashing the
+/// message and comparing it to the provided hash.
+///
 fn verify_signature_hash(
     message_hash: Felt,
     wallet_address: Felt,
@@ -237,7 +244,7 @@ fn verify_signature_hash(
     }
 }
 
-// Function to encode a value based on its type into a StarkNet-compatible format
+/// Encode a value based on its type into a StarkNet-compatible format.
 fn encode_value(field_type: &str, value: &str) -> EyreResult<String> {
     match field_type {
         "felt" => {
@@ -306,7 +313,7 @@ fn encode_value(field_type: &str, value: &str) -> EyreResult<String> {
     }
 }
 
-// Function to encode data fields into a vector of Felt values based on their types
+/// Encode data fields into a vector of Felt values based on their types.
 fn encode_data(types: &Types, type_name: &str, data: &Value) -> EyreResult<Vec<Felt>> {
     let target_type = match type_name {
         "StarknetDomain" => &types.stark_net_domain,
