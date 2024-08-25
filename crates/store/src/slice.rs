@@ -1,6 +1,11 @@
-use std::borrow::Borrow;
-use std::fmt;
-use std::ops::Deref;
+#[cfg(test)]
+#[path = "tests/slice.rs"]
+mod tests;
+
+use core::borrow::Borrow;
+use core::cmp::Ordering;
+use core::fmt::{self, Debug, Formatter};
+use core::ops::Deref;
 use std::rc::Rc;
 
 use calimero_primitives::reflect::{DynReflect, Reflect, ReflectExt};
@@ -27,8 +32,8 @@ impl<'a, T: AsRef<[u8]> + 'a> BufRef for T {
     }
 }
 
-impl<'a> fmt::Debug for dyn BufRef + 'a {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for dyn BufRef + '_ {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.type_name())
     }
 }
@@ -37,7 +42,7 @@ impl<'a> Slice<'a> {
     /// Create a new `Slice` from an owned value.
     pub fn from_owned<T: AsRef<[u8]> + 'a>(inner: T) -> Self {
         Self {
-            inner: SliceInner::Any(Rc::new(inner) as _),
+            inner: SliceInner::Any(Rc::new(inner)),
         }
     }
 
@@ -54,6 +59,7 @@ impl<'a> Slice<'a> {
         Rc::try_unwrap(ref_boxed).unwrap_or_else(|inner| (*inner).clone())
     }
 
+    #[must_use]
     pub fn owned_ref<T: AsRef<[u8]>>(&'a self) -> Option<&'a T> {
         if let SliceInner::Any(inner) = &self.inner {
             if let Some(inner) = inner.as_dyn().downcast_ref::<T>() {
@@ -78,7 +84,7 @@ impl<'a> Slice<'a> {
     }
 }
 
-impl<'a> Deref for Slice<'a> {
+impl Deref for Slice<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -86,7 +92,7 @@ impl<'a> Deref for Slice<'a> {
     }
 }
 
-impl<'a> AsRef<[u8]> for Slice<'a> {
+impl AsRef<[u8]> for Slice<'_> {
     fn as_ref(&self) -> &[u8] {
         match &self.inner {
             SliceInner::Ref(inner) => inner,
@@ -104,7 +110,7 @@ impl<'a, T: AsRef<[u8]> + ?Sized> From<&'a T> for Slice<'a> {
     }
 }
 
-impl<'a> From<Box<[u8]>> for Slice<'a> {
+impl From<Box<[u8]>> for Slice<'_> {
     fn from(inner: Box<[u8]>) -> Self {
         Self {
             inner: SliceInner::Box(inner.into()),
@@ -112,7 +118,7 @@ impl<'a> From<Box<[u8]>> for Slice<'a> {
     }
 }
 
-impl<'a> From<Vec<u8>> for Slice<'a> {
+impl From<Vec<u8>> for Slice<'_> {
     fn from(inner: Vec<u8>) -> Self {
         Self {
             inner: SliceInner::Box(Rc::new(inner.into())),
@@ -120,7 +126,7 @@ impl<'a> From<Vec<u8>> for Slice<'a> {
     }
 }
 
-impl<'a> From<Rc<Box<[u8]>>> for Slice<'a> {
+impl From<Rc<Box<[u8]>>> for Slice<'_> {
     fn from(inner: Rc<Box<[u8]>>) -> Self {
         Self {
             inner: SliceInner::Box(inner),
@@ -134,27 +140,27 @@ impl<'a> From<Slice<'a>> for Box<[u8]> {
     }
 }
 
-impl<'a> Eq for Slice<'a> {}
-impl<'a, T: AsRef<[u8]> + ?Sized> PartialEq<T> for Slice<'a> {
+impl Eq for Slice<'_> {}
+impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for Slice<'_> {
     fn eq(&self, other: &T) -> bool {
         self.as_ref() == other.as_ref()
     }
 }
 
-impl<'a> Ord for Slice<'a> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+impl Ord for Slice<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.as_ref().cmp(other.as_ref())
     }
 }
 
-impl<'a, 'b> PartialOrd<Slice<'b>> for Slice<'a> {
-    fn partial_cmp(&self, other: &Slice<'b>) -> Option<std::cmp::Ordering> {
+impl<'a> PartialOrd<Slice<'a>> for Slice<'_> {
+    fn partial_cmp(&self, other: &Slice<'a>) -> Option<Ordering> {
         self.as_ref().partial_cmp(other.as_ref())
     }
 }
 
-impl<'a> fmt::Debug for Slice<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for Slice<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             f.debug_tuple("Slice").field(&self.inner).finish()
         } else {
@@ -163,120 +169,8 @@ impl<'a> fmt::Debug for Slice<'a> {
     }
 }
 
-impl<'a> Borrow<[u8]> for Slice<'a> {
+impl Borrow<[u8]> for Slice<'_> {
     fn borrow(&self) -> &[u8] {
         self
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_slice_slice() {
-        let data = b"hello";
-        let slice = Slice::from(&data[..]);
-
-        assert_eq!(slice.as_ref(), data);
-        assert_eq!(&*slice.into_boxed(), data);
-    }
-
-    #[test]
-    fn test_slice_vec() {
-        let data = vec![0; 5];
-        let slice = Slice::from(data);
-
-        assert_eq!(slice.as_ref(), [0; 5]);
-        assert_eq!(&*slice.into_boxed(), [0; 5]);
-    }
-
-    #[test]
-    fn test_slice_box() {
-        let data: Box<[u8]> = Box::new([0; 5]);
-        let slice = Slice::from(data);
-
-        assert_eq!(slice.as_ref(), [0; 5]);
-        assert_eq!(&*slice.into_boxed(), [0; 5]);
-    }
-
-    #[test]
-    fn test_slice_any() {
-        struct Buf<'a>(&'a [u8]);
-
-        impl AsRef<[u8]> for Buf<'_> {
-            fn as_ref(&self) -> &[u8] {
-                self.0
-            }
-        }
-
-        let data = Buf(b"hello");
-        let slice = Slice::from_owned(data);
-
-        assert_eq!(slice.as_ref(), b"hello");
-        assert_eq!(&*slice.into_boxed(), b"hello");
-    }
-
-    #[test]
-    fn test_owned_slice() {
-        let data = b"hello";
-        let slice = Slice::from_owned(&data[..]);
-
-        let slice = slice.take_owned::<[u8; 5]>().unwrap_err();
-        let slice = slice.take_owned::<&[u8; 5]>().unwrap_err();
-        let slice = slice.take_owned::<Vec<u8>>().unwrap_err();
-        let slice = slice.take_owned::<Box<[u8]>>().unwrap_err();
-
-        let slice = slice.take_owned::<&[u8]>().unwrap();
-
-        assert_eq!(*slice, data);
-    }
-
-    #[test]
-    fn test_owned_array() {
-        let data = [0; 5];
-        let slice = Slice::from_owned(data);
-
-        let slice = slice.take_owned::<&[u8]>().unwrap_err();
-        let slice = slice.take_owned::<&[u8; 5]>().unwrap_err();
-        let slice = slice.take_owned::<Vec<u8>>().unwrap_err();
-        let slice = slice.take_owned::<Box<[u8]>>().unwrap_err();
-
-        let slice = slice.take_owned::<[u8; 5]>().unwrap();
-
-        assert_eq!(*slice, data);
-    }
-
-    #[test]
-    fn test_owned_vec() {
-        let data = vec![0; 5];
-        let slice = Slice::from_owned(data);
-
-        let slice = slice.take_owned::<&[u8]>().unwrap_err();
-        let slice = slice.take_owned::<&[u8; 5]>().unwrap_err();
-        let slice = slice.take_owned::<[u8; 5]>().unwrap_err();
-        let slice = slice.take_owned::<Box<[u8]>>().unwrap_err();
-
-        let slice = slice.take_owned::<Vec<u8>>().unwrap();
-
-        assert_eq!(*slice, [0; 5]);
-    }
-
-    #[test]
-    fn test_owned_any() {
-        struct Buf<'a>(&'a [u8]);
-
-        impl AsRef<[u8]> for Buf<'_> {
-            fn as_ref(&self) -> &[u8] {
-                self.0
-            }
-        }
-
-        let data = Buf(b"hello");
-        let slice = Slice::from_owned(data);
-
-        let slice = slice.take_owned::<Buf>().unwrap();
-
-        assert_eq!(slice.0, b"hello");
     }
 }

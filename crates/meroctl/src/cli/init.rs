@@ -1,15 +1,26 @@
-use std::fs;
-use std::net::IpAddr;
+use core::net::IpAddr;
+use core::time::Duration;
+use std::fs::{create_dir, create_dir_all};
 
-use calimero_network::config::{BootstrapConfig, BootstrapNodes, DiscoveryConfig, SwarmConfig};
+use calimero_network::config::{
+    BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RendezvousConfig, SwarmConfig,
+};
+use calimero_server::admin::service::AdminConfig;
+use calimero_server::jsonrpc::JsonRpcConfig;
+use calimero_server::ws::WsConfig;
+use calimero_store::config::StoreConfig;
+use calimero_store::db::RocksDB;
+use calimero_store::Store;
 use clap::{Parser, ValueEnum};
-use eyre::WrapErr;
-use libp2p::identity;
-use multiaddr::Multiaddr;
-use rand::Rng;
+use eyre::{bail, Result as EyreResult, WrapErr};
+use libp2p::identity::Keypair;
+use multiaddr::{Multiaddr, Protocol};
+use rand::{thread_rng, Rng};
 use tracing::{info, warn};
 
-use crate::config_file::{ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig};
+use crate::config_file::{
+    ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig as StoreConfigFile,
+};
 use crate::{cli, defaults};
 
 /// Initialize node configuration
@@ -66,18 +77,20 @@ pub enum BootstrapNetwork {
 }
 
 impl InitCommand {
-    pub fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
+    // TODO: Consider splitting this function up to reduce complexity.
+    #[allow(clippy::cognitive_complexity)]
+    pub fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
         let path = root_args.home.join(root_args.node_name);
 
         if !path.exists() {
             if root_args.home == defaults::default_node_dir() {
-                fs::create_dir_all(&path)
+                create_dir_all(&path)
             } else {
-                fs::create_dir(&path)
+                create_dir(&path)
             }
-            .wrap_err_with(|| format!("failed to create directory {:?}", path))?;
+            .wrap_err_with(|| format!("failed to create directory {path:?}"))?;
         }
 
         if ConfigFile::exists(&path) {
@@ -88,15 +101,15 @@ impl InitCommand {
                         err
                     );
                 } else {
-                    eyre::bail!("Failed to load existing configuration: {}", err);
+                    bail!("Failed to load existing configuration: {}", err);
                 }
             }
             if !self.force {
-                eyre::bail!("Node is already initialized in {:?}", path);
+                bail!("Node is already initialized in {:?}", path);
             }
         }
 
-        let identity = identity::Keypair::generate_ed25519();
+        let identity = Keypair::generate_ed25519();
         info!("Generated identity: {:?}", identity.public().to_peer_id());
 
         let mut listen: Vec<Multiaddr> = vec![];
@@ -105,8 +118,8 @@ impl InitCommand {
             let host = format!(
                 "/{}/{}",
                 match host {
-                    std::net::IpAddr::V4(_) => "ip4",
-                    std::net::IpAddr::V6(_) => "ip6",
+                    IpAddr::V4(_) => "ip4",
+                    IpAddr::V6(_) => "ip6",
                 },
                 host,
             );
@@ -118,59 +131,48 @@ impl InitCommand {
         if let Some(network) = self.boot_network {
             match network {
                 BootstrapNetwork::CalimeroDev => {
-                    boot_nodes.extend(BootstrapNodes::calimero_dev().list)
+                    boot_nodes.extend(BootstrapNodes::calimero_dev().list);
                 }
                 BootstrapNetwork::Ipfs => boot_nodes.extend(BootstrapNodes::ipfs().list),
             }
         }
 
         let config = ConfigFile {
-            identity: identity.clone(),
-            store: StoreConfig {
+            identity,
+            store: StoreConfigFile {
                 path: "data".into(),
             },
             application: ApplicationConfig {
                 path: "apps".into(),
             },
             network: NetworkConfig {
-                swarm: SwarmConfig { listen },
-                bootstrap: BootstrapConfig {
-                    nodes: BootstrapNodes { list: boot_nodes },
-                },
-                discovery: DiscoveryConfig {
-                    mdns,
-                    rendezvous: Default::default(),
-                },
+                swarm: SwarmConfig::new(listen),
+                bootstrap: BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
+                discovery: DiscoveryConfig::new(mdns, RendezvousConfig::default()),
                 server: ServerConfig {
                     listen: self
                         .server_host
                         .into_iter()
-                        .map(|host| {
-                            Multiaddr::from(host).with(multiaddr::Protocol::Tcp(self.server_port))
-                        })
+                        .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
                         .collect(),
-                    admin: Some(calimero_server::admin::service::AdminConfig { enabled: true }),
-                    jsonrpc: Some(calimero_server::jsonrpc::JsonRpcConfig { enabled: true }),
-                    websocket: Some(calimero_server::ws::WsConfig { enabled: true }),
+                    admin: Some(AdminConfig::new(true)),
+                    jsonrpc: Some(JsonRpcConfig::new(true)),
+                    websocket: Some(WsConfig::new(true)),
                 },
-                catchup: calimero_network::config::CatchupConfig {
-                    batch_size: 50,
-                    receive_timeout: std::time::Duration::from_secs(2),
-                    interval: std::time::Duration::from_secs(2),
-                    initial_delay: std::time::Duration::from_millis(
-                        rand::thread_rng().gen_range(0..1001),
-                    ),
-                },
+                catchup: CatchupConfig::new(
+                    50,
+                    Duration::from_secs(2),
+                    Duration::from_secs(2),
+                    Duration::from_millis(thread_rng().gen_range(0..1001)),
+                ),
             },
         };
 
         config.save(&path)?;
 
-        calimero_store::Store::open::<calimero_store::db::RocksDB>(
-            &calimero_store::config::StoreConfig {
-                path: path.join(config.store.path),
-            },
-        )?;
+        drop(Store::open::<RocksDB>(&StoreConfig::new(
+            path.join(config.store.path),
+        ))?);
 
         info!("Initialized a node in {:?}", path);
 

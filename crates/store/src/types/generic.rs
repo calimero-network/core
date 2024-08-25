@@ -1,14 +1,14 @@
 use crate::entry::Identity;
-use crate::key;
+use crate::key::Generic as GenericKey;
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
-#[derive(Eq, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenericData<'a> {
     value: Slice<'a>,
 }
 
-impl PredefinedEntry for key::Generic {
+impl PredefinedEntry for GenericKey {
     type Codec = Identity;
     type DataType<'a> = GenericData<'a>;
 }
@@ -19,7 +19,7 @@ impl<'a> From<Slice<'a>> for GenericData<'a> {
     }
 }
 
-impl<'a> AsRef<[u8]> for GenericData<'a> {
+impl AsRef<[u8]> for GenericData<'_> {
     fn as_ref(&self) -> &[u8] {
         self.value.as_ref()
     }

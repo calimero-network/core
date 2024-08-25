@@ -17,3 +17,6 @@ url = { workspace = true, features = ["serde"] }
 
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-primitives = { path = "../primitives" }
+
+[lints]
+workspace = true

@@ -1,22 +1,26 @@
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
+use eyre::Result as EyreResult;
 
+use crate::cli::context::create::CreateCommand;
+use crate::cli::context::join::JoinCommand;
+use crate::cli::context::list::ListCommand;
 use crate::cli::RootArgs;
 
 mod create;
 mod join;
 mod list;
 
-pub const EXAMPLES: &str = r#"
+pub const EXAMPLES: &str = r"
   # List all contexts
-  $ meroctl --home data/ --node-name node1 context ls
+  $ meroctl -- --home data --node-name node1 context ls
 
   # Create a new context
-  $ meroctl --home data/ --node-name node1 context create --application-id my-app-id
+  $ meroctl -- --home data --node-name node1 context create --application-id <appId>
 
   # Create a new context in dev mode
-  $ meroctl --home data/ --node-name node1 context create --dev --path /path/to/app --version 1.0.0
-"#;
+  $ meroctl -- --home data --node-name node1 context create --watch <path> -c <contextId>
+";
 
 #[derive(Debug, Parser)]
 #[command(about = "Manage contexts")]
@@ -32,13 +36,13 @@ pub struct ContextCommand {
 #[derive(Debug, Subcommand)]
 pub enum ContextSubCommands {
     #[command(alias = "ls")]
-    List(list::ListCommand),
-    Create(create::CreateCommand),
-    Join(join::JoinCommand),
+    List(ListCommand),
+    Create(Box<CreateCommand>),
+    Join(JoinCommand),
 }
 
 impl ContextCommand {
-    pub async fn run(self, args: RootArgs) -> eyre::Result<()> {
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         match self.subcommand {
             ContextSubCommands::List(list) => list.run(args).await,
             ContextSubCommands::Create(create) => create.run(args).await,

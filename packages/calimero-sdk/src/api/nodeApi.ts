@@ -148,6 +148,10 @@ export interface HealthStatus {
   status: string;
 }
 
+export interface ContextResponse {
+  identities: string[];
+}
+
 export interface NodeApi {
   login(
     loginRequest: LoginRequest,
@@ -162,5 +166,9 @@ export interface NodeApi {
     rpcBaseUrl: string,
     contextId: string,
   ): ApiResponse<RootKeyResponse>;
+  getContextIdentity(
+    rpcBaseUrl: string,
+    contextId: string,
+  ): ApiResponse<ContextResponse>;
   health(request: HealthRequest): ApiResponse<HealthStatus>;
 }

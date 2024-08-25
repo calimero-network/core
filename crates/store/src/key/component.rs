@@ -1,4 +1,4 @@
-use std::ops::Add;
+use core::ops::Add;
 
 use generic_array::typenum::Sum;
 use generic_array::ArrayLength;

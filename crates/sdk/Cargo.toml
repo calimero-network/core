@@ -16,3 +16,6 @@ calimero-sdk-macros = { path = "./macros" }
 
 [dev-dependencies]
 trybuild.workspace = true
+
+[lints]
+workspace = true

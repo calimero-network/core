@@ -11,6 +11,7 @@ use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
 use libp2p::identity::Keypair;
 use reqwest::StatusCode;
+use serde_json::to_string as to_json_string;
 use tracing::info;
 
 use crate::admin::service::{parse_api_error, ApiError};
@@ -27,10 +28,16 @@ pub async fn verify_node_signature(
         WalletType::NEAR { .. } => {
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::NEAR(metadata) => metadata,
-                _ => {
+                SignatureMetadataEnum::ETH(_) => {
                     return Err(ApiError {
                         status_code: StatusCode::BAD_REQUEST,
                         message: "Invalid metadata.".into(),
+                    })
+                }
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Unsupported metadata.".into(),
                     })
                 }
             };
@@ -65,10 +72,16 @@ pub async fn verify_node_signature(
         WalletType::ETH { .. } => {
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
-                _ => {
+                SignatureMetadataEnum::NEAR(_) => {
                     return Err(ApiError {
                         status_code: StatusCode::BAD_REQUEST,
                         message: "Invalid metadata.".into(),
+                    })
+                }
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Unsupported metadata.".into(),
                     })
                 }
             };
@@ -175,6 +188,10 @@ pub async fn verify_node_signature(
 
             Ok(true)
         }
+        _ => Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Unsupported wallet type.".into(),
+        }),
     }
 }
 
@@ -186,7 +203,8 @@ pub async fn validate_challenge(
     validate_challenge_content(&req.payload, keypair)?;
 
     // Check if node has created signature
-    verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload).await?;
+    let _ =
+        verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload).await?;
 
     // Check challenge to verify if it has expired or not
     if is_older_than_15_minutes(req.payload.message.timestamp) {
@@ -211,11 +229,11 @@ pub fn validate_challenge_content(payload: &Payload, keypair: &Keypair) -> Resul
 pub fn construct_node_challenge(
     message: &SignatureMessage,
 ) -> Result<NodeChallengeMessage, ApiError> {
-    Ok(NodeChallengeMessage {
-        nonce: message.nonce.clone(),
-        context_id: message.context_id,
-        timestamp: message.timestamp,
-    })
+    Ok(NodeChallengeMessage::new(
+        message.nonce.clone(),
+        message.context_id,
+        message.timestamp,
+    ))
 }
 
 pub fn decode_signature(encoded_sig: &String) -> Result<Vec<u8>, ApiError> {
@@ -226,7 +244,7 @@ pub fn decode_signature(encoded_sig: &String) -> Result<Vec<u8>, ApiError> {
 }
 
 pub fn serialize_node_challenge(challenge: &NodeChallengeMessage) -> Result<String, ApiError> {
-    serde_json::to_string(challenge).map_err(|_| ApiError {
+    to_json_string(challenge).map_err(|_| ApiError {
         status_code: StatusCode::INTERNAL_SERVER_ERROR,
         message: "Failed to deserialize challenge data".into(),
     })
@@ -247,6 +265,7 @@ pub fn verify_signature(
     }
 }
 
+#[must_use]
 pub fn is_older_than_15_minutes(timestamp: i64) -> bool {
     let timestamp_datetime = Utc.timestamp_opt(timestamp, 0).unwrap();
     let now = Utc::now();
@@ -257,18 +276,17 @@ pub fn is_older_than_15_minutes(timestamp: i64) -> bool {
 
 pub fn validate_root_key_exists(
     req: AddPublicKeyRequest,
-    store: &mut Store,
+    store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    let root_key_result =
-        get_root_key(store, req.wallet_metadata.signing_key.clone()).map_err(|e| {
-            info!("Error getting root key: {}", e);
-            ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: e.to_string(),
-            }
-        })?;
+    let root_key_result = get_root_key(store, &req.wallet_metadata.signing_key).map_err(|e| {
+        info!("Error getting root key: {}", e);
+        ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.to_string(),
+        }
+    })?;
 
-    match root_key_result {
+    drop(match root_key_result {
         Some(root_key) => root_key,
         None => {
             return Err(ApiError {
@@ -276,7 +294,7 @@ pub fn validate_root_key_exists(
                 message: "Root key does not exist".into(),
             });
         }
-    };
+    });
 
     Ok(req)
 }

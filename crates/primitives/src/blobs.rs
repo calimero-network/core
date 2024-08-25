@@ -1,18 +1,19 @@
-use std::fmt;
-use std::ops::Deref;
-use std::str::FromStr;
+use core::fmt::{self, Display, Formatter};
+use core::ops::Deref;
+use core::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
-use crate::hash::{Error as HashError, Hash};
+use crate::hash::{Hash, HashError};
 
-#[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct BlobId(Hash);
 
 impl BlobId {
-    pub fn hash(bytes: &[u8]) -> Self {
-        Self(Hash::new(bytes))
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
@@ -30,31 +31,25 @@ impl Deref for BlobId {
     }
 }
 
-impl BlobId {
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl fmt::Display for BlobId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for BlobId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
 
 impl From<BlobId> for String {
     fn from(id: BlobId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
 impl From<&BlobId> for String {
     fn from(id: &BlobId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, ThisError)]
 #[error(transparent)]
 pub struct InvalidBlobId(HashError);
 

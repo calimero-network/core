@@ -1,8 +1,8 @@
 macro_rules! parse_macro_input {
-    (@let $er:ident =) => { let mut $er = errors::Errors::default(); };
+    (@let $er:ident =) => { let $er = errors::Errors::default(); };
     (@let $er:ident = $item:expr) => {
         let item = proc_macro2::TokenStream::from($item);
-        let mut $er = errors::Errors::new(&item);
+        let $er = errors::Errors::new(&item);
     };
     ($({ $item:expr } =>)? $stream:ident as $ty:ty ) => {
         match syn::parse::<$ty>($stream) {
@@ -23,12 +23,12 @@ pub(crate) use parse_macro_input;
 macro_rules! infallible {
     ($body:block) => {{
         #[track_caller]
-        #[inline(always)]
-        fn infallible<T, E: std::fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> T {
+        #[inline]
+        fn infallible<T, E: core::fmt::Debug, F: FnOnce() -> Result<T, E>>(f: F) -> T {
             match f() {
                 Ok(value) => value,
                 Err(err) => {
-                    let location = std::panic::Location::caller();
+                    let location = core::panic::Location::caller();
                     unreachable!(
                         "infallible block failed: {:?} at {}:{}:{}",
                         err,
@@ -41,7 +41,7 @@ macro_rules! infallible {
         }
 
         infallible(
-            #[inline(always)]
+            #[inline]
             || $body,
         )
     }};

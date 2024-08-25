@@ -26,4 +26,7 @@ tempdir.workspace = true
 [features]
 borsh = ["borsh/derive"]
 serde = ["dep:serde", "dep:serde_json"]
-datatypes = ["borsh"]
+datatypes = ["borsh", "calimero-primitives/borsh"]
+
+[lints]
+workspace = true

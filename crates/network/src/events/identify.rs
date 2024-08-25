@@ -1,14 +1,14 @@
-use libp2p::identify;
+use libp2p::identify::Event;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
 use super::{EventHandler, EventLoop};
 
-impl EventHandler<identify::Event> for EventLoop {
-    async fn handle(&mut self, event: identify::Event) {
+impl EventHandler<Event> for EventLoop {
+    async fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "identify".yellow(), event);
 
-        if let identify::Event::Received { peer_id, info } = event {
+        if let Event::Received { peer_id, info } = event {
             self.discovery
                 .state
                 .update_peer_protocols(&peer_id, &info.protocols);

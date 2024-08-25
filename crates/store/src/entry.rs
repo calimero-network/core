@@ -1,3 +1,12 @@
+use std::io::Error as IoError;
+
+use borsh::{
+    from_slice as from_borsh_slice, to_vec as to_borsh_vec, BorshDeserialize, BorshSerialize,
+};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec, Error as JsonError};
+
 use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
@@ -19,10 +28,12 @@ pub trait Entry {
 pub trait Codec<'a, T> {
     type Error;
 
-    fn encode(value: &T) -> Result<Slice, Self::Error>;
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error>;
     fn decode(bytes: Slice<'a>) -> Result<T, Self::Error>;
 }
 
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Identity {}
 
 impl<'a, T, E> Codec<'a, T> for Identity
@@ -31,7 +42,7 @@ where
 {
     type Error = E;
 
-    fn encode(value: &T) -> Result<Slice, Self::Error> {
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
         Ok(value.into())
     }
 
@@ -41,39 +52,43 @@ where
 }
 
 #[cfg(feature = "serde")]
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Json {}
 
 #[cfg(feature = "serde")]
 impl<T> Codec<'_, T> for Json
 where
-    T: serde::Serialize + serde::de::DeserializeOwned,
+    T: Serialize + DeserializeOwned,
 {
-    type Error = serde_json::Error;
+    type Error = JsonError;
 
-    fn encode(value: &T) -> Result<Slice, Self::Error> {
-        serde_json::to_vec(value).map(Into::into)
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
+        to_json_vec(value).map(Into::into)
     }
 
-    fn decode(bytes: Slice) -> Result<T, Self::Error> {
-        serde_json::from_slice(&bytes)
+    fn decode(bytes: Slice<'_>) -> Result<T, Self::Error> {
+        from_json_slice(&bytes)
     }
 }
 
 #[cfg(feature = "borsh")]
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Borsh {}
 
 #[cfg(feature = "borsh")]
 impl<T> Codec<'_, T> for Borsh
 where
-    T: borsh::BorshSerialize + borsh::BorshDeserialize,
+    T: BorshSerialize + BorshDeserialize,
 {
-    type Error = std::io::Error;
+    type Error = IoError;
 
-    fn encode(value: &T) -> Result<Slice, Self::Error> {
-        borsh::to_vec(&value).map(Into::into)
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
+        to_borsh_vec(&value).map(Into::into)
     }
 
-    fn decode(bytes: Slice) -> Result<T, Self::Error> {
-        borsh::from_slice(&bytes)
+    fn decode(bytes: Slice<'_>) -> Result<T, Self::Error> {
+        from_borsh_slice(&bytes)
     }
 }

@@ -1,5 +1,7 @@
-use std::any::TypeId;
-use std::marker::PhantomData;
+use core::any::{type_name, TypeId};
+use core::marker::PhantomData;
+use core::mem::{transmute, ManuallyDrop};
+use core::ptr;
 use std::rc::Rc;
 
 // https://github.com/sagebind/castaway/pull/14
@@ -24,7 +26,7 @@ fn non_static_type_id<T: ?Sized>() -> TypeId {
 
     let phantom_data = PhantomData::<T>;
     NonStaticAny::get_type_id(unsafe {
-        std::mem::transmute::<&dyn NonStaticAny, &(dyn NonStaticAny + 'static)>(&phantom_data)
+        transmute::<&dyn NonStaticAny, &(dyn NonStaticAny + 'static)>(&phantom_data)
     })
 }
 
@@ -34,18 +36,19 @@ pub trait Reflect: DynReflect {
     }
 
     fn type_name(&self) -> &'static str {
-        std::any::type_name::<Self>()
+        type_name::<Self>()
     }
 }
 
-impl<'a> dyn Reflect + 'a {
+impl dyn Reflect + '_ {
     pub fn is<T: Reflect>(&self) -> bool {
         self.type_id() == non_static_type_id::<T>()
     }
 
     pub fn downcast_ref<T: Reflect>(&self) -> Option<&T> {
         if self.is::<T>() {
-            return Some(unsafe { &*(self as *const dyn Reflect as *const T) });
+            #[allow(trivial_casts)]
+            return Some(unsafe { &*ptr::from_ref::<dyn Reflect>(self).cast::<T>() });
         }
 
         None
@@ -53,7 +56,7 @@ impl<'a> dyn Reflect + 'a {
 
     pub fn downcast_box<T: Reflect>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
         if self.is::<T>() {
-            return Ok(unsafe { Box::from_raw(Box::into_raw(self) as *mut T) });
+            return Ok(unsafe { Box::from_raw(Box::into_raw(self).cast::<T>()) });
         }
         Err(self)
     }
@@ -121,7 +124,7 @@ where
         match f(unsafe { Box::from_raw(ptr) }.as_dyn_box()) {
             Ok(value) => Ok(value),
             Err(value) => {
-                let _ = std::mem::ManuallyDrop::new(value);
+                let _ignore = ManuallyDrop::new(value);
                 Err(unsafe { Box::from_raw(ptr) })
             }
         }
@@ -138,7 +141,7 @@ where
         match f(unsafe { Rc::from_raw(ptr) }.as_dyn_rc()) {
             Ok(value) => Ok(value),
             Err(value) => {
-                let _ = std::mem::ManuallyDrop::new(value);
+                let _ignore = ManuallyDrop::new(value);
                 Err(unsafe { Rc::from_raw(ptr) })
             }
         }

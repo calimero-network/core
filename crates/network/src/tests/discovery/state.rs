@@ -1,3 +1,5 @@
+use libp2p::rendezvous::Namespace;
+
 use super::*;
 
 #[test]
@@ -9,7 +11,7 @@ fn test_get_preferred_addr() {
 
     assert_eq!(peer_info.get_preferred_addr(), None);
 
-    peer_info.addrs.insert(tcp_addr_1.clone());
+    let _ = peer_info.addrs.insert(tcp_addr_1.clone());
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -17,10 +19,10 @@ fn test_get_preferred_addr() {
             .clone()
             .pop()
             .unwrap(),
-        libp2p::core::multiaddr::Protocol::Tcp(4001)
+        Protocol::Tcp(4001)
     );
 
-    peer_info.addrs.insert(quic_addr.clone());
+    let _ = peer_info.addrs.insert(quic_addr.clone());
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -28,10 +30,10 @@ fn test_get_preferred_addr() {
             .clone()
             .pop()
             .unwrap(),
-        libp2p::core::multiaddr::Protocol::Udp(4001)
+        Protocol::Udp(4001)
     );
 
-    peer_info.addrs.insert(tcp_addr_2.clone());
+    let _ = peer_info.addrs.insert(tcp_addr_2.clone());
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -39,7 +41,7 @@ fn test_get_preferred_addr() {
             .clone()
             .pop()
             .unwrap(),
-        libp2p::core::multiaddr::Protocol::Udp(4001)
+        Protocol::Udp(4001)
     );
 }
 
@@ -75,13 +77,13 @@ fn test_is_rendezvous_discovery_throttled() {
     assert_eq!(peer_info.is_rendezvous_discover_throttled(1.0), false);
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
-        last_discovery_at: Some(time::Instant::now() - time::Duration::from_secs(30)),
+        last_discovery_at: Some(Instant::now() - Duration::from_secs(30)),
         ..Default::default()
     });
     assert_eq!(peer_info.is_rendezvous_discover_throttled(1.0), true);
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
-        last_discovery_at: Some(time::Instant::now() - time::Duration::from_secs(61)),
+        last_discovery_at: Some(Instant::now() - Duration::from_secs(61)),
         ..Default::default()
     });
     assert_eq!(peer_info.is_rendezvous_discover_throttled(1.0), false);
@@ -123,12 +125,10 @@ fn test_state_mutations() {
     let peer_id = PeerId::random();
     let tcp_addr: Multiaddr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
     let quic_addr: Multiaddr = "/ip4/127.0.0.1/udp/4001".parse().unwrap();
-    let protocols = vec![libp2p::relay::HOP_PROTOCOL_NAME, RENDEZVOUS_PROTOCOL_NAME];
+    let protocols = vec![HOP_PROTOCOL_NAME, RENDEZVOUS_PROTOCOL_NAME];
     let mdns_discovery = PeerDiscoveryMechanism::Mdns;
     let rendezvous_discovery = PeerDiscoveryMechanism::Rendezvous;
-    let cookie = libp2p::rendezvous::Cookie::for_namespace(
-        libp2p::rendezvous::Namespace::from_static("test"),
-    );
+    let cookie = Cookie::for_namespace(Namespace::from_static("test"));
     let relay_status = RelayReservationStatus::Accepted;
     let rendezvous_status = RendezvousRegistrationStatus::Registered;
 
@@ -165,7 +165,7 @@ fn test_state_mutations() {
     assert!(state.is_peer_discovered_via(&peer_id, mdns_discovery));
     assert!(state.is_peer_discovered_via(&peer_id, rendezvous_discovery));
 
-    state.update_rendezvous_cookie(&peer_id, cookie.clone());
+    state.update_rendezvous_cookie(&peer_id, &cookie);
     state.update_rendezvous_registration_status(&peer_id, rendezvous_status);
     state.update_relay_reservation_status(&peer_id, relay_status);
     assert_eq!(

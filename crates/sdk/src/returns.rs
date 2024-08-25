@@ -1,16 +1,20 @@
 use serde::Serialize;
+use serde_json::{to_vec as to_json_vec, Result as JsonResult};
+
+use crate::returns::private::Sealed;
 
 mod private {
     pub trait Sealed {}
 }
 
-pub trait IntoResult: private::Sealed {
+pub trait IntoResult: Sealed {
     type Ok;
     type Err;
 
     fn into_result(self) -> ReturnsResult<Self::Ok, Self::Err>;
 }
 
+#[derive(Debug)]
 pub struct ReturnsResult<T, E>(Result<T, E>);
 
 impl<T, E> ReturnsResult<T, E>
@@ -19,35 +23,36 @@ where
     E: Serialize,
 {
     #[inline]
-    pub fn to_json(&self) -> serde_json::Result<Result<Vec<u8>, Vec<u8>>> {
+    pub fn to_json(&self) -> JsonResult<Result<Vec<u8>, Vec<u8>>> {
         Ok(match self {
-            ReturnsResult(Ok(ok)) => Ok(serde_json::to_vec(&ok)?),
-            ReturnsResult(Err(err)) => Err(serde_json::to_vec(&err)?),
+            Self(Ok(ok)) => Ok(to_json_vec(&ok)?),
+            Self(Err(err)) => Err(to_json_vec(&err)?),
         })
     }
 }
 
+#[derive(Debug)]
 pub struct WrappedReturn<T>(T);
 
 impl<T> WrappedReturn<T> {
-    #[inline(always)]
-    pub fn new(value: T) -> Self {
-        WrappedReturn(value)
+    #[inline]
+    pub const fn new(value: T) -> Self {
+        Self(value)
     }
 }
 
 impl<T, E> WrappedReturn<Result<T, E>> {
-    #[inline(always)]
+    #[inline]
     pub fn into_result(self) -> ReturnsResult<T, E> {
-        let WrappedReturn(value) = self;
+        let Self(value) = self;
         ReturnsResult(value)
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub enum Infallible {}
 
-impl<T> private::Sealed for WrappedReturn<T> {}
+impl<T> Sealed for WrappedReturn<T> {}
 impl<T> IntoResult for WrappedReturn<T>
 where
     T: Serialize,
@@ -55,9 +60,9 @@ where
     type Ok = T;
     type Err = Infallible;
 
-    #[inline(always)]
+    #[inline]
     fn into_result(self) -> ReturnsResult<Self::Ok, Self::Err> {
-        let WrappedReturn(value) = self;
+        let Self(value) = self;
         ReturnsResult(Ok(value))
     }
 }
