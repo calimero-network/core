@@ -125,7 +125,7 @@ pub struct ContextUser {
     pub joined_at: u64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 #[serde(tag = "type")]
 #[non_exhaustive]

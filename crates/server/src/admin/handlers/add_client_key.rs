@@ -100,7 +100,7 @@ pub fn store_client_key(
 ) -> Result<AddPublicKeyRequest, ApiError> {
     #[allow(clippy::cast_sign_loss)]
     let client_key = ClientKey::new(
-        req.wallet_metadata.wallet_type,
+        req.wallet_metadata.wallet_type.clone(),
         req.payload.message.public_key.clone(),
         Utc::now().timestamp_millis() as u64,
         req.context_id,
@@ -121,7 +121,7 @@ fn check_root_key(
         //first login so store root key as well
         let _ = store_root_key(
             req.wallet_metadata.signing_key.clone(),
-            req.wallet_metadata.wallet_type,
+            req.wallet_metadata.wallet_type.clone(),
             store,
         )?;
         Ok(req)
