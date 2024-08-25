@@ -2,9 +2,11 @@ use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::store::iterable_map::IterableMap;
 use near_sdk::{env, near_bindgen, require, AccountId, BorshStorageKey};
+use semver::Version;
 
-#[derive(BorshStorageKey, BorshSerialize)]
+#[derive(BorshSerialize, BorshStorageKey, Debug)]
 #[borsh(crate = "near_sdk::borsh")]
+#[non_exhaustive]
 pub enum StorageKeys {
     Packages,
     Release { package: String },
@@ -13,17 +15,19 @@ pub enum StorageKeys {
 
 // TODO: enable ABI generation support
 #[near_bindgen]
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(BorshDeserialize, BorshSerialize, Debug)]
 #[borsh(crate = "near_sdk::borsh")]
+#[non_exhaustive]
 pub struct PackageManager {
     pub packages: IterableMap<String, Package>,
     pub releases: IterableMap<String, IterableMap<String, Release>>,
 }
 
 //  TODO: add multiple owners
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
+#[non_exhaustive]
 pub struct Package {
     pub id: String,
     pub name: String,
@@ -35,9 +39,10 @@ pub struct Package {
 // TODO: add a checksum in the future
 // TODO: figure out status of reproduciable builds
 // TODO: add better error checking for URL path
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Deserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 #[borsh(crate = "near_sdk::borsh")]
+#[non_exhaustive]
 pub struct Release {
     pub version: String,
     pub notes: String,
@@ -57,12 +62,12 @@ impl Default for PackageManager {
 #[near_bindgen]
 impl PackageManager {
     pub fn add_package(&mut self, name: String, description: String, repository: String) -> String {
-        let id_hash = PackageManager::calculate_id_hash(&name);
+        let id_hash = Self::calculate_id_hash(&name);
         if self.packages.contains_key(&id_hash) {
             env::panic_str("Package already exists.")
         }
 
-        self.packages.insert(
+        drop(self.packages.insert(
             id_hash.clone(),
             Package::new(
                 id_hash.clone(),
@@ -71,7 +76,7 @@ impl PackageManager {
                 repository,
                 env::signer_account_id(),
             ),
-        );
+        ));
         id_hash
     }
 
@@ -83,31 +88,27 @@ impl PackageManager {
 
     pub fn add_release(
         &mut self,
-        name: String,
+        name: &str,
         version: String,
         notes: String,
         path: String,
         hash: String,
     ) {
-        let id_hash = PackageManager::calculate_id_hash(&name);
+        let id_hash = Self::calculate_id_hash(name);
         // Get the last release version for the package
         let last_release_version = self.releases.get(&id_hash).map(|version_map| {
             version_map
                 .keys()
-                .max_by(|a, b| {
-                    semver::Version::parse(a)
-                        .unwrap()
-                        .cmp(&semver::Version::parse(b).unwrap())
-                })
+                .max_by(|a, b| Version::parse(a).unwrap().cmp(&Version::parse(b).unwrap()))
                 .expect("No versions found for the package")
         });
 
         // Check if the last release version exists and is less than the current version
         if let Some(last_version) = last_release_version {
             let last_version =
-                semver::Version::parse(last_version).expect("Failed to parse last release version");
+                Version::parse(last_version).expect("Failed to parse last release version");
             let current_version =
-                semver::Version::parse(&version).expect("Failed to parse current version");
+                Version::parse(&version).expect("Failed to parse current version");
             if current_version <= last_version {
                 env::panic_str(
                     "New release version must be greater than the last release version.",
@@ -122,22 +123,24 @@ impl PackageManager {
         }
 
         // Insert the new release
-        self.releases
-            .entry(id_hash.clone())
-            .or_insert_with(|| {
-                IterableMap::new(StorageKeys::Release {
-                    package: id_hash.clone(),
+        drop(
+            self.releases
+                .entry(id_hash.clone())
+                .or_insert_with(|| {
+                    IterableMap::new(StorageKeys::Release {
+                        package: id_hash.clone(),
+                    })
                 })
-            })
-            .insert(
-                version.clone(),
-                Release {
-                    version,
-                    notes,
-                    path,
-                    hash,
-                },
-            );
+                .insert(
+                    version.clone(),
+                    Release {
+                        version,
+                        notes,
+                        path,
+                        hash,
+                    },
+                ),
+        );
     }
 
     pub fn get_packages(&self, offset: usize, limit: usize) -> Vec<Package> {
@@ -149,9 +152,9 @@ impl PackageManager {
             .collect()
     }
 
-    pub fn get_releases(&self, id: String, offset: usize, limit: usize) -> Vec<&Release> {
+    pub fn get_releases(&self, id: &str, offset: usize, limit: usize) -> Vec<&Release> {
         self.releases
-            .get(&id)
+            .get(id)
             .expect("Package doesn't exist.")
             .iter()
             .skip(offset)
@@ -160,15 +163,15 @@ impl PackageManager {
             .collect()
     }
 
-    pub fn get_package(&self, id: String) -> &Package {
-        self.packages.get(&id).expect("Package doesn't exist")
+    pub fn get_package(&self, id: &str) -> &Package {
+        self.packages.get(id).expect("Package doesn't exist")
     }
 
-    pub fn get_release(&self, id: String, version: String) -> &Release {
+    pub fn get_release(&self, id: &str, version: &str) -> &Release {
         self.releases
-            .get(&id)
+            .get(id)
             .expect("Package doesn't exist")
-            .get(&version)
+            .get(version)
             .expect("Version doesn't exist")
     }
 
@@ -186,7 +189,7 @@ impl PackageManager {
 }
 
 impl Package {
-    fn new(
+    const fn new(
         id: String,
         name: String,
         description: String,
@@ -201,4 +204,9 @@ impl Package {
             owner,
         }
     }
+}
+
+#[cfg(test)]
+mod integration_tests_package_usage {
+    use {near_workspaces as _, serde_json as _, tokio as _};
 }

@@ -1,9 +1,16 @@
-use std::marker::PhantomData;
+use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
+use core::slice::{from_raw_parts, from_raw_parts_mut};
+use core::str::{from_utf8, Utf8Error};
 
 use super::Pointer;
 
+// TODO: It does not make sense to have Slice.len as a u64 internally, and then
+// TODO: cast to usize everywhere, especially as this may fail on 32-bit
+// TODO: systems. Therefore, at some point this should be assessed, and ideally
+// TODO: the type used would be unified.
 #[repr(C)]
-#[derive(Eq, Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Slice<'a, T> {
     ptr: Pointer<T>,
     len: u64,
@@ -16,12 +23,12 @@ impl<'a, T> Slice<'a, T> {
         let slice = value.as_ref();
         Self {
             ptr: Pointer::new(slice.as_ptr()),
-            len: slice.len() as _,
+            len: slice.len() as u64,
             _phantom: PhantomData,
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn empty() -> Self {
         Self {
             ptr: Pointer::null(),
@@ -30,19 +37,24 @@ impl<'a, T> Slice<'a, T> {
         }
     }
 
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.len as _
+    // TODO: This converts from u64 to usize, which may fail on 32-bit systems,
+    // TODO: but this function is meant to be infallible. That is a concern, as
+    // TODO: we want to eliminate all potential panics. This needs future
+    // TODO: assessment.
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.len as usize
     }
 
     #[inline]
-    fn as_slice(&self) -> &'a [T] {
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len()) }
+    const fn as_slice(&self) -> &'a [T] {
+        unsafe { from_raw_parts(self.ptr.as_ptr(), self.len()) }
     }
 
     #[inline]
     fn as_mut_slice(&mut self) -> &'a mut [T] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_mut_ptr(), self.len()) }
+        unsafe { from_raw_parts_mut(self.ptr.as_mut_ptr(), self.len()) }
     }
 }
 
@@ -74,7 +86,7 @@ impl<'a, T> From<&'a mut [T]> for Slice<'a, T> {
     }
 }
 
-impl<'a, T> std::ops::Deref for Slice<'a, T> {
+impl<'a, T> Deref for Slice<'a, T> {
     type Target = [T];
 
     #[inline]
@@ -83,7 +95,7 @@ impl<'a, T> std::ops::Deref for Slice<'a, T> {
     }
 }
 
-impl<'a, T> std::ops::DerefMut for Slice<'a, T> {
+impl<'a, T> DerefMut for Slice<'a, T> {
     #[inline]
     fn deref_mut(&mut self) -> &'a mut Self::Target {
         self.as_mut_slice()
@@ -101,9 +113,9 @@ impl<'a> From<&'a str> for Buffer<'a> {
 }
 
 impl<'a> TryFrom<Buffer<'a>> for &'a str {
-    type Error = std::str::Utf8Error;
+    type Error = Utf8Error;
 
     fn try_from(buf: Buffer<'a>) -> Result<Self, Self::Error> {
-        std::str::from_utf8(buf.as_slice())
+        from_utf8(buf.as_slice())
     }
 }

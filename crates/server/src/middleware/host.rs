@@ -99,7 +99,9 @@ pub fn host(headers: &HeaderMap, listen: Vec<Multiaddr>) -> Result<(), Unauthori
     if ip_caller_host == *server_host {
         return Ok(());
     }
-    Err(UnauthorizedError::new("Unauthorized: Origin does not match the expected address."))
+    Err(UnauthorizedError::new(
+        "Unauthorized: Origin does not match the expected address.",
+    ))
 }
 
 fn normalize_origin(origin: &str) -> String {

@@ -13,10 +13,12 @@ crate-type = ["rlib", "cdylib"]
 hex.workspace = true
 near-sdk.workspace = true
 semver.workspace = true
-sha2.workspace = true
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-workspaces.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[lints]
+workspace = true

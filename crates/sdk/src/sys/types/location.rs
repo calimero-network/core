@@ -1,3 +1,5 @@
+use core::panic::Location as PanicLocation;
+
 use super::Buffer;
 
 #[repr(C)]
@@ -7,8 +9,8 @@ pub struct Location<'a> {
     column: u32,
 }
 
-impl<'a> Location<'a> {
-    #[inline(always)]
+impl Location<'_> {
+    #[inline]
     pub fn unknown() -> Self {
         Location {
             file: Buffer::empty(),
@@ -20,7 +22,7 @@ impl<'a> Location<'a> {
     #[track_caller]
     #[inline]
     pub fn caller() -> Self {
-        std::panic::Location::caller().into()
+        PanicLocation::caller().into()
     }
 
     #[inline]
@@ -30,20 +32,20 @@ impl<'a> Location<'a> {
             .expect("this should always be a valid utf8 string") // todo! test if this pulls in format code
     }
 
-    #[inline(always)]
-    pub fn line(&self) -> u32 {
+    #[inline]
+    pub const fn line(&self) -> u32 {
         self.line
     }
 
-    #[inline(always)]
-    pub fn column(&self) -> u32 {
+    #[inline]
+    pub const fn column(&self) -> u32 {
         self.column
     }
 }
 
-impl<'a> From<&'a std::panic::Location<'_>> for Location<'a> {
+impl<'a> From<&'a PanicLocation<'_>> for Location<'a> {
     #[inline]
-    fn from(location: &'a std::panic::Location<'_>) -> Self {
+    fn from(location: &'a PanicLocation<'_>) -> Self {
         Location {
             file: Buffer::from(location.file()),
             line: location.line(),
@@ -52,9 +54,9 @@ impl<'a> From<&'a std::panic::Location<'_>> for Location<'a> {
     }
 }
 
-impl<'a> From<Option<&'a std::panic::Location<'_>>> for Location<'a> {
+impl<'a> From<Option<&'a PanicLocation<'_>>> for Location<'a> {
     #[inline]
-    fn from(location: Option<&'a std::panic::Location<'_>>) -> Self {
+    fn from(location: Option<&'a PanicLocation<'_>>) -> Self {
         location.map_or_else(Location::unknown, Location::from)
     }
 }

@@ -1,31 +1,33 @@
-use std::convert::Infallible;
-use std::fmt;
+use core::convert::Infallible;
+use core::fmt::{self, Debug, Formatter};
 
+use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_primitives::application::ApplicationId as PrimitiveApplicationId;
 use generic_array::typenum::U32;
 
 use crate::db::Column;
 use crate::key::component::KeyComponent;
 use crate::key::{AsKeyParts, FromKeyParts, Key};
 
+#[derive(Clone, Copy, Debug)]
 pub struct ApplicationId;
 
 impl KeyComponent for ApplicationId {
     type LEN = U32;
 }
 
-#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
-#[cfg_attr(
-    feature = "borsh",
-    derive(borsh::BorshSerialize, borsh::BorshDeserialize)
-)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ApplicationMeta(Key<ApplicationId>);
 
 impl ApplicationMeta {
-    pub fn new(application_id: calimero_primitives::application::ApplicationId) -> Self {
+    #[must_use]
+    pub fn new(application_id: PrimitiveApplicationId) -> Self {
         Self(Key((*application_id).into()))
     }
 
-    pub fn application_id(&self) -> calimero_primitives::application::ApplicationId {
+    #[must_use]
+    pub fn application_id(&self) -> PrimitiveApplicationId {
         (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
     }
 }
@@ -50,8 +52,8 @@ impl FromKeyParts for ApplicationMeta {
     }
 }
 
-impl fmt::Debug for ApplicationMeta {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for ApplicationMeta {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Application")
             .field("id", &self.application_id())
             .finish()

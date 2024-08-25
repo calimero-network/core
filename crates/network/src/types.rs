@@ -1,14 +1,16 @@
-use libp2p::core::transport;
+use libp2p::core::transport::ListenerId;
 pub use libp2p::gossipsub::{IdentTopic, Message, MessageId, TopicHash};
 pub use libp2p::identity::PeerId;
+use multiaddr::Multiaddr;
 
-use super::stream;
+use crate::stream::Stream;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum NetworkEvent {
     ListeningOn {
-        listener_id: transport::ListenerId,
-        address: libp2p::Multiaddr,
+        listener_id: ListenerId,
+        address: Multiaddr,
     },
     Subscribed {
         peer_id: PeerId,
@@ -20,6 +22,6 @@ pub enum NetworkEvent {
     },
     StreamOpened {
         peer_id: PeerId,
-        stream: Box<stream::Stream>,
+        stream: Box<Stream>,
     },
 }

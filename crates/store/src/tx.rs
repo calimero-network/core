@@ -1,55 +1,61 @@
-use std::collections::{btree_map, BTreeMap};
-use std::ops::Bound;
+use core::ops::Bound;
+use std::collections::btree_map::{Iter as BTreeIter, Range};
+use std::collections::BTreeMap;
 
 use crate::db::Column;
 use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Transaction<'a> {
     cols: BTreeMap<Column, BTreeMap<Slice<'a>, Operation<'a>>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Operation<'a> {
     Put { value: Slice<'a> },
     Delete,
 }
 
 impl<'a> Transaction<'a> {
-    pub(crate) fn raw_get(&self, column: Column, key: &[u8]) -> Option<&Operation> {
+    pub(crate) fn raw_get(&self, column: Column, key: &[u8]) -> Option<&Operation<'_>> {
         self.cols.get(&column).and_then(|ops| ops.get(key))
     }
 
-    pub fn get<K: AsKeyParts>(&self, key: &K) -> Option<&Operation> {
+    pub fn get<K: AsKeyParts>(&self, key: &K) -> Option<&Operation<'_>> {
         self.cols
             .get(&K::column())
             .and_then(|ops| ops.get(key.as_key().as_bytes()))
     }
 
     pub fn put<K: AsKeyParts>(&mut self, key: &'a K, value: Slice<'a>) {
-        self.cols
-            .entry(K::column())
-            .or_default()
-            .insert(key.as_key().as_slice(), Operation::Put { value });
+        drop(
+            self.cols
+                .entry(K::column())
+                .or_default()
+                .insert(key.as_key().as_slice(), Operation::Put { value }),
+        );
     }
 
     pub fn delete<K: AsKeyParts>(&mut self, key: &'a K) {
-        self.cols
-            .entry(K::column())
-            .or_default()
-            .insert(key.as_key().as_slice(), Operation::Delete);
+        drop(
+            self.cols
+                .entry(K::column())
+                .or_default()
+                .insert(key.as_key().as_slice(), Operation::Delete),
+        );
     }
 
+    #[allow(clippy::use_self)]
     pub fn merge(&mut self, other: &Transaction<'a>) {
         for (entry, op) in other.iter() {
-            self.cols.entry(entry.column).or_default().insert(
+            drop(self.cols.entry(entry.column).or_default().insert(
                 match op {
                     Operation::Put { value } => value.clone(),
                     Operation::Delete => unreachable!(),
                 },
                 op.clone(),
-            );
+            ));
         }
     }
 
@@ -72,8 +78,8 @@ impl<'a> Transaction<'a> {
     }
 }
 
-pub(crate) struct ColRange<'this, 'a> {
-    iter: Option<btree_map::Range<'this, Slice<'a>, Operation<'a>>>,
+pub struct ColRange<'this, 'a> {
+    iter: Option<Range<'this, Slice<'a>, Operation<'a>>>,
 }
 
 impl<'this, 'a> Iterator for ColRange<'this, 'a> {
@@ -84,30 +90,32 @@ impl<'this, 'a> Iterator for ColRange<'this, 'a> {
     }
 }
 
-#[derive(Eq, Ord, Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Entry<'a> {
     column: Column,
     key: &'a [u8],
 }
 
 impl<'a> Entry<'a> {
-    pub fn key(&self) -> &'a [u8] {
+    pub const fn key(&self) -> &'a [u8] {
         self.key
     }
 
-    pub fn column(&self) -> Column {
+    pub const fn column(&self) -> Column {
         self.column
     }
 }
 
+#[derive(Debug)]
 pub struct Iter<'this, 'a> {
-    iter: btree_map::Iter<'this, Column, BTreeMap<Slice<'a>, Operation<'a>>>,
+    iter: BTreeIter<'this, Column, BTreeMap<Slice<'a>, Operation<'a>>>,
     cursor: Option<IterCursor<'this, 'a>>,
 }
 
+#[derive(Debug)]
 struct IterCursor<'this, 'a> {
     column: Column,
-    iter: btree_map::Iter<'this, Slice<'a>, Operation<'a>>,
+    iter: BTreeIter<'this, Slice<'a>, Operation<'a>>,
 }
 
 impl<'this, 'a> Iterator for Iter<'this, 'a> {

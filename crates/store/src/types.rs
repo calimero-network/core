@@ -1,5 +1,5 @@
 use crate::entry::{Codec, Entry};
-use crate::key;
+use crate::key::AsKeyParts;
 
 mod application;
 mod blobs;
@@ -13,7 +13,7 @@ pub use context::{
 };
 pub use generic::GenericData;
 
-pub trait PredefinedEntry: key::AsKeyParts {
+pub trait PredefinedEntry: AsKeyParts {
     type Codec: for<'a> Codec<'a, Self::DataType<'a>>;
     type DataType<'a>;
 }

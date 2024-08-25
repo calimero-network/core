@@ -1,29 +1,37 @@
+use std::env::args;
+use std::process::exit;
+
 use calimero_blobstore::{BlobManager, FileSystem};
+use calimero_store::config::StoreConfig;
+use calimero_store::db::RocksDB;
+use calimero_store::Store;
+use eyre::Result as EyreResult;
 use futures_util::TryStreamExt;
-use tokio::io::{self, AsyncWriteExt};
+use tokio::io::{stdin, stdout, AsyncWriteExt};
 use tokio_util::compat::TokioAsyncReadCompatExt;
+use tokio_util::io::ReaderStream;
 
 const DATA_DIR: &'static str = "blob-tests/data";
 const BLOB_DIR: &'static str = "blob-tests/blob";
 
 #[tokio::main]
-async fn main() -> eyre::Result<()> {
-    let config = calimero_store::config::StoreConfig {
+async fn main() -> EyreResult<()> {
+    let config = StoreConfig {
         path: DATA_DIR.into(),
     };
 
-    let data_store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config)?;
+    let data_store = Store::open::<RocksDB>(&config)?;
 
     let blob_store = FileSystem::new(BLOB_DIR.into()).await?;
 
     let blob_mgr = BlobManager::new(data_store, blob_store);
 
-    let mut args = std::env::args().skip(1);
+    let mut args = args().skip(1);
 
     match args.next() {
         Some(hash) => match blob_mgr.get(hash.parse()?).await? {
             Some(mut blob) => {
-                let mut stdout = io::stdout();
+                let mut stdout = stdout();
 
                 while let Some(chunk) = blob.try_next().await? {
                     stdout.write_all(&chunk).await?;
@@ -31,11 +39,11 @@ async fn main() -> eyre::Result<()> {
             }
             None => {
                 eprintln!("Blob does not exist");
-                std::process::exit(1);
+                exit(1);
             }
         },
         None => {
-            let stdin = io::stdin().compat();
+            let stdin = stdin().compat();
 
             println!("{}", blob_mgr.put_sized(None, stdin).await?);
         }

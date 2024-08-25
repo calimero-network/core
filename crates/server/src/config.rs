@@ -1,6 +1,11 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use multiaddr::Multiaddr;
+use libp2p::identity::Keypair;
+use multiaddr::{Multiaddr, Protocol};
+
+use crate::admin::service::AdminConfig;
+use crate::jsonrpc::JsonRpcConfig;
+use crate::ws::WsConfig;
 
 pub const DEFAULT_PORT: u16 = 2528; // (CHAT in T9) + 100
 pub const DEFAULT_ADDRS: [IpAddr; 2] = [
@@ -9,24 +14,45 @@ pub const DEFAULT_ADDRS: [IpAddr; 2] = [
 ];
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
-    pub identity: libp2p::identity::Keypair,
+    pub identity: Keypair,
 
     #[cfg(feature = "admin")]
-    pub admin: Option<crate::admin::service::AdminConfig>,
+    pub admin: Option<AdminConfig>,
 
     #[cfg(feature = "jsonrpc")]
-    pub jsonrpc: Option<crate::jsonrpc::JsonRpcConfig>,
+    pub jsonrpc: Option<JsonRpcConfig>,
 
     #[cfg(feature = "websocket")]
-    pub websocket: Option<crate::ws::WsConfig>,
+    pub websocket: Option<WsConfig>,
 }
 
+impl ServerConfig {
+    #[must_use]
+    pub const fn new(
+        listen: Vec<Multiaddr>,
+        identity: Keypair,
+        admin: Option<AdminConfig>,
+        jsonrpc: Option<JsonRpcConfig>,
+        websocket: Option<WsConfig>,
+    ) -> Self {
+        Self {
+            listen,
+            identity,
+            admin,
+            jsonrpc,
+            websocket,
+        }
+    }
+}
+
+#[must_use]
 pub fn default_addrs() -> Vec<Multiaddr> {
     DEFAULT_ADDRS
         .into_iter()
-        .map(|addr| Multiaddr::from(addr).with(multiaddr::Protocol::Tcp(DEFAULT_PORT)))
+        .map(|addr| Multiaddr::from(addr).with(Protocol::Tcp(DEFAULT_PORT)))
         .collect()
 }

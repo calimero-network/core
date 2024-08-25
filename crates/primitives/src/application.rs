@@ -1,14 +1,16 @@
-use std::fmt;
-use std::ops::Deref;
-use std::str::FromStr;
+use core::fmt::{self, Display, Formatter};
+use core::ops::Deref;
+use core::str::FromStr;
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use thiserror::Error as ThisError;
+use url::{ParseError, Url};
 
 use crate::blobs::BlobId;
-use crate::hash::{Error as HashError, Hash};
+use crate::hash::{Hash, HashError};
 
-#[derive(Eq, Copy, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 // todo! define macros that construct newtypes
 // todo! wrapping Hash<N> with this interface
 pub struct ApplicationId(Hash);
@@ -28,30 +30,31 @@ impl Deref for ApplicationId {
 }
 
 impl ApplicationId {
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
 }
 
-impl fmt::Display for ApplicationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for ApplicationId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
 
 impl From<ApplicationId> for String {
     fn from(id: ApplicationId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
 impl From<&ApplicationId> for String {
     fn from(id: &ApplicationId) -> Self {
-        id.as_str().to_string()
+        id.as_str().to_owned()
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, ThisError)]
 #[error(transparent)]
 pub struct InvalidApplicationId(HashError);
 
@@ -63,47 +66,68 @@ impl FromStr for ApplicationId {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct ApplicationSource(url::Url);
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ApplicationSource(Url);
 
 impl FromStr for ApplicationSource {
-    type Err = url::ParseError;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.parse().map(Self)
     }
 }
 
-impl From<url::Url> for ApplicationSource {
-    fn from(value: url::Url) -> Self {
+impl From<Url> for ApplicationSource {
+    fn from(value: Url) -> Self {
         Self(value)
     }
 }
 
-impl From<ApplicationSource> for url::Url {
+impl From<ApplicationSource> for Url {
     fn from(value: ApplicationSource) -> Self {
         value.0
     }
 }
 
-impl fmt::Display for ApplicationSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
+impl Display for ApplicationSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct Application {
     pub id: ApplicationId,
     pub blob: BlobId,
-    pub version: Option<semver::Version>,
+    pub version: Option<Version>,
     pub source: ApplicationSource,
     pub metadata: Vec<u8>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+impl Application {
+    #[must_use]
+    pub fn new(
+        id: ApplicationId,
+        blob: BlobId,
+        version: Option<Version>,
+        source: ApplicationSource,
+        metadata: Vec<u8>,
+    ) -> Self {
+        Self {
+            id,
+            blob,
+            version,
+            source,
+            metadata,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct Release {
-    pub version: semver::Version,
+    pub version: Version,
     pub notes: String,
     pub path: String,
     pub hash: String,

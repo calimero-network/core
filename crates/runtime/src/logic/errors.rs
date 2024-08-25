@@ -1,8 +1,10 @@
-use thiserror::Error;
+use thiserror::Error as ThisError;
+use wasmer::MemoryAccessError;
 
 use crate::errors::{FunctionCallError, HostError, StorageError, VMRuntimeError};
 
-#[derive(Error, Debug)]
+#[derive(Debug, ThisError)]
+#[non_exhaustive]
 pub enum VMLogicError {
     #[error(transparent)]
     HostError(#[from] HostError),
@@ -10,9 +12,9 @@ pub enum VMLogicError {
     StorageError(StorageError),
 }
 
-impl From<wasmer::MemoryAccessError> for VMLogicError {
-    fn from(_: wasmer::MemoryAccessError) -> Self {
-        VMLogicError::HostError(HostError::InvalidMemoryAccess)
+impl From<MemoryAccessError> for VMLogicError {
+    fn from(_: MemoryAccessError) -> Self {
+        Self::HostError(HostError::InvalidMemoryAccess)
     }
 }
 
@@ -29,7 +31,7 @@ impl TryFrom<VMLogicError> for FunctionCallError {
             //     context: PanicContext::Host,
             //     message,
             // }) => Err(VMRuntimeError::HostError(err)),
-            VMLogicError::HostError(err) => Ok(FunctionCallError::HostError(err)),
+            VMLogicError::HostError(err) => Ok(Self::HostError(err)),
         }
     }
 }

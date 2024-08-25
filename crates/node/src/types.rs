@@ -1,29 +1,39 @@
+use calimero_primitives::application::{ApplicationId, ApplicationSource};
+use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
+use calimero_primitives::transaction::Transaction;
+use semver::Version;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub enum PeerAction {
-    Transaction(calimero_primitives::transaction::Transaction),
+    Transaction(Transaction),
     TransactionConfirmation(TransactionConfirmation),
     TransactionRejection(TransactionRejection),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct TransactionConfirmation {
-    pub context_id: calimero_primitives::context::ContextId,
+    pub context_id: ContextId,
     pub nonce: u64,
-    pub transaction_hash: calimero_primitives::hash::Hash,
+    pub transaction_hash: Hash,
     // sha256(previous_confirmation_hash, transaction_hash, nonce)
-    pub confirmation_hash: calimero_primitives::hash::Hash,
+    pub confirmation_hash: Hash,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct TransactionRejection {
-    pub context_id: calimero_primitives::context::ContextId,
-    pub transaction_hash: calimero_primitives::hash::Hash,
+    pub context_id: ContextId,
+    pub transaction_hash: Hash,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub enum CatchupStreamMessage {
     Request(CatchupRequest),
     ApplicationChanged(CatchupApplicationChanged),
@@ -31,51 +41,53 @@ pub enum CatchupStreamMessage {
     Error(CatchupError),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct CatchupRequest {
-    pub context_id: calimero_primitives::context::ContextId,
-    pub application_id: Option<calimero_primitives::application::ApplicationId>,
-    pub last_executed_transaction_hash: calimero_primitives::hash::Hash,
+    pub context_id: ContextId,
+    pub application_id: Option<ApplicationId>,
+    pub last_executed_transaction_hash: Hash,
     pub batch_size: u8,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct CatchupApplicationChanged {
-    pub application_id: calimero_primitives::application::ApplicationId,
-    pub blob_id: calimero_primitives::blobs::BlobId,
-    pub version: Option<semver::Version>,
-    pub source: calimero_primitives::application::ApplicationSource,
-    pub hash: Option<calimero_primitives::hash::Hash>,
+    pub application_id: ApplicationId,
+    pub blob_id: BlobId,
+    pub version: Option<Version>,
+    pub source: ApplicationSource,
+    pub hash: Option<Hash>,
     pub metadata: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct CatchupTransactionBatch {
     pub transactions: Vec<TransactionWithStatus>,
 }
 
-#[derive(Error, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
+#[non_exhaustive]
 pub enum CatchupError {
     #[error("context `{context_id:?}` not found")]
-    ContextNotFound {
-        context_id: calimero_primitives::context::ContextId,
-    },
+    ContextNotFound { context_id: ContextId },
     #[error("transaction `{transaction_hash:?}` not found")]
-    TransactionNotFound {
-        transaction_hash: calimero_primitives::hash::Hash,
-    },
+    TransactionNotFound { transaction_hash: Hash },
     #[error("internal error")]
     InternalError,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct TransactionWithStatus {
-    pub transaction_hash: calimero_primitives::hash::Hash,
-    pub transaction: calimero_primitives::transaction::Transaction,
+    pub transaction_hash: Hash,
+    pub transaction: Transaction,
     pub status: TransactionStatus,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub enum TransactionStatus {
     Pending,
     Executed,

@@ -25,26 +25,23 @@ pub async fn create_root_key_handler(
 ) -> impl IntoResponse {
     transform_request(intermediate_req)
         .and_then(|req| validate_challenge(req, &state.keypair))
-        .and_then(|req| store_root(req, &mut state.store.clone()))
-        .map_or_else(
-            |err| err.into_response(),
-            |_| {
-                let data: String = "Root key stored".to_string();
-                ApiResponse {
-                    payload: CreateRootKeyResponse { data },
-                }
-                .into_response()
-            },
-        )
+        .and_then(|req| store_root(req, &state.store.clone()))
+        .map_or_else(IntoResponse::into_response, |_| {
+            let data: String = "Root key stored".to_owned();
+            ApiResponse {
+                payload: CreateRootKeyResponse { data },
+            }
+            .into_response()
+        })
 }
 
 pub fn store_root(
     req: AddPublicKeyRequest,
-    store: &mut Store,
+    store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    store_root_key(
+    let _ = store_root_key(
         req.wallet_metadata.signing_key.clone(),
-        req.wallet_metadata.wallet_type.clone(),
+        req.wallet_metadata.wallet_type,
         store,
     )?;
     Ok(req)
@@ -53,33 +50,34 @@ pub fn store_root(
 pub fn store_root_key(
     signing_key: String,
     wallet_type: WalletType,
-    store: &mut Store,
+    store: &Store,
 ) -> Result<bool, ApiError> {
-    let root_key = RootKey {
+    #[allow(clippy::cast_sign_loss)]
+    let root_key = RootKey::new(
         signing_key,
         wallet_type,
-        created_at: Utc::now().timestamp_millis() as u64,
-    };
-    add_root_key(store, root_key).map_err(parse_api_error)?;
+        Utc::now().timestamp_millis() as u64,
+    );
+    let _ = add_root_key(store, root_key).map_err(parse_api_error)?;
 
     info!("Root key stored successfully.");
     Ok(true)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct DeleteKeysResponse {
     data: Empty,
 }
 pub async fn delete_auth_keys_handler(
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
-    clean_auth_keys(&mut state.store.clone()).map_or_else(
+    drop(clean_auth_keys(&state.store.clone()).map_or_else(
         |err| parse_api_error(err).into_response(),
-        |_| {
+        |()| {
             ApiResponse {
                 payload: DeleteKeysResponse { data: Empty {} },
             }
             .into_response()
         },
-    );
+    ));
 }

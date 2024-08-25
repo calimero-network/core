@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+#[must_use]
 pub const fn bool_true() -> bool {
     true
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(remote = "Result")]
+#[allow(clippy::exhaustive_enums)]
 pub enum ResultAlt<T, E> {
     #[serde(rename = "result")]
     Ok(T),
