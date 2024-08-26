@@ -141,7 +141,7 @@ impl EventLoop {
                 debug!("External address confirmed: {}", address);
                 if let Ok(relayed_addr) = RelayedMultiaddr::try_from(&address) {
                     self.discovery.state.update_relay_reservation_status(
-                        &relayed_addr.relay_peer,
+                        relayed_addr.relay_peer_id(),
                         RelayReservationStatus::Accepted,
                     );
 
@@ -169,7 +169,7 @@ impl EventLoop {
 
 #[derive(Debug)]
 pub struct RelayedMultiaddr {
-    relay_peer: PeerId,
+    relay_peer: P2pPeerId,
 }
 
 impl TryFrom<&Multiaddr> for RelayedMultiaddr {
@@ -210,7 +210,7 @@ impl TryFrom<&Multiaddr> for RelayedMultiaddr {
 }
 
 impl RelayedMultiaddr {
-    const fn relay_peer_id(&self) -> &PeerId {
+    const fn relay_peer_id(&self) -> &P2pPeerId {
         &self.relay_peer
     }
 }

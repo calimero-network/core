@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
+use calimero_primitives::identity::PeerId;
 use eyre::Result as EyreResult;
 use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
-use libp2p::{Multiaddr, PeerId};
+use libp2p::Multiaddr;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::CatchupConfig;
@@ -27,6 +28,17 @@ impl NetworkClient {
         receiver.await.expect("Sender not to be dropped.")
     }
 
+    pub async fn dial(&self, peer_addr: Multiaddr) -> EyreResult<Option<()>> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.sender
+            .send(Command::Dial { peer_addr, sender })
+            .await
+            .expect("Command receiver not to be dropped.");
+
+        receiver.await.expect("Sender not to be dropped.")
+    }
+
     pub async fn bootstrap(&self) -> EyreResult<()> {
         let (sender, receiver) = oneshot::channel();
 
@@ -38,6 +50,28 @@ impl NetworkClient {
         let _ = receiver.await.expect("Sender not to be dropped.")?;
 
         Ok(())
+    }
+
+    pub async fn start_providing(&self, key: String) {
+        let (sender, receiver) = oneshot::channel();
+
+        self.sender
+            .send(Command::StartProviding { key, sender })
+            .await
+            .expect("Command receiver not to be dropped.");
+
+        receiver.await.expect("Sender not to be dropped.");
+    }
+
+    pub async fn get_providers(&self, key: String) -> HashSet<PeerId> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.sender
+            .send(Command::GetProviders { key, sender })
+            .await
+            .expect("Command receiver not to be dropped.");
+
+        receiver.await.expect("Sender not to be dropped.")
     }
 
     pub async fn subscribe(&self, topic: IdentTopic) -> EyreResult<IdentTopic> {
@@ -115,39 +149,6 @@ impl NetworkClient {
                 data,
                 sender,
             })
-            .await
-            .expect("Command receiver not to be dropped.");
-
-        receiver.await.expect("Sender not to be dropped.")
-    }
-
-    pub async fn dial(&self, peer_addr: Multiaddr) -> EyreResult<Option<()>> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.sender
-            .send(Command::Dial { peer_addr, sender })
-            .await
-            .expect("Command receiver not to be dropped.");
-
-        receiver.await.expect("Sender not to be dropped.")
-    }
-
-    pub async fn start_providing(&self, key: String) {
-        let (sender, receiver) = oneshot::channel();
-
-        self.sender
-            .send(Command::StartProviding { key, sender })
-            .await
-            .expect("Command receiver not to be dropped.");
-
-        receiver.await.expect("Sender not to be dropped.");
-    }
-
-    pub async fn get_providers(&self, key: String) -> HashSet<PeerId> {
-        let (sender, receiver) = oneshot::channel();
-
-        self.sender
-            .send(Command::GetProviders { key, sender })
             .await
             .expect("Command receiver not to be dropped.");
 

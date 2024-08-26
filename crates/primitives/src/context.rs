@@ -7,6 +7,7 @@ use thiserror::Error as ThisError;
 
 use crate::application::ApplicationId;
 use crate::hash::{Hash, HashError};
+use crate::identity::PeerId;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 // todo! define macros that construct newtypes
@@ -71,6 +72,7 @@ pub struct Context {
     pub id: ContextId,
     pub application_id: ApplicationId,
     pub last_transaction_hash: Hash,
+    pub coordinator_peer: Option<PeerId>,
 }
 
 impl Context {
@@ -79,11 +81,13 @@ impl Context {
         id: ContextId,
         application_id: ApplicationId,
         last_transaction_hash: Hash,
+        coordinator_peer: Option<PeerId>,
     ) -> Self {
         Self {
             id,
             application_id,
             last_transaction_hash,
+            coordinator_peer,
         }
     }
 }

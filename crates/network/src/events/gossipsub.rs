@@ -1,10 +1,10 @@
-use gossipsub::Event;
-use libp2p::gossipsub;
+use calimero_primitives::identity::PeerId;
+use libp2p::gossipsub::Event;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
 use super::{EventHandler, EventLoop};
-use crate::types::NetworkEvent;
+use crate::types::{Message, NetworkEvent};
 
 impl EventHandler<Event> for EventLoop {
     async fn handle(&mut self, event: Event) {
@@ -18,7 +18,10 @@ impl EventHandler<Event> for EventLoop {
             } => {
                 if let Err(err) = self
                     .event_sender
-                    .send(NetworkEvent::Message { id, message })
+                    .send(NetworkEvent::Message {
+                        id,
+                        message: Message::from(message),
+                    })
                     .await
                 {
                     error!("Failed to send message event: {:?}", err);
@@ -27,7 +30,10 @@ impl EventHandler<Event> for EventLoop {
             Event::Subscribed { peer_id, topic } => {
                 if (self
                     .event_sender
-                    .send(NetworkEvent::Subscribed { peer_id, topic })
+                    .send(NetworkEvent::Subscribed {
+                        peer_id: PeerId::from(peer_id),
+                        topic,
+                    })
                     .await)
                     .is_err()
                 {

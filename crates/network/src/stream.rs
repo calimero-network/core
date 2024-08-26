@@ -1,9 +1,10 @@
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
+use calimero_primitives::identity::PeerId;
 use eyre::{bail, Result as EyreResult};
 use futures_util::{Sink as FuturesSink, SinkExt, Stream as FuturesStream};
-use libp2p::{PeerId, Stream as P2pStream, StreamProtocol};
+use libp2p::{PeerId as P2pPeerId, Stream as P2pStream, StreamProtocol};
 use tokio::io::BufStream;
 use tokio_util::codec::Framed;
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
@@ -68,17 +69,17 @@ impl FuturesSink<Message> for Stream {
 #[allow(clippy::needless_pass_by_ref_mut)]
 #[allow(clippy::multiple_inherent_impl)]
 impl EventLoop {
-    pub(crate) async fn handle_incoming_stream(&mut self, (peer, stream): (PeerId, P2pStream)) {
+    pub(crate) async fn handle_incoming_stream(&mut self, (peer, stream): (P2pPeerId, P2pStream)) {
         self.event_sender
             .send(NetworkEvent::StreamOpened {
-                peer_id: peer,
+                peer_id: PeerId::from(peer),
                 stream: Box::new(Stream::new(stream)),
             })
             .await
             .expect("Failed to send stream opened event");
     }
 
-    pub(crate) async fn open_stream(&mut self, peer_id: PeerId) -> EyreResult<Stream> {
+    pub(crate) async fn open_stream(&mut self, peer_id: P2pPeerId) -> EyreResult<Stream> {
         let stream = match self
             .swarm
             .behaviour()

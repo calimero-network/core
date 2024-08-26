@@ -1,5 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::{KeyPair, PublicKey};
+use calimero_primitives::identity::{KeyPair, PeerId, PublicKey};
 
 use crate::entry::{Borsh, Identity};
 use crate::key::{
@@ -17,6 +17,7 @@ pub type TransactionHash = [u8; 32];
 pub struct ContextMeta {
     pub application: ApplicationMetaKey,
     pub last_transaction_hash: TransactionHash,
+    pub coordinator_peer: Option<PeerId>,
 }
 
 impl ContextMeta {
@@ -24,10 +25,12 @@ impl ContextMeta {
     pub const fn new(
         application: ApplicationMetaKey,
         last_transaction_hash: TransactionHash,
+        coordinator_peer: Option<PeerId>,
     ) -> Self {
         Self {
             application,
             last_transaction_hash,
+            coordinator_peer,
         }
     }
 }

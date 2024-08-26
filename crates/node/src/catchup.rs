@@ -1,15 +1,16 @@
 use std::collections::VecDeque;
 
 use calimero_network::stream::{Message, Stream};
+use calimero_network::types::TopicHash;
 use calimero_node_primitives::NodeType;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PeerId;
 use calimero_primitives::transaction::Transaction;
 use calimero_store::key::ContextTransaction as ContextTransactionKey;
 use eyre::{bail, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
-use libp2p::gossipsub::TopicHash;
-use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
@@ -19,8 +20,8 @@ use tracing::{error, info, warn};
 use crate::catchup::batch::CatchupBatchSender;
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::types::{
-    CatchupApplicationChanged, CatchupError, CatchupRequest, CatchupStreamMessage,
-    TransactionStatus, TransactionWithStatus,
+    CatchupApplicationChange, CatchupContextMetaChanged, CatchupCoordinatorChange, CatchupError,
+    CatchupRequest, CatchupStreamMessage, TransactionStatus, TransactionWithStatus,
 };
 use crate::Node;
 
@@ -37,7 +38,7 @@ impl Node {
 
         let request = match from_json_slice(&message?.data)? {
             CatchupStreamMessage::Request(req) => req,
-            message @ (CatchupStreamMessage::ApplicationChanged(_)
+            message @ (CatchupStreamMessage::ContextMetaChanged(_)
             | CatchupStreamMessage::TransactionsBatch(_)
             | CatchupStreamMessage::Error(_)) => {
                 bail!("Unexpected message: {:?}", message)
@@ -54,6 +55,17 @@ impl Node {
 
             return Ok(());
         };
+
+        // if context.coordinator_peer.is_none() {
+        //     let message = to_json_vec(&CatchupStreamMessage::Error(
+        //         CatchupError::ContextNotCoordinated {
+        //             context_id: request.context_id,
+        //         },
+        //     ))?;
+        //     stream.send(Message::new(message)).await?;
+
+        //     return Ok(());
+        // }
 
         info!(
             request=?request,
@@ -81,6 +93,15 @@ impl Node {
 
         let application_id = context.application_id;
 
+        let mut application_change = None;
+        let mut coordinator_change = None;
+
+        if request.coordinator_peer != context.coordinator_peer {
+            coordinator_change = Some(CatchupCoordinatorChange {
+                coordinator_peer: request.coordinator_peer,
+            });
+        }
+
         if request
             .application_id
             .map_or(true, |id| id != application_id)
@@ -93,14 +114,21 @@ impl Node {
                 );
             };
 
-            let message = to_json_vec(&CatchupStreamMessage::ApplicationChanged(
-                CatchupApplicationChanged {
-                    application_id,
-                    blob_id: application.blob,
-                    version: application.version,
-                    source: application.source,
-                    hash: None, // todo! blob_mgr(application.blob)?.hash
-                    metadata: Some(Vec::new()),
+            application_change = Some(CatchupApplicationChange {
+                application_id,
+                blob_id: application.blob,
+                version: application.version,
+                source: application.source,
+                hash: None, // todo! blob_mgr(application.blob)?.hash
+                metadata: Some(Vec::new()),
+            });
+        }
+
+        if coordinator_change.is_some() || application_change.is_some() {
+            let message = to_json_vec(&CatchupStreamMessage::ContextMetaChanged(
+                CatchupContextMetaChanged {
+                    coordinator_change,
+                    application_change,
                 },
             ))?;
             stream.send(Message::new(message)).await?;
@@ -207,7 +235,10 @@ impl Node {
 
         info!(%context_id, %peer_id, "Attempting to perform interval triggered catchup");
 
-        if let Err(err) = self.perform_catchup(context_id, *peer_id).await {
+        if let Err(err) = self
+            .perform_catchup(context_id, PeerId::from(*peer_id))
+            .await
+        {
             error!(%err, "Failed to perform interval catchup");
             return;
         }
@@ -231,6 +262,7 @@ impl Node {
                 CatchupRequest {
                     context_id,
                     application_id: Some(context.application_id),
+                    coordinator_peer: context.coordinator_peer,
                     last_executed_transaction_hash: context.last_transaction_hash,
                     batch_size: self.network_client.catchup_config.batch_size,
                 },
@@ -240,13 +272,14 @@ impl Node {
                 CatchupRequest {
                     context_id,
                     application_id: None,
+                    coordinator_peer: None,
                     last_executed_transaction_hash: Hash::default(),
                     batch_size: self.network_client.catchup_config.batch_size,
                 },
             ),
         };
 
-        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+        let mut stream = self.network_client.open_stream(chosen_peer.into()).await?;
 
         let data = to_json_vec(&CatchupStreamMessage::Request(request))?;
 
@@ -368,39 +401,45 @@ impl Node {
                     context_.last_transaction_hash = transaction_hash;
                 }
             }
-            CatchupStreamMessage::ApplicationChanged(change) => {
-                info!(?change, "Processing catchup application changed");
+            CatchupStreamMessage::ContextMetaChanged(change) => {
+                info!(?change, "Processing catchup context meta changed");
 
-                if !self
-                    .ctx_manager
-                    .is_application_installed(&change.application_id)?
-                {
-                    // note! for now, we assume all paths are urls
-                    // todo! for path sources, share the blob peer to peer
+                let ref mut context_inner = match context {
+                    Some(ref mut context_) => context_,
+                    None => &mut Context::new(
+                        context_id,
+                        ApplicationId::from([0; 32]),
+                        Hash::default(),
+                        None,
+                    ),
+                };
 
-                    let _ = self
+                if let Some(application_change) = change.application_change {
+                    if !self
                         .ctx_manager
-                        .install_application_from_url(
-                            change.source.to_string().parse()?,
-                            change.version,
-                            Vec::new(),
-                        )
-                        .await?;
+                        .is_application_installed(&application_change.application_id)?
+                    {
+                        // note! for now, we assume all paths are urls
+                        // todo! for path sources, share the blob peer to peer
+
+                        let _ = self
+                            .ctx_manager
+                            .install_application_from_url(
+                                application_change.source.to_string().parse()?,
+                                application_change.version,
+                                Vec::new(),
+                            )
+                            .await?;
+
+                        context_inner.application_id = application_change.application_id;
+                    }
                 }
 
-                if let Some(ref mut context_) = context {
-                    self.ctx_manager
-                        .update_application_id(context_.id, change.application_id)?;
-
-                    context_.application_id = change.application_id;
-                } else {
-                    let context_inner =
-                        Context::new(context_id, change.application_id, Hash::default());
-
-                    self.ctx_manager.add_context(&context_inner)?;
-
-                    context = Some(context_inner);
+                if let Some(coordinator_change) = change.coordinator_change {
+                    context_inner.coordinator_peer = coordinator_change.coordinator_peer;
                 }
+
+                self.ctx_manager.put_context(context_inner)?;
             }
             CatchupStreamMessage::Error(err) => {
                 error!(?err, "Received error during catchup");

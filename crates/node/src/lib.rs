@@ -10,7 +10,8 @@ use calimero_context::config::ApplicationConfig;
 use calimero_context::ContextManager;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
-use calimero_network::types::{NetworkEvent, PeerId};
+use calimero_network::types::{IdentTopic, Keypair, TopicHash};
+use calimero_network::types::{Message, NetworkEvent};
 use calimero_node_primitives::{
     CallError, ExecutionRequest, Finality, MutateCallError, NodeType, QueryCallError,
 };
@@ -20,6 +21,7 @@ use calimero_primitives::events::{
     OutcomeEventPayload, PeerJoinedPayload,
 };
 use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PeerId;
 use calimero_primitives::transaction::Transaction;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
@@ -35,8 +37,6 @@ use calimero_store::types::{ContextMeta, ContextTransaction};
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
-use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
-use libp2p::identity::Keypair;
 use owo_colors::OwoColorize;
 use serde_json::{
     from_slice as from_json_slice, from_str as from_json_str, to_vec as to_json_vec, Value,
@@ -762,7 +762,7 @@ impl Node {
         store: Store,
     ) -> Self {
         Self {
-            id: config.identity.public().to_peer_id(),
+            id: PeerId::from(config.identity.public().to_peer_id()),
             typ: config.node_type,
             store,
             tx_pool: TransactionPool::default(),
@@ -1239,6 +1239,7 @@ impl Node {
             &ContextMeta::new(
                 ApplicationMetaKey::new(context.application_id),
                 *hash.as_bytes(),
+                context.coordinator_peer,
             ),
         )?;
 

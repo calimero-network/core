@@ -1,6 +1,7 @@
 use std::collections::hash_map::{Entry, HashMap};
 use std::collections::HashSet;
 
+use calimero_primitives::identity::PeerId;
 use client::NetworkClient;
 use config::NetworkConfig;
 use eyre::{bail, eyre, Result as EyreResult};
@@ -24,7 +25,7 @@ use libp2p::swarm::{NetworkBehaviour, Swarm, SwarmEvent};
 use libp2p::tcp::Config as TcpConfig;
 use libp2p::tls::Config as TlsConfig;
 use libp2p::yamux::Config as YamuxConfig;
-use libp2p::{PeerId, StreamProtocol, SwarmBuilder};
+use libp2p::{PeerId as P2pPeerId, StreamProtocol, SwarmBuilder};
 use libp2p_stream::{Behaviour as StreamBehaviour, IncomingStreams};
 use multiaddr::{Multiaddr, Protocol};
 use stream::Stream;
@@ -78,7 +79,7 @@ pub async fn run(
 }
 
 fn init(
-    peer_id: PeerId,
+    peer_id: P2pPeerId,
     config: &NetworkConfig,
 ) -> EyreResult<(NetworkClient, mpsc::Receiver<NetworkEvent>, EventLoop)> {
     let bootstrap_peers = {
@@ -186,7 +187,7 @@ pub(crate) struct EventLoop {
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<NetworkEvent>,
     discovery: Discovery,
-    pending_dial: HashMap<PeerId, oneshot::Sender<EyreResult<Option<()>>>>,
+    pending_dial: HashMap<P2pPeerId, oneshot::Sender<EyreResult<Option<()>>>>,
     pending_bootstrap: HashMap<QueryId, oneshot::Sender<EyreResult<Option<()>>>>,
     pending_start_providing: HashMap<QueryId, oneshot::Sender<()>>,
     pending_get_providers: HashMap<QueryId, oneshot::Sender<HashSet<PeerId>>>,
@@ -254,6 +255,23 @@ impl EventLoop {
                     .send(Err(eyre!(err)))
                     .expect("Receiver not to be dropped."),
             },
+            Command::StartProviding { key, sender } => {
+                let query_id = self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .start_providing(key.into_bytes().into())
+                    .expect("No store error.");
+                drop(self.pending_start_providing.insert(query_id, sender));
+            }
+            Command::GetProviders { key, sender } => {
+                let query_id = self
+                    .swarm
+                    .behaviour_mut()
+                    .kad
+                    .get_providers(key.into_bytes().into());
+                drop(self.pending_get_providers.insert(query_id, sender));
+            }
             Command::Dial {
                 mut peer_addr,
                 sender,
@@ -302,7 +320,7 @@ impl EventLoop {
                 drop(sender.send(Ok(topic)));
             }
             Command::OpenStream { peer_id, sender } => {
-                drop(sender.send(self.open_stream(peer_id).await.map_err(Into::into)));
+                drop(sender.send(self.open_stream(peer_id.into()).await.map_err(Into::into)));
             }
             Command::PeerCount { sender } => {
                 let _ignore = sender.send(self.swarm.connected_peers().count());
@@ -314,7 +332,7 @@ impl EventLoop {
                             .behaviour_mut()
                             .gossipsub
                             .mesh_peers(&topic)
-                            .copied()
+                            .map(|peer_id| PeerId::from(*peer_id))
                             .collect(),
                     ),
                 );
@@ -342,23 +360,6 @@ impl EventLoop {
                 };
 
                 drop(sender.send(Ok(id)));
-            }
-            Command::StartProviding { key, sender } => {
-                let query_id = self
-                    .swarm
-                    .behaviour_mut()
-                    .kad
-                    .start_providing(key.into_bytes().into())
-                    .expect("No store error.");
-                drop(self.pending_start_providing.insert(query_id, sender));
-            }
-            Command::GetProviders { key, sender } => {
-                let query_id = self
-                    .swarm
-                    .behaviour_mut()
-                    .kad
-                    .get_providers(key.into_bytes().into());
-                drop(self.pending_get_providers.insert(query_id, sender));
             }
         }
     }

@@ -114,7 +114,7 @@ impl ContextManager {
         initial_identity: KeyPair,
         initialization_params: Vec<u8>,
     ) -> EyreResult<()> {
-        self.add_context(context)?;
+        self.put_context(context)?;
 
         let (tx, _) = oneshot::channel();
 
@@ -140,7 +140,7 @@ impl ContextManager {
         Ok(())
     }
 
-    pub fn add_context(&self, context: &Context) -> EyreResult<()> {
+    pub fn put_context(&self, context: &Context) -> EyreResult<()> {
         if !self.is_application_installed(&context.application_id)? {
             bail!("Application is not installed on node.")
         }
@@ -152,6 +152,7 @@ impl ContextManager {
             &ContextMeta::new(
                 ApplicationMetaKey::new(context.application_id),
                 context.last_transaction_hash.into(),
+                context.coordinator_peer,
             ),
         )?;
 
@@ -212,6 +213,7 @@ impl ContextManager {
             *context_id,
             ctx_meta.application.application_id(),
             ctx_meta.last_transaction_hash.into(),
+            ctx_meta.coordinator_peer,
         )))
     }
 
@@ -319,6 +321,7 @@ impl ContextManager {
                     key.context_id(),
                     value.application.application_id(),
                     value.last_transaction_hash.into(),
+                    value.coordinator_peer,
                 ));
             }
         }
@@ -329,6 +332,7 @@ impl ContextManager {
                 k.context_id(),
                 v.application.application_id(),
                 v.last_transaction_hash.into(),
+                v.coordinator_peer,
             ));
         }
 

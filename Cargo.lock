@@ -1136,7 +1136,6 @@ dependencies = [
  "camino",
  "eyre",
  "futures-util",
- "libp2p",
  "owo-colors",
  "rand 0.8.5",
  "semver",

@@ -86,14 +86,14 @@ sequenceDiagram
         Peer->>Peer:Update context with the coordinator `PeerId`
         Peer->>Peer:Clear pending request
     else
-        Peer->>-Coordinator: Send [OfferDeclined]
+        Peer->>-Coordinator: Send [OfferRejected]
     end
 
     Coordinator->>+Coordinator:Handle [OfferAccepted]
     Coordinator->>Coordinator:Join context topic
     Coordinator->>-Coordinator:Clear pending offer
 
-    Coordinator->>+Coordinator:Handle [OfferDeclined]
+    Coordinator->>+Coordinator:Handle [OfferRejected]
     Coordinator->>-Coordinator:Clear pending offer
 ```
 

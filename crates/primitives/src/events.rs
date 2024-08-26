@@ -1,8 +1,8 @@
-use libp2p_identity::PeerId;
 use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
 use crate::hash::Hash;
+use crate::identity::PeerId;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]

@@ -1,8 +1,46 @@
+use std::fmt::Display;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+pub struct PeerId(libp2p_identity::PeerId);
+
+impl Display for PeerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<libp2p_identity::PeerId> for PeerId {
+    fn from(peer_id: libp2p_identity::PeerId) -> Self {
+        Self(peer_id)
+    }
+}
+
+impl Into<libp2p_identity::PeerId> for PeerId {
+    fn into(self) -> libp2p_identity::PeerId {
+        self.0
+    }
+}
+
+#[cfg(feature = "borsh")]
+impl BorshSerialize for PeerId {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        BorshSerialize::serialize(&self.0.to_bytes(), writer)
+    }
+}
+
+#[cfg(feature = "borsh")]
+impl BorshDeserialize for PeerId {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let bytes = Vec::<u8>::deserialize_reader(reader)?;
+        Ok(PeerId(libp2p_identity::PeerId::from_bytes(&bytes).unwrap()))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(clippy::exhaustive_structs)]

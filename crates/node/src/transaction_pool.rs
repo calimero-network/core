@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use calimero_network::types::PeerId;
 use calimero_node_primitives::MutateCallError;
 use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PeerId;
 use calimero_primitives::transaction::Transaction;
 use calimero_runtime::logic::Outcome;
 use eyre::{eyre, Result as EyreResult};

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use calimero_primitives::identity::PeerId;
 use libp2p::kad::{Event, GetProvidersOk, QueryResult};
 use owo_colors::OwoColorize;
 use tracing::debug;
@@ -38,7 +39,14 @@ impl EventHandler<Event> for EventLoop {
                 ..
             } => {
                 if let Some(sender) = self.pending_get_providers.remove(&id) {
-                    sender.send(providers).expect("Receiver not to be dropped");
+                    sender
+                        .send(
+                            providers
+                                .into_iter()
+                                .map(|provider| PeerId::from(provider))
+                                .collect(),
+                        )
+                        .expect("Receiver not to be dropped");
 
                     if let Some(mut query) = self.swarm.behaviour_mut().kad.query_mut(&id) {
                         query.finish();

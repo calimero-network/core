@@ -10,7 +10,7 @@ use url::{ParseError, Url};
 use crate::blobs::BlobId;
 use crate::hash::{Hash, HashError};
 
-#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Copy, Clone, Default, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 // todo! define macros that construct newtypes
 // todo! wrapping Hash<N> with this interface
 pub struct ApplicationId(Hash);
