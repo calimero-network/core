@@ -5,12 +5,17 @@ use calimero_sdk_near::views::QueryRequest;
 use calimero_sdk_near::Client;
 
 #[app::state]
-#[derive(Default, BorshSerialize, BorshDeserialize)]
+#[derive(BorshDeserialize, BorshSerialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct GenExt;
 
 #[app::logic]
 impl GenExt {
+    #[app::init]
+    pub fn init() -> GenExt {
+        GenExt
+    }
+
     pub fn view_account(&mut self, account_id: &str, block_height: u64) -> String {
         let client = Client::testnet();
         let request = RpcQueryRequest {

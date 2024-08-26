@@ -1,47 +1,94 @@
+use std::io::Error as IoError;
+
+use borsh::{
+    from_slice as from_borsh_slice, to_vec as to_borsh_vec, BorshDeserialize, BorshSerialize,
+};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec, Error as JsonError};
+
 use crate::key::AsKeyParts;
 use crate::slice::Slice;
 
-pub trait DataType<'a>: Sized {
-    type Error;
-
-    // todo! change to &'a [u8]
-    fn from_slice(slice: Slice<'a>) -> Result<Self, Self::Error>;
-    fn as_slice(&'a self) -> Result<Slice<'a>, Self::Error>;
-}
-
 pub trait Entry {
     type Key: AsKeyParts;
-    type DataType<'a>: DataType<'a>;
+    type Codec: for<'a> Codec<'a, Self::DataType<'a>>;
+    type DataType<'a>;
 
     fn key(&self) -> &Self::Key;
+
+    // each entry should be able to define what
+    // happens when it's operated on wrt storage
+    // for example: to ref dec one of it's fields
+    // when it's changed, for example
+    // read old state, check if it's changed, decrement
+    // the referent entry
 }
 
-#[cfg(feature = "serde")]
-pub struct Json<T>(T);
+pub trait Codec<'a, T> {
+    type Error;
 
-#[cfg(feature = "serde")]
-impl<T> Json<T> {
-    pub fn new(value: T) -> Self {
-        Self(value)
-    }
-
-    pub fn value(self) -> T {
-        self.0
-    }
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error>;
+    fn decode(bytes: Slice<'a>) -> Result<T, Self::Error>;
 }
 
-#[cfg(feature = "serde")]
-impl<'a, T> DataType<'a> for Json<T>
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub enum Identity {}
+
+impl<'a, T, E> Codec<'a, T> for Identity
 where
-    T: serde::Serialize + serde::de::DeserializeOwned,
+    T: AsRef<[u8]> + TryFrom<Slice<'a>, Error = E>,
 {
-    type Error = serde_json::Error;
+    type Error = E;
 
-    fn from_slice(slice: Slice<'a>) -> Result<Self, Self::Error> {
-        serde_json::from_slice(&slice).map(Json)
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
+        Ok(value.into())
     }
 
-    fn as_slice(&self) -> Result<Slice, Self::Error> {
-        serde_json::to_vec(&self.0).map(Into::into)
+    fn decode(bytes: Slice<'a>) -> Result<T, Self::Error> {
+        bytes.try_into()
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub enum Json {}
+
+#[cfg(feature = "serde")]
+impl<T> Codec<'_, T> for Json
+where
+    T: Serialize + DeserializeOwned,
+{
+    type Error = JsonError;
+
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
+        to_json_vec(value).map(Into::into)
+    }
+
+    fn decode(bytes: Slice<'_>) -> Result<T, Self::Error> {
+        from_json_slice(&bytes)
+    }
+}
+
+#[cfg(feature = "borsh")]
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub enum Borsh {}
+
+#[cfg(feature = "borsh")]
+impl<T> Codec<'_, T> for Borsh
+where
+    T: BorshSerialize + BorshDeserialize,
+{
+    type Error = IoError;
+
+    fn encode(value: &T) -> Result<Slice<'_>, Self::Error> {
+        to_borsh_vec(&value).map(Into::into)
+    }
+
+    fn decode(bytes: Slice<'_>) -> Result<T, Self::Error> {
+        from_borsh_slice(&bytes)
     }
 }

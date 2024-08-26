@@ -1,8 +1,8 @@
-use std::marker::PhantomData;
+use core::marker::PhantomData;
+use core::ptr;
 
 #[repr(C)]
-#[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
-
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PtrSizedInt {
     value: u64,
 }
@@ -10,65 +10,72 @@ pub struct PtrSizedInt {
 impl PtrSizedInt {
     pub const MAX: Self = Self { value: u64::MAX };
 
-    #[inline(always)]
+    #[inline]
     pub const fn new(value: usize) -> Self {
-        Self { value: value as _ }
+        Self {
+            value: value as u64,
+        }
     }
 
-    #[inline(always)]
+    // TODO: This converts from u64 to usize, which may fail on 32-bit systems,
+    // TODO: but this function is meant to be infallible. That is a concern, as
+    // TODO: we want to eliminate all potential panics. This needs future
+    // TODO: assessment.
+    #[allow(clippy::cast_possible_truncation)]
+    #[inline]
     pub const fn as_usize(self) -> usize {
-        self.value as _
+        self.value as usize
     }
 }
 
 impl From<usize> for PtrSizedInt {
-    #[inline(always)]
+    #[inline]
     fn from(value: usize) -> Self {
         Self::new(value)
     }
 }
 
 #[repr(C)]
-#[derive(Eq, Ord, Copy, Hash, Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Pointer<T> {
     value: PtrSizedInt,
     _phantom: PhantomData<T>,
 }
 
 impl<T> Pointer<T> {
-    #[inline(always)]
+    #[inline]
     pub fn new(ptr: *const T) -> Self {
         Self {
-            value: PtrSizedInt::new(ptr as _),
+            value: PtrSizedInt::new(ptr as usize),
             _phantom: PhantomData,
         }
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn null() -> Self {
-        Self::new(std::ptr::null())
+        Self::new(ptr::null())
     }
 
-    #[inline(always)]
-    pub fn as_ptr(&self) -> *const T {
-        self.value.as_usize() as _
+    #[inline]
+    pub const fn as_ptr(&self) -> *const T {
+        self.value.as_usize() as *const T
     }
 
-    #[inline(always)]
-    pub fn as_mut_ptr(&self) -> *mut T {
-        self.value.as_usize() as _
+    #[inline]
+    pub const fn as_mut_ptr(&self) -> *mut T {
+        self.value.as_usize() as *mut T
     }
 }
 
 impl<T> From<*const T> for Pointer<T> {
-    #[inline(always)]
+    #[inline]
     fn from(ptr: *const T) -> Self {
         Self::new(ptr)
     }
 }
 
 impl<T> From<*mut T> for Pointer<T> {
-    #[inline(always)]
+    #[inline]
     fn from(ptr: *mut T) -> Self {
         Self::new(ptr)
     }

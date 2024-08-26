@@ -1,10 +1,11 @@
-use serde_json::Value;
-use thiserror::Error;
+use serde::{Deserialize, Serialize};
+use serde_json::{Error as JsonError, Value};
+use thiserror::Error as ThisError;
 
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum Error<R> {
     #[error(transparent)]
-    JsonError(#[from] serde_json::Error),
+    JsonError(#[from] JsonError),
 
     #[error("Failed to fetch: {0}")]
     FetchError(String),
@@ -13,22 +14,23 @@ pub enum Error<R> {
     ServerError(RpcError<R>),
 }
 
-#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "name", content = "cause", rename_all = "SCREAMING_SNAKE_CASE")]
+#[allow(clippy::enum_variant_names)]
 pub enum RpcErrorKind<R> {
     RequestValidationError(RpcRequestValidationErrorKind),
     HandlerError(R),
     InternalError(Value),
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "name", content = "info", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RpcRequestValidationErrorKind {
     MethodNotFound { method_name: String },
     ParseError { error_message: String },
 }
 
-#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RpcError<T> {
     #[serde(flatten)]

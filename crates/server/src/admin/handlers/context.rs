@@ -1,28 +1,37 @@
+use core::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use rand::RngCore;
+use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::identity::{ClientKey, ContextUser};
+use calimero_server_primitives::admin::{
+    ContextStorage, CreateContextRequest, CreateContextResponse, GetContextsResponse,
+    UpdateContextApplicationRequest,
+};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
+use tracing::error;
 
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
+use crate::admin::utils::context::{create_context, join_context};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContextObject {
-    context: calimero_primitives::context::Context,
+    context: Context,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GetContextResponse {
     data: ContextObject,
 }
 
 pub async fn get_context_handler(
-    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
@@ -31,6 +40,7 @@ pub async fn get_context_handler(
         .get_context(&context_id)
         .map_err(|err| parse_api_error(err).into_response());
 
+    #[allow(clippy::option_if_let_else)]
     match context {
         Ok(ctx) => match ctx {
             Some(context) => ApiResponse {
@@ -49,23 +59,88 @@ pub async fn get_context_handler(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClientKeys {
-    client_keys: Vec<calimero_primitives::identity::ClientKey>,
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GetContextIdentitiesResponse {
+    data: ContextIdentities,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextIdentities {
+    identities: Vec<String>,
+}
+
+pub async fn get_context_identities_handler(
+    Path(context_id): Path<ContextId>,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    let context = state
+        .ctx_manager
+        .get_context(&context_id)
+        .map_err(|err| parse_api_error(err).into_response());
+
+    match context {
+        #[allow(clippy::option_if_let_else)]
+        Ok(ctx) => match ctx {
+            Some(context) => {
+                let context_identities = state
+                    .ctx_manager
+                    .get_context_owned_identities(context.id)
+                    .map_err(|err| parse_api_error(err).into_response());
+
+                match context_identities {
+                    Ok(identities) => {
+                        let context_identities = identities
+                            .into_iter()
+                            .map(|identity| bs58::encode(identity.0).into_string())
+                            .collect::<Vec<String>>();
+
+                        ApiResponse {
+                            payload: GetContextIdentitiesResponse {
+                                data: ContextIdentities {
+                                    identities: context_identities,
+                                },
+                            },
+                        }
+                        .into_response()
+                    }
+                    Err(err) => {
+                        error!("Error getting context identities: {:?}", err);
+                        ApiError {
+                            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                            message: "Something went wrong".into(),
+                        }
+                        .into_response()
+                    }
+                }
+            }
+            None => ApiError {
+                status_code: StatusCode::NOT_FOUND,
+                message: "Context not found".into(),
+            }
+            .into_response(),
+        },
+        Err(err) => err.into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientKeys {
+    client_keys: Vec<ClientKey>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GetContextClientKeysResponse {
     data: ClientKeys,
 }
 
 pub async fn get_context_client_keys_handler(
-    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let client_keys_result = get_context_client_key(&mut state.store.clone(), &context_id)
+    let client_keys_result = get_context_client_key(&state.store.clone(), &context_id)
         .map_err(|err| parse_api_error(err).into_response());
     match client_keys_result {
         Ok(client_keys) => ApiResponse {
@@ -78,13 +153,13 @@ pub async fn get_context_client_keys_handler(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextUsers {
-    context_users: Vec<calimero_primitives::identity::ContextUser>,
+    context_users: Vec<ContextUser>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GetContextUsersResponse {
     data: ContextUsers,
 }
@@ -110,43 +185,49 @@ pub async fn get_contexts_handler(
     let contexts = state
         .ctx_manager
         .get_contexts(None)
-        .map_err(|err| parse_api_error(err));
+        .map_err(parse_api_error);
 
-    return match contexts {
+    match contexts {
         Ok(contexts) => ApiResponse {
-            payload: calimero_server_primitives::admin::GetContextsResponse {
-                data: calimero_server_primitives::admin::ContextList { contexts },
-            },
+            payload: GetContextsResponse::new(contexts),
         }
         .into_response(),
         Err(err) => err.into_response(),
-    };
+    }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletedContext {
     is_deleted: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct DeleteContextResponse {
     data: DeletedContext,
 }
 
 pub async fn delete_context_handler(
-    Path(context_id): Path<calimero_primitives::context::ContextId>,
+    Path(context_id): Path<String>,
     _session: Session,
     Extension(state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
+    let Ok(context_id_result) = ContextId::from_str(&context_id) else {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid context id".into(),
+        }
+        .into_response();
+    };
+
     // todo! experiment with Interior<Store>: WriteLayer<Interior>
     let result = state
         .ctx_manager
-        .delete_context(&context_id)
+        .delete_context(&context_id_result)
         .await
-        .map_err(|err| parse_api_error(err));
+        .map_err(parse_api_error);
 
-    return match result {
+    match result {
         Ok(result) => ApiResponse {
             payload: DeleteContextResponse {
                 data: DeletedContext { is_deleted: result },
@@ -154,48 +235,48 @@ pub async fn delete_context_handler(
         }
         .into_response(),
         Err(err) => err.into_response(),
-    };
+    }
 }
 
 pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<calimero_server_primitives::admin::CreateContextRequest>,
+    Json(req): Json<CreateContextRequest>,
 ) -> impl IntoResponse {
-    let mut seed = [0; 32];
-    rand::thread_rng().fill_bytes(&mut seed);
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&mut seed);
-    let context_id = signing_key.verifying_key();
+    //TODO enable providing private key in the request
+    let result = create_context(
+        &state.ctx_manager,
+        req.application_id,
+        None,
+        req.context_id,
+        req.initialization_params,
+    )
+    .await
+    .map_err(parse_api_error);
 
-    let context = calimero_primitives::context::Context {
-        id: (*context_id.as_bytes()).into(),
-        // signing_key, // todo! move to the Identity column
-        application_id: req.application_id,
-        last_transaction_hash: Default::default(),
-    };
-
-    // todo! experiment with Interior<Store>: WriteLayer<Interior>
-    let result = state
-        .ctx_manager
-        .add_context(context.clone())
-        .await
-        .map_err(|err| parse_api_error(err));
-
-    let response = match result {
-        Ok(_) => ApiResponse {
-            payload: calimero_server_primitives::admin::CreateContextResponse {
-                data: calimero_server_primitives::admin::ContextResponse { context },
-            },
+    match result {
+        Ok(context_create_result) => ApiResponse {
+            payload: CreateContextResponse::new(
+                context_create_result.context,
+                context_create_result.identity.public_key,
+            ),
         }
         .into_response(),
         Err(err) => err.into_response(),
-    };
-
-    response
+    }
 }
 
 #[derive(Debug, Serialize)]
 struct GetContextStorageResponse {
-    data: calimero_server_primitives::admin::ContextStorage,
+    data: ContextStorage,
+}
+
+impl GetContextStorageResponse {
+    #[must_use]
+    pub const fn new(size_in_bytes: u64) -> Self {
+        Self {
+            data: ContextStorage::new(size_in_bytes),
+        }
+    }
 }
 
 pub async fn get_context_storage_handler(
@@ -203,9 +284,86 @@ pub async fn get_context_storage_handler(
     Extension(_state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     ApiResponse {
-        payload: GetContextStorageResponse {
-            data: calimero_server_primitives::admin::ContextStorage { size_in_bytes: 0 },
-        },
+        payload: GetContextStorageResponse::new(0),
     }
     .into_response()
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[non_exhaustive]
+pub struct JoinContextRequest {
+    pub private_key: [u8; 32],
+}
+
+#[derive(Debug, Serialize)]
+struct JoinContextResponse {
+    data: Empty,
+}
+
+pub async fn join_context_handler(
+    Path(context_id): Path<String>,
+    Extension(state): Extension<Arc<AdminState>>,
+    request: Option<Json<JoinContextRequest>>,
+) -> impl IntoResponse {
+    let Ok(context_id_result) = ContextId::from_str(&context_id) else {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid context id".into(),
+        }
+        .into_response();
+    };
+
+    let private_key = if let Some(Json(json_body)) = request {
+        Some(bs58::encode(json_body.private_key).into_string())
+    } else {
+        None
+    };
+
+    let result = join_context(
+        &state.ctx_manager,
+        context_id_result,
+        private_key.as_deref(),
+    )
+    .await
+    .map_err(parse_api_error);
+
+    match result {
+        Ok(()) => ApiResponse {
+            payload: JoinContextResponse { data: Empty {} },
+        }
+        .into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateApplicationIdResponse {
+    data: Empty,
+}
+
+pub async fn update_application_id(
+    Extension(state): Extension<Arc<AdminState>>,
+    Path(context_id): Path<String>,
+    Json(req): Json<UpdateContextApplicationRequest>,
+) -> impl IntoResponse {
+    let Ok(context_id_result) = ContextId::from_str(&context_id) else {
+        return ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Invalid context id".into(),
+        }
+        .into_response();
+    };
+
+    let result = state
+        .ctx_manager
+        .update_application_id(context_id_result, req.application_id)
+        .map_err(parse_api_error);
+
+    match result {
+        Ok(()) => ApiResponse {
+            payload: UpdateApplicationIdResponse { data: Empty {} },
+        }
+        .into_response(),
+        Err(err) => err.into_response(),
+    }
 }

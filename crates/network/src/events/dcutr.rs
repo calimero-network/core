@@ -1,11 +1,11 @@
-use libp2p::dcutr;
+use libp2p::dcutr::Event;
 use owo_colors::OwoColorize;
 use tracing::debug;
 
 use super::{EventHandler, EventLoop};
 
-impl EventHandler<dcutr::Event> for EventLoop {
-    async fn handle(&mut self, event: dcutr::Event) {
+impl EventHandler<Event> for EventLoop {
+    async fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "dcutr".yellow(), event);
     }
 }

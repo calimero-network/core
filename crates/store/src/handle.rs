@@ -1,17 +1,18 @@
-use thiserror::Error;
+use eyre::Report;
+use thiserror::Error as ThisError;
 
-use crate::entry::{DataType, Entry};
+use crate::entry::{Codec, Entry};
 use crate::iter::{Iter, Structured};
 use crate::key::FromKeyParts;
 use crate::layer::{Layer, ReadLayer, WriteLayer};
-use crate::Store;
 
-pub struct StoreHandle<L = Store> {
+#[derive(Debug)]
+pub struct Handle<L> {
     pub(crate) inner: L,
 }
 
-impl<L: Layer> StoreHandle<L> {
-    pub fn new(inner: L) -> Self {
+impl<L: Layer> Handle<L> {
+    pub const fn new(inner: L) -> Self {
         Self { inner }
     }
 
@@ -20,51 +21,62 @@ impl<L: Layer> StoreHandle<L> {
     }
 }
 
-#[derive(Error, Debug)]
-pub enum Error<E> {
+#[derive(Debug, ThisError)]
+pub enum HandleError<E> {
     #[error(transparent)]
-    LayerError(#[from] eyre::Report),
+    LayerError(#[from] Report),
     #[error(transparent)]
     CodecError(E),
 }
 
-type EntryError<'a, E> = Error<<<E as Entry>::DataType<'a> as DataType<'a>>::Error>;
+type EntryError<'a, E> =
+    HandleError<<<E as Entry>::Codec as Codec<'a, <E as Entry>::DataType<'a>>>::Error>;
 
-impl<'k, L: ReadLayer<'k>> StoreHandle<L> {
-    pub fn has<E: Entry>(&self, entry: &'k E) -> Result<bool, EntryError<E>> {
+impl<L: ReadLayer> Handle<L> {
+    pub fn has<E: Entry>(&self, entry: &E) -> Result<bool, EntryError<'_, E>> {
         Ok(self.inner.has(entry.key())?)
     }
 
-    pub fn get<E: Entry>(&self, entry: &'k E) -> Result<Option<E::DataType<'_>>, EntryError<E>> {
+    pub fn get<E: Entry>(&self, entry: &E) -> Result<Option<E::DataType<'_>>, EntryError<'_, E>> {
         match self.inner.get(entry.key())? {
             Some(value) => Ok(Some(
-                E::DataType::from_slice(value).map_err(Error::CodecError)?,
+                E::Codec::decode(value).map_err(HandleError::CodecError)?,
             )),
             None => Ok(None),
         }
     }
 
+    // TODO: We should consider returning Iterator here.
+    #[allow(clippy::iter_not_returning_iterator)]
+    #[allow(clippy::type_complexity)]
     pub fn iter<E: Entry<Key: FromKeyParts>>(
         &self,
-        start: &'k E,
-    ) -> Result<Iter<Structured<E::Key>, Structured<E::DataType<'_>>>, EntryError<E>> {
-        Ok(self.inner.iter(start.key())?.structured_value())
+    ) -> Result<
+        Iter<'_, Structured<E::Key>, Structured<(E::DataType<'_>, E::Codec)>>,
+        EntryError<'_, E>,
+    > {
+        Ok(self.inner.iter()?.structured_value())
     }
 }
 
-impl<'k, 'v, L: WriteLayer<'k, 'v>> StoreHandle<L> {
-    pub fn put<E: Entry>(
-        &'v mut self,
-        entry: &'k E,
-        value: &'v E::DataType<'v>,
-    ) -> Result<(), EntryError<E>> {
+impl<'a, L: WriteLayer<'a>> Handle<L> {
+    pub fn put<'b, E: Entry>(
+        &'a mut self,
+        entry: &'a E,
+        value: &'a E::DataType<'b>,
+    ) -> Result<(), EntryError<'b, E>> {
         self.inner
-            .put(entry.key(), value.as_slice().map_err(Error::CodecError)?)
-            .map_err(Error::LayerError)
+            .put(
+                entry.key(),
+                E::Codec::encode(value).map_err(HandleError::CodecError)?,
+            )
+            .map_err(HandleError::LayerError)
     }
 
-    pub fn delete<E: Entry>(&mut self, entry: &'k E) -> Result<(), EntryError<E>> {
-        self.inner.delete(entry.key()).map_err(Error::LayerError)
+    pub fn delete<E: Entry>(&'a mut self, entry: &'a E) -> Result<(), EntryError<'_, E>> {
+        self.inner
+            .delete(entry.key())
+            .map_err(HandleError::LayerError)
     }
 }
 

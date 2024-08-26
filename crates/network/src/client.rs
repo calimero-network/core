@@ -1,18 +1,22 @@
 use std::collections::HashSet;
 
-use libp2p::{gossipsub, Multiaddr, PeerId};
+use eyre::Result as EyreResult;
+use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
+use libp2p::{Multiaddr, PeerId};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{config, stream, Command};
+use crate::config::CatchupConfig;
+use crate::stream::Stream;
+use crate::Command;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct NetworkClient {
-    pub catchup_config: config::CatchupConfig,
+    pub catchup_config: CatchupConfig,
     pub(crate) sender: mpsc::Sender<Command>,
 }
 
 impl NetworkClient {
-    pub async fn listen_on(&self, addr: Multiaddr) -> eyre::Result<()> {
+    pub async fn listen_on(&self, addr: Multiaddr) -> EyreResult<()> {
         let (sender, receiver) = oneshot::channel();
 
         self.sender
@@ -23,7 +27,7 @@ impl NetworkClient {
         receiver.await.expect("Sender not to be dropped.")
     }
 
-    pub async fn bootstrap(&self) -> eyre::Result<()> {
+    pub async fn bootstrap(&self) -> EyreResult<()> {
         let (sender, receiver) = oneshot::channel();
 
         self.sender
@@ -31,15 +35,12 @@ impl NetworkClient {
             .await
             .expect("Command receiver not to be dropped.");
 
-        receiver.await.expect("Sender not to be dropped.")?;
+        let _ = receiver.await.expect("Sender not to be dropped.")?;
 
         Ok(())
     }
 
-    pub async fn subscribe(
-        &self,
-        topic: gossipsub::IdentTopic,
-    ) -> eyre::Result<gossipsub::IdentTopic> {
+    pub async fn subscribe(&self, topic: IdentTopic) -> EyreResult<IdentTopic> {
         let (sender, receiver) = oneshot::channel();
 
         self.sender
@@ -50,10 +51,7 @@ impl NetworkClient {
         receiver.await.expect("Sender not to be dropped.")
     }
 
-    pub async fn unsubscribe(
-        &self,
-        topic: gossipsub::IdentTopic,
-    ) -> eyre::Result<gossipsub::IdentTopic> {
+    pub async fn unsubscribe(&self, topic: IdentTopic) -> EyreResult<IdentTopic> {
         let (sender, receiver) = oneshot::channel();
 
         self.sender
@@ -64,7 +62,7 @@ impl NetworkClient {
         receiver.await.expect("Sender not to be dropped.")
     }
 
-    pub async fn open_stream(&self, peer_id: PeerId) -> eyre::Result<stream::Stream> {
+    pub async fn open_stream(&self, peer_id: PeerId) -> EyreResult<Stream> {
         let (sender, receiver) = oneshot::channel();
 
         self.sender
@@ -86,7 +84,7 @@ impl NetworkClient {
         receiver.await.expect("Sender not to be dropped.")
     }
 
-    pub async fn mesh_peer_count(&self, topic: gossipsub::TopicHash) -> usize {
+    pub async fn mesh_peer_count(&self, topic: TopicHash) -> usize {
         let (sender, receiver) = oneshot::channel();
 
         self.sender
@@ -97,11 +95,18 @@ impl NetworkClient {
         receiver.await.expect("Sender not to be dropped.")
     }
 
-    pub async fn publish(
-        &self,
-        topic: gossipsub::TopicHash,
-        data: Vec<u8>,
-    ) -> eyre::Result<gossipsub::MessageId> {
+    pub async fn mesh_peers(&self, topic: TopicHash) -> Vec<PeerId> {
+        let (sender, receiver) = oneshot::channel();
+
+        self.sender
+            .send(Command::MeshPeers { topic, sender })
+            .await
+            .expect("Command receiver not to be dropped.");
+
+        receiver.await.expect("Sender not to be dropped.")
+    }
+
+    pub async fn publish(&self, topic: TopicHash, data: Vec<u8>) -> EyreResult<MessageId> {
         let (sender, receiver) = oneshot::channel();
 
         self.sender
@@ -116,7 +121,7 @@ impl NetworkClient {
         receiver.await.expect("Sender not to be dropped.")
     }
 
-    pub async fn dial(&self, peer_addr: Multiaddr) -> eyre::Result<Option<()>> {
+    pub async fn dial(&self, peer_addr: Multiaddr) -> EyreResult<Option<()>> {
         let (sender, receiver) = oneshot::channel();
 
         self.sender

@@ -3,24 +3,24 @@
 [Serde]: https://serde.rs/
 [Wasmer]: https://wasmer.io/
 
-  - [Introduction](#introduction)
-  - [Core components](#core-components)
-    - [Overview](#overview)
-    - [VMLogic](#vmlogic)
-    - [Host functions](#host-functions)
-    - [Resource limits](#resource-limits)
-    - [Storage](#storage)
-    - [Error handling](#error-handling)
-    - [Serialisation and deserialisation](#serialisation-and-deserialisation)
-  - [Operational flow](#operational-flow)
-  - [Detailed component descriptions](#detailed-component-descriptions)
-    - [Wasm module execution (`run()` function)](#wasm-module-execution-run-function)
-    - [VMLogic](#vmlogic-1)
-    - [Host functions](#host-functions-1)
-    - [Memory management](#memory-management)
-    - [Storage](#storage-1)
-    - [Error handling](#error-handling-1)
-  - [Usage examples](#usage-examples)
+- [Introduction](#introduction)
+- [Core components](#core-components)
+  - [Overview](#overview)
+  - [VMLogic](#vmlogic)
+  - [Host functions](#host-functions)
+  - [Resource limits](#resource-limits)
+  - [Storage](#storage)
+  - [Error handling](#error-handling)
+  - [Serialisation and deserialisation](#serialisation-and-deserialisation)
+- [Operational flow](#operational-flow)
+- [Detailed component descriptions](#detailed-component-descriptions)
+  - [Wasm module execution (`run()` function)](#wasm-module-execution-run-function)
+  - [VMLogic](#vmlogic-1)
+  - [Host functions](#host-functions-1)
+  - [Memory management](#memory-management)
+  - [Storage](#storage-1)
+  - [Error handling](#error-handling-1)
+- [Usage examples](#usage-examples)
 
 ## Introduction
 
@@ -34,16 +34,17 @@ various applications requiring sandboxed execution of untrusted code.
 
 Key features of the Calimero runtime include:
 
-  - Secure execution of Wasm modules
-  - Resource limitation and metering
-  - Host-provided functions for storage, logging, and external interactions
-  - Support for deterministic execution
-  - Error handling and panic recovery
+- Secure execution of Wasm modules
+- Resource limitation and metering
+- Host-provided functions for storage, logging, and external interactions
+- Support for deterministic execution
+- Error handling and panic recovery
 
 This document provides a [high-level summary](#core-components) of the runtime's
-architecture and core components, followed by a [detailed description of each
-component](#detailed-component-descriptions) . It also includes a brief overview
-of the [operational flow](#operational-flow), and [usage examples](#usage-examples).
+architecture and core components, followed by a
+[detailed description of each component](#detailed-component-descriptions) . It
+also includes a brief overview of the [operational flow](#operational-flow), and
+[usage examples](#usage-examples).
 
 ## Core components
 
@@ -68,64 +69,64 @@ graph TD
 
 The `VMLogic` struct is the central component of the runtime. It encapsulates:
 
-  - Storage access
-  - Memory management
-  - Context information
-  - Resource limits
-  - Logging and event emission
+- Storage access
+- Memory management
+- Context information
+- Resource limits
+- Logging and event emission
 
-*[Read more...](#vmlogic-1)*
+_[Read more...](#vmlogic-1)_
 
 ### Host functions
 
 The runtime provides a set of host functions that can be called from the guest
 Wasm module:
 
-  - Memory and register operations
-  - Storage read/write
-  - Logging and event emission
-  - Cryptographic operations (signing and verification)
-  - External HTTP requests (fetch)
+- Memory and register operations
+- Storage read/write
+- Logging and event emission
+- Cryptographic operations (signing and verification)
+- External HTTP requests (fetch)
 
-*[Read more...](#host-functions-1)*
+_[Read more...](#host-functions-1)_
 
 ### Resource limits
 
 The `VMLimits` struct defines constraints on various resources:
 
-  - Memory usage
-  - Stack size
-  - Number and size of registers
-  - Logging and event limits
-  - Storage key and value size limits
+- Memory usage
+- Stack size
+- Number and size of registers
+- Logging and event limits
+- Storage key and value size limits
 
 ### Storage
 
 The runtime includes an abstract `Storage` trait and an in-memory implementation
 (`InMemoryStorage`) for persisting state.
 
-*[Read more...](#storage-1)*
+_[Read more...](#storage-1)_
 
 ### Error handling
 
 A comprehensive error handling system is implemented, covering various
 scenarios:
 
-  - Host errors
-  - Wasm execution errors
-  - Storage errors
-  - Function call errors
+- Host errors
+- Wasm execution errors
+- Storage errors
+- Function call errors
 
-*[Read more...](#error-handling-1)*
+_[Read more...](#error-handling-1)_
 
 ## Operational flow
 
-  1. Load Wasm module
-  2. Set up execution environment (memory, limits, storage)
-  3. Resolve and link host functions
-  4. Execute specified function in the Wasm module
-  5. Handle return values, logs, and events
-  6. Clean up and return execution outcome
+1. Load Wasm module
+2. Set up execution environment (memory, limits, storage)
+3. Resolve and link host functions
+4. Execute specified function in the Wasm module
+5. Handle return values, logs, and events
+6. Clean up and return execution outcome
 
 ```mermaid
 graph TD
@@ -160,25 +161,25 @@ graph TD
 graph TD
     B[VMLogic]
     C[Wasm Module - Guest Code]
-    
+
     B --> E[Storage]
     B --> F[Memory Management]
     B --> G[Registers]
     B --> H[Context]
     B --> I[Host Functions]
-    
+
     I --> K[Memory Operations]
     I --> L[Register Operations]
     I --> M[Storage Operations]
     I --> N[Logging/Events]
     I --> O[External Requests]
-    
+
     C -.-> I
-    
+
     subgraph "External Environment"
         AB[Host System]
     end
-    
+
     E -.-> AB
     O -.-> AB
 ```
@@ -187,12 +188,12 @@ graph TD
 
 The `run()` function in `lib.rs` is the entry point for executing a Wasm module:
 
-  1. Creates a Wasmer engine and store
-  2. Sets up memory limits and tuning
-  3. Instantiates the Wasm module
-  4. Links host functions
-  5. Executes the specified method
-  6. Handles errors and returns the execution outcome
+1. Creates a Wasmer engine and store
+2. Sets up memory limits and tuning
+3. Instantiates the Wasm module
+4. Links host functions
+5. Executes the specified method
+6. Handles errors and returns the execution outcome
 
 The `run()` function is the primary entry point for executing WebAssembly (Wasm)
 modules within the Calimero runtime. Its purpose is to orchestrate the entire
@@ -273,10 +274,10 @@ which provides a comprehensive summary of the execution results.
 
 The `VMLogic` struct manages the execution context:
 
-  - Holds references to storage and resource limits
-  - Manages registers for temporary data storage
-  - Collects logs and events during execution
-  - Provides methods for interacting with the host environment
+- Holds references to storage and resource limits
+- Manages registers for temporary data storage
+- Collects logs and events during execution
+- Provides methods for interacting with the host environment
 
 The `VMLogic` struct is the centre of the Calimero runtime, orchestrating the
 execution of WebAssembly modules within a controlled and sandboxed environment.
@@ -329,11 +330,11 @@ receives a complete and consistent report of the execution results.
 
 Host functions are implemented in the `imports.rs` file:
 
-  - Panic handling
-  - Register operations (read, write, get length)
-  - Storage interactions
-  - Logging and event emission
-  - External HTTP requests (fetch)
+- Panic handling
+- Register operations (read, write, get length)
+- Storage interactions
+- Logging and event emission
+- External HTTP requests (fetch)
 
 Host functions serve as the bridge between the sandboxed WebAssembly (Wasm)
 environment and the host system. These functions provide a carefully curated set
@@ -390,8 +391,8 @@ a high level of security and predictability.
 
 The `memory.rs` file contains custom memory tuning for the [Wasmer][] runtime:
 
-  - Sets memory limits based on the provided `VMLimits`
-  - Configures memory styles and table styles
+- Sets memory limits based on the provided `VMLimits`
+- Configures memory styles and table styles
 
 Memory management is a critical component of the Calimero runtime, playing a
 vital role in ensuring secure, efficient, and controlled execution of
@@ -455,8 +456,8 @@ good performance while still providing a secure and controlled environment.
 The `store.rs` file defines the `Storage` trait and provides an in-memory
 implementation:
 
-  - Key-value storage interface
-  - Operations: `get`, `set`, `has`
+- Key-value storage interface
+- Operations: `get`, `set`, `has`
 
 The storage system in the Calimero runtime maintains state and facilitates data
 persistence across Wasm module executions. Its primary purpose is to provide a
@@ -529,10 +530,10 @@ improved performance in production environments.
 
 The `errors.rs` file defines a comprehensive error hierarchy:
 
-  - `VMRuntimeError`: Top-level error type
-  - `FunctionCallError`: Errors related to function execution
-  - `HostError`: Errors occurring in host functions
-  - `WasmTrap`: Wasm execution traps
+- `VMRuntimeError`: Top-level error type
+- `FunctionCallError`: Errors related to function execution
+- `HostError`: Errors occurring in host functions
+- `WasmTrap`: Wasm execution traps
 
 Error handling is a critical part of the Calimero runtime, designed to provide
 robust, informative, and secure management of various error conditions that may
@@ -542,27 +543,27 @@ way that maintains the integrity of the runtime, provides useful information for
 debugging and auditing, and ensures that errors in guest code do not compromise
 the host system.
 
-  - `VMRuntimeError` encapsulates all possible errors that can occur within the
-    runtime. Under this umbrella, there are several more specific error types.
+- `VMRuntimeError` encapsulates all possible errors that can occur within the
+  runtime. Under this umbrella, there are several more specific error types.
 
-  - `FunctionCallError` covers a wide range of issues that can occur during the
-    execution of a Wasm function. This includes compilation errors, linking
-    errors, method resolution errors, and various types of execution errors.
+- `FunctionCallError` covers a wide range of issues that can occur during the
+  execution of a Wasm function. This includes compilation errors, linking
+  errors, method resolution errors, and various types of execution errors.
 
-  - One of the key aspects of the error handling system is how it handles
-    both host-side and guest-side errors. `HostError` covers issues that occur
-    within the host functions or other parts of the runtime, while `WasmTrap`
-    handles errors that originate from the Wasm execution itself, such as stack
-    overflows or invalid memory accesses.
+- One of the key aspects of the error handling system is how it handles both
+  host-side and guest-side errors. `HostError` covers issues that occur within
+  the host functions or other parts of the runtime, while `WasmTrap` handles
+  errors that originate from the Wasm execution itself, such as stack overflows
+  or invalid memory accesses.
 
-  - The error handling system also includes sophisticated panic handling
-    capabilities. The runtime sets up a custom panic hook that captures detailed
-    information about panics, including the panic message and the location
-    (file, line, and column) where the panic occurred. This information is then
-    wrapped in a `HostError::Panic` variant, allowing panics to be handled
-    consistently with other types of errors. This is notable because, of course,
-    it is usually an ambition to avoid panics in Rust, but in this case, they
-    cannot currently be avoided.
+- The error handling system also includes sophisticated panic handling
+  capabilities. The runtime sets up a custom panic hook that captures detailed
+  information about panics, including the panic message and the location (file,
+  line, and column) where the panic occurred. This information is then wrapped
+  in a `HostError::Panic` variant, allowing panics to be handled consistently
+  with other types of errors. This is notable because, of course, it is usually
+  an ambition to avoid panics in Rust, but in this case, they cannot currently
+  be avoided.
 
 Security considerations are paramount in the design of the error handling
 system.
@@ -577,16 +578,14 @@ serialisation, error conversion, and string formatting of error messages.
 The repository includes several example applications demonstrating the use of
 the Calimero runtime:
 
-  - **[`demo.rs`](examples/demo.rs)**: Demonstrates basic key-value storage
-    operations.
+- **[`demo.rs`](examples/demo.rs)**: Demonstrates basic key-value storage
+  operations.
 
-  - **[`fetch.rs`](examples/fetch.rs)**: Shows how to make external HTTP
-    requests from within the Wasm module.
+- **[`fetch.rs`](examples/fetch.rs)**: Shows how to make external HTTP requests
+  from within the Wasm module.
 
-  - **[`rps.rs`](examples/rps.rs)**: Implements a more complex
-    rock-paper-scissors game, showcasing state management and cryptographic
-    operations.
+- **[`rps.rs`](examples/rps.rs)**: Implements a more complex rock-paper-scissors
+  game, showcasing state management and cryptographic operations.
 
 These examples provide practical insights into how to build and interact with
 Wasm modules using the runtime.
-

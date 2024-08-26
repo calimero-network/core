@@ -1,27 +1,32 @@
+use core::any::TypeId;
+use core::cell::RefCell;
 use std::borrow::Cow;
+use std::mem::transmute;
 
 use crate::env;
 use crate::state::AppState;
 
 pub trait AppEvent {
-    fn kind<'a>(&'a self) -> Cow<'a, str>;
-    fn data<'a>(&'a self) -> Cow<'a, [u8]>;
+    fn kind(&self) -> Cow<'_, str>;
+    fn data(&self) -> Cow<'_, [u8]>;
 }
 
+#[derive(Debug)]
+#[non_exhaustive]
 pub struct EncodedAppEvent<'a> {
     pub kind: Cow<'a, str>,
     pub data: Cow<'a, [u8]>,
 }
 
 thread_local! {
-    static HANDLER: std::cell::RefCell<fn(Box<dyn AppEventExt>)> = panic!("uninitialized handler");
+    static HANDLER: RefCell<fn(Box<dyn AppEventExt>)> = panic!("uninitialized handler");
 }
 
 #[track_caller]
 #[inline(never)]
 fn handler<E: AppEventExt + 'static>(event: Box<dyn AppEventExt>) {
     if let Ok(event) = E::downcast(event) {
-        env::emit(event);
+        env::emit(&event);
     }
 }
 
@@ -35,12 +40,12 @@ where
 #[track_caller]
 pub fn emit<'a, E: AppEventExt + 'a>(event: E) {
     let f = HANDLER.with_borrow(|handler| *handler);
-    let f: fn(Box<dyn AppEventExt + 'a>) = unsafe { std::mem::transmute::<_, _>(f) };
-    f(Box::new(event))
+    let f: fn(Box<dyn AppEventExt + 'a>) = unsafe { transmute::<_, _>(f) };
+    f(Box::new(event));
 }
 
 mod reflect {
-    pub use std::any::TypeId;
+    use core::any::{type_name, TypeId};
 
     pub trait Reflect {
         fn id(&self) -> TypeId
@@ -51,7 +56,7 @@ mod reflect {
         }
 
         fn name(&self) -> &'static str {
-            std::any::type_name::<Self>()
+            type_name::<Self>()
         }
     }
 
@@ -74,7 +79,7 @@ pub trait AppEventExt: AppEvent + Reflect {
 
 impl dyn AppEventExt {
     pub fn is<T: AppEventExt + 'static>(&self) -> bool {
-        self.id() == reflect::TypeId::of::<T>()
+        self.id() == TypeId::of::<T>()
     }
 }
 
@@ -82,20 +87,22 @@ pub fn downcast<T: AppEventExt + 'static>(
     event: Box<dyn AppEventExt>,
 ) -> Result<T, Box<dyn AppEventExt>> {
     if event.is::<T>() {
-        Ok(*unsafe { Box::from_raw(Box::into_raw(event) as *mut T) })
+        Ok(*unsafe { Box::from_raw(Box::into_raw(event).cast::<T>()) })
     } else {
         Err(event)
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+#[allow(clippy::exhaustive_enums)]
 pub enum NoEvent {}
 impl AppEvent for NoEvent {
-    fn kind<'a>(&'a self) -> Cow<'a, str> {
-        match *self {}
+    fn kind(&self) -> Cow<'_, str> {
+        unreachable!()
     }
 
-    fn data<'a>(&'a self) -> Cow<'a, [u8]> {
-        match *self {}
+    fn data(&self) -> Cow<'_, [u8]> {
+        unreachable!()
     }
 }
 impl AppEventExt for NoEvent {}

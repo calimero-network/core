@@ -1,44 +1,133 @@
-use std::fmt::Display;
+use core::fmt::{self, Display, Formatter};
+use core::ops::Deref;
+use core::str::FromStr;
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
+use thiserror::Error as ThisError;
+use url::{ParseError, Url};
 
-#[derive(Eq, Hash, Clone, Debug, PartialEq, Serialize, Deserialize)]
-// todo! change this, please
-pub struct ApplicationId(pub String);
+use crate::blobs::BlobId;
+use crate::hash::{Hash, HashError};
 
-impl Display for ApplicationId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.0, f)
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+// todo! define macros that construct newtypes
+// todo! wrapping Hash<N> with this interface
+pub struct ApplicationId(Hash);
+
+impl From<[u8; 32]> for ApplicationId {
+    fn from(id: [u8; 32]) -> Self {
+        Self(id.into())
     }
 }
 
-impl From<String> for ApplicationId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
+impl Deref for ApplicationId {
+    type Target = [u8; 32];
 
-impl Into<String> for ApplicationId {
-    fn into(self) -> String {
-        self.0
-    }
-}
-
-impl AsRef<str> for ApplicationId {
-    fn as_ref(&self) -> &str {
+    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct Application {
-    pub id: ApplicationId,
-    pub version: semver::Version,
+impl ApplicationId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+impl Display for ApplicationId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl From<ApplicationId> for String {
+    fn from(id: ApplicationId) -> Self {
+        id.as_str().to_owned()
+    }
+}
+
+impl From<&ApplicationId> for String {
+    fn from(id: &ApplicationId) -> Self {
+        id.as_str().to_owned()
+    }
+}
+
+#[derive(Clone, Copy, Debug, ThisError)]
+#[error(transparent)]
+pub struct InvalidApplicationId(HashError);
+
+impl FromStr for ApplicationId {
+    type Err = InvalidApplicationId;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.parse().map_err(InvalidApplicationId)?))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ApplicationSource(Url);
+
+impl FromStr for ApplicationSource {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self)
+    }
+}
+
+impl From<Url> for ApplicationSource {
+    fn from(value: Url) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ApplicationSource> for Url {
+    fn from(value: ApplicationSource) -> Self {
+        value.0
+    }
+}
+
+impl Display for ApplicationSource {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct Application {
+    pub id: ApplicationId,
+    pub blob: BlobId,
+    pub version: Option<Version>,
+    pub source: ApplicationSource,
+    pub metadata: Vec<u8>,
+}
+
+impl Application {
+    #[must_use]
+    pub fn new(
+        id: ApplicationId,
+        blob: BlobId,
+        version: Option<Version>,
+        source: ApplicationSource,
+        metadata: Vec<u8>,
+    ) -> Self {
+        Self {
+            id,
+            blob,
+            version,
+            source,
+            metadata,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct Release {
-    pub version: semver::Version,
+    pub version: Version,
     pub notes: String,
     pub path: String,
     pub hash: String,

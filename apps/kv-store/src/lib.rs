@@ -4,7 +4,7 @@ use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, env};
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(Default, BorshSerialize, BorshDeserialize)]
+#[derive(BorshDeserialize, BorshSerialize, Default)]
 #[borsh(crate = "calimero_sdk::borsh")]
 pub struct KvStore {
     items: HashMap<String, String>,
@@ -20,6 +20,11 @@ pub enum Event<'a> {
 
 #[app::logic]
 impl KvStore {
+    #[app::init]
+    pub fn init() -> KvStore {
+        KvStore::default()
+    }
+
     pub fn set(&mut self, key: String, value: String) {
         env::log(&format!("Setting key: {:?} to value: {:?}", key, value));
 
@@ -42,7 +47,7 @@ impl KvStore {
     }
 
     pub fn entries(&self) -> &HashMap<String, String> {
-        env::log(&format!("Getting all entries"));
+        env::log("Getting all entries");
 
         &self.items
     }

@@ -1,16 +1,24 @@
-use std::fmt;
+use core::cmp::Ordering;
+use core::fmt::{Debug, Formatter};
+use core::{fmt, ptr};
+use std::io::{Read, Result as IoResult, Write};
 
+use borsh::{BorshDeserialize, BorshSerialize};
+use component::KeyComponents;
 use generic_array::typenum::Const;
 use generic_array::{GenericArray, IntoArrayLength};
 
 use crate::db::Column;
 use crate::slice::Slice;
 
+mod application;
+mod blobs;
 mod component;
 mod context;
 mod generic;
 
-use component::KeyComponents;
+pub use application::ApplicationMeta;
+pub use blobs::BlobMeta;
 pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction};
 pub use generic::Generic;
 
@@ -23,8 +31,8 @@ impl<T: KeyComponents> Clone for Key<T> {
     }
 }
 
-impl<T: KeyComponents> fmt::Debug for Key<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<T: KeyComponents> Debug for Key<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Key").field(&self.0).finish()
     }
 }
@@ -43,7 +51,7 @@ impl<T: KeyComponents> Ord for Key<T>
 where
     GenericArray<u8, T::LEN>: Ord,
 {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.0.cmp(&other.0)
     }
 }
@@ -52,8 +60,8 @@ impl<T: KeyComponents> PartialOrd for Key<T>
 where
     GenericArray<u8, T::LEN>: PartialOrd,
 {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.0.partial_cmp(&other.0)
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -62,11 +70,11 @@ impl<T: KeyComponents> Key<T> {
         &self.0
     }
 
-    pub fn as_slice(&self) -> Slice {
+    pub fn as_slice(&self) -> Slice<'_> {
         self.as_bytes().into()
     }
 
-    pub(crate) fn try_from_slice(slice: Slice) -> Option<Self> {
+    pub(crate) fn try_from_slice(slice: &Slice<'_>) -> Option<Self> {
         let bytes = slice.as_ref();
 
         (bytes.len() == GenericArray::<u8, T::LEN>::len()).then_some(())?;
@@ -94,7 +102,10 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<T>) -> Self {
-        unsafe { &*(key as *const _ as *const _) }
+        #[allow(trivial_casts)]
+        unsafe {
+            &*ptr::from_ref(key).cast()
+        }
     }
 }
 
@@ -104,15 +115,19 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<(T,)>) -> Self {
-        unsafe { &*(key as *const _ as *const _) }
+        #[allow(trivial_casts)]
+        unsafe {
+            &*ptr::from_ref(key).cast()
+        }
     }
 }
 
-pub trait AsKeyParts: Copy {
+pub trait AsKeyParts: Copy + 'static {
     // KeyParts is Sealed so far as KeyComponents stays private
     type Components: KeyComponents;
 
-    fn parts(&self) -> (Column, &Key<Self::Components>);
+    fn column() -> Column;
+    fn as_key(&self) -> &Key<Self::Components>;
 }
 
 pub trait FromKeyParts: AsKeyParts {
@@ -120,3 +135,22 @@ pub trait FromKeyParts: AsKeyParts {
 
     fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error>;
 }
+
+#[cfg(feature = "borsh")]
+const _: () = {
+    impl<T: KeyComponents> BorshSerialize for Key<T> {
+        fn serialize<W: Write>(&self, writer: &mut W) -> IoResult<()> {
+            writer.write_all(&self.0)
+        }
+    }
+
+    impl<T: KeyComponents> BorshDeserialize for Key<T> {
+        fn deserialize_reader<R: Read>(reader: &mut R) -> IoResult<Self> {
+            let mut key = GenericArray::default();
+
+            reader.read_exact(&mut key)?;
+
+            Ok(Self(key))
+        }
+    }
+};

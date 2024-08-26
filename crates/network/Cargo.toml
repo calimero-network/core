@@ -33,7 +33,7 @@ owo-colors.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros"] }
 tokio-util = { workspace = true, features = ["codec", "compat"] }
 tracing.workspace = true
 
@@ -42,3 +42,6 @@ calimero-primitives = { path = "../primitives" }
 
 [dev-dependencies]
 tokio-test.workspace = true
+
+[lints]
+workspace = true

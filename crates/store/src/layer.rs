@@ -1,8 +1,12 @@
+use eyre::Result as EyreResult;
+
 use crate::iter::{Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
+use crate::layer::read_only::ReadOnly;
+use crate::layer::temporal::Temporal;
 use crate::slice::Slice;
 use crate::tx::Transaction;
-use crate::{Store, StoreHandle};
+use crate::{Handle, Store};
 
 // todo!
 // mod cache;
@@ -14,42 +18,44 @@ pub trait Layer {
     type Base: Layer;
 }
 
-pub trait ReadLayer<'k>: Layer {
-    fn has(&self, key: &'k impl AsKeyParts) -> eyre::Result<bool>;
-    fn get(&self, key: &'k impl AsKeyParts) -> eyre::Result<Option<Slice>>;
-    fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &'k K)
-        -> eyre::Result<Iter<Structured<K>>>;
+pub trait ReadLayer: Layer {
+    fn has<K: AsKeyParts>(&self, key: &K) -> EyreResult<bool>;
+    fn get<K: AsKeyParts>(&self, key: &K) -> EyreResult<Option<Slice<'_>>>;
+
+    // TODO: We should consider returning Iterator here.
+    #[allow(clippy::iter_not_returning_iterator)]
+    fn iter<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>>;
 }
 
-pub trait WriteLayer<'k, 'v>: ReadLayer<'k> {
-    fn put(&mut self, key: &'k impl AsKeyParts, value: Slice<'v>) -> eyre::Result<()>;
-    fn delete(&mut self, key: &'k impl AsKeyParts) -> eyre::Result<()>;
-    fn apply(&mut self, tx: &Transaction<'k, 'v>) -> eyre::Result<()>;
+pub trait WriteLayer<'a>: Layer {
+    fn put<K: AsKeyParts>(&mut self, key: &'a K, value: Slice<'a>) -> EyreResult<()>;
+    fn delete<K: AsKeyParts>(&mut self, key: &'a K) -> EyreResult<()>;
+    fn apply(&mut self, tx: &Transaction<'a>) -> EyreResult<()>;
 
-    fn commit(self) -> eyre::Result<()>;
+    fn commit(self) -> EyreResult<()>;
 }
 
-pub trait LayerExt: Sized {
-    fn handle(self) -> StoreHandle<Self>;
+pub trait LayerExt: Layer + Sized {
+    fn handle(self) -> Handle<Self>;
 
-    fn temporal<'k, 'v>(&mut self) -> temporal::Temporal<'_, 'k, 'v, Self>
+    fn temporal<'a>(&mut self) -> Temporal<'_, 'a, Self>
     where
-        Self: WriteLayer<'k, 'v>,
+        Self: WriteLayer<'a>,
     {
-        temporal::Temporal::new(self)
+        Temporal::new(self)
     }
 
-    fn read_only<'k>(&'k self) -> read_only::ReadOnly<'k, Self>
+    fn read_only(&self) -> ReadOnly<'_, Self>
     where
-        Self: ReadLayer<'k>,
+        Self: ReadLayer,
     {
-        read_only::ReadOnly::new(self)
+        ReadOnly::new(self)
     }
 }
 
 impl<L: Layer> LayerExt for L {
-    fn handle(self) -> StoreHandle<Self> {
-        StoreHandle::new(self)
+    fn handle(self) -> Handle<Self> {
+        Handle::new(self)
     }
 }
 
@@ -57,44 +63,34 @@ impl Layer for Store {
     type Base = Self;
 }
 
-impl<'k> ReadLayer<'k> for Store {
-    fn has(&self, key: &impl AsKeyParts) -> eyre::Result<bool> {
-        let (col, key) = key.parts();
-
-        self.db.has(col, key.as_slice())
+impl ReadLayer for Store {
+    fn has<K: AsKeyParts>(&self, key: &K) -> EyreResult<bool> {
+        self.db.has(K::column(), key.as_key().as_slice())
     }
 
-    fn get(&self, key: &impl AsKeyParts) -> eyre::Result<Option<Slice>> {
-        let (col, key) = key.parts();
-
-        self.db.get(col, key.as_slice())
+    fn get<K: AsKeyParts>(&self, key: &K) -> EyreResult<Option<Slice<'_>>> {
+        self.db.get(K::column(), key.as_key().as_slice())
     }
 
-    fn iter<K: AsKeyParts + FromKeyParts>(&self, start: &K) -> eyre::Result<Iter<Structured<K>>> {
-        let (col, key) = start.parts();
-
-        Ok(self.db.iter(col, key.as_slice())?.structured_key())
+    fn iter<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>> {
+        Ok(self.db.iter(K::column())?.structured_key())
     }
 }
 
-impl<'k, 'v> WriteLayer<'k, 'v> for Store {
-    fn put(&mut self, key: &'k impl AsKeyParts, value: Slice<'v>) -> eyre::Result<()> {
-        let (col, key) = key.parts();
-
-        self.db.put(col, key.as_slice(), value)
+impl<'a> WriteLayer<'a> for Store {
+    fn put<K: AsKeyParts>(&mut self, key: &'a K, value: Slice<'a>) -> EyreResult<()> {
+        self.db.put(K::column(), key.as_key().as_slice(), value)
     }
 
-    fn delete(&mut self, key: &'k impl AsKeyParts) -> eyre::Result<()> {
-        let (col, key) = key.parts();
-
-        self.db.delete(col, key.as_slice())
+    fn delete<K: AsKeyParts>(&mut self, key: &K) -> EyreResult<()> {
+        self.db.delete(K::column(), key.as_key().as_slice())
     }
 
-    fn apply(&mut self, tx: &Transaction<'k, 'v>) -> eyre::Result<()> {
+    fn apply(&mut self, tx: &Transaction<'a>) -> EyreResult<()> {
         self.db.apply(tx)
     }
 
-    fn commit(self) -> eyre::Result<()> {
+    fn commit(self) -> EyreResult<()> {
         Ok(())
     }
 }

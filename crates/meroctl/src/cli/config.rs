@@ -1,9 +1,11 @@
-use std::fs;
-use std::net::IpAddr;
+#![allow(unused_results)]
+
+use core::net::IpAddr;
+use std::fs::{read_to_string, write};
 
 use calimero_network::config::BootstrapNodes;
 use clap::{Args, Parser, ValueEnum};
-use eyre::eyre;
+use eyre::{eyre, Result as EyreResult};
 use multiaddr::{Multiaddr, Protocol};
 use toml_edit::{DocumentMut, Value};
 use tracing::info;
@@ -45,7 +47,7 @@ pub struct ConfigCommand {
     pub print: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Args, Debug)]
 #[group(multiple = false)]
 pub struct MdnsArgs {
     /// Enable mDNS discovery
@@ -62,20 +64,24 @@ pub enum BootstrapNetwork {
     Ipfs,
 }
 
+#[warn(unused_results)]
 impl ConfigCommand {
-    pub fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
+    // TODO: Consider splitting this long function into multiple parts.
+    #[allow(clippy::too_many_lines)]
+    pub fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
         let path = root_args
             .home
             .join(&root_args.node_name)
             .join("config.toml");
 
         // Load the existing TOML file
-        let toml_str = fs::read_to_string(&path)
-            .map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
+        let toml_str =
+            read_to_string(&path).map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
         let mut doc = toml_str.parse::<DocumentMut>()?;
 
+        #[allow(clippy::print_stdout)]
         if self.print {
-            println!("{}", doc);
+            println!("{doc}");
             return Ok(());
         }
 
@@ -100,7 +106,7 @@ impl ConfigCommand {
                     .parse()?;
                 let mut new_addr = Multiaddr::empty();
 
-                for protocol in addr.iter() {
+                for protocol in &addr {
                     match (&protocol, ipv4_host, ipv6_host, self.swarm_port) {
                         (Protocol::Ip4(_), Some(ipv4_host), _, _) => {
                             new_addr.push(Protocol::Ip4(ipv4_host));
@@ -109,6 +115,7 @@ impl ConfigCommand {
                             new_addr.push(Protocol::Ip6(ipv6_host));
                         }
                         (Protocol::Tcp(_) | Protocol::Udp(_), _, _, Some(new_port)) => {
+                            #[allow(clippy::wildcard_enum_match_arm)]
                             new_addr.push(match &protocol {
                                 Protocol::Tcp(_) => Protocol::Tcp(new_port),
                                 Protocol::Udp(_) => Protocol::Udp(new_port),
@@ -136,7 +143,7 @@ impl ConfigCommand {
                     .parse()?;
                 let mut new_addr = Multiaddr::empty();
 
-                for protocol in addr.iter() {
+                for protocol in &addr {
                     match (&protocol, ipv4_host, ipv6_host, self.server_port) {
                         (Protocol::Ip4(_), Some(ipv4_host), _, _) => {
                             new_addr.push(Protocol::Ip4(ipv4_host));
@@ -161,7 +168,7 @@ impl ConfigCommand {
                 .as_array_mut()
                 .ok_or(eyre!("No swarm table in config.toml"))?;
             list_array.clear();
-            for node in self.boot_nodes.iter() {
+            for node in self.boot_nodes {
                 list_array.push(node.to_string());
             }
         } else if let Some(network) = self.boot_network {
@@ -173,7 +180,7 @@ impl ConfigCommand {
                 BootstrapNetwork::CalimeroDev => BootstrapNodes::calimero_dev().list,
                 BootstrapNetwork::Ipfs => BootstrapNodes::ipfs().list,
             };
-            for node in new_nodes.iter() {
+            for node in new_nodes {
                 list_array.push(node.to_string());
             }
         }
@@ -184,7 +191,7 @@ impl ConfigCommand {
         }
 
         // Save the updated TOML back to the file
-        fs::write(&path, doc.to_string())?;
+        write(&path, doc.to_string())?;
 
         info!("Node configuration has been updated");
 

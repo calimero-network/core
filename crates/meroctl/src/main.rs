@@ -1,27 +1,31 @@
+use std::env::var;
+
 use clap::Parser;
+use eyre::Result as EyreResult;
+use tracing_subscriber::fmt::layer;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{registry, EnvFilter};
+
+use crate::cli::RootCommand;
 
 mod cli;
+mod common;
 mod config_file;
 mod defaults;
 
 #[tokio::main]
-async fn main() -> eyre::Result<()> {
+async fn main() -> EyreResult<()> {
     setup()?;
 
-    let command = cli::RootCommand::parse();
+    let command = RootCommand::parse();
 
     command.run().await
 }
 
-fn setup() -> eyre::Result<()> {
-    tracing_subscriber::registry()
-        .with(EnvFilter::builder().parse(format!(
-            "info,{}",
-            std::env::var("RUST_LOG").unwrap_or_default()
-        ))?)
-        .with(tracing_subscriber::fmt::layer())
+fn setup() -> EyreResult<()> {
+    registry()
+        .with(EnvFilter::builder().parse(format!("info,{}", var("RUST_LOG").unwrap_or_default()))?)
+        .with(layer())
         .init();
 
     color_eyre::install()

@@ -1,8 +1,12 @@
-use std::{fmt, time};
+use core::fmt::{self, Formatter};
+use core::time::Duration;
 
-use libp2p::{identity, rendezvous};
-use multiaddr::Multiaddr;
-use serde::{Deserialize, Serialize};
+use calimero_node_primitives::NodeType;
+use libp2p::identity::Keypair;
+use libp2p::rendezvous::Namespace;
+use multiaddr::{Multiaddr, Protocol};
+use serde::de::{Error as SerdeError, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub const DEFAULT_PORT: u16 = 2428; // CHAT in T9
 
@@ -22,9 +26,10 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
 ];
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NetworkConfig {
-    pub identity: identity::Keypair,
-    pub node_type: calimero_node_primitives::NodeType,
+    pub identity: Keypair,
+    pub node_type: NodeType,
 
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
@@ -32,33 +37,69 @@ pub struct NetworkConfig {
     pub catchup: CatchupConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl NetworkConfig {
+    #[must_use]
+    pub const fn new(
+        identity: Keypair,
+        node_type: NodeType,
+        swarm: SwarmConfig,
+        bootstrap: BootstrapConfig,
+        discovery: DiscoveryConfig,
+        catchup: CatchupConfig,
+    ) -> Self {
+        Self {
+            identity,
+            node_type,
+            swarm,
+            bootstrap,
+            discovery,
+            catchup,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct SwarmConfig {
     pub listen: Vec<Multiaddr>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl SwarmConfig {
+    #[must_use]
+    pub const fn new(listen: Vec<Multiaddr>) -> Self {
+        Self { listen }
+    }
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct BootstrapConfig {
     #[serde(default)]
     pub nodes: BootstrapNodes,
 }
 
-impl Default for BootstrapConfig {
-    fn default() -> Self {
-        Self {
-            nodes: Default::default(),
-        }
+impl BootstrapConfig {
+    #[must_use]
+    pub const fn new(nodes: BootstrapNodes) -> Self {
+        Self { nodes }
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(transparent)]
+#[non_exhaustive]
 pub struct BootstrapNodes {
     #[serde(deserialize_with = "deserialize_bootstrap")]
     pub list: Vec<Multiaddr>,
 }
 
 impl BootstrapNodes {
+    #[must_use]
+    pub const fn new(list: Vec<Multiaddr>) -> Self {
+        Self { list }
+    }
+
+    #[must_use]
     pub fn ipfs() -> Self {
         Self {
             list: IPFS_BOOT_NODES
@@ -68,6 +109,7 @@ impl BootstrapNodes {
         }
     }
 
+    #[must_use]
     pub fn calimero_dev() -> Self {
         Self {
             list: CALIMERO_DEV_BOOT_NODES
@@ -78,7 +120,8 @@ impl BootstrapNodes {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct DiscoveryConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub mdns: bool,
@@ -86,89 +129,116 @@ pub struct DiscoveryConfig {
     pub rendezvous: RendezvousConfig,
 }
 
+impl DiscoveryConfig {
+    #[must_use]
+    pub const fn new(mdns: bool, rendezvous: RendezvousConfig) -> Self {
+        Self { mdns, rendezvous }
+    }
+}
+
 impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             mdns: true,
-            rendezvous: Default::default(),
+            rendezvous: RendezvousConfig::default(),
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct RendezvousConfig {
     #[serde(
         serialize_with = "serialize_rendezvous_namespace",
         deserialize_with = "deserialize_rendezvous_namespace"
     )]
-    pub namespace: rendezvous::Namespace,
+    pub namespace: Namespace,
 
     pub discovery_rpm: f32,
 
-    pub discovery_interval: time::Duration,
+    pub discovery_interval: Duration,
 }
 
 impl Default for RendezvousConfig {
     fn default() -> Self {
         Self {
-            namespace: rendezvous::Namespace::from_static("/calimero/devnet/global"),
+            namespace: Namespace::from_static("/calimero/devnet/global"),
             discovery_rpm: 0.5,
-            discovery_interval: time::Duration::from_secs(90),
+            discovery_interval: Duration::from_secs(90),
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct CatchupConfig {
     pub batch_size: u8,
-    pub receive_timeout: time::Duration,
+
+    pub receive_timeout: Duration,
+
+    pub interval: Duration,
+
+    pub initial_delay: Duration,
+}
+
+impl CatchupConfig {
+    #[must_use]
+    pub const fn new(
+        batch_size: u8,
+        receive_timeout: Duration,
+        interval: Duration,
+        initial_delay: Duration,
+    ) -> Self {
+        Self {
+            batch_size,
+            receive_timeout,
+            interval,
+            initial_delay,
+        }
+    }
 }
 
 fn serialize_rendezvous_namespace<S>(
-    namespace: &rendezvous::Namespace,
+    namespace: &Namespace,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
-    S: serde::Serializer,
+    S: Serializer,
 {
     let namespace_str = namespace.to_string();
     serializer.serialize_str(&namespace_str)
 }
 
-fn deserialize_rendezvous_namespace<'de, D>(
-    deserializer: D,
-) -> Result<rendezvous::Namespace, D::Error>
+fn deserialize_rendezvous_namespace<'de, D>(deserializer: D) -> Result<Namespace, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
     let namespace_str = String::deserialize(deserializer)?;
-    rendezvous::Namespace::new(namespace_str).map_err(serde::de::Error::custom)
+    Namespace::new(namespace_str).map_err(SerdeError::custom)
 }
 
 fn deserialize_bootstrap<'de, D>(deserializer: D) -> Result<Vec<Multiaddr>, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
-    use serde::de;
-
     struct BootstrapVisitor;
 
-    impl<'de> de::Visitor<'de> for BootstrapVisitor {
+    impl<'de> Visitor<'de> for BootstrapVisitor {
         type Value = Vec<Multiaddr>;
 
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
             formatter.write_str("a list of multiaddresses")
         }
 
         fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
         where
-            A: de::SeqAccess<'de>,
+            A: SeqAccess<'de>,
         {
             let mut addrs = Vec::new();
 
             while let Some(addr) = seq.next_element::<Multiaddr>()? {
-                let Some(multiaddr::Protocol::P2p(_)) = addr.iter().last() else {
-                    return Err(serde::de::Error::custom("peer ID not allowed"));
+                let Some(Protocol::P2p(_)) = addr.iter().last() else {
+                    return Err(SerdeError::custom("peer ID not allowed"));
                 };
 
                 addrs.push(addr);

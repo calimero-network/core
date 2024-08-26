@@ -1,5 +1,8 @@
+use borsh::to_vec as to_borsh_vec;
+
 use super::{expected_boolean, expected_register, panic_str, read_register, DATA_REGISTER};
 use crate::sys;
+use crate::sys::Buffer;
 
 #[doc(hidden)]
 pub unsafe fn fetch(
@@ -8,14 +11,14 @@ pub unsafe fn fetch(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let headers = match borsh::to_vec(&headers) {
+    let headers = match to_borsh_vec(&headers) {
         Ok(data) => data,
-        Err(err) => panic_str(&format!("Cannot serialize headers: {:?}", err)),
+        Err(err) => panic_str(&format!("Cannot serialize headers: {err:?}")),
     };
-    let method = sys::Buffer::from(method);
-    let url = sys::Buffer::from(url);
-    let headers = sys::Buffer::from(headers.as_slice());
-    let body = sys::Buffer::from(body);
+    let method = Buffer::from(method);
+    let url = Buffer::from(url);
+    let headers = Buffer::from(headers.as_slice());
+    let body = Buffer::from(body);
 
     let failed = unsafe { sys::fetch(url, method, headers, body, DATA_REGISTER) }
         .try_into()

@@ -1,6 +1,13 @@
+use calimero_context::config::ApplicationConfig;
+use calimero_network::config::NetworkConfig;
+use calimero_node::{start, NodeConfig};
+use calimero_node_primitives::NodeType as PrimitiveNodeType;
+use calimero_server::config::ServerConfig;
+use calimero_store::config::StoreConfig;
 use clap::{Parser, ValueEnum};
+use eyre::{bail, Result as EyreResult};
 
-use crate::cli;
+use crate::cli::RootArgs;
 use crate::config_file::ConfigFile;
 
 /// Run a node
@@ -11,58 +18,54 @@ pub struct RunCommand {
     pub node_type: NodeType,
 }
 
-#[derive(Copy, Clone, Debug, Default, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
 pub enum NodeType {
     #[default]
     Peer,
     Coordinator,
 }
 
-impl From<NodeType> for calimero_node_primitives::NodeType {
+impl From<NodeType> for PrimitiveNodeType {
     fn from(value: NodeType) -> Self {
         match value {
-            NodeType::Peer => calimero_node_primitives::NodeType::Peer,
-            NodeType::Coordinator => calimero_node_primitives::NodeType::Coordinator,
+            NodeType::Peer => Self::Peer,
+            NodeType::Coordinator => Self::Coordinator,
         }
     }
 }
 
 impl RunCommand {
-    pub async fn run(self, root_args: cli::RootArgs) -> eyre::Result<()> {
+    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(root_args.node_name);
 
         if !ConfigFile::exists(&path) {
-            eyre::bail!("Node is not initialized in {:?}", path);
+            bail!("Node is not initialized in {:?}", path);
         }
 
         let config = ConfigFile::load(&path)?;
 
-        calimero_node::start(calimero_node::NodeConfig {
-            home: path.clone(),
-            node_type: self.node_type.into(),
-            identity: config.identity.clone(),
-            store: calimero_store::config::StoreConfig {
-                path: path.join(config.store.path),
-            },
-            application: calimero_context::config::ApplicationConfig {
-                dir: path.join(config.application.path),
-            },
-            network: calimero_network::config::NetworkConfig {
-                identity: config.identity.clone(),
-                node_type: self.node_type.into(),
-                swarm: config.network.swarm,
-                bootstrap: config.network.bootstrap,
-                discovery: config.network.discovery,
-                catchup: config.network.catchup,
-            },
-            server: calimero_server::config::ServerConfig {
-                listen: config.network.server.listen,
-                identity: config.identity,
-                admin: config.network.server.admin,
-                jsonrpc: config.network.server.jsonrpc,
-                websocket: config.network.server.websocket,
-            },
-        })
+        start(NodeConfig::new(
+            path.clone(),
+            self.node_type.into(),
+            config.identity.clone(),
+            StoreConfig::new(path.join(config.store.path)),
+            ApplicationConfig::new(path.join(config.application.path)),
+            NetworkConfig::new(
+                config.identity.clone(),
+                self.node_type.into(),
+                config.network.swarm,
+                config.network.bootstrap,
+                config.network.discovery,
+                config.network.catchup,
+            ),
+            ServerConfig::new(
+                config.network.server.listen,
+                config.identity.clone(),
+                config.network.server.admin,
+                config.network.server.jsonrpc,
+                config.network.server.websocket,
+            ),
+        ))
         .await
     }
 }

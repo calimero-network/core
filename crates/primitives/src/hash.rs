@@ -1,15 +1,28 @@
-use std::fmt;
-use std::mem::MaybeUninit;
-use std::ops::Deref;
-use std::str::FromStr;
+#[cfg(test)]
+#[path = "tests/hash.rs"]
+mod tests;
 
-use sha2::Digest;
-use thiserror::Error;
+use core::cmp::Ordering;
+use core::fmt::{self, Debug, Display, Formatter};
+use core::hash::{Hash as StdHash, Hasher};
+use core::mem::MaybeUninit;
+use core::ops::Deref;
+use core::str::{from_utf8, FromStr};
+use std::io::Result as IoResult;
+
+use borsh::BorshSerialize;
+use bs58::decode::Error as Bs58Error;
+use serde::de::{Error as SerdeError, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{to_writer as to_json_writer, Result as JsonResult};
+use sha2::{Digest, Sha256};
+use thiserror::Error as ThisError;
 
 const BYTES_LEN: usize = 32;
+#[allow(clippy::integer_division)]
 const MAX_STR_LEN: usize = (BYTES_LEN + 1) * 4 / 3;
 
-#[derive(Copy, Clone)]
+#[derive(Clone, Copy)]
 pub struct Hash {
     // todo! consider genericizing over a const N
     bytes: [u8; BYTES_LEN],
@@ -17,49 +30,65 @@ pub struct Hash {
 }
 
 impl Hash {
-    pub fn as_bytes(&self) -> &[u8; BYTES_LEN] {
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; BYTES_LEN] {
         &self.bytes
     }
 
     // todo! genericize over D: Digest
-    pub fn hash(data: &[u8]) -> Self {
+    #[must_use]
+    pub fn new(data: &[u8]) -> Self {
         Self {
-            bytes: sha2::Sha256::digest(data).into(),
+            bytes: Sha256::digest(data).into(),
             bs58: MaybeUninit::zeroed(),
         }
     }
 
     // todo! genericize over D: Digest
-    pub fn hash_json<T: serde::Serialize>(data: &T) -> serde_json::Result<Self> {
-        let mut hasher = sha2::Sha256::default();
+    pub fn hash_json<T: Serialize>(data: &T) -> JsonResult<Self> {
+        let mut hasher = Sha256::default();
 
-        serde_json::to_writer(&mut hasher, data)?;
+        to_json_writer(&mut hasher, data)?;
 
-        Ok(Hash {
+        Ok(Self {
             bytes: hasher.finalize().into(),
             bs58: MaybeUninit::zeroed(),
         })
     }
 
-    // todo! pub fn hash_borsh
+    #[cfg(feature = "borsh")]
+    pub fn hash_borsh<T: BorshSerialize>(data: &T) -> IoResult<Self> {
+        let mut hasher = Sha256::default();
+
+        data.serialize(&mut hasher)?;
+
+        Ok(Self {
+            bytes: hasher.finalize().into(),
+            bs58: MaybeUninit::zeroed(),
+        })
+    }
 
     // todo! using generic-array;
     // todo! as_str(&self, buf: &mut [u8; N]) -> &str
+    #[must_use]
     pub fn as_str(&self) -> &str {
-        let (len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
+        let (stored_len, bs58) = unsafe { &mut *self.bs58.as_ptr().cast_mut() };
 
-        if *len == 0 {
-            *len = bs58::encode(&self.bytes).onto(&mut bs58[..]).unwrap();
+        let mut len = *stored_len;
+
+        if len == 0 {
+            len = bs58::encode(&self.bytes).onto(&mut bs58[..]).unwrap();
+            *stored_len = len;
         }
 
-        std::str::from_utf8(&bs58[..*len]).unwrap()
+        from_utf8(&bs58[..len]).unwrap()
     }
 
-    fn from_str(s: &str) -> Result<Self, Option<bs58::decode::Error>> {
+    fn from_str(s: &str) -> Result<Self, Option<Bs58Error>> {
         let mut bytes = [0; BYTES_LEN];
         let mut bs58 = [0; MAX_STR_LEN];
         let len = s.len().min(MAX_STR_LEN);
-        (&mut bs58[..len]).copy_from_slice(&s.as_bytes()[..len]);
+        bs58[..len].copy_from_slice(&s.as_bytes()[..len]);
         match bs58::decode(s).onto(&mut bytes) {
             Ok(len) if len == bytes.len() => Ok(Self {
                 bytes,
@@ -104,8 +133,8 @@ impl Default for Hash {
     }
 }
 
-impl std::hash::Hash for Hash {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl StdHash for Hash {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.bytes.hash(state);
     }
 }
@@ -119,68 +148,69 @@ impl PartialEq for Hash {
 impl Eq for Hash {}
 
 impl PartialOrd for Hash {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.bytes.partial_cmp(&other.bytes)
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for Hash {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         self.bytes.cmp(&other.bytes)
     }
 }
 
-impl fmt::Display for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Hash {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
 
-impl fmt::Debug for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for Hash {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Hash").field(&self.as_str()).finish()
     }
 }
 
-#[derive(Debug, Error)]
-pub enum Error {
+#[derive(Clone, Copy, Debug, ThisError)]
+#[non_exhaustive]
+pub enum HashError {
     #[error("invalid hash length")]
     InvalidLength,
 
     #[error("invalid base58")]
-    DecodeError(#[from] bs58::decode::Error),
+    DecodeError(#[from] Bs58Error),
 }
 
 impl FromStr for Hash {
-    type Err = Error;
+    type Err = HashError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match Self::from_str(s) {
             Ok(hash) => Ok(hash),
-            Err(None) => Err(Error::InvalidLength),
-            Err(Some(err)) => Err(Error::DecodeError(err)),
+            Err(None) => Err(HashError::InvalidLength),
+            Err(Some(err)) => Err(HashError::DecodeError(err)),
         }
     }
 }
 
-impl serde::Serialize for Hash {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl Serialize for Hash {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Hash {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+impl<'de> Deserialize<'de> for Hash {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct HashVisitor;
 
-        impl<'de> serde::de::Visitor<'de> for HashVisitor {
+        impl Visitor<'_> for HashVisitor {
             type Value = Hash;
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a base58 encoded hash")
             }
 
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            fn visit_str<E: SerdeError>(self, v: &str) -> Result<Self::Value, E> {
                 match Hash::from_str(v) {
                     Ok(hash) => Ok(hash),
                     Err(None) => Err(E::invalid_length(v.len(), &self)),
@@ -190,64 +220,5 @@ impl<'de> serde::Deserialize<'de> for Hash {
         }
 
         deserializer.deserialize_str(HashVisitor)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_hash_43() {
-        let hash = Hash::hash(b"Hello, World");
-
-        assert_eq!(
-            hex::encode(hash.as_bytes()),
-            "03675ac53ff9cd1535ccc7dfcdfa2c458c5218371f418dc136f2d19ac1fbe8a5"
-        );
-
-        assert_eq!(hash.as_str(), "EHdZfnzn717B56XYH8sWLAHfDC3icGEkccNzpAF4PwS");
-        assert_eq!(
-            (*&*&*&*&*&*&hash).as_str(),
-            "EHdZfnzn717B56XYH8sWLAHfDC3icGEkccNzpAF4PwS"
-        );
-    }
-
-    #[test]
-    fn test_hash_44() {
-        let hash = Hash::hash(b"Hello World");
-
-        assert_eq!(
-            hex::encode(hash.as_bytes()),
-            "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
-        );
-
-        assert_eq!(
-            hash.as_str(),
-            "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
-        );
-
-        assert_eq!(
-            (*&*&*&*&*&*&hash).as_str(),
-            "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
-        );
-    }
-
-    #[test]
-    fn test_serde() {
-        let hash = Hash::hash(b"Hello World");
-
-        assert_eq!(
-            serde_json::to_string(&hash).unwrap(),
-            "\"C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK\""
-        );
-
-        assert_eq!(
-            serde_json::from_value::<Hash>(serde_json::json!(
-                "C9K5weED8iiEgM6bkU6gZSgGsV6DW2igMtNtL1sjfFKK"
-            ))
-            .unwrap(),
-            hash
-        );
     }
 }

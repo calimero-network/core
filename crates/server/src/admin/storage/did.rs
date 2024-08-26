@@ -1,15 +1,17 @@
 use calimero_primitives::identity::Did;
 use calimero_store::entry::{Entry, Json};
-use calimero_store::key::Generic;
+use calimero_store::key::Generic as GenericKey;
 use calimero_store::Store;
+use eyre::Result as EyreResult;
 
 struct DidEntry {
-    key: Generic,
+    key: GenericKey,
 }
 
 impl Entry for DidEntry {
-    type Key = Generic;
-    type DataType<'a> = Json<Did>;
+    type Key = GenericKey;
+    type Codec = Json;
+    type DataType<'a> = Did;
 
     fn key(&self) -> &Self::Key {
         &self.key
@@ -19,17 +21,13 @@ impl Entry for DidEntry {
 impl DidEntry {
     fn new() -> Self {
         Self {
-            key: Generic::new(*b"id:calimero:node", [0; 32]),
+            key: GenericKey::new(*b"id:calimero:node", [0; 32]),
         }
     }
 }
 
-pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
-    let did_document = Json::new(Did {
-        id: "did:cali".to_string(),
-        root_keys: vec![],
-        client_keys: vec![],
-    });
+pub fn create_did(store: &Store) -> EyreResult<Did> {
+    let did_document = Did::new("did:cali".to_owned(), vec![], vec![]);
 
     let entry = DidEntry::new();
 
@@ -37,10 +35,10 @@ pub fn create_did(store: &mut Store) -> eyre::Result<Did> {
 
     handle.put(&entry, &did_document)?;
 
-    Ok(did_document.value())
+    Ok(did_document)
 }
 
-pub fn get_or_create_did(store: &mut Store) -> eyre::Result<Did> {
+pub fn get_or_create_did(store: &Store) -> EyreResult<Did> {
     let entry = DidEntry::new();
 
     let handle = store.handle();
@@ -49,17 +47,15 @@ pub fn get_or_create_did(store: &mut Store) -> eyre::Result<Did> {
         return create_did(store);
     };
 
-    Ok(did_document.value())
+    Ok(did_document)
 }
 
-pub fn update_did(store: &mut Store, did: Did) -> eyre::Result<()> {
+pub fn update_did(store: &Store, did: &Did) -> EyreResult<()> {
     let entry = DidEntry::new();
-
-    let did_document = Json::new(did);
 
     let mut handle = store.handle();
 
-    handle.put(&entry, &did_document)?;
+    handle.put(&entry, did)?;
 
     Ok(())
 }

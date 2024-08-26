@@ -13,7 +13,7 @@ import { useWalletSelector } from './WalletSelectorContext';
 import { getOrCreateKeypair } from '../../auth/ed25519';
 import apiClient from '../../api';
 import { ResponseData } from '../../types/api-response';
-import { setStorageNodeAuthorized } from '../../storage/storage';
+import { setExecutorPublicKey, setStorageNodeAuthorized } from '../../storage/storage';
 import { Loading } from '../loading/Loading';
 import {
   LoginRequest,
@@ -38,6 +38,7 @@ export type Account = AccountView & {
 };
 
 interface NearLoginProps {
+  networkId: string;
   rpcBaseUrl: string;
   contextId?: string;
   successRedirect: () => void;
@@ -241,24 +242,37 @@ export const NearLogin: React.FC<NearLoginProps> = ({
         contextId,
       };
 
-      await apiClient
-        .node()
-        .login(loginRequest, rpcBaseUrl)
-        .then((result) => {
-          console.log('result', result);
-          if (result.error) {
-            console.error('login error', result.error);
-            //TODO handle error
-          } else {
-            setStorageNodeAuthorized();
-            successRedirect();
-            console.log('login success');
+      try {
+        const result = await apiClient.node().login(loginRequest, rpcBaseUrl);
+
+        if (result.error) {
+          console.error('Login error: ', result.error);
+          return;
+        }
+
+        try {
+          const identity = await apiClient
+            .node()
+            .getContextIdentity(rpcBaseUrl, contextId);
+
+          if (
+            !identity ||
+            !identity.data ||
+            !identity.data.identities ||
+            identity.data.identities.length === 0
+          ) {
+            console.error('Login error: No context identities found');
           }
-        })
-        .catch(() => {
-          console.error('error while login');
-          //TODO handle error
-        });
+
+          setExecutorPublicKey(identity.data.identities[0]);
+          setStorageNodeAuthorized();
+          successRedirect();
+        } catch (identityError) {
+          console.error('Error fetching context identity: ', identityError);
+        }
+      } catch (loginError) {
+        console.error('Login error: ', loginError);
+      }
     } else {
       //TODO handle error
       console.error('Message not verified');

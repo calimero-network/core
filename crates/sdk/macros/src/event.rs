@@ -1,15 +1,19 @@
+use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
+use syn::{parse_quote, Error as SynError, GenericParam, Generics, Ident, Visibility};
 
-use crate::{errors, items, reserved};
+use crate::errors::{Errors, ParseError};
+use crate::items::StructOrEnumItem;
+use crate::reserved::{idents, lifetimes};
 
 pub struct EventImpl<'a> {
-    ident: &'a syn::Ident,
-    generics: &'a syn::Generics,
-    orig: &'a items::StructOrEnumItem,
+    ident: &'a Ident,
+    generics: &'a Generics,
+    orig: &'a StructOrEnumItem,
 }
 
-impl<'a> ToTokens for EventImpl<'a> {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
+impl ToTokens for EventImpl<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
         let EventImpl {
             ident,
             generics: source_generics,
@@ -22,7 +26,7 @@ impl<'a> ToTokens for EventImpl<'a> {
             generics
                 .make_where_clause()
                 .predicates
-                .push(syn::parse_quote!(#generic_ty: ::calimero_sdk::serde::Serialize));
+                .push(parse_quote!(#generic_ty: ::calimero_sdk::serde::Serialize));
         }
 
         let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
@@ -56,67 +60,60 @@ impl<'a> ToTokens for EventImpl<'a> {
 
             impl #impl_generics ::calimero_sdk::event::AppEventExt for #ident #ty_generics #where_clause {}
         }
-        .to_tokens(tokens)
+        .to_tokens(tokens);
     }
 }
 
 pub struct EventImplInput<'a> {
-    pub item: &'a items::StructOrEnumItem,
+    pub item: &'a StructOrEnumItem,
 }
 
 impl<'a> TryFrom<EventImplInput<'a>> for EventImpl<'a> {
-    type Error = errors::Errors<'a, items::StructOrEnumItem>;
+    type Error = Errors<'a, StructOrEnumItem>;
 
     fn try_from(input: EventImplInput<'a>) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(input.item);
+        let errors = Errors::new(input.item);
 
         let (vis, ident, generics) = match input.item {
-            items::StructOrEnumItem::Struct(item) => (&item.vis, &item.ident, &item.generics),
-            items::StructOrEnumItem::Enum(item) => (&item.vis, &item.ident, &item.generics),
+            StructOrEnumItem::Struct(item) => (&item.vis, &item.ident, &item.generics),
+            StructOrEnumItem::Enum(item) => (&item.vis, &item.ident, &item.generics),
         };
 
         match vis {
-            syn::Visibility::Public(_) => {}
-            syn::Visibility::Inherited => {
-                return Err(errors.finish(syn::Error::new_spanned(
-                    ident,
-                    errors::ParseError::NoPrivateEvent,
-                )));
+            Visibility::Public(_) => {}
+            Visibility::Inherited => {
+                return Err(errors.finish(SynError::new_spanned(ident, ParseError::NoPrivateEvent)));
             }
-            syn::Visibility::Restricted(spec) => {
-                return Err(errors.finish(syn::Error::new_spanned(
-                    spec,
-                    errors::ParseError::NoComplexVisibility,
-                )));
+            Visibility::Restricted(spec) => {
+                return Err(
+                    errors.finish(SynError::new_spanned(spec, ParseError::NoComplexVisibility))
+                );
             }
         }
 
-        if ident == &*reserved::idents::input() {
-            errors.subsume(syn::Error::new_spanned(
-                &ident,
-                errors::ParseError::UseOfReservedIdent,
-            ));
+        if ident == &*idents::input() {
+            errors.subsume(SynError::new_spanned(ident, ParseError::UseOfReservedIdent));
         }
 
         for generic in &generics.params {
             match generic {
-                syn::GenericParam::Lifetime(params) => {
-                    if params.lifetime == *reserved::lifetimes::input() {
-                        errors.subsume(syn::Error::new(
+                GenericParam::Lifetime(params) => {
+                    if params.lifetime == *lifetimes::input() {
+                        errors.subsume(SynError::new(
                             params.lifetime.span(),
-                            errors::ParseError::UseOfReservedLifetime,
+                            ParseError::UseOfReservedLifetime,
                         ));
                     }
                 }
-                syn::GenericParam::Type(params) => {
-                    if params.ident == *reserved::idents::input() {
-                        errors.subsume(syn::Error::new_spanned(
+                GenericParam::Type(params) => {
+                    if params.ident == *idents::input() {
+                        errors.subsume(SynError::new_spanned(
                             &params.ident,
-                            errors::ParseError::UseOfReservedIdent,
+                            ParseError::UseOfReservedIdent,
                         ));
                     }
                 }
-                syn::GenericParam::Const(_) => {}
+                GenericParam::Const(_) => {}
             }
         }
 

@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+axum-server.workspace = true
+axum-server-dual-protocol.workspace = true
 base64.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 bs58.workspace = true
@@ -17,10 +19,11 @@ eyre.workspace = true
 futures-util = { workspace = true, optional = true }
 hex.workspace = true
 libp2p.workspace = true
+local-ip-address.workspace = true
 multiaddr.workspace = true
 rand.workspace = true
+rcgen.workspace = true
 reqwest.workspace = true
-semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
@@ -30,6 +33,7 @@ tower.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs"] }
 tower-sessions = { workspace = true, optional = true }
 tracing.workspace = true
+x509-parser.workspace = true
 
 calimero-context = { path = "../context" }
 calimero-node-primitives = { path = "../node-primitives" }
@@ -47,3 +51,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 jsonrpc = []
 websocket = ["axum/ws", "dep:futures-util"]
 admin = ["dep:tower-sessions"]
+
+[lints]
+workspace = true

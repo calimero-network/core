@@ -1,7 +1,13 @@
+use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
+use syn::{parse2, Error as SynError, GenericParam, ImplItem, ItemImpl, Path};
 
+use crate::errors::{Errors, ParseError};
+use crate::logic::method::{LogicMethod, LogicMethodImplInput, PublicLogicMethod};
+use crate::logic::utils::typed_path;
 use crate::macros::infallible;
-use crate::{errors, reserved, sanitizer};
+use crate::reserved::{idents, lifetimes};
+use crate::sanitizer::{Action, Case, Sanitizer};
 
 mod arg;
 mod method;
@@ -10,86 +16,83 @@ mod utils;
 
 pub struct LogicImpl<'a> {
     #[allow(dead_code)]
-    type_: syn::Path,
-    methods: Vec<method::PublicLogicMethod<'a>>,
-    orig: &'a syn::ItemImpl,
+    type_: Path,
+    methods: Vec<PublicLogicMethod<'a>>,
+    orig: &'a ItemImpl,
 }
 
-impl<'a> ToTokens for LogicImpl<'a> {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        let LogicImpl {
-            type_: _,
-            orig,
-            methods,
-            ..
-        } = self;
+impl ToTokens for LogicImpl<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let LogicImpl { orig, methods, .. } = self;
 
         quote! {
             #orig
 
             #(#methods)*
         }
-        .to_tokens(tokens)
+        .to_tokens(tokens);
     }
 }
 
 pub struct LogicImplInput<'a> {
-    pub item: &'a syn::ItemImpl,
+    pub item: &'a ItemImpl,
 }
 
 impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
-    type Error = errors::Errors<'a, syn::ItemImpl>;
+    type Error = Errors<'a, ItemImpl>;
 
+    // TODO: This unwrap() call needs to be corrected to return an error.
+    #[allow(clippy::unwrap_in_result)]
     fn try_from(input: LogicImplInput<'a>) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(input.item);
+        let errors = Errors::new(input.item);
 
         for generic in &input.item.generics.params {
-            if let syn::GenericParam::Lifetime(params) = generic {
-                if params.lifetime == *reserved::lifetimes::input() {
-                    errors.subsume(syn::Error::new(
+            if let GenericParam::Lifetime(params) = generic {
+                if params.lifetime == *lifetimes::input() {
+                    errors.subsume(SynError::new(
                         params.lifetime.span(),
-                        errors::ParseError::UseOfReservedLifetime,
+                        ParseError::UseOfReservedLifetime,
                     ));
                 }
                 continue;
             }
-            errors.subsume(syn::Error::new_spanned(
+            errors.subsume(SynError::new_spanned(
                 generic,
-                errors::ParseError::NoGenericTypeSupport,
+                ParseError::NoGenericTypeSupport,
             ));
         }
 
-        if let Some(_) = &input.item.trait_ {
-            return Err(errors.finish(syn::Error::new_spanned(
+        if input.item.trait_.is_some() {
+            return Err(errors.finish(SynError::new_spanned(
                 input.item,
-                errors::ParseError::NoTraitSupport,
+                ParseError::NoTraitSupport,
             )));
         }
 
-        let Some(type_) = utils::typed_path(input.item.self_ty.as_ref(), false) else {
-            return Err(errors.finish(syn::Error::new_spanned(
+        let Some(type_) = typed_path(input.item.self_ty.as_ref(), false) else {
+            return Err(errors.finish(SynError::new_spanned(
                 &input.item.self_ty,
-                errors::ParseError::UnsupportedImplType,
+                ParseError::UnsupportedImplType,
             )));
         };
 
-        let mut sanitizer = syn::parse2::<sanitizer::Sanitizer>(type_.to_token_stream()).unwrap();
+        let mut sanitizer = parse2::<Sanitizer<'_>>(type_.to_token_stream()).unwrap();
 
-        let reserved_ident = reserved::idents::input();
-        let reserved_lifetime = reserved::lifetimes::input();
+        let reserved_ident = idents::input();
+        let reserved_lifetime = lifetimes::input();
 
         let cases = [
             (
-                sanitizer::Case::Ident(Some(&reserved_ident)),
-                sanitizer::Action::Forbid(errors::ParseError::UseOfReservedIdent),
+                Case::Ident(Some(&reserved_ident)),
+                Action::Forbid(ParseError::UseOfReservedIdent),
             ),
             (
-                sanitizer::Case::Lifetime(Some(&reserved_lifetime)),
-                sanitizer::Action::Forbid(errors::ParseError::UseOfReservedLifetime),
+                Case::Lifetime(Some(&reserved_lifetime)),
+                Action::Forbid(ParseError::UseOfReservedLifetime),
             ),
             (
-                sanitizer::Case::Lifetime(None),
-                sanitizer::Action::Forbid(errors::ParseError::NoGenericLifetimeSupport),
+                Case::Lifetime(None),
+                Action::Forbid(ParseError::NoGenericLifetimeSupport),
             ),
         ];
 
@@ -99,23 +102,24 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
             errors.subsume(err);
         }
 
-        if outcome.count(&sanitizer::Case::Ident(Some(&reserved_ident))) > 0 {
+        if outcome.count(&Case::Ident(Some(&reserved_ident))) > 0 {
             // fail-fast due to reuse of the self ident for code generation
             return Err(errors);
         }
 
-        let type_ = infallible!({ syn::parse2(sanitizer.to_token_stream()) });
+        let type_ = infallible!({ parse2(sanitizer.to_token_stream()) });
 
         let mut methods = vec![];
+
         for item in &input.item.items {
-            if let syn::ImplItem::Fn(method) = item {
-                match method::LogicMethod::try_from(method::LogicMethodImplInput {
+            if let ImplItem::Fn(method) = item {
+                match LogicMethod::try_from(LogicMethodImplInput {
                     type_: &type_,
                     item: method,
                 }) {
-                    Ok(method::LogicMethod::Private) => {}
-                    Ok(method::LogicMethod::Public(method)) => methods.push(method),
-                    Err(err) => errors.combine(err),
+                    Ok(LogicMethod::Public(method)) => methods.push(method),
+                    Ok(LogicMethod::Private) => {}
+                    Err(err) => errors.combine(&err),
                 }
             }
         }

@@ -1,45 +1,112 @@
-use calimero_primitives::events::OutcomeEvent;
-use calimero_runtime::logic::VMLimits;
+#![allow(clippy::print_stdout)]
+
+use core::future::{pending, Future};
+use core::mem::replace;
+use core::pin::Pin;
+use core::str::FromStr;
+
+use calimero_blobstore::{BlobManager, FileSystem};
+use calimero_context::config::ApplicationConfig;
+use calimero_context::ContextManager;
+use calimero_network::client::NetworkClient;
+use calimero_network::config::NetworkConfig;
+use calimero_network::types::{NetworkEvent, PeerId};
+use calimero_node_primitives::{
+    CallError, ExecutionRequest, Finality, MutateCallError, NodeType, QueryCallError,
+};
+use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::events::{
+    ApplicationEvent, ApplicationEventPayload, ExecutedTransactionPayload, NodeEvent, OutcomeEvent,
+    OutcomeEventPayload, PeerJoinedPayload,
+};
+use calimero_primitives::hash::Hash;
+use calimero_primitives::transaction::Transaction;
+use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
+use calimero_server::admin::utils::context::{create_context, join_context};
+use calimero_server::config::ServerConfig;
+use calimero_store::config::StoreConfig;
+use calimero_store::db::RocksDB;
+use calimero_store::key::{
+    ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
+    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
+};
+use calimero_store::types::{ContextMeta, ContextTransaction};
 use calimero_store::Store;
-use libp2p::gossipsub::TopicHash;
-use libp2p::identity;
+use camino::Utf8PathBuf;
+use eyre::{bail, eyre, Result as EyreResult};
+use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
+use libp2p::identity::Keypair;
 use owo_colors::OwoColorize;
-use tokio::io::AsyncBufReadExt;
+use serde_json::{
+    from_slice as from_json_slice, from_str as from_json_str, to_vec as to_json_vec, Value,
+};
+use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::time::{interval_at, Instant};
+use tokio::{select, spawn};
 use tracing::{debug, error, info, warn};
+
+use crate::runtime_compat::RuntimeCompatStore;
+use crate::transaction_pool::{TransactionPool, TransactionPoolEntry};
+use crate::types::{PeerAction, TransactionConfirmation, TransactionRejection};
 
 pub mod catchup;
 pub mod runtime_compat;
 pub mod transaction_pool;
 pub mod types;
 
-type BoxedFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>>>;
+type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NodeConfig {
-    pub home: camino::Utf8PathBuf,
-    pub identity: identity::Keypair,
-    pub node_type: calimero_node_primitives::NodeType,
-    pub application: calimero_context::config::ApplicationConfig,
-    pub network: calimero_network::config::NetworkConfig,
-    pub server: calimero_server::config::ServerConfig,
-    pub store: calimero_store::config::StoreConfig,
+    pub home: Utf8PathBuf,
+    pub identity: Keypair,
+    pub node_type: NodeType,
+    pub application: ApplicationConfig,
+    pub network: NetworkConfig,
+    pub server: ServerConfig,
+    pub store: StoreConfig,
 }
 
+impl NodeConfig {
+    #[must_use]
+    pub const fn new(
+        home: Utf8PathBuf,
+        node_type: NodeType,
+        identity: Keypair,
+        store: StoreConfig,
+        application: ApplicationConfig,
+        network: NetworkConfig,
+        server: ServerConfig,
+    ) -> Self {
+        Self {
+            home,
+            identity,
+            node_type,
+            application,
+            network,
+            server,
+            store,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Node {
-    id: calimero_network::types::PeerId,
-    typ: calimero_node_primitives::NodeType,
-    store: calimero_store::Store,
-    tx_pool: transaction_pool::TransactionPool,
-    ctx_manager: calimero_context::ContextManager,
-    network_client: calimero_network::client::NetworkClient,
-    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
+    id: PeerId,
+    typ: NodeType,
+    store: Store,
+    tx_pool: TransactionPool,
+    ctx_manager: ContextManager,
+    network_client: NetworkClient,
+    node_events: broadcast::Sender<NodeEvent>,
     // --
     nonce: u64,
 }
 
-pub async fn start(config: NodeConfig) -> eyre::Result<()> {
+pub async fn start(config: NodeConfig) -> EyreResult<()> {
     let peer_id = config.identity.public().to_peer_id();
 
     info!("Peer ID: {}", peer_id);
@@ -48,11 +115,19 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let store = calimero_store::Store::open::<calimero_store::db::RocksDB>(&config.store)?;
+    let store = Store::open::<RocksDB>(&config.store)?;
 
-    let ctx_manager = calimero_context::ContextManager::start(
-        &config.application,
+    let blob_manager = BlobManager::new(
         store.clone(),
+        FileSystem::new(&config.application.dir).await?,
+    );
+
+    let (server_sender, mut server_receiver) = mpsc::channel(32);
+
+    let ctx_manager = ContextManager::start(
+        store.clone(),
+        blob_manager,
+        server_sender.clone(),
         network_client.clone(),
     )
     .await?;
@@ -65,20 +140,38 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
         store.clone(),
     );
 
-    let (server_sender, mut server_receiver) = mpsc::channel(32);
-
+    #[allow(trivial_casts)]
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,
         ctx_manager,
         node_events,
         store,
-    )) as BoxedFuture<eyre::Result<()>>;
+    )) as BoxedFuture<EyreResult<()>>;
 
-    let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    let mut stdin = BufReader::new(stdin()).lines();
 
+    match network_client
+        .subscribe(IdentTopic::new("meta_topic"))
+        .await
+    {
+        Ok(_) => info!("Subscribed to meta topic"),
+        Err(err) => {
+            error!("{}: {:?}", "Error subscribing to meta topic", err);
+            bail!("Failed to subscribe to meta topic: {:?}", err)
+        }
+    };
+
+    let mut catchup_interval_tick = interval_at(
+        Instant::now()
+            .checked_add(config.network.catchup.initial_delay)
+            .ok_or_else(|| eyre!("Overflow when calculating initial catchup interval delay"))?,
+        config.network.catchup.interval,
+    );
+
+    #[allow(clippy::redundant_pub_crate)]
     loop {
-        tokio::select! {
+        select! {
             event = network_events.recv() => {
                 let Some(event) = event else {
                     break;
@@ -92,19 +185,20 @@ pub async fn start(config: NodeConfig) -> eyre::Result<()> {
             }
             result = &mut server => {
                 result?;
-                server = Box::pin(std::future::pending());
+                server = Box::pin(pending());
                 continue;
             }
-            Some((context_id, method, payload, write, outcome_sender)) = server_receiver.recv() => {
-                node.handle_call(context_id, method, payload, write, outcome_sender).await;
-            }
+            Some(request) = server_receiver.recv() => node.handle_call(request).await,
+            _ = catchup_interval_tick.tick() => node.handle_interval_catchup().await,
         }
     }
 
     Ok(())
 }
 
-async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
+// TODO: Consider splitting this long function into multiple parts.
+#[allow(clippy::too_many_lines)]
+async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
     let (command, args) = match line.split_once(' ') {
         Some((method, payload)) => (method, Some(payload)),
         None => (line.as_str(), None),
@@ -116,41 +210,53 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     // TODO: should be replaced with RPC endpoints
     match command {
         "call" => {
-            if let Some((context_id, args)) = args.and_then(|args| args.split_once(' ')) {
-                let (method, payload) = args.split_once(' ').unwrap_or_else(|| (args, "{}"));
+            if let Some((context_id, rest)) = args.and_then(|args| args.split_once(' ')) {
+                let (method, rest) = rest.split_once(' ').unwrap_or((rest, "{}"));
+                let (payload, executor_key) = rest.split_once(' ').unwrap_or((rest, ""));
 
-                match serde_json::from_str::<serde_json::Value>(payload) {
+                match from_json_str::<Value>(payload) {
                     Ok(_) => {
                         let (outcome_sender, outcome_receiver) = oneshot::channel();
 
                         let context_id = context_id.parse()?;
 
                         let Ok(Some(context)) = node.ctx_manager.get_context(&context_id) else {
-                            println!("{IND} Context not found: {}", context_id);
+                            println!("{IND} Context not found: {context_id}");
                             return Ok(());
                         };
 
-                        let tx_hash = match node
-                            .call_mutate(
-                                context,
-                                method.to_owned(),
-                                payload.as_bytes().to_owned(),
-                                outcome_sender,
-                            )
-                            .await
-                        {
+                        // Parse the executor's public key if provided
+                        let executor_public_key = if executor_key.is_empty() {
+                            return Err(eyre!("Executor public key is required"));
+                        } else {
+                            bs58::decode(executor_key)
+                                .into_vec()
+                                .map_err(|_| eyre!("Invalid executor public key"))?
+                                .try_into()
+                                .map_err(|_| eyre!("Executor public key must be 32 bytes"))?
+                        };
+
+                        let tx = Transaction::new(
+                            context.id,
+                            method.to_owned(),
+                            payload.as_bytes().to_owned(),
+                            context.last_transaction_hash,
+                            executor_public_key,
+                        );
+
+                        let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {
                             Ok(tx_hash) => tx_hash,
                             Err(e) => {
-                                println!("{IND} Failed to execute transaction: {}", e);
+                                println!("{IND} Failed to execute transaction: {e}");
                                 return Ok(());
                             }
                         };
 
-                        println!("{IND} Scheduled Transaction! {:?}", tx_hash);
+                        println!("{IND} Scheduled Transaction! {tx_hash:?}");
 
-                        tokio::spawn(async move {
+                        drop(spawn(async move {
                             if let Ok(outcome_result) = outcome_receiver.await {
-                                println!("{IND} {:?}", tx_hash);
+                                println!("{IND} {tx_hash:?}");
 
                                 match outcome_result {
                                     Ok(outcome) => {
@@ -158,13 +264,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                             Ok(result) => match result {
                                                 Some(result) => {
                                                     println!("{IND}   Return Value:");
+                                                    #[allow(clippy::option_if_let_else)]
                                                     let result = if let Ok(value) =
-                                                        serde_json::from_slice::<serde_json::Value>(
-                                                            &result,
-                                                        ) {
+                                                        from_json_slice::<Value>(&result)
+                                                    {
                                                         format!(
                                                             "(json): {}",
-                                                            format!("{:#}", value)
+                                                            format!("{value:#}")
                                                                 .lines()
                                                                 .map(|line| line.cyan().to_string())
                                                                 .collect::<Vec<_>>()
@@ -175,13 +281,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                                     };
 
                                                     for line in result.lines() {
-                                                        println!("{IND}     > {}", line);
+                                                        println!("{IND}     > {line}");
                                                     }
                                                 }
                                                 None => println!("{IND}   (No return value)"),
                                             },
                                             Err(err) => {
-                                                let err = format!("{:#?}", err);
+                                                let err = format!("{err:#?}");
 
                                                 println!("{IND}   Error:");
                                                 for line in err.lines() {
@@ -199,7 +305,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                         }
                                     }
                                     Err(err) => {
-                                        let err = format!("{:#?}", err);
+                                        let err = format!("{err:#?}");
 
                                         println!("{IND}   Error:");
                                         for line in err.lines() {
@@ -208,14 +314,16 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                                     }
                                 }
                             }
-                        });
+                        }));
                     }
                     Err(e) => {
-                        println!("{IND} Failed to parse payload: {}", e);
+                        println!("{IND} Failed to parse payload: {e}");
                     }
                 }
             } else {
-                println!("{IND} Usage: call <Method> <JSON Payload>");
+                println!(
+                    "{IND} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
+                );
             }
         }
         "gc" => {
@@ -226,7 +334,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                     "{IND} Garbage collecting {} transactions.",
                     node.tx_pool.transactions.len().cyan()
                 );
-                node.tx_pool = transaction_pool::TransactionPool::default();
+                node.tx_pool = TransactionPool::default();
             }
         }
         "pool" => {
@@ -238,23 +346,23 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                 println!("{IND}     Sender: {}", entry.sender.cyan());
                 println!("{IND}     Method: {:?}", entry.transaction.method.cyan());
                 println!("{IND}     Payload:");
-                let payload = if let Ok(value) =
-                    serde_json::from_slice::<serde_json::Value>(&entry.transaction.payload)
-                {
-                    format!(
-                        "(json): {}",
-                        format!("{:#}", value)
-                            .lines()
-                            .map(|line| line.cyan().to_string())
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    )
-                } else {
-                    format!("(raw): {:?}", entry.transaction.payload.cyan())
-                };
+                #[allow(clippy::option_if_let_else)]
+                let payload =
+                    if let Ok(value) = from_json_slice::<Value>(&entry.transaction.payload) {
+                        format!(
+                            "(json): {}",
+                            format!("{value:#}")
+                                .lines()
+                                .map(|line| line.cyan().to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        )
+                    } else {
+                        format!("(raw): {:?}", entry.transaction.payload.cyan())
+                    };
 
                 for line in payload.lines() {
-                    println!("{IND}       > {}", line);
+                    println!("{IND}       > {line}");
                 }
                 println!("{IND}     Prior: {:?}", entry.transaction.prior_hash.cyan());
             }
@@ -280,24 +388,123 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             // todo! test this
 
             println!(
-                "{IND} {c1:44} | {c2:44} | {c3}",
+                "{IND} {c1:44} | {c2:44} | Value",
                 c1 = "Context ID",
                 c2 = "State Key",
-                c3 = "Value"
             );
-
-            let key = calimero_store::key::ContextState::new([0; 32].into(), [0; 32].into());
 
             let handle = node.store.handle();
 
-            for (k, v) in &mut handle.iter(&key)?.entries() {
+            for (k, v) in handle.iter::<ContextStateKey>()?.entries() {
+                let (k, v) = (k?, v?);
                 let (cx, state_key) = (k.context_id(), k.state_key());
-                let sk = calimero_primitives::hash::Hash::from(state_key);
+                let sk = Hash::from(state_key);
                 let entry = format!("{c1:44} | {c2:44}| {c3:?}", c1 = cx, c2 = sk, c3 = v.value);
                 for line in entry.lines() {
                     println!("{IND} {}", line.cyan());
                 }
             }
+        }
+        "application" => 'done: {
+            'usage: {
+                let Some(args) = args else {
+                    break 'usage;
+                };
+
+                let (subcommand, args) = args
+                    .split_once(' ')
+                    .map_or_else(|| (args, None), |(a, b)| (a, Some(b)));
+
+                match subcommand {
+                    "install" => {
+                        let Some((type_, resource, version, metadata)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let type_ = iter.next()?;
+                            let resource = iter.next()?;
+                            let version = iter.next()?;
+                            let metadata = iter.next();
+
+                            Some((type_, resource, version, metadata))
+                        }) else {
+                            println!(
+                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> <version> [metadata]"
+                            );
+                            break 'done;
+                        };
+
+                        let Ok(version) = version.parse() else {
+                            println!("{IND} Invalid version: {version:?}");
+                            break 'done;
+                        };
+
+                        let application_id = match type_ {
+                            "url" => {
+                                let Ok(url) = resource.parse() else {
+                                    println!("{IND} Invalid URL: {resource}");
+                                    break 'done;
+                                };
+
+                                println!("{IND} Downloading application..");
+
+                                node.ctx_manager
+                                    .install_application_from_url(url, Some(version), Vec::new())
+                                    .await?
+                            }
+                            "file" => {
+                                let path = Utf8PathBuf::from(resource);
+
+                                node.ctx_manager
+                                    .install_application_from_path(
+                                        path,
+                                        Some(version),
+                                        metadata
+                                            .map(|x| x.as_bytes().to_owned())
+                                            .unwrap_or_default(),
+                                    )
+                                    .await?
+                            }
+                            unknown => {
+                                println!("{IND} Unknown resource type: `{unknown}`");
+                                break 'done;
+                            }
+                        };
+
+                        println!("{IND} Installed application: {application_id}");
+                    }
+                    "ls" => {
+                        println!(
+                            "{IND} {c1:44} | {c2:44} | {c3:12} | Source",
+                            c1 = "Application ID",
+                            c2 = "Blob ID",
+                            c3 = "Version",
+                        );
+
+                        for application in node.ctx_manager.list_installed_applications()? {
+                            let entry = format!(
+                                "{c1:44} | {c2:44} | {c3:>12} | {c4}",
+                                c1 = application.id,
+                                c2 = application.blob,
+                                c3 = application
+                                    .version
+                                    .map(|ver| ver.to_string())
+                                    .unwrap_or_default(),
+                                c4 = application.source
+                            );
+                            for line in entry.lines() {
+                                println!("{IND} {}", line.cyan());
+                            }
+                        }
+                    }
+                    // todo! a "show" subcommand should help keep "ls" compact
+                    unknown => {
+                        println!("{IND} Unknown command: `{unknown}`");
+                        break 'usage;
+                    }
+                }
+
+                break 'done;
+            };
+            println!("{IND} Usage: application [ls|install]");
         }
         "context" => 'done: {
             'usage: {
@@ -311,27 +518,26 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
 
                 match subcommand {
                     "ls" => {
-                        // todo! application ID shouldn't be hex anymore
                         println!(
-                            "{IND} {c1:44} | {c2:64} | {c3}",
+                            "{IND} {c1:44} | {c2:64} | Last Transaction",
                             c1 = "Context ID",
                             c2 = "Application ID",
-                            c3 = "Last Transaction"
                         );
 
                         let handle = node.store.handle();
 
-                        for (k, v) in &mut handle
-                            .iter(&calimero_store::key::ContextMeta::new([0; 32].into()))?
-                            .entries()
-                        {
-                            let (cx, app_id, last_tx) =
-                                (k.context_id(), v.application_id, v.last_transaction_hash);
+                        for (k, v) in handle.iter::<ContextMetaKey>()?.entries() {
+                            let (k, v) = (k?, v?);
+                            let (cx, app_id, last_tx) = (
+                                k.context_id(),
+                                v.application.application_id(),
+                                v.last_transaction_hash,
+                            );
                             let entry = format!(
-                                "{c1:44} | {c2:64} | {c3}",
+                                "{c1:44} | {c2:44} | {c3}",
                                 c1 = cx,
                                 c2 = app_id,
-                                c3 = calimero_primitives::hash::Hash::from(last_tx)
+                                c3 = Hash::from(last_tx)
                             );
                             for line in entry.lines() {
                                 println!("{IND} {}", line.cyan());
@@ -339,21 +545,26 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         }
                     }
                     "join" => {
-                        let Some(context_id) = args else {
-                            println!("{IND} Usage: context join <context_id>");
+                        let Some((context_id, private_key)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context = iter.next()?;
+                            let private_key = iter.next();
+
+                            Some((context, private_key))
+                        }) else {
+                            println!("{IND} Usage: context join <context_id> [private_key]");
                             break 'done;
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
-                        node.ctx_manager.join_context(&context_id).await?;
+                        join_context(&node.ctx_manager, context_id, private_key).await?;
 
                         println!(
-                            "{IND} Joined context {}, waiting for catchup to complete..",
-                            context_id
+                            "{IND} Joined context {context_id}, waiting for catchup to complete..."
                         );
                     }
                     "leave" => {
@@ -363,55 +574,62 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
-                        node.ctx_manager.delete_context(&context_id).await?;
+                        let _ = node.ctx_manager.delete_context(&context_id).await?;
 
-                        println!("{IND} Left context {}", context_id);
+                        println!("{IND} Left context {context_id}");
                     }
                     "create" => {
-                        let Some((context_id, application_id, version)) = args.and_then(|args| {
-                            let mut iter = args.split(' ');
-                            let context = iter.next()?;
-                            let application = iter.next()?;
-                            let version = iter.next()?;
-
-                            Some((context, application, version))
-                        }) else {
-                            println!("{IND} Usage: context create <context_id> <application_id> <version>");
+                        let Some((application_id, context_id, mut params)) =
+                            args.and_then(|args| {
+                                let mut iter = args.split(' ');
+                                let application = iter.next()?;
+                                let context_id = iter.next();
+                                let params = iter.next();
+                                Some((application, context_id, params))
+                            })
+                        else {
+                            println!("{IND} Usage: context create <application_id> [context_id] [initialization params]");
                             break 'done;
                         };
 
-                        let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                        let Ok(application_id) = application_id.parse() else {
+                            println!("{IND} Invalid application ID: {application_id}");
                             break 'done;
                         };
 
-                        let Ok(version) = version.parse() else {
-                            println!("{IND} Invalid version: {}", version);
+                        let (context_id, params) = 'infer: {
+                            let Some(context_id) = context_id else {
+                                break 'infer (None, None);
+                            };
+
+                            if let Ok(context_id) = context_id.parse() {
+                                break 'infer (Some(context_id), params);
+                            };
+
+                            match replace(&mut params, Some(context_id)).map(FromStr::from_str) {
+                                Some(Ok(context_id)) => break 'infer (Some(context_id), params),
+                                None => break 'infer (None, params),
+                                _ => {}
+                            };
+
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
-                        let application_id = application_id.to_owned().into();
-
-                        println!("{IND} Downloading application..");
-
-                        // todo! we should be able to install latest version
-                        node.ctx_manager
-                            .install_application(&application_id, &version)
-                            .await?;
-
-                        let context = calimero_primitives::context::Context {
-                            id: context_id,
+                        let context_create_result = create_context(
+                            &node.ctx_manager,
                             application_id,
-                            last_transaction_hash: calimero_primitives::hash::Hash::default(),
-                        };
+                            None,
+                            context_id,
+                            params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                        )
+                        .await?;
 
-                        node.ctx_manager.add_context(context).await?;
-
-                        println!("{IND} Created context {}", context_id);
+                        println!("{IND} Created context {}", context_create_result.context.id);
                     }
                     "delete" => {
                         let Some(context_id) = args else {
@@ -420,13 +638,13 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
-                        node.ctx_manager.delete_context(&context_id).await?;
+                        let _ = node.ctx_manager.delete_context(&context_id).await?;
 
-                        println!("{IND} Deleted context {}", context_id);
+                        println!("{IND} Deleted context {context_id}");
                     }
                     "transactions" => {
                         let Some(context_id) = args else {
@@ -435,24 +653,33 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
                         let handle = node.store.handle();
 
-                        let key = calimero_store::key::ContextTransaction::new(
-                            context_id,
-                            [0; 32].into(),
-                        );
+                        let mut iter = handle.iter::<ContextTransactionKey>()?;
+
+                        let first = 'first: {
+                            let Some(k) = iter
+                                .seek(ContextTransactionKey::new(context_id, [0; 32]))
+                                .transpose()
+                            else {
+                                break 'first None;
+                            };
+
+                            Some((k, iter.read()))
+                        };
 
                         println!("{IND} {c1:44} | {c2:44}", c1 = "Hash", c2 = "Prior Hash");
 
-                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                        for (k, v) in first.into_iter().chain(iter.entries()) {
+                            let (k, v) = (k?, v?);
                             let entry = format!(
                                 "{c1:44} | {c2}",
-                                c1 = calimero_primitives::hash::Hash::from(k.transaction_id()),
-                                c2 = calimero_primitives::hash::Hash::from(v.prior_hash),
+                                c1 = Hash::from(k.transaction_id()),
+                                c2 = Hash::from(v.prior_hash),
                             );
                             for line in entry.lines() {
                                 println!("{IND} {}", line.cyan());
@@ -466,21 +693,38 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {}", context_id);
+                            println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
                         let handle = node.store.handle();
 
-                        let key =
-                            calimero_store::key::ContextState::new(context_id, [0; 32].into());
-
                         println!("{IND} {c1:44} | {c2:44}", c1 = "State Key", c2 = "Value");
 
-                        for (k, v) in &mut handle.iter(&key)?.entries() {
+                        let mut iter = handle.iter::<ContextStateKey>()?;
+
+                        // let first = 'first: {
+                        //     let Some(k) = iter
+                        //         .seek(ContextStateKey::new(context_id, [0; 32]))
+                        //         .transpose()
+                        //     else {
+                        //         break 'first None;
+                        //     };
+
+                        //     Some((k, iter.read()))
+                        //                   ^^^^~ ContextState<'a> lends the `iter`, while `.entries()` attempts to mutate it
+                        // };
+
+                        for (k, v) in iter.entries() {
+                            let (k, v) = (k?, v?);
+                            if k.context_id() != context_id {
+                                // todo! revisit this when DBIter::seek no longer returns
+                                // todo! the sought item, you have to call next(), read()
+                                continue;
+                            }
                             let entry = format!(
                                 "{c1:44} | {c2:?}",
-                                c1 = calimero_primitives::hash::Hash::from(k.state_key()),
+                                c1 = Hash::from(k.state_key()),
                                 c2 = v.value,
                             );
                             for line in entry.lines() {
@@ -489,7 +733,7 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
                         }
                     }
                     unknown => {
-                        println!("{IND} Unknown command: `{}`", unknown);
+                        println!("{IND} Unknown command: `{unknown}`");
                         break 'usage;
                     }
                 }
@@ -499,27 +743,29 @@ async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             println!("{IND} Usage: context [ls|join|leave|create|delete|state] [args]");
         }
         unknown => {
-            println!("{IND} Unknown command: `{}`", unknown);
-            println!("{IND} Usage: [call|peers|pool|gc|store|context] [args]")
+            println!("{IND} Unknown command: `{unknown}`");
+            println!("{IND} Usage: [call|peers|pool|gc|store|context|application] [args]");
         }
     }
 
     Ok(())
 }
 
+#[allow(clippy::multiple_inherent_impl)]
 impl Node {
+    #[must_use]
     pub fn new(
         config: &NodeConfig,
-        network_client: calimero_network::client::NetworkClient,
-        node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-        ctx_manager: calimero_context::ContextManager,
+        network_client: NetworkClient,
+        node_events: broadcast::Sender<NodeEvent>,
+        ctx_manager: ContextManager,
         store: Store,
     ) -> Self {
         Self {
             id: config.identity.public().to_peer_id(),
             typ: config.node_type,
             store,
-            tx_pool: transaction_pool::TransactionPool::default(),
+            tx_pool: TransactionPool::default(),
             ctx_manager,
             network_client,
             node_events,
@@ -528,28 +774,25 @@ impl Node {
         }
     }
 
-    pub async fn handle_event(
-        &mut self,
-        event: calimero_network::types::NetworkEvent,
-    ) -> eyre::Result<()> {
+    pub async fn handle_event(&mut self, event: NetworkEvent) -> EyreResult<()> {
         match event {
-            calimero_network::types::NetworkEvent::Subscribed {
+            NetworkEvent::Subscribed {
                 peer_id: their_peer_id,
                 topic: topic_hash,
             } => {
-                if let Err(err) = self.handle_subscribed(their_peer_id, topic_hash).await {
+                if let Err(err) = self.handle_subscribed(their_peer_id, &topic_hash) {
                     error!(?err, "Failed to handle subscribed event");
                 }
             }
-            calimero_network::types::NetworkEvent::Message { message, .. } => {
+            NetworkEvent::Message { message, .. } => {
                 if let Err(err) = self.handle_message(message).await {
                     error!(?err, "Failed to handle message event");
                 }
             }
-            calimero_network::types::NetworkEvent::ListeningOn { address, .. } => {
+            NetworkEvent::ListeningOn { address, .. } => {
                 info!("Listening on: {}", address);
             }
-            calimero_network::types::NetworkEvent::StreamOpened { peer_id, stream } => {
+            NetworkEvent::StreamOpened { peer_id, stream } => {
                 info!("Stream opened from peer: {}", peer_id);
 
                 if let Err(err) = self.handle_opened_stream(stream).await {
@@ -558,46 +801,24 @@ impl Node {
 
                 info!("Stream closed from peer: {:?}", peer_id);
             }
+            _ => error!("Unhandled event: {:?}", event),
         }
 
         Ok(())
     }
 
-    async fn handle_subscribed(
-        &mut self,
-        their_peer_id: libp2p::PeerId,
-        topic_hash: libp2p::gossipsub::TopicHash,
-    ) -> eyre::Result<()> {
+    fn handle_subscribed(&self, their_peer_id: PeerId, topic_hash: &TopicHash) -> EyreResult<()> {
         let Ok(context_id) = topic_hash.as_str().parse() else {
-            eyre::bail!(
-                "Failed to parse topic hash '{}' into context ID",
-                topic_hash
-            );
+            // bail!(
+            //     "Failed to parse topic hash '{}' into context ID",
+            //     topic_hash
+            // );
+            return Ok(());
         };
-
-        // Too much errors due to concurrent tries to catchup, e.g.
-        // 2024-07-12T16:29:36.373857Z ERROR calimero_node: Failed to handle subscribed event err=
-        // 0: Timeout while waiting for catchup message: Elapsed(())
-
-        // if self
-        //     .ctx_manager
-        //     .is_context_pending_initial_catchup(&context_id)
-        //     .await
-        // {
-        //     info!(%context_id, %their_peer_id, "Attempting to perform subscription triggered catchup");
-
-        //     self.perform_catchup(context_id, their_peer_id).await?;
-
-        //     self.ctx_manager
-        //         .clear_context_pending_initial_catchup(&context_id)
-        //         .await;
-
-        //     info!(%context_id, %their_peer_id, "Subscription triggered catchup successfully finished");
-        // }
 
         let handle = self.store.handle();
 
-        if !handle.has(&calimero_store::key::ContextMeta::new(context_id))? {
+        if !handle.has(&ContextMetaKey::new(context_id))? {
             debug!(
                 %context_id,
                 %their_peer_id,
@@ -607,36 +828,31 @@ impl Node {
         };
 
         info!("{} joined the session.", their_peer_id.cyan());
-        let _ = self
-            .node_events
-            .send(calimero_primitives::events::NodeEvent::Application(
-                calimero_primitives::events::ApplicationEvent {
+        drop(
+            self.node_events
+                .send(NodeEvent::Application(ApplicationEvent::new(
                     context_id,
-                    payload: calimero_primitives::events::ApplicationEventPayload::PeerJoined(
-                        calimero_primitives::events::PeerJoinedPayload {
-                            peer_id: their_peer_id,
-                        },
-                    ),
-                },
-            ));
+                    ApplicationEventPayload::PeerJoined(PeerJoinedPayload::new(their_peer_id)),
+                ))),
+        );
 
         Ok(())
     }
 
-    async fn handle_message(&mut self, message: libp2p::gossipsub::Message) -> eyre::Result<()> {
+    async fn handle_message(&mut self, message: Message) -> EyreResult<()> {
         let Some(source) = message.source else {
             warn!(?message, "Received message without source");
             return Ok(());
         };
 
-        match serde_json::from_slice(&message.data)? {
-            types::PeerAction::Transaction(transaction) => {
+        match from_json_slice(&message.data)? {
+            PeerAction::Transaction(transaction) => {
                 debug!(?transaction, %source, "Received transaction");
 
                 let handle = self.store.handle();
 
-                let ctx_meta_key = calimero_store::key::ContextMeta::new(transaction.context_id);
-                let prior_transaction_key = calimero_store::key::ContextTransaction::new(
+                let ctx_meta_key = ContextMetaKey::new(transaction.context_id);
+                let prior_transaction_key = ContextTransactionKey::new(
                     transaction.context_id,
                     transaction.prior_hash.into(),
                 );
@@ -644,7 +860,7 @@ impl Node {
                 let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
 
                 if !handle.has(&ctx_meta_key)?
-                    || (transaction.prior_hash != calimero_primitives::hash::Hash::default()
+                    || (transaction.prior_hash != Hash::default()
                         && !handle.has(&prior_transaction_key)?
                         && !self.typ.is_coordinator())
                 {
@@ -652,15 +868,16 @@ impl Node {
 
                     self.perform_catchup(transaction.context_id, source).await?;
 
-                    self.ctx_manager
-                        .clear_context_pending_initial_catchup(&transaction.context_id)
+                    let _ = self
+                        .ctx_manager
+                        .clear_context_pending_catchup(&transaction.context_id)
                         .await;
 
                     info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
                 };
 
                 let Some(context) = self.ctx_manager.get_context(&transaction.context_id)? else {
-                    eyre::bail!("Context '{}' not found", transaction.context_id);
+                    bail!("Context '{}' not found", transaction.context_id);
                 };
 
                 if self.typ.is_coordinator() {
@@ -668,19 +885,20 @@ impl Node {
                         return Ok(());
                     };
 
-                    self.validate_pending_transaction(
-                        context,
-                        pool_entry.transaction,
-                        transaction_hash,
-                    )
-                    .await?;
+                    let _ = self
+                        .validate_pending_transaction(
+                            &context,
+                            pool_entry.transaction,
+                            transaction_hash,
+                        )
+                        .await?;
                 }
             }
-            types::PeerAction::TransactionConfirmation(confirmation) => {
+            PeerAction::TransactionConfirmation(confirmation) => {
                 debug!(?confirmation, %source, "Received transaction confirmation");
                 // todo! ensure this was only sent by a coordinator
 
-                let Some(transaction_pool::TransactionPoolEntry {
+                let Some(TransactionPoolEntry {
                     transaction,
                     outcome_sender,
                     ..
@@ -694,23 +912,22 @@ impl Node {
                     .await;
 
                 if let Some(outcome_sender) = outcome_sender {
-                    let _ = outcome_sender.send(outcome_result);
+                    drop(outcome_sender.send(outcome_result));
                 }
             }
-            types::PeerAction::TransactionRejection(rejection) => {
+            PeerAction::TransactionRejection(rejection) => {
                 debug!(?rejection, %source, "Received transaction rejection");
                 // todo! ensure this was only sent by a coordinator
 
-                if let Err(err) = self.reject_from_pool(rejection.transaction_hash).await {
-                    error!(%err, "Failed to reject transaction from pool");
-                };
+                let _ = self.reject_from_pool(rejection.transaction_hash);
 
                 info!(context_id=%rejection.context_id, %source, "Attempting to perform rejection triggered catchup");
 
                 self.perform_catchup(rejection.context_id, source).await?;
 
-                self.ctx_manager
-                    .clear_context_pending_initial_catchup(&rejection.context_id)
+                let _ = self
+                    .ctx_manager
+                    .clear_context_pending_catchup(&rejection.context_id)
                     .await;
 
                 info!(context_id=%rejection.context_id, %source, "Rejection triggered catchup successfully finished");
@@ -722,16 +939,16 @@ impl Node {
 
     async fn validate_pending_transaction(
         &mut self,
-        context: calimero_primitives::context::Context,
-        transaction: calimero_primitives::transaction::Transaction,
-        transaction_hash: calimero_primitives::hash::Hash,
-    ) -> eyre::Result<bool> {
+        context: &Context,
+        transaction: Transaction,
+        transaction_hash: Hash,
+    ) -> EyreResult<bool> {
         if context.last_transaction_hash == transaction.prior_hash {
-            self.nonce += 1;
+            self.nonce = self.nonce.saturating_add(1);
 
             self.push_action(
                 transaction.context_id,
-                types::PeerAction::TransactionConfirmation(types::TransactionConfirmation {
+                PeerAction::TransactionConfirmation(TransactionConfirmation {
                     context_id: transaction.context_id,
                     nonce: self.nonce,
                     transaction_hash,
@@ -741,13 +958,13 @@ impl Node {
             )
             .await?;
 
-            self.persist_transaction(context.clone(), transaction.clone(), transaction_hash)?;
+            self.persist_transaction(context, transaction, transaction_hash)?;
 
             Ok(true)
         } else {
             self.push_action(
                 transaction.context_id,
-                types::PeerAction::TransactionRejection(types::TransactionRejection {
+                PeerAction::TransactionRejection(TransactionRejection {
                     context_id: transaction.context_id,
                     transaction_hash,
                 }),
@@ -758,78 +975,95 @@ impl Node {
         }
     }
 
-    async fn push_action(
-        &mut self,
-        context_id: calimero_primitives::context::ContextId,
-        action: types::PeerAction,
-    ) -> eyre::Result<()> {
-        self.network_client
-            .publish(
-                TopicHash::from_raw(context_id),
-                serde_json::to_vec(&action)?,
-            )
-            .await?;
+    async fn push_action(&self, context_id: ContextId, action: PeerAction) -> EyreResult<()> {
+        drop(
+            self.network_client
+                .publish(TopicHash::from_raw(context_id), to_json_vec(&action)?)
+                .await?,
+        );
 
         Ok(())
     }
 
-    pub async fn handle_call(
-        &mut self,
-        context_id: calimero_primitives::context::ContextId,
-        method: String,
-        payload: Vec<u8>,
-        write: bool,
-        outcome_sender: oneshot::Sender<
-            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::CallError>,
-        >,
-    ) {
-        let Ok(Some(context)) = self.ctx_manager.get_context(&context_id) else {
-            let _ =
-                outcome_sender.send(Err(calimero_node_primitives::CallError::ContextNotFound {
-                    context_id,
-                }));
+    pub async fn handle_call(&mut self, request: ExecutionRequest) {
+        let Ok(Some(context)) = self.ctx_manager.get_context(&request.context_id) else {
+            drop(request.outcome_sender.send(Err(CallError::ContextNotFound {
+                context_id: request.context_id,
+            })));
             return;
         };
 
-        if write {
-            let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
+        if let Some(finality) = request.finality {
+            let transaction = Transaction::new(
+                context.id,
+                request.method,
+                request.payload,
+                context.last_transaction_hash,
+                request.executor_public_key,
+            );
 
-            if let Err(err) = self
-                .call_mutate(context, method, payload, inner_outcome_sender)
+            match finality {
+                Finality::Local => {
+                    let task = async {
+                        let hash = Hash::hash_json(&transaction)?;
+
+                        self.execute_transaction(&context, transaction, hash).await
+                    };
+
+                    drop(request.outcome_sender.send(task.await.map_err(|err| {
+                        error!(%err, "failed to execute local transaction");
+
+                        CallError::Mutate(MutateCallError::InternalError)
+                    })));
+                }
+                Finality::Global => {
+                    let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
+
+                    if let Err(err) = self
+                        .call_mutate(&context, transaction, inner_outcome_sender)
+                        .await
+                    {
+                        drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
+                        return;
+                    }
+
+                    drop(spawn(async move {
+                        match inner_outcome_receiver.await {
+                            Ok(outcome) => match outcome {
+                                Ok(outcome) => {
+                                    drop(request.outcome_sender.send(Ok(outcome)));
+                                }
+                                Err(err) => {
+                                    drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
+                                }
+                            },
+                            Err(err) => {
+                                error!("Failed to receive inner outcome of a transaction: {}", err);
+                                drop(
+                                    request.outcome_sender.send(Err(CallError::Mutate(
+                                        MutateCallError::InternalError,
+                                    ))),
+                                );
+                            }
+                        }
+                    }));
+                }
+            }
+        } else {
+            match self
+                .call_query(
+                    &context,
+                    request.method,
+                    request.payload,
+                    request.executor_public_key,
+                )
                 .await
             {
-                let _ = outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(err)));
-                return;
-            }
-
-            tokio::spawn(async move {
-                match inner_outcome_receiver.await {
-                    Ok(outcome) => match outcome {
-                        Ok(outcome) => {
-                            let _ = outcome_sender.send(Ok(outcome));
-                        }
-                        Err(err) => {
-                            let _ = outcome_sender
-                                .send(Err(calimero_node_primitives::CallError::Mutate(err)));
-                        }
-                    },
-                    Err(err) => {
-                        error!("Failed to receive inner outcome of a transaction: {}", err);
-                        let _ =
-                            outcome_sender.send(Err(calimero_node_primitives::CallError::Mutate(
-                                calimero_node_primitives::MutateCallError::InternalError,
-                            )));
-                    }
-                }
-            });
-        } else {
-            match self.call_query(context, method, payload).await {
                 Ok(outcome) => {
-                    let _ = outcome_sender.send(Ok(outcome));
+                    drop(request.outcome_sender.send(Ok(outcome)));
                 }
                 Err(err) => {
-                    let _ =
-                        outcome_sender.send(Err(calimero_node_primitives::CallError::Query(err)));
+                    drop(request.outcome_sender.send(Err(CallError::Query(err))));
                 }
             };
         }
@@ -837,40 +1071,41 @@ impl Node {
 
     async fn call_query(
         &mut self,
-        context: calimero_primitives::context::Context,
+        context: &Context,
         method: String,
         payload: Vec<u8>,
-    ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::QueryCallError> {
+        executor_public_key: [u8; 32],
+    ) -> Result<Outcome, QueryCallError> {
         if !self
             .ctx_manager
             .is_application_installed(&context.application_id)
+            .unwrap_or_default()
         {
-            return Err(
-                calimero_node_primitives::QueryCallError::ApplicationNotInstalled {
-                    application_id: context.application_id,
-                },
-            );
+            return Err(QueryCallError::ApplicationNotInstalled {
+                application_id: context.application_id,
+            });
         }
 
-        self.execute(context, None, method, payload)
+        self.execute(context, None, method, payload, executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e,"Failed to execute query call.");
-                calimero_node_primitives::QueryCallError::InternalError
+                QueryCallError::InternalError
             })
     }
 
     async fn call_mutate(
         &mut self,
-        context: calimero_primitives::context::Context,
-        method: String,
-        payload: Vec<u8>,
-        outcome_sender: oneshot::Sender<
-            Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError>,
-        >,
-    ) -> Result<calimero_primitives::hash::Hash, calimero_node_primitives::MutateCallError> {
+        context: &Context,
+        transaction: Transaction,
+        outcome_sender: oneshot::Sender<Result<Outcome, MutateCallError>>,
+    ) -> Result<Hash, MutateCallError> {
+        if context.id != transaction.context_id {
+            return Err(MutateCallError::TransactionRejected);
+        }
+
         if self.typ.is_coordinator() {
-            return Err(calimero_node_primitives::MutateCallError::InvalidNodeType {
+            return Err(MutateCallError::InvalidNodeType {
                 node_type: self.typ,
             });
         }
@@ -878,12 +1113,11 @@ impl Node {
         if !self
             .ctx_manager
             .is_application_installed(&context.application_id)
+            .unwrap_or_default()
         {
-            return Err(
-                calimero_node_primitives::MutateCallError::ApplicationNotInstalled {
-                    application_id: context.application_id,
-                },
-            );
+            return Err(MutateCallError::ApplicationNotInstalled {
+                application_id: context.application_id,
+            });
         }
 
         if self
@@ -892,32 +1126,22 @@ impl Node {
             .await
             == 0
         {
-            return Err(calimero_node_primitives::MutateCallError::NoConnectedPeers);
+            return Err(MutateCallError::NoConnectedPeers);
         }
 
-        let transaction = calimero_primitives::transaction::Transaction {
-            context_id: context.id,
-            method,
-            payload,
-            prior_hash: context.last_transaction_hash,
-        };
-
-        self.push_action(
-            context.id,
-            types::PeerAction::Transaction(transaction.clone()),
-        )
-        .await
-        .map_err(|err| {
-            error!(%err, "Failed to push transaction over the network.");
-            calimero_node_primitives::MutateCallError::InternalError
-        })?;
+        self.push_action(context.id, PeerAction::Transaction(transaction.clone()))
+            .await
+            .map_err(|err| {
+                error!(%err, "Failed to push transaction over the network.");
+                MutateCallError::InternalError
+            })?;
 
         let tx_hash = self
             .tx_pool
             .insert(self.id, transaction, Some(outcome_sender))
             .map_err(|err| {
                 error!(%err, "Failed to insert transaction into the pool.");
-                calimero_node_primitives::MutateCallError::InternalError
+                MutateCallError::InternalError
             })?;
 
         Ok(tx_hash)
@@ -925,19 +1149,19 @@ impl Node {
 
     async fn execute_in_context(
         &mut self,
-        transaction_hash: calimero_primitives::hash::Hash,
-        transaction: calimero_primitives::transaction::Transaction,
-    ) -> Result<calimero_runtime::logic::Outcome, calimero_node_primitives::MutateCallError> {
+        transaction_hash: Hash,
+        transaction: Transaction,
+    ) -> Result<Outcome, MutateCallError> {
         let Some(context) = self
             .ctx_manager
             .get_context(&transaction.context_id)
             .map_err(|e| {
                 error!(%e, "Failed to get context");
-                calimero_node_primitives::MutateCallError::InternalError
+                MutateCallError::InternalError
             })?
         else {
             error!(%transaction.context_id, "Context not found");
-            return Err(calimero_node_primitives::MutateCallError::InternalError);
+            return Err(MutateCallError::InternalError);
         };
 
         if context.last_transaction_hash != transaction.prior_hash {
@@ -947,15 +1171,15 @@ impl Node {
                 prior_hash=%transaction.prior_hash,
                 "Transaction from the pool doesn't build on last transaction",
             );
-            return Err(calimero_node_primitives::MutateCallError::TransactionRejected);
+            return Err(MutateCallError::TransactionRejected);
         }
 
         let outcome = self
-            .execute_transaction(context, transaction, transaction_hash)
+            .execute_transaction(&context, transaction, transaction_hash)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute transaction");
-                calimero_node_primitives::MutateCallError::InternalError
+                MutateCallError::InternalError
             })?;
 
         Ok(outcome)
@@ -963,16 +1187,17 @@ impl Node {
 
     async fn execute_transaction(
         &mut self,
-        context: calimero_primitives::context::Context,
-        transaction: calimero_primitives::transaction::Transaction,
-        hash: calimero_primitives::hash::Hash,
-    ) -> eyre::Result<calimero_runtime::logic::Outcome> {
+        context: &Context,
+        transaction: Transaction,
+        hash: Hash,
+    ) -> EyreResult<Outcome> {
         let outcome = self
             .execute(
-                context.clone(),
+                context,
                 Some(hash),
                 transaction.method.clone(),
                 transaction.payload.clone(),
+                transaction.executor_public_key,
             )
             .await?;
 
@@ -981,48 +1206,40 @@ impl Node {
         Ok(outcome)
     }
 
-    async fn reject_from_pool(
-        &mut self,
-        hash: calimero_primitives::hash::Hash,
-    ) -> eyre::Result<Option<()>> {
-        let Some(transaction_pool::TransactionPoolEntry { outcome_sender, .. }) =
-            self.tx_pool.remove(&hash)
-        else {
-            return Ok(None);
-        };
+    fn reject_from_pool(&mut self, hash: Hash) -> Option<()> {
+        let TransactionPoolEntry { outcome_sender, .. } = self.tx_pool.remove(&hash)?;
 
         if let Some(sender) = outcome_sender {
-            let _ = sender.send(Err(
-                calimero_node_primitives::MutateCallError::TransactionRejected,
-            ));
+            drop(sender.send(Err(MutateCallError::TransactionRejected)));
         }
 
-        Ok(Some(()))
+        Some(())
     }
 
     fn persist_transaction(
-        &mut self,
-        context: calimero_primitives::context::Context,
-        transaction: calimero_primitives::transaction::Transaction,
-        hash: calimero_primitives::hash::Hash,
-    ) -> eyre::Result<()> {
+        &self,
+        context: &Context,
+        transaction: Transaction,
+        hash: Hash,
+    ) -> EyreResult<()> {
         let mut handle = self.store.handle();
 
         handle.put(
-            &calimero_store::key::ContextTransaction::new(context.id, hash.into()),
-            &calimero_store::types::ContextTransaction {
-                method: transaction.method.into(),
-                payload: transaction.payload.into(),
-                prior_hash: *transaction.prior_hash,
-            },
+            &ContextTransactionKey::new(context.id, hash.into()),
+            &ContextTransaction::new(
+                transaction.method.into(),
+                transaction.payload.into(),
+                *transaction.prior_hash,
+                transaction.executor_public_key,
+            ),
         )?;
 
         handle.put(
-            &calimero_store::key::ContextMeta::new(context.id),
-            &calimero_store::types::ContextMeta {
-                application_id: context.application_id.0.into(),
-                last_transaction_hash: *hash.as_bytes(),
-            },
+            &ContextMetaKey::new(context.id),
+            &ContextMeta::new(
+                ApplicationMetaKey::new(context.application_id),
+                *hash.as_bytes(),
+            ),
         )?;
 
         Ok(())
@@ -1030,22 +1247,32 @@ impl Node {
 
     async fn execute(
         &mut self,
-        context: calimero_primitives::context::Context,
-        hash: Option<calimero_primitives::hash::Hash>,
+        context: &Context,
+        hash: Option<Hash>,
         method: String,
         payload: Vec<u8>,
-    ) -> eyre::Result<calimero_runtime::logic::Outcome> {
+        executor_public_key: [u8; 32],
+    ) -> EyreResult<Outcome> {
         let mut storage = match hash {
-            Some(_) => runtime_compat::RuntimeCompatStore::temporal(&mut self.store, context.id),
-            None => runtime_compat::RuntimeCompatStore::read_only(&self.store, context.id),
+            Some(_) => RuntimeCompatStore::temporal(&mut self.store, context.id),
+            None => RuntimeCompatStore::read_only(&self.store, context.id),
+        };
+
+        let Some(blob) = self
+            .ctx_manager
+            .load_application_blob(&context.application_id)
+            .await?
+        else {
+            bail!(
+                "fatal error: missing blob for application `{}`",
+                context.application_id
+            );
         };
 
         let outcome = calimero_runtime::run(
-            &self
-                .ctx_manager
-                .load_application_blob(&context.application_id)?,
+            &blob,
             &method,
-            calimero_runtime::logic::VMContext { input: payload },
+            VMContext::new(payload, executor_public_key),
             &mut storage,
             &get_runtime_limits()?,
         )?;
@@ -1057,38 +1284,30 @@ impl Node {
             // todo! debate: when we switch to optimistic execution
             // todo! we won't have query vs. mutate methods anymore, so this shouldn't matter
 
-            let _ = self
-                .node_events
-                .send(calimero_primitives::events::NodeEvent::Application(
-                calimero_primitives::events::ApplicationEvent {
-                    context_id: context.id,
-                    payload:
-                        calimero_primitives::events::ApplicationEventPayload::TransactionExecuted(
-                            calimero_primitives::events::ExecutedTransactionPayload { hash },
+            drop(
+                self.node_events
+                    .send(NodeEvent::Application(ApplicationEvent::new(
+                        context.id,
+                        ApplicationEventPayload::TransactionExecuted(
+                            ExecutedTransactionPayload::new(hash),
                         ),
-                },
-            ));
+                    ))),
+            );
         }
 
-        let _ = self
-            .node_events
-            .send(calimero_primitives::events::NodeEvent::Application(
-                calimero_primitives::events::ApplicationEvent {
-                    context_id: context.id,
-                    payload: calimero_primitives::events::ApplicationEventPayload::OutcomeEvent(
-                        calimero_primitives::events::OutcomeEventPayload {
-                            events: outcome
-                                .events
-                                .iter()
-                                .map(|e| OutcomeEvent {
-                                    data: e.data.clone(),
-                                    kind: e.kind.clone(),
-                                })
-                                .collect(),
-                        },
-                    ),
-                },
-            ));
+        drop(
+            self.node_events
+                .send(NodeEvent::Application(ApplicationEvent::new(
+                    context.id,
+                    ApplicationEventPayload::OutcomeEvent(OutcomeEventPayload::new(
+                        outcome
+                            .events
+                            .iter()
+                            .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
+                            .collect(),
+                    )),
+                ))),
+        );
 
         Ok(outcome)
     }
@@ -1096,20 +1315,21 @@ impl Node {
 
 // TODO: move this into the config
 // TODO: also this would be nice to have global default with per application customization
-fn get_runtime_limits() -> eyre::Result<VMLimits> {
-    Ok(calimero_runtime::logic::VMLimits {
-        max_stack_size: 200 << 10, // 200 KiB
-        max_memory_pages: 1 << 10, // 1 KiB
-        max_registers: 100,
-        max_register_size: (100 << 20).validate()?, // 100 MiB
-        max_registers_capacity: 1 << 30,            // 1 GiB
-        max_logs: 100,
-        max_log_size: 16 << 10, // 16 KiB
-        max_events: 100,
-        max_event_kind_size: 100,
-        max_event_data_size: 16 << 10,               // 16 KiB
-        max_storage_key_size: (1 << 20).try_into()?, // 1 MiB
-        max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
-                                                     // can_write: writes, // todo!
-    })
+fn get_runtime_limits() -> EyreResult<VMLimits> {
+    Ok(VMLimits::new(
+        /*max_stack_size:*/ 200 << 10, // 200 KiB
+        /*max_memory_pages:*/ 1 << 10, // 1 KiB
+        /*max_registers:*/ 100,
+        /*max_register_size:*/ (100 << 20).validate()?, // 100 MiB
+        /*max_registers_capacity:*/ 1 << 30, // 1 GiB
+        /*max_logs:*/ 100,
+        /*max_log_size:*/ 16 << 10, // 16 KiB
+        /*max_events:*/ 100,
+        /*max_event_kind_size:*/ 100,
+        /*max_event_data_size:*/ 16 << 10, // 16 KiB
+        /*max_storage_key_size:*/ (1 << 20).try_into()?, // 1 MiB
+        /*max_storage_value_size:*/
+        (10 << 20).try_into()?, // 10 MiB
+                                // can_write: writes, // todo!
+    ))
 }

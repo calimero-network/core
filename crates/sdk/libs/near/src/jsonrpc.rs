@@ -1,13 +1,16 @@
-use calimero_sdk::env;
+use std::cell::RefCell;
+
+use calimero_sdk::env::ext::fetch;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
 
 use crate::error::RpcError;
 use crate::{Error, RpcMethod};
 
 pub struct Client {
     url: String,
-    id: std::cell::RefCell<u64>,
+    id: RefCell<u64>,
 }
 
 impl Client {
@@ -22,7 +25,7 @@ impl Client {
     fn new(url: String) -> Self {
         Self {
             url,
-            id: std::cell::RefCell::new(0),
+            id: RefCell::new(0),
         }
     }
 
@@ -33,23 +36,23 @@ impl Client {
         let headers = [("Content-Type", "application/json")];
 
         *self.id.borrow_mut() += 1;
-        let body = serde_json::to_vec(&Request {
+        let body = to_json_vec(&Request {
             jsonrpc: "2.0",
             id: *self.id.borrow(),
             method: method.method_name(),
             params: method.params(),
         })?;
 
-        let response = unsafe { env::ext::fetch(&self.url, "POST", &headers, &body) }
-            .map_err(Error::FetchError)?;
+        let response =
+            unsafe { fetch(&self.url, "POST", &headers, &body) }.map_err(Error::FetchError)?;
 
-        serde_json::from_slice::<Response<_, _>>(&response)?
+        from_json_slice::<Response<_, _>>(&response)?
             .data
             .map_err(Error::ServerError)
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct Request<'a, P: Serialize> {
     jsonrpc: &'a str,
     id: u64,
@@ -58,7 +61,8 @@ struct Request<'a, P: Serialize> {
     params: P,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct Response<T: DeserializeOwned, E: DeserializeOwned> {
     pub jsonrpc: Option<String>,
     pub id: u64,

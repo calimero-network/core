@@ -1,5 +1,11 @@
 use std::sync::Arc;
 
+use eyre::Result as EyreResult;
+use handle::Handle;
+
+use crate::config::StoreConfig;
+use crate::db::Database;
+
 pub mod config;
 pub mod db;
 pub mod entry;
@@ -9,23 +15,22 @@ pub mod key;
 pub mod layer;
 pub mod slice;
 mod tx;
+#[cfg(feature = "datatypes")]
 pub mod types;
 
-use handle::StoreHandle;
-
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Store {
-    db: Arc<dyn db::Database>,
+    db: Arc<dyn for<'a> Database<'a>>,
 }
 
 impl Store {
-    pub fn open<T: db::Database>(config: &config::StoreConfig) -> eyre::Result<Self> {
-        let db = T::open(&config)?;
-
+    pub fn open<T: for<'a> Database<'a>>(config: &StoreConfig) -> EyreResult<Self> {
+        let db = T::open(config)?;
         Ok(Self { db: Arc::new(db) })
     }
 
-    pub fn handle(&self) -> StoreHandle {
-        StoreHandle::new(self.clone())
+    #[must_use]
+    pub fn handle(&self) -> Handle<Self> {
+        Handle::new(self.clone())
     }
 }

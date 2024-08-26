@@ -1,41 +1,41 @@
+use eyre::Result as EyreResult;
+
 use crate::iter::{Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
 use crate::layer::{Layer, ReadLayer};
 use crate::slice::Slice;
 
-pub struct ReadOnly<'k, L> {
-    inner: &'k L,
+#[derive(Debug)]
+pub struct ReadOnly<'base, L> {
+    inner: &'base L,
 }
 
-impl<'k, L> ReadOnly<'k, L>
+impl<'base, L> ReadOnly<'base, L>
 where
-    L: ReadLayer<'k>,
+    L: ReadLayer,
 {
-    pub fn new(layer: &'k L) -> Self {
+    pub const fn new(layer: &'base L) -> Self {
         Self { inner: layer }
     }
 }
 
-impl<'k, L: Layer> Layer for ReadOnly<'k, L> {
+impl<L: Layer> Layer for ReadOnly<'_, L> {
     type Base = L;
 }
 
-impl<'k, L> ReadLayer<'k> for ReadOnly<'k, L>
+impl<L> ReadLayer for ReadOnly<'_, L>
 where
-    L: ReadLayer<'k>,
+    L: ReadLayer,
 {
-    fn has(&self, key: &'k impl AsKeyParts) -> eyre::Result<bool> {
+    fn has<K: AsKeyParts>(&self, key: &K) -> EyreResult<bool> {
         self.inner.has(key)
     }
 
-    fn get(&self, key: &'k impl AsKeyParts) -> eyre::Result<Option<Slice>> {
+    fn get<K: AsKeyParts>(&self, key: &K) -> EyreResult<Option<Slice<'_>>> {
         self.inner.get(key)
     }
 
-    fn iter<K: AsKeyParts + FromKeyParts>(
-        &self,
-        start: &'k K,
-    ) -> eyre::Result<Iter<Structured<K>>> {
-        self.inner.iter(start)
+    fn iter<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>> {
+        self.inner.iter()
     }
 }
