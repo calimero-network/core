@@ -14,3 +14,12 @@ export const getNetworkType = (chainId: string): WalletType => {
       return WalletType.ETH({ chainId: 1 });
   }
 };
+
+export const getWalletType = (walletType: string): WalletType => {
+  switch (walletType) {
+    case 'argentX':
+      return WalletType.STARKNET({ walletName: 'argentX' });
+    default:
+      return WalletType.STARKNET({ walletName: 'metamask' });
+  }
+};

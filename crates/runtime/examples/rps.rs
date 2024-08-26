@@ -3,7 +3,7 @@
 
 use calimero_runtime::logic::{VMContext, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
-use calimero_runtime::{logic, run, store, Constraint};
+use calimero_runtime::{run, Constraint};
 use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use rand::distributions::{Distribution, Standard};
