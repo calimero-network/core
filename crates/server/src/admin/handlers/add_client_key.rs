@@ -120,7 +120,7 @@ fn check_root_key(
     } else {
         //first login so store root key as well
         let _ = store_root_key(
-            req.wallet_metadata.signing_key.clone(),
+            req.wallet_metadata.verifying_key.clone(),
             req.wallet_metadata.wallet_type.clone(),
             store,
         )?;

@@ -58,7 +58,7 @@ pub async fn verify_node_signature(
                 &near_metadata.recipient,
                 &near_metadata.callback_url,
                 signature_str,
-                &wallet_metadata.signing_key,
+                &wallet_metadata.verifying_key,
             );
 
             if !result {
@@ -95,7 +95,7 @@ pub async fn verify_node_signature(
             };
 
             if let Err(err) = verify_eth_signature(
-                &wallet_metadata.signing_key,
+                &wallet_metadata.verifying_key,
                 &payload.message.message,
                 signature_str,
             ) {
@@ -119,7 +119,7 @@ pub async fn verify_node_signature(
             #[allow(clippy::wildcard_enum_match_arm)]
             let (message_hash, signature) = match wallet_signature {
                 WalletSignature::StarknetPayload(payload) => {
-                    (&payload.message_hash, payload.signature.clone())
+                    (&payload.message_hash, &payload.signature)
                 }
                 _ => {
                     return Err(ApiError {
@@ -144,8 +144,8 @@ pub async fn verify_node_signature(
                 "argentX" => {
                     verify_argent_signature(
                         message_hash,
-                        signature,
-                        &wallet_metadata.signing_key.clone(),
+                        signature.clone(),
+                        &wallet_metadata.verifying_key,
                         &payload.message.message,
                         &rpc_node_url,
                         &chain_id,
@@ -153,19 +153,16 @@ pub async fn verify_node_signature(
                     .await
                 }
                 "metamask" => {
-                    let wallet_address: &str = match &wallet_metadata.wallet_address {
-                        Some(s) => s,
-                        None => {
-                            return Err(ApiError {
-                                status_code: StatusCode::BAD_REQUEST,
-                                message: "Wallet address not present.".into(),
-                            })
-                        }
+                    let Some(wallet_address) = &wallet_metadata.wallet_address else {
+                        return Err(ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: "Wallet address not present.".into(),
+                        });
                     };
                     verify_metamask_signature(
                         message_hash,
                         &signature,
-                        &wallet_metadata.signing_key,
+                        &wallet_metadata.verifying_key,
                         &payload.message.message,
                         wallet_address,
                         &chain_id,
@@ -275,7 +272,7 @@ pub fn validate_root_key_exists(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    let root_key_result = get_root_key(store, &req.wallet_metadata.signing_key).map_err(|e| {
+    let root_key_result = get_root_key(store, &req.wallet_metadata.verifying_key).map_err(|e| {
         info!("Error getting root key: {}", e);
         ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,

@@ -42,7 +42,7 @@ pub fn store_root(
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let _ = store_root_key(
-        req.wallet_metadata.signing_key.clone(),
+        req.wallet_metadata.verifying_key.clone(),
         req.wallet_metadata.wallet_type.clone(),
         store,
     )?;

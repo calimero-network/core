@@ -172,7 +172,7 @@ pub struct SignatureMessage {
 pub struct WalletMetadata {
     #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
-    pub signing_key: String,
+    pub verifying_key: String,
     pub wallet_address: Option<String>,
     pub network_metadata: Option<NetworkMetadata>,
 }
@@ -206,12 +206,14 @@ pub struct NearSignatureMessageMetadata {
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct EthSignatureMessageMetadata;
+#[allow(clippy::empty_structs_with_brackets)]
+pub struct EthSignatureMessageMetadata {}
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(clippy::exhaustive_structs)]
-pub struct StarknetSignatureMessageMetadata;
+#[allow(clippy::empty_structs_with_brackets)]
+pub struct StarknetSignatureMessageMetadata {}
 
 // Intermediate structs for initial parsing
 #[derive(Debug, Deserialize)]

@@ -25,8 +25,8 @@ struct FieldType {
 ///
 #[derive(Debug)]
 struct Types {
-    stark_net_domain: Vec<FieldType>,
-    challenge: Vec<FieldType>,
+    stark_net_domain: [FieldType; 4],
+    challenge: [FieldType; 2],
 }
 
 /// Verify an Argent wallet signature on chain.
@@ -145,7 +145,7 @@ fn verify_signature_hash(
     chain_id: &str,
 ) -> EyreResult<()> {
     let types = Types {
-        stark_net_domain: vec![
+        stark_net_domain: [
             FieldType {
                 name: "name".to_owned(),
                 field_type: "shortstring".to_owned(),
@@ -163,7 +163,7 @@ fn verify_signature_hash(
                 field_type: "shortstring".to_owned(),
             },
         ],
-        challenge: vec![
+        challenge: [
             FieldType {
                 name: "nodeSignature".to_owned(),
                 field_type: "string".to_owned(),
@@ -315,10 +315,10 @@ fn encode_value(field_type: &str, value: &str) -> EyreResult<String> {
 
 /// Encode data fields into a vector of Felt values based on their types.
 fn encode_data(types: &Types, type_name: &str, data: &Value) -> EyreResult<Vec<Felt>> {
-    let target_type = match type_name {
-        "StarknetDomain" => &types.stark_net_domain,
-        "Challenge" => &types.challenge,
-        _ => bail!("Type not found"),
+    let target_type: &[FieldType] = match type_name {
+        "StarknetDomain" => &types.stark_net_domain[..],
+        "Challenge" => &types.challenge[..],
+        _ => bail!("Type '{}' not found", type_name),
     };
 
     let mut values = vec![];
