@@ -105,7 +105,7 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = setup(&config, &store, ctx_manager) {
+        if let Some((api_path, router)) = setup(&config, store.clone(), ctx_manager) {
             if let Some((site_path, serve_dir)) = site(&config) {
                 app = app.nest_service(site_path, serve_dir);
             }

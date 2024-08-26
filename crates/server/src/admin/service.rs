@@ -62,10 +62,9 @@ pub struct AdminState {
 
 pub(crate) fn setup(
     config: &ServerConfig,
-    store: &Store,
+    store: Store,
     ctx_manager: ContextManager,
 ) -> Option<(&'static str, Router)> {
-    let listen = config.listen.clone();
     let _ = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
@@ -115,7 +114,7 @@ pub(crate) fn setup(
         .route("/contexts/:context_id/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
-        .layer(AuthSignatureLayer::new(store.clone()))
+        .layer(AuthSignatureLayer::new(store))
         .layer(Extension(Arc::clone(&shared_state)));
 
     let unprotected_router = Router::new()
@@ -144,7 +143,7 @@ pub(crate) fn setup(
         .nest("/", unprotected_router)
         .nest("/", protected_router)
         .layer(session_layer)
-        .layer(HostLayer::new(listen));
+        .layer(HostLayer::new(config.listen.clone()));
 
     Some((admin_path, admin_router))
 }
