@@ -281,7 +281,7 @@ export function useNear({ accountId, selector }: UseNearProps) {
           wallet: WalletType.NEAR({
             networkId: selector.options.network.networkId,
           }),
-          signingKey: publicKey,
+          verifyingKey: publicKey,
         };
 
         const nearRequest: LoginRequest = {

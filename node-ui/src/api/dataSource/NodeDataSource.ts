@@ -182,7 +182,7 @@ export namespace WalletType {
 
 export interface WalletMetadata {
   wallet: WalletType;
-  signingKey: String;
+  verifyingKey: String;
 }
 
 export interface Payload {
