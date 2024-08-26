@@ -20,9 +20,6 @@ const AppLoginProvider = ({ children }: AppLoginProviderProps) => {
         const callbackParam = decodeURIComponent(
           urlParams.get('callback_url') ?? '',
         );
-        console.log(applicationIdParam);
-        console.log(callbackParam);
-        console.log('params');
         if (applicationIdParam && callbackParam) {
           setApplicationId(applicationIdParam);
           setCallbackUrl(callbackParam);

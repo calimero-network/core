@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import Modal from 'react-bootstrap/Modal';
-import { styled } from 'styled-components';
 import apiClient from '../../../api';
-import { ContextList } from '../../../api/dataSource/NodeDataSource';
+import { Context, ContextList } from '../../../api/dataSource/NodeDataSource';
 import { ResponseData } from '../../../api/response';
+import SelectContextStep from './SelectContextStep';
+import CreateAccessTokenStep from './CreateAccessTokenStep';
 
 interface AppLoginPopupProps {
   showPopup: boolean;
@@ -12,54 +13,21 @@ interface AppLoginPopupProps {
   showServerDownPopup: () => void;
 }
 
-const ModalWrapper = styled.div`
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 1.5rem;
-  border-radius: 0.375rem;
-  items-align: center;
-  background-color: #17191b;
-
-  .title {
-    text-align: center;
-    font-size: 1rem;
-    font-weight: 500;
-    line-height: 1.25rem;
-    color: #fff;
-  }
-
-  .subtitle {
-    margin-top: 1.25rem;
-    color: #fff;
-    font-weigth: 500;
-    font-size: 0.875rem;
-  }
-
-  .context-list {
-    margin-top: 1.25rem;
-    color: #fff;
-  }
-
-  .app-id {
-    color: #ff7a00;
-  }
-
-  .app-callbackurl {
-    color: #ff7a00;
-    text-decoration: none;
-`;
+export const enum LoginStep {
+  SELECT_CONTEXT,
+  SELECT_IDENTITY,
+  CREATE_ACCESS_TOKEN,
+}
 
 export default function AppLoginPopup({
   showPopup,
   callbackUrl,
   applicationId,
-  showServerDownPopup
+  showServerDownPopup,
 }: AppLoginPopupProps) {
-  const [contextList, setContextList] = useState<string[]>([]);
-  const finishLogin = () => {
-    window.location.href = callbackUrl;
-  };
+  const [contextList, setContextList] = useState<Context[]>([]);
+  const [selectedContextId, setSelectedContextId] = useState('');
+  const [loginStep, setLoginStep] = useState(LoginStep.SELECT_CONTEXT);
 
   useEffect(() => {
     const fetchAvailableContexts = async () => {
@@ -68,10 +36,30 @@ export default function AppLoginPopup({
       )
         .node()
         .getContexts();
-        console.log(fetchContextsResponse.data);
-    }
+      console.log(fetchContextsResponse.data?.contexts);
+      const contexts =
+        fetchContextsResponse.data?.contexts.filter(
+          (context) => context.applicationId === applicationId,
+        ) ?? [];
+      setContextList(contexts);
+    };
     fetchAvailableContexts();
-  }, []);
+  }, [showPopup, applicationId, showServerDownPopup]);
+
+  const finishLogin = () => {
+    window.location.href = callbackUrl;
+  };
+
+  const onCreateToken = async () => {
+    // TBD
+    // const createTokenResponse = await apiClient(showServerDownPopup)
+    //   .node()
+    //   .createAccessToken(applicationId, selectedContextId);
+    // if (createTokenResponse.success) {
+    //   finishLogin();
+    // }
+  }
+
   return (
     <Modal
       show={showPopup}
@@ -80,19 +68,24 @@ export default function AppLoginPopup({
       aria-labelledby="contained-modal-title-vcenter"
       centered
     >
-      <ModalWrapper>
-        <div className="title">Sign-in request</div>
-        <div className="subtitle">
-          This site: {' '}
-          <a href={callbackUrl} target="_blank" rel="noreferrer" className='app-callbackurl'>
-            {callbackUrl}
-          </a>, running application:{' '}
-          <span className="app-id">{applicationId}</span> requested to sign in
-        </div>
-        <div className="context-list">
-          <div className="context-title">Available contexts</div>
-        </div>
-      </ModalWrapper>
+      {loginStep === LoginStep.SELECT_CONTEXT && (
+        <SelectContextStep
+          applicationId={applicationId}
+          callbackUrl={callbackUrl}
+          contextList={contextList}
+          selectedContextId={selectedContextId}
+          setSelectedContextId={setSelectedContextId}
+          updateLoginStep={() => setLoginStep(LoginStep.CREATE_ACCESS_TOKEN)}
+        />
+      )}
+      {loginStep === LoginStep.CREATE_ACCESS_TOKEN && (
+        <CreateAccessTokenStep
+          applicationId={applicationId}
+          callbackUrl={callbackUrl}
+          selectedContextId={selectedContextId}
+          onCreateToken={onCreateToken}
+        />
+      )}
     </Modal>
   );
 }
