@@ -1245,7 +1245,7 @@ impl Node {
         Ok(())
     }
 
-    pub async fn execute(
+    async fn execute(
         &mut self,
         context: &Context,
         hash: Option<Hash>,
