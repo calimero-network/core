@@ -38,7 +38,10 @@ impl BorshSerialize for PeerId {
 impl BorshDeserialize for PeerId {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
         let bytes = Vec::<u8>::deserialize_reader(reader)?;
-        Ok(PeerId(libp2p_identity::PeerId::from_bytes(&bytes).unwrap()))
+        match libp2p_identity::PeerId::from_bytes(&bytes) {
+            Ok(peer_id) => Ok(PeerId(peer_id)),
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        }
     }
 }
 
