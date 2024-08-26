@@ -1,13 +1,13 @@
-use core::convert::Infallible;
-use core::task::{Context, Poll};
-use std::error::Error;
-use core::fmt::{Display, Formatter, self};
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use core::convert::Infallible;
+use core::fmt::{self, Display, Formatter};
+use core::task::{Context, Poll};
 use libp2p::futures::future::BoxFuture;
 use multiaddr::{Multiaddr, Protocol};
+use std::error::Error;
 use tower::{Layer, Service};
 
 #[derive(Clone)]
@@ -59,12 +59,7 @@ where
             return Box::pin(async move { Ok(error_response) });
         }
 
-        let future = self.inner.call(request);
-
-        Box::pin(async move {
-            let response: Response = future.await?;
-            Ok(response)
-        })
+        Box::pin(self.inner.call(request))
     }
 }
 
@@ -96,31 +91,41 @@ pub fn host(headers: &HeaderMap, listen: &[Multiaddr]) -> Result<(), Unauthorize
         })
         .collect();
 
-    let server_host = &hosts[0];
-    if ip_caller_host == *server_host {
-        return Ok(());
+    if let Some(ip_caller_host) = ip_caller_host {
+        let server_host = &hosts[0];
+        if ip_caller_host == *server_host {
+            return Ok(());
+        }
+        Err(UnauthorizedError::new(
+            "Unauthorized: Origin does not match the expected address.",
+        ))
+    } else {
+        Err(UnauthorizedError::new(
+            "Unauthorized: Caller host is missing.",
+        ))
     }
-    Err(UnauthorizedError::new(
-        "Unauthorized: Origin does not match the expected address.",
-    ))
 }
 
-fn normalize_origin(origin: &str) -> String {
-    let host: Vec<&str> = origin.split("://").collect();
-    let parts: Vec<&str> = host[1].split(':').collect();
+fn normalize_origin(origin: &str) -> Option<String> {
+    let unschemed = origin.split("://").skip(1).next()?;
+    let unpathed = unschemed.split('/').next()?;
+    let mut parts = unpathed.split(':');
+    let host = parts.next()?;
+    let port = parts.next();
 
-    let normalized_origin = if parts[0] == "localhost" {
+    let normalized_host = if host == "localhost" {
         "127.0.0.1".to_owned()
     } else {
-        parts[0].to_owned()
+        host.to_owned()
     };
 
-    if parts.len() > 1 {
-        let port = parts[1].split('/').next().unwrap();
-        format!("{normalized_origin}:{port}")
+    let normalized_origin = if let Some(port) = port {
+        format!("{}:{}", normalized_host, port)
     } else {
-        normalized_origin
-    }
+        normalized_host
+    };
+
+    Some(normalized_origin)
 }
 
 #[derive(Debug)]
