@@ -1,5 +1,10 @@
 #![allow(unused_crate_dependencies)]
 
+use std::env;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
 use calimero_runtime::logic::{VMContext, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::{run, Constraint};
@@ -7,7 +12,19 @@ use eyre::Result as EyreResult;
 use serde_json::{json, to_vec as to_json_vec};
 
 fn main() -> EyreResult<()> {
-    let file = include_bytes!("../../../apps/gen-ext/res/gen_ext.wasm");
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        println!("Usage: {:?} <path-to-wasm>", args);
+        return Ok(());
+    }
+
+    let path = &args[1];
+    let path = Path::new(path);
+    if !path.exists() {
+        return eyre::Result::Err(eyre::eyre!("Gen-ext wasm file not found"));
+    }
+
+    let file = File::open(&path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
 
     let mut storage = InMemoryStorage::default();
 
@@ -33,7 +50,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let get_outcome = run(file, "view_account", cx, &mut storage, &limits)?;
+    let get_outcome = run(&file, "view_account", cx, &mut storage, &limits)?;
     let returns = String::from_utf8(get_outcome.returns.unwrap().unwrap()).unwrap();
     println!("{returns}");
 
