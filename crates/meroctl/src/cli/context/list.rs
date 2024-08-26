@@ -1,11 +1,10 @@
 use calimero_server_primitives::admin::GetContextsResponse;
-use chrono::Utc;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::multiaddr_to_url;
+use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -26,17 +25,8 @@ impl ListCommand {
 
         let url = multiaddr_to_url(multiaddr, "admin-api/dev/contexts")?;
         let client = Client::new();
-        let keypair = config.identity;
 
-        let timestamp = Utc::now().timestamp().to_string();
-        let signature = keypair.sign(timestamp.as_bytes())?;
-
-        let response = client
-            .get(url)
-            .header("X-Signature", hex::encode(signature))
-            .header("X-Timestamp", timestamp)
-            .send()
-            .await?;
+        let response = get_response::<()>(&client, url, None, &config.identity).await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())

@@ -1251,7 +1251,7 @@ dependencies = [
  "ed25519-dalek",
  "eyre",
  "futures-util",
- "hex",
+ "hex 0.4.3",
  "libp2p",
  "local-ip-address",
  "multiaddr",
@@ -4776,16 +4776,13 @@ dependencies = [
  "calimero-server-primitives",
  "calimero-store",
  "camino",
-<<<<<<< HEAD
  "chrono",
- "clap 4.5.4",
-=======
  "clap",
->>>>>>> origin/master
  "color-eyre",
  "const_format",
  "dirs",
  "eyre",
+ "hex 0.4.3",
  "libp2p",
  "multiaddr",
  "notify",

@@ -35,6 +35,7 @@ use crate::admin::handlers::context::{
 use crate::admin::handlers::fetch_did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
+use crate::middleware;
 use crate::middleware::auth::AuthSignatureLayer;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -110,34 +111,18 @@ pub(crate) fn setup(
             "/contexts/:context_id/identities",
             get(get_context_identities_handler),
         )
-<<<<<<< HEAD
-        .route_layer(middleware::auth::AuthSignatureLayer::new(store));
-
-    let unprotected_router = Router::new()
-        .route("/health", get(health_check_handler))
-        .route(
-            "/request-challenge",
-            post(handlers::challenge::request_challenge_handler),
-        );
-
-    let dev_router = Router::new()
-        .route(
-            "/add-client-key",
-            post(handlers::add_client_key::add_client_key_handler),
-        )
-=======
         .route("/contexts/:context_id/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
-        .layer(AuthSignatureLayer::new(store))
-        .layer(Extension(Arc::clone(&shared_state)));
+        .layer(AuthSignatureLayer::new(store));
 
     let unprotected_router = Router::new()
         .route("/health", get(health_check_handler))
         .route("/certificate", get(certificate_handler))
         .route("/request-challenge", post(request_challenge_handler))
-        .route("/add-client-key", post(add_client_key_handler))
->>>>>>> origin/master
+        .route("/add-client-key", post(add_client_key_handler));
+
+    let dev_router = Router::new()
         .route(
             "/dev/install-application",
             post(install_dev_application_handler),

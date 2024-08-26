@@ -32,7 +32,5 @@ pub async fn dev_mode_auth(
 
     let response = next.run(request).await;
 
-    // Do we add that the response was from dev mode?
-
     Ok(response)
 }
