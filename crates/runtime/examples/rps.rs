@@ -60,7 +60,7 @@ fn main() -> EyreResult<()> {
     let path = &args[1];
     let path = Path::new(path);
     if !path.exists() {
-        return eyre::Result::Err(eyre::eyre!("RPS wasm file not found"));
+        eyre::bail!("RPS wasm file not found");
     }
 
     let file = File::open(&path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
