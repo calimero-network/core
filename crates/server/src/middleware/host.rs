@@ -70,40 +70,38 @@ pub fn host(headers: &HeaderMap, listen: &[Multiaddr]) -> Result<(), Unauthorize
         .to_str()
         .map_err(|_| UnauthorizedError::new("Invalid referer header"))?;
 
-    let ip_caller_host = normalize_origin(caller_host);
+    let ip_caller_host = normalize_origin(caller_host)
+        .ok_or_else(|| UnauthorizedError::new("Invalid referer format"))?;
 
-    let hosts: Vec<String> = listen
-        .iter()
-        .filter_map(|addr| {
-            let mut components = addr.iter();
-            let host = match components.next() {
-                Some(Protocol::Ip4(host)) => host.to_string(),
-                Some(Protocol::Ip6(host)) => format!("[{host}]"),
-                _ => return None,
-            };
+    for addr in listen.iter() {
+        let mut host_matched = false;
+        let mut port_matched = false;
+        let mut iter = addr.iter();
 
-            let port = match components.next() {
-                Some(Protocol::Tcp(port)) => port.to_string(),
-                _ => return None,
-            };
+        match iter.next() {
+            Some(Protocol::Ip4(host)) => {
+                if host.to_string() == ip_caller_host.split(":").next().unwrap() {
+                    host_matched = true;
+                }
+            }
+            _ => {}
+        }
 
-            Some(format!("{host}:{port}"))
-        })
-        .collect();
+        if host_matched {
+            if let Some(Protocol::Tcp(port)) = iter.next() {
+                if ip_caller_host.contains(&format!(":{}", port)) {
+                    port_matched = true;
+                }
+            }
+        }
 
-    if let Some(ip_caller_host) = ip_caller_host {
-        let server_host = &hosts[0];
-        if ip_caller_host == *server_host {
+        if host_matched && port_matched {
             return Ok(());
         }
-        Err(UnauthorizedError::new(
-            "Unauthorized: Origin does not match the expected address.",
-        ))
-    } else {
-        Err(UnauthorizedError::new(
-            "Unauthorized: Caller host is missing.",
-        ))
     }
+    Err(UnauthorizedError::new(
+        "Unauthorized: Origin does not match the expected address.",
+    ))
 }
 
 fn normalize_origin(origin: &str) -> Option<String> {
