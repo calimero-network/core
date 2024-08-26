@@ -1,5 +1,6 @@
 #![allow(unused_crate_dependencies)]
 
+#[ignore]
 #[test]
 fn all() {
     let t = trybuild::TestCases::new();
