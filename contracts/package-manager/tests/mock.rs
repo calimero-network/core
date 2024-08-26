@@ -23,8 +23,9 @@ fn test_add_package() {
         "Demo Application".to_string(),
         "https://github.com/application".to_string(),
     ));
-    let package =
-        contract.get_package("f50a6253c64e399051d942acc129c421cf1ccc591b7ba68f8e3365a23b201ce7");
+    let package = contract.get_package(
+        "f50a6253c64e399051d942acc129c421cf1ccc591b7ba68f8e3365a23b201ce7".to_string(),
+    );
 
     assert_eq!(package.owner, "bobo".to_string());
     assert_eq!(package.name, "application".to_string());
@@ -42,7 +43,7 @@ fn test_add_release() {
         "https://github.com/application".to_string(),
     ));
     contract.add_release(
-        "application",
+        "application".to_string(),
         "0.1.0".to_string(),
         "".to_string(),
         "https://gateway/ipfs/CID".to_string(),
@@ -112,40 +113,40 @@ fn test_get_releases() {
         "https://github.com/package1".to_string(),
     ));
     contract.add_release(
-        "application",
+        "application".to_string(),
         "0.0.1".to_string(),
         "".to_string(),
         "https://gateway/ipfs/CID".to_string(),
         "123456789".to_string(),
     );
     contract.add_release(
-        "application",
+        "application".to_string(),
         "0.0.2".to_string(),
         "".to_string(),
         "https://gateway/ipfs/CID".to_string(),
         "123456789".to_string(),
     );
     contract.add_release(
-        "application",
+        "application".to_string(),
         "0.1.0".to_string(),
         "".to_string(),
         "https://gateway/ipfs/CID".to_string(),
         "123456789".to_string(),
     );
     contract.add_release(
-        "package1",
+        "package1".to_string(),
         "0.1.1".to_string(),
         "".to_string(),
         "https://gateway/ipfs/CID".to_string(),
         "123456789".to_string(),
     );
     let app_releases_versions = contract.get_releases(
-        "8ad69ecc5b424952a14859bb3b36c889bd0660cec342bc86aff35bfcaef9ba66",
+        "8ad69ecc5b424952a14859bb3b36c889bd0660cec342bc86aff35bfcaef9ba66".to_string(),
         0,
         10,
     );
     let pkg_releases_versions = contract.get_releases(
-        "3f5f73176789988dee4a989721aa147d63ca9bcde7b83bedf76e4772bf6448d5",
+        "3f5f73176789988dee4a989721aa147d63ca9bcde7b83bedf76e4772bf6448d5".to_string(),
         0,
         10,
     );
