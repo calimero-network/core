@@ -139,7 +139,7 @@ impl ToTokens for PublicLogicMethod<'_> {
                         ),
                     }
                 };
-                ::calimero_sdk::env::value_return(output);
+                ::calimero_sdk::env::value_return(&output);
             };
         }
 

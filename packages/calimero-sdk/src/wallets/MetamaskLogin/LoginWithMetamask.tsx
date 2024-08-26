@@ -115,7 +115,7 @@ export function LoginWithMetamask({
     } else {
       const walletMetadata: WalletMetadata = {
         wallet: getNetworkType(chainId),
-        signingKey: address,
+        verifyingKey: address,
       };
       const loginRequest: LoginRequest = {
         walletSignature: signData,

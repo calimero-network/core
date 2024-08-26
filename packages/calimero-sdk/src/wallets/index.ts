@@ -5,3 +5,5 @@ export * from './NearLogin/NearRootKey';
 export * from './NearLogin/WalletSelectorContext';
 export * from './LoginSelector';
 export * from './login';
+export * from './StarknetLogin/LoginWithStarknet';
+export * from './StarknetLogin/StarknetRootKey';

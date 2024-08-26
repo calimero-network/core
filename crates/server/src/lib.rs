@@ -30,7 +30,7 @@ pub mod config;
 pub mod jsonrpc;
 #[cfg(feature = "admin")]
 mod middleware;
-mod verifysignature;
+mod verifywalletsignatures;
 #[cfg(feature = "websocket")]
 pub mod ws;
 

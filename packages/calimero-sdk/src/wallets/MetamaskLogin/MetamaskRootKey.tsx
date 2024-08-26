@@ -110,7 +110,7 @@ export function MetamaskRootKey({
     } else {
       const walletMetadata: WalletMetadata = {
         wallet: getNetworkType(chainId),
-        signingKey: address,
+        verifyingKey: address,
       };
       const rootKeyRequest: RootKeyRequest = {
         walletSignature: signData,

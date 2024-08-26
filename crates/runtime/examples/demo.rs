@@ -1,5 +1,10 @@
 #![allow(unused_crate_dependencies)]
 
+use std::env;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
 use calimero_runtime::logic::{VMContext, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::{run, Constraint};
@@ -8,7 +13,19 @@ use owo_colors::OwoColorize;
 use serde_json::{json, to_vec as to_json_vec};
 
 fn main() -> EyreResult<()> {
-    let file = include_bytes!("../../../apps/kv-store/res/kv_store.wasm");
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        println!("Usage: {:?} <path-to-wasm>", args);
+        return Ok(());
+    }
+
+    let path = &args[1];
+    let path = Path::new(path);
+    if !path.exists() {
+        eyre::bail!("KV wasm file not found");
+    }
+
+    let file = File::open(&path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
 
     let mut storage = InMemoryStorage::default();
 
@@ -33,7 +50,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let get_outcome = run(file, "get", cx, &mut storage, &limits)?;
+    let get_outcome = run(&file, "get", cx, &mut storage, &limits)?;
     dbg!(get_outcome);
 
     let cx = VMContext::new(
@@ -43,7 +60,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let set_outcome = run(file, "set", cx, &mut storage, &limits)?;
+    let set_outcome = run(&file, "set", cx, &mut storage, &limits)?;
     dbg!(set_outcome);
 
     let cx = VMContext::new(
@@ -52,7 +69,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let get_outcome = run(file, "get", cx, &mut storage, &limits)?;
+    let get_outcome = run(&file, "get", cx, &mut storage, &limits)?;
     dbg!(get_outcome);
 
     let cx = VMContext::new(
@@ -61,7 +78,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let get_result_outcome = run(file, "get_result", cx, &mut storage, &limits)?;
+    let get_result_outcome = run(&file, "get_result", cx, &mut storage, &limits)?;
     dbg!(get_result_outcome);
 
     let cx = VMContext::new(
@@ -70,7 +87,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let get_unchecked_outcome = run(file, "get_unchecked", cx, &mut storage, &limits)?;
+    let get_unchecked_outcome = run(&file, "get_unchecked", cx, &mut storage, &limits)?;
     dbg!(get_unchecked_outcome);
 
     println!("{}", "--".repeat(20).dimmed());
