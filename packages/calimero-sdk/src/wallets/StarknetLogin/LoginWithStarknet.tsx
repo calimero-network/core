@@ -4,12 +4,12 @@ import { getOrCreateKeypair } from '../../auth/ed25519';
 
 import apiClient from '../../api';
 import {
-  EthSignatureMessageMetadata,
   LoginRequest,
   NodeChallenge,
   Payload,
   SignatureMessage,
   SignatureMessageMetadata,
+  StarknetSignatureMessageMetadata,
   WalletMetadata,
   WalletSignatureData,
 } from '../../api/nodeApi';
@@ -103,7 +103,7 @@ export function LoginWithStarknet({
           challengeResponseData.data?.timestamp ?? new Date().getTime(),
         message: JSON.stringify(signatureMessage),
       };
-      const signatureMetadata: EthSignatureMessageMetadata = {};
+      const signatureMetadata: StarknetSignatureMessageMetadata = {};
       const payload: Payload = {
         message: signatureMessageMetadata,
         metadata: signatureMetadata,
@@ -211,7 +211,7 @@ export function LoginWithStarknet({
         }
         const walletMetadata: WalletMetadata = {
           wallet: getWalletType(starknetInstance?.id),
-          signingKey:
+          verifyingKey:
             starknetInstance?.id === argentXId
               ? starknetInstance?.account.address
               : await starknetInstance?.account.signer.getPubKey(),

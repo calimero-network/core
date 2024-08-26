@@ -233,7 +233,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
       };
       const walletMetadata: WalletMetadata = {
         wallet: WalletType.NEAR,
-        signingKey: publicKey,
+        verifyingKey: publicKey,
       };
       const loginRequest: LoginRequest = {
         walletSignature: signature,

@@ -113,7 +113,7 @@ export interface NetworkMetadata {
 
 export interface WalletMetadata {
   wallet: WalletType;
-  signingKey: String;
+  verifyingKey: String;
   walletAddress?: String;
   networkMetadata?: NetworkMetadata;
 }
@@ -129,6 +129,10 @@ export interface NearSignatureMessageMetadata extends SignatureMetadata {
 }
 
 export interface EthSignatureMessageMetadata extends SignatureMetadata {
+  //
+}
+
+export interface StarknetSignatureMessageMetadata extends SignatureMetadata {
   //
 }
 

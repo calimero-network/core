@@ -210,7 +210,7 @@ export function StarknetRootKey({
         }
         const walletMetadata: WalletMetadata = {
           wallet: getWalletType(starknetInstance?.id),
-          signingKey:
+          verifyingKey:
             starknetInstance?.id === argentXId
               ? starknetInstance?.account.address
               : await starknetInstance?.account.signer.getPubKey(),

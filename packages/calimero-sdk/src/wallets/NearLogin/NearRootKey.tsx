@@ -220,7 +220,7 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
       };
       const walletMetadata: WalletMetadata = {
         wallet: WalletType.NEAR,
-        signingKey: publicKey,
+        verifyingKey: publicKey,
       };
       const rootKeyRequest: RootKeyRequest = {
         walletSignature: signature,
