@@ -30,23 +30,23 @@ pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url
     Ok(url)
 }
 
-pub async fn get_response<T: Serialize>(
+pub async fn get_response(
     client: &Client,
     url: Url,
-    request: Option<T>,
+    body: Option<impl Serialize>,
     keypair: &Keypair,
 ) -> EyreResult<Response> {
     let timestamp = Utc::now().timestamp().to_string();
     let signature = keypair.sign(timestamp.as_bytes())?;
 
-    let mut builder = if request.is_some() {
-        client.post(url).json(&request)
+    let mut builder = if body.is_some() {
+        client.post(url).json(&body)
     } else {
         client.get(url)
     };
 
     builder = builder
-        .header("X-Signature", hex::encode(signature))
+        .header("X-Signature", bs58::encode(signature).into_string())
         .header("X-Timestamp", timestamp);
 
     builder

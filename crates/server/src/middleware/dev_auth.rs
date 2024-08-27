@@ -17,7 +17,7 @@ pub async fn dev_mode_auth(
     let signature = request
         .headers()
         .get("X-Signature")
-        .and_then(|v| hex::decode(v).ok())
+        .and_then(|v| bs58::decode(v).into_vec().ok())
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     let timestamp = request

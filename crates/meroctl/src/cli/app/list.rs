@@ -25,7 +25,7 @@ impl ListCommand {
 
         let url = multiaddr_to_url(multiaddr, "admin-api/dev/applications")?;
         let client = Client::new();
-        let response = get_response::<()>(&client, url, None, &config.identity).await?;
+        let response = get_response(&client, url, None::<()>, &config.identity).await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())

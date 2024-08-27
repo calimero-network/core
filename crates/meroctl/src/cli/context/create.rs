@@ -275,7 +275,7 @@ async fn app_installed(
         &format!("admin-api/dev/application/{application_id}"),
     )?;
 
-    let response = get_response::<()>(client, url, None, keypair).await?;
+    let response = get_response(client, url, None::<()>, keypair).await?;
 
     if !response.status().is_success() {
         bail!("Request failed with status: {}", response.status())
