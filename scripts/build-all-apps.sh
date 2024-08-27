@@ -28,10 +28,7 @@ run_script() {
     fi
 }
 
-# Iterate over each script in the array and run it in the background
+# Iterate over each script in the array and run them synchronously
 for script in "${BUILD_SCRIPTS[@]}"; do
-    run_script "$script" &
+    run_script "$script"
 done
-
-# Wait for all background jobs to finish
-wait
