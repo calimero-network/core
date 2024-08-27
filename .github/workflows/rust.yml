@@ -2,9 +2,9 @@ name: Rust
 
 on:
   push:
-    branches: [ "master" ]
+    branches: ['master']
   pull_request:
-    branches: [ "master" ]
+    branches: ['master', 'chore-cli']
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,34 +14,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install sccache
-      run: |
-        wget https://github.com/mozilla/sccache/releases/download/v0.5.3/sccache-v0.5.3-x86_64-unknown-linux-musl.tar.gz
-        tar -xzf sccache-v0.5.3-x86_64-unknown-linux-musl.tar.gz
-        sudo mv sccache-v0.5.3-x86_64-unknown-linux-musl/sccache /usr/local/bin/
-        rm -rf sccache-v0.5.3-x86_64-unknown-linux-musl*
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.5
+        env:
+          SCCACHE_GHA_ENABLED: 'true'
+          RUSTC_WRAPPER: 'sccache'
 
-    - name: Cache Cargo and sccache
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-          ~/.cache/sccache
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+      - name: Cache Cargo and sccache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            ~/.cache/sccache
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-    - name: Set up sccache
-      run: echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+      - name: Set up sccache
+        run: echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
 
-    - name: Build
-      run: cargo build --verbose
+      - name: Build
+        run: cargo build --verbose
 
-    - name: Run tests
-      run: cargo test --verbose
-
-
+      - name: Run tests
+        run: cargo test --verbose
