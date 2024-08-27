@@ -1,5 +1,6 @@
 use std::net::{IpAddr, SocketAddr};
 
+use admin::storage::jwt_key::insert_jwt_key_if_not_exists;
 use axum::{http, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use calimero_store::Store;
@@ -32,6 +33,17 @@ pub async fn start(
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
+
+    match insert_jwt_key_if_not_exists(store.clone()) {
+        Ok(jwt_key) => {
+            let jwt_secret = jwt_key.key();
+            config.jwt_secret = jwt_secret.to_vec();
+        }
+        Err(e) => {
+            eprintln!("Failed to get JWT key: {:?}", e);
+            return Err(e.into());
+        }
+    }
 
     while let Some(addr) = want_listeners.next() {
         let mut components = addr.iter();

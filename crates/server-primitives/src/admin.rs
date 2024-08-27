@@ -117,6 +117,15 @@ pub struct IntermediateAddPublicKeyRequest {
     pub context_id: Option<calimero_primitives::context::ContextId>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JwtTokenRequest {
+    pub context_id: calimero_primitives::context::ContextId,
+    pub executor_public_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JwtRefreshRequest {
     pub refresh_token: String,
 }
