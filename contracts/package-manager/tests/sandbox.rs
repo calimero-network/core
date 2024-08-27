@@ -11,6 +11,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wasm = async_read("res/package_manager.wasm").await?;
     let contract = worker.dev_deploy(&wasm).await?;
 
+    println!("Contract deployed at: {}", contract.id());
+
     // create accounts
     let account = worker.dev_create_account().await?;
     let bobo = account
@@ -29,21 +31,21 @@ async fn test_add_package_and_release(
     user: &Account,
     contract: &Contract,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    drop(
-        user.call(contract.id(), "add_package")
-            .args_json(json!({
-                "name": "application",
-                "description": "Demo Application",
-                "repository": "https://github.com/application",
-            }))
-            .transact()
-            .await?,
-    );
+    let package_id: Value = user
+        .call(contract.id(), "add_package")
+        .args_json(json!({
+            "name": "application",
+            "description": "Demo Application",
+            "repository": "https://github.com/application",
+        }))
+        .transact()
+        .await?
+        .json()?;
 
     let package: Value = user
         .view(contract.id(), "get_package")
         .args_json(json!({
-            "name": "application",
+            "id": package_id,
         }))
         .await?
         .json()?;
@@ -67,8 +69,8 @@ async fn test_add_package_and_release(
     let release: Value = user
         .view(contract.id(), "get_release")
         .args_json(json!({
-            "name": "application",
-            "version": "0.1.0"
+            "id": package_id,
+            "version": "0.1.0",
         }))
         .await?
         .json()?;
