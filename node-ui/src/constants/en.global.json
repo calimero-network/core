@@ -276,5 +276,38 @@
   "walletSelectorContext": {
     "alertErrorText": "Failed to initialise wallet selector",
     "componentErrorText": "useWalletSelector must be used within a WalletSelectorContextProvider"
+  },
+  "appLoginPopup": {
+    "selectContext": {
+      "title": "Sign-in request",
+      "websiteText": "From site: ",
+      "appIdText": "Application Id: ",
+      "contextsTitle": "Available contexts",
+      "contextsSubtitle": "Select context",
+      "noContextsText": "No contexts found",
+      "selectedContextText": "Selected context Id:",
+      "buttonNextText": "Confirm context Id",
+      "buttonBackText": "Return to application"
+    },
+    "selectIdentity": {
+      "title": "Sign-in request",
+      "websiteText": "From site: ",
+      "appIdText": "Application Id: ",
+      "contextIdText": "Context Id: ",
+      "contextsTitle": "Available contexts identities",
+      "contextsSubtitle": "Select context identity",
+      "noContextsText": "No contexts identities found",
+      "selectedContextText": "Selected context identity:",
+      "buttonNextText": "Confirm context identity",
+      "buttonBackText": "Return to application"
+    },
+    "createToken": {
+      "title": "Sign-in request",
+      "websiteText": "From site: ",
+      "appIdText": "Application Id: ",
+      "contextIdText": "Context Id: ",
+      "contextIdentityText": "Context Identity: ",
+      "buttonNextText": "Create token"
+    }
   }
 }

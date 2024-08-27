@@ -1,10 +1,8 @@
 import React from 'react';
 import { styled } from 'styled-components';
 import Button from '../../common/Button';
-import { Context } from '../../../api/dataSource/NodeDataSource';
 import ListItem from './ListItem';
 import translations from "../../../constants/en.global.json";
-
 
 export const ModalWrapper = styled.div`
   display: flex;
@@ -85,35 +83,35 @@ export const ModalWrapper = styled.div`
     gap: 1rem;
   }
 
-  .wrap-text {
-    word-wrap: break-word;
-    overflow-wrap: break-word;
+  .selected-text-wrapper {
+    display: flex;
+    flex-direction: column;
   }
   .no-context-text {
     text-align: center;
   }
 `;
 
-interface SelectContextStepProps {
+interface SelectIdentityStepProps {
   applicationId: string;
   callbackUrl: string;
-  contextList: Context[];
-  selectedContextId: string;
-  setSelectedContextId: (selectedContextId: string) => void;
+  contextIdentities: string[];
+  selectedIdentity: string;
+  setSelectedIdentity: (selectedIdentity: string) => void;
   updateLoginStep: () => void;
   finishLogin: () => void;
 }
 
-export default function SelectContextStep({
+export default function SelectIdentityStep({
   applicationId,
   callbackUrl,
-  contextList,
-  selectedContextId,
-  setSelectedContextId,
+  contextIdentities,
+  selectedIdentity,
+  setSelectedIdentity,
   updateLoginStep,
-  finishLogin,
-}: SelectContextStepProps) {
-  const t = translations.appLoginPopup.selectContext;
+  finishLogin
+}: SelectIdentityStepProps) {
+  const t = translations.appLoginPopup.selectIdentity;
   return (
     <ModalWrapper>
       <div className="title">{t.title}</div>
@@ -132,6 +130,9 @@ export default function SelectContextStep({
         <div className="subtitle">
           {t.appIdText}<span className="app-id">{applicationId}</span>
         </div>
+        <div className="subtitle">
+          {t.contextIdText}<span className="app-id">{applicationId}</span>
+        </div>
       </div>
       <div className="wrapper">
         <div className="context-title">{t.contextsTitle}</div>
@@ -139,33 +140,32 @@ export default function SelectContextStep({
           {t.contextsSubtitle}
         </div>
         <div className="context-list">
-          {contextList.length > 0 ? (
-            contextList.map((context, i) => (
-              <ListItem
-                item={context.id}
-                id={i}
-                count={contextList.length}
-                onRowItemClick={setSelectedContextId}
-              />
-            ))
-          ) : (
-            <div className="flex-container">
-              <div className="no-context-text">{t.noContextsText}</div>
-              <Button
-                text={t.buttonBackText}
-                onClick={finishLogin}
-                width="100%"
-              />
-            </div>
-          )}
+          {contextIdentities.length > 0 ? contextIdentities.map((identity, i) => (
+            <ListItem
+              item={identity}
+              id={i}
+              count={contextIdentities.length}
+              onRowItemClick={setSelectedIdentity}
+            />
+          )) : (
+          <div className='flex-container'>
+          <div className='no-context-text'>{t.noContextsText}</div>
+          <Button
+              text={t.buttonBackText}
+              onClick={finishLogin}
+              width="100%"
+            />
+          </div>
+          )
+        }
         </div>
       </div>
       <div>
-        {selectedContextId && (
+        {selectedIdentity && (
           <div className="flex-container">
-            <div className="selected-text-wrapper">
-              <span className="subtitle wrap-text">{t.selectedContextText}</span>
-              <span className="context-title wrap-text">{selectedContextId}</span>
+            <div className='selected-text-wrapper'>
+              <span className="subtitle">{t.selectedContextText}</span>
+              <span className="context-title">{selectedIdentity}</span>
             </div>
             <Button
               text={t.buttonNextText}

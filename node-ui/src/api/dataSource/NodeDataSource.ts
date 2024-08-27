@@ -224,6 +224,19 @@ export interface InstallApplicationResponse {
   application_id: string;
 }
 
+export interface ContextIdentitiesResponse {
+  identities: string[];
+}
+
+export interface JsonWebToken {
+  access_token: string;
+  refresh_token: string;
+}
+
+export interface CreateTokenResponse {
+  jwt_token: JsonWebToken;
+}
+
 export class NodeDataSource implements NodeApi {
   private client: HttpClient;
 
@@ -499,6 +512,38 @@ export class NodeDataSource implements NodeApi {
         ...rootKeyRequest,
       },
       headers,
+    );
+  }
+
+  async getContextIdentity(contextId: string): ApiResponse<ContextIdentitiesResponse> {
+    const headers: Header | null = await createAuthHeader(
+      JSON.stringify(contextId),
+    );
+    if (!headers) {
+      return { error: { code: 401, message: 'Unauthorized' } };
+    }
+
+    return await this.client.get<ContextIdentitiesResponse>(
+      `${getAppEndpointKey()}/admin-api/contexts/${contextId}/identities`,
+      headers
+    );
+  }
+
+  async createAccessToken(contextId: string, contextIdentity: string): ApiResponse<CreateTokenResponse> {
+    const headers: Header | null = await createAuthHeader(
+      JSON.stringify(contextId),
+    );
+    if (!headers) {
+      return { error: { code: 401, message: 'Unauthorized' } };
+    }
+
+    return await this.client.post<CreateTokenResponse>(
+      `${getAppEndpointKey()}/admin-api/contexts/${contextId}/identities`,
+      {
+        contextId,
+        executorPublicKey: contextIdentity
+      },
+      headers
     );
   }
 }

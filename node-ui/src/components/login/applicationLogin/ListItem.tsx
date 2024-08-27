@@ -1,6 +1,5 @@
 import React from 'react';
 import styled from 'styled-components';
-import { Context } from '../../../api/dataSource/NodeDataSource';
 
 interface RowItemProps {
   $hasBorders: boolean;
@@ -41,26 +40,26 @@ const RowItem = styled.div<RowItemProps>`
  
 `;
 
-interface ContextListItemProps {
-  item: Context;
+interface ListItemProps {
+  item: string;
   id: number;
   count: number;
   onRowItemClick?: (id: string) => void;
 }
 
-export default function ContextListItem({
+export default function ListItem({
   item,
   id,
   count,
   onRowItemClick,
-}: ContextListItemProps) {
+}: ListItemProps) {
   return (
-    <RowItem key={item.id} $hasBorders={id === count}>
+    <RowItem key={id} $hasBorders={id === count}>
       <div
         className="row-item name"
-        onClick={() => onRowItemClick && onRowItemClick(item.id)}
+        onClick={() => onRowItemClick && onRowItemClick(item)}
       >
-        {item.id}
+        {item}
       </div>
     </RowItem>
   );

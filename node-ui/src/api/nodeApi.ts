@@ -18,6 +18,8 @@ import {
   RootKeyResponse,
   InstallApplicationResponse,
   InstalledApplication,
+  ContextIdentitiesResponse,
+  CreateTokenResponse,
 } from './dataSource/NodeDataSource';
 
 export interface NodeApi {
@@ -48,4 +50,6 @@ export interface NodeApi {
   login(loginRequest: LoginRequest): ApiResponse<LoginResponse>;
   requestChallenge(): ApiResponse<NodeChallenge>;
   addRootKey(rootKeyRequest: LoginRequest): ApiResponse<RootKeyResponse>;
+  getContextIdentity(contextId: string): ApiResponse<ContextIdentitiesResponse>;
+  createAccessToken(contextId: string, contextIdentity: string): ApiResponse<CreateTokenResponse>
 }
