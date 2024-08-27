@@ -51,6 +51,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 jsonrpc = []
+host_layer = []
 websocket = ["axum/ws", "dep:futures-util"]
 admin = ["dep:tower-sessions"]
 
