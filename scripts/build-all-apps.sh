@@ -13,12 +13,15 @@ BUILD_SCRIPTS=(
 
 run_script() {
     local script="$1"
-    echo "Executing $script..."
 
     # Check if the build.sh script exists and is executable
     if [ -f "$script" ] && [ -x "$script" ]; then
-        "$script"
-        echo "$script executed successfully."
+        if "$script" > /dev/null 2>&1; then
+            echo "$script executed successfully."
+        else
+            echo "Error: $script failed."
+            exit 1
+        fi
     else
         echo "Error: $script does not exist or is not executable."
         exit 1
