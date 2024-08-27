@@ -6,7 +6,8 @@ use axum::{Extension, Json};
 use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_server_primitives::admin::{
     AddPublicKeyRequest, EthSignatureMessageMetadata, IntermediateAddPublicKeyRequest,
-    JwtRefreshRequest, NearSignatureMessageMetadata, Payload, SignatureMetadataEnum,
+    JwtRefreshRequest, JwtTokenRequest, NearSignatureMessageMetadata, Payload,
+    SignatureMetadataEnum,
 };
 use calimero_store::Store;
 use chrono::Utc;
@@ -18,7 +19,7 @@ use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
 use crate::admin::storage::client_keys::add_client_key;
 use crate::admin::storage::root_key::exists_root_keys;
 use crate::admin::utils::auth::{validate_challenge, validate_root_key_exists};
-use crate::admin::utils::jwt::{generate_jwt_tokens, refresh_access_token, JwtToken};
+use crate::admin::utils::jwt::{generate_jwt_tokens, refresh_access_token};
 
 pub fn transform_request(
     intermediate: IntermediateAddPublicKeyRequest,
@@ -78,34 +79,21 @@ pub async fn add_client_key_handler(
         .and_then(|req| validate_challenge(req, &state.keypair))
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
         .and_then(|req| store_client_key(req, &mut state.store.clone()))
-        .map_or_else(
-            |err| err.into_response(),
-            |req| {
-                // Create the JSON response
-                let client_id = req.wallet_metadata.signing_key.clone();
-                let context_id = "context_id".to_string();
-                match generate_jwt_tokens(&client_id, &context_id, state.store.clone()) {
-                    Ok(jwt_tokens) => {
-                        let response = JwtResponse {
-                            access_token: jwt_tokens.access_token,
-                            refresh_token: jwt_tokens.refresh_token,
-                        };
-                        ApiResponse { payload: response }.into_response()
-                    }
-                    Err(err) => {
-                        eprintln!("Error generating JWT tokens: {}", err.message);
-                        err.into_response()
-                    }
-                }
-            },
-        )
+        .map_or_else(IntoResponse::into_response, |_| {
+            let data: String = "Client key stored".to_owned();
+            ApiResponse {
+                payload: AddClientKeyResponse { data },
+            }
+            .into_response()
+        })
 }
 
-pub async fn refresh_token_handler(
+//* Register client key to authenticate client requests  */
+pub async fn generate_jwt_token_handler(
     Extension(state): Extension<Arc<AdminState>>,
-    Json(payload): Json<JwtRefreshRequest>,
+    Json(req): Json<JwtTokenRequest>,
 ) -> impl IntoResponse {
-    match refresh_access_token(&payload.refresh_token, state.store.clone()) {
+    match generate_jwt_tokens(req, state.store.clone(), state.jwt_secret.clone()) {
         Ok(jwt_tokens) => {
             let response = JwtResponse {
                 access_token: jwt_tokens.access_token,
@@ -114,7 +102,27 @@ pub async fn refresh_token_handler(
             ApiResponse { payload: response }.into_response()
         }
         Err(err) => {
-            eprintln!("Error refreshing token: {}", err.message);
+            eprintln!("Error generating JWT tokens: {}", err.message);
+            err.into_response()
+        }
+    }
+}
+
+// Refresh JWT token by providing refresh token
+pub async fn refresh_jwt_token_handler(
+    Extension(state): Extension<Arc<AdminState>>,
+    Json(req): Json<JwtRefreshRequest>,
+) -> impl IntoResponse {
+    match refresh_access_token(&req.refresh_token, state.store.clone(), state.jwt_secret.clone()) {
+        Ok(jwt_tokens) => {
+            let response = JwtResponse {
+                access_token: jwt_tokens.access_token,
+                refresh_token: jwt_tokens.refresh_token,
+            };
+            ApiResponse { payload: response }.into_response()
+        }
+        Err(err) => {
+            eprintln!("Error generating JWT tokens: {}", err.message);
             err.into_response()
         }
     }

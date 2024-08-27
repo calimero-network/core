@@ -33,6 +33,7 @@ pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
     pub ctx_manager: calimero_context::ContextManager,
+    pub jwt_secret: Vec<u8>,
 }
 
 pub(crate) fn setup(
@@ -57,6 +58,7 @@ pub(crate) fn setup(
         store: store.clone(),
         keypair: config.identity.clone(),
         ctx_manager,
+        jwt_secret: config.jwt_secret.clone(),
     });
     let protected_router = Router::new()
         .route(
@@ -119,8 +121,12 @@ pub(crate) fn setup(
             post(handlers::add_client_key::add_client_key_handler),
         )
         .route(
-            "/refresh-token",
-            post(handlers::add_client_key::refresh_token_handler),
+            "/refresh-jwt-token",
+            post(handlers::add_client_key::refresh_jwt_token_handler),
+        )
+        .route(
+            "/generate-jwt-token",
+            post(handlers::add_client_key::generate_jwt_token_handler),
         )
         .route(
             "/dev/install-application",
