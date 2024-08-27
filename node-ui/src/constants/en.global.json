@@ -16,6 +16,19 @@
     "signMessageError": "Error while signing message",
     "signOutError": "Failed to signing out"
   },
+  "useStarknet": {
+    "requestNodeDataError": "Error while requesting node data",
+    "noSignatureError": "Signature is empty",
+    "noAddressError": "Address is empty",
+    "loginError": "Error while login",
+    "rootkeyError": "Error while adding root key",
+    "applicationNameText": "admin-dashboard",
+    "signMessageError": "Error while signing message",
+    "signOutError": "Failed to signing out",
+    "errorChangingNetwork": "Error changing network",
+    "walletNotFound": "Wallet not found",
+    "errorLogin": "Error while login"
+  },
   "loginPage": {
     "logoDashboardText": "Admin Dashboard",
     "title": "Calimero Node Admin Dashboard",
@@ -24,7 +37,8 @@
     "loginSelector": {
       "title": "Continue with wallet",
       "metamaskButtonText": "Metamask wallet",
-      "nearButtonText": "Near wallet"
+      "nearButtonText": "Near wallet",
+      "starknetButtonText": "Starknet wallet"
     },
     "nearLogin": {
       "title": "Login with NEAR",
@@ -43,6 +57,23 @@
       "authButtonText": "Sign authentication transaction",
       "errorTitleText": "Error signing message",
       "backButtonText": "Back to wallet selector"
+    },
+    "starknetLogin": {
+      "title": "Login with Starknet",
+      "subtitle": "Choose which account from your wallet you want to log in with",
+      "accountIdText": "Account Id",
+      "logoutButtonText": "Logout",
+      "switchWalletButtonText": "Switch Wallet",
+      "authButtonText": "Authenticate",
+      "switchAccountButtonText": "Switch Account",
+      "backButtonText": "Back to wallet selector",
+      "loginWithArgentX": "Login with ArgentX",
+      "loginWithMetaMask": "Login with MetaMask",
+      "titleRootKey": "Add Starknet root key",
+      "currentNetwork": "Current network",
+      "signMessage": "Sign authentication message",
+      "backToWalletSelector": "Back to wallet selector",
+      "backToLoginPage": "Back to login selector"
     }
   },
   "addRootKeyPage": {
