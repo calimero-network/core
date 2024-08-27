@@ -1,1 +1,10 @@
 pnpm format:md
+
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+# Check for changes in the 'logic' directory
+if git diff --cached --name-only | grep -vqE '^(node-ui/|packages/calimero-sdk/)'; then
+  echo "Running checks for the Rust code..."
+  cargo +nightly fmt
+fi
