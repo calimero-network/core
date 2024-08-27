@@ -2,7 +2,7 @@ import React from 'react';
 import { styled } from 'styled-components';
 import Button from '../../common/Button';
 import ListItem from './ListItem';
-import translations from "../../../constants/en.global.json";
+import translations from '../../../constants/en.global.json';
 
 export const ModalWrapper = styled.div`
   display: flex;
@@ -109,7 +109,7 @@ export default function SelectIdentityStep({
   selectedIdentity,
   setSelectedIdentity,
   updateLoginStep,
-  finishLogin
+  finishLogin,
 }: SelectIdentityStepProps) {
   const t = translations.appLoginPopup.selectIdentity;
   return (
@@ -128,42 +128,43 @@ export default function SelectIdentityStep({
           </a>
         </div>
         <div className="subtitle">
-          {t.appIdText}<span className="app-id">{applicationId}</span>
+          {t.appIdText}
+          <span className="app-id">{applicationId}</span>
         </div>
         <div className="subtitle">
-          {t.contextIdText}<span className="app-id">{applicationId}</span>
+          {t.contextIdText}
+          <span className="app-id">{applicationId}</span>
         </div>
       </div>
       <div className="wrapper">
         <div className="context-title">{t.contextsTitle}</div>
-        <div className="context-subtitle">
-          {t.contextsSubtitle}
-        </div>
+        <div className="context-subtitle">{t.contextsSubtitle}</div>
         <div className="context-list">
-          {contextIdentities.length > 0 ? contextIdentities.map((identity, i) => (
-            <ListItem
-              item={identity}
-              id={i}
-              count={contextIdentities.length}
-              onRowItemClick={setSelectedIdentity}
-            />
-          )) : (
-          <div className='flex-container'>
-          <div className='no-context-text'>{t.noContextsText}</div>
-          <Button
-              text={t.buttonBackText}
-              onClick={finishLogin}
-              width="100%"
-            />
-          </div>
-          )
-        }
+          {contextIdentities.length > 0 ? (
+            contextIdentities.map((identity, i) => (
+              <ListItem
+                item={identity}
+                id={i}
+                count={contextIdentities.length}
+                onRowItemClick={setSelectedIdentity}
+              />
+            ))
+          ) : (
+            <div className="flex-container">
+              <div className="no-context-text">{t.noContextsText}</div>
+              <Button
+                text={t.buttonBackText}
+                onClick={finishLogin}
+                width="100%"
+              />
+            </div>
+          )}
         </div>
       </div>
       <div>
         {selectedIdentity && (
           <div className="flex-container">
-            <div className='selected-text-wrapper'>
+            <div className="selected-text-wrapper">
               <span className="subtitle">{t.selectedContextText}</span>
               <span className="context-title">{selectedIdentity}</span>
             </div>

@@ -37,7 +37,6 @@ const RowItem = styled.div<RowItemProps>`
       cursor: pointer;
     }
   }
- 
 `;
 
 interface ListItemProps {

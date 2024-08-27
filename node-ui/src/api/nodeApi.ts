@@ -51,5 +51,8 @@ export interface NodeApi {
   requestChallenge(): ApiResponse<NodeChallenge>;
   addRootKey(rootKeyRequest: LoginRequest): ApiResponse<RootKeyResponse>;
   getContextIdentity(contextId: string): ApiResponse<ContextIdentitiesResponse>;
-  createAccessToken(contextId: string, contextIdentity: string): ApiResponse<CreateTokenResponse>
+  createAccessToken(
+    contextId: string,
+    contextIdentity: string,
+  ): ApiResponse<CreateTokenResponse>;
 }

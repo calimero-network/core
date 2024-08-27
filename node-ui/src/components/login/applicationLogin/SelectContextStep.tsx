@@ -3,8 +3,7 @@ import { styled } from 'styled-components';
 import Button from '../../common/Button';
 import { Context } from '../../../api/dataSource/NodeDataSource';
 import ListItem from './ListItem';
-import translations from "../../../constants/en.global.json";
-
+import translations from '../../../constants/en.global.json';
 
 export const ModalWrapper = styled.div`
   display: flex;
@@ -130,14 +129,13 @@ export default function SelectContextStep({
           </a>
         </div>
         <div className="subtitle">
-          {t.appIdText}<span className="app-id">{applicationId}</span>
+          {t.appIdText}
+          <span className="app-id">{applicationId}</span>
         </div>
       </div>
       <div className="wrapper">
         <div className="context-title">{t.contextsTitle}</div>
-        <div className="context-subtitle">
-          {t.contextsSubtitle}
-        </div>
+        <div className="context-subtitle">{t.contextsSubtitle}</div>
         <div className="context-list">
           {contextList.length > 0 ? (
             contextList.map((context, i) => (
@@ -164,8 +162,12 @@ export default function SelectContextStep({
         {selectedContextId && (
           <div className="flex-container">
             <div className="selected-text-wrapper">
-              <span className="subtitle wrap-text">{t.selectedContextText}</span>
-              <span className="context-title wrap-text">{selectedContextId}</span>
+              <span className="subtitle wrap-text">
+                {t.selectedContextText}
+              </span>
+              <span className="context-title wrap-text">
+                {selectedContextId}
+              </span>
             </div>
             <Button
               text={t.buttonNextText}

@@ -515,7 +515,9 @@ export class NodeDataSource implements NodeApi {
     );
   }
 
-  async getContextIdentity(contextId: string): ApiResponse<ContextIdentitiesResponse> {
+  async getContextIdentity(
+    contextId: string,
+  ): ApiResponse<ContextIdentitiesResponse> {
     const headers: Header | null = await createAuthHeader(
       JSON.stringify(contextId),
     );
@@ -525,11 +527,14 @@ export class NodeDataSource implements NodeApi {
 
     return await this.client.get<ContextIdentitiesResponse>(
       `${getAppEndpointKey()}/admin-api/contexts/${contextId}/identities`,
-      headers
+      headers,
     );
   }
 
-  async createAccessToken(contextId: string, contextIdentity: string): ApiResponse<CreateTokenResponse> {
+  async createAccessToken(
+    contextId: string,
+    contextIdentity: string,
+  ): ApiResponse<CreateTokenResponse> {
     const headers: Header | null = await createAuthHeader(
       JSON.stringify(contextId),
     );
@@ -541,9 +546,9 @@ export class NodeDataSource implements NodeApi {
       `${getAppEndpointKey()}/admin-api/contexts/${contextId}/identities`,
       {
         contextId,
-        executorPublicKey: contextIdentity
+        executorPublicKey: contextIdentity,
       },
-      headers
+      headers,
     );
   }
 }
