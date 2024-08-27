@@ -16,7 +16,7 @@ run_script() {
 
     # Check if the build.sh script exists and is executable
     if [ -f "$script" ] && [ -x "$script" ]; then
-        if "$script" > /dev/null 2>&1; then
+        if "$script"; then
             echo "$script executed successfully."
         else
             echo "Error: $script failed."
