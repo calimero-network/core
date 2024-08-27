@@ -1,13 +1,14 @@
+use core::convert::Infallible;
+use core::fmt::{self, Display, Formatter};
+use core::task::{Context, Poll};
+use std::error::Error;
+
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use core::convert::Infallible;
-use core::fmt::{self, Display, Formatter};
-use core::task::{Context, Poll};
 use libp2p::futures::future::BoxFuture;
 use multiaddr::{Multiaddr, Protocol};
-use std::error::Error;
 use tower::{Layer, Service};
 
 #[derive(Clone)]
@@ -72,10 +73,10 @@ pub fn host(headers: &HeaderMap, listen: &[Multiaddr]) -> Result<(), Unauthorize
 
     let ip_caller = normalize_origin(caller_host)
         .ok_or_else(|| UnauthorizedError::new("Invalid referer format"))?;
-    let (ip_caller_host, ip_caller_port) = ip_caller.split_once(":")
-    .map(|(host, port)| (host, Some(port)))
-    .unwrap_or_else(|| (&ip_caller[..], None));
-
+    let (ip_caller_host, ip_caller_port) = ip_caller
+        .split_once(":")
+        .map(|(host, port)| (host, Some(port)))
+        .unwrap_or_else(|| (&ip_caller[..], None));
 
     for addr in listen.iter() {
         let mut host_matched = false;
