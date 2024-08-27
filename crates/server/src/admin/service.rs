@@ -142,8 +142,10 @@ pub(crate) fn setup(
     let admin_router = Router::new()
         .nest("/", unprotected_router)
         .nest("/", protected_router)
-        .layer(session_layer)
-        .layer(HostLayer::new(config.listen.clone()));
+        .layer(session_layer);
+
+    #[cfg(feature = "host_layer")]
+    let admin_router = admin_router.layer(HostLayer::new(config.listen.clone()));
 
     Some((admin_path, admin_router))
 }
