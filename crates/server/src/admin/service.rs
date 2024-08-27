@@ -36,6 +36,7 @@ use crate::admin::handlers::fetch_did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
 use crate::middleware::auth::AuthSignatureLayer;
+use crate::middleware::host::HostLayer;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -142,6 +143,9 @@ pub(crate) fn setup(
         .nest("/", unprotected_router)
         .nest("/", protected_router)
         .layer(session_layer);
+
+    #[cfg(feature = "host_layer")]
+    let admin_router = admin_router.layer(HostLayer::new(config.listen.clone()));
 
     Some((admin_path, admin_router))
 }
