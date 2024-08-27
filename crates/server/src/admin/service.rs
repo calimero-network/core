@@ -33,7 +33,6 @@ pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
     pub ctx_manager: calimero_context::ContextManager,
-    pub jwt_secret: Vec<u8>,
 }
 
 pub(crate) fn setup(
@@ -58,7 +57,6 @@ pub(crate) fn setup(
         store: store.clone(),
         keypair: config.identity.clone(),
         ctx_manager,
-        jwt_secret: config.jwt_secret.clone(),
     });
     let protected_router = Router::new()
         .route(

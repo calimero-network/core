@@ -8,7 +8,8 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::admin::service::ApiError;
-use crate::admin::storage::jwt_token::{get_refresh_token, insert_or_update_refresh_token};
+use crate::admin::storage::jwt_secret::get_jwt_secret;
+use crate::admin::storage::jwt_token::{create_or_update_refresh_token, get_refresh_token};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -24,7 +25,23 @@ pub struct JwtToken {
     pub refresh_token: String,
 }
 
-pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store, jwt_secret: Vec<u8>) -> Result<JwtToken, ApiError> {
+pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToken, ApiError> {
+
+    let jwt_secret = match get_jwt_secret(store.clone()) {
+        Ok(Some(secret)) => secret.jwt_secret().to_vec(),
+        Ok(None) => {
+            return Err(ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "JWT secret not found".into(),
+            });
+        }
+        Err(err) => {
+            return Err(ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("Failed to get JWT secret: {}", err),
+            });
+        }
+    };
 
     let context_id = req.context_id;
     let executor_public_key = req.executor_public_key;
@@ -67,7 +84,7 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store, jwt_secret: Vec<u
     })?;
 
     // Store the refresh token in the database
-    insert_or_update_refresh_token(store.clone(), refresh_token.as_bytes().to_vec()).map_err(
+    create_or_update_refresh_token(store.clone(), refresh_token.as_bytes().to_vec()).map_err(
         |err| ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
             message: format!("Failed to store refresh token: {}", err),
@@ -81,7 +98,24 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store, jwt_secret: Vec<u
 }
 
 // Check if the refresh token is valid and generate new tokens
-pub fn refresh_access_token(refresh_token: &str, store: Store, jwt_secret: Vec<u8>) -> Result<JwtToken, ApiError> {
+pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToken, ApiError> {
+
+    // Get the JWT secret from the DB
+    let jwt_secret = match get_jwt_secret(store.clone()) {
+        Ok(Some(secret)) => secret.jwt_secret().to_vec(),
+        Ok(None) => {
+            return Err(ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: "JWT secret not found".into(),
+            });
+        }
+        Err(err) => {
+            return Err(ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("Failed to get JWT secret: {}", err),
+            });
+        }
+    };
     // Check if the refresh token from the database is present
     let refresh_token_db = match get_refresh_token(store.clone()) {
         Ok(Some(token)) => {
@@ -182,7 +216,7 @@ pub fn refresh_access_token(refresh_token: &str, store: Store, jwt_secret: Vec<u
     })?;
 
     // Store the refresh token in the database
-    insert_or_update_refresh_token(store.clone(), refresh_token.as_bytes().to_vec()).map_err(
+    create_or_update_refresh_token(store.clone(), new_refresh_token.as_bytes().to_vec()).map_err(
         |err| ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
             message: format!("Failed to store refresh token: {}", err),

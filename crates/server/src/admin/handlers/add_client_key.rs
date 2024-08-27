@@ -93,7 +93,7 @@ pub async fn generate_jwt_token_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<JwtTokenRequest>,
 ) -> impl IntoResponse {
-    match generate_jwt_tokens(req, state.store.clone(), state.jwt_secret.clone()) {
+    match generate_jwt_tokens(req, state.store.clone()) {
         Ok(jwt_tokens) => {
             let response = JwtResponse {
                 access_token: jwt_tokens.access_token,
@@ -113,7 +113,7 @@ pub async fn refresh_jwt_token_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<JwtRefreshRequest>,
 ) -> impl IntoResponse {
-    match refresh_access_token(&req.refresh_token, state.store.clone(), state.jwt_secret.clone()) {
+    match refresh_access_token(&req.refresh_token, state.store.clone()) {
         Ok(jwt_tokens) => {
             let response = JwtResponse {
                 access_token: jwt_tokens.access_token,

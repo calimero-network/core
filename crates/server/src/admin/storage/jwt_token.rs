@@ -36,7 +36,7 @@ impl JwtRefreshToken {
     }
 }
 
-pub fn insert_or_update_refresh_token(
+pub fn create_or_update_refresh_token(
     store: Store,
     refresh_token: Vec<u8>,
 ) -> eyre::Result<JwtRefreshToken> {
