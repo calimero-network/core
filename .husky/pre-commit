@@ -10,7 +10,7 @@ fi
 
 
 # Check for change in Rust code
-if git diff --cached  --name-only | grep -vqE '^(node-ui/|packages/calimero-sdk/)'; then
+if git diff --cached  --name-only | grep -qE '\.rs$'; then
   echo "Running checks for the Rust code..."
   cargo +nightly fmt
 fi
