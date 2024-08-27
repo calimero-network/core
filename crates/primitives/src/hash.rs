@@ -2,20 +2,21 @@
 #[path = "tests/hash.rs"]
 mod tests;
 
+#[cfg(feature = "borsh")]
+use borsh::BorshSerialize;
+use bs58::decode::Error as Bs58Error;
 use core::cmp::Ordering;
 use core::fmt::{self, Debug, Display, Formatter};
 use core::hash::{Hash as StdHash, Hasher};
 use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::str::{from_utf8, FromStr};
-use std::io::Result as IoResult;
-
-use borsh::BorshSerialize;
-use bs58::decode::Error as Bs58Error;
 use serde::de::{Error as SerdeError, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{to_writer as to_json_writer, Result as JsonResult};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "borsh")]
+use std::io::Result as IoResult;
 use thiserror::Error as ThisError;
 
 const BYTES_LEN: usize = 32;
