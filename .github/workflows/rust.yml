@@ -14,28 +14,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.5
-        env:
-          SCCACHE_GHA_ENABLED: 'true'
-          RUSTC_WRAPPER: 'sccache'
+      - name: Setup rust toolchain
+        run: rustup toolchain install stable --profile minimal
 
-      - name: Cache Cargo and sccache
+      - name: Setup rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cache Cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-            ~/.cache/sccache
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-
-      - name: Set up sccache
-        run: echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
 
       - name: Build
         run: cargo build --verbose
