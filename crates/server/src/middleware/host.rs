@@ -70,8 +70,12 @@ pub fn host(headers: &HeaderMap, listen: &[Multiaddr]) -> Result<(), Unauthorize
         .to_str()
         .map_err(|_| UnauthorizedError::new("Invalid referer header"))?;
 
-    let ip_caller_host = normalize_origin(caller_host)
+    let ip_caller = normalize_origin(caller_host)
         .ok_or_else(|| UnauthorizedError::new("Invalid referer format"))?;
+    let (ip_caller_host, ip_caller_port) = ip_caller.split_once(":")
+    .map(|(host, port)| (host, Some(port)))
+    .unwrap_or_else(|| (&ip_caller[..], None));
+
 
     for addr in listen.iter() {
         let mut host_matched = false;
@@ -80,7 +84,7 @@ pub fn host(headers: &HeaderMap, listen: &[Multiaddr]) -> Result<(), Unauthorize
 
         match iter.next() {
             Some(Protocol::Ip4(host)) => {
-                if host.to_string() == ip_caller_host.split(":").next().unwrap() {
+                if host.to_string() == ip_caller_host {
                     host_matched = true;
                 }
             }
@@ -89,8 +93,10 @@ pub fn host(headers: &HeaderMap, listen: &[Multiaddr]) -> Result<(), Unauthorize
 
         if host_matched {
             if let Some(Protocol::Tcp(port)) = iter.next() {
-                if ip_caller_host.contains(&format!(":{}", port)) {
-                    port_matched = true;
+                if let Some(ip_port) = ip_caller_port {
+                    if ip_port == port.to_string() {
+                        port_matched = true;
+                    }
                 }
             }
         }
