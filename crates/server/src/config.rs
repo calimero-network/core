@@ -14,8 +14,6 @@ pub struct ServerConfig {
 
     pub identity: libp2p::identity::Keypair,
 
-    pub jwt_secret: Vec<u8>,
-
     #[cfg(feature = "admin")]
     pub admin: Option<crate::admin::service::AdminConfig>,
 

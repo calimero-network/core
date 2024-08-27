@@ -3,21 +3,21 @@ use calimero_store::key::Generic;
 use calimero_store::Store;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-struct JwtTokenKeyEntry {
+struct JwtTokenSecretEntry {
     key: Generic,
 }
 
-impl Entry for JwtTokenKeyEntry {
+impl Entry for JwtTokenSecretEntry {
     type Key = Generic;
     type Codec = Json;
-    type DataType<'a> = JwtTokenKey;
+    type DataType<'a> = JwtTokenSecret;
 
     fn key(&self) -> &Self::Key {
         &self.key
     }
 }
 
-impl JwtTokenKeyEntry {
+impl JwtTokenSecretEntry {
     fn new() -> Self {
         Self {
             key: Generic::new(*b"jwt_salt::server", [0; 32]),
@@ -26,50 +26,50 @@ impl JwtTokenKeyEntry {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct JwtTokenKey {
-    key: Vec<u8>,
+pub struct JwtTokenSecret {
+    jwt_secret: Vec<u8>,
 }
 
-impl JwtTokenKey {
-    pub fn key(&self) -> &Vec<u8> {
-        &self.key
+impl JwtTokenSecret {
+    pub fn jwt_secret(&self) -> &Vec<u8> {
+        &self.jwt_secret
     }
 }
 
 // Method to generate a new JWT key
-fn generate_jwt_key() -> Vec<u8> {
+fn generate_jwt_secret() -> Vec<u8> {
     let mut rng = rand::thread_rng();
     (0..32).map(|_| rng.gen()).collect()
 }
 
 // Method to insert the JWT key if it doesn't exist
-pub fn insert_jwt_key_if_not_exists(store: Store) -> eyre::Result<JwtTokenKey> {
+pub fn get_or_create_jwt_secret(store: Store) -> eyre::Result<JwtTokenSecret> {
     // Check if the key already exists
-    if let Some(existing_key) = get_jwt_key(store.clone())? {
-        return Ok(existing_key);
+    if let Some(existing_secret) = get_jwt_secret(store.clone())? {
+        return Ok(existing_secret);
     }
 
     // Generate a new key if it doesn't exist
-    let new_key = generate_jwt_key();
-    let jwt_key = JwtTokenKey {
-        key: new_key.to_vec(),
+    let new_secret = generate_jwt_secret();
+    let jwt_secret = JwtTokenSecret {
+        jwt_secret: new_secret.to_vec(),
     };
 
-    let entry = JwtTokenKeyEntry::new();
+    let entry = JwtTokenSecretEntry::new();
     let mut handle = store.handle();
-    match handle.put(&entry, &jwt_key) {
-        Ok(_) => Ok(jwt_key),
+    match handle.put(&entry, &jwt_secret) {
+        Ok(_) => Ok(jwt_secret),
         Err(e) => Err(e.into()),
     }
 }
 
 // Method to get the JWT key from the store
-pub fn get_jwt_key(store: Store) -> eyre::Result<Option<JwtTokenKey>> {
-    let entry = JwtTokenKeyEntry::new();
+pub fn get_jwt_secret(store: Store) -> eyre::Result<Option<JwtTokenSecret>> {
+    let entry = JwtTokenSecretEntry::new();
     let handle = store.handle();
 
     match handle.get(&entry) {
-        Ok(Some(jwt_key)) => Ok(Some(jwt_key)),
+        Ok(Some(jwt_secret)) => Ok(Some(jwt_secret)),
         Ok(None) => Ok(None),
         Err(e) => Err(e.into()),
     }
