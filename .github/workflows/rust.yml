@@ -28,6 +28,6 @@ jobs:
 
       - name: Run tests
         run: |
-          chmod +x ./../../scripts/build-all-apps.sh
-          chmod +x ./../../scripts/test.sh
-          ./../../scripts/test.sh
+          chmod +x $GITHUB_WORKSPACE/scripts/build-all-apps.sh
+          chmod +x $GITHUB_WORKSPACE/scripts/test.sh
+          $GITHUB_WORKSPACE/scripts/test.sh
