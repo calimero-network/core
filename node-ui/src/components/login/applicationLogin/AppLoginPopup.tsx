@@ -11,7 +11,10 @@ import { ResponseData } from '../../../api/response';
 import SelectContextStep from './SelectContextStep';
 import CreateAccessTokenStep from './CreateAccessTokenStep';
 import SelectIdentityStep from './SelectIdentityStep';
-import { setStorageApplicationId, setStorageCallbackUrl } from '../../../auth/storage';
+import {
+  setStorageApplicationId,
+  setStorageCallbackUrl,
+} from '../../../auth/storage';
 
 interface AppLoginPopupProps {
   showPopup: boolean;
@@ -87,8 +90,8 @@ export default function AppLoginPopup({
   };
 
   const onCreateToken = async () => {
-    setStorageApplicationId("");
-      setStorageCallbackUrl("");
+    setStorageApplicationId('');
+    setStorageCallbackUrl('');
     const createTokenResponse: ResponseData<CreateTokenResponse> =
       await apiClient(showServerDownPopup)
         .node()

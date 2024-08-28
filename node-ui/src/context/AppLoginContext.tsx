@@ -1,7 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import AppLoginPopup from '../components/login/applicationLogin/AppLoginPopup';
 import { useServerDown } from './ServerDownContext';
-import { getStorageApplicationId, getStorageCallbackUrl, getStorageNodeAuthorized, setStorageApplicationId, setStorageCallbackUrl } from '../auth/storage';
+import {
+  getStorageApplicationId,
+  getStorageCallbackUrl,
+  getStorageNodeAuthorized,
+  setStorageApplicationId,
+  setStorageCallbackUrl,
+} from '../auth/storage';
 
 interface AppLoginProviderProps {
   children: React.ReactNode;
@@ -45,7 +51,7 @@ const AppLoginProvider = ({ children }: AppLoginProviderProps) => {
     storageCallbackUrl,
     setApplicationId,
     setCallbackUrl,
-    setShowPopup
+    setShowPopup,
   }: AuthorizedPopupProps) => {
     if (applicationIdParam && callbackParam) {
       setApplicationId(applicationIdParam);
@@ -62,7 +68,7 @@ const AppLoginProvider = ({ children }: AppLoginProviderProps) => {
     applicationIdParam,
     callbackParam,
     setStorageApplicationId,
-    setStorageCallbackUrl
+    setStorageCallbackUrl,
   }: UnAuthorizedPopupProps) => {
     if (applicationIdParam && callbackParam) {
       setStorageApplicationId(applicationIdParam);
@@ -73,7 +79,10 @@ const AppLoginProvider = ({ children }: AppLoginProviderProps) => {
   useEffect(() => {
     const setupLoginPopup = () => {
       try {
-        const { applicationId: applicationIdParam, callbackUrl: callbackParam } = getUrlParams();
+        const {
+          applicationId: applicationIdParam,
+          callbackUrl: callbackParam,
+        } = getUrlParams();
         const isNodeAuthorized = getStorageNodeAuthorized();
         const storageApplicationId = getStorageApplicationId();
         const storageCallbackUrl = getStorageCallbackUrl();
@@ -86,15 +95,15 @@ const AppLoginProvider = ({ children }: AppLoginProviderProps) => {
             storageCallbackUrl,
             setApplicationId,
             setCallbackUrl,
-            setShowPopup
-        });
+            setShowPopup,
+          });
         } else {
           handleUnauthorizedNode({
             applicationIdParam,
             callbackParam,
             setStorageApplicationId,
-            setStorageCallbackUrl
-        });
+            setStorageCallbackUrl,
+          });
         }
       } catch (e) {
         console.error(e);
@@ -116,12 +125,14 @@ const AppLoginProvider = ({ children }: AppLoginProviderProps) => {
 
   return (
     <div>
-      {showPopup && <AppLoginPopup
-        showPopup={showPopup}
-        callbackUrl={callbackUrl}
-        applicationId={applicationId}
-        showServerDownPopup={showServerDownPopup}
-      />}
+      {showPopup && (
+        <AppLoginPopup
+          showPopup={showPopup}
+          callbackUrl={callbackUrl}
+          applicationId={applicationId}
+          showServerDownPopup={showServerDownPopup}
+        />
+      )}
       {children}
     </div>
   );

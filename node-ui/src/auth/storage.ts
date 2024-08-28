@@ -25,7 +25,7 @@ export const getStorageCallbackUrl = (): string | null => {
 
 export const setStorageApplicationId = (applicationId: string) => {
   localStorage.setItem(APPLICATION_ID, JSON.stringify(applicationId));
-}
+};
 
 export const getStorageApplicationId = (): string | null => {
   if (typeof window !== 'undefined' && window.localStorage) {
@@ -38,7 +38,7 @@ export const getStorageApplicationId = (): string | null => {
     }
   }
   return null;
-}
+};
 
 export const setStorageClientKey = (clientKey: ClientKey) => {
   localStorage.setItem(CLIENT_KEY, JSON.stringify(clientKey));
