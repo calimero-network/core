@@ -37,7 +37,6 @@ use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_key
 use crate::config::ServerConfig;
 use crate::middleware;
 use crate::middleware::auth::AuthSignatureLayer;
-use crate::middleware::host::HostLayer;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
