@@ -6,10 +6,11 @@ use axum::{Extension, Json};
 use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_server_primitives::admin::{
     AddPublicKeyRequest, EthSignatureMessageMetadata, IntermediateAddPublicKeyRequest,
-    NearSignatureMessageMetadata, Payload, SignatureMetadataEnum,
+    NearSignatureMessageMetadata, Payload, SignatureMetadataEnum, StarknetSignatureMessageMetadata,
 };
 use calimero_store::Store;
 use chrono::Utc;
+use futures_util::TryFutureExt;
 use serde::Serialize;
 use serde_json::from_value as from_json_value;
 use tracing::info;
@@ -42,6 +43,15 @@ pub fn transform_request(
                     })?;
             SignatureMetadataEnum::ETH(metadata)
         }
+        WalletType::STARKNET { .. } => {
+            let metadata =
+                from_json_value::<StarknetSignatureMessageMetadata>(intermediate.payload.metadata)
+                    .map_err(|_| ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid metadata.".into(),
+                    })?;
+            SignatureMetadataEnum::STARKNET(metadata)
+        }
         _ => {
             return Err(ApiError {
                 status_code: StatusCode::BAD_REQUEST,
@@ -68,12 +78,13 @@ pub async fn add_client_key_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(intermediate_req): Json<IntermediateAddPublicKeyRequest>,
 ) -> impl IntoResponse {
-    transform_request(intermediate_req)
+    async { transform_request(intermediate_req) }
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        .and_then(|req| check_root_key(req, &state.store.clone()))
+        .and_then(|req| async { check_root_key(req, &state.store.clone()) })
         .and_then(|req| validate_challenge(req, &state.keypair))
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        .and_then(|req| store_client_key(req, &state.store.clone()))
+        .and_then(|req| async { store_client_key(req, &state.store.clone()) })
+        .await
         .map_or_else(IntoResponse::into_response, |_| {
             let data: String = "Client key stored".to_owned();
             ApiResponse {
@@ -89,7 +100,7 @@ pub fn store_client_key(
 ) -> Result<AddPublicKeyRequest, ApiError> {
     #[allow(clippy::cast_sign_loss)]
     let client_key = ClientKey::new(
-        req.wallet_metadata.wallet_type,
+        req.wallet_metadata.wallet_type.clone(),
         req.payload.message.public_key.clone(),
         Utc::now().timestamp_millis() as u64,
         req.context_id,
@@ -109,8 +120,8 @@ fn check_root_key(
     } else {
         //first login so store root key as well
         let _ = store_root_key(
-            req.wallet_metadata.signing_key.clone(),
-            req.wallet_metadata.wallet_type,
+            req.wallet_metadata.verifying_key.clone(),
+            req.wallet_metadata.wallet_type.clone(),
             store,
         )?;
         Ok(req)

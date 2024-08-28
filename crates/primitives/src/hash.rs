@@ -8,8 +8,10 @@ use core::hash::{Hash as StdHash, Hasher};
 use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::str::{from_utf8, FromStr};
+#[cfg(feature = "borsh")]
 use std::io::Result as IoResult;
 
+#[cfg(feature = "borsh")]
 use borsh::BorshSerialize;
 use bs58::decode::Error as Bs58Error;
 use serde::de::{Error as SerdeError, Visitor};

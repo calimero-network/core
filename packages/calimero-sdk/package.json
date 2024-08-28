@@ -1,6 +1,6 @@
 {
   "name": "@calimero-is-near/calimero-p2p-sdk",
-  "version": "0.0.33",
+  "version": "0.0.34",
   "description": "Javascript library to interact with Calimero P2P node",
   "type": "module",
   "main": "lib/index.js",
@@ -17,9 +17,11 @@
     "@near-wallet-selector/near-wallet": "^8.9.3",
     "axios": "^1.6.8",
     "bs58": "^5.0.0",
+    "get-starknet-core": "^3.3.2",
     "near-api-js": "^3.0.4",
     "react": "^18.3.0",
     "react-dom": "^18.3.1",
+    "starknet": "^6.11.0",
     "styled-components": "^6.1.8"
   },
   "devDependencies": {

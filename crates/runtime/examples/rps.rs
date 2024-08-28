@@ -1,9 +1,14 @@
 #![allow(unused_crate_dependencies)]
 #![allow(dead_code)]
 
+use std::env;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
 use calimero_runtime::logic::{VMContext, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
-use calimero_runtime::{logic, run, store, Constraint};
+use calimero_runtime::{run, Constraint};
 use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use rand::distributions::{Distribution, Standard};
@@ -46,7 +51,19 @@ struct GameOver {
 }
 
 fn main() -> EyreResult<()> {
-    let file = include_bytes!("../../../apps/rock-paper-scissors/res/rock_paper_scissors.wasm");
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        println!("Usage: {:?} <path-to-wasm>", args);
+        return Ok(());
+    }
+
+    let path = &args[1];
+    let path = Path::new(path);
+    if !path.exists() {
+        eyre::bail!("RPS wasm file not found");
+    }
+
+    let file = File::open(&path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
 
     let mut storage = InMemoryStorage::default();
 
@@ -77,7 +94,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let create_keypair_outcome = run(file, "create_keypair", cx, &mut storage, &limits)?;
+    let create_keypair_outcome = run(&file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
 
     let joe_keypair = from_json_slice::<KeyComponents>(
@@ -100,7 +117,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let create_keypair_outcome = run(file, "create_keypair", cx, &mut storage, &limits)?;
+    let create_keypair_outcome = run(&file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
 
     let melissa_keypair = from_json_slice::<KeyComponents>(
@@ -122,7 +139,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let join_outcome = run(file, "join", cx, &mut storage, &limits)?;
+    let join_outcome = run(&file, "join", cx, &mut storage, &limits)?;
     dbg!(&join_outcome);
 
     let joe_idx =
@@ -141,7 +158,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let join_outcome = run(file, "join", cx, &mut storage, &limits)?;
+    let join_outcome = run(&file, "join", cx, &mut storage, &limits)?;
     dbg!(&join_outcome);
 
     let melissa_idx =
@@ -157,7 +174,7 @@ fn main() -> EyreResult<()> {
     println!("{}", "--".repeat(20).dimmed());
 
     let cx = VMContext::new(vec![], [0; 32]);
-    let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
+    let state_outcome = run(&file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
     let game_state = from_json_slice::<[Option<(String, State)>; 2]>(
@@ -181,7 +198,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let prepare_outcome = run(file, "prepare", cx, &mut storage, &limits)?;
+    let prepare_outcome = run(&file, "prepare", cx, &mut storage, &limits)?;
     dbg!(&prepare_outcome);
 
     let (joe_commitment, joe_signature) = from_json_slice::<(String, String)>(
@@ -205,7 +222,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let prepare_outcome = run(file, "prepare", cx, &mut storage, &limits)?;
+    let prepare_outcome = run(&file, "prepare", cx, &mut storage, &limits)?;
     dbg!(&prepare_outcome);
 
     let (melissa_commitment, melissa_signature) = from_json_slice::<(String, String)>(
@@ -226,7 +243,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let commit_outcome = run(file, "commit", cx, &mut storage, &limits)?;
+    let commit_outcome = run(&file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
 
     from_json_slice::<()>(&commit_outcome.returns?.expect("Expected a return value"))?;
@@ -243,7 +260,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let commit_outcome = run(file, "commit", cx, &mut storage, &limits)?;
+    let commit_outcome = run(&file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
 
     from_json_slice::<()>(&commit_outcome.returns?.expect("Expected a return value"))?;
@@ -259,7 +276,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let reveal_outcome = run(file, "reveal", cx, &mut storage, &limits)?;
+    let reveal_outcome = run(&file, "reveal", cx, &mut storage, &limits)?;
     dbg!(&reveal_outcome);
 
     from_json_slice::<()>(&reveal_outcome.returns?.expect("Expected a return value"))?;
@@ -275,7 +292,7 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let reveal_outcome = run(file, "reveal", cx, &mut storage, &limits)?;
+    let reveal_outcome = run(&file, "reveal", cx, &mut storage, &limits)?;
     dbg!(&reveal_outcome);
 
     from_json_slice::<()>(&reveal_outcome.returns?.expect("Expected a return value"))?;
@@ -288,7 +305,7 @@ fn main() -> EyreResult<()> {
     println!("{}", "--".repeat(20).dimmed());
 
     let cx = VMContext::new(vec![], [0; 32]);
-    let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
+    let state_outcome = run(&file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
     let game_state = from_json_slice::<[Option<(String, State)>; 2]>(
@@ -315,13 +332,13 @@ fn main() -> EyreResult<()> {
         }))?,
         [0; 32],
     );
-    let reset_outcome = run(file, "reset", cx, &mut storage, &limits)?;
+    let reset_outcome = run(&file, "reset", cx, &mut storage, &limits)?;
     dbg!(&reset_outcome);
 
     from_json_slice::<()>(&reset_outcome.returns?.expect("Expected a return value"))?;
 
     let cx = VMContext::new(vec![], [0; 32]);
-    let state_outcome = run(file, "state", cx, &mut storage, &limits)?;
+    let state_outcome = run(&file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
     let game_state = from_json_slice::<[Option<(String, State)>; 2]>(

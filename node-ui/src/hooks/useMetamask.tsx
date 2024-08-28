@@ -126,7 +126,7 @@ export function useMetamask(): useMetamaskReturn {
       } else {
         const walletMetadata: WalletMetadata = {
           wallet: getNetworkType(chainId ?? ''),
-          signingKey: address,
+          verifyingKey: address,
         };
         if (walletSignatureData?.payload) {
           const metamaskRequest: LoginRequest = {

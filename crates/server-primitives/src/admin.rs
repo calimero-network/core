@@ -116,7 +116,7 @@ pub struct GetApplicationResult {
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct AddPublicKeyRequest {
-    pub wallet_signature: String,
+    pub wallet_signature: WalletSignature,
     pub payload: Payload,
     pub wallet_metadata: WalletMetadata,
     pub context_id: Option<ContextId>,
@@ -125,7 +125,7 @@ pub struct AddPublicKeyRequest {
 impl AddPublicKeyRequest {
     #[must_use]
     pub const fn new(
-        wallet_signature: String,
+        wallet_signature: WalletSignature,
         payload: Payload,
         wallet_metadata: WalletMetadata,
         context_id: Option<ContextId>,
@@ -172,7 +172,17 @@ pub struct SignatureMessage {
 pub struct WalletMetadata {
     #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
-    pub signing_key: String,
+    pub verifying_key: String,
+    pub wallet_address: Option<String>,
+    pub network_metadata: Option<NetworkMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct NetworkMetadata {
+    pub chain_id: String,
+    pub rpc_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +191,7 @@ pub struct WalletMetadata {
 pub enum SignatureMetadataEnum {
     NEAR(NearSignatureMessageMetadata),
     ETH(EthSignatureMessageMetadata),
+    STARKNET(StarknetSignatureMessageMetadata),
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,17 +206,40 @@ pub struct NearSignatureMessageMetadata {
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct EthSignatureMessageMetadata;
+#[allow(clippy::empty_structs_with_brackets)]
+pub struct EthSignatureMessageMetadata {}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::exhaustive_structs)]
+#[allow(clippy::empty_structs_with_brackets)]
+pub struct StarknetSignatureMessageMetadata {}
 
 // Intermediate structs for initial parsing
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct IntermediateAddPublicKeyRequest {
-    pub wallet_signature: String,
+    pub wallet_signature: WalletSignature,
     pub payload: IntermediatePayload,
     pub wallet_metadata: WalletMetadata, // Reuse WalletMetadata as it fits the intermediate step
     pub context_id: Option<ContextId>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+#[non_exhaustive]
+pub enum WalletSignature {
+    String(String),
+    StarknetPayload(StarknetPayload),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct StarknetPayload {
+    pub signature: Vec<String>,
+    pub message_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
