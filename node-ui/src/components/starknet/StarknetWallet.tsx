@@ -16,14 +16,14 @@ const Wrapper = styled.div`
   .wrapper {
     margin-top: 1.5rem;
     display: grid;
-    color: #FFFFFF;
+    color: #ffffff;
     font-size: 1.25rem;
     font-weight: 500;
     text-align: center;
 
     .title {
-      margin-bottom: .5rem;
-      color: #FFFFFF;
+      margin-bottom: 0.5rem;
+      color: #ffffff;
     }
 
     .subtitle-wrapper {
@@ -54,10 +54,10 @@ const Wrapper = styled.div`
         font-size: 1.25rem;
         font-weight: 500;
         text-align: center;
-        margin-bottom: .5rem;
+        margin-bottom: 0.5rem;
         color: #000000;
-        background-color: #FFFFFF;
-        padding: .5rem .7rem;
+        background-color: #ffffff;
+        padding: 0.5rem 0.7rem;
         cursor: pointer;
         border-radius: 0.375rem;
       }
@@ -93,8 +93,8 @@ const Wrapper = styled.div`
       flex-direction: column;
 
       .sign-btn {
-        background-color: #FF7A00;
-        color: #FFFFFF;
+        background-color: #ff7a00;
+        color: #ffffff;
         width: 100%;
         display: flex;
         justify-content: center;
@@ -114,7 +114,7 @@ const Wrapper = styled.div`
     .logout-wrapper {
       padding-top: 1rem;
       font-size: 14px;
-      color: #FFFFFF;
+      color: #ffffff;
       text-align: center;
       cursor: pointer;
     }
@@ -122,7 +122,7 @@ const Wrapper = styled.div`
     .back-wrapper {
       padding-top: 1rem;
       font-size: 14px;
-      color: #FFFFFF;
+      color: #ffffff;
       text-align: center;
       cursor: pointer;
     }
@@ -168,7 +168,9 @@ export function StarknetWallet({
   logout,
   changeMetamaskNetwork,
 }: LoginWithStarknetProps) {
-  const t = isLogin ? translations.loginPage.starknetLogin : translations.addRootKeyPage.starknetRootKey;
+  const t = isLogin
+    ? translations.loginPage.starknetLogin
+    : translations.addRootKeyPage.starknetRootKey;
 
   if (!ready) {
     return <Loading />;
