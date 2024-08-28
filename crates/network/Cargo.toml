@@ -42,3 +42,6 @@ calimero-primitives = { path = "../primitives" }
 
 [dev-dependencies]
 tokio-test.workspace = true
+
+[lints]
+workspace = true

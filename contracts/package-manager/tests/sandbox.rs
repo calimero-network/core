@@ -1,12 +1,17 @@
+#![allow(unused_crate_dependencies)]
+
 use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract};
-use serde_json::json;
+use serde_json::{json, Value};
+use tokio::fs::read as async_read;
 
 #[tokio::test]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = near_workspaces::sandbox().await?;
-    let wasm = tokio::fs::read("res/package_manager.wasm").await?;
+    let wasm = async_read("res/package_manager.wasm").await?;
     let contract = worker.dev_deploy(&wasm).await?;
+
+    println!("Contract deployed at: {}", contract.id());
 
     // create accounts
     let account = worker.dev_create_account().await?;
@@ -26,7 +31,7 @@ async fn test_add_package_and_release(
     user: &Account,
     contract: &Contract,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = user
+    let package_id: Value = user
         .call(contract.id(), "add_package")
         .args_json(json!({
             "name": "application",
@@ -34,12 +39,13 @@ async fn test_add_package_and_release(
             "repository": "https://github.com/application",
         }))
         .transact()
-        .await?;
+        .await?
+        .json()?;
 
-    let package: serde_json::Value = user
+    let package: Value = user
         .view(contract.id(), "get_package")
         .args_json(json!({
-            "name": "application",
+            "id": package_id,
         }))
         .await?
         .json()?;
@@ -47,23 +53,24 @@ async fn test_add_package_and_release(
     assert_eq!(package["name"], "application".to_string());
     assert_eq!(package["owner"], user.id().to_string());
 
-    let _ = user
-        .call(contract.id(), "add_release")
-        .args_json(json!({
-            "name": "application",
-            "version": "0.1.0",
-            "notes": "",
-            "path": "https://gateway/ipfs/CID",
-            "hash": "123456789",
-        }))
-        .transact()
-        .await?;
+    drop(
+        user.call(contract.id(), "add_release")
+            .args_json(json!({
+                "name": "application",
+                "version": "0.1.0",
+                "notes": "",
+                "path": "https://gateway/ipfs/CID",
+                "hash": "123456789",
+            }))
+            .transact()
+            .await?,
+    );
 
-    let release: serde_json::Value = user
+    let release: Value = user
         .view(contract.id(), "get_release")
         .args_json(json!({
-            "name": "application",
-            "version": "0.1.0"
+            "id": package_id,
+            "version": "0.1.0",
         }))
         .await?
         .json()?;

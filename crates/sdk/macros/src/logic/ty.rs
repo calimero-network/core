@@ -1,53 +1,55 @@
+use proc_macro2::TokenStream;
 use quote::ToTokens;
+use syn::{parse2, Path, Type};
 
+use crate::errors::{Errors, ParseError};
 use crate::macros::infallible;
-use crate::{errors, reserved, sanitizer};
+use crate::reserved::{idents, lifetimes};
+use crate::sanitizer::{Action, Case, Sanitizer};
 
 pub struct LogicTy {
-    pub ty: syn::Type,
+    pub ty: Type,
     pub ref_: bool,
 }
 
 impl ToTokens for LogicTy {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        self.ty.to_tokens(tokens)
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.ty.to_tokens(tokens);
     }
 }
 
 pub struct LogicTyInput<'a, 'b> {
-    pub ty: &'a syn::Type,
+    pub ty: &'a Type,
 
-    pub type_: &'b syn::Path,
+    pub type_: &'b Path,
 }
 
 impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
-    type Error = errors::Errors<'a, syn::Type>;
+    type Error = Errors<'a, Type>;
 
+    // TODO: This unwrap() call needs to be corrected to return an error.
+    #[allow(clippy::unwrap_in_result)]
     fn try_from(input: LogicTyInput<'a, 'b>) -> Result<Self, Self::Error> {
-        let mut errors = errors::Errors::new(input.ty);
+        let errors = Errors::new(input.ty);
 
-        let mut sanitizer =
-            syn::parse2::<sanitizer::Sanitizer>(input.ty.to_token_stream()).unwrap();
+        let mut sanitizer = parse2::<Sanitizer<'_>>(input.ty.to_token_stream()).unwrap();
 
-        let reserved_ident = reserved::idents::input();
-        let reserved_lifetime = reserved::lifetimes::input();
+        let reserved_ident = idents::input();
+        let reserved_lifetime = lifetimes::input();
 
         let cases = [
+            (Case::Self_, Action::ReplaceWith(&input.type_)),
             (
-                sanitizer::Case::Self_,
-                sanitizer::Action::ReplaceWith(&input.type_),
+                Case::Ident(Some(&reserved_ident)),
+                Action::Forbid(ParseError::UseOfReservedIdent),
             ),
             (
-                sanitizer::Case::Ident(Some(&reserved_ident)),
-                sanitizer::Action::Forbid(errors::ParseError::UseOfReservedIdent),
+                Case::Lifetime(Some(&reserved_lifetime)),
+                Action::Forbid(ParseError::UseOfReservedLifetime),
             ),
             (
-                sanitizer::Case::Lifetime(Some(&reserved_lifetime)),
-                sanitizer::Action::Forbid(errors::ParseError::UseOfReservedLifetime),
-            ),
-            (
-                sanitizer::Case::Lifetime(None),
-                sanitizer::Action::ReplaceWith(&reserved_lifetime),
+                Case::Lifetime(None),
+                Action::ReplaceWith(&reserved_lifetime),
             ),
         ];
 
@@ -59,16 +61,16 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
 
         let has_ref = matches!(
             (
-                outcome.count(&sanitizer::Case::Lifetime(None)),
-                outcome.count(&sanitizer::Case::Lifetime(Some(&reserved_lifetime)))
+                outcome.count(&Case::Lifetime(None)),
+                outcome.count(&Case::Lifetime(Some(&reserved_lifetime)))
             ),
             (1.., _) | (_, 1..)
         );
 
-        let ty = infallible!({ syn::parse2(sanitizer.into_token_stream()) });
+        let ty = infallible!({ parse2(sanitizer.into_token_stream()) });
 
         errors.check()?;
 
-        Ok(LogicTy { ty, ref_: has_ref })
+        Ok(Self { ty, ref_: has_ref })
     }
 }

@@ -12,7 +12,6 @@ fragile.workspace = true
 ouroboros.workspace = true
 owo-colors = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
 thiserror.workspace = true
 ureq.workspace = true
 wasmer.workspace = true
@@ -23,10 +22,13 @@ name = "demo"
 
 [dev-dependencies]
 assert-json-diff.workspace = true
-clap = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
+serde_json.workspace = true
 
 [features]
 host-traces = ["owo-colors"]
+
+[lints]
+workspace = true

@@ -13,7 +13,10 @@ import { useWalletSelector } from './WalletSelectorContext';
 import { getOrCreateKeypair } from '../../auth/ed25519';
 import apiClient from '../../api';
 import { ResponseData } from '../../types/api-response';
-import { setExecutorPublicKey, setStorageNodeAuthorized } from '../../storage/storage';
+import {
+  setExecutorPublicKey,
+  setStorageNodeAuthorized,
+} from '../../storage/storage';
 import { Loading } from '../loading/Loading';
 import {
   LoginRequest,
@@ -233,7 +236,7 @@ export const NearLogin: React.FC<NearLoginProps> = ({
       };
       const walletMetadata: WalletMetadata = {
         wallet: WalletType.NEAR,
-        signingKey: publicKey,
+        verifyingKey: publicKey,
       };
       const loginRequest: LoginRequest = {
         walletSignature: signature,
@@ -376,10 +379,12 @@ export const NearLogin: React.FC<NearLoginProps> = ({
             alignItems: 'center',
             fontSize: '14px',
             color: '#778899',
-            whiteSpace: 'break-spaces'
+            whiteSpace: 'break-spaces',
           }}
         >
-          <span>Choose which account from your wallet you want to log in with</span>
+          <span>
+            Choose which account from your wallet you want to log in with
+          </span>
         </div>
         {account && (
           <div

@@ -1,9 +1,10 @@
+use core::fmt::Debug;
 use std::collections::BTreeMap;
 
 pub type Key = Vec<u8>;
 pub type Value = Vec<u8>;
 
-pub trait Storage {
+pub trait Storage: Debug {
     fn get(&self, key: &Key) -> Option<Value>;
     fn set(&mut self, key: Key, value: Value) -> Option<Value>;
     // fn remove(&mut self, key: &[u8]);

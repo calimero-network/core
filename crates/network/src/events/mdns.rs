@@ -1,15 +1,15 @@
-use libp2p::mdns;
+use libp2p::mdns::Event;
 use owo_colors::OwoColorize;
 use tracing::{debug, error};
 
 use super::{EventHandler, EventLoop, RelayedMultiaddr};
-use crate::discovery;
+use crate::discovery::state::PeerDiscoveryMechanism;
 
-impl EventHandler<mdns::Event> for EventLoop {
-    async fn handle(&mut self, event: mdns::Event) {
+impl EventHandler<Event> for EventLoop {
+    async fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "mdns".yellow(), event);
 
-        if let mdns::Event::Discovered(peers) = event {
+        if let Event::Discovered(peers) = event {
             for (peer_id, addr) in peers {
                 if RelayedMultiaddr::try_from(&addr).is_ok() {
                     // Skip "fake" relayed addresses to avoid OutgoingConnectionError e.g.:
@@ -17,10 +17,9 @@ impl EventHandler<mdns::Event> for EventLoop {
                     continue;
                 }
 
-                self.discovery.state.add_peer_discovery_mechanism(
-                    &peer_id,
-                    discovery::state::PeerDiscoveryMechanism::Mdns,
-                );
+                self.discovery
+                    .state
+                    .add_peer_discovery_mechanism(&peer_id, PeerDiscoveryMechanism::Mdns);
 
                 debug!(%peer_id, %addr, "Attempting to dial discovered peer via mdns");
 

@@ -4,33 +4,52 @@ use calimero_identity::auth::verify_eth_signature;
 use calimero_primitives::identity::WalletType;
 use calimero_server_primitives::admin::{
     AddPublicKeyRequest, EthSignatureMessageMetadata, NearSignatureMessageMetadata,
-    NodeChallengeMessage, Payload, SignatureMessage, SignatureMetadataEnum, WalletMetadata,
+    NodeChallengeMessage, Payload, SignatureMessage, SignatureMetadataEnum,
+    StarknetSignatureMessageMetadata, WalletMetadata, WalletSignature,
 };
 use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
 use libp2p::identity::Keypair;
 use reqwest::StatusCode;
+use serde_json::to_string as to_json_string;
 use tracing::info;
 
 use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::root_key::get_root_key;
-use crate::verifysignature::verify_near_signature;
+use crate::verifywalletsignatures::near::verify_near_signature;
+use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
-pub fn verify_node_signature(
+// TODO: Consider breaking this function up into pieces.
+#[allow(clippy::too_many_lines)]
+pub async fn verify_node_signature(
     wallet_metadata: &WalletMetadata,
-    wallet_signature: &str,
+    wallet_signature: &WalletSignature,
     payload: &Payload,
 ) -> Result<bool, ApiError> {
     match wallet_metadata.wallet_type {
         WalletType::NEAR { .. } => {
+            #[allow(clippy::wildcard_enum_match_arm)]
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::NEAR(metadata) => metadata,
-                _ => {
+                SignatureMetadataEnum::ETH(_) => {
                     return Err(ApiError {
                         status_code: StatusCode::BAD_REQUEST,
                         message: "Invalid metadata.".into(),
                     })
                 }
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Unsupported metadata.".into(),
+                    })
+                }
+            };
+
+            let WalletSignature::String(signature_str) = wallet_signature else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid wallet signature type.".into(),
+                });
             };
 
             let result = verify_near_signature(
@@ -38,8 +57,8 @@ pub fn verify_node_signature(
                 &payload.message.message,
                 &near_metadata.recipient,
                 &near_metadata.callback_url,
-                wallet_signature,
-                &wallet_metadata.signing_key,
+                signature_str,
+                &wallet_metadata.verifying_key,
             );
 
             if !result {
@@ -51,8 +70,44 @@ pub fn verify_node_signature(
             Ok(true)
         }
         WalletType::ETH { .. } => {
+            #[allow(clippy::wildcard_enum_match_arm)]
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => metadata,
+                SignatureMetadataEnum::NEAR(_) => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid metadata.".into(),
+                    })
+                }
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Unsupported metadata.".into(),
+                    })
+                }
+            };
+
+            let WalletSignature::String(signature_str) = wallet_signature else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid wallet signature type.".into(),
+                });
+            };
+
+            if let Err(err) = verify_eth_signature(
+                &wallet_metadata.verifying_key,
+                &payload.message.message,
+                signature_str,
+            ) {
+                return Err(parse_api_error(err));
+            }
+
+            Ok(true)
+        }
+        WalletType::STARKNET { ref wallet_name } => {
+            #[allow(clippy::wildcard_enum_match_arm)]
+            let _sn_metadata: &StarknetSignatureMessageMetadata = match &payload.metadata {
+                SignatureMetadataEnum::STARKNET(metadata) => metadata,
                 _ => {
                     return Err(ApiError {
                         status_code: StatusCode::BAD_REQUEST,
@@ -61,28 +116,89 @@ pub fn verify_node_signature(
                 }
             };
 
-            if let Err(err) = verify_eth_signature(
-                &wallet_metadata.signing_key,
-                &payload.message.message,
-                wallet_signature,
-            ) {
+            #[allow(clippy::wildcard_enum_match_arm)]
+            let (message_hash, signature) = match wallet_signature {
+                WalletSignature::StarknetPayload(payload) => {
+                    (&payload.message_hash, &payload.signature)
+                }
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid wallet signature type for Starknet.".into(),
+                    })
+                }
+            };
+
+            let Some(network_metadata) = &wallet_metadata.network_metadata else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Missing network_metadata for Starknet.".into(),
+                });
+            };
+
+            // Now extract `rpc_url` and `chain_id` from the `network_metadata`
+            let rpc_node_url = network_metadata.rpc_url.clone();
+            let chain_id = network_metadata.chain_id.clone();
+
+            let result = match wallet_name.as_str() {
+                "argentX" => {
+                    verify_argent_signature(
+                        message_hash,
+                        signature.clone(),
+                        &wallet_metadata.verifying_key,
+                        &payload.message.message,
+                        &rpc_node_url,
+                        &chain_id,
+                    )
+                    .await
+                }
+                "metamask" => {
+                    let Some(wallet_address) = &wallet_metadata.wallet_address else {
+                        return Err(ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: "Wallet address not present.".into(),
+                        });
+                    };
+                    verify_metamask_signature(
+                        message_hash,
+                        &signature,
+                        &wallet_metadata.verifying_key,
+                        &payload.message.message,
+                        wallet_address,
+                        &chain_id,
+                    )
+                }
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid wallet name for Starknet.".into(),
+                    })
+                }
+            };
+
+            if let Err(err) = result {
                 return Err(parse_api_error(err));
             }
 
             Ok(true)
         }
+        _ => Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Unsupported wallet type.".into(),
+        }),
     }
 }
 
 //Check if challenge is valid
-pub fn validate_challenge(
+pub async fn validate_challenge(
     req: AddPublicKeyRequest,
     keypair: &Keypair,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     validate_challenge_content(&req.payload, keypair)?;
 
     // Check if node has created signature
-    verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload)?;
+    let _ =
+        verify_node_signature(&req.wallet_metadata, &req.wallet_signature, &req.payload).await?;
 
     // Check challenge to verify if it has expired or not
     if is_older_than_15_minutes(req.payload.message.timestamp) {
@@ -107,11 +223,11 @@ pub fn validate_challenge_content(payload: &Payload, keypair: &Keypair) -> Resul
 pub fn construct_node_challenge(
     message: &SignatureMessage,
 ) -> Result<NodeChallengeMessage, ApiError> {
-    Ok(NodeChallengeMessage {
-        nonce: message.nonce.clone(),
-        context_id: message.context_id,
-        timestamp: message.timestamp,
-    })
+    Ok(NodeChallengeMessage::new(
+        message.nonce.clone(),
+        message.context_id,
+        message.timestamp,
+    ))
 }
 
 pub fn decode_signature(encoded_sig: &String) -> Result<Vec<u8>, ApiError> {
@@ -122,7 +238,7 @@ pub fn decode_signature(encoded_sig: &String) -> Result<Vec<u8>, ApiError> {
 }
 
 pub fn serialize_node_challenge(challenge: &NodeChallengeMessage) -> Result<String, ApiError> {
-    serde_json::to_string(challenge).map_err(|_| ApiError {
+    to_json_string(challenge).map_err(|_| ApiError {
         status_code: StatusCode::INTERNAL_SERVER_ERROR,
         message: "Failed to deserialize challenge data".into(),
     })
@@ -143,6 +259,7 @@ pub fn verify_signature(
     }
 }
 
+#[must_use]
 pub fn is_older_than_15_minutes(timestamp: i64) -> bool {
     let timestamp_datetime = Utc.timestamp_opt(timestamp, 0).unwrap();
     let now = Utc::now();
@@ -153,18 +270,17 @@ pub fn is_older_than_15_minutes(timestamp: i64) -> bool {
 
 pub fn validate_root_key_exists(
     req: AddPublicKeyRequest,
-    store: &mut Store,
+    store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    let root_key_result =
-        get_root_key(store, req.wallet_metadata.signing_key.clone()).map_err(|e| {
-            info!("Error getting root key: {}", e);
-            ApiError {
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: e.to_string(),
-            }
-        })?;
+    let root_key_result = get_root_key(store, &req.wallet_metadata.verifying_key).map_err(|e| {
+        info!("Error getting root key: {}", e);
+        ApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.to_string(),
+        }
+    })?;
 
-    match root_key_result {
+    drop(match root_key_result {
         Some(root_key) => root_key,
         None => {
             return Err(ApiError {
@@ -172,7 +288,7 @@ pub fn validate_root_key_exists(
                 message: "Root key does not exist".into(),
             });
         }
-    };
+    });
 
     Ok(req)
 }

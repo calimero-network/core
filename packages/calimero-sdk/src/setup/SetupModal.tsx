@@ -8,6 +8,8 @@ export interface SetupModalProps {
   successRoute: () => void;
   getNodeUrl: () => string | null;
   setNodeUrl: (url: string) => void;
+  getContextId?: () => string | null;
+  setContextId?: (contextId: string) => void;
 }
 
 const Container = styled.div`
@@ -82,16 +84,27 @@ const Button = styled.button`
   }
 `;
 
+const FlexContainer = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+`;
+
 export const SetupModal: React.FC<SetupModalProps> = (
   props: SetupModalProps,
 ) => {
   const [error, setError] = useState<string | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
+  const [contextId, setContextId] = useState<string | null>(null);
   const MINIMUM_LOADING_TIME_MS = 1000;
 
   useEffect(() => {
     setUrl(props.getNodeUrl());
+    if (props.getContextId) {
+      setContextId(props.getContextId());
+    }
   }, [props]);
 
   function validateUrl(value: string): boolean {
@@ -103,9 +116,29 @@ export const SetupModal: React.FC<SetupModalProps> = (
     }
   }
 
+  function validateContext(value: string) {
+    if (value.length < 32 || value.length > 44) {
+      setContextError('Context ID must be between 32 and 44 characters long.');
+      return;
+    }
+    const validChars =
+      /^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]+$/;
+
+    if (!validChars.test(value)) {
+      setContextError('Context ID must contain only base58 characters.');
+      return;
+    }
+  }
+
   const handleChange = (url: string) => {
     setError('');
     setUrl(url);
+  };
+
+  const handleChangeContextId = (value: string) => {
+    setContextError('');
+    setContextId(value);
+    validateContext(value);
   };
 
   const checkConnection = useCallback(async () => {
@@ -121,6 +154,7 @@ export const SetupModal: React.FC<SetupModalProps> = (
         if (response.data) {
           setError('');
           props.setNodeUrl(url);
+          props.setContextId && props.setContextId(contextId || '');
           props.successRoute();
         } else {
           setError('Connection failed. Please check if node url is correct.');
@@ -130,7 +164,16 @@ export const SetupModal: React.FC<SetupModalProps> = (
     } else {
       setError('Connection failed. Please check if node url is correct.');
     }
-  }, [props, url]);
+  }, [props, url, contextId]);
+
+  const disableButton = (): boolean => {
+    if (!url) return true;
+    if (props.getContextId && props.setContextId) {
+      if (contextError) return true;
+      if (!contextId) return true;
+    }
+    return false;
+  };
 
   return (
     <Container>
@@ -142,7 +185,20 @@ export const SetupModal: React.FC<SetupModalProps> = (
               <Spinner />
             ) : (
               <>
-                <div>
+                <FlexContainer>
+                  {props.setContextId && props.getContextId && (
+                    <>
+                      <Input
+                        type="text"
+                        placeholder="context id"
+                        value={contextId?.toString() || ''}
+                        onChange={(e: { target: { value: string } }) => {
+                          handleChangeContextId(e.target.value);
+                        }}
+                      />
+                      <Error>{contextError}</Error>
+                    </>
+                  )}
                   <Input
                     type="text"
                     placeholder="node url"
@@ -153,14 +209,14 @@ export const SetupModal: React.FC<SetupModalProps> = (
                     }}
                   />
                   <Error>{error}</Error>
-                </div>
+                </FlexContainer>
                 <Button
-                  disabled={!url}
+                  disabled={disableButton()}
                   onClick={() => {
                     checkConnection();
                   }}
                 >
-                  <span>Set node URL</span>
+                  <span>Set values</span>
                 </Button>
               </>
             )}

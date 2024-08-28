@@ -1,67 +1,88 @@
 use std::borrow::Cow;
-use std::collections::{hash_map, HashMap, HashSet};
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
-use calimero_server_primitives::ws as ws_primitives;
+use calimero_primitives::context::ContextId;
+use calimero_primitives::events::NodeEvent;
+use calimero_server_primitives::ws::{
+    Command, ConnectionId, Request as WsRequest, RequestPayload, Response, ResponseBody,
+    ResponseBodyError, ServerResponseError,
+};
+use eyre::Error as EyreError;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
+use rand::random;
 use serde::{Deserialize, Serialize};
+use serde_json::{
+    from_str as from_json_str, from_value as from_json_value, to_string as to_json_string,
+    to_value as to_json_value, Value,
+};
+use tokio::spawn;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, error, info};
 
 mod subscribe;
 mod unsubscribe;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct WsConfig {
     #[serde(default = "calimero_primitives::common::bool_true")]
     pub enabled: bool,
 }
 
+impl WsConfig {
+    #[must_use]
+    pub const fn new(enabled: bool) -> Self {
+        Self { enabled }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ConnectionStateInner {
-    subscriptions: HashSet<calimero_primitives::context::ContextId>,
+    subscriptions: HashSet<ContextId>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConnectionState {
-    commands: mpsc::Sender<ws_primitives::Command>,
+    commands: mpsc::Sender<Command>,
     inner: Arc<RwLock<ConnectionStateInner>>,
 }
 
 pub(crate) struct ServiceState {
-    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-    connections: RwLock<HashMap<ws_primitives::ConnectionId, ConnectionState>>,
+    node_events: broadcast::Sender<NodeEvent>,
+    connections: RwLock<HashMap<ConnectionId, ConnectionState>>,
 }
 
 pub(crate) fn service(
-    config: &crate::config::ServerConfig,
-    node_events: broadcast::Sender<calimero_primitives::events::NodeEvent>,
-) -> eyre::Result<Option<(&'static str, MethodRouter)>> {
+    config: &ServerConfig,
+    node_events: broadcast::Sender<NodeEvent>,
+) -> Option<(&'static str, MethodRouter)> {
     let _config = match &config.websocket {
         Some(config) if config.enabled => config,
         _ => {
             info!("WebSocket server is disabled");
-            return Ok(None);
+            return None;
         }
     };
 
     let path = "/ws"; // todo! source from config
 
-    for listen in config.listen.iter() {
+    for listen in &config.listen {
         info!("WebSocket server listening on {}/ws{{{}}}", listen, path);
     }
 
     let state = Arc::new(ServiceState {
         node_events,
-        connections: Default::default(),
+        connections: RwLock::default(),
     });
 
-    Ok(Some((path, get(ws_handler).layer(Extension(state)))))
+    Some((path, get(ws_handler).layer(Extension(state))))
 }
 
 async fn ws_handler(
@@ -74,16 +95,17 @@ async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     let (commands_sender, commands_receiver) = mpsc::channel(32);
     let (connection_id, _) = loop {
-        let connection_id = rand::random();
+        let connection_id = random();
+        let mut connections = state.connections.write().await;
 
-        match state.connections.write().await.entry(connection_id) {
-            hash_map::Entry::Occupied(_) => continue,
-            hash_map::Entry::Vacant(entry) => {
+        match connections.entry(connection_id) {
+            Entry::Occupied(_) => continue,
+            Entry::Vacant(entry) => {
                 let connection_state = ConnectionState {
                     commands: commands_sender.clone(),
-                    inner: Default::default(),
+                    inner: Arc::default(),
                 };
-                entry.insert(connection_state.clone());
+                let _ = entry.insert(connection_state.clone());
                 break (connection_id, connection_state);
             }
         }
@@ -91,20 +113,20 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
     debug!(%connection_id, "Client connection established");
 
-    tokio::spawn(handle_node_events(
+    drop(spawn(handle_node_events(
         connection_id,
-        state.clone(),
+        Arc::clone(&state),
         state.node_events.subscribe(),
         commands_sender.clone(),
-    ));
+    )));
 
     let (socket_sender, mut socket_receiver) = socket.split();
 
-    tokio::spawn(handle_commands(
+    drop(spawn(handle_commands(
         connection_id,
         commands_receiver,
         socket_sender,
-    ));
+    )));
 
     while let Some(message) = socket_receiver.next().await {
         let message = match message {
@@ -117,7 +139,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
 
         match message {
             Message::Text(message) => {
-                tokio::spawn(handle_text_message(connection_id, state.clone(), message));
+                drop(spawn(handle_text_message(
+                    connection_id,
+                    Arc::clone(&state),
+                    message,
+                )));
             }
             Message::Binary(_) => {
                 debug!("Received binary message");
@@ -138,23 +164,20 @@ async fn handle_socket(socket: WebSocket, state: Arc<ServiceState>) {
     debug!(%connection_id, "Client connection terminated");
 
     let mut state = state.connections.write().await;
-    state.remove(&connection_id);
+    drop(state.remove(&connection_id));
 }
 
 async fn handle_node_events(
-    connection_id: ws_primitives::ConnectionId,
+    connection_id: ConnectionId,
     state: Arc<ServiceState>,
-    mut node_events_receiver: broadcast::Receiver<calimero_primitives::events::NodeEvent>,
-    command_sender: mpsc::Sender<ws_primitives::Command>,
+    mut node_events_receiver: broadcast::Receiver<NodeEvent>,
+    command_sender: mpsc::Sender<Command>,
 ) {
     while let Ok(event) = node_events_receiver.recv().await {
-        let connections = state.connections.read().await;
-        let connection_state = match connections.get(&connection_id) {
-            Some(state) => state,
-            None => {
-                error!(%connection_id, "Unexpected state, client_id not found in client state map");
-                return;
-            }
+        let Some(connection_state) = state.connections.read().await.get(&connection_id).cloned()
+        else {
+            error!(%connection_id, "Unexpected state, client_id not found in client state map");
+            return;
         };
 
         debug!(
@@ -165,7 +188,7 @@ async fn handle_node_events(
         );
 
         let event = match event {
-            calimero_primitives::events::NodeEvent::Application(event)
+            NodeEvent::Application(event)
                 if {
                     connection_state
                         .inner
@@ -175,45 +198,41 @@ async fn handle_node_events(
                         .contains(&event.context_id)
                 } =>
             {
-                calimero_primitives::events::NodeEvent::Application(event)
+                NodeEvent::Application(event)
             }
-            _ => continue,
+            NodeEvent::Application(_) => continue,
+            _ => unreachable!("Unexpected event type"),
         };
 
-        let body = match serde_json::to_value(event) {
-            Ok(v) => ws_primitives::ResponseBody::Result(v),
-            Err(err) => {
-                ws_primitives::ResponseBody::Error(ws_primitives::ResponseBodyError::ServerError(
-                    ws_primitives::ServerResponseError::InternalError {
-                        err: Some(err.into()),
-                    },
-                ))
-            }
+        let body = match to_json_value(event) {
+            Ok(v) => ResponseBody::Result(v),
+            Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
+                ServerResponseError::InternalError {
+                    err: Some(err.into()),
+                },
+            )),
         };
 
-        let response = ws_primitives::Response { id: None, body };
+        let response = Response::new(None, body);
 
-        if let Err(err) = command_sender
-            .send(ws_primitives::Command::Send(response))
-            .await
-        {
+        if let Err(err) = command_sender.send(Command::Send(response)).await {
             error!(
                 %connection_id,
                 %err,
-                "Failed to send ws_primitives::WsCommand::Send",
+                "Failed to send WsCommand::Send",
             );
         };
     }
 }
 
 async fn handle_commands(
-    connection_id: ws_primitives::ConnectionId,
-    mut command_receiver: mpsc::Receiver<ws_primitives::Command>,
+    connection_id: ConnectionId,
+    mut command_receiver: mpsc::Receiver<Command>,
     mut socket_sender: SplitSink<WebSocket, Message>,
 ) {
     while let Some(action) = command_receiver.recv().await {
         match action {
-            ws_primitives::Command::Close(code, reason) => {
+            Command::Close(code, reason) => {
                 let close_frame = Some(CloseFrame {
                     code,
                     reason: Cow::from(reason),
@@ -225,42 +244,39 @@ async fn handle_commands(
                         "Failed to send ws::Message::Close",
                     );
                 }
-                let _ = socket_sender.close().await;
+                drop(socket_sender.close().await);
                 break;
             }
-            ws_primitives::Command::Send(response) => {
-                let response = match serde_json::to_string(&response) {
+            Command::Send(response) => {
+                let response = match to_json_string(&response) {
                     Ok(message) => message,
                     Err(err) => {
                         error!(
                             %connection_id,
                             %err,
-                            "Failed to serialize ws_primitives::WsResponse",
+                            "Failed to serialize WsResponse",
                         );
                         continue;
                     }
                 };
                 if let Err(err) = socket_sender.send(Message::Text(response)).await {
-                    error!(%connection_id, %err, "Failed to send ws::Message::Text");
+                    error!(%connection_id, %err, "Failed to send Message::Text");
                 }
             }
+            _ => unreachable!("Unexpected Command"),
         }
     }
 }
 
 async fn handle_text_message(
-    connection_id: ws_primitives::ConnectionId,
+    connection_id: ConnectionId,
     state: Arc<ServiceState>,
     message: String,
 ) {
     debug!(%connection_id, %message, "Received text message");
-    let connections = state.connections.read().await;
-    let connection_state = match connections.get(&connection_id) {
-        Some(state) => state,
-        None => {
-            error!(%connection_id, "Unexpected state, client_id not found in client state map");
-            return;
-        }
+    let Some(connection_state) = state.connections.read().await.get(&connection_id).cloned() else {
+        error!(%connection_id, "Unexpected state, client_id not found in client state map");
+        return;
     };
 
     if state.connections.read().await.get(&connection_id).is_none() {
@@ -268,47 +284,44 @@ async fn handle_text_message(
         return;
     };
 
-    let message = match serde_json::from_str::<ws_primitives::Request<serde_json::Value>>(&message)
-    {
+    let message = match from_json_str::<WsRequest<Value>>(&message) {
         Ok(message) => message,
         Err(err) => {
-            error!(%connection_id, %err, "Failed to deserialize ws_primitives::Request<serde_json::Value>");
+            error!(%connection_id, %err, "Failed to deserialize Request<Value>");
             return;
         }
     };
 
-    let body = match serde_json::from_value::<ws_primitives::RequestPayload>(message.payload) {
+    let body = match from_json_value::<RequestPayload>(message.payload) {
         Ok(payload) => match payload {
-            ws_primitives::RequestPayload::Subscribe(request) => request
-                .handle(state.clone(), connection_state.clone())
+            RequestPayload::Subscribe(request) => request
+                .handle(Arc::clone(&state), connection_state.clone())
                 .await
                 .to_res_body(),
-            ws_primitives::RequestPayload::Unsubscribe(request) => request
-                .handle(state.clone(), connection_state.clone())
+            RequestPayload::Unsubscribe(request) => request
+                .handle(Arc::clone(&state), connection_state.clone())
                 .await
                 .to_res_body(),
+            _ => unreachable!("Unsupported WebSocket method"),
         },
         Err(err) => {
-            error!(%connection_id, %err, "Failed to deserialize ws_primitives::RequestPayload");
+            error!(%connection_id, %err, "Failed to deserialize RequestPayload");
 
-            ws_primitives::ResponseBody::Error(ws_primitives::ResponseBodyError::ServerError(
-                ws_primitives::ServerResponseError::ParseError(err.to_string()),
+            ResponseBody::Error(ResponseBodyError::ServerError(
+                ServerResponseError::ParseError(err.to_string()),
             ))
         }
     };
 
     if let Err(err) = connection_state
         .commands
-        .send(ws_primitives::Command::Send(ws_primitives::Response {
-            id: message.id,
-            body,
-        }))
+        .send(Command::Send(Response::new(message.id, body)))
         .await
     {
         error!(
             %connection_id,
             %err,
-            "Failed to send ws_primitives::WsCommand::Send",
+            "Failed to send WsCommand::Send",
         );
     };
 }
@@ -324,43 +337,39 @@ pub(crate) trait Request {
     ) -> Result<Self::Response, WsError<Self::Error>>;
 }
 
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum WsError<E> {
     MethodCallError(E),
-    InternalError(eyre::Error),
+    InternalError(EyreError),
 }
 
 trait ToResponseBody {
-    fn to_res_body(self) -> ws_primitives::ResponseBody;
+    fn to_res_body(self) -> ResponseBody;
 }
 
 impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, WsError<E>> {
-    fn to_res_body(self) -> ws_primitives::ResponseBody {
+    fn to_res_body(self) -> ResponseBody {
         match self {
-            Ok(r) => match serde_json::to_value(r) {
-                Ok(v) => ws_primitives::ResponseBody::Result(v),
-                Err(err) => ws_primitives::ResponseBody::Error(
-                    ws_primitives::ResponseBodyError::ServerError(
-                        ws_primitives::ServerResponseError::InternalError {
-                            err: Some(err.into()),
-                        },
-                    ),
-                ),
+            Ok(r) => match to_json_value(r) {
+                Ok(v) => ResponseBody::Result(v),
+                Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError {
+                        err: Some(err.into()),
+                    },
+                )),
             },
-            Err(WsError::MethodCallError(err)) => match serde_json::to_value(err) {
-                Ok(v) => ws_primitives::ResponseBody::Error(
-                    ws_primitives::ResponseBodyError::HandlerError(v),
-                ),
-                Err(err) => ws_primitives::ResponseBody::Error(
-                    ws_primitives::ResponseBodyError::ServerError(
-                        ws_primitives::ServerResponseError::InternalError {
-                            err: Some(err.into()),
-                        },
-                    ),
-                ),
+            Err(WsError::MethodCallError(err)) => match to_json_value(err) {
+                Ok(v) => ResponseBody::Error(ResponseBodyError::HandlerError(v)),
+                Err(err) => ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError {
+                        err: Some(err.into()),
+                    },
+                )),
             },
             Err(WsError::InternalError(err)) => {
-                ws_primitives::ResponseBody::Error(ws_primitives::ResponseBodyError::ServerError(
-                    ws_primitives::ServerResponseError::InternalError { err: Some(err) },
+                ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError { err: Some(err) },
                 ))
             }
         }
@@ -377,7 +386,7 @@ macro_rules! mount_method {
                 self,
                 state: std::sync::Arc<crate::ws::ServiceState>,
                 connection_state: crate::ws::ConnectionState,
-            ) -> std::result::Result<Self::Response, crate::ws::WsError<Self::Error>> {
+            ) -> core::result::Result<Self::Response, crate::ws::WsError<Self::Error>> {
                 match $handle(self, state, connection_state).await {
                     Ok(response) => Ok(response),
                     Err(err) => match err.downcast::<Self::Error>() {
@@ -391,3 +400,5 @@ macro_rules! mount_method {
 }
 
 pub(crate) use mount_method;
+
+use crate::config::ServerConfig;

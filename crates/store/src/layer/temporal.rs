@@ -1,9 +1,14 @@
+use core::ptr;
+
+use eyre::Result as EyreResult;
+
 use crate::iter::{DBIter, Iter, Structured};
 use crate::key::{AsKeyParts, FromKeyParts};
 use crate::layer::{Layer, ReadLayer, WriteLayer};
 use crate::slice::Slice;
 use crate::tx::{self, Operation, Transaction};
 
+#[derive(Debug)]
 pub struct Temporal<'base, 'entry, L> {
     inner: &'base mut L,
     shadow: Transaction<'entry>,
@@ -21,18 +26,18 @@ where
     }
 }
 
-impl<'base, 'entry, L> Layer for Temporal<'base, 'entry, L>
+impl<L> Layer for Temporal<'_, '_, L>
 where
     L: Layer,
 {
     type Base = L;
 }
 
-impl<'base, 'entry, L> ReadLayer for Temporal<'base, 'entry, L>
+impl<L> ReadLayer for Temporal<'_, '_, L>
 where
     L: ReadLayer,
 {
-    fn has<K: AsKeyParts>(&self, key: &K) -> eyre::Result<bool> {
+    fn has<K: AsKeyParts>(&self, key: &K) -> EyreResult<bool> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(false),
             Some(Operation::Put { .. }) => Ok(true),
@@ -40,7 +45,7 @@ where
         }
     }
 
-    fn get<K: AsKeyParts>(&self, key: &K) -> eyre::Result<Option<Slice>> {
+    fn get<K: AsKeyParts>(&self, key: &K) -> EyreResult<Option<Slice<'_>>> {
         match self.shadow.get(key) {
             Some(Operation::Delete) => Ok(None),
             Some(Operation::Put { value }) => Ok(Some(value.into())),
@@ -48,7 +53,7 @@ where
         }
     }
 
-    fn iter<K: FromKeyParts>(&self) -> eyre::Result<Iter<Structured<K>>> {
+    fn iter<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>> {
         Ok(Iter::new(TemporalIterator {
             inner: self.inner.iter::<K>()?,
             shadow: &self.shadow,
@@ -58,29 +63,29 @@ where
     }
 }
 
-impl<'base, 'entry, L> WriteLayer<'entry> for Temporal<'base, 'entry, L>
+impl<'entry, L> WriteLayer<'entry> for Temporal<'_, 'entry, L>
 where
     L: WriteLayer<'entry>,
 {
-    fn put<K: AsKeyParts>(&mut self, key: &'entry K, value: Slice<'entry>) -> eyre::Result<()> {
+    fn put<K: AsKeyParts>(&mut self, key: &'entry K, value: Slice<'entry>) -> EyreResult<()> {
         self.shadow.put(key, value);
 
         Ok(())
     }
 
-    fn delete<K: AsKeyParts>(&mut self, key: &'entry K) -> eyre::Result<()> {
+    fn delete<K: AsKeyParts>(&mut self, key: &'entry K) -> EyreResult<()> {
         self.shadow.delete(key);
 
         Ok(())
     }
 
-    fn apply(&mut self, tx: &Transaction<'entry>) -> eyre::Result<()> {
+    fn apply(&mut self, tx: &Transaction<'entry>) -> EyreResult<()> {
         self.shadow.merge(tx);
 
         Ok(())
     }
 
-    fn commit(self) -> eyre::Result<()> {
+    fn commit(self) -> EyreResult<()> {
         self.inner.apply(&self.shadow)?;
 
         Ok(())
@@ -94,18 +99,19 @@ struct TemporalIterator<'a, 'b, K> {
     value: Option<Slice<'a>>,
 }
 
-impl<'a, 'b, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, 'b, K> {
-    fn seek(&mut self, key: Slice) -> eyre::Result<Option<Slice>> {
+impl<'a, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, '_, K> {
+    fn seek(&mut self, key: Slice<'_>) -> EyreResult<Option<Slice<'_>>> {
         self.shadow_iter = Some(self.shadow.col_iter(K::column(), Some(&key)));
         self.inner.seek(key)
     }
 
-    fn next(&mut self) -> eyre::Result<Option<Slice>> {
+    fn next(&mut self) -> EyreResult<Option<Slice<'_>>> {
         self.value = None;
 
         loop {
             // safety: Slice doesn't mutably borrow self
-            let other = unsafe { &mut *(&mut self.inner as *mut Iter<'a, Structured<K>>) };
+            #[allow(trivial_casts)]
+            let other = unsafe { &mut *ptr::from_mut::<Iter<'a, Structured<K>>>(&mut self.inner) };
 
             let Some(key) = other.next()? else {
                 break;
@@ -131,14 +137,14 @@ impl<'a, 'b, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, 'b, K
                     Operation::Put { value } => self.value = Some(value.into()),
                 }
 
-                return Ok(Some(key.into()));
+                return Ok(Some(key));
             }
 
             return Ok(None);
         }
     }
 
-    fn read(&self) -> eyre::Result<Slice> {
+    fn read(&self) -> EyreResult<Slice<'_>> {
         if let Some(value) = &self.value {
             return Ok(value.into());
         };

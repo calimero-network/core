@@ -24,10 +24,12 @@ multiaddr.workspace = true
 rand.workspace = true
 rcgen.workspace = true
 reqwest.workspace = true
-semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+starknet-core.workspace = true
+starknet-crypto.workspace = true
+starknet-providers.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
@@ -50,5 +52,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 jsonrpc = []
+host_layer = []
 websocket = ["axum/ws", "dep:futures-util"]
 admin = ["dep:tower-sessions"]
+
+[lints]
+workspace = true

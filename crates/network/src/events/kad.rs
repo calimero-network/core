@@ -1,43 +1,40 @@
 use std::collections::HashSet;
 
-use libp2p::kad;
+use libp2p::kad::{Event, GetProvidersOk, QueryResult};
 use owo_colors::OwoColorize;
 use tracing::debug;
 
 use super::{EventHandler, EventLoop};
 
-impl EventHandler<kad::Event> for EventLoop {
-    async fn handle(&mut self, event: kad::Event) {
+impl EventHandler<Event> for EventLoop {
+    async fn handle(&mut self, event: Event) {
         debug!("{}: {:?}", "kad".yellow(), event);
 
         match event {
-            kad::Event::OutboundQueryProgressed {
+            Event::OutboundQueryProgressed {
                 id,
-                result: kad::QueryResult::Bootstrap(result),
+                result: QueryResult::Bootstrap(result),
                 ..
             } => {
                 if let Some(sender) = self.pending_bootstrap.remove(&id) {
-                    let _ = sender.send(result.map(|_| None).map_err(Into::into));
+                    drop(sender.send(result.map(|_| None).map_err(Into::into)));
                 }
             }
-            kad::Event::OutboundQueryProgressed {
+            Event::OutboundQueryProgressed {
                 id,
-                result: kad::QueryResult::StartProviding(_),
+                result: QueryResult::StartProviding(_),
                 ..
             } => {
-                let _ = self
+                let _ignore = self
                     .pending_start_providing
                     .remove(&id)
                     .expect("Completed query to be previously pending.")
                     .send(());
             }
-            kad::Event::OutboundQueryProgressed {
+            Event::OutboundQueryProgressed {
                 id,
                 result:
-                    kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
-                        providers,
-                        ..
-                    })),
+                    QueryResult::GetProviders(Ok(GetProvidersOk::FoundProviders { providers, .. })),
                 ..
             } => {
                 if let Some(sender) = self.pending_get_providers.remove(&id) {
@@ -48,12 +45,12 @@ impl EventHandler<kad::Event> for EventLoop {
                     }
                 }
             }
-            kad::Event::OutboundQueryProgressed {
+            Event::OutboundQueryProgressed {
                 id,
                 result:
-                    kad::QueryResult::GetProviders(Ok(
-                        kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
-                    )),
+                    QueryResult::GetProviders(Ok(GetProvidersOk::FinishedWithNoAdditionalRecord {
+                        ..
+                    })),
                 ..
             } => {
                 if let Some(sender) = self.pending_get_providers.remove(&id) {
@@ -66,7 +63,13 @@ impl EventHandler<kad::Event> for EventLoop {
                     }
                 }
             }
-            _ => {}
+            Event::InboundRequest { .. }
+            | Event::ModeChanged { .. }
+            | Event::OutboundQueryProgressed { .. }
+            | Event::PendingRoutablePeer { .. }
+            | Event::RoutablePeer { .. }
+            | Event::RoutingUpdated { .. }
+            | Event::UnroutablePeer { .. } => {}
         }
     }
 }

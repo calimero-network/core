@@ -7,12 +7,14 @@ pub mod views;
 pub use error::Error;
 pub use jsonrpc::Client;
 pub use query::*;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 pub use types::*;
 
 pub trait RpcMethod {
-    type Response: serde::de::DeserializeOwned;
-    type Error: serde::de::DeserializeOwned;
+    type Response: DeserializeOwned;
+    type Error: DeserializeOwned;
 
     fn method_name(&self) -> &str;
-    fn params(&self) -> serde_json::Value;
+    fn params(&self) -> Value;
 }

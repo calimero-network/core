@@ -13,7 +13,7 @@ pub use pointer::*;
 pub use register::*;
 
 #[repr(C, u64)]
-#[derive(Eq, Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValueReturn<'a> {
     Ok(Buffer<'a>),
     Err(Buffer<'a>),

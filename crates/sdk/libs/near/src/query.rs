@@ -1,4 +1,7 @@
-use serde_json::json;
+use calimero_primitives::hash::Hash;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use thiserror::Error as ThisError;
 
 use crate::types::{AccountId, BlockHash, BlockHeight, BlockId, ShardId};
 use crate::views::{
@@ -7,14 +10,14 @@ use crate::views::{
 };
 use crate::RpcMethod;
 
-#[derive(serde::Serialize, Debug)]
+#[derive(Debug, Serialize)]
 pub struct RpcQueryRequest {
     pub block_id: BlockId,
     #[serde(flatten)]
     pub request: QueryRequest,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(Debug, Deserialize)]
 pub struct RpcQueryResponse {
     #[serde(flatten)]
     pub kind: QueryResponseKind,
@@ -22,7 +25,7 @@ pub struct RpcQueryResponse {
     pub block_hash: BlockHash,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum QueryResponseKind {
     ViewAccount(AccountView),
@@ -41,12 +44,12 @@ impl RpcMethod for RpcQueryRequest {
         "query"
     }
 
-    fn params(&self) -> serde_json::Value {
+    fn params(&self) -> Value {
         json!(self)
     }
 }
 
-#[derive(thiserror::Error, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Deserialize, Serialize, ThisError)]
 #[serde(tag = "name", content = "info", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RpcQueryError {
     #[error("There are no fully synchronized blocks on the node yet")]
@@ -58,7 +61,7 @@ pub enum RpcQueryError {
     )]
     GarbageCollectedBlock {
         block_height: BlockHeight,
-        block_hash: calimero_primitives::hash::Hash,
+        block_hash: Hash,
     },
     #[error("Block either has never been observed on the node or has been garbage collected: {block_reference:?}")]
     UnknownBlock { block_reference: BlockReference },
@@ -66,13 +69,13 @@ pub enum RpcQueryError {
     InvalidAccount {
         requested_account_id: AccountId,
         block_height: BlockHeight,
-        block_hash: calimero_primitives::hash::Hash,
+        block_hash: Hash,
     },
     #[error("account {requested_account_id} does not exist while viewing")]
     UnknownAccount {
         requested_account_id: AccountId,
         block_height: BlockHeight,
-        block_hash: calimero_primitives::hash::Hash,
+        block_hash: Hash,
     },
     #[error(
         "Contract code for contract ID #{contract_account_id} has never been observed on the node"
@@ -80,25 +83,25 @@ pub enum RpcQueryError {
     NoContractCode {
         contract_account_id: AccountId,
         block_height: BlockHeight,
-        block_hash: calimero_primitives::hash::Hash,
+        block_hash: Hash,
     },
     #[error("State of contract {contract_account_id} is too large to be viewed")]
     TooLargeContractState {
         contract_account_id: AccountId,
         block_height: BlockHeight,
-        block_hash: calimero_primitives::hash::Hash,
+        block_hash: Hash,
     },
     #[error("Access key for public key {public_key} has never been observed on the node")]
     UnknownAccessKey {
         public_key: String,
         block_height: BlockHeight,
-        block_hash: calimero_primitives::hash::Hash,
+        block_hash: Hash,
     },
     #[error("Function call returned an error: {vm_error}")]
     ContractExecutionError {
         vm_error: String,
         block_height: BlockHeight,
-        block_hash: calimero_primitives::hash::Hash,
+        block_hash: Hash,
     },
     #[error("The node reached its limits. Try again later. More details: {error_message}")]
     InternalError { error_message: String },

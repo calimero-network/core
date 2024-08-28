@@ -1,5 +1,7 @@
-use std::convert::Infallible;
-use std::task::{Context, Poll};
+use core::convert::Infallible;
+use core::fmt::{self, Display, Formatter};
+use core::task::{Context, Poll};
+use std::error::Error;
 
 use axum::body::Body;
 use axum::extract::Request;
@@ -11,6 +13,7 @@ use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_store::Store;
 use chrono::Utc;
 use libp2p::futures::future::BoxFuture;
+use serde_json::from_slice as from_json_slice;
 use tower::{Layer, Service};
 use tracing::debug;
 
@@ -23,7 +26,7 @@ pub struct AuthSignatureLayer {
 }
 
 impl AuthSignatureLayer {
-    pub fn new(store: Store) -> Self {
+    pub const fn new(store: Store) -> Self {
         Self { store }
     }
 }
@@ -61,7 +64,7 @@ where
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        let result = auth(request.headers(), &mut self.store.clone());
+        let result = auth(request.headers(), &self.store.clone());
 
         if let Err(err) = result {
             let error_response = err.into_response();
@@ -86,18 +89,19 @@ struct AuthHeaders {
     context_id: Option<ContextId>,
 }
 
-pub fn auth(headers: &HeaderMap, store: &mut Store) -> Result<(), UnauthorizedError<'static>> {
+pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<'static>> {
     let auth_headers = get_auth_headers(headers).map_err(|e| {
         debug!("Failed to extract authentication headers {}", e);
         UnauthorizedError::new("Failed to extract authentication headers.")
     })?;
 
-    let client_key = ClientKey {
-        wallet_type: auth_headers.wallet_type,
-        signing_key: auth_headers.signing_key.clone(),
-        created_at: Utc::now().timestamp_millis() as u64,
-        context_id: auth_headers.context_id,
-    };
+    #[allow(clippy::cast_sign_loss)]
+    let client_key = ClientKey::new(
+        auth_headers.wallet_type,
+        auth_headers.signing_key.clone(),
+        Utc::now().timestamp_millis() as u64,
+        auth_headers.context_id,
+    );
 
     let key_exists = exists_client_key(store, &client_key)
         .map_err(|_| UnauthorizedError::new("Issue during extracting client key"))?;
@@ -127,7 +131,7 @@ pub fn auth(headers: &HeaderMap, store: &mut Store) -> Result<(), UnauthorizedEr
     }
 }
 
-fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError> {
+fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedError<'_>> {
     let signing_key = headers
         .get("signing_key")
         .ok_or_else(|| UnauthorizedError::new("Missing signing_key header"))?;
@@ -138,7 +142,7 @@ fn get_auth_headers(headers: &HeaderMap) -> Result<AuthHeaders, UnauthorizedErro
         .get("wallet_type")
         .ok_or_else(|| UnauthorizedError::new("Missing wallet_type header"))?;
 
-    let wallet_type: WalletType = serde_json::from_slice(wallet_type.as_bytes())
+    let wallet_type: WalletType = from_json_slice(wallet_type.as_bytes())
         .map_err(|_| UnauthorizedError::new("Failed to parse wallet_type"))?;
 
     let signature = headers
@@ -182,21 +186,21 @@ pub struct UnauthorizedError<'a> {
 }
 
 impl<'a> UnauthorizedError<'a> {
-    pub fn new(reason: &'a str) -> Self {
+    pub const fn new(reason: &'a str) -> Self {
         Self { reason }
     }
 }
 
-impl std::fmt::Display for UnauthorizedError<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for UnauthorizedError<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(self.reason)
     }
 }
 
-impl std::error::Error for UnauthorizedError<'_> {}
+impl Error for UnauthorizedError<'_> {}
 
 impl IntoResponse for UnauthorizedError<'_> {
     fn into_response(self) -> Response<Body> {
-        (StatusCode::UNAUTHORIZED, self.reason.to_string()).into_response()
+        (StatusCode::UNAUTHORIZED, self.reason.to_owned()).into_response()
     }
 }

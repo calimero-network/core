@@ -1,0 +1,16 @@
+name: setup
+description: 'Setup - Cache dependencies ⚡ - Install dependencies 🔧'
+runs:
+  using: 'composite'
+  steps:
+    - name: Install pnpm
+      run: npm install -g pnpm
+      shell: bash
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install
+
+    - name: Build
+      shell: bash
+      run: pnpm build

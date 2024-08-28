@@ -2,29 +2,48 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::identity::{KeyPair, PublicKey};
 
 use crate::entry::{Borsh, Identity};
-use crate::key;
+use crate::key::{
+    ApplicationMeta as ApplicationMetaKey, ContextIdentity as ContextIdentityKey,
+    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
+    ContextTransaction as ContextTransactionKey,
+};
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
 pub type TransactionHash = [u8; 32];
 
-#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ContextMeta {
-    pub application: key::ApplicationMeta,
+    pub application: ApplicationMetaKey,
     pub last_transaction_hash: TransactionHash,
 }
 
-impl PredefinedEntry for key::ContextMeta {
+impl ContextMeta {
+    #[must_use]
+    pub const fn new(
+        application: ApplicationMetaKey,
+        last_transaction_hash: TransactionHash,
+    ) -> Self {
+        Self {
+            application,
+            last_transaction_hash,
+        }
+    }
+}
+
+impl PredefinedEntry for ContextMetaKey {
     type Codec = Borsh;
     type DataType<'a> = ContextMeta;
 }
 
-#[derive(Eq, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ContextState<'a> {
     pub value: Slice<'a>,
 }
 
-impl PredefinedEntry for key::ContextState {
+impl PredefinedEntry for ContextStateKey {
     type Codec = Identity;
     type DataType<'a> = ContextState<'a>;
 }
@@ -35,13 +54,14 @@ impl<'a> From<Slice<'a>> for ContextState<'a> {
     }
 }
 
-impl<'a> AsRef<[u8]> for ContextState<'a> {
+impl AsRef<[u8]> for ContextState<'_> {
     fn as_ref(&self) -> &[u8] {
         self.value.as_ref()
     }
 }
 
-#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::exhaustive_structs)]
 pub struct ContextIdentity {
     pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
@@ -65,12 +85,13 @@ impl From<ContextIdentity> for KeyPair {
     }
 }
 
-impl PredefinedEntry for key::ContextIdentity {
+impl PredefinedEntry for ContextIdentityKey {
     type Codec = Borsh;
     type DataType<'a> = ContextIdentity;
 }
 
-#[derive(Eq, Clone, Debug, PartialEq, BorshSerialize, BorshDeserialize)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ContextTransaction {
     pub method: Box<str>,
     pub payload: Box<[u8]>,
@@ -78,7 +99,24 @@ pub struct ContextTransaction {
     pub executor_public_key: [u8; 32],
 }
 
-impl PredefinedEntry for key::ContextTransaction {
+impl ContextTransaction {
+    #[must_use]
+    pub fn new(
+        method: Box<str>,
+        payload: Box<[u8]>,
+        prior_hash: TransactionHash,
+        executor_public_key: [u8; 32],
+    ) -> Self {
+        Self {
+            method,
+            payload,
+            prior_hash,
+            executor_public_key,
+        }
+    }
+}
+
+impl PredefinedEntry for ContextTransactionKey {
     type Codec = Borsh;
     type DataType<'a> = ContextTransaction;
 }

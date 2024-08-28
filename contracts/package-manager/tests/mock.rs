@@ -1,4 +1,5 @@
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(unused_crate_dependencies)]
 
 use near_sdk::test_utils::VMContextBuilder;
 use near_sdk::{testing_env, VMContext};
@@ -17,11 +18,11 @@ fn test_add_package() {
     testing_env!(context);
     let mut contract = PackageManager::default();
 
-    contract.add_package(
+    drop(contract.add_package(
         "application".to_string(),
         "Demo Application".to_string(),
         "https://github.com/application".to_string(),
-    );
+    ));
     let package = contract.get_package(
         "f50a6253c64e399051d942acc129c421cf1ccc591b7ba68f8e3365a23b201ce7".to_string(),
     );
@@ -36,11 +37,11 @@ fn test_add_release() {
     testing_env!(context);
     let mut contract = PackageManager::default();
 
-    contract.add_package(
+    drop(contract.add_package(
         "application".to_string(),
         "Demo Application".to_string(),
         "https://github.com/application".to_string(),
-    );
+    ));
     contract.add_release(
         "application".to_string(),
         "0.1.0".to_string(),
@@ -54,23 +55,23 @@ fn test_add_release() {
 fn test_get_packages_with_multiple_offsets_and_limits() {
     let mut contract = PackageManager::default();
 
-    contract.add_package(
+    drop(contract.add_package(
         "application".to_string(),
         "Demo Application".to_string(),
         "https://github.com/application".to_string(),
-    );
+    ));
 
-    contract.add_package(
+    drop(contract.add_package(
         "package1".to_string(),
         "Package 1".to_string(),
         "https://github.com/package1".to_string(),
-    );
+    ));
 
-    contract.add_package(
+    drop(contract.add_package(
         "package2".to_string(),
         "Package 2".to_string(),
         "https://github.com/package2".to_string(),
-    );
+    ));
 
     // Test with offset 0 and limit 1
     let packages_offset0_limit1 = contract.get_packages(0, 1);
@@ -100,17 +101,17 @@ fn test_get_packages_with_multiple_offsets_and_limits() {
 #[test]
 fn test_get_releases() {
     let mut contract = PackageManager::default();
-    contract.add_package(
+    drop(contract.add_package(
         "application".to_string(),
         "Demo Application".to_string(),
         "https://github.com/application".to_string(),
-    );
+    ));
 
-    contract.add_package(
+    drop(contract.add_package(
         "package1".to_string(),
         "Package 1".to_string(),
         "https://github.com/package1".to_string(),
-    );
+    ));
     contract.add_release(
         "application".to_string(),
         "0.0.1".to_string(),
