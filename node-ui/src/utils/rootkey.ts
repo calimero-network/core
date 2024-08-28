@@ -84,7 +84,7 @@ export function mapApiResponseToObjects(
             type: Network.NEAR,
           };
           return nearObject;
-        } else if(obj.wallet.type === Network.ETH) {
+        } else if (obj.wallet.type === Network.ETH) {
           const ethObject: ETHRootKey = {
             signingKey: obj.signing_key,
             type: Network.ETH,
@@ -92,10 +92,10 @@ export function mapApiResponseToObjects(
             chainId: obj.wallet.chainId ?? 1,
           };
           return ethObject;
-        }else {
+        } else {
           const starknetObject: StarknetRootKey = {
             signingKey: obj.signing_key,
-            type: (Network.STARKNET + ' ' + obj.wallet.walletName),
+            type: Network.STARKNET + ' ' + obj.wallet.walletName,
             createdAt: obj.created_at,
           };
           return starknetObject;

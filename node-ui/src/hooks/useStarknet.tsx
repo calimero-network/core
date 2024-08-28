@@ -35,7 +35,10 @@ interface RequestNodeDataProps {
 
 interface useStarknetReturn {
   login: ({ isLogin, setErrorMessage }: LoginProps) => void;
-  walletLogin: (walletType: string, setErrorMessage: (msg: string) => void) => void;
+  walletLogin: (
+    walletType: string,
+    setErrorMessage: (msg: string) => void,
+  ) => void;
   ready: boolean;
   starknetInstance: StarknetWindowObject | null;
   argentXId: string;
@@ -44,12 +47,15 @@ interface useStarknetReturn {
   signMessage: (setErrorMessage: (msg: string) => void) => void;
   logout: (setErrorMessage: (msg: string) => void) => void;
   requestNodeData: ({ setErrorMessage }: RequestNodeDataProps) => void;
-  changeMetamaskNetwork: (networkId: string, setErrorMessage: (msg: string) => void) => void;
+  changeMetamaskNetwork: (
+    networkId: string,
+    setErrorMessage: (msg: string) => void,
+  ) => void;
 }
 
 const t = translations.useStarknet;
 
-export function useStarknet(): useStarknetReturn  {
+export function useStarknet(): useStarknetReturn {
   const [starknetInstance, setStarknetInstance] =
     useState<StarknetWindowObject | null>(null);
   const [walletSignatureData, setWalletSignatureData] =
@@ -61,44 +67,47 @@ export function useStarknet(): useStarknetReturn  {
 
   const argentXId = 'argentX';
 
-  const walletLogin = useCallback(async (walletType: string, setErrorMessage: (msg: string) => void) => {
-    try {
-      setReady(false);
-      const starknetInstance = getStarknet();
-      if (starknetInstance) {
-        if (walletType === argentXId) {
-          if(window.starknet_argentX) {
-            await starknetInstance.enable(window.starknet_argentX);
-            const wallets: StarknetWindowObject[] =
-            await starknetInstance.getAvailableWallets();
-            const argentX: StarknetWindowObject = wallets.find(
-              (wallet: any) => wallet.id === argentXId,
-            ) as StarknetWindowObject;
-            setStarknetInstance(argentX);
-          }else {
-            setErrorMessage(t.walletNotFound);
-          }
-        } else {
-          if(window.starknet_metamask) {
-            await starknetInstance.enable(window.starknet_metamask);
-            const wallets: StarknetWindowObject[] =
-              await starknetInstance.getAvailableWallets();
-            const metamask: StarknetWindowObject = wallets.find(
-              (wallet: any) => wallet.id === 'metamask',
-            ) as StarknetWindowObject;
-            setStarknetInstance(metamask);
-          }else {
-            setErrorMessage(t.walletNotFound);
+  const walletLogin = useCallback(
+    async (walletType: string, setErrorMessage: (msg: string) => void) => {
+      try {
+        setReady(false);
+        const starknetInstance = getStarknet();
+        if (starknetInstance) {
+          if (walletType === argentXId) {
+            if (window.starknet_argentX) {
+              await starknetInstance.enable(window.starknet_argentX);
+              const wallets: StarknetWindowObject[] =
+                await starknetInstance.getAvailableWallets();
+              const argentX: StarknetWindowObject = wallets.find(
+                (wallet: any) => wallet.id === argentXId,
+              ) as StarknetWindowObject;
+              setStarknetInstance(argentX);
+            } else {
+              setErrorMessage(t.walletNotFound);
+            }
+          } else {
+            if (window.starknet_metamask) {
+              await starknetInstance.enable(window.starknet_metamask);
+              const wallets: StarknetWindowObject[] =
+                await starknetInstance.getAvailableWallets();
+              const metamask: StarknetWindowObject = wallets.find(
+                (wallet: any) => wallet.id === 'metamask',
+              ) as StarknetWindowObject;
+              setStarknetInstance(metamask);
+            } else {
+              setErrorMessage(t.walletNotFound);
+            }
           }
         }
+      } catch (error) {
+        console.error(`${t.errorLogin}: ${error}`);
+        setErrorMessage(t.errorLogin);
       }
-    } catch (error) {
-      console.error(`${t.errorLogin}: ${error}`);
-      setErrorMessage(t.errorLogin);
-    }
 
-    setReady(true);
-  }, []);
+      setReady(true);
+    },
+    [],
+  );
 
   const requestNodeData = useCallback(
     async ({ setErrorMessage }: RequestNodeDataProps) => {
@@ -144,80 +153,101 @@ export function useStarknet(): useStarknetReturn  {
     [showServerDownPopup],
   );
 
-  const changeMetamaskNetwork = useCallback(async (networkId: string, setErrorMessage: (msg: string) => void) => {
-    try {
-      setReady(false);
-      setErrorMessage('');
-      if (starknetInstance) {
-        await starknetInstance.request({
-          type: "wallet_switchStarknetChain",
-          params: {
-            id: starknetInstance.id,
-            chainId: networkId === constants.NetworkName.SN_MAIN ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA,
-            baseUrl: networkId === constants.NetworkName.SN_MAIN ? constants.BaseUrl.SN_MAIN : constants.BaseUrl.SN_SEPOLIA,
-            chainName: networkId === constants.NetworkName.SN_MAIN ? constants.NetworkName.SN_MAIN : constants.NetworkName.SN_SEPOLIA,
-          }
-        })
-      }
-    } catch (error) {
-      console.error(`${t.errorChangingNetwork}: ${error}`);
-      setErrorMessage(`${t.errorChangingNetwork}`);
-    }
-    setReady(true);
-  }, [starknetInstance]);
-
-  const signMessage = useCallback(async (setErrorMessage: (msg: string) => void) => {
-    try {
-      setErrorMessage('');
-      setReady(false);
-      let chainId: string = starknetInstance?.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA;
-      if(starknetInstance && starknetInstance.id !== argentXId) {
-        chainId = starknetInstance.chainId === constants.StarknetChainId.SN_MAIN ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA;
-      }
-      if (starknetInstance && walletSignatureData) {
-        const message = {
-          domain: {
-            name: 'ServerChallenge',
-            chainId: chainId,
-            version: '1',
-            revision: '1',
-          },
-          types: {
-            StarknetDomain: [
-              { name: 'name', type: 'shortstring' },
-              { name: 'chainId', type: 'felt' },
-              { name: 'version', type: 'shortstring' },
-              { name: 'revision', type: 'shortstring' },
-            ],
-            Challenge: [
-              { name: 'nodeSignature', type: 'string' },
-              { name: 'publicKey', type: 'string' },
-            ],
-          },
-          primaryType: 'Challenge',
-          message: {
-            nodeSignature: walletSignatureData.payload?.message.nodeSignature,
-            publicKey: walletSignatureData.payload?.message.publicKey,
-          },
-        };
-        const signature: Signature =
-          await starknetInstance.account.signMessage(message);
-        const messageHash: String =
-          await starknetInstance.account.hashMessage(message);
-
-        if (signature) {
-          setSignData({
-            signature: signature,
-            messageHash: messageHash,
+  const changeMetamaskNetwork = useCallback(
+    async (networkId: string, setErrorMessage: (msg: string) => void) => {
+      try {
+        setReady(false);
+        setErrorMessage('');
+        if (starknetInstance) {
+          await starknetInstance.request({
+            type: 'wallet_switchStarknetChain',
+            params: {
+              id: starknetInstance.id,
+              chainId:
+                networkId === constants.NetworkName.SN_MAIN
+                  ? constants.StarknetChainId.SN_MAIN
+                  : constants.StarknetChainId.SN_SEPOLIA,
+              baseUrl:
+                networkId === constants.NetworkName.SN_MAIN
+                  ? constants.BaseUrl.SN_MAIN
+                  : constants.BaseUrl.SN_SEPOLIA,
+              chainName:
+                networkId === constants.NetworkName.SN_MAIN
+                  ? constants.NetworkName.SN_MAIN
+                  : constants.NetworkName.SN_SEPOLIA,
+            },
           });
         }
+      } catch (error) {
+        console.error(`${t.errorChangingNetwork}: ${error}`);
+        setErrorMessage(`${t.errorChangingNetwork}`);
       }
-    } catch (error) {
-      console.error(`${t.signMessageError}: ${error}`);
-      setErrorMessage(t.signMessageError);
-    }
-    setReady(true);
-  }, [starknetInstance, walletSignatureData]);
+      setReady(true);
+    },
+    [starknetInstance],
+  );
+
+  const signMessage = useCallback(
+    async (setErrorMessage: (msg: string) => void) => {
+      try {
+        setErrorMessage('');
+        setReady(false);
+        let chainId: string =
+          starknetInstance?.chainId === 'SN_MAIN'
+            ? constants.StarknetChainId.SN_MAIN
+            : constants.StarknetChainId.SN_SEPOLIA;
+        if (starknetInstance && starknetInstance.id !== argentXId) {
+          chainId =
+            starknetInstance.chainId === constants.StarknetChainId.SN_MAIN
+              ? constants.StarknetChainId.SN_MAIN
+              : constants.StarknetChainId.SN_SEPOLIA;
+        }
+        if (starknetInstance && walletSignatureData) {
+          const message = {
+            domain: {
+              name: 'ServerChallenge',
+              chainId: chainId,
+              version: '1',
+              revision: '1',
+            },
+            types: {
+              StarknetDomain: [
+                { name: 'name', type: 'shortstring' },
+                { name: 'chainId', type: 'felt' },
+                { name: 'version', type: 'shortstring' },
+                { name: 'revision', type: 'shortstring' },
+              ],
+              Challenge: [
+                { name: 'nodeSignature', type: 'string' },
+                { name: 'publicKey', type: 'string' },
+              ],
+            },
+            primaryType: 'Challenge',
+            message: {
+              nodeSignature: walletSignatureData.payload?.message.nodeSignature,
+              publicKey: walletSignatureData.payload?.message.publicKey,
+            },
+          };
+          const signature: Signature =
+            await starknetInstance.account.signMessage(message);
+          const messageHash: String =
+            await starknetInstance.account.hashMessage(message);
+
+          if (signature) {
+            setSignData({
+              signature: signature,
+              messageHash: messageHash,
+            });
+          }
+        }
+      } catch (error) {
+        console.error(`${t.signMessageError}: ${error}`);
+        setErrorMessage(t.signMessageError);
+      }
+      setReady(true);
+    },
+    [starknetInstance, walletSignatureData],
+  );
 
   const login = useCallback(
     async ({ isLogin, setErrorMessage }: LoginProps) => {
@@ -229,12 +259,28 @@ export function useStarknet(): useStarknetReturn  {
       } else if (!starknetInstance) {
         console.error(t.noAddressError);
         setErrorMessage(t.noAddressError);
-      } else if(starknetInstance && walletSignatureData && walletSignatureData.payload) {
-        let chainId: string = starknetInstance.chainId === 'SN_MAIN' ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA;
-        let rpcUrl: string = starknetInstance.chainId === 'SN_MAIN' ? constants.RPC_NODES.SN_MAIN[0] : constants.RPC_NODES.SN_SEPOLIA[0];
-        if(starknetInstance.id !== argentXId) {
-          chainId = starknetInstance.chainId === constants.StarknetChainId.SN_MAIN ? constants.StarknetChainId.SN_MAIN : constants.StarknetChainId.SN_SEPOLIA;
-          rpcUrl = starknetInstance.chainId === constants.StarknetChainId.SN_MAIN ? constants.RPC_NODES.SN_MAIN[0] : constants.RPC_NODES.SN_SEPOLIA[0];
+      } else if (
+        starknetInstance &&
+        walletSignatureData &&
+        walletSignatureData.payload
+      ) {
+        let chainId: string =
+          starknetInstance.chainId === 'SN_MAIN'
+            ? constants.StarknetChainId.SN_MAIN
+            : constants.StarknetChainId.SN_SEPOLIA;
+        let rpcUrl: string =
+          starknetInstance.chainId === 'SN_MAIN'
+            ? constants.RPC_NODES.SN_MAIN[0]
+            : constants.RPC_NODES.SN_SEPOLIA[0];
+        if (starknetInstance.id !== argentXId) {
+          chainId =
+            starknetInstance.chainId === constants.StarknetChainId.SN_MAIN
+              ? constants.StarknetChainId.SN_MAIN
+              : constants.StarknetChainId.SN_SEPOLIA;
+          rpcUrl =
+            starknetInstance.chainId === constants.StarknetChainId.SN_MAIN
+              ? constants.RPC_NODES.SN_MAIN[0]
+              : constants.RPC_NODES.SN_SEPOLIA[0];
         }
         const walletMetadata: WalletMetadata = {
           wallet: getWalletType(starknetInstance?.id),
@@ -254,7 +300,9 @@ export function useStarknet(): useStarknetReturn  {
           walletMetadata: walletMetadata,
         };
         const result: ResponseData<LoginResponse> = isLogin
-          ? await apiClient(showServerDownPopup).node().login(starknetLoginRequest)
+          ? await apiClient(showServerDownPopup)
+              .node()
+              .login(starknetLoginRequest)
           : await apiClient(showServerDownPopup)
               .node()
               .addRootKey(starknetLoginRequest);
@@ -269,7 +317,14 @@ export function useStarknet(): useStarknetReturn  {
         }
       }
       setReady(true);
-    }, [navigate, signData, starknetInstance, showServerDownPopup, walletSignatureData],
+    },
+    [
+      navigate,
+      signData,
+      starknetInstance,
+      showServerDownPopup,
+      walletSignatureData,
+    ],
   );
 
   const logout = useCallback((setErrorMessage: (msg: string) => void) => {

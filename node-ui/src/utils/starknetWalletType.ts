@@ -1,4 +1,4 @@
-import { WalletType } from "../api/dataSource/NodeDataSource";
+import { WalletType } from '../api/dataSource/NodeDataSource';
 
 export const getWalletType = (walletType: string): WalletType => {
   switch (walletType) {

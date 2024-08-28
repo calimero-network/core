@@ -153,7 +153,10 @@ interface LoginWithStarknetProps {
   errorMessage: string;
   setErrorMessage: (msg: string) => void;
   logout: (setErrorMessage: (msg: string) => void) => void;
-  changeMetamaskNetwork: (network: string, setErrorMessage: (msg: string) => void) => void;
+  changeMetamaskNetwork: (
+    network: string,
+    setErrorMessage: (msg: string) => void,
+  ) => void;
 }
 
 export function StarknetWallet({
@@ -192,7 +195,10 @@ export function StarknetWallet({
               >
                 {t.loginWithArgentX}
               </span>
-              <span className="wallet-btn" onClick={() => walletLogin('metamask', setErrorMessage)}>
+              <span
+                className="wallet-btn"
+                onClick={() => walletLogin('metamask', setErrorMessage)}
+              >
                 {t.loginWithMetaMask}
               </span>
             </header>
@@ -243,11 +249,7 @@ export function StarknetWallet({
           <div className="back-wrapper" onClick={() => navigateBack}>
             {t.backToLoginPage}
           </div>
-          {errorMessage && (
-            <div className="error-message">
-              {errorMessage}
-            </div>
-          )}
+          {errorMessage && <div className="error-message">{errorMessage}</div>}
         </div>
       </Wrapper>
     </Fragment>

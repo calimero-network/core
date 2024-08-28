@@ -78,7 +78,10 @@ export default function LoginSelector({
       <div className="container">
         <div className="center-container">{t.title}</div>
         <div className="flex-container">
-          <button className="login-btn metamask-btn" onClick={navigateMetamaskLogin}>
+          <button
+            className="login-btn metamask-btn"
+            onClick={navigateMetamaskLogin}
+          >
             <img src={MetamaskIcon as unknown as string} alt="metamask-icon" />
             <span>{t.metamaskButtonText}</span>
           </button>

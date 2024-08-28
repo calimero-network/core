@@ -190,7 +190,11 @@ export namespace WalletType {
     return { type: 'ETH', chainId } as ETHWalletType;
   }
 
-  export function STARKNET({ walletName = 'MS' }: {walletName?: string;}): WalletType {
+  export function STARKNET({
+    walletName = 'MS',
+  }: {
+    walletName?: string;
+  }): WalletType {
     return { type: 'STARKNET', walletName } as SNWalletType;
   }
 }

@@ -37,7 +37,6 @@ export default function StarknetLogin({ isLogin }: StarknetLoginProps) {
     }
   }, [login, signData, isLogin, starknetInstance]);
 
-
   return (
     <ContentWrapper>
       <StarknetWallet
