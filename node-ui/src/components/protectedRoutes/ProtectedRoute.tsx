@@ -20,7 +20,7 @@ export default function ProtectedRoute() {
     } else {
       if (!(isAuthorized && clientKey)) {
         //show setup if not authorized
-        navigate(`/${search}`);
+        navigate(`/${search ? `${search}` : '/'}`);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
