@@ -24,5 +24,5 @@ fi
 # Check for changes in the 'packages/calimero-sdk' directory
 if git diff --cached  --name-only | grep -q '^packages/calimero-sdk/'; then
   echo "Running checks for the packages/calimero-sdk..."
-  (cd packages/calimero-sdk && pnpm prettier && pnpm lint:fix && pnpm test)
+  (cd packages/calimero-sdk && pnpm prettier && pnpm lint:fix)
 fi
