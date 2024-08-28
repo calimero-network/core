@@ -65,7 +65,6 @@ export interface RpcQueryParams<Args> {
   method: string;
   argsJson: Args;
   executorPublicKey: number[];
-
 }
 
 export interface RpcQueryResponse<Output> {

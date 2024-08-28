@@ -142,7 +142,7 @@ export function MetamaskRootKey({
     signData,
     successRedirect,
     walletSignatureData?.payload,
-    contextId
+    contextId,
   ]);
 
   useEffect(() => {
@@ -203,8 +203,11 @@ export function MetamaskRootKey({
             whiteSpace: 'break-spaces',
           }}
         >
-          <span>Choose which account from your wallet you want to add a node root key for.
-          Each key, and therefore each account, can only be added once</span>
+          <span>
+            Choose which account from your wallet you want to add a node root
+            key for. Each key, and therefore each account, can only be added
+            once
+          </span>
         </div>
         <header
           style={{
