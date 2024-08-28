@@ -39,14 +39,18 @@ export const SetupModal: React.FC<SetupModalProps> = (
 
   function validateContext(value: string) {
     if (value.length < 32 || value.length > 44) {
-      setApplicationError('Application ID must be between 32 and 44 characters long.');
+      setApplicationError(
+        'Application ID must be between 32 and 44 characters long.',
+      );
       return;
     }
     const validChars =
       /^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]+$/;
 
     if (!validChars.test(value)) {
-      setApplicationError('Application ID must contain only base58 characters.');
+      setApplicationError(
+        'Application ID must contain only base58 characters.',
+      );
       return;
     }
   }

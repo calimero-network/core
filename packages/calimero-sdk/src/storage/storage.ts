@@ -4,12 +4,12 @@ export const CLIENT_KEY = 'client-key';
 export const APP_URL = 'app-url';
 export const AUTHORIZED = 'node-authorized';
 export const CONTEXT_IDENTITY = 'context-identity';
-export const ACCESS_TOKEN = "access-token";
-export const REFRESH_TOKEN = "refresh-token";
+export const ACCESS_TOKEN = 'access-token';
+export const REFRESH_TOKEN = 'refresh-token';
 
 export const setAccessToken = (accessToken: string) => {
   localStorage.setItem(ACCESS_TOKEN, JSON.stringify(accessToken));
-}
+};
 
 export const getAccessToken = (): string | null => {
   if (typeof window !== 'undefined' && window.localStorage) {
@@ -23,7 +23,7 @@ export const getAccessToken = (): string | null => {
 
 export const setRefreshToken = (refreshToken: string) => {
   localStorage.setItem(REFRESH_TOKEN, JSON.stringify(refreshToken));
-}
+};
 
 export const getRefreshToken = (): string | null => {
   if (typeof window !== 'undefined' && window.localStorage) {
