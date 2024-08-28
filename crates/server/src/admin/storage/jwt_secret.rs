@@ -25,34 +25,33 @@ impl JwtTokenSecretEntry {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Copy)]
 pub struct JwtTokenSecret {
-    jwt_secret: Vec<u8>,
+    jwt_secret: [u8; 32],
 }
 
 impl JwtTokenSecret {
-    pub fn jwt_secret(&self) -> &Vec<u8> {
+    pub fn jwt_secret(&self) -> &[u8; 32] {
         &self.jwt_secret
     }
 }
 
 // Method to generate a new JWT key
-fn generate_jwt_secret() -> Vec<u8> {
-    let mut rng = rand::thread_rng();
-    (0..32).map(|_| rng.gen()).collect()
+fn generate_jwt_secret() -> [u8; 32] {
+    rand::thread_rng().gen()
 }
 
 // Method to insert the JWT key if it doesn't exist
-pub fn get_or_create_jwt_secret(store: Store) -> eyre::Result<JwtTokenSecret> {
+pub fn get_or_create_jwt_secret(store: &Store) -> eyre::Result<JwtTokenSecret> {
     // Check if the key already exists
-    if let Some(existing_secret) = get_jwt_secret(store.clone())? {
+    if let Some(existing_secret) = get_jwt_secret(&store.clone())? {
         return Ok(existing_secret);
     }
 
     // Generate a new key if it doesn't exist
     let new_secret = generate_jwt_secret();
     let jwt_secret = JwtTokenSecret {
-        jwt_secret: new_secret.to_vec(),
+        jwt_secret: new_secret,
     };
 
     let entry = JwtTokenSecretEntry::new();
@@ -64,13 +63,9 @@ pub fn get_or_create_jwt_secret(store: Store) -> eyre::Result<JwtTokenSecret> {
 }
 
 // Method to get the JWT key from the store
-pub fn get_jwt_secret(store: Store) -> eyre::Result<Option<JwtTokenSecret>> {
+pub fn get_jwt_secret(store: &Store) -> eyre::Result<Option<JwtTokenSecret>> {
     let entry = JwtTokenSecretEntry::new();
     let handle = store.handle();
 
-    match handle.get(&entry) {
-        Ok(Some(jwt_secret)) => Ok(Some(jwt_secret)),
-        Ok(None) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
+    handle.get(&entry).map_err(Into::into)
 }

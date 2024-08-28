@@ -76,6 +76,11 @@ struct AddClientKeyResponse {
 }
 #[derive(Debug, Serialize)]
 struct JwtResponse {
+    data: JwtTokens,
+}
+
+#[derive(Debug, Serialize)]
+struct JwtTokens {
     access_token: String,
     refresh_token: String,
 }
@@ -108,10 +113,11 @@ pub async fn generate_jwt_token_handler(
 ) -> impl IntoResponse {
     match generate_jwt_tokens(req, state.store.clone()) {
         Ok(jwt_tokens) => {
-            let response = JwtResponse {
+            let tokens = JwtTokens {
                 access_token: jwt_tokens.access_token,
                 refresh_token: jwt_tokens.refresh_token,
             };
+            let response = JwtResponse { data: tokens };
             ApiResponse { payload: response }.into_response()
         }
         Err(err) => {
@@ -128,10 +134,11 @@ pub async fn refresh_jwt_token_handler(
 ) -> impl IntoResponse {
     match refresh_access_token(&req.refresh_token, state.store.clone()) {
         Ok(jwt_tokens) => {
-            let response = JwtResponse {
+            let tokens = JwtTokens {
                 access_token: jwt_tokens.access_token,
                 refresh_token: jwt_tokens.refresh_token,
             };
+            let response = JwtResponse { data: tokens };
             ApiResponse { payload: response }.into_response()
         }
         Err(err) => {

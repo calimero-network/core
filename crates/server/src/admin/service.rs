@@ -21,7 +21,9 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::storage::ssl::get_ssl;
-use crate::admin::handlers::add_client_key::add_client_key_handler;
+use crate::admin::handlers::add_client_key::{
+    add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
+};
 use crate::admin::handlers::applications::{
     get_application, get_application_details_handler, install_application_handler,
     install_dev_application_handler, list_applications_handler,
@@ -122,14 +124,8 @@ pub(crate) fn setup(
         .route("/certificate", get(certificate_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/add-client-key", post(add_client_key_handler))
-        .route(
-            "/refresh-jwt-token",
-            post(handlers::add_client_key::refresh_jwt_token_handler),
-        )
-        .route(
-            "/generate-jwt-token",
-            post(handlers::add_client_key::generate_jwt_token_handler),
-        )
+        .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
+        .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .route(
             "/dev/install-application",
             post(install_dev_application_handler),

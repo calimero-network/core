@@ -237,7 +237,7 @@ pub enum WalletSignature {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JwtTokenRequest {
-    pub context_id: calimero_primitives::context::ContextId,
+    pub context_id: ContextId,
     pub executor_public_key: String,
 }
 
