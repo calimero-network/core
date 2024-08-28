@@ -4,7 +4,7 @@ import { getOrCreateKeypair } from '../auth/ed25519';
 
 import apiClient from '../api';
 import {
-  EthSignatureMessageMetadata,
+  StarknetSignatureMessageMetadata,
   LoginRequest,
   LoginResponse,
   NodeChallenge,
@@ -139,7 +139,7 @@ export function useStarknet(): useStarknetReturn {
           challengeResponseData.data?.timestamp ?? new Date().getTime(),
         message: JSON.stringify(signatureMessage),
       };
-      const signatureMetadata: EthSignatureMessageMetadata = {};
+      const signatureMetadata: StarknetSignatureMessageMetadata = {};
       const payload: Payload = {
         message: signatureMessageMetadata,
         metadata: signatureMetadata,
