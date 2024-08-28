@@ -1,7 +1,7 @@
 import React from 'react';
-import { LoginSelector } from '@calimero-is-near/calimero-p2p-sdk';
 import { useNavigate } from 'react-router-dom';
 import ContentWrapper from '../components/login/ContentWrapper';
+import LoginSelector from '../components/login/wallets/LoginSelector';
 
 export default function AddRootKeyPage() {
   const navigate = useNavigate();
@@ -10,7 +10,7 @@ export default function AddRootKeyPage() {
       <LoginSelector
         navigateMetamaskLogin={() => navigate('/identity/root-key/metamask')}
         navigateNearLogin={() => navigate('/identity/root-key/near')}
-        cardBackgroundColor={undefined}
+        navigateStarknetLogin={() => navigate('/identity/root-key/starknet')}
       />
     </ContentWrapper>
   );

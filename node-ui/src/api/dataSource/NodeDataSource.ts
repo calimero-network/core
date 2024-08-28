@@ -5,6 +5,7 @@ import { ApiResponse, ResponseData } from '../response';
 import { NodeApi } from '../nodeApi';
 import translations from '../../constants/en.global.json';
 import { createAppMetadata } from '../../utils/metadata';
+import { Signature } from 'starknet';
 
 const t = translations.nodeDataSource;
 
@@ -14,6 +15,7 @@ export enum Network {
   BNB = 'BNB',
   ARB = 'ARB',
   ZK = 'ZK',
+  STARKNET = 'STARKNET',
 }
 
 export interface ContextClientKeysList {
@@ -82,9 +84,14 @@ export interface NearRootKey extends RootKey {
   type: Network.NEAR;
 }
 
+export interface StarknetRootKey extends RootKey {
+  type: String;
+}
+
 interface NetworkType {
   type: Network;
   chainId?: number;
+  walletName?: string;
 }
 
 export interface ApiRootKey {
@@ -163,7 +170,11 @@ interface NEARWalletType extends WalletTypeBase<'NEAR'> {
   networkId: string;
 }
 
-export type WalletType = ETHWalletType | NEARWalletType;
+interface SNWalletType extends WalletTypeBase<'STARKNET'> {
+  walletName: string;
+}
+
+export type WalletType = ETHWalletType | NEARWalletType | SNWalletType;
 
 // eslint-disable-next-line @typescript-eslint/no-redeclare
 export namespace WalletType {
@@ -178,11 +189,26 @@ export namespace WalletType {
   export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
     return { type: 'ETH', chainId } as ETHWalletType;
   }
+
+  export function STARKNET({
+    walletName = 'MS',
+  }: {
+    walletName?: string;
+  }): WalletType {
+    return { type: 'STARKNET', walletName } as SNWalletType;
+  }
 }
 
 export interface WalletMetadata {
   wallet: WalletType;
   verifyingKey: String;
+  walletAddress?: String;
+  networkMetadata?: NetworkMetadata;
+}
+
+export interface NetworkMetadata {
+  chainId: String;
+  rpcUrl: String;
 }
 
 export interface Payload {
@@ -190,8 +216,13 @@ export interface Payload {
   metadata: SignatureMetadata;
 }
 
+export interface SignData {
+  signature: Signature;
+  messageHash: String;
+}
+
 export interface LoginRequest {
-  walletSignature: String;
+  walletSignature: SignData | string;
   payload: Payload;
   walletMetadata: WalletMetadata;
 }
@@ -214,6 +245,8 @@ export interface NearSignatureMessageMetadata extends SignatureMetadata {
 }
 
 export interface EthSignatureMessageMetadata extends SignatureMetadata {}
+
+export interface StarknetSignatureMessageMetadata extends SignatureMetadata {}
 
 export interface WalletSignatureData {
   payload: Payload | undefined;
