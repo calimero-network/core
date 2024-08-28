@@ -25,13 +25,8 @@ const Wrapper = styled.div`
       margin-bottom: .5rem;
       color: #FFFFFF;
     }
-<<<<<<< HEAD
-    
-    .subtitle-wrap {
-=======
 
     .subtitle-wrapper {
->>>>>>> 7259ed17 (fix:updated alt of starknet icon, fixed naming of CSS classes)
       display: flex;
       justify-content: center;
       align-items: center;
@@ -173,7 +168,7 @@ export function StarknetWallet({
   logout,
   changeMetamaskNetwork,
 }: LoginWithStarknetProps) {
-  const t = translations.loginPage.starknetLogin;
+  const t = isLogin ? translations.loginPage.starknetLogin : translations.addRootKeyPage.starknetRootKey;
 
   if (!ready) {
     return <Loading />;
@@ -183,7 +178,7 @@ export function StarknetWallet({
     <Fragment>
       <Wrapper>
         <div className="wrapper">
-          <span className="title">{isLogin ? t.title : t.titleRootKey}</span>
+          <span className="title">{t.title}</span>
           <div className="subtitle-wrapper">
             <span className="subtitle-content">{t.subtitle}</span>
           </div>
@@ -193,13 +188,13 @@ export function StarknetWallet({
                 className="wallet-btn"
                 onClick={() => walletLogin('argentX', setErrorMessage)}
               >
-                {t.loginWithArgentX}
+                {t.argentXButton}
               </span>
               <span
                 className="wallet-btn"
                 onClick={() => walletLogin('metamask', setErrorMessage)}
               >
-                {t.loginWithMetaMask}
+                {t.metamaskButton}
               </span>
             </header>
           )}
@@ -246,7 +241,7 @@ export function StarknetWallet({
               </div>
             </>
           )}
-          <div className="back-wrapper" onClick={() => navigateBack}>
+          <div className="back-wrapper" onClick={() => navigateBack()}>
             {t.backToLoginPage}
           </div>
           {errorMessage && <div className="error-message">{errorMessage}</div>}
