@@ -2,7 +2,8 @@ use core::net::{IpAddr, SocketAddr};
 use std::io::Error as IoError;
 
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
-use axum::{http::Method, Router};
+use axum::http::Method;
+use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
 use calimero_context::ContextManager;

@@ -7,7 +7,7 @@ use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_server_primitives::admin::{
     AddPublicKeyRequest, EthSignatureMessageMetadata, IntermediateAddPublicKeyRequest,
     JwtRefreshRequest, JwtTokenRequest, NearSignatureMessageMetadata, Payload,
-    SignatureMetadataEnum, StarknetSignatureMessageMetadata
+    SignatureMetadataEnum, StarknetSignatureMessageMetadata,
 };
 use calimero_store::Store;
 use chrono::Utc;

@@ -26,7 +26,6 @@ pub struct JwtToken {
 }
 
 pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToken, ApiError> {
-
     let jwt_secret = match get_jwt_secret(store.clone()) {
         Ok(Some(secret)) => secret.jwt_secret().to_vec(),
         Ok(None) => {
@@ -99,7 +98,6 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
 
 // Check if the refresh token is valid and generate new tokens
 pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToken, ApiError> {
-
     // Get the JWT secret from the DB
     let jwt_secret = match get_jwt_secret(store.clone()) {
         Ok(Some(secret)) => secret.jwt_secret().to_vec(),
