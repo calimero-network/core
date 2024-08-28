@@ -3,6 +3,42 @@ import { ClientKey } from './types';
 export const CLIENT_KEY = 'client-key';
 export const APP_URL = 'app-url';
 export const AUTHORIZED = 'node-authorized';
+export const CALLBACK_URL = 'callback-url';
+export const APPLICATION_ID = 'application-id';
+
+export const setStorageCallbackUrl = (callbackUrl: string) => {
+  localStorage.setItem(CALLBACK_URL, JSON.stringify(callbackUrl));
+};
+
+export const getStorageCallbackUrl = (): string | null => {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const storageCallbackUrl = localStorage.getItem(CALLBACK_URL);
+    if (storageCallbackUrl) {
+      let callbackUrl: string = JSON.parse(storageCallbackUrl);
+      return callbackUrl;
+    } else {
+      return null;
+    }
+  }
+  return null;
+};
+
+export const setStorageApplicationId = (applicationId: string) => {
+  localStorage.setItem(APPLICATION_ID, JSON.stringify(applicationId));
+}
+
+export const getStorageApplicationId = (): string | null => {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const storageApplicationId = localStorage.getItem(APPLICATION_ID);
+    if (storageApplicationId) {
+      let applicationId: string = JSON.parse(storageApplicationId);
+      return applicationId;
+    } else {
+      return null;
+    }
+  }
+  return null;
+}
 
 export const setStorageClientKey = (clientKey: ClientKey) => {
   localStorage.setItem(CLIENT_KEY, JSON.stringify(clientKey));
@@ -32,11 +68,14 @@ export const setStorageNodeAuthorized = () => {
 
 export const getStorageNodeAuthorized = (): boolean | null => {
   if (typeof window !== 'undefined' && window.localStorage) {
-    let authorized: boolean = JSON.parse(
-      localStorage.getItem(AUTHORIZED) ?? '',
-    );
-    if (authorized) {
-      return authorized;
+    const isAuthorized = localStorage.getItem(AUTHORIZED);
+    if (isAuthorized !== null) {
+      let authorized: boolean = JSON.parse(isAuthorized);
+      if (authorized) {
+        return authorized;
+      }
+    } else {
+      return null;
     }
   }
   return null;

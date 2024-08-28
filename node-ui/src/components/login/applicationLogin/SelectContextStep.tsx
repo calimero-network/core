@@ -144,6 +144,7 @@ export default function SelectContextStep({
                 id={i}
                 count={contextList.length}
                 onRowItemClick={setSelectedContextId}
+                key={i}
               />
             ))
           ) : (

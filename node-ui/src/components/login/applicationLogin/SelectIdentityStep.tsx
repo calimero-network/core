@@ -147,6 +147,7 @@ export default function SelectIdentityStep({
                 id={i}
                 count={contextIdentities.length}
                 onRowItemClick={setSelectedIdentity}
+                key={i}
               />
             ))
           ) : (
