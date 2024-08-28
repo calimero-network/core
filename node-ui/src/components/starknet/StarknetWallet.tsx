@@ -13,7 +13,7 @@ const Wrapper = styled.div`
   padding: 0.5rem;
   max-width: 400px;
 
-  .wrap {
+  .wrapper {
     margin-top: 1.5rem;
     display: grid;
     color: #FFFFFF;
@@ -25,8 +25,13 @@ const Wrapper = styled.div`
       margin-bottom: .5rem;
       color: #FFFFFF;
     }
+<<<<<<< HEAD
     
     .subtitle-wrap {
+=======
+
+    .subtitle-wrapper {
+>>>>>>> 7259ed17 (fix:updated alt of starknet icon, fixed naming of CSS classes)
       display: flex;
       justify-content: center;
       align-items: center;
@@ -41,7 +46,7 @@ const Wrapper = styled.div`
       }
     }
 
-    .wallet-options-wrap {
+    .wallet-options-wrapper {
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -85,7 +90,7 @@ const Wrapper = styled.div`
       }
     }
 
-    .sign-wrap {
+    .sign-wrapper {
       margin-top: 1.5rem;
       display: flex;
       align-items: center;
@@ -111,7 +116,7 @@ const Wrapper = styled.div`
         padding-left: 0.5rem;
       }
     }
-    .logout-wrap {
+    .logout-wrapper {
       padding-top: 1rem;
       font-size: 14px;
       color: #FFFFFF;
@@ -119,7 +124,7 @@ const Wrapper = styled.div`
       cursor: pointer;
     }
 
-    .back-wrap {
+    .back-wrapper {
       padding-top: 1rem;
       font-size: 14px;
       color: #FFFFFF;
@@ -174,14 +179,17 @@ export function StarknetWallet({
   return (
     <Fragment>
       <Wrapper>
-        <div className="wrap">
+        <div className="wrapper">
           <span className="title">{isLogin ? t.title : t.titleRootKey}</span>
-          <div className="subtitle-wrap">
+          <div className="subtitle-wrapper">
             <span className="subtitle-content">{t.subtitle}</span>
           </div>
           {!starknetInstance && (
-            <header className="wallet-options-wrap">
-              <span className="wallet-btn" onClick={() => walletLogin('argentX', setErrorMessage)}>
+            <header className="wallet-options-wrapper">
+              <span
+                className="wallet-btn"
+                onClick={() => walletLogin('argentX', setErrorMessage)}
+              >
                 {t.loginWithArgentX}
               </span>
               <span className="wallet-btn" onClick={() => walletLogin('metamask', setErrorMessage)}>
@@ -190,27 +198,49 @@ export function StarknetWallet({
             </header>
           )}
           {starknetInstance && walletSignatureData && (
-          <>
-            {starknetInstance?.id !== argentXId && (
-              <div className="metamask-network">
-                <label htmlFor="network">{t.currentNetwork}:</label>
-                <select name="network" defaultValue={ starknetInstance.chainId === constants.StarknetChainId.SN_MAIN ? constants.NetworkName.SN_MAIN : constants.NetworkName.SN_SEPOLIA } onChange={(e) => changeMetamaskNetwork(e.target.value, setErrorMessage)}>
-                  <option value={constants.NetworkName.SN_MAIN}>Mainnet</option>
-                  <option value={constants.NetworkName.SN_SEPOLIA}>Sepolia</option>
-                </select>
+            <>
+              {starknetInstance?.id !== argentXId && (
+                <div className="metamask-network">
+                  <label htmlFor="network">{t.currentNetwork}:</label>
+                  <select
+                    name="network"
+                    defaultValue={
+                      starknetInstance.chainId ===
+                      constants.StarknetChainId.SN_MAIN
+                        ? constants.NetworkName.SN_MAIN
+                        : constants.NetworkName.SN_SEPOLIA
+                    }
+                    onChange={(e) =>
+                      changeMetamaskNetwork(e.target.value, setErrorMessage)
+                    }
+                  >
+                    <option value={constants.NetworkName.SN_MAIN}>
+                      Mainnet
+                    </option>
+                    <option value={constants.NetworkName.SN_SEPOLIA}>
+                      Sepolia
+                    </option>
+                  </select>
+                </div>
+              )}
+              <div className="sign-wrapper">
+                <button
+                  className="sign-btn"
+                  disabled={starknetInstance === null}
+                  onClick={() => signMessage(setErrorMessage)}
+                >
+                  {t.signMessage}
+                </button>
               </div>
-            )}  
-            <div className="sign-wrap">
-              <button className="sign-btn" disabled={starknetInstance === null} onClick={() => signMessage(setErrorMessage)}>
-                {t.signMessage}
-              </button>
-            </div>
-            <div className="logout-wrap" onClick={() => logout(setErrorMessage)}>
-              {t.backToWalletSelector}
-            </div>
-          </>
+              <div
+                className="logout-wrapper"
+                onClick={() => logout(setErrorMessage)}
+              >
+                {t.backToWalletSelector}
+              </div>
+            </>
           )}
-          <div className="back-wrap" onClick={() => navigateBack}>
+          <div className="back-wrapper" onClick={() => navigateBack}>
             {t.backToLoginPage}
           </div>
           {errorMessage && (

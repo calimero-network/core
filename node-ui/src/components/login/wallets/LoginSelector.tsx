@@ -87,7 +87,7 @@ export default function LoginSelector({
             <span>{t.nearButtonText}</span>
           </button>
           <button className="login-btn" onClick={navigateStarknetLogin}>
-            <img src={StarknetIcon as unknown as string} alt="near-icon" />
+            <img src={StarknetIcon as unknown as string} alt="starknet-icon" />
             <span>{t.starknetButtonText}</span>
           </button>
         </div>
