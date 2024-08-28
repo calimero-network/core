@@ -46,12 +46,15 @@ export class NodeApiDataSource implements NodeApi {
     );
   }
 
-  async getContextIdentity(rpcBaseUrl: string, contextId: string): ApiResponse<ContextResponse> {
+  async getContextIdentity(
+    rpcBaseUrl: string,
+    contextId: string,
+  ): ApiResponse<ContextResponse> {
     const headers: Header | null = await createAuthHeader(contextId);
 
     return await this.client.get<ContextResponse>(
       `${rpcBaseUrl}/admin-api/contexts/${contextId}/identities`,
-      headers
+      headers,
     );
   }
 
@@ -64,7 +67,7 @@ export class NodeApiDataSource implements NodeApi {
 
     const headers: Header | null = await createAuthHeader(
       JSON.stringify(rootKeyRequest),
-      contextId
+      contextId,
     );
 
     return await this.client.post<LoginRequest>(
@@ -72,7 +75,7 @@ export class NodeApiDataSource implements NodeApi {
       {
         ...rootKeyRequest,
       },
-      headers
+      headers,
     );
   }
 

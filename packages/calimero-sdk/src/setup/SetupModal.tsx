@@ -186,18 +186,19 @@ export const SetupModal: React.FC<SetupModalProps> = (
             ) : (
               <>
                 <FlexContainer>
-                  {props.setContextId && props.getContextId && 
-                  (<>
-                  <Input
-                    type="text"
-                    placeholder="context id"
-                    value={contextId?.toString() || ''}
-                    onChange={(e: { target: { value: string } }) => {
-                      handleChangeContextId(e.target.value);
-                    }}
-                  />
-                  <Error>{contextError}</Error>
-                  </>)}
+                  {props.setContextId && props.getContextId && (
+                    <>
+                      <Input
+                        type="text"
+                        placeholder="context id"
+                        value={contextId?.toString() || ''}
+                        onChange={(e: { target: { value: string } }) => {
+                          handleChangeContextId(e.target.value);
+                        }}
+                      />
+                      <Error>{contextError}</Error>
+                    </>
+                  )}
                   <Input
                     type="text"
                     placeholder="node url"
