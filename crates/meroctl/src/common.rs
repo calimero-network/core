@@ -1,7 +1,10 @@
+use chrono::Utc;
 use eyre::{eyre, Result as EyreResult};
+use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
-use reqwest::Url;
+use reqwest::{Client, Response, Url};
+use serde::Serialize;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
     #[allow(clippy::wildcard_enum_match_arm)]
@@ -25,4 +28,29 @@ pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url
     url.set_path(api_path);
 
     Ok(url)
+}
+
+pub async fn get_response(
+    client: &Client,
+    url: Url,
+    body: Option<impl Serialize>,
+    keypair: &Keypair,
+) -> EyreResult<Response> {
+    let timestamp = Utc::now().timestamp().to_string();
+    let signature = keypair.sign(timestamp.as_bytes())?;
+
+    let mut builder = if body.is_some() {
+        client.post(url).json(&body)
+    } else {
+        client.get(url)
+    };
+
+    builder = builder
+        .header("X-Signature", bs58::encode(signature).into_string())
+        .header("X-Timestamp", timestamp);
+
+    builder
+        .send()
+        .await
+        .map_err(|_| eyre!("Error with client request"))
 }

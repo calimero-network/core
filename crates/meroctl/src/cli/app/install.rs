@@ -7,7 +7,7 @@ use semver::Version;
 use tracing::info;
 
 use crate::cli::RootArgs;
-use crate::common::multiaddr_to_url;
+use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -48,11 +48,13 @@ impl InstallCommand {
             self.metadata.unwrap_or_default(),
         );
 
-        let install_response = client
-            .post(install_url)
-            .json(&install_request)
-            .send()
-            .await?;
+        let install_response = get_response(
+            &client,
+            install_url,
+            Some(install_request),
+            &config.identity,
+        )
+        .await?;
 
         if !install_response.status().is_success() {
             let status = install_response.status();

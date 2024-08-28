@@ -9,6 +9,7 @@ use calimero_server_primitives::admin::{
 use camino::Utf8PathBuf;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
+use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -17,7 +18,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
-use crate::common::multiaddr_to_url;
+use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -65,7 +66,8 @@ impl CreateCommand {
                 metadata: None,
                 params,
             } => {
-                let _ = create_context(&client, multiaddr, app_id, None, params).await?;
+                let _ = create_context(&client, multiaddr, app_id, None, params, &config.identity)
+                    .await?;
             }
             Self {
                 application_id: None,
@@ -75,19 +77,47 @@ impl CreateCommand {
                 params,
             } => {
                 let path = path.canonicalize_utf8()?;
-                let application_id =
-                    install_app(&client, multiaddr, path.clone(), metadata.clone()).await?;
+                let application_id = install_app(
+                    &client,
+                    multiaddr,
+                    path.clone(),
+                    metadata.clone(),
+                    &config.identity,
+                )
+                .await?;
                 let context_id = match context_id {
                     Some(context_id) => {
-                        create_context(&client, multiaddr, application_id, Some(context_id), params)
-                            .await?
+                        create_context(
+                            &client,
+                            multiaddr,
+                            application_id,
+                            Some(context_id),
+                            params,
+                            &config.identity,
+                        )
+                        .await?
                     }
                     None => {
-                        create_context(&client, multiaddr, application_id, None, params).await?
+                        create_context(
+                            &client,
+                            multiaddr,
+                            application_id,
+                            None,
+                            params,
+                            &config.identity,
+                        )
+                        .await?
                     }
                 };
-                watch_app_and_update_context(&client, multiaddr, context_id, path, metadata)
-                    .await?;
+                watch_app_and_update_context(
+                    &client,
+                    multiaddr,
+                    context_id,
+                    path,
+                    metadata,
+                    &config.identity,
+                )
+                .await?;
             }
             _ => bail!("Invalid command configuration"),
         }
@@ -102,8 +132,9 @@ async fn create_context(
     application_id: ApplicationId,
     context_id: Option<ContextId>,
     params: Option<String>,
+    keypair: &Keypair,
 ) -> EyreResult<ContextId> {
-    if !app_installed(base_multiaddr, &application_id, client).await? {
+    if !app_installed(base_multiaddr, &application_id, client, &keypair).await? {
         bail!("Application is not installed on node.")
     }
 
@@ -114,7 +145,7 @@ async fn create_context(
         params.map(String::into_bytes).unwrap_or_default(),
     );
 
-    let response = client.post(url).json(&request).send().await?;
+    let response = get_response(client, url, Some(request), &keypair).await?;
 
     if response.status().is_success() {
         let context_response: CreateContextResponse = response.json().await?;
@@ -146,6 +177,7 @@ async fn watch_app_and_update_context(
     context_id: ContextId,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
+    keypair: &Keypair,
 ) -> EyreResult<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -182,10 +214,17 @@ async fn watch_app_and_update_context(
             | EventKind::Other => continue,
         }
 
-        let application_id =
-            install_app(client, base_multiaddr, path.clone(), metadata.clone()).await?;
+        let application_id = install_app(
+            client,
+            base_multiaddr,
+            path.clone(),
+            metadata.clone(),
+            &keypair,
+        )
+        .await?;
 
-        update_context_application(client, base_multiaddr, context_id, application_id).await?;
+        update_context_application(client, base_multiaddr, context_id, application_id, keypair)
+            .await?;
     }
 
     Ok(())
@@ -196,6 +235,7 @@ async fn update_context_application(
     base_multiaddr: &Multiaddr,
     context_id: ContextId,
     application_id: ApplicationId,
+    keypair: &Keypair,
 ) -> EyreResult<()> {
     let url = multiaddr_to_url(
         base_multiaddr,
@@ -204,7 +244,7 @@ async fn update_context_application(
 
     let request = UpdateContextApplicationRequest::new(application_id);
 
-    let response = client.post(url).json(&request).send().await?;
+    let response = get_response(client, url, Some(request), keypair).await?;
 
     if response.status().is_success() {
         println!(
@@ -228,12 +268,14 @@ async fn app_installed(
     base_multiaddr: &Multiaddr,
     application_id: &ApplicationId,
     client: &Client,
-) -> EyreResult<bool> {
+    keypair: &Keypair,
+) -> eyre::Result<bool> {
     let url = multiaddr_to_url(
         base_multiaddr,
         &format!("admin-api/dev/application/{application_id}"),
     )?;
-    let response = client.get(url).send().await?;
+
+    let response = get_response(client, url, None::<()>, keypair).await?;
 
     if !response.status().is_success() {
         bail!("Request failed with status: {}", response.status())
@@ -249,17 +291,15 @@ async fn install_app(
     base_multiaddr: &Multiaddr,
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
+    keypair: &Keypair,
 ) -> EyreResult<ApplicationId> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
 
     let install_request =
         InstallDevApplicationRequest::new(path, None, metadata.unwrap_or_default());
 
-    let install_response = client
-        .post(install_url)
-        .json(&install_request)
-        .send()
-        .await?;
+    let install_response =
+        get_response(client, install_url, Some(install_request), keypair).await?;
 
     if !install_response.status().is_success() {
         let status = install_response.status();

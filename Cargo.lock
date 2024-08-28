@@ -4827,6 +4827,7 @@ checksum = "8452105ba047068f40ff7093dd1d9da90898e63dd61736462e9cdda6a90ad3c3"
 name = "meroctl"
 version = "0.1.0"
 dependencies = [
+ "bs58 0.5.1",
  "calimero-context",
  "calimero-network",
  "calimero-node",
@@ -4836,6 +4837,7 @@ dependencies = [
  "calimero-server-primitives",
  "calimero-store",
  "camino",
+ "chrono",
  "clap",
  "color-eyre",
  "const_format",

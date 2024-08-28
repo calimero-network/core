@@ -35,8 +35,8 @@ use crate::admin::handlers::context::{
 use crate::admin::handlers::fetch_did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
+use crate::middleware;
 use crate::middleware::auth::AuthSignatureLayer;
-use crate::middleware::host::HostLayer;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -114,14 +114,15 @@ pub(crate) fn setup(
         .route("/contexts/:context_id/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
-        .layer(AuthSignatureLayer::new(store))
-        .layer(Extension(Arc::clone(&shared_state)));
+        .layer(AuthSignatureLayer::new(store));
 
     let unprotected_router = Router::new()
         .route("/health", get(health_check_handler))
         .route("/certificate", get(certificate_handler))
         .route("/request-challenge", post(request_challenge_handler))
-        .route("/add-client-key", post(add_client_key_handler))
+        .route("/add-client-key", post(add_client_key_handler));
+
+    let dev_router = Router::new()
         .route(
             "/dev/install-application",
             post(install_dev_application_handler),
@@ -137,11 +138,15 @@ pub(crate) fn setup(
             post(update_application_id),
         )
         .route("/dev/applications", get(list_applications_handler))
-        .layer(Extension(shared_state));
+        .route_layer(axum::middleware::from_fn(
+            middleware::dev_auth::dev_mode_auth,
+        ));
 
     let admin_router = Router::new()
-        .nest("/", unprotected_router)
-        .nest("/", protected_router)
+        .merge(unprotected_router)
+        .merge(protected_router)
+        .merge(dev_router)
+        .layer(Extension(shared_state.clone()))
         .layer(session_layer);
 
     #[cfg(feature = "host_layer")]
