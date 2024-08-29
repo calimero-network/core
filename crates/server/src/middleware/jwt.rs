@@ -74,7 +74,7 @@ where
 
 #[derive(Debug)]
 struct JwtHeader {
-    token: String
+    token: String,
 }
 
 pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<'static>> {
@@ -101,7 +101,9 @@ fn get_jwt_token_from_headers(headers: &HeaderMap) -> Result<JwtHeader, Unauthor
 
     let token = extract_token_from_header(authorization_str)?;
 
-    let auth = JwtHeader { token: token.to_string() };
+    let auth = JwtHeader {
+        token: token.to_string(),
+    };
     Ok(auth)
 }
 
