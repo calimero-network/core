@@ -229,12 +229,12 @@ export interface ContextIdentitiesResponse {
 }
 
 export interface JsonWebToken {
-  access_token: string;
-  refresh_token: string;
+  accessToken: string;
+  refreshToken: string;
 }
 
 export interface CreateTokenResponse {
-  jwt_token: JsonWebToken;
+  data: JsonWebToken;
 }
 
 export class NodeDataSource implements NodeApi {
@@ -543,7 +543,7 @@ export class NodeDataSource implements NodeApi {
     }
 
     return await this.client.post<CreateTokenResponse>(
-      `${getAppEndpointKey()}/admin-api/contexts/${contextId}/identities`,
+      `${getAppEndpointKey()}/admin-api/generate-jwt-token`,
       {
         contextId,
         executorPublicKey: contextIdentity,

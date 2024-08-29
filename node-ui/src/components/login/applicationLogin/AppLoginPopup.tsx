@@ -71,16 +71,16 @@ export default function AppLoginPopup({
     }
   }, [selectedContextId, showServerDownPopup]);
 
-  const finishLogin = (accessToken?: string) => {
-    if (!accessToken) {
+  const finishLogin = (accessTokens?: string) => {
+    if (!accessTokens) {
       window.location.href = callbackUrl;
       return;
     }
     try {
-      const tokenData = JSON.parse(accessToken);
-      const { access_token, refresh_token } = tokenData;
-      const encodedAccessToken = encodeURIComponent(access_token);
-      const encodedRefreshToken = encodeURIComponent(refresh_token);
+      const tokenData = JSON.parse(accessTokens);
+      const { accessToken, refreshToken } = tokenData;
+      const encodedAccessToken = encodeURIComponent(accessToken);
+      const encodedRefreshToken = encodeURIComponent(refreshToken);
       const newUrl = `${callbackUrl}?access_token=${encodedAccessToken}&refresh_token=${encodedRefreshToken}`;
       window.location.href = newUrl;
     } catch (error) {
@@ -96,9 +96,9 @@ export default function AppLoginPopup({
       await apiClient(showServerDownPopup)
         .node()
         .createAccessToken(selectedContextId, selectedIdentity);
-    const accessToken = createTokenResponse.data?.jwt_token;
-    if (accessToken) {
-      finishLogin(JSON.stringify(accessToken));
+    const accessTokens = createTokenResponse.data;
+    if (accessTokens) {
+      finishLogin(JSON.stringify(accessTokens));
     }
   };
 
