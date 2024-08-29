@@ -9,6 +9,7 @@ interface CreateAccessTokenStepProps {
   selectedContextId: string;
   selectedIdentity: string;
   onCreateToken: () => void;
+  errorMessage: string;
 }
 
 export default function CreateAccessTokenStep({
@@ -17,6 +18,7 @@ export default function CreateAccessTokenStep({
   selectedContextId,
   selectedIdentity,
   onCreateToken,
+  errorMessage,
 }: CreateAccessTokenStepProps) {
   const t = translations.appLoginPopup.createToken;
   return (
@@ -49,6 +51,9 @@ export default function CreateAccessTokenStep({
       </div>
       <div className="wrapper">
         <Button text={t.buttonNextText} onClick={onCreateToken} width="100%" />
+      </div>
+      <div className="no-context-text">
+        <span className="app-id error">{errorMessage}</span>
       </div>
     </ModalWrapper>
   );

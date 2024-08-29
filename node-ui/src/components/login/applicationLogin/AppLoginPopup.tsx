@@ -15,6 +15,7 @@ import {
   setStorageApplicationId,
   setStorageCallbackUrl,
 } from '../../../auth/storage';
+import translations from "../../../constants/en.global.json";
 
 interface AppLoginPopupProps {
   showPopup: boolean;
@@ -40,6 +41,8 @@ export default function AppLoginPopup({
   const [selectedIdentity, setSelectedIdentity] = useState('');
   const [selectedContextId, setSelectedContextId] = useState('');
   const [loginStep, setLoginStep] = useState(LoginStep.SELECT_CONTEXT);
+  const [errorMessage, setErrorMessage] = useState('');
+  const t = translations.appLoginPopup;
 
   useEffect(() => {
     const fetchAvailableContexts = async () => {
@@ -90,15 +93,23 @@ export default function AppLoginPopup({
   };
 
   const onCreateToken = async () => {
-    setStorageApplicationId('');
-    setStorageCallbackUrl('');
-    const createTokenResponse: ResponseData<CreateTokenResponse> =
-      await apiClient(showServerDownPopup)
-        .node()
-        .createAccessToken(selectedContextId, selectedIdentity);
-    const accessTokens = createTokenResponse.data;
-    if (accessTokens) {
-      finishLogin(JSON.stringify(accessTokens));
+    try {
+      setErrorMessage('');
+      setStorageApplicationId('');
+      setStorageCallbackUrl('');
+      const createTokenResponse: ResponseData<CreateTokenResponse> =
+        await apiClient(showServerDownPopup)
+          .node()
+          .createAccessToken(selectedContextId, selectedIdentity);
+      const accessTokens = createTokenResponse.data;
+      if (accessTokens) {
+        finishLogin(JSON.stringify(accessTokens));
+      } else {
+        setErrorMessage(t.createTokenError);
+      }
+    } catch (e) {
+      console.log(e);
+      setErrorMessage(t.createTokenError);
     }
   };
 
@@ -139,6 +150,7 @@ export default function AppLoginPopup({
           selectedContextId={selectedContextId}
           selectedIdentity={selectedIdentity}
           onCreateToken={onCreateToken}
+          errorMessage={errorMessage}
         />
       )}
     </Modal>
