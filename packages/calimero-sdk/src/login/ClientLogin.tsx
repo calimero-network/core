@@ -1,12 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { styled } from 'styled-components';
 import { setAccessToken, setRefreshToken } from '../storage/storage';
-
-const Error = styled.div`
-  color: #ef4444;
-  font-size: 0.875rem;
-  margin-top: 0.5rem;
-`;
 
 interface ClientLoginProps {
   getNodeUrl: () => string | null;
@@ -103,7 +96,15 @@ export const ClientLogin: React.FC<ClientLoginProps> = ({
       >
         Login
       </button>
-      <Error>{errorMessage}</Error>
+      <div
+        style={{
+          color: '#ef4444',
+          fontSize: '0.875rem',
+          marginTop: '0.5rem',
+        }}
+      >
+        {errorMessage}
+      </div>
     </div>
   );
 };
