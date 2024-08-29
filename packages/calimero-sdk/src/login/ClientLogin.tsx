@@ -40,11 +40,13 @@ export const ClientLogin: React.FC<ClientLoginProps> = ({
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    const access_token = urlParams.get('access_token');
-    const refresh_token = urlParams.get('refresh_token');
-    if (access_token && refresh_token) {
-      setAccessToken(access_token);
-      setRefreshToken(refresh_token);
+    const encodedAccessToken = urlParams.get('access_token');
+    const encodedRefreshToken = urlParams.get('refresh_token');
+    if (encodedAccessToken && encodedRefreshToken) {
+      const accessToken = decodeURIComponent(encodedAccessToken);
+      const refreshToken = decodeURIComponent(encodedRefreshToken);
+      setAccessToken(accessToken);
+      setRefreshToken(refreshToken);
       sucessRedirect();
     }
   }, []);
