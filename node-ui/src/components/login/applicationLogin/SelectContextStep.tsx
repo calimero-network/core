@@ -88,8 +88,14 @@ export const ModalWrapper = styled.div`
     word-wrap: break-word;
     overflow-wrap: break-word;
   }
+
   .no-context-text {
     text-align: center;
+  }
+
+  .error {
+    color: #ef4444;
+    font-size: 0.875rem;
   }
 `;
 
