@@ -44,7 +44,7 @@ fn generate_jwt_secret() -> [u8; 32] {
 // Method to insert the JWT key if it doesn't exist
 pub fn get_or_create_jwt_secret(store: &Store) -> eyre::Result<JwtTokenSecret> {
     // Check if the key already exists
-    if let Some(existing_secret) = get_jwt_secret(&store.clone())? {
+    if let Some(existing_secret) = get_jwt_secret(&store)? {
         return Ok(existing_secret);
     }
 

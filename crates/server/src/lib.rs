@@ -50,7 +50,7 @@ pub async fn start(
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
 
-    if let Err(e) = get_or_create_jwt_secret(&store.clone()) {
+    if let Err(e) = get_or_create_jwt_secret(&store) {
         eprintln!("Failed to get JWT key: {:?}", e);
         return Err(e.into());
     }

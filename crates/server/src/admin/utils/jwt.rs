@@ -1,7 +1,6 @@
 use std::str::from_utf8;
 
 use calimero_primitives::hash;
-// use calimero_primitives::hash;
 use calimero_server_primitives::admin::JwtTokenRequest;
 use calimero_store::Store;
 use chrono::{Duration, Utc};

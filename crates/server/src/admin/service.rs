@@ -116,6 +116,8 @@ pub(crate) fn setup(
         .route("/contexts/:context_id/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
+        .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
+        .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .layer(AuthSignatureLayer::new(store))
         .layer(Extension(Arc::clone(&shared_state)));
 
@@ -124,8 +126,6 @@ pub(crate) fn setup(
         .route("/certificate", get(certificate_handler))
         .route("/request-challenge", post(request_challenge_handler))
         .route("/add-client-key", post(add_client_key_handler))
-        .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
-        .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .route(
             "/dev/install-application",
             post(install_dev_application_handler),
