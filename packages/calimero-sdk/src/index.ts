@@ -7,3 +7,4 @@ export * from './types';
 export * from './api/nodeApi';
 export * from './auth';
 export * from './login';
+export * from './storage';
