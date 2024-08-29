@@ -15,7 +15,7 @@ import {
   setStorageApplicationId,
   setStorageCallbackUrl,
 } from '../../../auth/storage';
-import translations from "../../../constants/en.global.json";
+import translations from '../../../constants/en.global.json';
 
 interface AppLoginPopupProps {
   showPopup: boolean;
