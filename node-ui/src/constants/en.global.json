@@ -268,7 +268,8 @@
   },
   "nodeDataSource": {
     "joinContextErrorTitle": "Error joining context",
-    "joinContextErrorMessage": "Failed to join context"
+    "joinContextErrorMessage": "Failed to join context",
+    "unauthorizedErrorMessage": "Unauthorized"
   },
   "authHeaders": {
     "errorText": "Error extracting private key"

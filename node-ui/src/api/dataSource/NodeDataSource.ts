@@ -522,7 +522,7 @@ export class NodeDataSource implements NodeApi {
       JSON.stringify(contextId),
     );
     if (!headers) {
-      return { error: { code: 401, message: 'Unauthorized' } };
+      return { error: { code: 401, message: t.unauthorizedErrorMessage } };
     }
 
     return await this.client.get<ContextIdentitiesResponse>(
@@ -539,7 +539,7 @@ export class NodeDataSource implements NodeApi {
       JSON.stringify(contextId),
     );
     if (!headers) {
-      return { error: { code: 401, message: 'Unauthorized' } };
+      return { error: { code: 401, message: t.unauthorizedErrorMessage } };
     }
 
     return await this.client.post<CreateTokenResponse>(
