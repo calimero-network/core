@@ -99,7 +99,7 @@ impl ReprBytes for Vec<u8> {
     type EncodeBytes<'b> = &'b [u8];
     type DecodeBytes = Vec<u8>;
 
-    type Error = InsufficientLength;
+    type Error = std::convert::Infallible;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
         self
