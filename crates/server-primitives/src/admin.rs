@@ -251,6 +251,7 @@ pub struct JwtRefreshRequest {
 #[non_exhaustive]
 pub struct StarknetPayload {
     pub signature: Vec<String>,
+    #[serde(rename = "messageHash")]
     pub message_hash: String,
 }
 
