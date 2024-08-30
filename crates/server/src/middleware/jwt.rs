@@ -8,9 +8,13 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use calimero_store::Store;
+use jsonwebtoken::{decode, DecodingKey, Validation};
 use libp2p::futures::future::BoxFuture;
 use tower::{Layer, Service};
 use tracing::debug;
+
+use crate::admin::storage::jwt_secret::get_jwt_secret;
+use crate::admin::utils::jwt::Claims;
 
 #[derive(Clone)]
 pub struct JwtLayer {
@@ -83,9 +87,22 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
         UnauthorizedError::new("Failed to extract authentication headers.")
     })?;
 
-    println!("auth_headers: {:?}", jwt_header.token);
-    println!("store: {:?}", store);
-    // verification here
+    let jwt_secret = match get_jwt_secret(&store.clone()) {
+        Ok(Some(secret)) => secret.jwt_secret().to_vec(),
+        Ok(None) => {
+            return Err(UnauthorizedError::new("JWT secret not found."));
+        }
+        Err(_) => {
+            return Err(UnauthorizedError::new("Failed to fetch JWT secret."));
+        }
+    };
+
+    let _token_data = decode::<Claims>(
+        &jwt_header.token,
+        &DecodingKey::from_secret(jwt_secret.as_slice()),
+        &Validation::default(),
+    )
+    .map_err(|_| UnauthorizedError::new("Token not valid."))?;
 
     Ok(())
 }

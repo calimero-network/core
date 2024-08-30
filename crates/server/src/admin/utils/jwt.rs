@@ -16,7 +16,7 @@ use crate::admin::storage::jwt_token::{
 };
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Claims {
+pub struct Claims {
     context_id: ContextId,
     executor: String,
     exp: usize,
