@@ -1,4 +1,3 @@
-use chrono::Utc;
 use core::convert::Infallible;
 use core::fmt::{self, Display, Formatter};
 use core::task::{Context, Poll};
@@ -9,6 +8,7 @@ use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use calimero_store::Store;
+use chrono::Utc;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use libp2p::futures::future::BoxFuture;
 use tower::{Layer, Service};
