@@ -21,7 +21,9 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::storage::ssl::get_ssl;
-use crate::admin::handlers::add_client_key::add_client_key_handler;
+use crate::admin::handlers::add_client_key::{
+    add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
+};
 use crate::admin::handlers::applications::{
     get_application, get_application_details_handler, install_application_handler,
     install_dev_application_handler, list_applications_handler,
@@ -114,7 +116,10 @@ pub(crate) fn setup(
         .route("/contexts/:context_id/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
-        .layer(AuthSignatureLayer::new(store));
+        .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
+        .route("/generate-jwt-token", post(generate_jwt_token_handler))
+        .layer(AuthSignatureLayer::new(store))
+        .layer(Extension(Arc::clone(&shared_state)));
 
     let unprotected_router = Router::new()
         .route("/health", get(health_check_handler))

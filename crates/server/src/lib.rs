@@ -1,6 +1,7 @@
 use core::net::{IpAddr, SocketAddr};
 use std::io::Error as IoError;
 
+use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
 use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
@@ -48,6 +49,11 @@ pub async fn start(
     let mut addrs = Vec::with_capacity(config.listen.len());
     let mut listeners = Vec::with_capacity(config.listen.len());
     let mut want_listeners = config.listen.into_iter().peekable();
+
+    if let Err(e) = get_or_create_jwt_secret(&store) {
+        eprintln!("Failed to get JWT key: {:?}", e);
+        return Err(e.into());
+    }
 
     while let Some(addr) = want_listeners.next() {
         let mut components = addr.iter();
