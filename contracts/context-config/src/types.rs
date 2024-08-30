@@ -119,27 +119,6 @@ impl ReprBytes for Signature {
     }
 }
 
-impl ReprBytes for Vec<u8> {
-    type EncodeBytes<'b> = &'b [u8];
-    type DecodeBytes = Vec<u8>;
-
-    type Error = repr::InsufficientLength;
-
-    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.as_ref()
-    }
-
-    fn from_bytes<F>(f: F) -> Result<Self, repr::Error<Self::Error>>
-    where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
-    {
-        let mut bytes = Vec::new();
-        let len = f(&mut bytes)?;
-        assert_eq!(len, bytes.len());
-        Ok(bytes)
-    }
-}
-
 #[derive(Eq, Debug, Clone, PartialEq)]
 #[near(serializers = [json])]
 pub struct SignedPayload<T> {

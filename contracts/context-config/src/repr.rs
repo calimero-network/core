@@ -95,6 +95,27 @@ impl<const N: usize> ReprBytes for [u8; N] {
     }
 }
 
+impl ReprBytes for Vec<u8> {
+    type EncodeBytes<'b> = &'b [u8];
+    type DecodeBytes = Vec<u8>;
+
+    type Error = InsufficientLength;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.as_ref()
+    }
+
+    fn from_bytes<F>(f: F) -> Result<Self, Error<Self::Error>>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+    {
+        let mut bytes = Vec::new();
+        let len = f(&mut bytes)?;
+        assert_eq!(len, bytes.len());
+        Ok(bytes)
+    }
+}
+
 mod serde_bytes {
     use near_sdk::bs58;
     use near_sdk::serde::{de, ser, Deserialize};
