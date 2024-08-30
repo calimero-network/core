@@ -81,9 +81,9 @@ export default function AppLoginPopup({
     }
     try {
       const tokenData = JSON.parse(accessTokens);
-      const { accessToken, refreshToken } = tokenData;
-      const encodedAccessToken = encodeURIComponent(accessToken);
-      const encodedRefreshToken = encodeURIComponent(refreshToken);
+      const { access_token, refresh_token } = tokenData;
+      const encodedAccessToken = encodeURIComponent(access_token);
+      const encodedRefreshToken = encodeURIComponent(refresh_token);
       const newUrl = `${callbackUrl}?access_token=${encodedAccessToken}&refresh_token=${encodedRefreshToken}`;
       window.location.href = newUrl;
     } catch (error) {
