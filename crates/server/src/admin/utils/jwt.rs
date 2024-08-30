@@ -228,7 +228,7 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
         status_code: StatusCode::BAD_REQUEST,
         message: format!("Failed to generate access token: {}", err),
     })?;
-    
+
     Ok(JwtToken {
         access_token,
         refresh_token: jwt_tokens.refresh_token,
