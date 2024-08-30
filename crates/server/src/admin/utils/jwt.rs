@@ -1,5 +1,6 @@
 use std::str::from_utf8;
 
+use calimero_primitives::context::ContextId;
 use calimero_primitives::hash;
 use calimero_server_primitives::admin::JwtTokenRequest;
 use calimero_store::Store;
@@ -16,7 +17,7 @@ use crate::admin::storage::jwt_token::{
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
-    context_id: String,
+    context_id: ContextId,
     executor: String,
     exp: usize,
     token_type: TokenType,
@@ -57,7 +58,7 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
     // Generate Access Token
     let access_expiration = Utc::now() + Duration::hours(1);
     let access_claims = Claims {
-        context_id: context_id.to_string(),
+        context_id,
         executor: executor_public_key.to_string(),
         exp: access_expiration.timestamp() as usize,
         token_type: TokenType::Access,
@@ -76,7 +77,7 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
     // Generate Refresh Token
     let refresh_expiration = Utc::now() + Duration::days(30);
     let refresh_claims = Claims {
-        context_id: context_id.to_string(),
+        context_id,
         executor: executor_public_key.to_string(),
         exp: refresh_expiration.timestamp() as usize,
         token_type: TokenType::Refresh,
@@ -218,41 +219,18 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
         message: format!("Failed to generate access token: {}", err),
     })?;
 
-    // Generate new Refresh Token
-    let refresh_expiration = Utc::now() + Duration::days(30);
-    let refresh_claims = Claims {
-        context_id: context_id.clone(),
-        executor: executor.clone(),
-        exp: refresh_expiration.timestamp() as usize,
-        token_type: TokenType::Refresh,
+    let payload: JwtTokenRequest = JwtTokenRequest {
+        context_id,
+        executor_public_key: executor,
     };
 
-    let new_refresh_token = encode(
-        &Header::default(),
-        &refresh_claims,
-        &EncodingKey::from_secret(jwt_secret.as_slice()),
-    )
-    .map_err(|err| ApiError {
+    let jwt_tokens = generate_jwt_tokens(payload, store.clone()).map_err(|err| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: format!("Failed to generate new refresh token: {}", err),
+        message: format!("Failed to generate access token: {}", err),
     })?;
-
-    let db_key = format!("{}{}", refresh_claims.context_id, refresh_claims.exp);
-    let db_key_hash = hash::Hash::new(db_key.as_bytes());
-
-    // Store the refresh token in the database
-    create_refresh_token(
-        store.clone(),
-        new_refresh_token.as_bytes().to_vec(),
-        db_key_hash.as_bytes(),
-    )
-    .map_err(|err| ApiError {
-        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-        message: format!("Failed to store refresh token: {}", err),
-    })?;
-
+    
     Ok(JwtToken {
         access_token,
-        refresh_token: new_refresh_token,
+        refresh_token: jwt_tokens.refresh_token,
     })
 }
