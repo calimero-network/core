@@ -28,6 +28,7 @@ members = [
   "./apps/only-peers",
   "./apps/gen-ext",
 
+  "./contracts/context-config",
   "./contracts/package-manager",
 ]
 

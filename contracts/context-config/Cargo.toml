@@ -1,0 +1,25 @@
+[package]
+name = "context-config"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+ed25519-dalek.workspace = true
+near-sdk.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+eyre.workspace = true
+near-workspaces.workspace = true
+rand.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
