@@ -1,3 +1,4 @@
+use chrono::Utc;
 use core::convert::Infallible;
 use core::fmt::{self, Display, Formatter};
 use core::task::{Context, Poll};
@@ -60,19 +61,14 @@ where
 
     fn call(&mut self, request: Request<Body>) -> Self::Future {
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        let result = auth(request.headers(), &self.store.clone());
+        let result = auth(request.headers(), &self.store);
 
         if let Err(err) = result {
             let error_response = err.into_response();
             return Box::pin(async move { Ok(error_response) });
         }
 
-        let future = self.inner.call(request);
-
-        Box::pin(async move {
-            let response: Response = future.await?;
-            Ok(response)
-        })
+        Box::pin(self.inner.call(request))
     }
 }
 
@@ -87,8 +83,8 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
         UnauthorizedError::new("Failed to extract authentication headers.")
     })?;
 
-    let jwt_secret = match get_jwt_secret(&store.clone()) {
-        Ok(Some(secret)) => secret.jwt_secret().to_vec(),
+    let jwt_secret = match get_jwt_secret(&store) {
+        Ok(Some(secret)) => *secret.jwt_secret(),
         Ok(None) => {
             return Err(UnauthorizedError::new("JWT secret not found."));
         }
@@ -97,12 +93,17 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
         }
     };
 
-    let _token_data = decode::<Claims>(
+    let token_data = decode::<Claims>(
         &jwt_header.token,
-        &DecodingKey::from_secret(jwt_secret.as_slice()),
+        &DecodingKey::from_secret(&jwt_secret),
         &Validation::default(),
     )
     .map_err(|_| UnauthorizedError::new("Token not valid."))?;
+
+    let now = Utc::now().timestamp() as usize;
+    if token_data.claims.exp < now {
+        return Err(UnauthorizedError::new("Token expired."));
+    }
 
     Ok(())
 }
@@ -125,9 +126,8 @@ fn get_jwt_token_from_headers(headers: &HeaderMap) -> Result<JwtHeader, Unauthor
 }
 
 fn extract_token_from_header(authorization_header: &str) -> Result<&str, UnauthorizedError<'_>> {
-    let bearer_prefix = "Bearer ";
-    if authorization_header.starts_with(bearer_prefix) {
-        Ok(&authorization_header[bearer_prefix.len()..])
+    if let Some(token) = authorization_header.strip_prefix("Bearer ") {
+        Ok(token)
     } else {
         Err(UnauthorizedError::new("Invalid authorization header"))
     }

@@ -19,7 +19,7 @@ use crate::admin::storage::jwt_token::{
 pub struct Claims {
     context_id: ContextId,
     executor: String,
-    exp: usize,
+    pub exp: usize,
     token_type: TokenType,
 }
 
