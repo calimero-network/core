@@ -102,7 +102,7 @@ impl ReprBytes for Vec<u8> {
     type Error = InsufficientLength;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self.as_ref()
+        self
     }
 
     fn from_bytes<F>(f: F) -> Result<Self, Error<Self::Error>>
@@ -110,8 +110,11 @@ impl ReprBytes for Vec<u8> {
         F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
     {
         let mut bytes = Vec::new();
+
         let len = f(&mut bytes)?;
+
         assert_eq!(len, bytes.len());
+
         Ok(bytes)
     }
 }
