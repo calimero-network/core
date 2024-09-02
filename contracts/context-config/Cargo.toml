@@ -16,6 +16,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 eyre.workspace = true
+near-crypto.workspace = true
 near-workspaces.workspace = true
 rand.workspace = true
 serde_json.workspace = true

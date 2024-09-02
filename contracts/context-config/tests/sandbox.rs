@@ -1,89 +1,141 @@
 #![allow(unused_crate_dependencies)]
 
 use std::collections::BTreeMap;
-use std::time;
 
-use context_config::Capability;
-use context_config::ContextIdentity;
-use ed25519_dalek::Signer;
-use ed25519_dalek::SigningKey;
-use near_sdk::AccountId;
-use near_workspaces::types::NearToken;
-use rand::Rng;
+use context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use context_config::types::{Application, Capability, ContextIdentity, Signed, SignerId};
+use context_config::{ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest};
+use ed25519_dalek::{Signer, SigningKey};
+use near_workspaces::operations::Function;
+use near_workspaces::types::{KeyType, SecretKey};
+use near_workspaces::Contract;
+use rand::{CryptoRng, Rng, RngCore};
 use serde_json::json;
 use tokio::fs;
 
-use context_config::{AddContextInput, Application, Repr, ReprBytes, SignedPayload};
+fn new_secret<R: CryptoRng + RngCore>(rng: &mut R) -> (SigningKey, SecretKey) {
+    let rsk = SigningKey::generate(rng);
 
-pub trait ReprBytesExt: ReprBytes<DecodeBytes: AsRef<[u8]>> {
-    fn from_bytes(bytes: Self::DecodeBytes) -> Self {
-        ReprBytes::from_bytes(|b| {
-            let len = bytes.as_ref().len();
-            *b = bytes;
-            Ok(len)
-        })
-        .unwrap()
-    }
+    let wsk =
+        near_crypto::SecretKey::ED25519(near_crypto::ED25519SecretKey(rsk.to_keypair_bytes()))
+            .to_string()
+            .parse::<SecretKey>()
+            .unwrap();
+
+    (rsk, wsk)
 }
-
-impl<T: ReprBytes<DecodeBytes: AsRef<[u8]>> + ?Sized> ReprBytesExt for T {}
 
 #[tokio::test]
 async fn main() -> eyre::Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let wasm = fs::read("res/context_config.wasm").await?;
-    let contract = worker.dev_deploy(&wasm).await?;
-
-    let root_account = worker.root_account()?;
 
     let mut rng = rand::thread_rng();
 
-    let alice = root_account
-        .create_subaccount("alice")
-        .initial_balance(NearToken::from_near(30))
-        .transact()
+    let contract = worker
+        .create_tla(
+            "config-alt".parse()?,
+            SecretKey::from_random(KeyType::SECP256K1),
+        )
         .await?
         .into_result()?;
-    let alice_cx_id = Repr::<ContextIdentity>::new(ReprBytesExt::from_bytes(rng.gen()));
 
-    let bob = root_account
-        .create_subaccount("bob")
-        .initial_balance(NearToken::from_near(30))
+    let res = contract
+        .batch(contract.id())
+        .deploy(&wasm)
+        .call(Function::new("init"))
         .transact()
         .await?
-        .into_result()?;
-    let bob_cx_id = Repr::<ContextIdentity>::new(ReprBytesExt::from_bytes(rng.gen()));
+        .into_result()
+        .expect_err("Secp256k1 should not be allowed");
 
-    let carol = root_account
-        .create_subaccount("carol")
-        .initial_balance(NearToken::from_near(30))
+    {
+        let err = res.to_string();
+        assert!(err.contains("pweety please, sign the the contract initialization transaction with an ed25519 key: decode error: insufficient length, found: 64, expected: 32"), "{}", err);
+    }
+
+    let (config_rsk, config_wsk) = new_secret(&mut rng);
+    let config_pk = config_rsk.verifying_key();
+    let config_id: SignerId = config_pk.to_bytes().rt()?;
+
+    let contract = worker
+        .create_tla("config".parse()?, config_wsk)
+        .await?
+        .into_result()?;
+
+    let res = contract
+        .batch(contract.id())
+        .deploy(&wasm)
+        .call(Function::new("init"))
         .transact()
         .await?
         .into_result()?;
-    let carol_cx_id = Repr::<ContextIdentity>::new(ReprBytesExt::from_bytes(rng.gen()));
+
+    assert_eq!(
+        res.logs(),
+        [format!(
+            "Contract initialized by `{}`",
+            Repr::new(config_id)
+        )]
+    );
+
+    let contract = Contract::from_secret_key(
+        contract.id().clone(),
+        contract.secret_key().clone(),
+        &worker,
+    );
+
+    let root_account = worker.root_account()?;
+
+    let node1 = root_account
+        .create_subaccount("node1")
+        .transact()
+        .await?
+        .into_result()?;
+
+    let node2 = root_account
+        .create_subaccount("node3")
+        .transact()
+        .await?
+        .into_result()?;
+
+    let alice_cx_sk = SigningKey::from_bytes(&rng.gen());
+    let alice_cx_pk = alice_cx_sk.verifying_key();
+    let alice_cx_id = alice_cx_pk.to_bytes().rt()?;
+
+    let bob_cx_sk = SigningKey::from_bytes(&rng.gen());
+    let bob_cx_pk = bob_cx_sk.verifying_key();
+    let bob_cx_id = bob_cx_pk.to_bytes().rt()?;
+
+    let carol_cx_sk = SigningKey::from_bytes(&rng.gen());
+    let carol_cx_pk = carol_cx_sk.verifying_key();
+    let carol_cx_id = carol_cx_pk.to_bytes().rt()?;
 
     let context_secret = SigningKey::from_bytes(&rng.gen());
     let context_public = context_secret.verifying_key();
+    let context_id = context_public.to_bytes().rt()?;
 
-    let context_id = Repr::new(ReprBytesExt::from_bytes(context_public.to_bytes()));
-    let application_id = Repr::new(ReprBytesExt::from_bytes(rng.gen()));
-    let blob_id = Repr::new(ReprBytesExt::from_bytes(rng.gen()));
+    let application_id = rng.gen::<[_; 32]>().rt()?;
+    let blob_id = rng.gen::<[_; 32]>().rt()?;
 
-    let res = alice
-        .call(contract.id(), "add_context")
-        .args_json(SignedPayload::new(
-            &AddContextInput {
-                context_id,
-                application: Application {
-                    id: application_id,
-                    blob: blob_id,
-                    source: Default::default(),
-                    metadata: Default::default(),
-                },
-                account_id: alice.id().clone(),
-                timestamp_ms: time::SystemTime::now()
-                    .duration_since(time::UNIX_EPOCH)?
-                    .as_millis() as u64,
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::Add {
+                        author_id: alice_cx_id,
+                        application: Application {
+                            id: application_id,
+                            blob: blob_id,
+                            source: Default::default(),
+                            metadata: Default::default(),
+                        },
+                    },
+                });
+
+                Request::new(context_id.rt()?, kind)
             },
             |p| context_secret.sign(p),
         )?)
@@ -93,21 +145,24 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res.logs(), [format!("Context `{}` added", context_id)]);
 
-    let res = alice
-        .call(contract.id(), "add_context")
-        .args_json(SignedPayload::new(
-            &AddContextInput {
-                context_id,
-                application: Application {
-                    id: application_id,
-                    blob: blob_id,
-                    source: Default::default(),
-                    metadata: Default::default(),
-                },
-                account_id: alice.id().clone(),
-                timestamp_ms: time::SystemTime::now()
-                    .duration_since(time::UNIX_EPOCH)?
-                    .as_millis() as u64,
+    let res = node2
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::Add {
+                        author_id: alice_cx_id,
+                        application: Application {
+                            id: application_id,
+                            blob: blob_id,
+                            source: Default::default(),
+                            metadata: Default::default(),
+                        },
+                    },
+                });
+
+                Request::new(context_id.rt()?, kind)
             },
             |p| context_secret.sign(p),
         )?)
@@ -118,25 +173,26 @@ async fn main() -> eyre::Result<()> {
 
     {
         let err = res.to_string();
-        assert!(err.contains("Context already exists"), "{}", err);
+        assert!(err.contains("context already exists"), "{}", err);
     }
 
-    let res: Application = contract
+    let res = contract
         .view("application")
         .args_json(json!({ "context_id": context_id }))
-        .await?
-        .json()?;
+        .await?;
+
+    let res: Application<'_> = serde_json::from_slice(&res.result)?;
 
     assert_eq!(res.id, application_id);
     assert_eq!(res.blob, blob_id);
     assert_eq!(res.source, Default::default());
     assert_eq!(res.metadata, Default::default());
 
-    let res: BTreeMap<AccountId, Vec<Capability>> = contract
+    let res: BTreeMap<Repr<SignerId>, Vec<Capability>> = contract
         .view("privileges")
         .args_json(json!({
             "context_id": context_id,
-            "account_ids": [],
+            "identities": [],
         }))
         .await?
         .json()?;
@@ -144,7 +200,7 @@ async fn main() -> eyre::Result<()> {
     assert_eq!(res.len(), 1);
     let first = res.first_key_value().expect("expected one entry");
 
-    assert_eq!(first.0, alice.id());
+    assert_eq!(first.0.as_bytes(), alice_cx_id.as_bytes());
     assert_eq!(
         first.1,
         &[Capability::ManageApplication, Capability::ManageMembers]
@@ -162,12 +218,21 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, []);
 
-    let res = alice
-        .call(contract.id(), "add_members")
-        .args_json(json!({
-            "context_id": context_id,
-            "members": [alice_cx_id, bob_cx_id],
-        }))
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::AddMembers {
+                        members: vec![alice_cx_id, bob_cx_id].into(),
+                    },
+                });
+
+                Request::new(alice_cx_id.rt()?, kind)
+            },
+            |p| alice_cx_sk.sign(p),
+        )?)
         .transact()
         .await?
         .into_result()?;
@@ -182,7 +247,7 @@ async fn main() -> eyre::Result<()> {
 
     let res: Vec<Repr<ContextIdentity>> = contract
         .view("members")
-        .args_json(json! ({
+        .args_json(json!({
             "context_id": context_id,
             "offset": 0,
             "length": 10,
@@ -192,11 +257,11 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, [alice_cx_id, bob_cx_id]);
 
-    let res: BTreeMap<AccountId, Vec<Capability>> = contract
+    let res: BTreeMap<Repr<SignerId>, Vec<Capability>> = contract
         .view("privileges")
         .args_json(json!({
             "context_id": context_id,
-            "account_ids": [bob.id()],
+            "identities": [bob_cx_id],
         }))
         .await?
         .json()?;
@@ -204,15 +269,24 @@ async fn main() -> eyre::Result<()> {
     assert_eq!(res.len(), 1);
     let first = res.first_key_value().expect("expected one entry");
 
-    assert_eq!(first.0, bob.id());
+    assert_eq!(first.0.as_bytes(), bob_cx_id.as_bytes());
     assert_eq!(first.1, &[]);
 
-    let res = bob
-        .call(contract.id(), "add_members")
-        .args_json(json!({
-            "context_id": context_id,
-            "members": [carol_cx_id],
-        }))
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::AddMembers {
+                        members: vec![carol_cx_id].into(),
+                    },
+                });
+
+                Request::new(bob_cx_id.rt()?, kind)
+            },
+            |p| bob_cx_sk.sign(p),
+        )?)
         .transact()
         .await?
         .raw_bytes()
@@ -227,24 +301,48 @@ async fn main() -> eyre::Result<()> {
         );
     }
 
-    let res = alice
-        .call(contract.id(), "grant")
-        .args_json(json!({
-            "context_id": context_id,
-            "capabilities": [(bob.id(), Capability::ManageMembers)],
-        }))
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::Grant {
+                        capabilities: (vec![(bob_cx_id, Capability::ManageMembers)]).into(),
+                    },
+                });
+
+                Request::new(alice_cx_id.rt()?, kind)
+            },
+            |p| alice_cx_sk.sign(p),
+        )?)
         .transact()
         .await?
         .into_result()?;
 
-    assert_eq!(res.logs(), [""; 0]);
+    assert_eq!(
+        res.logs(),
+        [format!(
+            "Granted `ManageMembers` to `{}` in `{}`",
+            bob_cx_id, context_id
+        )]
+    );
 
-    let res = bob
-        .call(contract.id(), "add_members")
-        .args_json(json!({
-            "context_id": context_id,
-            "members": [carol_cx_id],
-        }))
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::AddMembers {
+                        members: vec![carol_cx_id].into(),
+                    },
+                });
+
+                Request::new(bob_cx_id.rt()?, kind)
+            },
+            |p| bob_cx_sk.sign(p),
+        )?)
         .transact()
         .await?
         .into_result()?;
@@ -259,7 +357,7 @@ async fn main() -> eyre::Result<()> {
 
     let res: Vec<Repr<ContextIdentity>> = contract
         .view("members")
-        .args_json(json! ({
+        .args_json(json!({
             "context_id": context_id,
             "offset": 0,
             "length": 10,
@@ -269,21 +367,25 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, [alice_cx_id, bob_cx_id, carol_cx_id]);
 
-    let res: BTreeMap<AccountId, Vec<Capability>> = contract
+    let res: BTreeMap<Repr<SignerId>, Vec<Capability>> = contract
         .view("privileges")
         .args_json(json!({
             "context_id": context_id,
-            "account_ids": [],
+            "identities": [],
         }))
         .await?
         .json()?;
 
     assert_eq!(res.len(), 2);
 
-    let alice_capabilities = res.get(alice.id()).expect("alice should have capabilities");
-    let bob_capabilities = res.get(bob.id()).expect("bob should have capabilities");
+    let alice_capabilities = res
+        .get(&alice_cx_id.rt()?)
+        .expect("alice should have capabilities");
+    let bob_capabilities = res
+        .get(&bob_cx_id.rt()?)
+        .expect("bob should have capabilities");
 
-    assert_eq!(res.get(carol.id()), None);
+    assert_eq!(res.get(&carol_cx_id.rt()?), None);
 
     assert_eq!(
         alice_capabilities,
@@ -292,20 +394,29 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(bob_capabilities, &[Capability::ManageMembers]);
 
-    let new_application_id = Repr::new(ReprBytesExt::from_bytes(rng.gen()));
-    let new_blob_id = Repr::new(ReprBytesExt::from_bytes(rng.gen()));
+    let new_application_id = rng.gen::<[_; 32]>().rt()?;
+    let new_blob_id = rng.gen::<[_; 32]>().rt()?;
 
-    let res = bob
-        .call(contract.id(), "update_application")
-        .args_json(json!({
-            "context_id": context_id,
-            "application": Application {
-                id: new_application_id,
-                blob: new_blob_id,
-                source: Default::default(),
-                metadata: Default::default(),
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::UpdateApplication {
+                        application: Application {
+                            id: new_application_id,
+                            blob: new_blob_id,
+                            source: Default::default(),
+                            metadata: Default::default(),
+                        },
+                    },
+                });
+
+                Request::new(bob_cx_id.rt()?, kind)
             },
-        }))
+            |p| bob_cx_sk.sign(p),
+        )?)
         .transact()
         .await?
         .raw_bytes()
@@ -320,28 +431,38 @@ async fn main() -> eyre::Result<()> {
         );
     }
 
-    let res: Application = contract
+    let res = contract
         .view("application")
         .args_json(json!({ "context_id": context_id }))
-        .await?
-        .json()?;
+        .await?;
+
+    let res: Application<'_> = serde_json::from_slice(&res.result)?;
 
     assert_eq!(res.id, application_id);
     assert_eq!(res.blob, blob_id);
     assert_eq!(res.source, Default::default());
     assert_eq!(res.metadata, Default::default());
 
-    let res = alice
-        .call(contract.id(), "update_application")
-        .args_json(json!({
-            "context_id": context_id,
-            "application": Application {
-                id: new_application_id,
-                blob: new_blob_id,
-                source: Default::default(),
-                metadata: Default::default(),
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::UpdateApplication {
+                        application: Application {
+                            id: new_application_id,
+                            blob: new_blob_id,
+                            source: Default::default(),
+                            metadata: Default::default(),
+                        },
+                    },
+                });
+
+                Request::new(alice_cx_id.rt()?, kind)
             },
-        }))
+            |p| alice_cx_sk.sign(p),
+        )?)
         .transact()
         .await?
         .into_result()?;
@@ -354,16 +475,72 @@ async fn main() -> eyre::Result<()> {
         )]
     );
 
-    let res: Application = contract
+    let res = contract
         .view("application")
         .args_json(json!({ "context_id": context_id }))
-        .await?
-        .json()?;
+        .await?;
+
+    let res: Application<'_> = serde_json::from_slice(&res.result)?;
 
     assert_eq!(res.id, new_application_id);
     assert_eq!(res.blob, new_blob_id);
     assert_eq!(res.source, Default::default());
     assert_eq!(res.metadata, Default::default());
+
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind =
+                    RequestKind::System(SystemRequest::SetValidityThreshold { threshold_ms: 1 });
+
+                Request::new(config_id, kind)
+            },
+            |p| config_rsk.sign(p),
+        )?)
+        .transact()
+        .await?;
+
+    let res = res.into_result()?;
+
+    assert_eq!(res.logs(), ["Set validity threshold to `1ms`"]);
+
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::RemoveMembers {
+                        members: vec![carol_cx_id].into(),
+                    },
+                });
+
+                Request::new(bob_cx_id.rt()?, kind)
+            },
+            |p| bob_cx_sk.sign(p),
+        )?)
+        .transact()
+        .await?
+        .raw_bytes()
+        .expect_err("request should've expired");
+
+    {
+        let err = res.to_string();
+        assert!(err.contains("request expired"), "{}", err);
+    }
+
+    let res: Vec<Repr<ContextIdentity>> = contract
+        .view("members")
+        .args_json(json!({
+            "context_id": context_id,
+            "offset": 0,
+            "length": 10,
+        }))
+        .await?
+        .json()?;
+
+    assert_eq!(res, [alice_cx_id, bob_cx_id, carol_cx_id]);
 
     Ok(())
 }

@@ -1,9 +1,13 @@
-use std::{fmt, ops::Deref};
+use std::borrow::Cow;
+use std::fmt;
+use std::ops::Deref;
 
 use near_sdk::{bs58, near};
 use thiserror::Error;
 
-#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub type Result<T, E> = std::result::Result<T, Error<E>>;
+
+#[derive(Eq, Ord, Copy, Clone, Debug, Default, PartialEq, PartialOrd)]
 #[near(serializers = [borsh, json])]
 #[serde(transparent)]
 pub struct Repr<T> {
@@ -52,34 +56,72 @@ pub trait ReprBytes: Sized {
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_>;
 
-    fn from_bytes<F>(f: F) -> Result<Self, Error<Self::Error>>
+    fn from_bytes<F>(f: F) -> Result<Self, Self::Error>
     where
         F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>;
 }
 
+pub trait ReprTransmute<'a>: ReprBytes + 'a {
+    fn rt<O: ReprBytes<DecodeBytes = Self::EncodeBytes<'a>>>(&'a self) -> Result<O, O::Error>;
+}
+
+impl<'a, T: 'a> ReprTransmute<'a> for T
+where
+    T: ReprBytes<EncodeBytes<'a>: AsRef<[u8]>>,
+{
+    fn rt<O: ReprBytes<DecodeBytes = Self::EncodeBytes<'a>>>(&'a self) -> Result<O, O::Error> {
+        O::from_bytes(|buf| {
+            *buf = self.as_bytes();
+            Ok(buf.as_ref().len())
+        })
+    }
+}
+
+impl<T: ReprBytes> ReprBytes for Repr<T> {
+    type EncodeBytes<'a> = T::EncodeBytes<'a> where T: 'a;
+    type DecodeBytes = T::DecodeBytes;
+
+    type Error = T::Error;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.inner.as_bytes()
+    }
+
+    fn from_bytes<F>(f: F) -> Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+    {
+        Ok(Repr {
+            inner: ReprBytes::from_bytes(f)?,
+        })
+    }
+}
+
 #[derive(Copy, Clone, Error)]
-#[error("insufficient length")]
-pub struct InsufficientLength {
+#[error("insufficient length, found: {found}, expected: {expected}")]
+pub struct LengthMismatch {
+    found: usize,
+    expected: usize,
     _priv: (),
 }
 
-impl fmt::Debug for InsufficientLength {
+impl fmt::Debug for LengthMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl<const N: usize> ReprBytes for [u8; N] {
-    type EncodeBytes<'a> = &'a Self;
+    type EncodeBytes<'a> = Self;
     type DecodeBytes = Self;
 
-    type Error = InsufficientLength;
+    type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self
+        *self
     }
 
-    fn from_bytes<F>(f: F) -> Result<Self, Error<Self::Error>>
+    fn from_bytes<F>(f: F) -> Result<Self, Self::Error>
     where
         F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
     {
@@ -88,7 +130,11 @@ impl<const N: usize> ReprBytes for [u8; N] {
         let len = f(&mut bytes).map_err(Error::InvalidBase58)?;
 
         if len != N {
-            return Err(Error::DecodeError(InsufficientLength { _priv: () }));
+            return Err(Error::DecodeError(LengthMismatch {
+                found: len,
+                expected: N,
+                _priv: (),
+            }));
         }
 
         Ok(bytes)
@@ -97,7 +143,9 @@ impl<const N: usize> ReprBytes for [u8; N] {
 
 pub trait DynSizedByteSlice: AsRef<[u8]> + From<Vec<u8>> {}
 
+impl DynSizedByteSlice for Vec<u8> {}
 impl DynSizedByteSlice for Box<[u8]> {}
+impl<'a> DynSizedByteSlice for Cow<'a, [u8]> {}
 
 impl<T> ReprBytes for T
 where
@@ -112,7 +160,7 @@ where
         self.as_ref()
     }
 
-    fn from_bytes<F>(f: F) -> Result<Self, Error<Self::Error>>
+    fn from_bytes<F>(f: F) -> Result<Self, Self::Error>
     where
         F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
     {
@@ -127,10 +175,10 @@ where
 }
 
 mod serde_bytes {
-    use std::ops::Deref;
+    use std::borrow::Cow;
 
+    use near_sdk::bs58;
     use near_sdk::serde::{de, ser, Deserialize};
-    use near_sdk::{bs58, near};
 
     use super::{Error, ReprBytes};
 
@@ -144,37 +192,18 @@ mod serde_bytes {
         serializer.serialize_str(&encoded)
     }
 
-    #[derive(Debug)]
-    #[near(serializers = [json])]
-    #[serde(untagged)]
-    #[repr(u8)]
-    // mitigation for borrowed slices
-    enum MaybeOwnedStr<'a> {
-        // v~~ serde's codegen deserializes in order
-        Borrowed(&'a str) = 0,
-        // ^~~ we must try the borrowed variant first
-        Owned(String) = 1,
-    }
-
-    impl Deref for MaybeOwnedStr<'_> {
-        type Target = str;
-
-        fn deref(&self) -> &Self::Target {
-            match self {
-                MaybeOwnedStr::Borrowed(s) => s,
-                MaybeOwnedStr::Owned(s) => s,
-            }
-        }
-    }
-
     pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
     where
         T: ReprBytes,
         D: de::Deserializer<'de>,
     {
-        let encoded = MaybeOwnedStr::deserialize(deserializer)?;
+        #[derive(Deserialize)]
+        #[serde(crate = "near_sdk::serde")]
+        struct Container<'a>(#[serde(borrow)] Cow<'a, str>);
 
-        T::from_bytes(|bytes| bs58::decode(&*encoded).onto(bytes)).map_err(|e| match e {
+        let encoded = Container::deserialize(deserializer)?;
+
+        T::from_bytes(|bytes| bs58::decode(&*encoded.0).onto(bytes)).map_err(|e| match e {
             Error::DecodeError(err) => de::Error::custom(err),
             Error::InvalidBase58(err) => de::Error::custom(err),
         })
