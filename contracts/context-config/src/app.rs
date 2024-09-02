@@ -15,7 +15,7 @@ const DEFAULT_VALIDITY_THRESHOLD_MS: Timestamp = 10_000;
 
 #[derive(Debug, PanicOnDefault)]
 #[near(contract_state)]
-pub struct ContextConfig {
+pub struct ContextConfigs {
     contexts: IterableMap<ContextId, Context>,
     config: Guard<Config>,
 }
@@ -50,7 +50,7 @@ enum PrivilegeScope {
 }
 
 #[near]
-impl ContextConfig {
+impl ContextConfigs {
     #[init]
     pub fn init() -> Self {
         let signer_id = SignerId::from_bytes(|buf| {

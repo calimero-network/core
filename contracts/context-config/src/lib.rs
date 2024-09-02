@@ -19,7 +19,7 @@ use types::{Application, Capability, ContextId, ContextIdentity, SignerId};
 
 #[doc(hidden)]
 pub mod __private {
-    pub use super::app::ContextConfig as near;
+    pub use super::app::ContextConfigs as near;
 }
 
 #[derive(Debug)]

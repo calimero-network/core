@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 
 use near_sdk::near;
 
-use super::{ContextConfig, ContextConfigExt};
+use super::{ContextConfigs, ContextConfigsExt};
 use crate::repr::{Repr, ReprTransmute};
 use crate::types::{Application, Capability, ContextId, ContextIdentity, SignerId};
 
 #[near]
-impl ContextConfig {
+impl ContextConfigs {
     pub fn application(&self, context_id: Repr<ContextId>) -> &Application<'_> {
         let context = self
             .contexts

@@ -4,13 +4,13 @@ use ed25519_dalek::VerifyingKey;
 use near_sdk::store::IterableSet;
 use near_sdk::{env, near, require, serde_json, Timestamp};
 
-use super::{Context, ContextConfig, ContextConfigExt, Guard, Prefix, PrivilegeScope};
+use super::{Context, ContextConfigs, ContextConfigsExt, Guard, Prefix, PrivilegeScope};
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::{Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
 use crate::{ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest};
 
 #[near]
-impl ContextConfig {
+impl ContextConfigs {
     pub fn mutate(&mut self) {
         let input = env::input().unwrap_or_default();
 
@@ -66,7 +66,7 @@ impl ContextConfig {
     }
 }
 
-impl ContextConfig {
+impl ContextConfigs {
     fn add_context(
         &mut self,
         context_id: Repr<ContextId>,
