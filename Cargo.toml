@@ -21,6 +21,7 @@ members = [
   "./crates/sdk/macros",
   "./crates/server",
   "./crates/server-primitives",
+  "./crates/storage",
   "./crates/store",
   "./crates/store/blobs",
 

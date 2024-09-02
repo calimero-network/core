@@ -1286,6 +1286,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-storage"
+version = "0.1.0"
+
+[[package]]
 name = "calimero-store"
 version = "0.1.0"
 dependencies = [
