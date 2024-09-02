@@ -30,9 +30,8 @@ export async function createAuthHeader(
   const signature = await privateKey.sign(hashArray);
   const signatureBase58 = bs58.encode(signature);
   const contentBase58 = bs58.encode(hashArray);
-
   const headers: Header = {
-    wallet_type: JSON.stringify(WalletType.NEAR),
+    wallet_type: JSON.stringify(WalletType.NEAR({ networkId: 'mainnet' })),
     signing_key: signingKey,
     signature: signatureBase58,
     challenge: contentBase58,

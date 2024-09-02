@@ -131,7 +131,10 @@ pub struct ContextUser {
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum WalletType {
-    NEAR,
+    NEAR {
+        #[serde(rename = "networkId")]
+        network_id: NearNetworkId,
+    },
     ETH {
         #[serde(rename = "chainId")]
         chain_id: u64,
