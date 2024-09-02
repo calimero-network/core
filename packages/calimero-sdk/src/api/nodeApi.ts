@@ -18,7 +18,7 @@ interface SNWalletType extends WalletTypeBase<'STARKNET'> {}
 
 export type WalletType = ETHWalletType | NEARWalletType | SNWalletType;
 
-export namespace WalletType { 
+export namespace WalletType {
   export function NEAR({ networkId }: { networkId: string }): WalletType {
     return { type: 'NEAR', networkId } as NEARWalletType;
   }
