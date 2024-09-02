@@ -1,4 +1,4 @@
-use calimero_primitives::identity::RootKey;
+use calimero_primitives::identity::{RootKey, WalletType};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
@@ -46,4 +46,13 @@ pub fn clean_auth_keys(store: &Store) -> EyreResult<()> {
     update_did(store, &did)?;
 
     Ok(())
+}
+
+pub fn has_near_root_key(store: &Store) -> EyreResult<Vec<RootKey>> {
+    let did = get_or_create_did(store)?;
+    Ok(did
+        .root_keys
+        .into_iter()
+        .filter(|k| matches!(k.wallet_type, WalletType::NEAR { .. }))
+        .collect())
 }

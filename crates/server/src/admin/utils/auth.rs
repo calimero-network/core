@@ -1,7 +1,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_identity::auth::verify_eth_signature;
-use calimero_primitives::identity::WalletType;
+use calimero_primitives::identity::{NearNetworkId, WalletType};
 use calimero_server_primitives::admin::{
     AddPublicKeyRequest, EthSignatureMessageMetadata, NearSignatureMessageMetadata,
     NodeChallengeMessage, Payload, SignatureMessage, SignatureMetadataEnum,
@@ -15,8 +15,8 @@ use serde_json::to_string as to_json_string;
 use tracing::info;
 
 use crate::admin::service::{parse_api_error, ApiError};
-use crate::admin::storage::root_key::get_root_key;
-use crate::verifywalletsignatures::near::verify_near_signature;
+use crate::admin::storage::root_key::{get_root_key, has_near_root_key};
+use crate::verifywalletsignatures::near::{check_for_near_account_key, verify_near_signature};
 use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
 // TODO: Consider breaking this function up into pieces.
@@ -268,7 +268,7 @@ pub fn is_older_than_15_minutes(timestamp: i64) -> bool {
     duration_since_timestamp > Duration::minutes(15)
 }
 
-pub fn validate_root_key_exists(
+pub async fn validate_root_key_exists(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
@@ -283,6 +283,57 @@ pub fn validate_root_key_exists(
     drop(match root_key_result {
         Some(root_key) => root_key,
         None => {
+            if let WalletType::NEAR { network_id } = &req.wallet_metadata.wallet_type {
+                let near_keys = match has_near_root_key(store) {
+                    Ok(keys) if keys.is_empty() => {
+                        return Err(ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: "Root key does not exist".into(),
+                        });
+                    }
+                    Ok(keys) => keys, // If keys are not empty, proceed with them
+                    Err(err) => {
+                        info!("Error checking if near client key exists: {}", err);
+                        return Err(ApiError {
+                            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                            message: err.to_string(),
+                        });
+                    }
+                };
+
+                // Extract wallet_address as a &str
+                let wallet_address = match req.wallet_metadata.wallet_address.as_deref() {
+                    Some(address) => address,
+                    None => {
+                        return Err(ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: "Wallet address not present".to_string(),
+                        });
+                    }
+                };
+
+                // Get network_type and from it use correct rpc_url
+                let rpc_url = match network_id {
+                    NearNetworkId::Mainnet => "https://rpc.mainnet.near.org",
+                    NearNetworkId::Testnet => "https://rpc.testnet.near.org",
+                    _ => {
+                        // Handle the case where the network ID is unknown or not handled
+                        return Err(ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: "Unknown NEAR network ID".into(),
+                        });
+                    }
+                };
+                match check_for_near_account_key(&near_keys, wallet_address, rpc_url).await? {
+                    true => return Ok(req),
+                    false => {
+                        return Err(ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: "Root key does not exist for given wallet".into(),
+                        });
+                    }
+                }
+            }
             return Err(ApiError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: "Root key does not exist".into(),
