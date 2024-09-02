@@ -47,6 +47,12 @@ impl<T> Guard<T> {
     pub fn priviledged(&self) -> &IterableSet<SignerId> {
         &self.priviledged
     }
+
+    pub fn priviledges(&mut self) -> Priviledges<'_> {
+        Priviledges {
+            inner: &mut self.priviledged,
+        }
+    }
 }
 
 impl<T> Deref for Guard<T> {
@@ -94,7 +100,7 @@ impl Priviledges<'_> {
         self.inner.insert(signer_id);
     }
 
-    pub fn revoke(&mut self, signer_id: SignerId) {
-        self.inner.remove(&signer_id);
+    pub fn revoke(&mut self, signer_id: &SignerId) {
+        self.inner.remove(signer_id);
     }
 }

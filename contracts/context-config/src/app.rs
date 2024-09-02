@@ -12,12 +12,13 @@ mod query;
 use guard::Guard;
 
 const DEFAULT_VALIDITY_THRESHOLD_MS: Timestamp = 10_000;
+const MIN_VALIDITY_THRESHOLD_MS: Timestamp = 5_000;
 
 #[derive(Debug, PanicOnDefault)]
 #[near(contract_state)]
 pub struct ContextConfigs {
     contexts: IterableMap<ContextId, Context>,
-    config: Guard<Config>,
+    config: Config,
 }
 
 #[derive(Debug)]
@@ -44,9 +45,14 @@ enum Prefix {
 #[derive(Copy, Clone, Debug)]
 #[near(serializers = [borsh])]
 enum PrivilegeScope {
-    Application(ContextId),
-    MemberList(ContextId),
-    Config,
+    Context(ContextId, ContextPrivilegeScope),
+}
+
+#[derive(Copy, Clone, Debug)]
+#[near(serializers = [borsh])]
+enum ContextPrivilegeScope {
+    Application,
+    MemberList,
 }
 
 #[near]
@@ -62,27 +68,20 @@ impl ContextConfigs {
         });
 
         let signer_id = match signer_id {
-            Ok(signer_id) => signer_id,
+            Ok(signer_id) => Repr::new(signer_id),
             Err(err) => env::panic_str(&format!(
                 "pweety please, sign the the contract initialization transaction with an ed25519 key: {}",
                 err
             )),
         };
 
-        env::log_str(&format!(
-            "Contract initialized by `{}`",
-            Repr::new(signer_id)
-        ));
+        env::log_str(&format!("Contract initialized by `{}`", signer_id));
 
         Self {
             contexts: IterableMap::new(Prefix::Contexts),
-            config: Guard::new(
-                Prefix::Privileges(PrivilegeScope::Config),
-                signer_id,
-                Config {
-                    validity_threshold_ms: DEFAULT_VALIDITY_THRESHOLD_MS,
-                },
-            ),
+            config: Config {
+                validity_threshold_ms: DEFAULT_VALIDITY_THRESHOLD_MS,
+            },
         }
     }
 }

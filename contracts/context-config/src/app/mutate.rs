@@ -4,7 +4,10 @@ use ed25519_dalek::VerifyingKey;
 use near_sdk::store::IterableSet;
 use near_sdk::{env, near, require, serde_json, Timestamp};
 
-use super::{Context, ContextConfigs, ContextConfigsExt, Guard, Prefix, PrivilegeScope};
+use super::{
+    Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
+    PrivilegeScope, MIN_VALIDITY_THRESHOLD_MS,
+};
 use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::{Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
 use crate::{ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest};
@@ -28,39 +31,31 @@ impl ContextConfigs {
         );
 
         match request.kind {
-            RequestKind::Context(ContextRequest { context_id, kind }) => {
-                // check if the signer is in the context
-                // require!(
-                //     *request.account_id == env::signer_account_id(),
-                //     "not so fast, buddy"
-                // );
-
-                match kind {
-                    ContextRequestKind::Add {
-                        author_id,
-                        application,
-                    } => {
-                        self.add_context(context_id, author_id, application);
-                    }
-                    ContextRequestKind::UpdateApplication { application } => {
-                        self.update_application(&request.signer_id, context_id, application);
-                    }
-                    ContextRequestKind::AddMembers { members } => {
-                        self.add_members(&request.signer_id, context_id, members.into_owned());
-                    }
-                    ContextRequestKind::RemoveMembers { members } => {
-                        self.remove_members(&request.signer_id, context_id, members.into_owned());
-                    }
-                    ContextRequestKind::Grant { capabilities } => {
-                        self.grant(&request.signer_id, context_id, capabilities.into_owned());
-                    }
-                    ContextRequestKind::Revoke { capabilities } => {
-                        self.revoke(&request.signer_id, context_id, capabilities.into_owned());
-                    }
+            RequestKind::Context(ContextRequest { context_id, kind }) => match kind {
+                ContextRequestKind::Add {
+                    author_id,
+                    application,
+                } => {
+                    self.add_context(context_id, author_id, application);
                 }
-            }
+                ContextRequestKind::UpdateApplication { application } => {
+                    self.update_application(&request.signer_id, context_id, application);
+                }
+                ContextRequestKind::AddMembers { members } => {
+                    self.add_members(&request.signer_id, context_id, members.into_owned());
+                }
+                ContextRequestKind::RemoveMembers { members } => {
+                    self.remove_members(&request.signer_id, context_id, members.into_owned());
+                }
+                ContextRequestKind::Grant { capabilities } => {
+                    self.grant(&request.signer_id, context_id, capabilities.into_owned());
+                }
+                ContextRequestKind::Revoke { capabilities } => {
+                    self.revoke(&request.signer_id, context_id, capabilities.into_owned());
+                }
+            },
             RequestKind::System(SystemRequest::SetValidityThreshold { threshold_ms }) => {
-                self.set_validity_threshold_ms(&request.signer_id, threshold_ms);
+                self.set_validity_threshold_ms(threshold_ms);
             }
         }
     }
@@ -73,11 +68,16 @@ impl ContextConfigs {
         author_id: Repr<ContextIdentity>,
         application: Application<'_>,
     ) {
-        let members = IterableSet::new(Prefix::Members(*context_id));
+        let mut members = IterableSet::new(Prefix::Members(*context_id));
+
+        members.insert(*author_id);
 
         let context = Context {
             application: Guard::new(
-                Prefix::Privileges(PrivilegeScope::Application(*context_id)),
+                Prefix::Privileges(PrivilegeScope::Context(
+                    *context_id,
+                    ContextPrivilegeScope::Application,
+                )),
                 author_id.rt().expect("infallible conversion"),
                 Application {
                     id: application.id,
@@ -87,7 +87,10 @@ impl ContextConfigs {
                 },
             ),
             members: Guard::new(
-                Prefix::Privileges(PrivilegeScope::MemberList(*context_id)),
+                Prefix::Privileges(PrivilegeScope::Context(
+                    *context_id,
+                    ContextPrivilegeScope::MemberList,
+                )),
                 author_id.rt().expect("infallible conversion"),
                 members,
             ),
@@ -154,7 +157,7 @@ impl ContextConfigs {
                 member, context_id
             ));
 
-            ctx_members.insert(member.clone().into_inner());
+            ctx_members.insert(*member);
         }
     }
 
@@ -175,12 +178,18 @@ impl ContextConfigs {
             .expect("unable to update member list");
 
         for member in members {
+            ctx_members.remove(&member);
+
+            let member = member.rt().expect("infallible conversion");
+
             env::log_str(&format!(
-                "Removed `{}` as a member of `{}`",
-                member, context_id
+                "Removed `{}` from being a member of `{}`",
+                Repr::new(member),
+                context_id
             ));
 
-            ctx_members.remove(&member.into_inner());
+            ctx_members.priviledges().revoke(&member);
+            context.application.priviledges().revoke(&member);
         }
     }
 
@@ -196,7 +205,12 @@ impl ContextConfigs {
             .expect("context does not exist");
 
         for (identity, capability) in capabilities {
-            let identity: Repr<_> = identity.rt().expect("infallible conversion");
+            require!(
+                context.members.contains(&*identity),
+                "unable to grant privileges to non-member"
+            );
+
+            let identity = identity.rt().expect("infallible conversion");
 
             match capability {
                 Capability::ManageApplication => context
@@ -204,18 +218,20 @@ impl ContextConfigs {
                     .get_mut(signer_id)
                     .expect("unable to update application")
                     .priviledges()
-                    .grant(*identity),
+                    .grant(identity),
                 Capability::ManageMembers => context
                     .members
                     .get_mut(signer_id)
                     .expect("unable to update member list")
                     .priviledges()
-                    .grant(*identity),
+                    .grant(identity),
             };
 
             env::log_str(&format!(
                 "Granted `{:?}` to `{}` in `{}`",
-                capability, identity, context_id
+                capability,
+                Repr::new(identity),
+                context_id
             ));
         }
     }
@@ -232,7 +248,7 @@ impl ContextConfigs {
             .expect("context does not exist");
 
         for (identity, capability) in capabilities {
-            let identity: Repr<_> = identity.rt().expect("infallible conversion");
+            let identity = identity.rt().expect("infallible conversion");
 
             match capability {
                 Capability::ManageApplication => context
@@ -240,31 +256,30 @@ impl ContextConfigs {
                     .get_mut(signer_id)
                     .expect("unable to update application")
                     .priviledges()
-                    .revoke(*identity),
+                    .revoke(&identity),
                 Capability::ManageMembers => context
                     .members
                     .get_mut(signer_id)
                     .expect("unable to update member list")
                     .priviledges()
-                    .revoke(*identity),
+                    .revoke(&identity),
             };
 
             env::log_str(&format!(
                 "Revoked `{:?}` from `{}` in `{}`",
-                capability, identity, context_id
+                capability,
+                Repr::new(identity),
+                context_id
             ));
         }
     }
 
-    fn set_validity_threshold_ms(
-        &mut self,
-        signer_id: &SignerId,
-        validity_threshold_ms: Timestamp,
-    ) {
-        self.config
-            .get_mut(signer_id)
-            .expect("unable to update config")
-            .validity_threshold_ms = validity_threshold_ms;
+    fn set_validity_threshold_ms(&mut self, validity_threshold_ms: Timestamp) {
+        if validity_threshold_ms < MIN_VALIDITY_THRESHOLD_MS {
+            env::panic_str("invalid validity threshold");
+        }
+
+        self.config.validity_threshold_ms = validity_threshold_ms;
 
         env::log_str(&format!(
             "Set validity threshold to `{:?}`",
