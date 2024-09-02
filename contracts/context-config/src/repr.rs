@@ -95,14 +95,21 @@ impl<const N: usize> ReprBytes for [u8; N] {
     }
 }
 
-impl ReprBytes for Vec<u8> {
-    type EncodeBytes<'b> = &'b [u8];
+pub trait DynSizedByteSlice: AsRef<[u8]> + From<Vec<u8>> {}
+
+impl DynSizedByteSlice for Box<[u8]> {}
+
+impl<T> ReprBytes for T
+where
+    T: DynSizedByteSlice,
+{
+    type EncodeBytes<'b> = &'b [u8] where T: 'b;
     type DecodeBytes = Vec<u8>;
 
     type Error = std::convert::Infallible;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
-        self
+        self.as_ref()
     }
 
     fn from_bytes<F>(f: F) -> Result<Self, Error<Self::Error>>
@@ -115,32 +122,59 @@ impl ReprBytes for Vec<u8> {
 
         assert_eq!(len, bytes.len());
 
-        Ok(bytes)
+        Ok(bytes.into())
     }
 }
 
 mod serde_bytes {
-    use near_sdk::bs58;
+    use std::ops::Deref;
+
     use near_sdk::serde::{de, ser, Deserialize};
+    use near_sdk::{bs58, near};
 
     use super::{Error, ReprBytes};
 
-    pub fn serialize<S, T>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: ser::Serializer,
         T: ReprBytes,
+        S: ser::Serializer,
     {
         let encoded = bs58::encode(value.as_bytes()).into_string();
+
         serializer.serialize_str(&encoded)
+    }
+
+    #[derive(Debug)]
+    #[near(serializers = [json])]
+    #[serde(untagged)]
+    #[repr(u8)]
+    // mitigation for borrowed slices
+    enum MaybeOwnedStr<'a> {
+        // v~~ serde's codegen deserializes in order
+        Borrowed(&'a str) = 0,
+        // ^~~ we must try the borrowed variant first
+        Owned(String) = 1,
+    }
+
+    impl Deref for MaybeOwnedStr<'_> {
+        type Target = str;
+
+        fn deref(&self) -> &Self::Target {
+            match self {
+                MaybeOwnedStr::Borrowed(s) => s,
+                MaybeOwnedStr::Owned(s) => s,
+            }
+        }
     }
 
     pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
     where
-        D: de::Deserializer<'de>,
         T: ReprBytes,
+        D: de::Deserializer<'de>,
     {
-        let encoded = <&'de str>::deserialize(deserializer)?;
-        T::from_bytes(|bytes| bs58::decode(encoded).onto(bytes)).map_err(|e| match e {
+        let encoded = MaybeOwnedStr::deserialize(deserializer)?;
+
+        T::from_bytes(|bytes| bs58::decode(&*encoded).onto(bytes)).map_err(|e| match e {
             Error::DecodeError(err) => de::Error::custom(err),
             Error::InvalidBase58(err) => de::Error::custom(err),
         })
