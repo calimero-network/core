@@ -14,6 +14,7 @@ use reqwest::StatusCode;
 use serde_json::to_string as to_json_string;
 use tracing::info;
 
+use crate::admin::handlers::root_keys::store_root_key;
 use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::root_key::{get_root_key, has_near_root_key};
 use crate::verifywalletsignatures::near::{check_for_near_account_key, verify_near_signature};
@@ -284,14 +285,14 @@ pub async fn validate_root_key_exists(
         Some(root_key) => root_key,
         None => {
             if let WalletType::NEAR { network_id } = &req.wallet_metadata.wallet_type {
-                let near_keys = match has_near_root_key(store) {
+                let near_keys: Vec<String> = match has_near_root_key(store) {
                     Ok(keys) if keys.is_empty() => {
                         return Err(ApiError {
                             status_code: StatusCode::BAD_REQUEST,
                             message: "Root key does not exist".into(),
                         });
                     }
-                    Ok(keys) => keys, // If keys are not empty, proceed with them
+                    Ok(keys) => keys.into_iter().map(|key| key.signing_key).collect(),
                     Err(err) => {
                         info!("Error checking if near client key exists: {}", err);
                         return Err(ApiError {
@@ -324,8 +325,33 @@ pub async fn validate_root_key_exists(
                         });
                     }
                 };
+
+                // Check if the given public key is from the given NEAR account
+                if !check_for_near_account_key(
+                    &vec![req.wallet_metadata.verifying_key.clone()],
+                    wallet_address,
+                    rpc_url,
+                )
+                .await?
+                {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Given public key is not from wallet".into(),
+                    });
+                }
+                // Check if the wallet_address has a NEAR account key from DB
                 match check_for_near_account_key(&near_keys, wallet_address, rpc_url).await? {
-                    true => return Ok(req),
+                    true => {
+                        let _ = store_root_key(
+                            req.wallet_metadata.verifying_key.clone(),
+                            req.wallet_metadata.wallet_type.clone(),
+                            store,
+                        )
+                        .map_err(|err| {
+                            return err;
+                        })?;
+                        return Ok(req);
+                    }
                     false => {
                         return Err(ApiError {
                             status_code: StatusCode::BAD_REQUEST,

@@ -97,7 +97,7 @@ pub fn verify_near_signature(
 }
 
 pub async fn check_for_near_account_key(
-    current_near_root_keys: &Vec<RootKey>,
+    current_near_root_keys: &Vec<String>,
     account_name: &str,
     rpc_url: &str,
 ) -> EyreResult<bool, ApiError> {
@@ -112,7 +112,7 @@ pub async fn check_for_near_account_key(
                 "request_type": "view_access_key",
                 "finality": "final",
                 "account_id": account_name,
-                "public_key": &root_key.signing_key
+                "public_key": &root_key,
             }
         });
 
