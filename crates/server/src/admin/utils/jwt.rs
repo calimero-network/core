@@ -18,7 +18,7 @@ use crate::admin::storage::jwt_token::{
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     context_id: ContextId,
-    executor: String,
+    executor_public_key: String,
     pub exp: usize,
     token_type: TokenType,
 }
@@ -59,7 +59,7 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
     let access_expiration = Utc::now() + Duration::hours(1);
     let access_claims = Claims {
         context_id,
-        executor: executor_public_key.to_string(),
+        executor_public_key: executor_public_key.to_string(),
         exp: access_expiration.timestamp() as usize,
         token_type: TokenType::Access,
     };
@@ -78,7 +78,7 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
     let refresh_expiration = Utc::now() + Duration::days(30);
     let refresh_claims = Claims {
         context_id,
-        executor: executor_public_key.to_string(),
+        executor_public_key: executor_public_key.to_string(),
         exp: refresh_expiration.timestamp() as usize,
         token_type: TokenType::Refresh,
     };
@@ -204,7 +204,7 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
     let access_expiration = Utc::now() + Duration::hours(1);
     let access_claims = Claims {
         context_id: context_id.clone(),
-        executor: executor.clone(),
+        executor_public_key: executor.clone(),
         exp: access_expiration.timestamp() as usize,
         token_type: TokenType::Access,
     };
