@@ -2,9 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use context_config::repr::{Repr, ReprTransmute};
-use context_config::types::{Application, Capability, ContextIdentity, Signed, SignerId};
-use context_config::{ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest};
+use calimero_context_config::repr::{Repr, ReprTransmute};
+use calimero_context_config::types::{Application, Capability, ContextIdentity, Signed, SignerId};
+use calimero_context_config::{
+    ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest,
+};
 use ed25519_dalek::{Signer, SigningKey};
 use near_workspaces::operations::Function;
 use near_workspaces::types::{KeyType, SecretKey};
@@ -28,7 +30,7 @@ fn new_secret<R: CryptoRng + RngCore>(rng: &mut R) -> (SigningKey, SecretKey) {
 #[tokio::test]
 async fn main() -> eyre::Result<()> {
     let worker = near_workspaces::sandbox().await?;
-    let wasm = fs::read("res/context_config.wasm").await?;
+    let wasm = fs::read("res/calimero_context_config_near.wasm").await?;
 
     let mut rng = rand::thread_rng();
 

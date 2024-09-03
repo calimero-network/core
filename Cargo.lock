@@ -1098,6 +1098,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-context-config"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "bs58 0.5.1",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "calimero-context-config-near"
+version = "0.1.0"
+dependencies = [
+ "calimero-context-config",
+ "ed25519-dalek",
+ "eyre",
+ "near-crypto",
+ "near-sdk",
+ "near-workspaces",
+ "rand 0.8.5",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "calimero-identity"
 version = "0.1.0"
 dependencies = [
@@ -1669,21 +1697,6 @@ name = "constant_time_eq"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
-
-[[package]]
-name = "context-config"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "eyre",
- "near-crypto",
- "near-sdk",
- "near-workspaces",
- "rand 0.8.5",
- "serde_json",
- "thiserror",
- "tokio",
-]
 
 [[package]]
 name = "convert_case"

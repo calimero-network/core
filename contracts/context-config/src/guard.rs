@@ -6,7 +6,7 @@ use near_sdk::store::IterableSet;
 use thiserror::Error;
 
 use super::Prefix;
-use crate::types::SignerId;
+use calimero_context_config::types::SignerId;
 
 #[derive(Debug)]
 #[near(serializers = [borsh])]

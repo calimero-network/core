@@ -8,9 +8,13 @@ use super::{
     Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
     PrivilegeScope, MIN_VALIDITY_THRESHOLD_MS,
 };
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
-use crate::types::{Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
-use crate::{ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest};
+use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use calimero_context_config::types::{
+    Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
+};
+use calimero_context_config::{
+    ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest,
+};
 
 #[near]
 impl ContextConfigs {

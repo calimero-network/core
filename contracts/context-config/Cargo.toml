@@ -1,5 +1,5 @@
 [package]
-name = "context-config"
+name = "calimero-context-config-near"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -13,6 +13,8 @@ crate-type = ["rlib", "cdylib"]
 ed25519-dalek.workspace = true
 near-sdk.workspace = true
 thiserror.workspace = true
+
+calimero-context-config = { path = "../../crates/context/config" }
 
 [dev-dependencies]
 eyre.workspace = true
