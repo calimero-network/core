@@ -102,5 +102,6 @@ pub enum ContextRequestKind<'a> {
 #[serde(tag = "scope", content = "params")]
 #[serde(deny_unknown_fields)]
 pub enum SystemRequest {
+    #[serde(rename_all = "camelCase")]
     SetValidityThreshold { threshold_ms: Timestamp },
 }
