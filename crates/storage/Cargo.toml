@@ -7,6 +7,13 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+fixedstr.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+
+[dev-dependencies]
+claims.workspace = true
 
 [lints]
 workspace = true

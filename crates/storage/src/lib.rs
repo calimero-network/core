@@ -31,3 +31,5 @@
     clippy::unreachable,
     clippy::use_debug
 )]
+
+pub mod address;
