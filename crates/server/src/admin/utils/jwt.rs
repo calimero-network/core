@@ -160,7 +160,7 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
     }
 
     let context_id = token_data.claims.context_id.clone();
-    let executor = token_data.claims.executor.clone();
+    let executor = token_data.claims.executor_public_key.clone();
 
     let db_key = format!("{}{}", context_id, token_data.claims.exp);
     let db_key_hash = hash::Hash::new(db_key.as_bytes());
