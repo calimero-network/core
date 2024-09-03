@@ -1,11 +1,9 @@
 #![allow(unused_results, unused_crate_dependencies)]
 
+use calimero_context_config::repr::{Repr, ReprBytes};
+use calimero_context_config::types::{Application, ContextId, ContextIdentity, SignerId};
 use near_sdk::store::{IterableMap, IterableSet};
 use near_sdk::{env, near, BorshStorageKey, PanicOnDefault, Timestamp};
-
-use calimero_context_config::repr::{Repr, ReprBytes};
-use calimero_context_config::types::SignerId;
-use calimero_context_config::types::{Application, ContextId, ContextIdentity};
 
 mod guard;
 mod mutate;

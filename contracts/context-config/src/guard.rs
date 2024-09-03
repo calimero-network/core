@@ -1,11 +1,11 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
+use calimero_context_config::types::SignerId;
 use near_sdk::near;
 use near_sdk::store::IterableSet;
 
 use super::Prefix;
-use calimero_context_config::types::SignerId;
 
 #[derive(Debug)]
 #[near(serializers = [borsh])]
