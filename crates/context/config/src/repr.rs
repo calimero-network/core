@@ -60,6 +60,18 @@ pub enum Error<E> {
     InvalidBase58(#[from] bs58::decode::Error),
 }
 
+impl<E> Error<E> {
+    pub fn map<F, O>(self, f: F) -> Error<O>
+    where
+        F: FnOnce(E) -> O,
+    {
+        match self {
+            Error::DecodeError(e) => Error::DecodeError(f(e)),
+            Error::InvalidBase58(e) => Error::InvalidBase58(e),
+        }
+    }
+}
+
 pub trait ReprBytes: Sized {
     type EncodeBytes<'a>: AsRef<[u8]>
     where

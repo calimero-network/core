@@ -1,6 +1,5 @@
 use std::time;
 
-use ed25519_dalek::VerifyingKey;
 use near_sdk::store::IterableSet;
 use near_sdk::{env, near, require, serde_json, Timestamp};
 
@@ -8,7 +7,7 @@ use super::{
     Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
     PrivilegeScope, MIN_VALIDITY_THRESHOLD_MS,
 };
-use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{
     Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
 };
@@ -25,7 +24,7 @@ impl ContextConfigs {
             serde_json::from_slice(&input).expect("failed to parse input");
 
         let request = request
-            .parse(|i| VerifyingKey::from_bytes(&i.signer_id.as_bytes()))
+            .parse(|i| *i.signer_id)
             .expect("failed to parse input");
 
         require!(

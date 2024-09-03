@@ -6,7 +6,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::repr::{self, Repr, ReprBytes};
+use crate::repr::{self, Repr, ReprBytes, ReprTransmute};
 
 #[derive(
     Eq,
@@ -222,6 +222,28 @@ pub enum VerificationKeyParseError {
     InvalidVerificationKey(ed25519_dalek::SignatureError),
 }
 
+impl ReprBytes for VerifyingKey {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+
+    type Error = VerificationKeyParseError;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.to_bytes()
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+    {
+        use VerificationKeyParseError::{InvalidVerificationKey, LengthMismatch};
+
+        let bytes = Self::DecodeBytes::from_bytes(f).map_err(|e| e.map(LengthMismatch))?;
+
+        Self::from_bytes(&bytes).map_err(|e| repr::Error::DecodeError(InvalidVerificationKey(e)))
+    }
+}
+
 #[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Capability {
     ManageApplication,
@@ -243,8 +265,10 @@ pub enum Error<E> {
     InvalidSignature,
     #[error("failed to parse JSON payload: {0}")]
     ParseError(#[from] serde_json::Error),
-    #[error("failed to derive verifing key: {0}")]
+    #[error("failed to derive key: {0}")]
     KeyDerivationError(E),
+    #[error(transparent)]
+    VerificationKeyParseError(#[from] repr::Error<VerificationKeyParseError>),
 }
 
 impl<E: fmt::Display> fmt::Debug for Error<E> {
@@ -266,14 +290,43 @@ impl<T: Serialize> Signed<T> {
         })
     }
 }
+
+pub trait IntoResult<T> {
+    type Error;
+
+    fn into_result(self) -> Result<T, Self::Error>;
+}
+
+impl<T> IntoResult<T> for T {
+    type Error = std::convert::Infallible;
+
+    fn into_result(self) -> Result<T, Self::Error> {
+        Ok(self)
+    }
+}
+
+impl<T, E> IntoResult<T> for Result<T, E> {
+    type Error = E;
+
+    fn into_result(self) -> Result<T, Self::Error> {
+        self
+    }
+}
+
 impl<'a, T: Deserialize<'a>> Signed<T> {
-    pub fn parse<E>(
+    pub fn parse<R: IntoResult<SignerId>>(
         &'a self,
-        f: impl FnOnce(&T) -> Result<VerifyingKey, E>,
-    ) -> Result<T, Error<E>> {
+        f: impl FnOnce(&T) -> R,
+    ) -> Result<T, Error<R::Error>> {
         let parsed = serde_json::from_slice(&self.payload)?;
 
-        let key = f(&parsed).map_err(Error::KeyDerivationError)?;
+        let bytes = f(&parsed)
+            .into_result()
+            .map_err(Error::KeyDerivationError)?;
+
+        let key = bytes
+            .rt::<VerifyingKey>()
+            .map_err(Error::VerificationKeyParseError)?;
 
         key.verify(&self.payload, &self.signature)
             .map_or(Err(Error::InvalidSignature), |_| Ok(parsed))
