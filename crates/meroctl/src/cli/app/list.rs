@@ -4,7 +4,7 @@ use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::multiaddr_to_url;
+use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -25,7 +25,7 @@ impl ListCommand {
 
         let url = multiaddr_to_url(multiaddr, "admin-api/dev/applications")?;
         let client = Client::new();
-        let response = client.get(url).send().await?;
+        let response = get_response(&client, url, None::<()>, &config.identity).await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())

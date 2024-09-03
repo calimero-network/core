@@ -1262,6 +1262,7 @@ dependencies = [
  "ed25519-dalek",
  "eyre",
  "futures-util",
+ "jsonwebtoken",
  "libp2p",
  "local-ip-address",
  "multiaddr",
@@ -3955,6 +3956,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "9.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9ae10193d25051e74945f1ea2d0b42e03cc3b890f7e4cc5faa44997d808193f"
+dependencies = [
+ "base64 0.21.7",
+ "js-sys",
+ "pem",
+ "ring 0.17.8",
+ "serde",
+ "serde_json",
+ "simple_asn1",
+]
+
+[[package]]
 name = "keccak"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4842,6 +4858,7 @@ checksum = "8452105ba047068f40ff7093dd1d9da90898e63dd61736462e9cdda6a90ad3c3"
 name = "meroctl"
 version = "0.1.0"
 dependencies = [
+ "bs58 0.5.1",
  "calimero-context",
  "calimero-network",
  "calimero-node",
@@ -4851,6 +4868,7 @@ dependencies = [
  "calimero-server-primitives",
  "calimero-store",
  "camino",
+ "chrono",
  "clap",
  "color-eyre",
  "const_format",
@@ -7934,6 +7952,18 @@ name = "simdutf8"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27f6278552951f1f2b8cf9da965d10969b2efdea95a6ec47987ab46edfe263a"
+
+[[package]]
+name = "simple_asn1"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adc4e5204eb1910f40f9cfa375f6f05b68c3abac4b6fd879c8ff5e7ae8a0a085"
+dependencies = [
+ "num-bigint 0.4.6",
+ "num-traits",
+ "thiserror",
+ "time",
+]
 
 [[package]]
 name = "siphasher"

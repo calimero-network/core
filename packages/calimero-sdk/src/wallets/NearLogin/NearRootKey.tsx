@@ -349,11 +349,14 @@ export const NearRootKey: React.FC<NearRootKeyProps> = ({
             alignItems: 'center',
             fontSize: '14px',
             color: '#778899',
-            whiteSpace: 'break-spaces'
+            whiteSpace: 'break-spaces',
           }}
         >
-          <span>Choose which account from your wallet you want to add a node root key for.
-          Each key, and therefore each account, can only be added once</span>
+          <span>
+            Choose which account from your wallet you want to add a node root
+            key for. Each key, and therefore each account, can only be added
+            once
+          </span>
         </div>
         {account && (
           <div

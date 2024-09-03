@@ -236,9 +236,22 @@ pub enum WalletSignature {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct JwtTokenRequest {
+    pub context_id: ContextId,
+    pub executor_public_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JwtRefreshRequest {
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[non_exhaustive]
 pub struct StarknetPayload {
     pub signature: Vec<String>,
+    #[serde(rename = "messageHash")]
     pub message_hash: String,
 }
 
