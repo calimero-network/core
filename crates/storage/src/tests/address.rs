@@ -127,7 +127,120 @@ mod path__constructor {
 }
 
 #[cfg(test)]
-mod path__implementations {
+mod path__public_methods {
+    use super::*;
+
+    #[test]
+    fn depth() {
+        assert_eq!(Path::new("::root").unwrap().depth(), 0);
+        assert_eq!(Path::new("::root::node::leaf").unwrap().depth(), 2);
+    }
+
+    #[test]
+    fn first() {
+        assert_eq!(Path::new("::root").unwrap().first(), "root");
+        assert_eq!(Path::new("::root::node::leaf").unwrap().first(), "root");
+    }
+
+    #[test]
+    fn is_ancestor_of() {
+        assert!(Path::new("::root::node")
+            .unwrap()
+            .is_ancestor_of(&Path::new("::root::node::leaf").unwrap()));
+        assert!(Path::new("::root")
+            .unwrap()
+            .is_ancestor_of(&Path::new("::root::node::leaf").unwrap()));
+
+        assert!(!Path::new("::root::node::leaf")
+            .unwrap()
+            .is_ancestor_of(&Path::new("::root::node").unwrap()));
+        assert!(!Path::new("::root::node")
+            .unwrap()
+            .is_ancestor_of(&Path::new("::root::node").unwrap()));
+        assert!(!Path::new("::root::node")
+            .unwrap()
+            .is_ancestor_of(&Path::new("::root::another").unwrap()));
+    }
+
+    #[test]
+    fn is_descendant_of() {
+        assert!(Path::new("::root::node::leaf")
+            .unwrap()
+            .is_descendant_of(&Path::new("::root::node").unwrap()));
+        assert!(Path::new("::root::node::leaf")
+            .unwrap()
+            .is_descendant_of(&Path::new("::root").unwrap()));
+
+        assert!(!Path::new("::root::node")
+            .unwrap()
+            .is_descendant_of(&Path::new("::root::node::leaf").unwrap()));
+        assert!(!Path::new("::root::node")
+            .unwrap()
+            .is_descendant_of(&Path::new("::root::node").unwrap()));
+        assert!(!Path::new("::root::node")
+            .unwrap()
+            .is_descendant_of(&Path::new("::root::another").unwrap()));
+    }
+
+    #[test]
+    fn is_root() {
+        assert!(Path::new("::root").unwrap().is_root());
+        assert!(!Path::new("::root::node").unwrap().is_root());
+    }
+
+    #[test]
+    fn join() {
+        let path1 = Path::new("::root::node").unwrap();
+        let path2 = Path::new("::leaf").unwrap();
+        let joined1 = path1.join(&path2).unwrap();
+        assert_eq!(joined1.to_string(), "::root::node::leaf");
+
+        let path3 = Path::new("::root").unwrap();
+        let path4 = Path::new("::node::leaf").unwrap();
+        let joined2 = path3.join(&path4).unwrap();
+        assert_eq!(joined2.to_string(), "::root::node::leaf");
+    }
+
+    #[test]
+    fn last() {
+        let path1 = Path::new("::root").unwrap();
+        assert_eq!(path1.last(), "root");
+
+        let path2 = Path::new("::root::node::leaf").unwrap();
+        assert_eq!(path2.last(), "leaf");
+    }
+
+    #[test]
+    fn parent() {
+        assert_eq!(
+            Path::new("::root::node::leaf")
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_string(),
+            "::root::node"
+        );
+        assert!(Path::new("::root").unwrap().parent().is_none());
+    }
+
+    #[test]
+    fn segment() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        assert_eq!(path.segment(0).unwrap(), "root");
+        assert_eq!(path.segment(1).unwrap(), "node");
+        assert_eq!(path.segment(2).unwrap(), "leaf");
+        assert!(path.segment(3).is_none());
+    }
+
+    #[test]
+    fn segments() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        assert_eq!(path.segments(), vec!["root", "node", "leaf"]);
+    }
+}
+
+#[cfg(test)]
+mod path__traits {
     use super::*;
 
     #[test]

@@ -161,6 +161,267 @@ impl Path {
 
         Ok(Self { offsets, path: str })
     }
+
+    /// The number of segments in the [`Path`].
+    ///
+    /// Returns the depth of the path, which is one less than the number of
+    /// segments, because the roots are level 0.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// let path = Path::new("::root::node::leaf").unwrap();
+    /// assert_eq!(path.depth(), 2);
+    /// ```
+    ///
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        self.offsets.len()
+    }
+
+    /// The first segment of the [`Path`].
+    ///
+    /// Returns the first segment of the path, which is the top-most in the
+    /// hierarchy expressed by the path.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// let path = Path::new("::root::node::leaf").unwrap();
+    /// assert_eq!(path.first(), "root");
+    /// ```
+    ///
+    #[must_use]
+    pub fn first(&self) -> &str {
+        if self.offsets.is_empty() {
+            &self.path
+        } else {
+            &self.path[..self.offsets[0] as usize]
+        }
+    }
+
+    /// Checks if the [`Path`] is an ancestor of another [`Path`].
+    ///
+    /// Returns `true` if the [`Path`] is an ancestor of the other [`Path`], and
+    /// `false` otherwise. In order to be counted as an ancestor, the path must
+    /// be strictly shorter than the other path, and all segments must match.
+    ///
+    /// # Parameters
+    ///
+    /// * `other` - The other [`Path`] to check against.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// let path1 = Path::new("::root::node").unwrap();
+    /// let path2 = Path::new("::root::node::leaf").unwrap();
+    /// assert!(path1.is_ancestor_of(&path2));
+    /// ```
+    ///
+    #[must_use]
+    pub fn is_ancestor_of(&self, other: &Self) -> bool {
+        if self.depth() >= other.depth() {
+            return false;
+        }
+        let last_offset = 0_usize;
+
+        for &offset in &self.offsets {
+            #[allow(clippy::cast_sign_loss)] // Can't occur here
+            #[allow(trivial_numeric_casts)] // Not harmful here
+            if self.path[last_offset..offset as usize] != other.path[last_offset..offset as usize] {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Checks if the [`Path`] is a descendant of another [`Path`].
+    ///
+    /// Returns `true` if the [`Path`] is a descendant of the other [`Path`],
+    /// and `false` otherwise. In order to be counted as a descendant, the path
+    /// must be strictly longer than the other path, and all segments must
+    /// match.
+    ///
+    /// # Parameters
+    ///
+    /// * `other` - The other [`Path`] to check against.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// let path1 = Path::new("::root::node::leaf").unwrap();
+    /// let path2 = Path::new("::root::node").unwrap();
+    /// assert!(path1.is_descendant_of(&path2));
+    /// ```
+    ///
+    #[must_use]
+    pub fn is_descendant_of(&self, other: &Self) -> bool {
+        other.is_ancestor_of(self)
+    }
+
+    /// Checks if the [`Path`] is the root.
+    ///
+    /// Returns `true` if the [`Path`] is the root, and `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// assert!(Path::new("::root").unwrap().is_root());
+    /// assert!(!Path::new("::root::node").unwrap().is_root());
+    /// ```
+    ///
+    #[must_use]
+    pub fn is_root(&self) -> bool {
+        self.depth() == 0
+    }
+
+    /// Joins two [`Path`]s.
+    ///
+    /// Joins the [`Path`] with another [`Path`], returning a new [`Path`] that
+    /// is the concatenation of the two.
+    ///
+    /// # Parameters
+    ///
+    /// * `other` - The other [`Path`] to join with.
+    ///
+    /// # Errors
+    ///
+    /// An error will be returned if the resulting path would be too long.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// let path1 = Path::new("::root::node").unwrap();
+    /// let path2 = Path::new("::leaf").unwrap();
+    /// let joined = path1.join(&path2).unwrap();
+    /// assert_eq!(joined.to_string(), "::root::node::leaf");
+    /// ```
+    ///
+    pub fn join(&self, other: &Self) -> Result<Self, PathError> {
+        if self.path.len().saturating_add(other.path.len()) > 255 {
+            return Err(PathError::Overflow);
+        }
+        let mut path: Flexstr<255> = Flexstr::new();
+        let _: bool = path.push_str(&self.path);
+        let _: bool = path.push_str(&other.path);
+        let mut offsets = self.offsets.clone();
+        #[allow(clippy::cast_possible_truncation)] // Can't occur here
+        offsets.push(self.path.len() as u8);
+        #[allow(clippy::cast_possible_truncation)] // Can't occur here
+        offsets.extend(
+            other
+                .offsets
+                .iter()
+                .map(|&offset| offset.saturating_add(self.path.len() as u8)),
+        );
+        Ok(Self { offsets, path })
+    }
+
+    /// The last segment of the [`Path`].
+    ///
+    /// Returns the last segment of the path, which is the bottom-most in the
+    /// hierarchy expressed by the path.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// let path = Path::new("::root::node::leaf").unwrap();
+    /// assert_eq!(path.last(), "leaf");
+    /// ```
+    ///
+    #[must_use]
+    pub fn last(&self) -> &str {
+        if self.offsets.is_empty() {
+            &self.path
+        } else {
+            self.offsets
+                .last()
+                .map_or(&self.path, |&offset| &self.path[offset as usize..])
+        }
+    }
+
+    /// The parent of the [`Path`].
+    ///
+    /// Returns the parent of the [`Path`], which is the path with the last
+    /// segment removed. If the path is already at the root, then `None` is
+    /// returned.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// let path = Path::new("::root::node::leaf").unwrap();
+    /// assert_eq!(path.parent().unwrap().to_string(), "::root::node");
+    /// assert_eq!(Path::new("::root").unwrap().parent(), None);
+    /// ```
+    ///
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        let mut clone = self.clone();
+        let _: bool = match clone.offsets.pop() {
+            Some(offset) => clone.path.truncate(offset as usize),
+            None => return None,
+        };
+        Some(clone)
+    }
+
+    /// The segment at a given index.
+    ///
+    /// Returns the segment at the given index, or `None` if the index is out of
+    /// bounds. Note that the root is at index 0.
+    ///
+    /// # Parameters
+    ///
+    /// * `index` - The index of the segment to retrieve.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// let path = Path::new("::root::node::leaf").unwrap();
+    /// assert_eq!(path.segment(1).unwrap(), "node");
+    /// assert_eq!(path.segment(3), None);
+    /// ```
+    ///
+    #[must_use]
+    pub fn segment(&self, index: usize) -> Option<&str> {
+        if index > self.depth() {
+            return None;
+        }
+        let start = index.checked_sub(1).map_or(0, |i| self.offsets[i] as usize);
+        #[allow(clippy::cast_possible_truncation)] // Can't occur here
+        let end = self
+            .offsets
+            .get(index)
+            .copied()
+            .unwrap_or(self.path.len() as u8);
+        Some(&self.path[start..end as usize])
+    }
+
+    /// The segments of the [`Path`].
+    ///
+    /// Returns the segments of the path as a vector of strings.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Path;
+    /// let path = Path::new("::root::node::leaf").unwrap();
+    /// assert_eq!(path.segments(), vec!["root", "node", "leaf"]);
+    /// ```
+    ///
+    #[must_use]
+    pub fn segments(&self) -> Vec<&str> {
+        (0..=self.depth()).filter_map(|i| self.segment(i)).collect()
+    }
 }
 
 impl Display for Path {
