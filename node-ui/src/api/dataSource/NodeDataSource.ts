@@ -6,6 +6,7 @@ import { NodeApi } from '../nodeApi';
 import translations from '../../constants/en.global.json';
 import { createAppMetadata } from '../../utils/metadata';
 import { Signature } from 'starknet';
+import { getNearEnvironment } from '../../utils/node';
 
 const t = translations.nodeDataSource;
 
@@ -281,6 +282,7 @@ export class NodeDataSource implements NodeApi {
     try {
       const headers: Header | null = await createAuthHeader(
         getAppEndpointKey() as string,
+        getNearEnvironment(),
       );
       const response: ResponseData<GetInstalledApplicationsResponse> =
         await this.client.get<GetInstalledApplicationsResponse>(
@@ -305,6 +307,7 @@ export class NodeDataSource implements NodeApi {
     try {
       const headers: Header | null = await createAuthHeader(
         getAppEndpointKey() as string,
+        getNearEnvironment(),
       );
       const response: ResponseData<InstalledApplication> =
         await this.client.get<InstalledApplication>(
@@ -327,6 +330,7 @@ export class NodeDataSource implements NodeApi {
     try {
       const headers: Header | null = await createAuthHeader(
         getAppEndpointKey() as string,
+        getNearEnvironment(),
       );
       const response = await this.client.get<ContextList>(
         `${getAppEndpointKey()}/admin-api/contexts`,
@@ -341,7 +345,7 @@ export class NodeDataSource implements NodeApi {
 
   async getContext(contextId: string): ApiResponse<ApiContext> {
     try {
-      const headers: Header | null = await createAuthHeader(contextId);
+      const headers: Header | null = await createAuthHeader(contextId, getNearEnvironment());
       const response = await this.client.get<ApiContext>(
         `${getAppEndpointKey()}/admin-api/contexts/${contextId}`,
         headers ?? {},
@@ -357,7 +361,7 @@ export class NodeDataSource implements NodeApi {
     contextId: string,
   ): ApiResponse<ContextClientKeysList> {
     try {
-      const headers: Header | null = await createAuthHeader(contextId);
+      const headers: Header | null = await createAuthHeader(contextId, getNearEnvironment());
       const response = await this.client.get<ContextClientKeysList>(
         `${getAppEndpointKey()}/admin-api/contexts/${contextId}/client-keys`,
         headers ?? {},
@@ -373,7 +377,7 @@ export class NodeDataSource implements NodeApi {
 
   async getContextUsers(contextId: string): ApiResponse<ContextUsersList> {
     try {
-      const headers: Header | null = await createAuthHeader(contextId);
+      const headers: Header | null = await createAuthHeader(contextId, getNearEnvironment());
       const response = await this.client.get<ContextUsersList>(
         `${getAppEndpointKey()}/admin-api/contexts/${contextId}/users`,
         headers ?? {},
@@ -389,7 +393,7 @@ export class NodeDataSource implements NodeApi {
 
   async getContextStorageUsage(contextId: string): ApiResponse<ContextStorage> {
     try {
-      const headers: Header | null = await createAuthHeader(contextId);
+      const headers: Header | null = await createAuthHeader(contextId, getNearEnvironment());
       const response = await this.client.get<ContextStorage>(
         `${getAppEndpointKey()}/admin-api/contexts/${contextId}/storage`,
         headers ?? {},
@@ -405,7 +409,7 @@ export class NodeDataSource implements NodeApi {
 
   async deleteContext(contextId: string): ApiResponse<DeleteContextResponse> {
     try {
-      const headers: Header | null = await createAuthHeader(contextId);
+      const headers: Header | null = await createAuthHeader(contextId, getNearEnvironment());
       const response = await this.client.delete<DeleteContextResponse>(
         `${getAppEndpointKey()}/admin-api/contexts/${contextId}`,
         headers ?? {},
@@ -429,6 +433,7 @@ export class NodeDataSource implements NodeApi {
           initFunction,
           initArguments,
         }),
+        getNearEnvironment(),
       );
       const response = await this.client.post<Context>(
         `${getAppEndpointKey()}/admin-api/contexts`,
@@ -450,6 +455,7 @@ export class NodeDataSource implements NodeApi {
     try {
       const headers: Header | null = await createAuthHeader(
         getAppEndpointKey() as string,
+        getNearEnvironment(),
       );
       const response = await this.client.get<DidResponse>(
         `${getAppEndpointKey()}/admin-api/did`,
@@ -481,6 +487,7 @@ export class NodeDataSource implements NodeApi {
           selectedVersion,
           hash,
         }),
+        getNearEnvironment(),
       );
 
       const response: ResponseData<InstallApplicationResponse> =
@@ -505,7 +512,7 @@ export class NodeDataSource implements NodeApi {
 
   async joinContext(contextId: string): ApiResponse<JoinContextResponse> {
     try {
-      const headers: Header | null = await createAuthHeader(contextId);
+      const headers: Header | null = await createAuthHeader(contextId, getNearEnvironment());
       const response = await this.client.post<JoinContextResponse>(
         `${getAppEndpointKey()}/admin-api/contexts/${contextId}/join`,
         {},
@@ -534,6 +541,7 @@ export class NodeDataSource implements NodeApi {
   async addRootKey(rootKeyRequest: LoginRequest): ApiResponse<RootKeyResponse> {
     const headers: Header | null = await createAuthHeader(
       JSON.stringify(rootKeyRequest),
+      getNearEnvironment(),
     );
     if (!headers) {
       return { error: { code: 401, message: 'Unauthorized' } };
@@ -553,6 +561,7 @@ export class NodeDataSource implements NodeApi {
   ): ApiResponse<ContextIdentitiesResponse> {
     const headers: Header | null = await createAuthHeader(
       JSON.stringify(contextId),
+      getNearEnvironment(),
     );
     if (!headers) {
       return { error: { code: 401, message: t.unauthorizedErrorMessage } };
@@ -570,6 +579,7 @@ export class NodeDataSource implements NodeApi {
   ): ApiResponse<CreateTokenResponse> {
     const headers: Header | null = await createAuthHeader(
       JSON.stringify(contextId),
+      getNearEnvironment(),
     );
     if (!headers) {
       return { error: { code: 401, message: t.unauthorizedErrorMessage } };

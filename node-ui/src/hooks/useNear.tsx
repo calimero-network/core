@@ -280,7 +280,7 @@ export function useNear({ accountId, selector }: UseNearProps) {
         };
         const walletMetadata: WalletMetadata = {
           wallet: WalletType.NEAR({
-            networkId: selector.options.network.networkId,
+            networkId: getNearEnvironment(),
           }),
           verifyingKey: publicKey,
           walletAddress: accId,
