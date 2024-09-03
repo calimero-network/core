@@ -154,7 +154,7 @@ impl ReprBytes for ApplicationId {
 #[near(serializers = [borsh, json])]
 pub struct ApplicationSource<'a>(#[serde(borrow)] pub Cow<'a, str>);
 
-impl<'a> ApplicationSource<'a> {
+impl ApplicationSource<'_> {
     pub fn to_owned(self) -> ApplicationSource<'static> {
         ApplicationSource(Cow::Owned(self.0.into_owned()))
     }
@@ -164,7 +164,7 @@ impl<'a> ApplicationSource<'a> {
 #[near(serializers = [borsh, json])]
 pub struct ApplicationMetadata<'a>(#[serde(borrow)] pub Repr<Cow<'a, [u8]>>);
 
-impl<'a> ApplicationMetadata<'a> {
+impl ApplicationMetadata<'_> {
     pub fn to_owned(self) -> ApplicationMetadata<'static> {
         ApplicationMetadata(Repr::new(Cow::Owned(self.0.into_inner().into_owned())))
     }

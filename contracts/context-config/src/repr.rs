@@ -145,7 +145,7 @@ pub trait DynSizedByteSlice: AsRef<[u8]> + From<Vec<u8>> {}
 
 impl DynSizedByteSlice for Vec<u8> {}
 impl DynSizedByteSlice for Box<[u8]> {}
-impl<'a> DynSizedByteSlice for Cow<'a, [u8]> {}
+impl DynSizedByteSlice for Cow<'_, [u8]> {}
 
 impl<T> ReprBytes for T
 where
