@@ -10,6 +10,7 @@ cd "$(dirname $0)"
 
 # Prepare package manager
 ./../contracts/package-manager/build.sh
+./../contracts/context-config/build.sh
 
 # Run cargo test
 cargo test
