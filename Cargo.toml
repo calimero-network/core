@@ -30,7 +30,7 @@ members = [
   "./apps/gen-ext",
 
   "./contracts/context-config",
-  "./contracts/package-manager",
+  "./contracts/registry",
 ]
 
 [workspace.dependencies]

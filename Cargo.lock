@@ -1214,6 +1214,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-registry"
+version = "0.1.0"
+dependencies = [
+ "hex 0.4.3",
+ "near-sdk",
+ "near-workspaces",
+ "semver",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "calimero-runtime"
 version = "0.1.0"
 dependencies = [
@@ -6231,18 +6243,6 @@ name = "owo-colors"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1b04fb49957986fdce4d6ee7a65027d55d4b6d2265e5848bbb507b58ccfdb6f"
-
-[[package]]
-name = "package-manager"
-version = "0.1.0"
-dependencies = [
- "hex 0.4.3",
- "near-sdk",
- "near-workspaces",
- "semver",
- "serde_json",
- "tokio",
-]
 
 [[package]]
 name = "parity-scale-codec"

@@ -8,7 +8,7 @@ use tokio::fs::read as async_read;
 #[tokio::test]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = near_workspaces::sandbox().await?;
-    let wasm = async_read("res/package_manager.wasm").await?;
+    let wasm = async_read("res/calimero_registry.wasm").await?;
     let contract = worker.dev_deploy(&wasm).await?;
 
     println!("Contract deployed at: {}", contract.id());
