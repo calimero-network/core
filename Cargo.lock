@@ -1121,7 +1121,6 @@ dependencies = [
  "near-workspaces",
  "rand 0.8.5",
  "serde_json",
- "thiserror",
  "tokio",
 ]
 

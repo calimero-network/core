@@ -3,7 +3,6 @@ use std::ops::{Deref, DerefMut};
 
 use near_sdk::near;
 use near_sdk::store::IterableSet;
-use thiserror::Error;
 
 use super::Prefix;
 use calimero_context_config::types::SignerId;
@@ -15,10 +14,15 @@ pub struct Guard<T> {
     priviledged: IterableSet<SignerId>,
 }
 
-#[derive(Copy, Clone, Error)]
-#[error("unauthorized access")]
+#[derive(Copy, Clone)]
 pub struct UnauthorizedAccess {
     _priv: (),
+}
+
+impl fmt::Display for UnauthorizedAccess {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad("unauthorized access")
+    }
 }
 
 impl fmt::Debug for UnauthorizedAccess {
