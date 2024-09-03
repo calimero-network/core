@@ -5,7 +5,6 @@ mod tests;
 use base64::engine::general_purpose::STANDARD;
 use base64::engine::Engine;
 use borsh::BorshSerialize;
-use calimero_primitives::identity::RootKey;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use eyre::{eyre, Report, Result as EyreResult};
 use reqwest::{Client, StatusCode};
