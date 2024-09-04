@@ -2,7 +2,7 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
     MutateRequest, QueryRequest, Request, RequestId, RequestPayload, Version,
 };
-use clap::{value_parser, Parser};
+use clap::{value_parser, Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 use serde_json::Value;
 
@@ -13,7 +13,7 @@ use crate::config_file::ConfigFile;
 #[derive(Debug, Parser)]
 pub struct JsonRpcCommand {
     #[arg(long)]
-    pub call_type: String,
+    pub call_type: CallType,
 
     #[arg(long)]
     pub context_id: ContextId,
@@ -26,6 +26,12 @@ pub struct JsonRpcCommand {
 
     #[arg(long, default_value = "dontcare")]
     pub id: String,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum CallType {
+    Query,
+    Mutate,
 }
 
 impl JsonRpcCommand {
@@ -46,20 +52,19 @@ impl JsonRpcCommand {
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
-        let payload = match self.call_type.to_lowercase().as_str() {
-            "query" => RequestPayload::Query(QueryRequest::new(
+        let payload = match self.call_type {
+            CallType::Query => RequestPayload::Query(QueryRequest::new(
                 self.context_id,
                 self.method,
                 self.args_json,
                 config.identity.public().try_into_ed25519()?.to_bytes(),
             )),
-            "mutate" => RequestPayload::Mutate(MutateRequest::new(
+            CallType::Mutate => RequestPayload::Mutate(MutateRequest::new(
                 self.context_id,
                 self.method,
                 self.args_json,
                 config.identity.public().try_into_ed25519()?.to_bytes(),
             )),
-            _ => bail!("Invalid call_type. Must be either 'query' or 'mutate'."),
         };
 
         let request = Request {
