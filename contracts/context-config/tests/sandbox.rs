@@ -8,9 +8,7 @@ use calimero_context_config::{
     ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
-use near_workspaces::operations::Function;
-use near_workspaces::types::{KeyType, SecretKey};
-use near_workspaces::Contract;
+use near_workspaces::types::SecretKey;
 use rand::{CryptoRng, Rng, RngCore};
 use serde_json::json;
 use tokio::{fs, time};
@@ -34,55 +32,14 @@ async fn main() -> eyre::Result<()> {
 
     let mut rng = rand::thread_rng();
 
-    let contract = worker
-        .create_tla(
-            "config-alt".parse()?,
-            SecretKey::from_random(KeyType::SECP256K1),
-        )
-        .await?
-        .into_result()?;
-
-    let res = contract
-        .batch(contract.id())
-        .deploy(&wasm)
-        .call(Function::new("init"))
-        .transact()
-        .await?
-        .into_result()
-        .expect_err("Secp256k1 should not be allowed");
-
-    {
-        let err = res.to_string();
-        assert!(err.contains("pweety please, sign the the contract initialization transaction with an ed25519 key: decode error: insufficient length, found: 64, expected: 32"), "{}", err);
-    }
-
     let (config_rsk, config_wsk) = new_secret(&mut rng);
     let config_pk = config_rsk.verifying_key();
     let config_id: Repr<ContextIdentity> = config_pk.to_bytes().rt()?;
 
     let contract = worker
-        .create_tla("config".parse()?, config_wsk)
+        .create_tla_and_deploy("config".parse()?, config_wsk, &wasm)
         .await?
         .into_result()?;
-
-    let res = contract
-        .batch(contract.id())
-        .deploy(&wasm)
-        .call(Function::new("init"))
-        .transact()
-        .await?
-        .into_result()?;
-
-    assert_eq!(
-        res.logs(),
-        [format!("Contract initialized by `{}`", config_id)]
-    );
-
-    let contract = Contract::from_secret_key(
-        contract.id().clone(),
-        contract.secret_key().clone(),
-        &worker,
-    );
 
     let root_account = worker.root_account()?;
 

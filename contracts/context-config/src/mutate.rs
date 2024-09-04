@@ -284,6 +284,11 @@ impl ContextConfigs {
     }
 
     fn set_validity_threshold_ms(&mut self, validity_threshold_ms: Timestamp) {
+        require!(
+            env::current_account_id() == env::predecessor_account_id(),
+            "access denied"
+        );
+
         if validity_threshold_ms < MIN_VALIDITY_THRESHOLD_MS {
             env::panic_str("invalid validity threshold");
         }
