@@ -9,10 +9,9 @@ use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
-use calimero_context::ContextManager;
+use calimero_server_primitives::admin::AdminState;
 use calimero_store::Store;
 use eyre::Report;
-use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
 use tower_http::services::{ServeDir, ServeFile};
@@ -54,18 +53,10 @@ impl AdminConfig {
     }
 }
 
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct AdminState {
-    pub store: Store,
-    pub keypair: Keypair,
-    pub ctx_manager: ContextManager,
-}
-
 pub(crate) fn setup(
     config: &ServerConfig,
     store: Store,
-    ctx_manager: ContextManager,
+    shared_state: Arc<AdminState>,
 ) -> Option<(&'static str, Router)> {
     let _ = match &config.admin {
         Some(config) if config.enabled => config,
@@ -80,11 +71,6 @@ pub(crate) fn setup(
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
-    let shared_state = Arc::new(AdminState {
-        store: store.clone(),
-        keypair: config.identity.clone(),
-        ctx_manager,
-    });
     let protected_router = Router::new()
         .route("/root-key", post(create_root_key_handler))
         .route("/install-application", post(install_application_handler))

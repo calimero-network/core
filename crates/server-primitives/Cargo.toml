@@ -9,14 +9,17 @@ license.workspace = true
 [dependencies]
 camino.workspace = true
 eyre.workspace = true
+libp2p.workspace = true
 semver = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 url = { workspace = true, features = ["serde"] }
 
+calimero-context = { path = "../context" }
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-primitives = { path = "../primitives" }
+calimero-store = { path = "../store", features = ["serde"] }
 
 [lints]
 workspace = true

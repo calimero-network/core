@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_server_primitives::admin::{
-    AddPublicKeyRequest, EthSignatureMessageMetadata, IntermediateAddPublicKeyRequest,
+    AddPublicKeyRequest, AdminState, EthSignatureMessageMetadata, IntermediateAddPublicKeyRequest,
     JwtRefreshRequest, JwtTokenRequest, NearSignatureMessageMetadata, Payload,
     SignatureMetadataEnum, StarknetSignatureMessageMetadata,
 };
@@ -17,7 +17,7 @@ use serde_json::from_value as from_json_value;
 use tracing::info;
 
 use crate::admin::handlers::root_keys::store_root_key;
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::admin::storage::client_keys::add_client_key;
 use crate::admin::storage::root_key::exists_root_keys;
 use crate::admin::utils::auth::{validate_challenge, validate_root_key_exists};

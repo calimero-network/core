@@ -7,7 +7,7 @@ use axum::{Extension, Json};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::identity::{ClientKey, ContextUser};
 use calimero_server_primitives::admin::{
-    ContextStorage, CreateContextRequest, CreateContextResponse, GetContextsResponse,
+    AdminState, ContextStorage, CreateContextRequest, CreateContextResponse, GetContextsResponse,
     UpdateContextApplicationRequest,
 };
 use reqwest::StatusCode;
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use tracing::error;
 
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
 use crate::admin::utils::context::{create_context, join_context};
 

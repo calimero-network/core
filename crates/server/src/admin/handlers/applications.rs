@@ -6,11 +6,11 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
-    GetApplicationDetailsResponse, GetApplicationResponse, InstallApplicationRequest,
+    AdminState, GetApplicationDetailsResponse, GetApplicationResponse, InstallApplicationRequest,
     InstallApplicationResponse, InstallDevApplicationRequest, ListApplicationsResponse,
 };
 
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 
 pub async fn install_dev_application_handler(
     Extension(state): Extension<Arc<AdminState>>,

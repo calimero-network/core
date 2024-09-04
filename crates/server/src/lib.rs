@@ -1,14 +1,16 @@
 use core::net::{IpAddr, SocketAddr};
 use std::io::Error as IoError;
+use std::sync::Arc;
 
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
-use axum::Router;
+use axum::{Extension, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
 use calimero_context::ContextManager;
 use calimero_node_primitives::ServerSender;
 use calimero_primitives::events::NodeEvent;
+use calimero_server_primitives::admin::AdminState;
 use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
@@ -90,11 +92,27 @@ pub async fn start(
 
     let mut serviced = false;
 
+    let shared_state = Arc::new(AdminState {
+        store: store.clone(),
+        keypair: config.identity.clone(),
+        ctx_manager,
+    });
+
     #[cfg(feature = "jsonrpc")]
     {
         if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone()) {
-            app = app.route(path, handler);
-            app = app.layer(middleware::jwt::JwtLayer::new(store.clone()));
+            app = app
+                .route(path, handler.clone())
+                .route_layer(middleware::jwt::JwtLayer::new(store.clone()))
+                .nest(
+                    "/jsonrpc/dev",
+                    Router::new()
+                        .route("/", handler)
+                        .route_layer(axum::middleware::from_fn(
+                            middleware::dev_auth::dev_mode_auth,
+                        ))
+                        .layer(Extension(shared_state.clone())),
+                );
 
             serviced = true;
         }
@@ -111,7 +129,7 @@ pub async fn start(
 
     #[cfg(feature = "admin")]
     {
-        if let Some((api_path, router)) = setup(&config, store.clone(), ctx_manager) {
+        if let Some((api_path, router)) = setup(&config, store.clone(), shared_state) {
             if let Some((site_path, serve_dir)) = site(&config) {
                 app = app.nest_service(site_path, serve_dir);
             }
