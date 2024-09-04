@@ -258,7 +258,11 @@ export const NearLogin: React.FC<NearLoginProps> = ({
         try {
           const identity = await apiClient
             .node()
-            .getContextIdentity(rpcBaseUrl, contextId, selector.options.network.networkId);
+            .getContextIdentity(
+              rpcBaseUrl,
+              contextId,
+              selector.options.network.networkId,
+            );
 
           if (
             !identity ||
