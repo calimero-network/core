@@ -30,8 +30,9 @@ toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-url.workspace = true
+url = { workspace = true, features = ["serde"] }
 
+calimero-blobstore = { path = "../store/blobs" }
 calimero-context = { path = "../context" }
 calimero-node = { path = "../node" }
 calimero-network = { path = "../network" }

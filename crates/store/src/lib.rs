@@ -1,10 +1,6 @@
 use std::sync::Arc;
 
 use eyre::Result as EyreResult;
-use handle::Handle;
-
-use crate::config::StoreConfig;
-use crate::db::Database;
 
 pub mod config;
 pub mod db;
@@ -15,6 +11,11 @@ pub mod key;
 pub mod layer;
 pub mod slice;
 mod tx;
+
+use config::StoreConfig;
+use db::Database;
+use handle::Handle;
+
 #[cfg(feature = "datatypes")]
 pub mod types;
 

@@ -5,8 +5,9 @@ use core::mem::replace;
 use core::pin::Pin;
 use core::str::FromStr;
 
+use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
-use calimero_context::config::ApplicationConfig;
+use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
@@ -59,38 +60,15 @@ pub mod types;
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
     pub node_type: NodeType,
-    pub application: ApplicationConfig,
     pub network: NetworkConfig,
+    pub datastore: StoreConfig,
+    pub blobstore: BlobStoreConfig,
+    pub context: ContextConfig,
     pub server: ServerConfig,
-    pub store: StoreConfig,
-}
-
-impl NodeConfig {
-    #[must_use]
-    pub const fn new(
-        home: Utf8PathBuf,
-        node_type: NodeType,
-        identity: Keypair,
-        store: StoreConfig,
-        application: ApplicationConfig,
-        network: NetworkConfig,
-        server: ServerConfig,
-    ) -> Self {
-        Self {
-            home,
-            identity,
-            node_type,
-            application,
-            network,
-            server,
-            store,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -115,16 +93,14 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let store = Store::open::<RocksDB>(&config.store)?;
+    let store = Store::open::<RocksDB>(&config.datastore)?;
 
-    let blob_manager = BlobManager::new(
-        store.clone(),
-        FileSystem::new(&config.application.dir).await?,
-    );
+    let blob_manager = BlobManager::new(store.clone(), FileSystem::new(&config.blobstore).await?);
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
     let ctx_manager = ContextManager::start(
+        &config.context,
         store.clone(),
         blob_manager,
         server_sender.clone(),

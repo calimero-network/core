@@ -29,10 +29,13 @@ use tracing::info;
 
 pub mod config;
 
+use config::ContextConfig;
+
 #[derive(Clone, Debug)]
 pub struct ContextManager {
-    pub store: Store,
-    pub blob_manager: BlobManager,
+    config: ContextConfig,
+    store: Store,
+    blob_manager: BlobManager,
     network_client: NetworkClient,
     server_sender: ServerSender,
     state: Arc<RwLock<State>>,
@@ -45,12 +48,14 @@ struct State {
 
 impl ContextManager {
     pub async fn start(
+        config: &ContextConfig,
         store: Store,
         blob_manager: BlobManager,
         server_sender: ServerSender,
         network_client: NetworkClient,
     ) -> EyreResult<Self> {
         let this = Self {
+            config: config.clone(),
             store,
             blob_manager,
             network_client,

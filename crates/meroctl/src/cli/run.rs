@@ -1,4 +1,5 @@
-use calimero_context::config::ApplicationConfig;
+use calimero_blobstore::config::BlobStoreConfig;
+use calimero_context::config::ContextConfig;
 use calimero_network::config::NetworkConfig;
 use calimero_node::{start, NodeConfig};
 use calimero_node_primitives::NodeType as PrimitiveNodeType;
@@ -44,28 +45,35 @@ impl RunCommand {
 
         let config = ConfigFile::load(&path)?;
 
-        start(NodeConfig::new(
-            path.clone(),
-            self.node_type.into(),
-            config.identity.clone(),
-            StoreConfig::new(path.join(config.store.path)),
-            ApplicationConfig::new(path.join(config.application.path)),
-            NetworkConfig::new(
-                config.identity.clone(),
-                self.node_type.into(),
-                config.network.swarm,
-                config.network.bootstrap,
-                config.network.discovery,
-                config.network.catchup,
-            ),
-            ServerConfig::new(
-                config.network.server.listen,
-                config.identity.clone(),
-                config.network.server.admin,
-                config.network.server.jsonrpc,
-                config.network.server.websocket,
-            ),
-        ))
+        start(NodeConfig {
+            home: path.clone(),
+            node_type: self.node_type.into(),
+            identity: config.identity.clone(),
+            network: NetworkConfig {
+                identity: config.identity.clone(),
+                node_type: self.node_type.into(),
+                swarm: config.network.swarm,
+                bootstrap: config.network.bootstrap,
+                discovery: config.network.discovery,
+                catchup: config.network.catchup,
+            },
+            datastore: StoreConfig {
+                path: path.join(config.datastore.path),
+            },
+            blobstore: BlobStoreConfig {
+                path: path.join(config.blobstore.path),
+            },
+            context: ContextConfig {
+                relayer: config.context.relayer,
+            },
+            server: ServerConfig {
+                listen: config.network.server.listen,
+                identity: config.identity.clone(),
+                admin: config.network.server.admin,
+                jsonrpc: config.network.server.jsonrpc,
+                websocket: config.network.server.websocket,
+            },
+        })
         .await
     }
 }

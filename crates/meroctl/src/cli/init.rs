@@ -19,7 +19,7 @@ use rand::{thread_rng, Rng};
 use tracing::{info, warn};
 
 use crate::config_file::{
-    ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig as StoreConfigFile,
+    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
 };
 use crate::{cli, defaults};
 
@@ -139,10 +139,10 @@ impl InitCommand {
 
         let config = ConfigFile {
             identity,
-            store: StoreConfigFile {
+            datastore: StoreConfigFile {
                 path: "data".into(),
             },
-            application: ApplicationConfig {
+            blobstore: BlobStoreConfig {
                 path: "apps".into(),
             },
             network: NetworkConfig {
@@ -171,7 +171,7 @@ impl InitCommand {
         config.save(&path)?;
 
         drop(Store::open::<RocksDB>(&StoreConfig::new(
-            path.join(config.store.path),
+            path.join(config.datastore.path),
         ))?);
 
         info!("Initialized a node in {:?}", path);

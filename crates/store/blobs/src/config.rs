@@ -1,7 +1,7 @@
+use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ContextConfig {
-    pub relayer: Url,
+pub struct BlobStoreConfig {
+    pub path: Utf8PathBuf,
 }
