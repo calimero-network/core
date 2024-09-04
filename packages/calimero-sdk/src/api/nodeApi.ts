@@ -175,6 +175,7 @@ export interface NodeApi {
   getContextIdentity(
     rpcBaseUrl: string,
     contextId: string,
+    networkId?: string,
   ): ApiResponse<ContextResponse>;
   health(request: HealthRequest): ApiResponse<HealthStatus>;
 }

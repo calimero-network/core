@@ -11,7 +11,7 @@ export interface Header {
 
 export async function createAuthHeader(
   payload: string,
-  nearNetworkType: string,
+  networkId: string,
 ): Promise<Header | null> {
   const privateKey: PrivateKey = await getPrivateKey();
 
@@ -32,7 +32,7 @@ export async function createAuthHeader(
   const contentBase58 = bs58.encode(hashArray);
   const headers: Header = {
     wallet_type: JSON.stringify(
-      WalletType.NEAR({ networkId: nearNetworkType }),
+      WalletType.NEAR({ networkId: networkId }),
     ),
     signing_key: signingKey,
     signature: signatureBase58,
