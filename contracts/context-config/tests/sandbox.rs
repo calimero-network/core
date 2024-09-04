@@ -8,22 +8,9 @@ use calimero_context_config::{
     ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
-use near_workspaces::types::SecretKey;
-use rand::{CryptoRng, Rng, RngCore};
+use rand::Rng;
 use serde_json::json;
 use tokio::{fs, time};
-
-fn new_secret<R: CryptoRng + RngCore>(rng: &mut R) -> (SigningKey, SecretKey) {
-    let rsk = SigningKey::generate(rng);
-
-    let wsk =
-        near_crypto::SecretKey::ED25519(near_crypto::ED25519SecretKey(rsk.to_keypair_bytes()))
-            .to_string()
-            .parse::<SecretKey>()
-            .unwrap();
-
-    (rsk, wsk)
-}
 
 #[tokio::test]
 async fn main() -> eyre::Result<()> {
@@ -32,14 +19,7 @@ async fn main() -> eyre::Result<()> {
 
     let mut rng = rand::thread_rng();
 
-    let (config_rsk, config_wsk) = new_secret(&mut rng);
-    let config_pk = config_rsk.verifying_key();
-    let config_id: Repr<ContextIdentity> = config_pk.to_bytes().rt()?;
-
-    let contract = worker
-        .create_tla_and_deploy("config".parse()?, config_wsk, &wasm)
-        .await?
-        .into_result()?;
+    let contract = worker.dev_deploy(&wasm).await?;
 
     let root_account = worker.root_account()?;
 
@@ -544,18 +524,11 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, [alice_cx_id, carol_cx_id]);
 
-    let res = node1
-        .call(contract.id(), "mutate")
-        .args_json(Signed::new(
-            &{
-                let kind = RequestKind::System(SystemRequest::SetValidityThreshold {
-                    threshold_ms: 5_000,
-                });
-
-                Request::new(config_id.rt()?, kind)
-            },
-            |p| config_rsk.sign(p),
-        )?)
+    let res = contract
+        .call("set")
+        .args_json(SystemRequest::SetValidityThreshold {
+            threshold_ms: 5_000,
+        })
         .transact()
         .await?
         .into_result()?;

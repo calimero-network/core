@@ -5,23 +5,45 @@ use calimero_context_config::types::{
     Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
 };
 use calimero_context_config::{
-    ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest,
+    ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest, Timestamp,
 };
 use near_sdk::store::IterableSet;
-use near_sdk::{env, near, require, serde_json, Timestamp};
+use near_sdk::{env, near, require, serde_json};
 
 use super::{
     Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
-    PrivilegeScope, MIN_VALIDITY_THRESHOLD_MS,
+    PrivilegeScope,
 };
+
+const MIN_VALIDITY_THRESHOLD_MS: Timestamp = 5_000;
+
+macro_rules! parse_input {
+    ($input:ident $(: $input_ty:ty)?) => {
+        let $input = env::input().unwrap_or_default();
+
+        let $input $(: $input_ty )? = serde_json::from_slice(&$input).expect("failed to parse input");
+    };
+}
 
 #[near]
 impl ContextConfigs {
-    pub fn mutate(&mut self) {
-        let input = env::input().unwrap_or_default();
+    pub fn set(&mut self) {
+        require!(
+            env::predecessor_account_id() == env::current_account_id(),
+            "access denied"
+        );
 
-        let request: Signed<Request<'_>> =
-            serde_json::from_slice(&input).expect("failed to parse input");
+        parse_input!(request);
+
+        match request {
+            SystemRequest::SetValidityThreshold { threshold_ms } => {
+                self.set_validity_threshold_ms(threshold_ms);
+            }
+        }
+    }
+
+    pub fn mutate(&mut self) {
+        parse_input!(request: Signed<Request<'_>>);
 
         let request = request
             .parse(|i| *i.signer_id)
@@ -57,9 +79,6 @@ impl ContextConfigs {
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
             },
-            RequestKind::System(SystemRequest::SetValidityThreshold { threshold_ms }) => {
-                self.set_validity_threshold_ms(threshold_ms);
-            }
         }
     }
 }
@@ -284,11 +303,6 @@ impl ContextConfigs {
     }
 
     fn set_validity_threshold_ms(&mut self, validity_threshold_ms: Timestamp) {
-        require!(
-            env::current_account_id() == env::predecessor_account_id(),
-            "access denied"
-        );
-
         if validity_threshold_ms < MIN_VALIDITY_THRESHOLD_MS {
             env::panic_str("invalid validity threshold");
         }

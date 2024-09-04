@@ -44,7 +44,6 @@ impl<'a> Request<'a> {
 pub enum RequestKind<'a> {
     #[serde(borrow)]
     Context(ContextRequest<'a>),
-    System(SystemRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize)]

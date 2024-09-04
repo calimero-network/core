@@ -1,8 +1,9 @@
 #![allow(unused_results, unused_crate_dependencies)]
 
 use calimero_context_config::types::{Application, ContextId, ContextIdentity};
+use calimero_context_config::Timestamp;
 use near_sdk::store::{IterableMap, IterableSet};
-use near_sdk::{near, BorshStorageKey, Timestamp};
+use near_sdk::{near, BorshStorageKey};
 
 mod guard;
 mod mutate;
@@ -11,7 +12,6 @@ mod query;
 use guard::Guard;
 
 const DEFAULT_VALIDITY_THRESHOLD_MS: Timestamp = 10_000;
-const MIN_VALIDITY_THRESHOLD_MS: Timestamp = 5_000;
 
 #[derive(Debug)]
 #[near(contract_state)]
