@@ -1,9 +1,12 @@
-#[cfg(feature = "borsh")]
-use borsh::{BorshDeserialize, BorshSerialize};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use std::fmt;
+use std::ops::Deref;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::context::ContextId;
+use crate::hash::{Hash, HashError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(clippy::exhaustive_structs)]
@@ -12,42 +15,57 @@ pub struct KeyPair {
     pub private_key: Option<[u8; 32]>,
 }
 
-// This could use a Hash, but we need to be able to serialize the PublicKey and
-// create::hash::Hash does not currently implement Borsh.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
-#[allow(clippy::exhaustive_structs)]
-pub struct PublicKey(pub [u8; 32]);
+#[derive(Eq, Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PublicKey(Hash);
+
+impl From<[u8; 32]> for PublicKey {
+    fn from(id: [u8; 32]) -> Self {
+        Self(id.into())
+    }
+}
+
+impl Deref for PublicKey {
+    type Target = [u8; 32];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 impl PublicKey {
     #[must_use]
-    pub fn derive_from_private_key(private_key: &[u8; 32]) -> Self {
-        let secret_key = SigningKey::from_bytes(private_key);
-        let public_key: VerifyingKey = (&secret_key).into();
-        public_key.into()
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
-impl From<[u8; 32]> for PublicKey {
-    fn from(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+impl fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
     }
 }
 
-impl From<VerifyingKey> for PublicKey {
-    fn from(public_key: VerifyingKey) -> Self {
-        Self(public_key.to_bytes())
-    }
-}
-impl From<KeyPair> for PublicKey {
-    fn from(key_pair: KeyPair) -> Self {
-        key_pair.public_key
+impl From<PublicKey> for String {
+    fn from(id: PublicKey) -> Self {
+        id.as_str().to_owned()
     }
 }
 
-impl From<&KeyPair> for PublicKey {
-    fn from(key_pair: &KeyPair) -> Self {
-        key_pair.public_key
+impl From<&PublicKey> for String {
+    fn from(id: &PublicKey) -> Self {
+        id.as_str().to_owned()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Error)]
+#[error(transparent)]
+pub struct InvalidPublicKey(HashError);
+
+impl FromStr for PublicKey {
+    type Err = InvalidPublicKey;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.parse().map_err(InvalidPublicKey)?))
     }
 }
 
