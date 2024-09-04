@@ -33,3 +33,4 @@
 )]
 
 pub mod address;
+pub mod entities;
