@@ -134,6 +134,41 @@ async fn main() -> eyre::Result<()> {
                     },
                 });
 
+                Request::new(alice_cx_id.rt()?, kind)
+            },
+            |p| alice_cx_sk.sign(p),
+        )?)
+        .transact()
+        .await?
+        .raw_bytes()
+        .expect_err("context creation should fail");
+
+    {
+        let err = res.to_string();
+        assert!(
+            err.contains("context addition must be signed by the context itself"),
+            "{}",
+            err
+        );
+    }
+
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::Add {
+                        author_id: alice_cx_id,
+                        application: Application {
+                            id: application_id,
+                            blob: blob_id,
+                            source: Default::default(),
+                            metadata: Default::default(),
+                        },
+                    },
+                });
+
                 Request::new(context_id.rt()?, kind)
             },
             |p| context_secret.sign(p),
@@ -474,8 +509,8 @@ async fn main() -> eyre::Result<()> {
     assert_eq!(
         res.logs(),
         [format!(
-            "Updated application `{}` -> `{}`",
-            application_id, new_application_id
+            "Updated application for context `{}` from `{}` to `{}`",
+            context_id, application_id, new_application_id
         )]
     );
 

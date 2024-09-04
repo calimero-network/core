@@ -1,6 +1,6 @@
 use std::time;
 
-use calimero_context_config::repr::{Repr, ReprTransmute};
+use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
 };
@@ -39,7 +39,7 @@ impl ContextConfigs {
                     author_id,
                     application,
                 } => {
-                    self.add_context(context_id, author_id, application);
+                    self.add_context(&request.signer_id, context_id, author_id, application);
                 }
                 ContextRequestKind::UpdateApplication { application } => {
                     self.update_application(&request.signer_id, context_id, application);
@@ -67,10 +67,16 @@ impl ContextConfigs {
 impl ContextConfigs {
     fn add_context(
         &mut self,
+        signer_id: &SignerId,
         context_id: Repr<ContextId>,
         author_id: Repr<ContextIdentity>,
         application: Application<'_>,
     ) {
+        require!(
+            signer_id.as_bytes() == context_id.as_bytes(),
+            "context addition must be signed by the context itself"
+        );
+
         let mut members = IterableSet::new(Prefix::Members(*context_id));
 
         members.insert(*author_id);
@@ -133,8 +139,8 @@ impl ContextConfigs {
         );
 
         env::log_str(&format!(
-            "Updated application `{}` -> `{}`",
-            old_application.id, new_application_id
+            "Updated application for context `{}` from `{}` to `{}`",
+            context_id, old_application.id, new_application_id
         ))
     }
 
