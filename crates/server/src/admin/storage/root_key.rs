@@ -48,11 +48,20 @@ pub fn clean_auth_keys(store: &Store) -> EyreResult<()> {
     Ok(())
 }
 
-pub fn has_near_root_key(store: &Store) -> EyreResult<Vec<RootKey>> {
+pub fn has_near_account_root_key(store: &Store, wallet_address: &str) -> EyreResult<String> {
     let did = get_or_create_did(store)?;
-    Ok(did
+
+    if let Some(root_key) = did
         .root_keys
         .into_iter()
-        .filter(|k| matches!(k.wallet_type, WalletType::NEAR { .. }))
-        .collect())
+        .find(|k| k.wallet_address == wallet_address)
+    {
+        // Return the signing_key as a string if a matching root key is found
+        Ok(root_key.signing_key)
+    } else {
+        // Return an error if no matching root key is found
+        Err(eyre::eyre!(
+            "Root key does not exist for given wallet address"
+        ))
+    }
 }

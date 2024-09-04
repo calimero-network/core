@@ -76,15 +76,22 @@ pub struct RootKey {
     pub signing_key: String,
     #[serde(rename = "wallet")]
     pub wallet_type: WalletType,
+    pub wallet_address: String,
     pub created_at: u64,
 }
 
 impl RootKey {
     #[must_use]
-    pub const fn new(signing_key: String, wallet_type: WalletType, created_at: u64) -> Self {
+    pub const fn new(
+        signing_key: String,
+        wallet_type: WalletType,
+        wallet_address: String,
+        created_at: u64,
+    ) -> Self {
         Self {
             signing_key,
             wallet_type,
+            wallet_address,
             created_at,
         }
     }

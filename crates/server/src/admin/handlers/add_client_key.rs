@@ -174,9 +174,19 @@ async fn check_root_key(
         validate_root_key_exists(req, store).await
     } else {
         // Attempt to store the root key, then return the request
+        let wallet_address = match req.wallet_metadata.wallet_type {
+            WalletType::NEAR { .. } => req
+                .wallet_metadata
+                .wallet_address
+                .clone()
+                .unwrap_or(String::new()),
+            _ => String::new(), // Handle other cases appropriately
+        };
+
         let _ = store_root_key(
             req.wallet_metadata.verifying_key.clone(),
             req.wallet_metadata.wallet_type.clone(),
+            wallet_address,
             store,
         )
         .map_err(|err| {

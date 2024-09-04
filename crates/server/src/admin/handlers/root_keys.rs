@@ -41,9 +41,18 @@ pub fn store_root(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
+    let wallet_address = match req.wallet_metadata.wallet_type {
+        WalletType::NEAR { .. } => req
+            .wallet_metadata
+            .wallet_address
+            .clone()
+            .unwrap_or(String::new()),
+        _ => String::new(), // If wallet type is not NEAR, wallet address is not required
+    };
     let _ = store_root_key(
         req.wallet_metadata.verifying_key.clone(),
         req.wallet_metadata.wallet_type.clone(),
+        wallet_address,
         store,
     )?;
     Ok(req)
@@ -52,12 +61,14 @@ pub fn store_root(
 pub fn store_root_key(
     signing_key: String,
     wallet_type: WalletType,
+    wallet_address: String,
     store: &Store,
 ) -> Result<bool, ApiError> {
     #[allow(clippy::cast_sign_loss)]
     let root_key = RootKey::new(
         signing_key,
         wallet_type,
+        wallet_address,
         Utc::now().timestamp_millis() as u64,
     );
     let _ = add_root_key(store, root_key).map_err(parse_api_error)?;
