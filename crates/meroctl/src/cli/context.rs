@@ -3,11 +3,15 @@ use const_format::concatcp;
 use eyre::Result as EyreResult;
 
 use crate::cli::context::create::CreateCommand;
+use crate::cli::context::delete::DeleteCommand;
+use crate::cli::context::get::GetCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
 use crate::cli::RootArgs;
 
 mod create;
+mod delete;
+mod get;
 mod join;
 mod list;
 
@@ -39,6 +43,9 @@ pub enum ContextSubCommands {
     List(ListCommand),
     Create(Box<CreateCommand>),
     Join(JoinCommand),
+    Get(GetCommand),
+    #[command(alias = "del")]
+    Delete(DeleteCommand),
 }
 
 impl ContextCommand {
@@ -47,6 +54,8 @@ impl ContextCommand {
             ContextSubCommands::List(list) => list.run(args).await,
             ContextSubCommands::Create(create) => create.run(args).await,
             ContextSubCommands::Join(join) => join.run(args).await,
+            ContextSubCommands::Get(get) => get.run(args).await,
+            ContextSubCommands::Delete(delete) => delete.run(args).await,
         }
     }
 }
