@@ -96,57 +96,61 @@ pub fn verify_near_signature(
 }
 
 pub async fn check_for_near_account_key(
-    current_near_root_keys: &Vec<String>,
+    current_near_root_key: &str,
     account_name: &str,
     rpc_url: &str,
 ) -> EyreResult<bool, ApiError> {
     let client = Client::new();
-    // Loop over each NEAR root key and check against the given account
-    for root_key in current_near_root_keys {
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": "dontcare",
-            "method": "query",
-            "params": {
-                "request_type": "view_access_key",
-                "finality": "final",
-                "account_id": account_name,
-                "public_key": &root_key,
-            }
+    // Check if root key belongs to the account
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": "dontcare",
+        "method": "query",
+        "params": {
+            "request_type": "view_access_key",
+            "finality": "final",
+            "account_id": account_name,
+            "public_key": current_near_root_key,
+        }
+    });
+
+    let response = client
+        .post(rpc_url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("Request failed: {}", e),
+        })?
+        .json::<NearJsonRpcResponse<ResultDataWithPermission>>()
+        .await
+        .map_err(|e| ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("Failed to parse response: {}", e),
+        })?;
+
+    // Check if there is a top-level error
+    if let Some(ref error) = response.error {
+        println!("Top-level error found: {:?}", error);
+        return Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("Top-level error: {}", error.message),
         });
+    }
 
-        let response = client
-            .post(rpc_url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ApiError {
+    // Check for an error within the result object
+    if let Some(result) = &response.result {
+        if let Some(error) = result.error.as_deref() {
+            println!("Error within result: {}", error);
+            return Err(ApiError {
                 status_code: StatusCode::BAD_REQUEST,
-                message: format!("Request failed: {}", e),
-            })?
-            .json::<NearJsonRpcResponse<ResultDataWithPermission>>()
-            .await
-            .map_err(|e| ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: format!("Failed to parse response: {}", e),
-            })?;
-
-        // Check if there is a top-level error
-        if let Some(ref error) = response.error {
-            println!("Top-level error found: {:?}", error);
-            continue; // Skip to the next key
+                message: format!("Result error: {}", error),
+            });
         }
 
-        // Check for an error within the result object
-        if let Some(result) = &response.result {
-            if let Some(error) = result.error.as_deref() {
-                println!("Error within result: {}", error);
-                continue; // Skip to the next key
-            }
-
-            // If a valid key is found, return true immediately
-            return Ok(true);
-        }
+        // If a valid key is found, return true
+        return Ok(true);
     }
     Ok(false) // Return false if no matches are found
 }

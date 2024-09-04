@@ -16,7 +16,7 @@ use tracing::info;
 
 use crate::admin::handlers::root_keys::store_root_key;
 use crate::admin::service::{parse_api_error, ApiError};
-use crate::admin::storage::root_key::{get_root_key, has_near_root_key};
+use crate::admin::storage::root_key::{get_root_key, has_near_account_root_key};
 use crate::verifywalletsignatures::near::{check_for_near_account_key, verify_near_signature};
 use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
@@ -285,14 +285,24 @@ pub async fn validate_root_key_exists(
         Some(root_key) => root_key,
         None => {
             if let WalletType::NEAR { network_id } = &req.wallet_metadata.wallet_type {
-                let near_keys: Vec<String> = match has_near_root_key(store) {
+                let wallet_address = match req.wallet_metadata.wallet_address.as_deref() {
+                    Some(address) => address,
+                    None => {
+                        return Err(ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: "Wallet address not present".to_string(),
+                        });
+                    }
+                };
+                // Check if the wallet_address has a NEAR account key from DB
+                let near_keys: String = match has_near_account_root_key(store, wallet_address) {
                     Ok(keys) if keys.is_empty() => {
                         return Err(ApiError {
                             status_code: StatusCode::BAD_REQUEST,
                             message: "Root key does not exist".into(),
                         });
                     }
-                    Ok(keys) => keys.into_iter().map(|key| key.signing_key).collect(),
+                    Ok(keys) => keys,
                     Err(err) => {
                         info!("Error checking if near client key exists: {}", err);
                         return Err(ApiError {
@@ -328,7 +338,7 @@ pub async fn validate_root_key_exists(
 
                 // Check if the given public key is from the given NEAR account
                 if !check_for_near_account_key(
-                    &vec![req.wallet_metadata.verifying_key.clone()],
+                    &req.wallet_metadata.verifying_key,
                     wallet_address,
                     rpc_url,
                 )
@@ -345,6 +355,7 @@ pub async fn validate_root_key_exists(
                         let _ = store_root_key(
                             req.wallet_metadata.verifying_key.clone(),
                             req.wallet_metadata.wallet_type.clone(),
+                            wallet_address.to_string(),
                             store,
                         )
                         .map_err(|err| {
