@@ -137,8 +137,14 @@ impl ContextManager {
             (context_secret, identity_secret)
         };
 
+        let context_id = ContextId::from(*context_secret.public_key());
+
+        if self.get_context(&context_id)?.is_some() {
+            bail!("Context already exists on node.")
+        }
+
         let context = Context {
-            id: ContextId::from(*context_secret.public_key()),
+            id: context_id,
             application_id,
             last_transaction_hash: Default::default(),
         };
