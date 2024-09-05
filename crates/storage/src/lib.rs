@@ -35,3 +35,9 @@
 pub mod address;
 pub mod entities;
 pub mod interface;
+
+/// Shared test functionality.
+#[cfg(test)]
+pub mod tests {
+    pub mod common;
+}

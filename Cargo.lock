@@ -1308,6 +1308,7 @@ dependencies = [
  "calimero-store",
  "claims",
  "fixedstr",
+ "tempfile",
  "thiserror",
  "uuid 1.10.0",
 ]

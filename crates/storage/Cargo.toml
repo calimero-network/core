@@ -16,6 +16,7 @@ calimero-store = { path = "../store", features = ["datatypes"] }
 
 [dev-dependencies]
 claims.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
