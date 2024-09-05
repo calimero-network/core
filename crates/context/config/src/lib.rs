@@ -5,6 +5,8 @@ use std::time;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "client")]
+pub mod client;
 pub mod repr;
 pub mod types;
 

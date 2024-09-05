@@ -263,10 +263,10 @@ pub struct Signed<T> {
 pub enum Error<E> {
     #[error("invalid signature")]
     InvalidSignature,
-    #[error("failed to parse JSON payload: {0}")]
+    #[error("json error: {0}")]
     ParseError(#[from] serde_json::Error),
-    #[error("failed to derive key: {0}")]
-    KeyDerivationError(E),
+    #[error("derivation error: {0}")]
+    DerivationError(E),
     #[error(transparent)]
     VerificationKeyParseError(#[from] repr::Error<VerificationKeyParseError>),
 }
@@ -278,13 +278,18 @@ impl<E: fmt::Display> fmt::Debug for Error<E> {
 }
 
 impl<T: Serialize> Signed<T> {
-    pub fn new(payload: &T, sign: impl FnOnce(&[u8]) -> Signature) -> serde_json::Result<Self> {
-        let payload = serde_json::to_vec(&payload)?;
+    pub fn new<R: IntoResult<Signature>>(
+        payload: &T,
+        sign: impl FnOnce(&[u8]) -> R,
+    ) -> Result<Self, Error<R::Error>> {
+        let payload = serde_json::to_vec(&payload)?.into_boxed_slice();
 
-        let signature = sign(&payload);
+        let signature = sign(&payload)
+            .into_result()
+            .map_err(Error::DerivationError)?;
 
         Ok(Self {
-            payload: Repr::new(payload.into_boxed_slice()),
+            payload: Repr::new(payload),
             signature: Repr::new(signature),
             _priv: Default::default(),
         })
@@ -320,9 +325,7 @@ impl<'a, T: Deserialize<'a>> Signed<T> {
     ) -> Result<T, Error<R::Error>> {
         let parsed = serde_json::from_slice(&self.payload)?;
 
-        let bytes = f(&parsed)
-            .into_result()
-            .map_err(Error::KeyDerivationError)?;
+        let bytes = f(&parsed).into_result().map_err(Error::DerivationError)?;
 
         let key = bytes
             .rt::<VerifyingKey>()

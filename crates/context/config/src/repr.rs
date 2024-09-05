@@ -23,6 +23,7 @@ pub type Result<T, E> = std::result::Result<T, Error<E>>;
     BorshDeserialize,
 )]
 #[serde(transparent)]
+#[repr(transparent)]
 pub struct Repr<T> {
     #[serde(with = "serde_bytes", bound = "T: ReprBytes")]
     inner: T,

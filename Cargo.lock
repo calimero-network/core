@@ -1083,6 +1083,7 @@ name = "calimero-context"
 version = "0.1.0"
 dependencies = [
  "calimero-blobstore",
+ "calimero-context-config",
  "calimero-network",
  "calimero-node-primitives",
  "calimero-primitives",
@@ -1107,9 +1108,11 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "ed25519-dalek",
+ "reqwest 0.12.5",
  "serde",
  "serde_json",
  "thiserror",
+ "url",
 ]
 
 [[package]]

@@ -19,6 +19,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 url = { workspace = true, features = ["serde"] }
 
+calimero-context-config = { path = "./config", features = ["client"] }
 calimero-blobstore = { path = "../store/blobs" }
 calimero-primitives = { path = "../primitives", features = ["borsh", "rand"] }
 calimero-network = { path = "../network" }
