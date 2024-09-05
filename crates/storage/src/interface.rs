@@ -13,21 +13,41 @@
 #[path = "tests/interface.rs"]
 mod tests;
 
+use std::io::Error as IoError;
+use std::sync::Arc;
+
+use borsh::{to_vec, BorshDeserialize};
+use calimero_store::key::Storage as StorageKey;
+use calimero_store::layer::{ReadLayer, WriteLayer};
+use calimero_store::slice::Slice;
+use calimero_store::Store;
+use eyre::Report;
+use parking_lot::RwLock;
 use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
 use crate::entities::Element;
 
 /// The primary interface for the storage system.
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct Interface;
+pub struct Interface {
+    /// The backing store to use for the storage interface.
+    store: Arc<RwLock<Store>>,
+}
 
 impl Interface {
     /// Creates a new instance of the [`Interface`].
+    ///
+    /// # Parameters
+    ///
+    /// * `store` - The backing store to use for the storage interface.
+    ///
     #[must_use]
-    pub const fn new() -> Self {
-        Self {}
+    pub fn new(store: Store) -> Self {
+        Self {
+            store: Arc::new(RwLock::new(store)),
+        }
     }
 
     /// Finds an [`Element`] by its unique identifier.
@@ -44,8 +64,31 @@ impl Interface {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    pub fn find_by_id(&self, _id: Id) -> Result<Option<Element>, StorageError> {
-        unimplemented!()
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn find_by_id(&self, id: Id) -> Result<Option<Element>, StorageError> {
+        // TODO: It seems fairly bizarre/unexpected that the put() method is sync
+        // TODO: and not async. The reasons and intentions need checking here, in
+        // TODO: case this find() method should be async and wrap the blocking call
+        // TODO: with spawn_blocking(). However, this is not straightforward at
+        // TODO: present because Slice uses Rc internally for some reason.
+        // TODO: let value = spawn_blocking(|| {
+        // TODO:     self.store.read()
+        // TODO:         .get(&StorageKey::new((*id).into()))
+        // TODO:         .map_err(StorageError::StoreError)
+        // TODO: }).await.map_err(|err| StorageError::DispatchError(err.to_string()))??;
+        let store = self.store.read();
+        let value = store
+            .get(&StorageKey::new(id.into()))
+            .map_err(StorageError::StoreError)?;
+
+        match value {
+            Some(slice) => {
+                let element =
+                    Element::try_from_slice(&slice).map_err(StorageError::DeserializationError)?;
+                Ok(Some(element))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Finds one or more [`Element`]s by path in the hierarchy.
@@ -102,11 +145,23 @@ impl Interface {
     ///
     /// # Errors
     ///
-    /// If an error occurs when interacting with the storage system, an error
-    /// will be returned.
+    /// If an error occurs when serialising data or interacting with the storage
+    /// system, an error will be returned.
     ///
-    pub fn save(&self, _id: Id, _element: &Element) -> Result<(), StorageError> {
-        unimplemented!()
+    pub fn save(&self, id: Id, element: &Element) -> Result<(), StorageError> {
+        // TODO: It seems fairly bizarre/unexpected that the put() method is sync
+        // TODO: and not async. The reasons and intentions need checking here, in
+        // TODO: case this save() method should be async and wrap the blocking call
+        // TODO: with spawn_blocking(). However, this is not straightforward at
+        // TODO: present because Slice uses Rc internally for some reason.
+        self.store
+            .write()
+            .put(
+                &StorageKey::new(id.into()),
+                Slice::from(to_vec(element).map_err(StorageError::SerializationError)?),
+            )
+            .map_err(StorageError::StoreError)?;
+        Ok(())
     }
 
     /// Validates the stored state.
@@ -127,14 +182,26 @@ impl Interface {
 }
 
 /// Errors that can occur when working with the storage system.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, ThisError)]
+#[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum StorageError {
+    /// An error occurred during serialization.
+    #[error("Deerialization error: {0}")]
+    DeserializationError(IoError),
+
+    /// An error occurred when handling threads or async tasks.
+    #[error("Dispatch error: {0}")]
+    DispatchError(String),
+
     /// TODO: An error during tree validation.
     #[error("Invalid data was found for ID: {0}")]
     InvalidDataFound(Id),
 
+    /// An error occurred during serialization.
+    #[error("Serialization error: {0}")]
+    SerializationError(IoError),
+
     /// TODO: An error from the Store.
     #[error("Store error: {0}")]
-    StoreError(String),
+    StoreError(#[from] Report),
 }

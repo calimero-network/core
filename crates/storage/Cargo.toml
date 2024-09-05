@@ -8,7 +8,9 @@ license.workspace = true
 
 [dependencies]
 borsh.workspace = true
+eyre.workspace = true
 fixedstr.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
