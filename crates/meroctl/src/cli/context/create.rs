@@ -65,12 +65,19 @@ impl CreateCommand {
             Self {
                 application_id: Some(app_id),
                 watch: None,
-                context_seed: None,
+                context_seed,
                 metadata: None,
                 params,
             } => {
-                let _ = create_context(&client, multiaddr, None, app_id, params, &config.identity)
-                    .await?;
+                let _ = create_context(
+                    &client,
+                    multiaddr,
+                    context_seed,
+                    app_id,
+                    params,
+                    &config.identity,
+                )
+                .await?;
             }
             Self {
                 application_id: None,
