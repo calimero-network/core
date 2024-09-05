@@ -1,16 +1,16 @@
-use core::fmt;
-use std::{borrow::Cow, collections::BTreeMap, mem};
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::convert::Infallible;
+use std::mem;
 
 use ed25519_dalek::Signature;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
 
-use crate::{
-    repr::Repr,
-    types::{self, Application, Capability, ContextId, ContextIdentity, Signed, SignerId},
-    ContextRequest, ContextRequestKind, Request, RequestKind,
-};
+use crate::repr::Repr;
+use crate::types::{self, Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
+use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 
 mod relayer;
 
@@ -21,7 +21,7 @@ pub enum Operation<'a> {
 }
 
 pub trait Transport {
-    type Error: fmt::Display;
+    type Error: std::error::Error;
 
     #[allow(async_fn_in_trait)]
     async fn send(
@@ -62,7 +62,7 @@ pub enum Error<T: Transport> {
     #[error("transport error: {0}")]
     Transport(T::Error),
     #[error(transparent)]
-    Other(#[from] types::Error<std::convert::Infallible>),
+    Other(#[from] types::Error<Infallible>),
 }
 
 #[derive(Debug)]
@@ -158,14 +158,20 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
 }
 
 #[derive(Debug)]
-pub struct ClientRequest<'a, R, T> {
-    request: R,
+pub struct ContextConfigMutateClient<'a, T> {
+    signer_id: SignerId,
     transport: &'a T,
 }
 
-impl<'a, R: Serialize, T: Transport> ClientRequest<'a, R, T> {
-    async fn send(&self, sign: impl FnOnce(&[u8]) -> Signature) -> Result<(), Error<T>> {
-        let signed = Signed::new(&self.request, sign)?;
+#[derive(Debug)]
+pub struct ClientRequest<'a, 'b, T> {
+    client: &'a ContextConfigMutateClient<'a, T>,
+    kind: RequestKind<'b>,
+}
+
+impl<T: Transport> ClientRequest<'_, '_, T> {
+    pub async fn send(self, sign: impl FnOnce(&[u8]) -> Signature) -> Result<(), Error<T>> {
+        let signed = Signed::new(&Request::new(self.client.signer_id, self.kind), sign)?;
 
         let operation = Operation::Write {
             method: Cow::Borrowed("mutate"),
@@ -174,6 +180,7 @@ impl<'a, R: Serialize, T: Transport> ClientRequest<'a, R, T> {
         let payload = serde_json::to_vec(&signed).map_err(|err| Error::Other(err.into()))?;
 
         let _unused = self
+            .client
             .transport
             .send(operation, payload)
             .await
@@ -183,144 +190,102 @@ impl<'a, R: Serialize, T: Transport> ClientRequest<'a, R, T> {
     }
 }
 
-#[derive(Debug)]
-pub struct ContextConfigMutateClient<'a, T> {
-    signer_id: SignerId,
-    transport: &'a T,
-}
-
 impl<T: Transport> ContextConfigMutateClient<'_, T> {
     pub async fn add_context<'a>(
         &self,
         context_id: ContextId,
         author_id: ContextIdentity,
         application: Application<'a>,
-    ) -> ClientRequest<'_, Request<'a>, T> {
-        let request = Request::new(
-            self.signer_id,
-            RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
-                kind: ContextRequestKind::Add {
-                    author_id: Repr::new(author_id),
-                    application,
-                },
-            }),
-        );
+    ) -> ClientRequest<'_, 'a, T> {
+        let kind = RequestKind::Context(ContextRequest {
+            context_id: Repr::new(context_id),
+            kind: ContextRequestKind::Add {
+                author_id: Repr::new(author_id),
+                application,
+            },
+        });
 
-        ClientRequest {
-            request,
-            transport: &self.transport,
-        }
+        ClientRequest { client: self, kind }
     }
 
     pub async fn update_application<'a>(
         &self,
         context_id: ContextId,
         application: Application<'a>,
-    ) -> ClientRequest<'_, Request<'a>, T> {
-        let request = Request::new(
-            self.signer_id,
-            RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
-                kind: ContextRequestKind::UpdateApplication { application },
-            }),
-        );
+    ) -> ClientRequest<'_, 'a, T> {
+        let kind = RequestKind::Context(ContextRequest {
+            context_id: Repr::new(context_id),
+            kind: ContextRequestKind::UpdateApplication { application },
+        });
 
-        ClientRequest {
-            request,
-            transport: &self.transport,
-        }
+        ClientRequest { client: self, kind }
     }
 
     pub async fn add_members(
         &self,
         context_id: ContextId,
         members: &[ContextIdentity],
-    ) -> ClientRequest<'_, Request<'static>, T> {
+    ) -> ClientRequest<'_, 'static, T> {
         let members = unsafe { mem::transmute(members) };
 
-        let request = Request::new(
-            self.signer_id,
-            RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
-                kind: ContextRequestKind::AddMembers {
-                    members: Cow::Borrowed(members),
-                },
-            }),
-        );
+        let kind = RequestKind::Context(ContextRequest {
+            context_id: Repr::new(context_id),
+            kind: ContextRequestKind::AddMembers {
+                members: Cow::Borrowed(members),
+            },
+        });
 
-        ClientRequest {
-            request,
-            transport: &self.transport,
-        }
+        ClientRequest { client: self, kind }
     }
 
     pub async fn remove_members(
         &self,
         context_id: ContextId,
         members: &[ContextIdentity],
-    ) -> ClientRequest<'_, Request<'static>, T> {
+    ) -> ClientRequest<'_, 'static, T> {
         let members = unsafe { mem::transmute(members) };
 
-        let request = Request::new(
-            self.signer_id,
-            RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
-                kind: ContextRequestKind::RemoveMembers {
-                    members: Cow::Borrowed(members),
-                },
-            }),
-        );
+        let kind = RequestKind::Context(ContextRequest {
+            context_id: Repr::new(context_id),
+            kind: ContextRequestKind::RemoveMembers {
+                members: Cow::Borrowed(members),
+            },
+        });
 
-        ClientRequest {
-            request,
-            transport: &self.transport,
-        }
+        ClientRequest { client: self, kind }
     }
 
     pub async fn grant(
         &self,
         context_id: ContextId,
         capabilities: &[(ContextIdentity, Capability)],
-    ) -> ClientRequest<'_, Request<'static>, T> {
+    ) -> ClientRequest<'_, 'static, T> {
         let capabilities = unsafe { mem::transmute(capabilities) };
 
-        let request = Request::new(
-            self.signer_id,
-            RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
-                kind: ContextRequestKind::Grant {
-                    capabilities: Cow::Borrowed(capabilities),
-                },
-            }),
-        );
+        let kind = RequestKind::Context(ContextRequest {
+            context_id: Repr::new(context_id),
+            kind: ContextRequestKind::Grant {
+                capabilities: Cow::Borrowed(capabilities),
+            },
+        });
 
-        ClientRequest {
-            request,
-            transport: &self.transport,
-        }
+        ClientRequest { client: self, kind }
     }
 
     pub async fn revoke(
         &self,
         context_id: ContextId,
         capabilities: &[(ContextIdentity, Capability)],
-    ) -> ClientRequest<'_, Request<'static>, T> {
+    ) -> ClientRequest<'_, 'static, T> {
         let capabilities = unsafe { mem::transmute(capabilities) };
 
-        let request = Request::new(
-            self.signer_id,
-            RequestKind::Context(ContextRequest {
-                context_id: Repr::new(context_id),
-                kind: ContextRequestKind::Revoke {
-                    capabilities: Cow::Borrowed(capabilities),
-                },
-            }),
-        );
+        let kind = RequestKind::Context(ContextRequest {
+            context_id: Repr::new(context_id),
+            kind: ContextRequestKind::Revoke {
+                capabilities: Cow::Borrowed(capabilities),
+            },
+        });
 
-        ClientRequest {
-            request,
-            transport: &self.transport,
-        }
+        ClientRequest { client: self, kind }
     }
 }
