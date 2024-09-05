@@ -18,11 +18,13 @@ mod blobs;
 mod component;
 mod context;
 mod generic;
+mod storage;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
 pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction};
 pub use generic::Generic;
+pub use storage::Storage;
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
