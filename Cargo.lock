@@ -1090,6 +1090,7 @@ dependencies = [
  "camino",
  "eyre",
  "futures-util",
+ "rand 0.8.5",
  "reqwest 0.12.5",
  "semver",
  "serde",
@@ -1164,7 +1165,6 @@ dependencies = [
 name = "calimero-node"
 version = "0.1.0"
 dependencies = [
- "bs58 0.5.1",
  "calimero-blobstore",
  "calimero-context",
  "calimero-network",
@@ -1207,6 +1207,7 @@ dependencies = [
  "ed25519-dalek",
  "hex 0.4.3",
  "libp2p-identity",
+ "rand 0.8.5",
  "semver",
  "serde",
  "serde_json",

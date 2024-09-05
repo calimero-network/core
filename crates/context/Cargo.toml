@@ -10,6 +10,7 @@ license.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
 futures-util.workspace = true
+rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 semver.workspace = true
 serde.workspace = true
@@ -19,7 +20,7 @@ tracing.workspace = true
 url = { workspace = true, features = ["serde"] }
 
 calimero-blobstore = { path = "../store/blobs" }
-calimero-primitives = { path = "../primitives", features = ["borsh"] }
+calimero-primitives = { path = "../primitives", features = ["borsh", "rand"] }
 calimero-network = { path = "../network" }
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-store = { path = "../store", features = ["datatypes"] }

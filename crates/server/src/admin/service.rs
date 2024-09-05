@@ -121,7 +121,7 @@ pub(crate) fn setup(
         .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .layer(AuthSignatureLayer::new(store))
-        .layer(Extension(Arc::clone(&shared_state)));
+        .layer(Extension(shared_state.clone()));
 
     let unprotected_router = Router::new()
         .route("/health", get(health_check_handler))

@@ -164,7 +164,7 @@ impl Node {
                         transaction.method.into(),
                         transaction.payload.into(),
                         Hash::from(transaction.prior_hash),
-                        transaction.executor_public_key,
+                        transaction.executor_public_key.into(),
                     ),
                     status: TransactionStatus::Executed,
                 })
@@ -394,8 +394,11 @@ impl Node {
 
                     context_.application_id = change.application_id;
                 } else {
-                    let context_inner =
-                        Context::new(context_id, change.application_id, Hash::default());
+                    let context_inner = Context {
+                        id: context_id,
+                        application_id: change.application_id,
+                        last_transaction_hash: Hash::default(),
+                    };
 
                     self.ctx_manager.add_context(&context_inner)?;
 

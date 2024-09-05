@@ -10,16 +10,19 @@ use calimero_primitives::application::{Application, ApplicationId, ApplicationSo
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{KeyPair, PublicKey};
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
 };
+use calimero_store::types::ContextIdentity as ContextIdentityValue;
 use calimero_store::types::{ApplicationMeta, ContextMeta};
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, Result as EyreResult};
 use futures_util::TryStreamExt;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use reqwest::{Client, Url};
 use semver::Version;
 use tokio::fs::File;
@@ -115,11 +118,32 @@ impl ContextManager {
 
     pub async fn create_context(
         &self,
-        context: &Context,
-        initial_identity: KeyPair,
+        seed: Option<[u8; 32]>,
+        application_id: ApplicationId,
+        identity_secret: Option<PrivateKey>,
         initialization_params: Vec<u8>,
-    ) -> EyreResult<()> {
-        self.add_context(context)?;
+    ) -> EyreResult<(ContextId, PublicKey)> {
+        let (context_secret, identity_secret) = {
+            let mut rng = rand::thread_rng();
+
+            let context_secret = match seed {
+                Some(seed) => PrivateKey::random(&mut StdRng::from_seed(seed)),
+                None => PrivateKey::random(&mut rng),
+            };
+
+            let identity_secret =
+                identity_secret.map_or_else(|| PrivateKey::random(&mut rng), PrivateKey::from);
+
+            (context_secret, identity_secret)
+        };
+
+        let context = Context {
+            id: ContextId::from(*context_secret.public_key()),
+            application_id,
+            last_transaction_hash: Default::default(),
+        };
+
+        self.add_context(&context)?;
 
         let (tx, _) = oneshot::channel();
 
@@ -128,7 +152,7 @@ impl ContextManager {
                 context.id,
                 "init".to_owned(),
                 initialization_params,
-                initial_identity.public_key.0,
+                identity_secret.public_key(),
                 tx,
                 Some(Finality::Local),
             ))
@@ -136,13 +160,16 @@ impl ContextManager {
 
         let mut handle = self.store.handle();
 
-        let identity_key = ContextIdentityKey::new(context.id, initial_identity.public_key);
-
-        handle.put(&identity_key, &initial_identity.into())?;
+        handle.put(
+            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
+            &ContextIdentityValue {
+                private_key: Some(*identity_secret),
+            },
+        )?;
 
         self.subscribe(&context.id).await?;
 
-        Ok(())
+        Ok((context.id, identity_secret.public_key()))
     }
 
     pub fn add_context(&self, context: &Context) -> EyreResult<()> {
@@ -165,25 +192,38 @@ impl ContextManager {
 
     pub async fn join_context(
         &self,
-        context_id: &ContextId,
-        initial_identity: KeyPair,
-    ) -> EyreResult<Option<()>> {
-        if self.state.read().await.pending_catchup.contains(context_id) {
+        context_id: ContextId,
+        identity_secret: Option<PrivateKey>,
+    ) -> EyreResult<Option<PublicKey>> {
+        if self
+            .state
+            .read()
+            .await
+            .pending_catchup
+            .contains(&context_id)
+        {
             return Ok(None);
         }
 
+        let identity_secret =
+            identity_secret.unwrap_or_else(|| PrivateKey::random(&mut rand::thread_rng()));
+
         let mut handle = self.store.handle();
 
-        let identity_key = ContextIdentityKey::new(*context_id, initial_identity.public_key);
-        handle.put(&identity_key, &initial_identity.into())?;
+        handle.put(
+            &ContextIdentityKey::new(context_id, identity_secret.public_key()),
+            &ContextIdentityValue {
+                private_key: Some(*identity_secret),
+            },
+        )?;
 
-        let _ = self.state.write().await.pending_catchup.insert(*context_id);
+        let _ = self.state.write().await.pending_catchup.insert(context_id);
 
-        self.subscribe(context_id).await?;
+        self.subscribe(&context_id).await?;
 
         info!(%context_id, "Joined context with pending catchup");
 
-        Ok(Some(()))
+        Ok(Some(identity_secret.public_key()))
     }
 
     pub async fn is_context_pending_catchup(&self, context_id: &ContextId) -> bool {
@@ -213,11 +253,11 @@ impl ContextManager {
             return Ok(None);
         };
 
-        Ok(Some(Context::new(
-            *context_id,
-            ctx_meta.application.application_id(),
-            ctx_meta.last_transaction_hash.into(),
-        )))
+        Ok(Some(Context {
+            id: *context_id,
+            application_id: ctx_meta.application.application_id(),
+            last_transaction_hash: ctx_meta.last_transaction_hash.into(),
+        }))
     }
 
     pub async fn delete_context(&self, context_id: &ContextId) -> EyreResult<bool> {
@@ -268,7 +308,7 @@ impl ContextManager {
 
         let first = 'first: {
             let Some(k) = iter
-                .seek(ContextIdentityKey::new(context_id, PublicKey([0; 32])))
+                .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
                 .transpose()
             else {
                 break 'first None;
@@ -285,7 +325,7 @@ impl ContextManager {
             }
 
             if !only_owned_identities || v.private_key.is_some() {
-                ids.push(PublicKey(k.public_key()));
+                ids.push(k.public_key());
             }
         }
         Ok(ids)
@@ -320,21 +360,21 @@ impl ContextManager {
             if let Some(key) = iter.seek(ContextMetaKey::new(start))? {
                 let value: ContextMeta = iter.read()?;
 
-                contexts.push(Context::new(
-                    key.context_id(),
-                    value.application.application_id(),
-                    value.last_transaction_hash.into(),
-                ));
+                contexts.push(Context {
+                    id: key.context_id(),
+                    application_id: value.application.application_id(),
+                    last_transaction_hash: value.last_transaction_hash.into(),
+                });
             }
         }
 
         for (k, v) in iter.entries() {
             let (k, v) = (k?, v?);
-            contexts.push(Context::new(
-                k.context_id(),
-                v.application.application_id(),
-                v.last_transaction_hash.into(),
-            ));
+            contexts.push(Context {
+                id: k.context_id(),
+                application_id: v.application.application_id(),
+                last_transaction_hash: v.last_transaction_hash.into(),
+            });
         }
 
         Ok(contexts)

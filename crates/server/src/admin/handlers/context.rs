@@ -5,10 +5,10 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::context::{Context, ContextId};
-use calimero_primitives::identity::{ClientKey, ContextUser};
+use calimero_primitives::identity::{ClientKey, ContextUser, PrivateKey, PublicKey};
 use calimero_server_primitives::admin::{
     ContextStorage, CreateContextRequest, CreateContextResponse, GetContextsResponse,
-    UpdateContextApplicationRequest,
+    JoinContextResponseData, UpdateContextApplicationRequest,
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,6 @@ use tracing::error;
 
 use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
-use crate::admin::utils::context::{create_context, join_context};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,7 +66,7 @@ pub struct GetContextIdentitiesResponse {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextIdentities {
-    identities: Vec<String>,
+    identities: Vec<PublicKey>,
 }
 
 pub async fn get_context_identities_handler(
@@ -89,21 +88,12 @@ pub async fn get_context_identities_handler(
                     .map_err(|err| parse_api_error(err).into_response());
 
                 match context_identities {
-                    Ok(identities) => {
-                        let context_identities = identities
-                            .into_iter()
-                            .map(|identity| bs58::encode(identity.0).into_string())
-                            .collect::<Vec<String>>();
-
-                        ApiResponse {
-                            payload: GetContextIdentitiesResponse {
-                                data: ContextIdentities {
-                                    identities: context_identities,
-                                },
-                            },
-                        }
-                        .into_response()
+                    Ok(identities) => ApiResponse {
+                        payload: GetContextIdentitiesResponse {
+                            data: ContextIdentities { identities },
+                        },
                     }
+                    .into_response(),
                     Err(err) => {
                         error!("Error getting context identities: {:?}", err);
                         ApiError {
@@ -242,23 +232,20 @@ pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<CreateContextRequest>,
 ) -> impl IntoResponse {
-    //TODO enable providing private key in the request
-    let result = create_context(
-        &state.ctx_manager,
-        req.application_id,
-        None,
-        req.context_id,
-        req.initialization_params,
-    )
-    .await
-    .map_err(parse_api_error);
+    let result = state
+        .ctx_manager
+        .create_context(
+            req.context_seed.map(Into::into),
+            req.application_id,
+            None,
+            req.initialization_params,
+        )
+        .await
+        .map_err(parse_api_error);
 
     match result {
-        Ok(context_create_result) => ApiResponse {
-            payload: CreateContextResponse::new(
-                context_create_result.context,
-                context_create_result.identity.public_key,
-            ),
+        Ok((context_id, member_public_key)) => ApiResponse {
+            payload: CreateContextResponse::new(context_id, member_public_key),
         }
         .into_response(),
         Err(err) => err.into_response(),
@@ -292,44 +279,32 @@ pub async fn get_context_storage_handler(
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[non_exhaustive]
 pub struct JoinContextRequest {
-    pub private_key: [u8; 32],
+    pub private_key: Option<PrivateKey>,
 }
 
 #[derive(Debug, Serialize)]
 struct JoinContextResponse {
-    data: Empty,
+    data: Option<JoinContextResponseData>,
 }
 
 pub async fn join_context_handler(
-    Path(context_id): Path<String>,
+    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
     request: Option<Json<JoinContextRequest>>,
 ) -> impl IntoResponse {
-    let Ok(context_id_result) = ContextId::from_str(&context_id) else {
-        return ApiError {
-            status_code: StatusCode::BAD_REQUEST,
-            message: "Invalid context id".into(),
-        }
-        .into_response();
-    };
-
-    let private_key = if let Some(Json(json_body)) = request {
-        Some(bs58::encode(json_body.private_key).into_string())
-    } else {
-        None
-    };
-
-    let result = join_context(
-        &state.ctx_manager,
-        context_id_result,
-        private_key.as_deref(),
-    )
-    .await
-    .map_err(parse_api_error);
+    let result = state
+        .ctx_manager
+        .join_context(context_id, request.and_then(|r| r.private_key))
+        .await
+        .map_err(parse_api_error);
 
     match result {
-        Ok(()) => ApiResponse {
-            payload: JoinContextResponse { data: Empty {} },
+        Ok(r) => ApiResponse {
+            payload: JoinContextResponse {
+                data: r.map(|r| JoinContextResponseData {
+                    member_public_key: r,
+                }),
+            },
         }
         .into_response(),
         Err(err) => err.into_response(),

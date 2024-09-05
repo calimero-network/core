@@ -359,7 +359,7 @@ impl GetContextsResponse {
 #[non_exhaustive]
 pub struct CreateContextRequest {
     pub application_id: ApplicationId,
-    pub context_id: Option<ContextId>,
+    pub context_seed: Option<Hash>,
     pub initialization_params: Vec<u8>,
 }
 
@@ -367,12 +367,12 @@ impl CreateContextRequest {
     #[must_use]
     pub const fn new(
         application_id: ApplicationId,
-        context_id: Option<ContextId>,
+        context_seed: Option<Hash>,
         initialization_params: Vec<u8>,
     ) -> Self {
         Self {
             application_id,
-            context_id,
+            context_seed,
             initialization_params,
         }
     }
@@ -381,7 +381,7 @@ impl CreateContextRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ContextResponse {
-    pub context: Context,
+    pub context_id: ContextId,
     pub member_public_key: PublicKey,
 }
 
@@ -393,14 +393,19 @@ pub struct CreateContextResponse {
 
 impl CreateContextResponse {
     #[must_use]
-    pub const fn new(context: Context, member_public_key: PublicKey) -> Self {
+    pub const fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
         Self {
             data: ContextResponse {
-                context,
+                context_id,
                 member_public_key,
             },
         }
     }
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+pub struct JoinContextResponseData {
+    pub member_public_key: PublicKey,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

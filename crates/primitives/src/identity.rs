@@ -2,17 +2,82 @@ use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
 
+#[cfg(feature = "rand")]
+use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::context::ContextId;
 use crate::hash::{Hash, HashError};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(clippy::exhaustive_structs)]
-pub struct KeyPair {
-    pub public_key: PublicKey,
-    pub private_key: Option<[u8; 32]>,
+#[derive(Eq, Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrivateKey(Hash);
+
+impl From<[u8; 32]> for PrivateKey {
+    fn from(id: [u8; 32]) -> Self {
+        Self(id.into())
+    }
+}
+
+impl Deref for PrivateKey {
+    type Target = [u8; 32];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PrivateKey {
+    pub fn public_key(&self) -> PublicKey {
+        ed25519_dalek::SigningKey::from_bytes(&self)
+            .verifying_key()
+            .to_bytes()
+            .into()
+    }
+
+    #[cfg(feature = "rand")]
+    pub fn random<R: CryptoRng + RngCore>(csprng: &mut R) -> Self {
+        let mut secret = [0; 32];
+
+        csprng.fill_bytes(&mut secret);
+
+        Self::from(secret)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Display for PrivateKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
+impl From<PrivateKey> for String {
+    fn from(id: PrivateKey) -> Self {
+        id.as_str().to_owned()
+    }
+}
+
+impl From<&PrivateKey> for String {
+    fn from(id: &PrivateKey) -> Self {
+        id.as_str().to_owned()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Error)]
+#[error(transparent)]
+pub struct InvalidPrivateKey(HashError);
+
+impl FromStr for PrivateKey {
+    type Err = InvalidPrivateKey;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.parse().map_err(InvalidPrivateKey)?))
+    }
 }
 
 #[derive(Eq, Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]

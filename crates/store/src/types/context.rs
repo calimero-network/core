@@ -60,7 +60,6 @@ impl AsRef<[u8]> for ContextState<'_> {
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(clippy::exhaustive_structs)]
 pub struct ContextIdentity {
     pub private_key: Option<[u8; 32]>,
 }

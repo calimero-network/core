@@ -17,9 +17,11 @@ use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
 use rand::{thread_rng, Rng};
 use tracing::{info, warn};
+use url::Url;
 
 use crate::config_file::{
-    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
+    BlobStoreConfig, ConfigFile, ContextConfig, DataStoreConfig as StoreConfigFile, NetworkConfig,
+    ServerConfig,
 };
 use crate::{cli, defaults};
 
@@ -55,6 +57,10 @@ pub struct InitCommand {
     #[clap(long, value_name = "PORT")]
     #[clap(default_value_t = calimero_server::config::DEFAULT_PORT)]
     pub server_port: u16,
+
+    /// URL of the relayer for submitting NEAR transactions
+    #[clap(long, value_name = "URL")]
+    pub relayer_url: Option<Url>,
 
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
@@ -137,14 +143,19 @@ impl InitCommand {
             }
         }
 
+        let relayer = self
+            .relayer_url
+            .unwrap_or_else(defaults::default_relayer_url);
+
         let config = ConfigFile {
             identity,
             datastore: StoreConfigFile {
                 path: "data".into(),
             },
             blobstore: BlobStoreConfig {
-                path: "apps".into(),
+                path: "blobs".into(),
             },
+            context: ContextConfig { relayer },
             network: NetworkConfig {
                 swarm: SwarmConfig::new(listen),
                 bootstrap: BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
@@ -170,9 +181,9 @@ impl InitCommand {
 
         config.save(&path)?;
 
-        drop(Store::open::<RocksDB>(&StoreConfig::new(
-            path.join(config.datastore.path),
-        ))?);
+        drop(Store::open::<RocksDB>(&StoreConfig {
+            path: path.join(config.datastore.path),
+        })?);
 
         info!("Initialized a node in {:?}", path);
 
