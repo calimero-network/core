@@ -472,7 +472,7 @@ pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> Ey
     }
 }
 
-fn eth_message(message: &str) -> [u8; 32] {
+pub fn eth_message(message: &str) -> [u8; 32] {
     keccak256(
         format!(
             "{}{}{}",
