@@ -9,8 +9,7 @@ use calimero_server_primitives::admin::{
 use calimero_store::Store;
 use chrono::{Duration, TimeZone, Utc};
 use eyre::{bail, eyre, Result as EyreResult};
-use libp2p::identity::Keypair;
-use libp2p::identity::PublicKey;
+use libp2p::identity::{Keypair, PublicKey};
 use reqwest::StatusCode;
 use serde_json::to_string as to_json_string;
 use tracing::info;

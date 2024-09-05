@@ -15,8 +15,9 @@ use calimero_store::key::{
     ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
 };
-use calimero_store::types::ContextIdentity as ContextIdentityValue;
-use calimero_store::types::{ApplicationMeta, ContextMeta};
+use calimero_store::types::{
+    ApplicationMeta, ContextIdentity as ContextIdentityValue, ContextMeta,
+};
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, Result as EyreResult};

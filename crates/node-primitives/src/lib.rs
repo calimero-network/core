@@ -1,5 +1,6 @@
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::{application::ApplicationId, identity::PublicKey};
+use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::Outcome;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
