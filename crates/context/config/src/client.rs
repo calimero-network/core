@@ -12,7 +12,7 @@ use crate::repr::Repr;
 use crate::types::{self, Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
 use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 
-mod relayer;
+pub mod relayer;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Operation<'a> {

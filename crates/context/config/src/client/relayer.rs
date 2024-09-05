@@ -4,12 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use super::{Operation, Transport};
 
+#[derive(Debug)]
 pub struct RelayerConfig<'a> {
     url: Cow<'a, str>,
     network: Cow<'a, str>,
     contract_id: Cow<'a, str>,
 }
 
+#[derive(Debug)]
 pub struct RelayerTransport<'a> {
     client: reqwest::Client,
     url: Cow<'a, str>,
