@@ -293,7 +293,7 @@ async fn install_app(
     metadata: Option<Vec<u8>>,
     keypair: &Keypair,
 ) -> EyreResult<ApplicationId> {
-    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
+    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
 
     let install_request =
         InstallDevApplicationRequest::new(path, None, metadata.unwrap_or_default());

@@ -129,10 +129,18 @@ pub(crate) fn setup(
 
     let dev_router = Router::new()
         .route(
-            "/dev/install-application",
+            "/dev/install-dev-application",
             post(install_dev_application_handler),
         )
+        .route(
+            "/dev/install-application",
+            post(install_application_handler),
+        )
         .route("/dev/application/:application_id", get(get_application))
+        .route(
+            "/dev/applications/:app_id",
+            get(get_application_details_handler),
+        )
         .route(
             "/dev/contexts",
             get(get_contexts_handler).post(create_context_handler),
