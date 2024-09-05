@@ -10,7 +10,9 @@
 mod tests;
 
 use core::fmt::{self, Debug, Display, Formatter};
+use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use fixedstr::Flexstr;
 use thiserror::Error as ThisError;
 use uuid::{Bytes, Uuid};
@@ -52,6 +54,34 @@ impl Id {
     #[must_use]
     pub const fn as_bytes(&self) -> &Bytes {
         self.0.as_bytes()
+    }
+}
+
+impl BorshDeserialize for Id {
+    fn deserialize(buf: &mut &[u8]) -> Result<Self, IoError> {
+        if buf.len() < 16 {
+            return Err(IoError::new(
+                IoErrorKind::UnexpectedEof,
+                "Not enough bytes to deserialize Id",
+            ));
+        }
+        let (bytes, rest) = buf.split_at(16);
+        *buf = rest;
+        Ok(Self(Uuid::from_slice(bytes).map_err(|err| {
+            IoError::new(IoErrorKind::InvalidData, err)
+        })?))
+    }
+
+    fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self, IoError> {
+        let mut bytes = [0_u8; 16];
+        reader.read_exact(&mut bytes)?;
+        Ok(Self(Uuid::from_bytes(bytes)))
+    }
+}
+
+impl BorshSerialize for Id {
+    fn serialize<W: Write>(&self, writer: &mut W) -> Result<(), IoError> {
+        writer.write_all(self.0.as_bytes())
     }
 }
 
@@ -419,6 +449,24 @@ impl Path {
     ///
     pub fn segments(&self) -> impl Iterator<Item = &str> {
         (0..=self.depth()).filter_map(|i| self.segment(i))
+    }
+}
+
+impl BorshDeserialize for Path {
+    fn deserialize(buf: &mut &[u8]) -> Result<Self, IoError> {
+        Self::new(&String::deserialize(buf)?)
+            .map_err(|err| IoError::new(IoErrorKind::InvalidData, err))
+    }
+
+    fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self, IoError> {
+        Self::new(&String::deserialize_reader(reader)?)
+            .map_err(|err| IoError::new(IoErrorKind::InvalidData, err))
+    }
+}
+
+impl BorshSerialize for Path {
+    fn serialize<W: Write>(&self, writer: &mut W) -> Result<(), IoError> {
+        self.to_string().serialize(writer)
     }
 }
 
