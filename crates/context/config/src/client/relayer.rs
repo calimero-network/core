@@ -60,6 +60,6 @@ impl Transport for RelayerTransport<'_> {
             .send()
             .await?;
 
-        response.bytes().await.map(|bytes| bytes.to_vec())
+        response.bytes().await.map(Into::into)
     }
 }
