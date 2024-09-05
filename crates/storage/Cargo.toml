@@ -12,6 +12,7 @@ fixedstr.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
+calimero-store = { path = "../store", features = ["datatypes"] }
 
 [dev-dependencies]
 claims.workspace = true

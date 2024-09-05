@@ -65,7 +65,7 @@ mod path__constructor {
     fn new__valid() {
         let path1 = Path::new("::root").unwrap();
         assert_eq!(path1.path, "root");
-        assert_eq!(path1.offsets, vec![]);
+        assert_eq!(path1.offsets, Vec::<u8>::new());
 
         let path2 = Path::new("::root::node").unwrap();
         assert_eq!(path2.path, "rootnode");
@@ -99,7 +99,7 @@ mod path__constructor {
     fn new__valid_and_long() {
         let path = Path::new(format!("::{}", "a".repeat(255))).unwrap();
         assert_eq!(path.path, "a".repeat(255).as_str());
-        assert_eq!(path.offsets, vec![]);
+        assert_eq!(path.offsets, Vec::<u8>::new());
     }
 
     #[test]
