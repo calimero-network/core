@@ -10,6 +10,10 @@ license.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 ed25519-dalek.workspace = true
+near-crypto.workspace = true
+near-jsonrpc-client.workspace = true
+near-jsonrpc-primitives.workspace = true
+near-primitives.workspace = true
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

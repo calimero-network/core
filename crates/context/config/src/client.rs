@@ -12,6 +12,7 @@ use crate::repr::Repr;
 use crate::types::{self, Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
 use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 
+pub mod near;
 pub mod relayer;
 
 pub trait Transport {
