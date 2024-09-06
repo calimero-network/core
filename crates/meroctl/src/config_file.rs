@@ -1,5 +1,6 @@
 use std::fs::{read_to_string, write};
 
+use calimero_context::config::ContextConfig;
 use calimero_network::config::{BootstrapConfig, CatchupConfig, DiscoveryConfig, SwarmConfig};
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
@@ -8,7 +9,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Result as EyreResult, WrapErr};
 use libp2p::{identity, Multiaddr};
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 const CONFIG_FILE: &str = "config.toml";
 
@@ -67,11 +67,6 @@ pub struct DataStoreConfig {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BlobStoreConfig {
     pub path: Utf8PathBuf,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ContextConfig {
-    pub relayer: Url,
 }
 
 impl ConfigFile {

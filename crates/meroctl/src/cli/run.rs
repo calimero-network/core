@@ -1,5 +1,4 @@
 use calimero_blobstore::config::BlobStoreConfig;
-use calimero_context::config::ContextConfig;
 use calimero_network::config::NetworkConfig;
 use calimero_node::{start, NodeConfig};
 use calimero_node_primitives::NodeType as PrimitiveNodeType;
@@ -63,9 +62,7 @@ impl RunCommand {
             blobstore: BlobStoreConfig {
                 path: path.join(config.blobstore.path),
             },
-            context: ContextConfig {
-                relayer: config.context.relayer,
-            },
+            context: config.context,
             server: ServerConfig {
                 listen: config.network.server.listen,
                 identity: config.identity.clone(),

@@ -947,7 +947,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -4733,6 +4732,7 @@ dependencies = [
  "bs58 0.5.1",
  "calimero-blobstore",
  "calimero-context",
+ "calimero-context-config",
  "calimero-network",
  "calimero-node",
  "calimero-node-primitives",
@@ -4747,8 +4747,10 @@ dependencies = [
  "const_format",
  "dirs",
  "eyre",
+ "hex",
  "libp2p",
  "multiaddr",
+ "near-crypto",
  "notify",
  "rand 0.8.5",
  "reqwest 0.12.5",

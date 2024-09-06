@@ -1,7 +1,7 @@
+use calimero_context_config::config::ContextConfigConfig;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ContextConfig {
-    pub relayer: Url,
+    pub config: ContextConfigConfig,
 }

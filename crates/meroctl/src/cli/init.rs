@@ -2,6 +2,11 @@ use core::net::IpAddr;
 use core::time::Duration;
 use std::fs::{create_dir, create_dir_all};
 
+use calimero_context::config::ContextConfig;
+use calimero_context_config::config::{
+    ContextConfigConfig, ContextConfigLocalSigner, ContextConfigRelayerSigner,
+    ContextConfigSelectedSigner, ContextConfigSigner,
+};
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RendezvousConfig, SwarmConfig,
 };
@@ -15,13 +20,13 @@ use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
+use near_crypto::{KeyType, SecretKey};
 use rand::{thread_rng, Rng};
 use tracing::{info, warn};
 use url::Url;
 
 use crate::config_file::{
-    BlobStoreConfig, ConfigFile, ContextConfig, DataStoreConfig as StoreConfigFile, NetworkConfig,
-    ServerConfig,
+    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
 };
 use crate::{cli, defaults};
 
@@ -147,6 +152,18 @@ impl InitCommand {
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
 
+        fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigLocalSigner> {
+            let secret_key = SecretKey::from_random(KeyType::ED25519);
+
+            let account_id = secret_key.public_key().unwrap_as_ed25519().0;
+
+            Ok(ContextConfigLocalSigner {
+                rpc_url,
+                account_id: hex::encode(account_id).parse()?,
+                secret_key,
+            })
+        }
+
         let config = ConfigFile {
             identity,
             datastore: StoreConfigFile {
@@ -155,7 +172,26 @@ impl InitCommand {
             blobstore: BlobStoreConfig {
                 path: "blobs".into(),
             },
-            context: ContextConfig { relayer },
+            context: ContextConfig {
+                config: ContextConfigConfig {
+                    signer: ContextConfigSigner {
+                        selected: ContextConfigSelectedSigner::Relayer,
+                        relayer: ContextConfigRelayerSigner { url: relayer },
+                        local: [
+                            (
+                                "mainnet".to_owned(),
+                                generate_local_signer("https://rpc.mainnet.near.org".parse()?)?,
+                            ),
+                            (
+                                "testnet".to_owned(),
+                                generate_local_signer("https://rpc.testnet.near.org".parse()?)?,
+                            ),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    },
+                },
+            },
             network: NetworkConfig {
                 swarm: SwarmConfig::new(listen),
                 bootstrap: BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
