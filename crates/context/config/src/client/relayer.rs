@@ -6,9 +6,9 @@ use super::{Operation, Transport};
 
 #[derive(Debug)]
 pub struct RelayerConfig<'a> {
-    url: Cow<'a, str>,
-    network: Cow<'a, str>,
-    contract_id: Cow<'a, str>,
+    pub url: Cow<'a, str>,
+    pub network: Cow<'a, str>,
+    pub contract_id: Cow<'a, str>,
 }
 
 #[derive(Debug)]
