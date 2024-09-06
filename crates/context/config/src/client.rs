@@ -14,21 +14,28 @@ use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 
 pub mod relayer;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum Operation<'a> {
-    Read { method: Cow<'a, str> },
-    Write { method: Cow<'a, str> },
-}
-
 pub trait Transport {
     type Error: std::error::Error;
 
     #[allow(async_fn_in_trait)]
     async fn send(
         &self,
-        operation: Operation<'_>,
+        request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error>;
+}
+
+#[derive(Debug)]
+pub struct TransportRequest<'a> {
+    pub network_id: Cow<'a, str>,
+    pub contract_id: Cow<'a, str>,
+    pub operation: Operation<'a>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum Operation<'a> {
+    Read { method: Cow<'a, str> },
+    Write { method: Cow<'a, str> },
 }
 
 #[derive(Debug)]
@@ -43,14 +50,27 @@ impl<T: Transport> ContextConfigClient<T> {
 }
 
 impl<T: Transport> ContextConfigClient<T> {
-    pub fn query(&self) -> ContextConfigQueryClient<'_, T> {
+    pub fn query<'a>(
+        &'a self,
+        network_id: Cow<'a, str>,
+        contract_id: Cow<'a, str>,
+    ) -> ContextConfigQueryClient<'a, T> {
         ContextConfigQueryClient {
+            network_id,
+            contract_id,
             transport: &self.transport,
         }
     }
 
-    pub fn mutate(&self, signer_id: SignerId) -> ContextConfigMutateClient<'_, T> {
+    pub fn mutate<'a>(
+        &'a self,
+        network_id: Cow<'a, str>,
+        contract_id: Cow<'a, str>,
+        signer_id: SignerId,
+    ) -> ContextConfigMutateClient<'a, T> {
         ContextConfigMutateClient {
+            network_id,
+            contract_id,
             signer_id,
             transport: &self.transport,
         }
@@ -89,6 +109,8 @@ impl<T> Response<T> {
 
 #[derive(Debug)]
 pub struct ContextConfigQueryClient<'a, T> {
+    network_id: Cow<'a, str>,
+    contract_id: Cow<'a, str>,
     transport: &'a T,
 }
 
@@ -96,13 +118,17 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
     async fn read<I: Serialize, O>(&self, method: &str, body: I) -> Result<Response<O>, Error<T>> {
         let payload = serde_json::to_vec(&body).map_err(|err| Error::Other(err.into()))?;
 
-        let operation = Operation::Read {
-            method: Cow::Borrowed(method),
+        let request = TransportRequest {
+            network_id: Cow::Borrowed(&self.network_id),
+            contract_id: Cow::Borrowed(&self.contract_id),
+            operation: Operation::Read {
+                method: Cow::Borrowed(method),
+            },
         };
 
         let response = self
             .transport
-            .send(operation, payload)
+            .send(request, payload)
             .await
             .map_err(Error::Transport)?;
 
@@ -159,6 +185,8 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
 
 #[derive(Debug)]
 pub struct ContextConfigMutateClient<'a, T> {
+    network_id: Cow<'a, str>,
+    contract_id: Cow<'a, str>,
     signer_id: SignerId,
     transport: &'a T,
 }
@@ -173,8 +201,12 @@ impl<T: Transport> ClientRequest<'_, '_, T> {
     pub async fn send(self, sign: impl FnOnce(&[u8]) -> Signature) -> Result<(), Error<T>> {
         let signed = Signed::new(&Request::new(self.client.signer_id, self.kind), sign)?;
 
-        let operation = Operation::Write {
-            method: Cow::Borrowed("mutate"),
+        let request = TransportRequest {
+            network_id: Cow::Borrowed(&self.client.network_id),
+            contract_id: Cow::Borrowed(&self.client.contract_id),
+            operation: Operation::Write {
+                method: Cow::Borrowed("mutate"),
+            },
         };
 
         let payload = serde_json::to_vec(&signed).map_err(|err| Error::Other(err.into()))?;
@@ -182,7 +214,7 @@ impl<T: Transport> ClientRequest<'_, '_, T> {
         let _unused = self
             .client
             .transport
-            .send(operation, payload)
+            .send(request, payload)
             .await
             .map_err(Error::Transport)?;
 

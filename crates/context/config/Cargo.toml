@@ -20,4 +20,4 @@ url = { workspace = true, optional = true }
 workspace = true
 
 [features]
-client = ["dep:reqwest", "dep:url"]
+client = ["reqwest/json", "dep:url"]
