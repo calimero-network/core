@@ -152,18 +152,6 @@ impl InitCommand {
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
 
-        fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSigner> {
-            let secret_key = SecretKey::from_random(KeyType::ED25519);
-
-            let account_id = secret_key.public_key().unwrap_as_ed25519().0;
-
-            Ok(ContextConfigClientLocalSigner {
-                rpc_url,
-                account_id: hex::encode(account_id).parse()?,
-                secret_key,
-            })
-        }
-
         let config = ConfigFile {
             identity,
             datastore: StoreConfigFile {
@@ -225,4 +213,16 @@ impl InitCommand {
 
         Ok(())
     }
+}
+
+fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSigner> {
+    let secret_key = SecretKey::from_random(KeyType::ED25519);
+
+    let account_id = secret_key.public_key().unwrap_as_ed25519().0;
+
+    Ok(ContextConfigClientLocalSigner {
+        rpc_url,
+        account_id: hex::encode(account_id).parse()?,
+        secret_key,
+    })
 }
