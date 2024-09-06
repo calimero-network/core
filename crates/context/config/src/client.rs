@@ -223,7 +223,7 @@ impl<T: Transport> ClientRequest<'_, '_, T> {
 }
 
 impl<T: Transport> ContextConfigMutateClient<'_, T> {
-    pub async fn add_context<'a>(
+    pub fn add_context<'a>(
         &self,
         context_id: ContextId,
         author_id: ContextIdentity,
@@ -240,7 +240,7 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub async fn update_application<'a>(
+    pub fn update_application<'a>(
         &self,
         context_id: ContextId,
         application: Application<'a>,
@@ -253,7 +253,7 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub async fn add_members(
+    pub fn add_members(
         &self,
         context_id: ContextId,
         members: &[ContextIdentity],
@@ -270,7 +270,7 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub async fn remove_members(
+    pub fn remove_members(
         &self,
         context_id: ContextId,
         members: &[ContextIdentity],
@@ -287,7 +287,7 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub async fn grant(
+    pub fn grant(
         &self,
         context_id: ContextId,
         capabilities: &[(ContextIdentity, Capability)],
@@ -304,7 +304,7 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub async fn revoke(
+    pub fn revoke(
         &self,
         context_id: ContextId,
         capabilities: &[(ContextIdentity, Capability)],
