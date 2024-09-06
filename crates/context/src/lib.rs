@@ -38,7 +38,7 @@ use config::ContextConfig;
 
 #[derive(Clone, Debug)]
 pub struct ContextManager {
-    client_config: ContextConfigClient<RelayOrNearTransport>,
+    config_client: ContextConfigClient<RelayOrNearTransport>,
     store: Store,
     blob_manager: BlobManager,
     network_client: NetworkClient,
@@ -60,7 +60,7 @@ impl ContextManager {
         network_client: NetworkClient,
     ) -> EyreResult<Self> {
         let this = Self {
-            client_config: ContextConfigClient::from_config(&config.client),
+            config_client: ContextConfigClient::from_config(&config.client),
             store,
             blob_manager,
             network_client,
