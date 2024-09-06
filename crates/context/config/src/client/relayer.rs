@@ -1,22 +1,23 @@
 use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use super::{Operation, Transport, TransportRequest};
 
 #[derive(Debug)]
-pub struct RelayerConfig<'a> {
-    pub url: Cow<'a, str>,
+pub struct RelayerConfig {
+    pub url: Url,
 }
 
 #[derive(Debug)]
-pub struct RelayerTransport<'a> {
+pub struct RelayerTransport {
     client: reqwest::Client,
-    url: Cow<'a, str>,
+    url: Url,
 }
 
-impl<'a> RelayerTransport<'a> {
-    pub fn new(config: &RelayerConfig<'a>) -> Self {
+impl RelayerTransport {
+    pub fn new(config: &RelayerConfig) -> Self {
         let client = reqwest::Client::new();
 
         Self {
@@ -34,7 +35,7 @@ pub struct RelayRequest<'a> {
     pub payload: Vec<u8>,
 }
 
-impl Transport for RelayerTransport<'_> {
+impl Transport for RelayerTransport {
     type Error = reqwest::Error;
 
     async fn send(
@@ -44,7 +45,7 @@ impl Transport for RelayerTransport<'_> {
     ) -> Result<Vec<u8>, Self::Error> {
         let response = self
             .client
-            .post(&*self.url)
+            .post(self.url.clone())
             .json(&RelayRequest {
                 network_id: request.network_id,
                 contract_id: request.contract_id,
