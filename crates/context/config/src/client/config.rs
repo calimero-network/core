@@ -6,34 +6,34 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextConfigConfig {
-    pub signer: ContextConfigSigner,
+pub struct ContextConfigClientConfig {
+    pub signer: ContextConfigClientSigner,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextConfigSigner {
+pub struct ContextConfigClientSigner {
     #[serde(rename = "use")]
-    pub selected: ContextConfigSelectedSigner,
-    pub relayer: ContextConfigRelayerSigner,
+    pub selected: ContextConfigClientSelectedSigner,
+    pub relayer: ContextConfigClientRelayerSigner,
     #[serde(rename = "self")]
-    pub local: BTreeMap<String, ContextConfigLocalSigner>,
+    pub local: BTreeMap<String, ContextConfigClientLocalSigner>,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ContextConfigSelectedSigner {
+pub enum ContextConfigClientSelectedSigner {
     Relayer,
     #[serde(rename = "self")]
     Local,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextConfigRelayerSigner {
+pub struct ContextConfigClientRelayerSigner {
     pub url: Url,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextConfigLocalSigner {
+pub struct ContextConfigClientLocalSigner {
     pub rpc_url: Url,
     pub account_id: AccountId,
     pub secret_key: SecretKey,

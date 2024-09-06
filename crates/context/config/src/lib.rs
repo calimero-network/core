@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "client")]
 pub mod client;
-#[cfg(feature = "client")]
-pub mod config;
 pub mod repr;
 pub mod types;
 

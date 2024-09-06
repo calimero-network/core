@@ -3,9 +3,9 @@ use core::time::Duration;
 use std::fs::{create_dir, create_dir_all};
 
 use calimero_context::config::ContextConfig;
-use calimero_context_config::config::{
-    ContextConfigConfig, ContextConfigLocalSigner, ContextConfigRelayerSigner,
-    ContextConfigSelectedSigner, ContextConfigSigner,
+use calimero_context_config::client::config::{
+    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientRelayerSigner,
+    ContextConfigClientSelectedSigner, ContextConfigClientSigner,
 };
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RendezvousConfig, SwarmConfig,
@@ -152,12 +152,12 @@ impl InitCommand {
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
 
-        fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigLocalSigner> {
+        fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSigner> {
             let secret_key = SecretKey::from_random(KeyType::ED25519);
 
             let account_id = secret_key.public_key().unwrap_as_ed25519().0;
 
-            Ok(ContextConfigLocalSigner {
+            Ok(ContextConfigClientLocalSigner {
                 rpc_url,
                 account_id: hex::encode(account_id).parse()?,
                 secret_key,
@@ -173,10 +173,10 @@ impl InitCommand {
                 path: "blobs".into(),
             },
             context: ContextConfig {
-                config: ContextConfigConfig {
-                    signer: ContextConfigSigner {
-                        selected: ContextConfigSelectedSigner::Relayer,
-                        relayer: ContextConfigRelayerSigner { url: relayer },
+                client: ContextConfigClientConfig {
+                    signer: ContextConfigClientSigner {
+                        selected: ContextConfigClientSelectedSigner::Relayer,
+                        relayer: ContextConfigClientRelayerSigner { url: relayer },
                         local: [
                             (
                                 "mainnet".to_owned(),

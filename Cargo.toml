@@ -50,6 +50,7 @@ color-eyre = "0.6.2"
 const_format = "0.2.32"
 dirs = "5.0.1"
 ed25519-dalek = "2.1.1"
+either = "1.13.0"
 eyre = "0.6.12"
 fixedstr = { version = "0.5.7", features = ["flex-str", "serde", "std"] }
 fragile = "2.0.0"

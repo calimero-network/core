@@ -10,7 +10,7 @@ pub struct RelayerConfig {
     pub url: Url,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RelayerTransport {
     client: reqwest::Client,
     url: Url,
