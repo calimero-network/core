@@ -36,7 +36,7 @@ pub struct NearConfig<'a> {
 struct Network {
     client: JsonRpcClient,
     account_id: AccountId,
-    access_key: SecretKey,
+    secret_key: SecretKey,
 }
 
 #[derive(Debug)]
@@ -56,7 +56,7 @@ impl<'a> NearTransport<'a> {
                 Network {
                     client,
                     account_id: network_config.account_id.clone(),
-                    access_key: network_config.access_key.clone(),
+                    secret_key: network_config.access_key.clone(),
                 },
             );
         }
@@ -155,7 +155,7 @@ impl Network {
                 block_reference: BlockReference::latest(),
                 request: QueryRequest::ViewAccessKey {
                     account_id: self.account_id.clone(),
-                    public_key: self.access_key.public_key().clone(),
+                    public_key: self.secret_key.public_key().clone(),
                 },
             })
             .await
@@ -206,7 +206,7 @@ impl Network {
 
         let transaction = Transaction::V0(TransactionV0 {
             signer_id: self.account_id.clone(),
-            public_key: self.access_key.public_key().clone(),
+            public_key: self.secret_key.public_key().clone(),
             nonce: nonce + 1,
             receiver_id: contract_id,
             block_hash,
@@ -228,7 +228,7 @@ impl Network {
                 signed_transaction: transaction.sign(&Signer::InMemory(
                     InMemorySigner::from_secret_key(
                         self.account_id.clone(),
-                        self.access_key.clone(),
+                        self.secret_key.clone(),
                     ),
                 )),
                 wait_until: TxExecutionStatus::Final,
