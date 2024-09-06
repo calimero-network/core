@@ -1,4 +1,4 @@
-use calimero_primitives::identity::{RootKey, WalletType};
+use calimero_primitives::identity::RootKey;
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 

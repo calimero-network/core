@@ -95,9 +95,9 @@ pub fn verify_near_signature(
     verify(public_key_str, &payload_hash, signature_base64).is_ok()
 }
 
-pub async fn check_for_near_account_key(
+pub async fn has_near_key(
     current_near_root_key: &str,
-    account_name: &str,
+    account_id: &str,
     rpc_url: &str,
 ) -> EyreResult<bool, ApiError> {
     let client = Client::new();
@@ -109,7 +109,7 @@ pub async fn check_for_near_account_key(
         "params": {
             "request_type": "view_access_key",
             "finality": "final",
-            "account_id": account_name,
+            "account_id": account_id,
             "public_key": current_near_root_key,
         }
     });

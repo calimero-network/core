@@ -17,7 +17,7 @@ use tracing::info;
 use crate::admin::handlers::root_keys::store_root_key;
 use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::root_key::{get_root_key, has_near_account_root_key};
-use crate::verifywalletsignatures::near::{check_for_near_account_key, verify_near_signature};
+use crate::verifywalletsignatures::near::{has_near_key, verify_near_signature};
 use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
 // TODO: Consider breaking this function up into pieces.
@@ -337,20 +337,20 @@ pub async fn validate_root_key_exists(
                 };
 
                 // Check if the given public key is from the given NEAR account
-                if !check_for_near_account_key(
-                    &req.wallet_metadata.verifying_key,
-                    wallet_address,
-                    rpc_url,
-                )
-                .await?
+                if !has_near_key(&req.wallet_metadata.verifying_key, wallet_address, rpc_url)
+                    .await?
                 {
                     return Err(ApiError {
                         status_code: StatusCode::BAD_REQUEST,
-                        message: "Given public key is not from wallet".into(),
+                        message: format!(
+                            "Provided public key does not belong to account {:?}",
+                            wallet_address
+                        )
+                        .into(),
                     });
                 }
                 // Check if the wallet_address has a NEAR account key from DB
-                match check_for_near_account_key(&near_keys, wallet_address, rpc_url).await? {
+                match has_near_key(&near_keys, wallet_address, rpc_url).await? {
                     true => {
                         let _ = store_root_key(
                             req.wallet_metadata.verifying_key.clone(),

@@ -188,10 +188,7 @@ async fn check_root_key(
             req.wallet_metadata.wallet_type.clone(),
             wallet_address,
             store,
-        )
-        .map_err(|err| {
-            return err;
-        })?;
+        )?;
 
         Ok(req)
     }
