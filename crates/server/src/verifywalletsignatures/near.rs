@@ -14,6 +14,13 @@ use tracing::info;
 
 use crate::admin::service::ApiError;
 
+/// A generic structure for NEAR JSON-RPC responses.
+///
+/// # Fields
+/// * `jsonrpc` - The version of the JSON-RPC protocol.
+/// * `result` - The result data if the query was successful.
+/// * `error` - The error data if the query failed.
+/// * `id` - The request ID.
 #[derive(Debug, Serialize, Deserialize)]
 struct NearJsonRpcResponse<T> {
     jsonrpc: String,
@@ -22,6 +29,12 @@ struct NearJsonRpcResponse<T> {
     id: String,
 }
 
+/// Represents an error from a NEAR JSON-RPC query.
+///
+/// # Fields
+/// * `code` - The error code.
+/// * `message` - The error message.
+/// * `data` - Optional additional error data.
 #[derive(Debug, Serialize, Deserialize)]
 struct NearJsonRpcError {
     code: i64,
@@ -29,6 +42,14 @@ struct NearJsonRpcError {
     data: Option<String>,
 }
 
+/// Represents the result data from a NEAR JSON-RPC query, including permissions.
+///
+/// # Fields
+/// * `block_hash` - The hash of the block containing the result.
+/// * `block_height` - The height of the block.
+/// * `nonce` - An optional nonce.
+/// * `permission` - The permission level granted to the key.
+/// * `error` - An optional error string at the result level.
 #[derive(Debug, Serialize, Deserialize)]
 struct ResultDataWithPermission {
     block_hash: String,
@@ -38,6 +59,11 @@ struct ResultDataWithPermission {
     error: Option<String>, // Result-level error
 }
 
+/// Represents the permission level of a NEAR key, which can be a function call or full access.
+///
+/// # Variants
+/// * `FunctionCall` - Grants function call access.
+/// * `FullAccess` - Grants full access to the account.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 enum Permission {
@@ -45,6 +71,12 @@ enum Permission {
     FullAccess(String),
 }
 
+/// Represents a function call permission, including the allowed methods and receiver ID.
+///
+/// # Fields
+/// * `allowance` - The allowance for function calls.
+/// * `receiver_id` - The receiver account ID.
+/// * `method_names` - The methods that can be called.
 #[derive(Debug, Serialize, Deserialize)]
 struct FunctionCall {
     allowance: String,
@@ -52,7 +84,13 @@ struct FunctionCall {
     method_names: Vec<String>,
 }
 
-// Define the outermost structure for the RPC request
+/// Represents an RPC request sent to the NEAR JSON-RPC API.
+///
+/// # Fields
+/// * `jsonrpc` - The version of the JSON-RPC protocol.
+/// * `id` - The request ID.
+/// * `method` - The method to be called.
+/// * `params` - The parameters for the method.
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcRequest {
     jsonrpc: String,
@@ -61,7 +99,13 @@ struct RpcRequest {
     params: RpcParams,
 }
 
-// Define the structure for the params field
+/// Represents the parameters for an RPC request.
+///
+/// # Fields
+/// * `request_type` - The type of request (e.g., "view_access_key").
+/// * `finality` - The finality level of the query (e.g., "final").
+/// * `account_id` - The account ID to query.
+/// * `public_key` - The public key to query.
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcParams {
     request_type: String,
@@ -70,6 +114,16 @@ struct RpcParams {
     public_key: String,
 }
 
+/// Creates a `Payload` struct from the provided message, nonce, recipient, and callback URL.
+///
+/// # Arguments
+/// * `message` - The message to include in the payload.
+/// * `nonce` - A 32-byte nonce.
+/// * `recipient` - The recipient of the message.
+/// * `callback_url` - The callback URL for the message.
+///
+/// # Returns
+/// * `Payload` - The constructed payload.
 fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url: &str) -> Payload {
     Payload {
         tag: 2_147_484_061,
@@ -80,6 +134,13 @@ fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url:
     }
 }
 
+/// Hashes the given bytes using SHA-256.
+///
+/// # Arguments
+/// * `bytes` - The bytes to hash.
+///
+/// # Returns
+/// * `[u8; 32]` - The SHA-256 hash of the bytes.
 fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
 
@@ -93,6 +154,19 @@ fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     hash_array
 }
 
+/// Verifies a NEAR signature by checking the payload, nonce, and signature.
+///
+/// # Arguments
+/// * `challenge` - A base64-encoded challenge string (nonce).
+/// * `message` - The message that was signed.
+/// * `app` - The recipient app.
+/// * `callback_url` - The callback URL.
+/// * `signature_base64` - The base64-encoded signature.
+/// * `public_key_str` - The public key string used to verify the signature.
+///
+/// # Returns
+/// * `true` - If the signature is valid.
+/// * `false` - If the signature is invalid or decoding fails.
 pub fn verify_near_signature(
     challenge: &str,
     message: &str,
@@ -113,7 +187,17 @@ pub fn verify_near_signature(
     verify(public_key_str, &payload_hash, signature_base64).is_ok()
 }
 
-// Check if root key belongs to the account
+/// Checks if a given NEAR key exists for the provided account using the NEAR RPC.
+///
+/// # Arguments
+/// * `current_near_root_key` - The public key to check.
+/// * `account_id` - The NEAR account ID.
+/// * `rpc_url` - The NEAR RPC URL to query.
+///
+/// # Returns
+/// * `Ok(true)` - If the key exists.
+/// * `Ok(false)` - If the key does not exist.
+/// * `Err(ApiError)` - If the RPC request fails or the response contains an error.
 pub async fn has_near_key(
     current_near_root_key: &str,
     account_id: &str,
@@ -178,6 +262,15 @@ enum Encoding {
     Base58,
 }
 
+/// Decodes a base58 or base64-encoded string into a fixed-size array.
+///
+/// # Arguments
+/// * `encoding` - The encoding used (Base58 or Base64).
+/// * `encoded` - The string to decode.
+///
+/// # Returns
+/// * `Ok([u8; N])` - The decoded array of bytes.
+/// * `Err(Report)` - If the decoding fails or the size is incorrect.
 fn decode_to_fixed_array<const N: usize>(
     encoding: &Encoding,
     encoded: &str,
@@ -195,6 +288,16 @@ fn decode_to_fixed_array<const N: usize>(
     Ok(fixed_array)
 }
 
+/// Verifies the signature for a given message using the provided public key.
+///
+/// # Arguments
+/// * `public_key_str` - The public key as a string.
+/// * `message` - The message bytes to verify.
+/// * `signature` - The base64-encoded signature to verify.
+///
+/// # Returns
+/// * `Ok(())` - If the signature is valid.
+/// * `Err(Report)` - If the verification fails.
 fn verify(public_key_str: &str, message: &[u8], signature: &str) -> EyreResult<()> {
     let encoded_key = public_key_str.trim_start_matches("ed25519:");
 
@@ -211,6 +314,14 @@ fn verify(public_key_str: &str, message: &[u8], signature: &str) -> EyreResult<(
     Ok(())
 }
 
+/// Represents the payload structure that contains a message, nonce, recipient, and optional callback URL.
+///
+/// # Fields
+/// * `tag` - A tag to identify the payload type.
+/// * `message` - The message to be sent.
+/// * `nonce` - A 32-byte nonce for the message.
+/// * `recipient` - The recipient of the message.
+/// * `callback_url` - An optional callback URL for the message.
 #[derive(BorshSerialize)]
 struct Payload {
     tag: u32,
