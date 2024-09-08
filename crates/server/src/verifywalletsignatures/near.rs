@@ -11,6 +11,7 @@ use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tracing::info;
 
 use crate::admin::service::ApiError;
 
@@ -50,6 +51,24 @@ struct FunctionCall {
     allowance: String,
     receiver_id: String,
     method_names: Vec<String>,
+}
+
+// Define the outermost structure for the RPC request
+#[derive(Serialize, Deserialize, Debug)]
+struct RpcRequest {
+    jsonrpc: String,
+    id: String,
+    method: String,
+    params: RpcParams,
+}
+
+// Define the structure for the params field
+#[derive(Serialize, Deserialize, Debug)]
+struct RpcParams {
+    request_type: String,
+    finality: String,
+    account_id: String,
+    public_key: String,
 }
 
 fn create_payload(message: &str, nonce: [u8; 32], recipient: &str, callback_url: &str) -> Payload {
@@ -95,24 +114,24 @@ pub fn verify_near_signature(
     verify(public_key_str, &payload_hash, signature_base64).is_ok()
 }
 
+// Check if root key belongs to the account
 pub async fn has_near_key(
     current_near_root_key: &str,
     account_id: &str,
     rpc_url: &str,
 ) -> EyreResult<bool, ApiError> {
     let client = Client::new();
-    // Check if root key belongs to the account
-    let body = json!({
-        "jsonrpc": "2.0",
-        "id": "dontcare",
-        "method": "query",
-        "params": {
-            "request_type": "view_access_key",
-            "finality": "final",
-            "account_id": account_id,
-            "public_key": current_near_root_key,
-        }
-    });
+    let body = RpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: "dontcare".to_string(),
+        method: "query".to_string(),
+        params: RpcParams {
+            request_type: "view_access_key".to_string(),
+            finality: "final".to_string(),
+            account_id: account_id.to_string(),
+            public_key: current_near_root_key.to_string(),
+        },
+    };
 
     let response = client
         .post(rpc_url)
@@ -132,7 +151,7 @@ pub async fn has_near_key(
 
     // Check if there is a top-level error
     if let Some(ref error) = response.error {
-        println!("Top-level error found: {:?}", error);
+        info!("Top-level error found: {:?}", error);
         return Err(ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: format!("Top-level error: {}", error.message),
@@ -142,7 +161,7 @@ pub async fn has_near_key(
     // Check for an error within the result object
     if let Some(result) = &response.result {
         if let Some(error) = result.error.as_deref() {
-            println!("Error within result: {}", error);
+            info!("Error within result: {}", error);
             return Err(ApiError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: format!("Result error: {}", error),
