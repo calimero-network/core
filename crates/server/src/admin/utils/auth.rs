@@ -346,18 +346,25 @@ pub async fn validate_root_key_exists(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    if get_root_key(store, &req.wallet_metadata.verifying_key).map_err(|e| {
-        info!("Error getting root key: {}", e);
-        ApiError {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: e.to_string(),
-        }
-    })?.is_none() {
+    if get_root_key(store, &req.wallet_metadata.verifying_key)
+        .map_err(|e| {
+            info!("Error getting root key: {}", e);
+            ApiError {
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                message: e.to_string(),
+            }
+        })?
+        .is_none()
+    {
         if let WalletType::NEAR { network_id } = &req.wallet_metadata.wallet_type {
-            let wallet_address = req.wallet_metadata.wallet_address.as_deref().ok_or(ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: "Wallet address not present".to_string(),
-            })?;
+            let wallet_address = req
+                .wallet_metadata
+                .wallet_address
+                .as_deref()
+                .ok_or(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Wallet address not present".to_string(),
+                })?;
 
             let near_keys: String = has_near_account_root_key(store, wallet_address)
                 .map(|keys| {
@@ -403,7 +410,8 @@ pub async fn validate_root_key_exists(
                     req.wallet_metadata.wallet_type.clone(),
                     wallet_address.to_string(),
                     store,
-                ).map_err(|err| err)?;
+                )
+                .map_err(|err| err)?;
             } else {
                 return Err(ApiError {
                     status_code: StatusCode::BAD_REQUEST,
