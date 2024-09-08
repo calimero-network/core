@@ -346,102 +346,78 @@ pub async fn validate_root_key_exists(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    let root_key_result = get_root_key(store, &req.wallet_metadata.verifying_key).map_err(|e| {
+    if get_root_key(store, &req.wallet_metadata.verifying_key).map_err(|e| {
         info!("Error getting root key: {}", e);
         ApiError {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
             message: e.to_string(),
         }
-    })?;
-
-    drop(match root_key_result {
-        Some(root_key) => root_key,
-        None => {
-            if let WalletType::NEAR { network_id } = &req.wallet_metadata.wallet_type {
-                let wallet_address = match req.wallet_metadata.wallet_address.as_deref() {
-                    Some(address) => Ok(address),
-                    None => Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Wallet address not present".to_string(),
-                    }),
-                }?;
-                // Check if the wallet_address has a NEAR account key from DB
-                let near_keys: String = has_near_account_root_key(store, wallet_address)
-                    .map(|keys| {
-                        if keys.is_empty() {
-                            Err(ApiError {
-                                status_code: StatusCode::BAD_REQUEST,
-                                message: "Root key does not exist".into(),
-                            })
-                        } else {
-                            Ok(keys)
-                        }
-                    })
-                    .map_err(|err| {
-                        info!("Error checking if near client key exists: {}", err);
-                        ApiError {
-                            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                            message: err.to_string(),
-                        }
-                    })??;
-
-                // Extract wallet_address as a &str
-                let wallet_address = match req.wallet_metadata.wallet_address.as_deref() {
-                    Some(address) => Ok(address),
-                    None => Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Wallet address not present".to_string(),
-                    }),
-                }?;
-
-                // Get network_type and from it use correct rpc_url
-                let rpc_url = match network_id {
-                    NearNetworkId::Mainnet => Ok("https://rpc.mainnet.near.org"),
-                    NearNetworkId::Testnet => Ok("https://rpc.testnet.near.org"),
-                    _ => Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Unknown NEAR network ID".into(),
-                    }),
-                }?;
-
-                // Check if the given public key is from the given NEAR account
-                if !has_near_key(&req.wallet_metadata.verifying_key, wallet_address, rpc_url)
-                    .await?
-                {
-                    return Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: format!(
-                            "Provided public key does not belong to account {:?}",
-                            wallet_address
-                        )
-                        .into(),
-                    });
-                }
-                // Check if the wallet_address has a NEAR account key from DB
-                if has_near_key(&near_keys, wallet_address, rpc_url).await? {
-                    let _ = store_root_key(
-                        req.wallet_metadata.verifying_key.clone(),
-                        req.wallet_metadata.wallet_type.clone(),
-                        wallet_address.to_string(),
-                        store,
-                    )
-                    .map_err(|err| {
-                        return err;
-                    })?;
-                } else {
-                    return Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Root key does not exist for given wallet".into(),
-                    });
-                }
-                return Ok(req);
-            }
-            return Err(ApiError {
+    })?.is_none() {
+        if let WalletType::NEAR { network_id } = &req.wallet_metadata.wallet_type {
+            let wallet_address = req.wallet_metadata.wallet_address.as_deref().ok_or(ApiError {
                 status_code: StatusCode::BAD_REQUEST,
-                message: "Root key does not exist".into(),
-            });
-        }
-    });
+                message: "Wallet address not present".to_string(),
+            })?;
 
+            let near_keys: String = has_near_account_root_key(store, wallet_address)
+                .map(|keys| {
+                    if keys.is_empty() {
+                        Err(ApiError {
+                            status_code: StatusCode::BAD_REQUEST,
+                            message: "Root key does not exist".into(),
+                        })
+                    } else {
+                        Ok(keys)
+                    }
+                })
+                .map_err(|err| {
+                    info!("Error checking if near client key exists: {}", err);
+                    ApiError {
+                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                        message: err.to_string(),
+                    }
+                })??;
+
+            let rpc_url = match network_id {
+                NearNetworkId::Mainnet => Ok("https://rpc.mainnet.near.org"),
+                NearNetworkId::Testnet => Ok("https://rpc.testnet.near.org"),
+                _ => Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Unknown NEAR network ID".into(),
+                }),
+            }?;
+
+            if !has_near_key(&req.wallet_metadata.verifying_key, wallet_address, rpc_url).await? {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: format!(
+                        "Provided public key does not belong to account {:?}",
+                        wallet_address
+                    ),
+                });
+            }
+
+            if has_near_key(&near_keys, wallet_address, rpc_url).await? {
+                let _ = store_root_key(
+                    req.wallet_metadata.verifying_key.clone(),
+                    req.wallet_metadata.wallet_type.clone(),
+                    wallet_address.to_string(),
+                    store,
+                ).map_err(|err| err)?;
+            } else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Root key does not exist for given wallet".into(),
+                });
+            }
+
+            return Ok(req);
+        }
+
+        return Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: "Root key does not exist".into(),
+        });
+    }
     Ok(req)
 }
