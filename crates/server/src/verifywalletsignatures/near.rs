@@ -9,7 +9,6 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use eyre::{eyre, Report, Result as EyreResult};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use tracing::info;
 

@@ -66,7 +66,7 @@ pub async fn verify_node_signature(
                 return Err(ApiError {
                     status_code: StatusCode::BAD_REQUEST,
                     message: "Node signature is invalid. Please check the signature.".into(),
-                })
+                });
             }
             Ok(true)
         }
