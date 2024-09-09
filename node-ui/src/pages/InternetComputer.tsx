@@ -8,7 +8,9 @@ interface InternetComputerProps {
   isLogin: boolean;
 }
 
-export default function InternetComputerLogin({ isLogin }: InternetComputerProps) {
+export default function InternetComputerLogin({
+  isLogin,
+}: InternetComputerProps) {
   const navigate = useNavigate();
   const {
     ready,
