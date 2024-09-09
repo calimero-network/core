@@ -10,6 +10,7 @@
 mod tests;
 
 use core::fmt::{self, Display, Formatter};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -33,6 +34,21 @@ pub struct Data;
 /// handling via the storage [`Interface`](crate::interface::Interface). The
 /// actual nature of the [`Element`] can be determined by inspection.
 ///
+/// # Updates
+///
+/// When an [`Element`] is updated, the [`Element`] is marked as dirty, and the
+/// [`updated_at()`](Element::updated_at()) timestamp is updated. This is used
+/// to determine the freshness of the data, and to resolve conflicts when
+/// multiple parties are updating the same [`Element`] concurrently, on a "last
+/// write wins" basis.
+///
+/// An [`Element`] is considered to be an atomic unit, but this designation
+/// applies only to it, and not its children. Its children are separate
+/// entities, and are not part of the "state" of an [`Element`] for update
+/// comparison purposes. However, they do matter for calculating the Merkle tree
+/// hashes that represent the sum of all data at that part in the hierarchy and
+/// below.
+///
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub struct Element {
@@ -43,10 +59,14 @@ pub struct Element {
     /// consumer application has stored in the [`Element`].
     data: Data,
 
+    /// Whether the [`Element`] is dirty, i.e. has been modified since it was
+    /// last saved.
+    pub(crate) is_dirty: bool,
+
     /// The metadata for the [`Element`]. This represents a range of
     /// system-managed properties that are used to process the [`Element`], but
     /// are not part of the primary data.
-    metadata: Metadata,
+    pub(crate) metadata: Metadata,
 
     /// The path to the [`Element`] in the hierarchy of the storage.
     path: Path,
@@ -68,12 +88,27 @@ impl Element {
     ///
     /// * `path` - The path to the [`Element`] in the hierarchy of the storage.
     ///
+    /// # Panics
+    ///
+    /// This method can technically panic if the system time goes backwards, to
+    /// before the Unix epoch, which should never ever happen!
+    ///
     #[must_use]
     pub fn new(path: &Path) -> Self {
+        #[allow(clippy::cast_possible_truncation)] // Impossible to overflow in normal circumstances
+        #[allow(clippy::expect_used)] // Effectively infallible here
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards to before the Unix epoch!")
+            .as_nanos() as u64;
         Self {
             id: Id::new(),
             data: Data {},
-            metadata: Metadata {},
+            is_dirty: true,
+            metadata: Metadata {
+                created_at: timestamp,
+                updated_at: timestamp,
+            },
             path: path.clone(),
         }
     }
@@ -93,6 +128,12 @@ impl Element {
     #[must_use]
     pub fn children(&self) -> Vec<Self> {
         unimplemented!()
+    }
+
+    /// The timestamp when the [`Element`] was first created.
+    #[must_use]
+    pub const fn created_at(&self) -> u64 {
+        self.metadata.created_at
     }
 
     /// The primary data for the [`Element`].
@@ -129,6 +170,17 @@ impl Element {
         self.id
     }
 
+    /// Whether the [`Element`] is dirty.
+    ///
+    /// This checks whether the [`Element`] is dirty, i.e. has been modified
+    /// since it was last saved. This is used to determine whether the
+    /// [`Element`] needs to be saved again in order to persist the changes.
+    ///
+    #[must_use]
+    pub const fn is_dirty(&self) -> bool {
+        self.is_dirty
+    }
+
     /// The metadata for the [`Element`].
     ///
     /// This gets the metadata for the [`Element`]. This represents a range of
@@ -153,6 +205,42 @@ impl Element {
     pub fn path(&self) -> Path {
         self.path.clone()
     }
+
+    /// Updates the data for the [`Element`].
+    ///
+    /// This updates the data for the [`Element`], and marks the [`Element`] as
+    /// dirty. This is used to indicate that the [`Element`] has been modified
+    /// since it was last saved, and that it needs to be saved again in order to
+    /// persist the changes.
+    ///
+    /// It also updates the [`updated_at()`](Element::updated_at()) timestamp to
+    /// reflect the time that the [`Element`] was last updated.
+    ///
+    /// # Parameters
+    ///
+    /// * `data` - The new data for the [`Element`].
+    ///
+    /// # Panics
+    ///
+    /// This method can technically panic if the system time goes backwards, to
+    /// before the Unix epoch, which should never ever happen!
+    ///
+    #[allow(clippy::cast_possible_truncation)] // Impossible to overflow in normal circumstances
+    #[allow(clippy::expect_used)] // Effectively infallible here
+    pub fn update_data(&mut self, data: Data) {
+        self.data = data;
+        self.is_dirty = true;
+        self.metadata.updated_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards to before the Unix epoch!")
+            .as_nanos() as u64;
+    }
+
+    /// The timestamp when the [`Element`] was last updated.
+    #[must_use]
+    pub const fn updated_at(&self) -> u64 {
+        self.metadata.updated_at
+    }
 }
 
 impl Display for Element {
@@ -166,6 +254,29 @@ impl Display for Element {
 /// This represents a range of system-managed properties that are used to
 /// process the [`Element`], but are not part of the primary data.
 ///
+/// # Timestamps
+///
+/// The timestamp fields, i.e. [`created_at()`](Element::created_at()) and
+/// [`updated_at()`](Element::updated_at()), are stored using [`u64`] integer
+/// values. This is because [Chrono](https://crates.io/crates/chrono) does not
+/// support [Borsh](https://crates.io/crates/borsh) serialisation, and also
+/// using a 64-bit integer is faster and more efficient (as Chrono uses 96 bits
+/// internally).
+///
+/// Using a [`u64`] timestamp allows for 585 years from the Unix epoch, at
+/// nanosecond precision. This is more than sufficient for our current needs.
+///
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 #[non_exhaustive]
-pub struct Metadata;
+pub struct Metadata {
+    /// When the [`Element`] was first created. Note that this is a global
+    /// creation time, and does not reflect the time that the [`Element`] was
+    /// added to the local storage.
+    created_at: u64,
+
+    /// When the [`Element`] was last updated. This is the time that the
+    /// [`Element`] was last modified in any way, and is used to determine the
+    /// freshness of the data. It is critical for the "last write wins" strategy
+    /// that is used to resolve conflicts.
+    pub(crate) updated_at: u64,
+}
