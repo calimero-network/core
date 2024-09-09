@@ -17,6 +17,23 @@ pub struct InstallApplicationRequest {
     pub metadata: Vec<u8>,
 }
 
+impl InstallApplicationRequest {
+    #[must_use]
+    pub const fn new(
+        url: Url,
+        version: Option<Version>,
+        hash: Option<Hash>,
+        metadata: Vec<u8>,
+    ) -> Self {
+        Self {
+            url,
+            hash,
+            version,
+            metadata,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct InstallDevApplicationRequest {

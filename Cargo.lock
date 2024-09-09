@@ -5100,11 +5100,13 @@ dependencies = [
  "reqwest 0.12.5",
  "semver",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "toml_edit 0.22.20",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
