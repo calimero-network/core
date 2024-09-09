@@ -18,7 +18,21 @@ fi
 # Check for changes in the 'node-ui' directory
 if git diff --cached  --name-only | grep -q '^node-ui/'; then
   echo "Running checks for the node-ui..."
-  (cd node-ui && pnpm prettier && pnpm lint:fix)
+  (cd node-ui && pnpm prettier && pnpm lint:fix && pnpm build)
+
+  # Check if the build folder has any changes
+  if [ -n "$(git status --porcelain node-ui/build)" ]; then
+    echo "Build folder has changed, committing and pushing the changes..."
+    
+    # Add and commit the build folder automatically
+    git add node-ui/build
+    git commit -m "Auto-commit build folder"
+
+    # Push the commit to the repository
+    git push
+  else
+    echo "No changes in the build folder."
+  fi
 fi
 
 # Check for changes in the 'packages/calimero-sdk' directory
