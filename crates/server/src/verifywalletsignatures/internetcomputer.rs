@@ -1,3 +1,6 @@
+//! This module provides functionality to verify signatures from Internet Computer using an Internet Identity (II).
+//! It defines structures for delegation and signed delegation chains, and verifies the integrity of the delegations
+//! and canister signatures.
 use candid::Principal;
 use ic_canister_sig_creation::{
     delegation_signature_msg, CanisterSigPublicKey, DELEGATION_SIG_DOMAIN,
@@ -7,7 +10,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::admin::service::ApiError;
 
-// A custom definition of Delegation, as we need to parse from hex-values provided  in JSON from JS.
+/// A custom structure representing a `Delegation`, which includes a public key, an expiration time, and optional targets.
+/// This struct is used to parse values from JSON, where the public key and expiration are provided as hex values.
+///
+/// # Fields
+/// - `pubkey`: The public key as a `Vec<u8>`, parsed from hex in JSON.
+/// - `expiration`: A `Vec<u8>` representing a Unix timestamp in nanoseconds, stored as a big-endian hex string.
+/// - `targets`: An optional vector of `Vec<u8>`, which may include specific targets for the delegation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Delegation {
     #[serde(with = "hex::serde")]
@@ -17,6 +26,11 @@ pub struct Delegation {
     pub targets: Option<Vec<Vec<u8>>>,
 }
 
+/// Represents a signed `Delegation` which includes the `Delegation` and its cryptographic signature.
+///
+/// # Fields
+/// - `delegation`: The delegation details (`Delegation`).
+/// - `signature`: The signature of the delegation, serialized as a hex string.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 struct SignedDelegation {
     pub delegation: Delegation,
@@ -24,6 +38,12 @@ struct SignedDelegation {
     pub signature: Vec<u8>,
 }
 
+/// A chain of signed delegations along with a public key. 
+/// This structure is used to verify delegation authenticity within a chain.
+///
+/// # Fields
+/// - `delegations`: A vector of signed delegations.
+/// - `publicKey`: The public key that signs the delegations, serialized as a hex string.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[allow(non_snake_case)]
 struct DelegationChain {
@@ -33,12 +53,17 @@ struct DelegationChain {
 }
 
 impl Delegation {
+    /// Returns the expiration timestamp from the `Delegation` as a `u64`.
+    ///
+    /// # Panics
+    /// This function will panic if the `expiration` vector cannot be converted into a `u64`.
     fn expiration(&self) -> u64 {
         let expiration_bytes: [u8; 8] = <[u8; 8]>::try_from(self.expiration.as_slice()).unwrap();
         u64::from_be_bytes(expiration_bytes)
     }
 }
 
+/// A constant array representing the Internet Computer (IC) root public key used in signature verification.
 const IC_ROOT_PUBLIC_KEY: [u8; 96] = [
     129, 76, 14, 110, 199, 31, 171, 88, 59, 8, 189, 129, 55, 60, 37, 92, 60, 55, 27, 46, 132, 134,
     60, 152, 164, 241, 224, 139, 116, 35, 93, 20, 251, 93, 156, 12, 213, 70, 217, 104, 95, 145, 58,
@@ -47,13 +72,25 @@ const IC_ROOT_PUBLIC_KEY: [u8; 96] = [
     185, 136, 131, 70, 63, 152, 9, 26, 11, 170, 174,
 ];
 
-/// Verify an Argent wallet signature on chain.
+/// Verifies the Internet Identity (II) signature from a provided challenge, delegation chain, and II canister ID.
+///
+/// # Arguments
+/// - `challenge`: The challenge data (public key) to verify the signature against.
+/// - `signed_delegation_chain_json`: A JSON string representing the signed delegation chain.
+/// - `ii_canister_id`: The ID of the II canister from which the delegation originates.
+///
+/// # Returns
+/// - `Ok(())`: If the signature and delegation chain are successfully verified.
+/// - `Err(ApiError)`: If any validation step fails, such as parsing errors, signature mismatches, or invalid delegation chains.
+///
+/// # Errors
+/// This function will return an `ApiError` in case of issues like invalid input, signature mismatches, or verification failure.
 pub async fn verify_internet_identity_signature(
     challenge: &[u8],
     signed_delegation_chain_json: &str,
     ii_canister_id: &str,
 ) -> Result<(), ApiError> {
-    // Parse the signed delegation chain and check if exactly one delegation exists
+    // Parses the signed delegation chain and checks if exactly one delegation exists
     let signed_delegation_chain: DelegationChain =
         serde_json::from_str(signed_delegation_chain_json)
             .map_err(|e| ApiError {
@@ -74,6 +111,7 @@ pub async fn verify_internet_identity_signature(
     let signed_delegation = &signed_delegation_chain.delegations[0];
     let delegation = &signed_delegation.delegation;
 
+    // Checks if the provided challenge (public key) matches the delegation's public key
     if delegation.pubkey != challenge {
         return Err(ApiError {
             status_code: StatusCode::BAD_REQUEST,
@@ -84,7 +122,7 @@ pub async fn verify_internet_identity_signature(
         });
     }
 
-    // Check publicKey for canister signatures of `ii_canister_id`
+    // Validates the canister signature public key and compares it to the II canister ID
     let cs_pk = CanisterSigPublicKey::try_from(signed_delegation_chain.publicKey.as_slice())
         .map_err(|e| ApiError {
             status_code: StatusCode::BAD_REQUEST,
@@ -106,7 +144,7 @@ pub async fn verify_internet_identity_signature(
         });
     }
 
-    // Perform canister signature verification
+    // Verifies the canister signature by checking the message and the provided signature
     let message = msg_with_domain(
         DELEGATION_SIG_DOMAIN,
         &delegation_signature_msg(
@@ -131,6 +169,14 @@ pub async fn verify_internet_identity_signature(
     Ok(())
 }
 
+/// Combines a domain separator with the provided message, used for signing purposes.
+///
+/// # Arguments
+/// - `sep`: The domain separator to prepend.
+/// - `bytes`: The message to append.
+///
+/// # Returns
+/// A vector combining the domain separator and the message.
 fn msg_with_domain(sep: &[u8], bytes: &[u8]) -> Vec<u8> {
     let mut msg = vec![sep.len() as u8];
     msg.append(&mut sep.to_vec());
