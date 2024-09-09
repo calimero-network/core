@@ -38,7 +38,7 @@ struct SignedDelegation {
     pub signature: Vec<u8>,
 }
 
-/// A chain of signed delegations along with a public key. 
+/// A chain of signed delegations along with a public key.
 /// This structure is used to verify delegation authenticity within a chain.
 ///
 /// # Fields
