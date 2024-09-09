@@ -16,6 +16,7 @@ use tracing::info;
 
 use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::root_key::get_root_key;
+use crate::verifywalletsignatures::internetcomputer::verify_internet_identity_signature;
 use crate::verifywalletsignatures::near::verify_near_signature;
 use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
@@ -178,6 +179,36 @@ pub async fn verify_node_signature(
 
             if let Err(err) = result {
                 return Err(parse_api_error(err));
+            }
+
+            Ok(true)
+        }
+        WalletType::INTERNETCOMPUTER {
+            ref cannister_id,
+            ref wallet_name,
+        } => {
+            let delegation_chain = match wallet_signature {
+                WalletSignature::String(delegation_chain) => delegation_chain,
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid wallet signature type.".into(),
+                    })
+                }
+            };
+
+            if wallet_name == "Internet Identity" {
+                verify_internet_identity_signature(
+                    payload.message.message.as_bytes(),
+                    &delegation_chain,
+                    cannister_id,
+                )
+                .await?;
+            } else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid wallet name for Internet Computer.".into(),
+                });
             }
 
             Ok(true)
