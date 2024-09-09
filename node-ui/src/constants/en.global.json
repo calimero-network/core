@@ -29,6 +29,13 @@
     "walletNotFound": "Wallet not found",
     "errorLogin": "Error while login"
   },
+  "useInternetComputer": {
+    "requestNodeDataError": "Error while requesting node data",
+    "errorChangingNetwork": "Error changing network",
+    "loginError": "Error while login",
+    "rootkeyError": "Error while adding root key",
+    "signMessageError": "Error while signing message"
+  },
   "loginPage": {
     "logoDashboardText": "Admin Dashboard",
     "title": "Calimero Node Admin Dashboard",
@@ -38,7 +45,8 @@
       "title": "Continue with wallet",
       "metamaskButtonText": "Metamask wallet",
       "nearButtonText": "Near wallet",
-      "starknetButtonText": "Starknet wallet"
+      "starknetButtonText": "Starknet wallet",
+      "internetComputerButtonText": "Internet Computer"
     },
     "nearLogin": {
       "title": "Login with NEAR",
@@ -49,6 +57,16 @@
       "authButtonText": "Authenticate",
       "switchAccountButtonText": "Switch Account",
       "backButtonText": "Back to wallet selector"
+    },
+    "internetComputerLogin": {
+      "title": "Login with Internet Identity",
+      "subtitle": "Choose from which account you want to log in with",
+      "accountIdText": "Account Id",
+      "logoutButtonText": "Logout",
+      "currentNetwork": "Current network",
+      "authButtonText": "Authenticate",
+      "switchAccountButtonText": "Switch Account",
+      "backToLoginPage": "Back to login page"
     },
     "metamaskLogin": {
       "titleLogin": "Login with Metamask",
@@ -97,6 +115,17 @@
       "currentNetwork": "Current network",
       "signMessage": "Sign authentication message",
       "backToWalletSelector": "Back to wallet selector",
+      "backToLoginPage": "Back to login selector"
+    },
+    "internetComputerKey": {
+      "title": "Add Internet Identity root key",
+      "subtitle": "Choose which account from your wallet you want to add a node root key for. Each key, and therefore each account, can only be added once",
+      "accountIdText": "Account Id",
+      "logoutButtonText": "Logout",
+      "currentNetwork": "Current network",
+      "signMessage": "Sign authentication message",
+      "backToWalletSelector": "Back to wallet selector",
+      "authButtonText": "Add root key",
       "backToLoginPage": "Back to login selector"
     }
   },
