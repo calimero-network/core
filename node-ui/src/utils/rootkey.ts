@@ -5,6 +5,7 @@ import {
   ApiRootKey,
   DidResponse,
   ETHRootKey,
+  InternetComputerRootKey,
   NearRootKey,
   Network,
   StarknetRootKey,
@@ -75,32 +76,43 @@ export function mapApiResponseToObjects(
   didResponse: DidResponse,
 ): RootKeyObject[] {
   if (didResponse?.did?.root_keys) {
-    const rootKeys: (ETHRootKey | NearRootKey | StarknetRootKey)[] =
-      didResponse?.did?.root_keys?.map((obj: ApiRootKey) => {
-        if (obj.wallet.type === Network.NEAR) {
-          const nearObject: NearRootKey = {
-            signingKey: obj.signing_key,
-            createdAt: obj.created_at,
-            type: Network.NEAR,
-          };
-          return nearObject;
-        } else if (obj.wallet.type === Network.ETH) {
-          const ethObject: ETHRootKey = {
-            signingKey: obj.signing_key,
-            type: Network.ETH,
-            createdAt: obj.created_at,
-            chainId: obj.wallet.chainId ?? 1,
-          };
-          return ethObject;
-        } else {
-          const starknetObject: StarknetRootKey = {
-            signingKey: obj.signing_key,
-            type: Network.STARKNET + ' ' + obj.wallet.walletName,
-            createdAt: obj.created_at,
-          };
-          return starknetObject;
-        }
-      });
+    const rootKeys: (
+      | ETHRootKey
+      | NearRootKey
+      | StarknetRootKey
+      | InternetComputerRootKey
+    )[] = didResponse?.did?.root_keys?.map((obj: ApiRootKey) => {
+      if (obj.wallet.type === Network.NEAR) {
+        const nearObject: NearRootKey = {
+          signingKey: obj.signing_key,
+          createdAt: obj.created_at,
+          type: Network.NEAR,
+        };
+        return nearObject;
+      } else if (obj.wallet.type === Network.ETH) {
+        const ethObject: ETHRootKey = {
+          signingKey: obj.signing_key,
+          type: Network.ETH,
+          createdAt: obj.created_at,
+          chainId: obj.wallet.chainId ?? 1,
+        };
+        return ethObject;
+      } else if (obj.wallet.type === Network.INTERNETCOMPUTER) {
+        const internetComputerObject: InternetComputerRootKey = {
+          signingKey: obj.signing_key,
+          type: Network.INTERNETCOMPUTER,
+          createdAt: obj.created_at,
+        };
+        return internetComputerObject;
+      } else {
+        const starknetObject: StarknetRootKey = {
+          signingKey: obj.signing_key,
+          type: Network.STARKNET + ' ' + obj.wallet.walletName,
+          createdAt: obj.created_at,
+        };
+        return starknetObject;
+      }
+    });
     return rootKeys.map((item) => ({
       type:
         item.type === Network.ETH
