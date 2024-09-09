@@ -1,10 +1,14 @@
-use calimero_server_primitives::admin::{InstallApplicationResponse, InstallDevApplicationRequest};
+use calimero_primitives::hash::Hash;
+use calimero_server_primitives::admin::{
+    InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
+};
 use camino::Utf8PathBuf;
 use clap::Parser;
 use eyre::{bail, Result};
 use reqwest::Client;
 use semver::Version;
 use tracing::info;
+use url::Url;
 
 use crate::cli::RootArgs;
 use crate::common::RequestType::POST;
@@ -14,13 +18,21 @@ use crate::config_file::ConfigFile;
 #[derive(Debug, Parser)]
 pub struct InstallCommand {
     /// Path to the application
-    #[arg(long, short)]
-    pub path: Utf8PathBuf,
+    #[arg(long, short, conflicts_with = "url")]
+    pub path: Option<Utf8PathBuf>,
 
-    /// Version of the application
+    /// Url of the application
+    #[clap(long, short, conflicts_with = "path", requires = "metadata")]
+    pub url: Option<String>,
+
     #[clap(short, long, help = "Version of the application")]
     pub version: Option<Version>,
+
+    #[clap(short, long, help = "Metadata for the application")]
     pub metadata: Option<Vec<u8>>,
+
+    #[clap(long, help = "Hash of the application")]
+    pub hash: Option<Hash>,
 }
 
 impl InstallCommand {
@@ -41,13 +53,33 @@ impl InstallCommand {
 
         let client = Client::new();
 
-        let install_url = multiaddr_to_url(multiaddr, "admin-api/dev/install-application")?;
+        let mut is_dev_installation = false;
 
-        let install_request = InstallDevApplicationRequest::new(
-            self.path.canonicalize_utf8()?,
-            self.version,
-            self.metadata.unwrap_or_default(),
-        );
+        let install_request = if let Some(app_path) = self.path {
+            let install_dev_request = InstallDevApplicationRequest::new(
+                app_path.canonicalize_utf8()?,
+                self.version,
+                self.metadata.unwrap_or_default(),
+            );
+            is_dev_installation = true;
+            serde_json::to_value(install_dev_request)?
+        } else if let Some(app_url) = self.url {
+            let install_request = InstallApplicationRequest::new(
+                Url::parse(&app_url)?,
+                self.version,
+                self.hash,
+                self.metadata.unwrap_or_default(),
+            );
+            serde_json::to_value(install_request)?
+        } else {
+            bail!("Either path or url must be provided");
+        };
+
+        let install_url = if is_dev_installation {
+            multiaddr_to_url(multiaddr, "admin-api/dev/install-dev-application")?
+        } else {
+            multiaddr_to_url(multiaddr, "admin-api/dev/install-application")?
+        };
 
         let install_response = get_response(
             &client,
