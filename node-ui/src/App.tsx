@@ -25,6 +25,7 @@ import InstallApplication from './pages/InstallApplication';
 import StarknetLogin from './pages/Starknet';
 
 import 'bootstrap/dist/css/bootstrap.min.css';
+import InternetComputerLogin from './pages/InternetComputer';
 
 export default function App() {
   const { showServerDownPopup } = useServerDown();
@@ -64,6 +65,14 @@ export default function App() {
             <Route
               path="/identity/root-key/starknet"
               element={<StarknetLogin isLogin={false} />}
+            />
+            <Route
+              path="/auth/internet-computer"
+              element={<InternetComputerLogin isLogin={true} />}
+            />
+            <Route
+              path="/identity/root-key/internet-computer"
+              element={<InternetComputerLogin isLogin={false} />}
             />
             <Route path="/identity" element={<Identity />} />
             <Route path="/identity/root-key" element={<AddRootKey />} />

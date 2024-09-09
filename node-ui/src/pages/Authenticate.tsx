@@ -11,6 +11,9 @@ export default function AuthenticatePage() {
         navigateMetamaskLogin={() => navigate('/auth/metamask')}
         navigateNearLogin={() => navigate('/auth/near')}
         navigateStarknetLogin={() => navigate('/auth/starknet')}
+        navigateInternetComputerLogin={() =>
+          navigate('/auth/internet-computer')
+        }
       />
     </ContentWrapper>
   );
