@@ -3,6 +3,7 @@ use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::RootArgs;
+use crate::common::RequestType::GET;
 use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
@@ -42,7 +43,7 @@ impl GetCommand {
             &format!("admin-api/dev/applications/{}", self.app_id),
         )?;
 
-        let response = get_response(&client, url, None::<()>, &config.identity).await?;
+        let response = get_response(&client, url, None::<()>, &config.identity, GET).await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())
