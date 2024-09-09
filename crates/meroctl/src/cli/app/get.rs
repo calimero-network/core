@@ -48,8 +48,7 @@ impl GetCommand {
             bail!("Request failed with status: {}", response.status())
         }
 
-        let text = response.text().await?;
-        println!("{}", text);
+        println!("{}", response.text().await?);
 
         Ok(())
     }

@@ -18,18 +18,18 @@ pub struct AppCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AppSubCommands {
+    Get(GetCommand),
     Install(InstallCommand),
     #[command(alias = "ls")]
     List(ListCommand),
-    Get(GetCommand),
 }
 
 impl AppCommand {
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         match self.subcommand {
+            AppSubCommands::Get(get) => get.run(args).await,
             AppSubCommands::Install(install) => install.run(args).await,
             AppSubCommands::List(list) => list.run(args).await,
-            AppSubCommands::Get(get) => get.run(args).await,
         }
     }
 }
