@@ -140,6 +140,12 @@ pub enum WalletType {
         #[serde(rename = "walletName")]
         wallet_name: String,
     },
+    INTERNETCOMPUTER {
+        #[serde(rename = "cannisterId")]
+        cannister_id: String,
+        #[serde(rename = "walletName")]
+        wallet_name: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
