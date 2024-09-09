@@ -143,6 +143,24 @@ pub(crate) fn setup(
             post(update_application_id),
         )
         .route("/dev/applications", get(list_applications_handler))
+        .route("/dev/contexts/:context_id", get(get_context_handler))
+        .route(
+            "/dev/contexts/:context_id/users",
+            get(get_context_users_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/client-keys",
+            get(get_context_client_keys_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/storage",
+            get(get_context_storage_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/identities",
+            get(get_context_identities_handler),
+        )
+        .route("/dev/contexts/:context_id", delete(delete_context_handler))
         .route_layer(axum::middleware::from_fn(
             middleware::dev_auth::dev_mode_auth,
         ));

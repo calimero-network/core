@@ -35,14 +35,15 @@ pub async fn get_response(
     url: Url,
     body: Option<impl Serialize>,
     keypair: &Keypair,
+    req_type: RequestType,
 ) -> EyreResult<Response> {
     let timestamp = Utc::now().timestamp().to_string();
     let signature = keypair.sign(timestamp.as_bytes())?;
 
-    let mut builder = if body.is_some() {
-        client.post(url).json(&body)
-    } else {
-        client.get(url)
+    let mut builder = match req_type {
+        RequestType::GET => client.get(url),
+        RequestType::POST => client.post(url).json(&body),
+        RequestType::DELETE => client.delete(url),
     };
 
     builder = builder
@@ -53,4 +54,10 @@ pub async fn get_response(
         .send()
         .await
         .map_err(|_| eyre!("Error with client request"))
+}
+
+pub enum RequestType {
+    GET,
+    POST,
+    DELETE,
 }

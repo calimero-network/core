@@ -7,6 +7,7 @@ use semver::Version;
 use tracing::info;
 
 use crate::cli::RootArgs;
+use crate::common::RequestType::POST;
 use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
@@ -53,6 +54,7 @@ impl InstallCommand {
             install_url,
             Some(install_request),
             &config.identity,
+            POST,
         )
         .await?;
 
