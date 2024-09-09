@@ -1,0 +1,139 @@
+use candid::Principal;
+use ic_canister_sig_creation::{
+    delegation_signature_msg, CanisterSigPublicKey, DELEGATION_SIG_DOMAIN,
+};
+use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
+
+use crate::admin::service::ApiError;
+
+// A custom definition of Delegation, as we need to parse from hex-values provided  in JSON from JS.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Delegation {
+    #[serde(with = "hex::serde")]
+    pub pubkey: Vec<u8>,
+    #[serde(with = "hex::serde")]
+    pub expiration: Vec<u8>, // Unix timestamp ns, u46 as BE-hex (that's how browser encodes it)
+    pub targets: Option<Vec<Vec<u8>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+struct SignedDelegation {
+    pub delegation: Delegation,
+    #[serde(with = "hex::serde")]
+    pub signature: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[allow(non_snake_case)]
+struct DelegationChain {
+    delegations: Vec<SignedDelegation>,
+    #[serde(with = "hex::serde")]
+    publicKey: Vec<u8>,
+}
+
+impl Delegation {
+    fn expiration(&self) -> u64 {
+        let expiration_bytes: [u8; 8] = <[u8; 8]>::try_from(self.expiration.as_slice()).unwrap();
+        u64::from_be_bytes(expiration_bytes)
+    }
+}
+
+const IC_ROOT_PUBLIC_KEY: [u8; 96] = [
+    129, 76, 14, 110, 199, 31, 171, 88, 59, 8, 189, 129, 55, 60, 37, 92, 60, 55, 27, 46, 132, 134,
+    60, 152, 164, 241, 224, 139, 116, 35, 93, 20, 251, 93, 156, 12, 213, 70, 217, 104, 95, 145, 58,
+    12, 11, 44, 197, 52, 21, 131, 191, 75, 67, 146, 228, 103, 219, 150, 214, 91, 155, 180, 203,
+    113, 113, 18, 248, 71, 46, 13, 90, 77, 20, 80, 95, 253, 116, 132, 176, 18, 145, 9, 28, 95, 135,
+    185, 136, 131, 70, 63, 152, 9, 26, 11, 170, 174,
+];
+
+/// Verify an Argent wallet signature on chain.
+pub async fn verify_internet_identity_signature(
+    challenge: &[u8],
+    signed_delegation_chain_json: &str,
+    ii_canister_id: &str,
+) -> Result<(), ApiError> {
+    // Parse the signed delegation chain and check if exactly one delegation exists
+    let signed_delegation_chain: DelegationChain =
+        serde_json::from_str(signed_delegation_chain_json)
+            .map_err(|e| ApiError {
+                status_code: StatusCode::BAD_REQUEST,
+                message: format!("Error parsing delegation_chain: {}", e),
+            })
+            .and_then(|chain: DelegationChain| {
+                if chain.delegations.len() == 1 {
+                    Ok(chain)
+                } else {
+                    Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Expected exactly one signed delegation.".into(),
+                    })
+                }
+            })?;
+
+    let signed_delegation = &signed_delegation_chain.delegations[0];
+    let delegation = &signed_delegation.delegation;
+
+    if delegation.pubkey != challenge {
+        return Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!(
+                "delegation.pubkey {} does not match the challenge",
+                hex::encode(delegation.pubkey.clone())
+            ),
+        });
+    }
+
+    // Check publicKey for canister signatures of `ii_canister_id`
+    let cs_pk = CanisterSigPublicKey::try_from(signed_delegation_chain.publicKey.as_slice())
+        .map_err(|e| ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("Invalid publicKey in delegation chain: {}", e),
+        })?;
+
+    let expected_ii_canister_id = Principal::from_text(ii_canister_id).map_err(|e| ApiError {
+        status_code: StatusCode::BAD_REQUEST,
+        message: format!("Invalid ii_canister_id: {}", e),
+    })?;
+
+    if cs_pk.canister_id != expected_ii_canister_id {
+        return Err(ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!(
+                "Delegation's signing canister {} does not match II canister id {}",
+                cs_pk.canister_id, expected_ii_canister_id
+            ),
+        });
+    }
+
+    // Perform canister signature verification
+    let message = msg_with_domain(
+        DELEGATION_SIG_DOMAIN,
+        &delegation_signature_msg(
+            delegation.pubkey.as_slice(),
+            delegation.expiration(),
+            delegation.targets.as_ref(),
+        ),
+    );
+
+    ic_signature_verification::verify_canister_sig(
+        message.as_slice(),
+        signed_delegation.signature.as_slice(),
+        &cs_pk.to_der(),
+        &IC_ROOT_PUBLIC_KEY,
+    )
+    .map_err(|e| ApiError {
+        status_code: StatusCode::BAD_REQUEST,
+        message: format!("Invalid canister signature: {}", e),
+    })?;
+
+    // println!("{:?}", Principal::self_authenticating(signed_delegation_chain.publicKey.as_slice()).to_text());
+    Ok(())
+}
+
+fn msg_with_domain(sep: &[u8], bytes: &[u8]) -> Vec<u8> {
+    let mut msg = vec![sep.len() as u8];
+    msg.append(&mut sep.to_vec());
+    msg.append(&mut bytes.to_vec());
+    msg
+}
