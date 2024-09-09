@@ -51,11 +51,11 @@ pub enum ContextSubCommands {
 impl ContextCommand {
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         match self.subcommand {
-            ContextSubCommands::List(list) => list.run(args).await,
             ContextSubCommands::Create(create) => create.run(args).await,
-            ContextSubCommands::Join(join) => join.run(args).await,
-            ContextSubCommands::Get(get) => get.run(args).await,
             ContextSubCommands::Delete(delete) => delete.run(args).await,
+            ContextSubCommands::Get(get) => get.run(args).await,
+            ContextSubCommands::Join(join) => join.run(args).await,
+            ContextSubCommands::List(list) => list.run(args).await,
         }
     }
 }
