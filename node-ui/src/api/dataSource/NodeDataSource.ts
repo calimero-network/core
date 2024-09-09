@@ -16,6 +16,7 @@ export enum Network {
   ARB = 'ARB',
   ZK = 'ZK',
   STARKNET = 'STARKNET',
+  INTERNETCOMPUTER = 'INTERNETCOMPUTER',
 }
 
 export interface ContextClientKeysList {
@@ -86,6 +87,10 @@ export interface NearRootKey extends RootKey {
 
 export interface StarknetRootKey extends RootKey {
   type: String;
+}
+
+export interface InternetComputerRootKey extends RootKey {
+  type: Network.INTERNETCOMPUTER;
 }
 
 interface NetworkType {
@@ -174,7 +179,16 @@ interface SNWalletType extends WalletTypeBase<'STARKNET'> {
   walletName: string;
 }
 
-export type WalletType = ETHWalletType | NEARWalletType | SNWalletType;
+interface INTERNETCOMPUTERWalletType
+  extends WalletTypeBase<'INTERNETCOMPUTER'> {
+  cannisterId: string;
+}
+
+export type WalletType =
+  | ETHWalletType
+  | NEARWalletType
+  | SNWalletType
+  | INTERNETCOMPUTERWalletType;
 
 // eslint-disable-next-line @typescript-eslint/no-redeclare
 export namespace WalletType {
@@ -197,6 +211,20 @@ export namespace WalletType {
   }): WalletType {
     return { type: 'STARKNET', walletName } as SNWalletType;
   }
+
+  export function INTERNETCOMPUTER({
+    cannisterId = 'rdmx6-jaaaa-aaaaa-aaadq-cai',
+    walletName = 'II',
+  }: {
+    cannisterId?: string;
+    walletName?: string;
+  }): WalletType {
+    return {
+      type: 'INTERNETCOMPUTER',
+      cannisterId,
+      walletName,
+    } as INTERNETCOMPUTERWalletType;
+  }
 }
 
 export interface WalletMetadata {
@@ -209,6 +237,7 @@ export interface WalletMetadata {
 export interface NetworkMetadata {
   chainId: String;
   rpcUrl: String;
+  cannisterId?: String;
 }
 
 export interface Payload {
@@ -247,6 +276,9 @@ export interface NearSignatureMessageMetadata extends SignatureMetadata {
 export interface EthSignatureMessageMetadata extends SignatureMetadata {}
 
 export interface StarknetSignatureMessageMetadata extends SignatureMetadata {}
+
+export interface InternetComputerSignatureMessageMetadata
+  extends SignatureMetadata {}
 
 export interface WalletSignatureData {
   payload: Payload | undefined;
