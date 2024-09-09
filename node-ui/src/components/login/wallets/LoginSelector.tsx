@@ -4,11 +4,13 @@ import translations from '../../../constants/en.global.json';
 import MetamaskIcon from '../../../assets/metamask-icon.svg';
 import NearIcon from '../../../assets/near-icon.svg';
 import StarknetIcon from '../../../assets/starknet-icon.svg';
+import InternetComputerIcon from '../../../assets/internet-computer.svg';
 
 export interface LoginSelectorProps {
   navigateMetamaskLogin: () => void | undefined;
   navigateNearLogin: () => void | undefined;
   navigateStarknetLogin: () => void | undefined;
+  navigateInternetComputerLogin: () => void | undefined;
 }
 
 const Wrapper = styled.div`
@@ -71,6 +73,7 @@ export default function LoginSelector({
   navigateMetamaskLogin,
   navigateNearLogin,
   navigateStarknetLogin,
+  navigateInternetComputerLogin,
 }: LoginSelectorProps) {
   const t = translations.loginPage.loginSelector;
   return (
@@ -92,6 +95,13 @@ export default function LoginSelector({
           <button className="login-btn" onClick={navigateStarknetLogin}>
             <img src={StarknetIcon as unknown as string} alt="starknet-icon" />
             <span>{t.starknetButtonText}</span>
+          </button>
+          <button className="login-btn" onClick={navigateInternetComputerLogin}>
+            <img
+              src={InternetComputerIcon as unknown as string}
+              alt="internet-computer-icon"
+            />
+            <span>{t.internetComputerButtonText}</span>
           </button>
         </div>
       </div>
