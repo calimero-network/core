@@ -12,10 +12,21 @@ use serde_json::Value;
 use url::Url;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AdminState {
     pub store: Store,
     pub keypair: Keypair,
     pub ctx_manager: ContextManager,
+}
+
+impl AdminState {
+    pub fn new(store: Store, keypair: Keypair, ctx_manager: ContextManager) -> Self {
+        Self {
+            store,
+            keypair,
+            ctx_manager,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

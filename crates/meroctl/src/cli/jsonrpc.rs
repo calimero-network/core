@@ -12,18 +12,23 @@ use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
 pub struct JsonRpcCommand {
+    /// Type of method call, either QUERY or MUTATE
     #[arg(long)]
     pub call_type: CallType,
 
+    /// ContextId of the context we are using
     #[arg(long)]
     pub context_id: ContextId,
 
+    /// Name of the method in the app
     #[arg(long)]
     pub method: String,
 
+    /// Arguemnts to the method in the app
     #[arg(long, value_parser = value_parser!(Value), default_value = "{}")]
     pub args_json: Value,
 
+    /// Id of the JsonRpc call
     #[arg(long, default_value = "dontcare")]
     pub id: String,
 }

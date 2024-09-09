@@ -50,14 +50,14 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
-    Init(InitCommand),
-    Config(ConfigCommand),
-    #[command(alias = "up")]
-    Run(RunCommand),
-    Context(ContextCommand),
     App(AppCommand),
+    Config(ConfigCommand),
+    Context(ContextCommand),
+    Init(InitCommand),
     #[command(alias = "call")]
     JsonRpc(JsonRpcCommand),
+    #[command(alias = "up")]
+    Run(RunCommand),
 }
 
 #[derive(Debug, Parser)]

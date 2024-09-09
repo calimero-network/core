@@ -92,11 +92,11 @@ pub async fn start(
 
     let mut serviced = false;
 
-    let shared_state = Arc::new(AdminState {
-        store: store.clone(),
-        keypair: config.identity.clone(),
+    let shared_state = Arc::new(AdminState::new(
+        store.clone(),
+        config.identity.clone(),
         ctx_manager,
-    });
+    ));
 
     #[cfg(feature = "jsonrpc")]
     {
