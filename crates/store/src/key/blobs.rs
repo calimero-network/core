@@ -1,6 +1,7 @@
 use core::convert::Infallible;
 use core::fmt::{self, Debug, Formatter};
 
+#[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::blobs::BlobId as PrimitiveBlobId;
 use generic_array::typenum::U32;
