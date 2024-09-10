@@ -29,7 +29,7 @@ export interface HttpClient {
   ): Promise<ResponseData<T>>;
   head(url: string, headers?: Header): Promise<ResponseData<void>>;
 }
-
+// AxiosHttpClient.ts
 export class AxiosHttpClient implements HttpClient {
   private axios: Axios;
   private showServerDownPopup: () => void;
