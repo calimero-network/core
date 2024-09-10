@@ -3,6 +3,15 @@
 
 echo "Running post-commit hook..."
 
+# Get the last commit message
+last_commit_message=$(git log -1 --pretty=%B)
+
+# Skip the hook if the last commit was the build commit
+if echo "$last_commit_message" | grep -q "build commit"; then
+  echo "Skipping post-commit hook for build commit."
+  exit 0
+fi
+
 # Check if there were changes in the 'node-ui' directory
 if git diff --name-only HEAD^ | grep -q '^node-ui/'; then
   echo "Building the Next.js app..."
@@ -14,5 +23,5 @@ if git diff --name-only HEAD^ | grep -q '^node-ui/'; then
 
   # Create a separate commit for the build folder
   echo "Creating a separate commit for the build folder..."
-  git commit -m "chore: add build folder after automatic build" --no-verify
+  git commit -m "chore: add build folder after automatic build [build commit]" --no-verify
 fi
