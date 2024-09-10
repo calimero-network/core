@@ -1,10 +1,15 @@
+#[cfg(feature = "borsh")]
 use std::io::Error as IoError;
 
+#[cfg(feature = "borsh")]
 use borsh::{
     from_slice as from_borsh_slice, to_vec as to_borsh_vec, BorshDeserialize, BorshSerialize,
 };
+#[cfg(feature = "serde")]
 use serde::de::DeserializeOwned;
+#[cfg(feature = "serde")]
 use serde::Serialize;
+#[cfg(feature = "serde")]
 use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec, Error as JsonError};
 
 use crate::key::AsKeyParts;

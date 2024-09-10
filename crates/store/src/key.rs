@@ -1,8 +1,10 @@
 use core::cmp::Ordering;
 use core::fmt::{Debug, Formatter};
 use core::{fmt, ptr};
+#[cfg(feature = "borsh")]
 use std::io::{Read, Result as IoResult, Write};
 
+#[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use component::KeyComponents;
 use generic_array::typenum::Const;
