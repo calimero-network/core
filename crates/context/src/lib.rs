@@ -3,7 +3,9 @@ use std::io::Error as IoError;
 use std::sync::Arc;
 
 use calimero_blobstore::BlobManager;
+use calimero_context_config::client::config::ContextConfigClientConfig;
 use calimero_context_config::client::{ContextConfigClient, RelayOrNearTransport};
+use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, Finality, ServerSender};
@@ -21,6 +23,8 @@ use calimero_store::types::{
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
+use ed25519_dalek::ed25519::signature::SignerMut;
+use ed25519_dalek::SigningKey;
 use eyre::{bail, Result as EyreResult};
 use futures_util::TryStreamExt;
 use rand::rngs::StdRng;
@@ -38,8 +42,9 @@ use config::ContextConfig;
 
 #[derive(Clone, Debug)]
 pub struct ContextManager {
-    config_client: ContextConfigClient<RelayOrNearTransport>,
     store: Store,
+    client_config: ContextConfigClientConfig,
+    config_client: ContextConfigClient<RelayOrNearTransport>,
     blob_manager: BlobManager,
     network_client: NetworkClient,
     server_sender: ServerSender,
@@ -59,9 +64,13 @@ impl ContextManager {
         server_sender: ServerSender,
         network_client: NetworkClient,
     ) -> EyreResult<Self> {
+        let client_config = config.client.clone();
+        let config_client = ContextConfigClient::from_config(&client_config);
+
         let this = Self {
-            config_client: ContextConfigClient::from_config(&config.client),
             store,
+            client_config,
+            config_client,
             blob_manager,
             network_client,
             server_sender,
@@ -139,17 +148,49 @@ impl ContextManager {
             (context_secret, identity_secret)
         };
 
-        let context_id = ContextId::from(*context_secret.public_key());
+        let context = {
+            let context_id = ContextId::from(*context_secret.public_key());
 
-        if self.get_context(&context_id)?.is_some() {
-            bail!("Context already exists on node.")
-        }
+            if self.get_context(&context_id)?.is_some() {
+                bail!("Context already exists on node.")
+            }
 
-        let context = Context {
-            id: context_id,
-            application_id,
-            last_transaction_hash: Default::default(),
+            Context {
+                id: context_id,
+                application_id,
+                last_transaction_hash: Default::default(),
+            }
         };
+
+        let Some(application) = self.get_application(&context.application_id)? else {
+            bail!("Application is not installed on node.")
+        };
+
+        self.config_client
+            .mutate(
+                self.client_config.new.network.as_str().into(),
+                self.client_config.new.contract_id.as_str().into(),
+                context.id.rt().expect("infallible conversion"),
+            )
+            .add_context(
+                context.id.rt().expect("infallible conversion"),
+                identity_secret
+                    .public_key()
+                    .rt()
+                    .expect("infallible conversion"),
+                calimero_context_config::types::Application {
+                    id: application.id.rt().expect("infallible conversion"),
+                    blob: application.blob.rt().expect("infallible conversion"),
+                    source: calimero_context_config::types::ApplicationSource(
+                        application.source.to_string().into(),
+                    ),
+                    metadata: calimero_context_config::types::ApplicationMetadata(Repr::new(
+                        application.metadata.into(),
+                    )),
+                },
+            )
+            .send(|b| SigningKey::from_bytes(&*context_secret).sign(b))
+            .await?;
 
         self.add_context(&context)?;
 
@@ -181,10 +222,6 @@ impl ContextManager {
     }
 
     pub fn add_context(&self, context: &Context) -> EyreResult<()> {
-        if !self.is_application_installed(&context.application_id)? {
-            bail!("Application is not installed on node.")
-        }
-
         let mut handle = self.store.handle();
 
         handle.put(
