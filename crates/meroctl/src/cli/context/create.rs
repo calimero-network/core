@@ -18,6 +18,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
+use crate::common::RequestType::{GET, POST};
 use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
@@ -145,7 +146,7 @@ async fn create_context(
         params.map(String::into_bytes).unwrap_or_default(),
     );
 
-    let response = get_response(client, url, Some(request), &keypair).await?;
+    let response = get_response(client, url, Some(request), &keypair, POST).await?;
 
     if response.status().is_success() {
         let context_response: CreateContextResponse = response.json().await?;
@@ -244,7 +245,7 @@ async fn update_context_application(
 
     let request = UpdateContextApplicationRequest::new(application_id);
 
-    let response = get_response(client, url, Some(request), keypair).await?;
+    let response = get_response(client, url, Some(request), keypair, POST).await?;
 
     if response.status().is_success() {
         println!(
@@ -275,7 +276,7 @@ async fn app_installed(
         &format!("admin-api/dev/application/{application_id}"),
     )?;
 
-    let response = get_response(client, url, None::<()>, keypair).await?;
+    let response = get_response(client, url, None::<()>, keypair, GET).await?;
 
     if !response.status().is_success() {
         bail!("Request failed with status: {}", response.status())
@@ -293,13 +294,13 @@ async fn install_app(
     metadata: Option<Vec<u8>>,
     keypair: &Keypair,
 ) -> EyreResult<ApplicationId> {
-    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
+    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
 
     let install_request =
         InstallDevApplicationRequest::new(path, None, metadata.unwrap_or_default());
 
     let install_response =
-        get_response(client, install_url, Some(install_request), keypair).await?;
+        get_response(client, install_url, Some(install_request), keypair, POST).await?;
 
     if !install_response.status().is_success() {
         let status = install_response.status();

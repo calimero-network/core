@@ -1,6 +1,7 @@
 use core::convert::Infallible;
 use core::fmt::{self, Debug, Formatter};
 
+#[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::context::ContextId as PrimitiveContextId;
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;

@@ -4880,7 +4880,7 @@ checksum = "8452105ba047068f40ff7093dd1d9da90898e63dd61736462e9cdda6a90ad3c3"
 
 [[package]]
 name = "meroctl"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 dependencies = [
  "bs58 0.5.1",
  "calimero-context",
@@ -4905,11 +4905,13 @@ dependencies = [
  "reqwest 0.12.5",
  "semver",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "toml_edit 0.22.20",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

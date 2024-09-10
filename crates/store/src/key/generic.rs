@@ -1,5 +1,6 @@
 use core::fmt::{self, Debug, Formatter};
 
+#[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use generic_array::sequence::Concat;
 use generic_array::typenum::{U16, U32};

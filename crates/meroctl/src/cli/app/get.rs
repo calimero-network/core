@@ -1,5 +1,4 @@
-use calimero_server_primitives::admin::ListApplicationsResponse;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 
@@ -8,37 +7,49 @@ use crate::common::RequestType::GET;
 use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
-#[derive(Debug, Parser)]
-pub struct ListCommand;
+#[derive(Parser, Debug)]
+pub struct GetCommand {
+    #[arg(long, short)]
+    pub method: GetValues,
 
-impl ListCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
+    #[arg(long, short)]
+    pub app_id: String,
+}
+#[derive(ValueEnum, Debug, Clone)]
+pub enum GetValues {
+    Details,
+}
+
+impl GetCommand {
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+        let path = args.home.join(&args.node_name);
+
         if !ConfigFile::exists(&path) {
             bail!("Config file does not exist")
-        }
-        let Ok(config) = ConfigFile::load(&path) else {
-            bail!("Failed to load config file");
         };
+
+        let Ok(config) = ConfigFile::load(&path) else {
+            bail!("Failed to load config file")
+        };
+
         let Some(multiaddr) = config.network.server.listen.first() else {
             bail!("No address.")
         };
 
-        let url = multiaddr_to_url(multiaddr, "admin-api/dev/applications")?;
         let client = Client::new();
+
+        let url = multiaddr_to_url(
+            multiaddr,
+            &format!("admin-api/dev/applications/{}", self.app_id),
+        )?;
+
         let response = get_response(&client, url, None::<()>, &config.identity, GET).await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())
         }
 
-        let api_response: ListApplicationsResponse = response.json().await?;
-        let app_list = api_response.data.apps;
-
-        #[allow(clippy::print_stdout)]
-        for app in app_list {
-            println!("{}", app.id);
-        }
+        println!("{}", response.text().await?);
 
         Ok(())
     }
