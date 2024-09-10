@@ -4,8 +4,9 @@ use std::fs::{create_dir, create_dir_all};
 
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientRelayerSigner,
-    ContextConfigClientSelectedSigner, ContextConfigClientSigner,
+    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
+    ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
+    Credentials,
 };
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RendezvousConfig, SwarmConfig,
@@ -178,6 +179,10 @@ impl InitCommand {
                         .into_iter()
                         .collect(),
                     },
+                    new: ContextConfigClientNew {
+                        network: "testnet".into(),
+                        contract_id: "calimero-context-config.testnet".parse()?,
+                    },
                 },
             },
             network: NetworkConfig {
@@ -218,11 +223,16 @@ impl InitCommand {
 fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSigner> {
     let secret_key = SecretKey::from_random(KeyType::ED25519);
 
-    let account_id = secret_key.public_key().unwrap_as_ed25519().0;
+    let public_key = secret_key.public_key();
+
+    let account_id = public_key.unwrap_as_ed25519().0;
 
     Ok(ContextConfigClientLocalSigner {
         rpc_url,
-        account_id: hex::encode(account_id).parse()?,
-        secret_key,
+        credentials: Credentials {
+            account_id: hex::encode(account_id).parse()?,
+            public_key,
+            secret_key,
+        },
     })
 }

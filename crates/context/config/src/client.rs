@@ -90,8 +90,8 @@ impl ContextConfigClient<RelayOrNearTransport> {
                                 network.clone().into(),
                                 near::NetworkConfig {
                                     rpc_url: config.rpc_url.clone(),
-                                    account_id: config.account_id.clone(),
-                                    access_key: config.secret_key.clone(),
+                                    account_id: config.credentials.account_id.clone(),
+                                    access_key: config.credentials.secret_key.clone(),
                                 },
                             )
                         })
