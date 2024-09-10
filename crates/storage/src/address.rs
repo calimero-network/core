@@ -484,11 +484,6 @@ impl Path {
 }
 
 impl BorshDeserialize for Path {
-    fn deserialize(buf: &mut &[u8]) -> Result<Self, IoError> {
-        Self::new(&String::deserialize(buf)?)
-            .map_err(|err| IoError::new(IoErrorKind::InvalidData, err))
-    }
-
     fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self, IoError> {
         Self::new(&String::deserialize_reader(reader)?)
             .map_err(|err| IoError::new(IoErrorKind::InvalidData, err))
