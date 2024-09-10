@@ -473,13 +473,5 @@ pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> Ey
 }
 
 pub fn eth_message(message: &str) -> [u8; 32] {
-    keccak256(
-        format!(
-            "{}{}{}",
-            "\x19Ethereum Signed Message:\n",
-            message.len(),
-            message
-        )
-        .as_bytes(),
-    )
+    keccak256(format!("\x19Ethereum Signed Message:\n{}{message}", message.len()).as_bytes())
 }
