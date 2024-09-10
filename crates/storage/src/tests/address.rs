@@ -235,7 +235,10 @@ mod path__public_methods {
     #[test]
     fn segments() {
         let path = Path::new("::root::node::leaf").unwrap();
-        assert_eq!(path.segments(), vec!["root", "node", "leaf"]);
+        assert_eq!(
+            path.segments().collect::<Vec<_>>(),
+            vec!["root", "node", "leaf"]
+        );
     }
 }
 

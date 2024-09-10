@@ -98,7 +98,7 @@ pub struct Path {
     /// The path to the element. This is a string of up to 255 characters in
     /// length, and is case-sensitive. Internally the segments are stored
     /// without the separators.
-    path: Flexstr<255>,
+    path: Flexstr<256>,
 }
 
 impl Path {
@@ -125,8 +125,8 @@ impl Path {
     /// Path::new("::root::node::leaf").unwrap();
     /// ```
     ///
-    pub fn new<S: Into<String>>(path: S) -> Result<Self, PathError> {
-        let string = path.into();
+    pub fn new<S: AsRef<str>>(path: S) -> Result<Self, PathError> {
+        let string = path.as_ref();
 
         if string.is_empty() {
             return Err(PathError::Empty);
@@ -142,7 +142,7 @@ impl Path {
             return Err(PathError::Empty);
         }
 
-        let mut str: Flexstr<255> = Flexstr::new();
+        let mut str: Flexstr<256> = Flexstr::new();
         let mut offsets = Vec::with_capacity(segments.len());
 
         for segment in segments {
@@ -226,7 +226,7 @@ impl Path {
         if self.depth() >= other.depth() {
             return false;
         }
-        let last_offset = 0_usize;
+        let mut last_offset = 0_usize;
 
         for &offset in &self.offsets {
             #[allow(clippy::cast_sign_loss)] // Can't occur here
@@ -234,6 +234,7 @@ impl Path {
             if self.path[last_offset..offset as usize] != other.path[last_offset..offset as usize] {
                 return false;
             }
+            last_offset = offset as usize;
         }
 
         true
@@ -308,7 +309,7 @@ impl Path {
         if self.path.len().saturating_add(other.path.len()) > 255 {
             return Err(PathError::Overflow);
         }
-        let mut path: Flexstr<255> = Flexstr::new();
+        let mut path: Flexstr<256> = Flexstr::new();
         let _: bool = path.push_str(&self.path);
         let _: bool = path.push_str(&other.path);
         let mut offsets = self.offsets.clone();
@@ -365,12 +366,10 @@ impl Path {
     ///
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
-        let mut clone = self.clone();
-        let _: bool = match clone.offsets.pop() {
-            Some(offset) => clone.path.truncate(offset as usize),
-            None => return None,
-        };
-        Some(clone)
+        self.offsets.last().map(|&offset| Self {
+            offsets: self.offsets[..self.offsets.len().saturating_sub(1)].to_vec(),
+            path: self.path[..offset as usize].into(),
+        })
     }
 
     /// The segment at a given index.
@@ -415,12 +414,11 @@ impl Path {
     /// ```rust
     /// use calimero_storage::address::Path;
     /// let path = Path::new("::root::node::leaf").unwrap();
-    /// assert_eq!(path.segments(), vec!["root", "node", "leaf"]);
+    /// assert_eq!(path.segments().collect::<Vec<_>>(), vec!["root", "node", "leaf"]);
     /// ```
     ///
-    #[must_use]
-    pub fn segments(&self) -> Vec<&str> {
-        (0..=self.depth()).filter_map(|i| self.segment(i)).collect()
+    pub fn segments(&self) -> impl Iterator<Item = &str> {
+        (0..=self.depth()).filter_map(|i| self.segment(i))
     }
 }
 
