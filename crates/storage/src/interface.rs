@@ -23,6 +23,7 @@ use calimero_store::slice::Slice;
 use calimero_store::Store;
 use eyre::Report;
 use parking_lot::RwLock;
+use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
@@ -48,6 +49,60 @@ impl Interface {
         Self {
             store: Arc::new(RwLock::new(store)),
         }
+    }
+
+    /// Calculates the Merkle hash for the [`Element`].
+    ///
+    /// This calculates the Merkle hash for the [`Element`], which is a
+    /// cryptographic hash of the significant data in the "scope" of the
+    /// [`Element`], and is used to determine whether the data has changed and
+    /// is valid. It is calculated by hashing the substantive data in the
+    /// [`Element`], along with the hashes of the children of the [`Element`],
+    /// thereby representing the state of the entire hierarchy below the
+    /// [`Element`].
+    ///
+    /// This method is called automatically when the [`Element`] is updated, but
+    /// can also be called manually if required.
+    ///
+    /// # Significant data
+    ///
+    /// The data considered "significant" to the state of the [`Element`], and
+    /// any change to which is considered to constitute a change in the state of
+    /// the [`Element`], is:
+    ///
+    ///   - The ID of the [`Element`]. This should never change. Arguably, this
+    ///     could be omitted, but at present it means that empty elements are
+    ///     given meaningful hashes.
+    ///   - The primary [`Data`] of the [`Element`]. This is the data that the
+    ///     consumer application has stored in the [`Element`], and is the
+    ///     focus of the [`Element`].
+    ///   - The metadata of the [`Element`]. This is the system-managed
+    ///     properties that are used to process the [`Element`], but are not
+    ///     part of the primary data. Arguably the Merkle hash could be
+    ///     considered part of the metadata, but it is not included in the
+    ///     [`Data`] struct at present (as it obviously should not contribute
+    ///     to the hash, i.e. itself).
+    ///
+    /// # Parameters
+    ///
+    /// * `element` - The [`Element`] to calculate the Merkle hash for.
+    ///
+    /// # Errors
+    ///
+    /// If there is a problem in serialising the data, an error will be
+    /// returned.
+    ///
+    pub fn calculate_merkle_hash_for(&self, element: &Element) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(element.id().as_bytes());
+        hasher.update(&to_vec(&element.data()).map_err(StorageError::SerializationError)?);
+        hasher.update(&to_vec(&element.metadata).map_err(StorageError::SerializationError)?);
+
+        for child in self.children_of(element)? {
+            hasher.update(child.merkle_hash);
+        }
+
+        Ok(hasher.finalize().into())
     }
 
     /// The children of the [`Element`].
@@ -207,6 +262,17 @@ impl Interface {
     /// effectively a no-op. If necessary, this can be checked before calling
     /// [`save()](Element::save()) by calling [`is_dirty()](Element::is_dirty()).
     ///
+    /// # Merkle hash
+    ///
+    /// The Merkle hash of the [`Element`] is calculated before saving, and
+    /// stored in the [`Element`] itself. This is used to determine whether the
+    /// data of the [`Element`] or its children has changed, and is used to
+    /// validate the stored data.
+    ///
+    /// Note that if the [`Element`] does not need saving, or cannot be saved,
+    /// then the Merkle hash will not be updated. This way the hash only ever
+    /// represents the state of the data that is actually stored.
+    ///
     /// # Parameters
     ///
     /// * `id`      - The unique identifier of the [`Element`] to save.
@@ -233,6 +299,10 @@ impl Interface {
                 return Ok(false);
             }
         }
+        // TODO: Need to propagate the change up the tree, i.e. trigger a
+        // TODO: recalculation for the ancestors.
+        element.merkle_hash = self.calculate_merkle_hash_for(element)?;
+
         // TODO: It seems fairly bizarre/unexpected that the put() method is sync
         // TODO: and not async. The reasons and intentions need checking here, in
         // TODO: case this save() method should be async and wrap the blocking call

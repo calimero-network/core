@@ -1,7 +1,31 @@
+use std::sync::LazyLock;
+
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::Store;
 use tempfile::{tempdir, TempDir};
+
+use crate::address::Id;
+
+/// A set of non-empty test UUIDs.
+pub const TEST_UUID: [[u8; 16]; 5] = [
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    [2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    [3, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    [4, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    [5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+];
+
+/// A set of non-empty test IDs.
+pub static TEST_ID: LazyLock<[Id; 5]> = LazyLock::new(|| {
+    [
+        Id::from(TEST_UUID[0]),
+        Id::from(TEST_UUID[1]),
+        Id::from(TEST_UUID[2]),
+        Id::from(TEST_UUID[3]),
+        Id::from(TEST_UUID[4]),
+    ]
+});
 
 /// Creates a new temporary store for testing.
 ///

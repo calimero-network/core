@@ -107,6 +107,14 @@ pub struct Element {
     /// last saved.
     pub(crate) is_dirty: bool,
 
+    /// The Merkle hash of the [`Element`]. This is a cryptographic hash of the
+    /// significant data in the "scope" of the [`Element`], and is used to
+    /// determine whether the data has changed and is valid. It is calculated by
+    /// hashing the substantive data in the [`Element`], along with the hashes
+    /// of the children of the [`Element`], thereby representing the state of
+    /// the entire hierarchy below the [`Element`].
+    pub(crate) merkle_hash: [u8; 32],
+
     /// The metadata for the [`Element`]. This represents a range of
     /// system-managed properties that are used to process the [`Element`], but
     /// are not part of the primary data.
@@ -127,6 +135,14 @@ impl Element {
     /// creating [`Element`]s that have been received from other parties. The
     /// intended approach there is that these will be created through
     /// deserialisation.
+    ///
+    /// # Merkle hash
+    ///
+    /// The Merkle hash will be empty for a brand-new [`Element`], as it has not
+    /// been saved. When saved to the database, the hash will be calculated and
+    /// stored, and set against the object. The way to tell if the hash is
+    /// up-to-date is simply to check the [`is_dirty()`](Element::is_dirty())
+    /// flag.
     ///
     /// # Parameters
     ///
@@ -154,6 +170,7 @@ impl Element {
                 created_at: timestamp,
                 updated_at: timestamp,
             },
+            merkle_hash: [0; 32],
             path: path.clone(),
         }
     }
@@ -260,6 +277,15 @@ impl Element {
     /// It also updates the [`updated_at()`](Element::updated_at()) timestamp to
     /// reflect the time that the [`Element`] was last updated.
     ///
+    /// # Merkle hash
+    ///
+    /// The Merkles hash will NOT be updated when the data is updated. It will
+    /// also not be cleared. Rather, it will continue to represent the state of
+    /// the *stored* data, until the data changes are saved, at which point the
+    /// hash will be recalculated and updated. The way to tell if the hash is
+    /// up-to-date is simply to check the [`is_dirty()`](Element::is_dirty())
+    /// flag.
+    ///
     /// # Parameters
     ///
     /// * `data` - The new data for the [`Element`].
@@ -284,6 +310,14 @@ impl Element {
     #[must_use]
     pub const fn updated_at(&self) -> u64 {
         self.metadata.updated_at
+    }
+}
+
+#[cfg(test)]
+impl Element {
+    /// Sets the ID of the [`Element`]. This is **ONLY** for use in tests.
+    pub fn set_id(&mut self, id: Id) {
+        self.id = id;
     }
 }
 
@@ -323,4 +357,13 @@ pub struct Metadata {
     /// freshness of the data. It is critical for the "last write wins" strategy
     /// that is used to resolve conflicts.
     pub(crate) updated_at: u64,
+}
+
+#[cfg(test)]
+impl Metadata {
+    /// Sets the created timestamp of the [`Element`]. This is **ONLY** for use
+    /// in tests.
+    pub fn set_created_at(&mut self, created_at: u64) {
+        self.created_at = created_at;
+    }
 }
