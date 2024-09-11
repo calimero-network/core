@@ -27,6 +27,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Install Node.js (version 20) and pnpm
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      # Install and build frontend
+      - name: Install frontend dependencies with pnpm
+        run: pnpm install --prefix ./node-ui
+
+      - name: Build frontend in node-ui
+        run: pnpm --filter ./node-ui run build
+      
+      - name: Install rustup and Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup toolchain install stable
+          rustup default stable
+
       - name: Setup rust toolchain
         run: rustup toolchain install stable --profile minimal
 

@@ -27,6 +27,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Install Node.js and pnpm
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      # Install and build frontend
+      - name: Install frontend dependencies with pnpm
+        run: pnpm install --prefix ./node-ui
+
+      - name: Build frontend
+        run: pnpm run build --prefix ./node-ui
+
       - name: Setup rust toolchain
         run: rustup toolchain install stable --profile minimal
 
