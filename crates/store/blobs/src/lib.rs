@@ -7,7 +7,7 @@ use async_stream::try_stream;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::hash::Hash;
 use calimero_store::key::BlobMeta as BlobMetaKey;
-use calimero_store::types::BlobMeta;
+use calimero_store::types::BlobMeta as BlobMetaValue;
 use calimero_store::Store as DataStore;
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Report, Result as EyreResult};
@@ -18,6 +18,9 @@ use thiserror::Error as ThisError;
 use tokio::fs::{create_dir_all, read as async_read, try_exists, write as async_write};
 
 const CHUNK_SIZE: usize = 1 << 20; // 1MiB
+const _: [(); { (usize::BITS - CHUNK_SIZE.leading_zeros()) > 32 } as _] = [
+    /* CHUNK_SIZE must be a 32-bit number */
+];
 
 // const MAX_LINKS_PER_BLOB: usize = 128;
 
@@ -29,14 +32,41 @@ pub struct BlobManager {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Value {
-    Full { hash: Hash, size: usize },
-    Part { id: BlobId, _size: usize },
+    Full { hash: Hash, size: u64 },
+    Part { id: BlobId, _size: u64 },
+    Overflow { found: u64, expected: u64 },
 }
 
 #[derive(Clone, Debug, Default)]
 struct State {
     digest: Sha256,
     size: usize,
+}
+
+#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub enum Size {
+    Hint(u64),
+    Exact(u64),
+}
+
+impl Size {
+    fn hint(&self) -> usize {
+        match self {
+            Size::Hint(size) => *size as usize,
+            Size::Exact(size) => *size as usize,
+        }
+    }
+
+    fn overflows(this: Option<&Self>, size: usize) -> Option<u64> {
+        let size = u64::try_from(size);
+
+        match dbg!(this) {
+            None | Some(Size::Hint(_)) => size.err().map(|_| u64::MAX),
+            Some(Size::Exact(exact)) => {
+                size.map_or_else(|_| Some(*exact), |s| (s > *exact).then(|| *exact))
+            }
+        }
+    }
 }
 
 impl BlobManager {
@@ -64,7 +94,7 @@ impl BlobManager {
         self.put_sized(None, stream).await
     }
 
-    pub async fn put_sized<T>(&self, size_hint: Option<u64>, stream: T) -> EyreResult<BlobId>
+    pub async fn put_sized<T>(&self, size: Option<Size>, stream: T) -> EyreResult<BlobId>
     where
         T: AsyncRead,
     {
@@ -77,18 +107,26 @@ impl BlobManager {
             let mut file = State::default();
             let mut blob = State::default();
 
-            loop {
+            let overflow_data = loop {
                 let bytes = stream.read(&mut buf[blob.size..]).await?;
 
                 let finished = bytes == 0;
 
                 if !finished {
-                    let chunk = &buf[blob.size..blob.size.saturating_add(bytes)];
+                    let new_blob_size = blob.size.saturating_add(bytes);
+                    let new_file_size = file.size.saturating_add(bytes);
 
-                    file.digest.update(chunk);
+                    let chunk = &buf[blob.size..new_blob_size];
+
+                    blob.size = new_blob_size;
+                    file.size = new_file_size;
+
+                    if let Some(expected) = dbg!(Size::overflows(size.as_ref(), new_file_size)) {
+                        break Some(expected);
+                    }
+
                     blob.digest.update(chunk);
-
-                    blob.size = blob.size.saturating_add(bytes);
+                    file.digest.update(chunk);
 
                     if blob.size != buf.len() {
                         continue;
@@ -96,50 +134,51 @@ impl BlobManager {
                 }
 
                 if blob.size == 0 {
-                    break;
+                    break None;
                 }
 
                 let id = BlobId::from(*AsRef::<[u8; 32]>::as_ref(&blob.digest.finalize()));
 
                 self.data_store.handle().put(
                     &BlobMetaKey::new(id),
-                    &BlobMeta::new(blob.size, *id, Box::default()),
+                    &BlobMetaValue::new(blob.size as u64, *id, Box::default()),
                 )?;
 
                 self.blob_store.put(id, &buf[..blob.size]).await?;
 
-                file.size = file.size.saturating_add(blob.size);
-
                 yield Value::Part {
                     id,
-                    _size: blob.size,
+                    _size: blob.size as u64,
                 };
 
                 if finished {
-                    break;
+                    break None;
                 }
 
                 blob = State::default();
-            }
-
-            yield Value::Full {
-                hash: Hash::from(*(AsRef::<[u8; 32]>::as_ref(&file.digest.finalize()))),
-                size: file.size,
             };
+
+            if let Some(expected) = overflow_data {
+                yield Value::Overflow {
+                    found: file.size as u64,
+                    expected,
+                };
+            } else {
+                yield Value::Full {
+                    hash: Hash::from(*(AsRef::<[u8; 32]>::as_ref(&file.digest.finalize()))),
+                    size: file.size as u64,
+                };
+            }
         });
 
         let blobs = typed_stream::<EyreResult<_>>(blobs).peekable();
         pin_mut!(blobs);
 
         let mut links = Vec::with_capacity(
-            size_hint
-                .and_then(|s| {
-                    usize::try_from(s)
-                        .map(|s| s.saturating_div(CHUNK_SIZE))
-                        .ok()
-                })
+            size.map(|s| s.hint().saturating_div(CHUNK_SIZE))
                 .unwrap_or_default(),
         );
+
         let mut digest = Sha256::new();
 
         while let Some(Value::Part { id, _size }) = blobs
@@ -152,15 +191,21 @@ impl BlobManager {
             digest.update(id.as_ref());
         }
 
-        let Some(Value::Full { hash, size }) = blobs.try_next().await? else {
-            unreachable!("the root should always be emitted");
+        let (hash, size) = match blobs.try_next().await? {
+            Some(Value::Full { hash, size }) => (hash, size),
+            Some(Value::Overflow { found, expected }) => {
+                eyre::bail!("expected {} bytes in the stream, found {}", expected, found)
+            }
+            _ => {
+                unreachable!("the root should always be emitted");
+            }
         };
 
         let id = BlobId::from(*(AsRef::<[u8; 32]>::as_ref(&digest.finalize())));
 
         self.data_store.handle().put(
             &BlobMetaKey::new(id),
-            &BlobMeta::new(size, *hash, links.into_boxed_slice()),
+            &BlobMetaValue::new(size, *hash, links.into_boxed_slice()),
         )?;
 
         Ok(id) // todo!: Ok(Blob { id, size, hash }::{fn stream()})

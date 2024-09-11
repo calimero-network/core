@@ -392,7 +392,10 @@ impl ContextManager {
 
         let blob_id = self
             .blob_manager
-            .put_sized(Some(meta.len()), file.compat())
+            .put_sized(
+                Some(calimero_blobstore::Size::Exact(meta.len())),
+                file.compat(),
+            )
             .await?;
 
         let Ok(uri) = Url::from_file_path(path) else {
@@ -418,7 +421,9 @@ impl ContextManager {
         let blob_id = self
             .blob_manager
             .put_sized(
-                response.content_length(),
+                response
+                    .content_length()
+                    .map(calimero_blobstore::Size::Exact),
                 response
                     .bytes_stream()
                     .map_err(IoError::other)
