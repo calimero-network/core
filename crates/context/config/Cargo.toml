@@ -10,6 +10,10 @@ license.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 ed25519-dalek.workspace = true
+near-crypto = { workspace = true, optional = true }
+near-jsonrpc-client = { workspace = true, optional = true }
+near-jsonrpc-primitives = { workspace = true, optional = true }
+near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -20,4 +24,11 @@ url = { workspace = true, optional = true }
 workspace = true
 
 [features]
-client = ["reqwest/json", "dep:url"]
+client = [
+  "dep:near-crypto",
+  "dep:near-jsonrpc-client",
+  "dep:near-jsonrpc-primitives",
+  "dep:near-primitives",
+  "reqwest/json",
+  "dep:url",
+]
