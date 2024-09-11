@@ -551,11 +551,19 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             break 'done;
                         };
 
-                        let Some((context_id, identity)) = node
+                        let response = match node
                             .ctx_manager
                             .join_context(private_key, invitation_payload)
-                            .await?
-                        else {
+                            .await
+                        {
+                            Ok(response) => response,
+                            Err(err) => {
+                                println!("{IND} Unable to join context: {err}");
+                                break 'done;
+                            }
+                        };
+
+                        let Some((context_id, identity)) = response else {
                             println!("{IND} Unable to join context at this time, a catchup is in progress.");
                             break 'done;
                         };
