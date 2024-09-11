@@ -71,22 +71,27 @@ pub struct ContextInvitationPayload(Vec<u8>);
 
 impl fmt::Debug for ContextInvitationPayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (context_id, invitee_id, network, contract_id) =
-            self.parts().map_err(|_| fmt::Error)?;
-
-        let is_alternate = f.alternate();
+        let _is_alternate = f.alternate();
 
         let mut d = f.debug_struct("ContextInvitationPayload");
 
-        let _ = d
-            .field("context_id", &context_id)
-            .field("invitee_id", &invitee_id)
-            .field("network", &network)
-            .field("contract_id", &contract_id);
+        #[cfg(feature = "borsh")]
+        {
+            let (context_id, invitee_id, network, contract_id) =
+                self.parts().map_err(|_| fmt::Error)?;
 
-        if is_alternate {
-            let _ = d.field("raw", &self.to_string());
+            let _ = d
+                .field("context_id", &context_id)
+                .field("invitee_id", &invitee_id)
+                .field("network", &network)
+                .field("contract_id", &contract_id);
+
+            if !_is_alternate {
+                return d.finish();
+            }
         }
+
+        let _ = d.field("raw", &self.to_string());
 
         d.finish()
     }
@@ -172,7 +177,7 @@ const _: () = {
     }
 };
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Context {
     pub id: ContextId,
