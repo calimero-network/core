@@ -253,16 +253,6 @@ impl ContextManager {
     ) -> EyreResult<Option<(ContextId, PublicKey)>> {
         let (context_id, invitee_id, network_id, contract_id) = invitation_payload.parts()?;
 
-        if self
-            .state
-            .read()
-            .await
-            .pending_catchup
-            .contains(&context_id)
-        {
-            return Ok(None);
-        }
-
         if identity_secret.public_key() != invitee_id {
             bail!("identity mismatch")
         }
