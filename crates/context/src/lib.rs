@@ -16,10 +16,12 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
-    ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
+    ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
+    ContextMeta as ContextMetaKey,
 };
 use calimero_store::types::{
-    ApplicationMeta, ContextIdentity as ContextIdentityValue, ContextMeta,
+    ApplicationMeta as ApplicationMetaValue, ContextConfig as ContextConfigValue,
+    ContextIdentity as ContextIdentityValue, ContextMeta as ContextMetaValue,
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
@@ -216,6 +218,14 @@ impl ContextManager {
             },
         )?;
 
+        handle.put(
+            &ContextConfigKey::new(context.id),
+            &ContextConfigValue {
+                network: self.client_config.new.network.as_str().into(),
+                contract: self.client_config.new.contract_id.as_str().into(),
+            },
+        )?;
+
         self.subscribe(&context.id).await?;
 
         Ok((context.id, identity_secret.public_key()))
@@ -226,7 +236,7 @@ impl ContextManager {
 
         handle.put(
             &ContextMetaKey::new(context.id),
-            &ContextMeta::new(
+            &ContextMetaValue::new(
                 ApplicationMetaKey::new(context.application_id),
                 context.last_transaction_hash.into(),
             ),
@@ -269,6 +279,41 @@ impl ContextManager {
         info!(%context_id, "Joined context with pending catchup");
 
         Ok(Some(identity_secret.public_key()))
+    }
+
+    pub async fn invite_to_context(
+        &self,
+        context_id: ContextId,
+        requester: PublicKey,
+        identity: PublicKey,
+    ) -> EyreResult<Option<()>> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            return Ok(None);
+        };
+
+        let Some(ContextIdentityValue {
+            private_key: Some(requester_secret),
+        }) = handle.get(&ContextIdentityKey::new(context_id, requester))?
+        else {
+            return Ok(None);
+        };
+
+        self.config_client
+            .mutate(
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+                requester.rt().expect("infallible conversion"),
+            )
+            .add_members(
+                context_id.rt().expect("infallible conversion"),
+                &[identity.rt().expect("infallible conversion")],
+            )
+            .send(|b| SigningKey::from_bytes(&requester_secret).sign(b))
+            .await?;
+
+        Ok(Some(()))
     }
 
     pub async fn is_context_pending_catchup(&self, context_id: &ContextId) -> bool {
@@ -403,7 +448,7 @@ impl ContextManager {
         if let Some(start) = start {
             // todo! Iter shouldn't behave like DBIter, first next should return sought element
             if let Some(key) = iter.seek(ContextMetaKey::new(start))? {
-                let value: ContextMeta = iter.read()?;
+                let value = iter.read()?;
 
                 contexts.push(Context {
                     id: key.context_id(),
@@ -454,7 +499,7 @@ impl ContextManager {
         version: Option<Version>,
         metadata: Vec<u8>,
     ) -> EyreResult<ApplicationId> {
-        let application = ApplicationMeta::new(
+        let application = ApplicationMetaValue::new(
             BlobMetaKey::new(blob_id),
             version.map(|v| v.to_string().into_boxed_str()),
             source.to_string().into_boxed_str(),

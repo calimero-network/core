@@ -633,6 +633,42 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
 
                         println!("{IND} Created context {} as {}", context_id, identity);
                     }
+                    "invite" => {
+                        let Some((context_id, inviter_id, invitee_id)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context_id = iter.next()?;
+                            let inviter_id = iter.next()?;
+                            let invitee_id = iter.next()?;
+                            Some((context_id, inviter_id, invitee_id))
+                        }) else {
+                            println!(
+                                "{IND} Usage: context invite <context_id> <inviter> <invitee>"
+                            );
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {context_id}");
+                            break 'done;
+                        };
+
+                        let Ok(inviter_id) = inviter_id.parse() else {
+                            println!("{IND} Invalid public key for inviter: {inviter_id}");
+                            break 'done;
+                        };
+
+                        let Ok(invitee_id) = invitee_id.parse() else {
+                            println!("{IND} Invalid public key for invitee: {invitee_id}");
+                            break 'done;
+                        };
+
+                        let _ = node
+                            .ctx_manager
+                            .invite_to_context(context_id, inviter_id, invitee_id)
+                            .await?;
+
+                        println!("{IND} Invited {invitee_id} to context {context_id}");
+                    }
                     "delete" => {
                         let Some(context_id) = args else {
                             println!("{IND} Usage: context delete <context_id>");
