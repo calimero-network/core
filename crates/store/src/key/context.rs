@@ -79,7 +79,7 @@ impl ContextIdentity {
     #[must_use]
     pub fn new(context_id: PrimitiveContextId, context_pk: PrimitivePublicKey) -> Self {
         Self(Key(
-            GenericArray::from(*context_id).concat(GenericArray::from(context_pk.0))
+            GenericArray::from(*context_id).concat(GenericArray::from(*context_pk))
         ))
     }
 
@@ -93,12 +93,12 @@ impl ContextIdentity {
     }
 
     #[must_use]
-    pub fn public_key(&self) -> [u8; 32] {
+    pub fn public_key(&self) -> PrimitivePublicKey {
         let mut public_key = [0; 32];
 
         public_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
 
-        public_key
+        public_key.into()
     }
 }
 

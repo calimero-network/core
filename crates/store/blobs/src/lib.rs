@@ -9,13 +9,17 @@ use calimero_primitives::hash::Hash;
 use calimero_store::key::BlobMeta as BlobMetaKey;
 use calimero_store::types::BlobMeta as BlobMetaValue;
 use calimero_store::Store as DataStore;
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use eyre::{Report, Result as EyreResult};
 use futures_util::io::BufReader;
 use futures_util::{pin_mut, AsyncRead, AsyncReadExt, Stream, StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 use tokio::fs::{create_dir_all, read as async_read, try_exists, write as async_write};
+
+pub mod config;
+
+use config::BlobStoreConfig;
 
 const CHUNK_SIZE: usize = 1 << 20; // 1MiB
 const _: [(); { (usize::BITS - CHUNK_SIZE.leading_zeros()) > 32 } as _] = [
@@ -297,11 +301,11 @@ pub struct FileSystem {
 // }
 
 impl FileSystem {
-    pub async fn new(root: &Utf8Path) -> EyreResult<Self> {
-        create_dir_all(&root).await?;
+    pub async fn new(config: &BlobStoreConfig) -> EyreResult<Self> {
+        create_dir_all(&config.path).await?;
 
         Ok(Self {
-            root: root.to_owned(),
+            root: config.path.to_owned(),
         })
     }
 

@@ -66,7 +66,6 @@ impl FromStr for ContextId {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[non_exhaustive]
 pub struct Context {
     pub id: ContextId,
     pub application_id: ApplicationId,

@@ -8,6 +8,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Result as EyreResult, WrapErr};
 use libp2p::{identity, Multiaddr};
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 const CONFIG_FILE: &str = "config.toml";
 
@@ -22,9 +23,11 @@ pub struct ConfigFile {
     #[serde(flatten)]
     pub network: NetworkConfig,
 
-    pub store: StoreConfig,
+    pub datastore: DataStoreConfig,
 
-    pub application: ApplicationConfig,
+    pub blobstore: BlobStoreConfig,
+
+    pub context: ContextConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -57,13 +60,18 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct StoreConfig {
+pub struct DataStoreConfig {
     pub path: Utf8PathBuf,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ApplicationConfig {
+pub struct BlobStoreConfig {
     pub path: Utf8PathBuf,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ContextConfig {
+    pub relayer: Url,
 }
 
 impl ConfigFile {

@@ -1,5 +1,4 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::{KeyPair, PublicKey};
 
 use crate::entry::{Borsh, Identity};
 use crate::key::{
@@ -61,28 +60,8 @@ impl AsRef<[u8]> for ContextState<'_> {
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(clippy::exhaustive_structs)]
 pub struct ContextIdentity {
-    pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
-}
-
-impl From<KeyPair> for ContextIdentity {
-    fn from(id: KeyPair) -> Self {
-        Self {
-            public_key: id.public_key,
-            private_key: id.private_key,
-        }
-    }
-}
-
-impl From<ContextIdentity> for KeyPair {
-    fn from(id: ContextIdentity) -> Self {
-        Self {
-            public_key: id.public_key,
-            private_key: id.private_key,
-        }
-    }
 }
 
 impl PredefinedEntry for ContextIdentityKey {
