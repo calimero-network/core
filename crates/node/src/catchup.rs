@@ -212,6 +212,8 @@ impl Node {
 
         stream.send(Message::new(data)).await?;
 
+        // todo! ask peer for the application if we don't have it
+
         loop {
             let message = timeout(
                 self.network_client.catchup_config.receive_timeout,
