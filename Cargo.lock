@@ -1334,6 +1334,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-storage"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "calimero-store",
+ "claims",
+ "eyre",
+ "fixedstr",
+ "parking_lot",
+ "tempfile",
+ "thiserror",
+ "uuid 1.10.0",
+]
+
+[[package]]
 name = "calimero-store"
 version = "0.1.0"
 dependencies = [
@@ -1570,6 +1585,15 @@ dependencies = [
  "crypto-common",
  "inout",
  "zeroize",
+]
+
+[[package]]
+name = "claims"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6995bbe186456c36307f8ea36be3eefe42f49d106896414e18efc4fb2f846b5"
+dependencies = [
+ "autocfg",
 ]
 
 [[package]]
@@ -2796,6 +2820,15 @@ dependencies = [
  "rand 0.8.5",
  "rustc-hex",
  "static_assertions",
+]
+
+[[package]]
+name = "fixedstr"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54e049f021908beff8f8c430a99f5c136d3be69f1667346e581f446b173bc012"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -9564,6 +9597,9 @@ name = "uuid"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81dfa00651efa65069b0b6b651f4aaa31ba9e3c3ce0137aaad053604ee7e0314"
+dependencies = [
+ "getrandom",
+]
 
 [[package]]
 name = "valuable"

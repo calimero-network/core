@@ -1,8 +1,10 @@
 use core::cmp::Ordering;
 use core::fmt::{Debug, Formatter};
 use core::{fmt, ptr};
+#[cfg(feature = "borsh")]
 use std::io::{Read, Result as IoResult, Write};
 
+#[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use component::KeyComponents;
 use generic_array::typenum::Const;
@@ -16,11 +18,13 @@ mod blobs;
 mod component;
 mod context;
 mod generic;
+mod storage;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
 pub use context::{ContextIdentity, ContextMeta, ContextState, ContextTransaction};
 pub use generic::Generic;
+pub use storage::Storage;
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
