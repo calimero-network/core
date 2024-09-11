@@ -732,8 +732,8 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                     let (k, v) = (k?, v?);
                                     let entry = format!(
                                         "{c1:44} | {}",
+                                        if v.private_key.is_some() { "*" } else { " " },
                                         c1 = k.public_key(),
-                                        if v.private_key.is_some() { "*" } else { " " }
                                     );
                                     for line in entry.lines() {
                                         println!("{IND} {}", line.cyan());
