@@ -4,9 +4,13 @@ use std::time;
 
 pub use near_crypto::SecretKey;
 use near_crypto::{InMemorySigner, Signer};
-use near_jsonrpc_client::{methods, JsonRpcClient};
-use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryResponse};
+use near_jsonrpc_client::methods::query::{RpcQueryRequest, RpcQueryResponse};
+use near_jsonrpc_client::methods::send_tx::RpcSendTransactionRequest;
+use near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest;
+use near_jsonrpc_client::JsonRpcClient;
+use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_jsonrpc_primitives::types::transactions::{RpcTransactionError, TransactionInfo};
+use near_primitives::account::id::ParseAccountError;
 use near_primitives::action::{Action, FunctionCallAction};
 use near_primitives::transaction::{Transaction, TransactionV0};
 pub use near_primitives::types::AccountId;
@@ -72,7 +76,7 @@ pub enum Error {
     #[error("invalid response from RPC while {operation}")]
     InvalidResponse { operation: ErrorOperation },
     #[error("invalid contract ID `{0}`")]
-    InvalidContractId(near_primitives::account::id::ParseAccountError),
+    InvalidContractId(ParseAccountError),
     #[error("access key does not have permission to call contract `{0}`")]
     NotPermittedToCallContract(AccountId),
     #[error(
@@ -139,7 +143,7 @@ impl Network {
     ) -> Result<Vec<u8>, Error> {
         let response = self
             .client
-            .call(methods::query::RpcQueryRequest {
+            .call(RpcQueryRequest {
                 block_reference: BlockReference::latest(),
                 request: QueryRequest::CallFunction {
                     account_id: contract_id,
@@ -169,7 +173,7 @@ impl Network {
     ) -> Result<Vec<u8>, Error> {
         let response = self
             .client
-            .call(methods::query::RpcQueryRequest {
+            .call(RpcQueryRequest {
                 block_reference: BlockReference::latest(),
                 request: QueryRequest::ViewAccessKey {
                     account_id: self.account_id.clone(),
@@ -233,7 +237,7 @@ impl Network {
 
         let mut response = self
             .client
-            .call(methods::send_tx::RpcSendTransactionRequest {
+            .call(RpcSendTransactionRequest {
                 signed_transaction: transaction.sign(&Signer::InMemory(
                     InMemorySigner::from_secret_key(
                         self.account_id.clone(),
@@ -261,7 +265,7 @@ impl Network {
 
                     response = self
                         .client
-                        .call(methods::tx::RpcTransactionStatusRequest {
+                        .call(RpcTransactionStatusRequest {
                             transaction_info: TransactionInfo::TransactionId {
                                 tx_hash,
                                 sender_account_id: self.account_id.clone(),
