@@ -19,7 +19,9 @@ interface SNWalletType extends WalletTypeBase<'STARKNET'> {}
 export type WalletType = ETHWalletType | NEARWalletType | SNWalletType;
 
 export namespace WalletType {
-  export let NEAR: WalletType = { type: 'NEAR' } as NEARWalletType;
+  export function NEAR({ networkId }: { networkId: string }): WalletType {
+    return { type: 'NEAR', networkId } as NEARWalletType;
+  }
 
   export function ETH({ chainId = 1 }: { chainId?: number }): WalletType {
     return { type: 'ETH', chainId } as ETHWalletType;
@@ -173,6 +175,7 @@ export interface NodeApi {
   getContextIdentity(
     rpcBaseUrl: string,
     contextId: string,
+    networkId?: string,
   ): ApiResponse<ContextResponse>;
   health(request: HealthRequest): ApiResponse<HealthStatus>;
 }
