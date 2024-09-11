@@ -248,11 +248,11 @@ impl ContextManager {
 
     pub async fn join_context(
         &self,
-        context_id: ContextId,
         identity_secret: PrivateKey,
-        network_id: &str,
-        contract_id: &str,
+        invitation_payload: ContextInvitationPayload,
     ) -> EyreResult<Option<PublicKey>> {
+        let (context_id, invitee_id, network_id, contract_id) = invitation_payload.parts()?;
+
         if self
             .state
             .read()
@@ -263,9 +263,13 @@ impl ContextManager {
             return Ok(None);
         }
 
+        if identity_secret.public_key() != invitee_id {
+            bail!("identity mismatch")
+        }
+
         let mut handle = self.store.handle();
 
-        let identity_key = ContextIdentityKey::new(context_id, identity_secret.public_key());
+        let identity_key = ContextIdentityKey::new(context_id, invitee_id);
 
         if handle.has(&identity_key)? {
             return Ok(None);
@@ -333,7 +337,7 @@ impl ContextManager {
 
         info!(%context_id, "Joined context with pending catchup");
 
-        Ok(Some(identity_secret.public_key()))
+        Ok(Some(invitee_id))
     }
 
     pub async fn invite_to_context(

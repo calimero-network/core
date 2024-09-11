@@ -528,35 +528,32 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         }
                     }
                     "join" => {
-                        let Some((context_id, private_key)) = args.and_then(|args| {
+                        let Some((private_key, invitation_payload)) = args.and_then(|args| {
                             let mut iter = args.split(' ');
-                            let context = iter.next()?;
-                            let private_key = iter.next();
+                            let private_key = iter.next()?;
+                            let invitation_payload = iter.next()?;
 
-                            Some((context, private_key))
+                            Some((private_key, invitation_payload))
                         }) else {
-                            println!("{IND} Usage: context join <context_id>");
-                            break 'done;
-                        };
-
-                        let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {context_id}");
-                            break 'done;
-                        };
-
-                        let Ok(private_key) = private_key.map(FromStr::from_str).transpose() else {
                             println!(
-                                "{IND} Invalid private key: {}",
-                                private_key.expect(
-                                    "the only way to have an `Err` is to have had a `Some`"
-                                )
+                                "{IND} Usage: context join <private_key> <invitation_payload>"
                             );
+                            break 'done;
+                        };
+
+                        let Ok(private_key) = private_key.parse() else {
+                            println!("{IND} Invalid private key: {private_key}");
+                            break 'done;
+                        };
+
+                        let Ok(invitation_payload) = invitation_payload.parse() else {
+                            println!("{IND} Invalid context ID: {private_key}");
                             break 'done;
                         };
 
                         let Some(identity) = node
                             .ctx_manager
-                            .join_context(context_id, private_key)
+                            .join_context(private_key, invitation_payload)
                             .await?
                         else {
                             println!("{IND} Unable to join context at this time, a catchup is in progress.");
@@ -564,7 +561,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         };
 
                         println!(
-                            "{IND} Joined context {context_id} as {identity}, waiting for catchup to complete..."
+                            "{IND} Joined context {private_key} as {identity}, waiting for catchup to complete..."
                         );
                     }
                     "leave" => {
