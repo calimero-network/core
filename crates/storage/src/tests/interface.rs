@@ -22,6 +22,28 @@ mod interface__public_methods {
     use super::*;
 
     #[test]
+    fn children_of() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let mut element = Element::new(&Path::new("::root::node").unwrap());
+        assert!(interface.save(element.id(), &mut element).unwrap());
+        assert_eq!(interface.children_of(&element).unwrap(), vec![]);
+
+        let mut child1 = Element::new(&Path::new("::root::node::leaf1").unwrap());
+        let mut child2 = Element::new(&Path::new("::root::node::leaf2").unwrap());
+        let mut child3 = Element::new(&Path::new("::root::node::leaf3").unwrap());
+        assert!(interface.save(child1.id(), &mut child1).unwrap());
+        assert!(interface.save(child2.id(), &mut child2).unwrap());
+        assert!(interface.save(child3.id(), &mut child3).unwrap());
+        element.child_ids = vec![child1.id(), child2.id(), child3.id()];
+        assert!(interface.save(element.id(), &mut element).unwrap());
+        assert_eq!(
+            interface.children_of(&element).unwrap(),
+            vec![child1, child2, child3]
+        );
+    }
+
+    #[test]
     fn find_by_id__existent() {
         let (db, _dir) = create_test_store();
         let interface = Interface::new(db);

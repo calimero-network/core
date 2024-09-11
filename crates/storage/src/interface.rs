@@ -50,6 +50,55 @@ impl Interface {
         }
     }
 
+    /// The children of the [`Element`].
+    ///
+    /// This gets the children of the [`Element`], which are the [`Element`]s
+    /// that are directly below this [`Element`] in the hierarchy. This is a
+    /// simple method that returns the children as a list, and does not provide
+    /// any filtering or ordering.
+    ///
+    /// Notably, there is no real concept of ordering in the storage system, as
+    /// the records are not ordered in any way. They are simply stored in the
+    /// hierarchy, and so the order of the children is not guaranteed. Any
+    /// required ordering must be done as required upon retrieval.
+    ///
+    /// # Determinism
+    ///
+    /// TODO: Update when the `child_ids` field is replaced with an index.
+    ///
+    /// Depending on the source, simply looping through the children may be
+    /// non-deterministic. At present we are using a [`Vec`], which is
+    /// deterministic, but this is a temporary measure, and the order of
+    /// children under a given path is not enforced, and therefore
+    /// non-deterministic. When the `child_ids` field is replaced with an index,
+    /// the order will be enforced using `created_at` timestamp and/or ID.
+    ///
+    /// # Performance
+    ///
+    /// TODO: Update when the `child_ids` field is replaced with an index.
+    ///
+    /// Looping through children and combining their hashes into the parent is
+    /// logically correct. However, it does necessitate loading all the children
+    /// to get their hashes every time there is an update. The efficiency of
+    /// this can and will be improved in future.
+    ///
+    /// # Parameters
+    ///
+    /// * `element` - The [`Element`] to get the children of.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`] cannot be found, an error will be returned.
+    ///
+    pub fn children_of(&self, element: &Element) -> Result<Vec<Element>, StorageError> {
+        let mut children = Vec::new();
+        for id in element.child_ids() {
+            children.push(self.find_by_id(id)?.ok_or(StorageError::NotFound(id))?);
+        }
+        Ok(children)
+    }
+
     /// Finds an [`Element`] by its unique identifier.
     ///
     /// This will always retrieve a single [`Element`], if it exists, regardless
@@ -222,7 +271,7 @@ impl Interface {
 #[non_exhaustive]
 pub enum StorageError {
     /// An error occurred during serialization.
-    #[error("Deerialization error: {0}")]
+    #[error("Deserialization error: {0}")]
     DeserializationError(IoError),
 
     /// An error occurred when handling threads or async tasks.
@@ -232,6 +281,12 @@ pub enum StorageError {
     /// TODO: An error during tree validation.
     #[error("Invalid data was found for ID: {0}")]
     InvalidDataFound(Id),
+
+    /// The requested record was not found, but in the context it was asked for,
+    /// it was expected to be found and so this represents an error or some kind
+    /// of inconsistency in the stored data.
+    #[error("Record not found with ID: {0}")]
+    NotFound(Id),
 
     /// An error occurred during serialization.
     #[error("Serialization error: {0}")]

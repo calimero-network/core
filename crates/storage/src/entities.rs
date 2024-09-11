@@ -49,11 +49,55 @@ pub struct Data;
 /// hashes that represent the sum of all data at that part in the hierarchy and
 /// below.
 ///
+/// # Structure
+///
+/// TODO: Update when the `child_ids` field is replaced with an index.
+///
+/// At present the [`Element`] has a `child_ids` field, which memoises the IDs
+/// of the children. This is because it is better than traversing the whole
+/// database to find the children (!).
+///
+/// Having a `child_ids` field is however non-optimal — this should come from
+/// outside the struct. We should be able to look up the children by path, and
+/// so given that the path is the primary method of determining that an
+/// [`Element`] is a child of another, this should be the mechanism relied upon.
+/// Therefore, maintaining a list of child IDs is a second point of maintenance
+/// and undesirable, as well as being restrictive for larger child sets.
+///
+/// An index would be a better approach, but this will be done later, as that is
+/// purely an optimisation aspect and not a functional one, and it is better to
+/// get the shape of the functionality correct, working, and testable first.
+///
+/// Given that we do need to obtain the children, and given also that indexes
+/// are a later optimisation, the best interim approach is therefore to simply
+/// store the child IDs against the struct.
+///
+/// This reasoning is, however, why we do not have a parent ID field. The path
+/// should be sufficient to determine the parent, and so a parent ID is
+/// redundant. It is also another point of maintenance and data to keep
+/// consistent. For instance, moving an item in the tree should be as simple as
+/// updating the path and recalculating affected [`Element`]s' hashes. If there
+/// is a parent ID then that also has to be synced, and that does not give us
+/// anything that we cannot already get via the path.
+///
+/// There are approaches that work with relational database when storing
+/// hierarchies, such as BetterNestedSet to combine a NestedSet (with left and
+/// right partitioning) with an AdjacencyList (parent IDs). However, operations
+/// to update things like that are fast in relational databases but slow in
+/// key-value stores. Therefore, this approach and other similar patterns are
+/// not suitable for our use case.
+///
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub struct Element {
     /// The unique identifier for the [`Element`].
     id: Id,
+
+    /// The unique identifiers of the children of the [`Element`]. This is
+    /// considered somewhat temporary, as there are efficiency gains to be made
+    /// by storing this list elsewhere — but for now, it helps to get the data
+    /// in place and usable, and establish a basis to test against and enhance.
+    pub(crate) child_ids: Vec<Id>,
 
     /// The primary data for the [`Element`], that is, the data that the
     /// consumer application has stored in the [`Element`].
@@ -103,6 +147,7 @@ impl Element {
             .as_nanos() as u64;
         Self {
             id: Id::new(),
+            child_ids: Vec::new(),
             data: Data {},
             is_dirty: true,
             metadata: Metadata {
@@ -113,21 +158,17 @@ impl Element {
         }
     }
 
-    /// The children of the [`Element`].
+    /// The unique identifiers of the children of the [`Element`].
     ///
-    /// This gets the children of the [`Element`], which are the [`Element`]s
-    /// that are directly below this [`Element`] in the hierarchy. This is a
-    /// simple method that returns the children as a list, and does not provide
-    /// any filtering or ordering.
+    /// This gets only the IDs of the children of the [`Element`], which are the
+    /// [`Element`]s that are directly below this [`Element`] in the hierarchy.
     ///
-    /// Notably, there is no real concept of ordering in the storage system, as
-    /// the records are not ordered in any way. They are simply stored in the
-    /// hierarchy, and so the order of the children is not guaranteed. Any
-    /// required ordering must be done as required upon retrieval.
+    /// TODO: This method will likely move to the [`Interface`] when the index
+    ///       is implemented.
     ///
     #[must_use]
-    pub fn children(&self) -> Vec<Self> {
-        unimplemented!()
+    pub fn child_ids(&self) -> Vec<Id> {
+        self.child_ids.clone()
     }
 
     /// The timestamp when the [`Element`] was first created.
@@ -153,9 +194,12 @@ impl Element {
     /// This checks whether the [`Element`] has children, which are the
     /// [`Element`]s that are directly below this [`Element`] in the hierarchy.
     ///
+    /// TODO: This method will likely move to the [`Interface`] when the index
+    ///       is implemented.
+    ///
     #[must_use]
     pub fn has_children(&self) -> bool {
-        unimplemented!()
+        !self.child_ids.is_empty()
     }
 
     /// The unique identifier for the [`Element`].
