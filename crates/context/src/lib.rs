@@ -153,10 +153,12 @@ impl ContextManager {
             (context_secret, identity_secret)
         };
 
+        let handle = self.store.handle();
+
         let context = {
             let context_id = ContextId::from(*context_secret.public_key());
 
-            if self.get_context(&context_id)?.is_some() {
+            if handle.has(&ContextMetaKey::new(context_id))? {
                 bail!("Context already exists on node.")
             }
 
@@ -197,7 +199,7 @@ impl ContextManager {
             .send(|b| SigningKey::from_bytes(&*context_secret).sign(b))
             .await?;
 
-        self.add_context(&context, identity_secret).await?;
+        self.add_context(&context, identity_secret, true).await?;
 
         let (tx, _) = oneshot::channel();
 
@@ -215,7 +217,12 @@ impl ContextManager {
         Ok((context.id, identity_secret.public_key()))
     }
 
-    async fn add_context(&self, context: &Context, identity_secret: PrivateKey) -> EyreResult<()> {
+    async fn add_context(
+        &self,
+        context: &Context,
+        identity_secret: PrivateKey,
+        is_new: bool,
+    ) -> EyreResult<()> {
         let mut handle = self.store.handle();
 
         handle.put(
@@ -225,23 +232,25 @@ impl ContextManager {
             },
         )?;
 
-        handle.put(
-            &ContextConfigKey::new(context.id),
-            &ContextConfigValue {
-                network: self.client_config.new.network.as_str().into(),
-                contract: self.client_config.new.contract_id.as_str().into(),
-            },
-        )?;
+        if is_new {
+            handle.put(
+                &ContextConfigKey::new(context.id),
+                &ContextConfigValue {
+                    network: self.client_config.new.network.as_str().into(),
+                    contract: self.client_config.new.contract_id.as_str().into(),
+                },
+            )?;
 
-        handle.put(
-            &ContextMetaKey::new(context.id),
-            &ContextMetaValue::new(
-                ApplicationMetaKey::new(context.application_id),
-                context.last_transaction_hash.into(),
-            ),
-        )?;
+            handle.put(
+                &ContextMetaKey::new(context.id),
+                &ContextMetaValue::new(
+                    ApplicationMetaKey::new(context.application_id),
+                    context.last_transaction_hash.into(),
+                ),
+            )?;
 
-        self.subscribe(&context.id).await?;
+            self.subscribe(&context.id).await?;
+        }
 
         Ok(())
     }
@@ -310,7 +319,10 @@ impl ContextManager {
             last_transaction_hash: Default::default(),
         };
 
-        self.add_context(&context, identity_secret).await?;
+        let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
+
+        self.add_context(&context, identity_secret, !context_exists)
+            .await?;
 
         if !self.is_application_installed(&context.application_id)? {
             let source = Url::parse(&application.source.0)?;
