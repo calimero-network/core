@@ -5,7 +5,7 @@ use std::sync::Arc;
 use calimero_blobstore::BlobManager;
 use calimero_context_config::client::config::ContextConfigClientConfig;
 use calimero_context_config::client::{ContextConfigClient, RelayOrNearTransport};
-use calimero_context_config::repr::{Repr, ReprTransmute};
+use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, Finality, ServerSender};
@@ -197,7 +197,7 @@ impl ContextManager {
             .send(|b| SigningKey::from_bytes(&*context_secret).sign(b))
             .await?;
 
-        self.add_context(&context)?;
+        self.add_context(&context, identity_secret).await?;
 
         let (tx, _) = oneshot::channel();
 
@@ -212,6 +212,10 @@ impl ContextManager {
             ))
             .await?;
 
+        Ok((context.id, identity_secret.public_key()))
+    }
+
+    async fn add_context(&self, context: &Context, identity_secret: PrivateKey) -> EyreResult<()> {
         let mut handle = self.store.handle();
 
         handle.put(
@@ -229,14 +233,6 @@ impl ContextManager {
             },
         )?;
 
-        self.subscribe(&context.id).await?;
-
-        Ok((context.id, identity_secret.public_key()))
-    }
-
-    pub fn add_context(&self, context: &Context) -> EyreResult<()> {
-        let mut handle = self.store.handle();
-
         handle.put(
             &ContextMetaKey::new(context.id),
             &ContextMetaValue::new(
@@ -245,13 +241,17 @@ impl ContextManager {
             ),
         )?;
 
+        self.subscribe(&context.id).await?;
+
         Ok(())
     }
 
     pub async fn join_context(
         &self,
         context_id: ContextId,
-        identity_secret: Option<PrivateKey>,
+        identity_secret: PrivateKey,
+        network_id: &str,
+        contract_id: &str,
     ) -> EyreResult<Option<PublicKey>> {
         if self
             .state
@@ -263,21 +263,73 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let identity_secret =
-            identity_secret.unwrap_or_else(|| PrivateKey::random(&mut rand::thread_rng()));
-
         let mut handle = self.store.handle();
 
-        handle.put(
-            &ContextIdentityKey::new(context_id, identity_secret.public_key()),
-            &ContextIdentityValue {
-                private_key: Some(*identity_secret),
-            },
+        let identity_key = ContextIdentityKey::new(context_id, identity_secret.public_key());
+
+        if handle.has(&identity_key)? {
+            return Ok(None);
+        }
+
+        let client = self
+            .config_client
+            .query(network_id.into(), contract_id.into());
+
+        for (offset, length) in (0..).map(|i| (i * 100, 100)) {
+            let members = client
+                .members(
+                    context_id.rt().expect("infallible conversion"),
+                    offset,
+                    length,
+                )
+                .await?
+                .parse()?;
+
+            if members.is_empty() {
+                break;
+            }
+
+            for member in members {
+                let member = member.as_bytes().into();
+
+                let key = ContextIdentityKey::new(context_id, member);
+
+                if !handle.has(&key)? {
+                    handle.put(&key, &ContextIdentityValue { private_key: None })?;
+                }
+            }
+        }
+
+        if !handle.has(&identity_key)? {
+            bail!("unable to join context: not a member, ask for an invite")
+        };
+
+        let response = client
+            .application(context_id.rt().expect("infallible conversion"))
+            .await?;
+
+        let application = response.parse()?;
+
+        let context = Context {
+            id: context_id,
+            application_id: application.id.as_bytes().into(),
+            last_transaction_hash: Default::default(),
+        };
+
+        self.add_context(&context, identity_secret).await?;
+
+        let application_id = self.install_application(
+            application.blob.as_bytes().into(),
+            &(application.source.0.parse()?),
+            None,
+            application.metadata.0.to_vec(),
         )?;
 
-        let _ = self.state.write().await.pending_catchup.insert(context_id);
+        if application_id != context.application_id {
+            bail!("application mismatch")
+        }
 
-        self.subscribe(&context_id).await?;
+        let _ = self.state.write().await.pending_catchup.insert(context_id);
 
         info!(%context_id, "Joined context with pending catchup");
 
