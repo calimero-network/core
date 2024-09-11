@@ -19,8 +19,7 @@ use tracing::{error, info, warn};
 use crate::catchup::batch::CatchupBatchSender;
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::types::{
-    CatchupApplicationChanged, CatchupError, CatchupRequest, CatchupStreamMessage,
-    TransactionStatus, TransactionWithStatus,
+    CatchupError, CatchupRequest, CatchupStreamMessage, TransactionStatus, TransactionWithStatus,
 };
 use crate::Node;
 
@@ -37,8 +36,7 @@ impl Node {
 
         let request = match from_json_slice(&message?.data)? {
             CatchupStreamMessage::Request(req) => req,
-            message @ (CatchupStreamMessage::ApplicationChanged(_)
-            | CatchupStreamMessage::TransactionsBatch(_)
+            message @ (CatchupStreamMessage::TransactionsBatch(_)
             | CatchupStreamMessage::Error(_)) => {
                 bail!("Unexpected message: {:?}", message)
             }
@@ -78,33 +76,6 @@ impl Node {
 
             return Ok(());
         };
-
-        let application_id = context.application_id;
-
-        if request
-            .application_id
-            .map_or(true, |id| id != application_id)
-        {
-            let Some(application) = self.ctx_manager.get_application(&application_id)? else {
-                bail!(
-                    "fatal error: context `{}` links to dangling application ID `{}`",
-                    context.id,
-                    application_id
-                );
-            };
-
-            let message = to_json_vec(&CatchupStreamMessage::ApplicationChanged(
-                CatchupApplicationChanged {
-                    application_id,
-                    blob_id: application.blob,
-                    version: application.version,
-                    source: application.source,
-                    hash: None, // todo! blob_mgr(application.blob)?.hash
-                    metadata: Some(Vec::new()),
-                },
-            ))?;
-            stream.send(Message::new(message)).await?;
-        }
 
         if context.last_transaction_hash == request.last_executed_transaction_hash
             && self.tx_pool.is_empty()
@@ -225,25 +196,14 @@ impl Node {
         context_id: ContextId,
         chosen_peer: PeerId,
     ) -> EyreResult<()> {
-        let (mut context, request) = match self.ctx_manager.get_context(&context_id)? {
-            Some(context) => (
-                Some(context.clone()),
-                CatchupRequest {
-                    context_id,
-                    application_id: Some(context.application_id),
-                    last_executed_transaction_hash: context.last_transaction_hash,
-                    batch_size: self.network_client.catchup_config.batch_size,
-                },
-            ),
-            None => (
-                None,
-                CatchupRequest {
-                    context_id,
-                    application_id: None,
-                    last_executed_transaction_hash: Hash::default(),
-                    batch_size: self.network_client.catchup_config.batch_size,
-                },
-            ),
+        let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
+            bail!("catching up for non-existent context?");
+        };
+
+        let request = CatchupRequest {
+            context_id,
+            last_executed_transaction_hash: context.last_transaction_hash,
+            batch_size: self.network_client.catchup_config.batch_size,
         };
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
@@ -251,6 +211,8 @@ impl Node {
         let data = to_json_vec(&CatchupStreamMessage::Request(request))?;
 
         stream.send(Message::new(data)).await?;
+
+        // todo! ask peer for the application if we don't have it
 
         loop {
             let message = timeout(
@@ -262,14 +224,12 @@ impl Node {
             match message {
                 Ok(message) => match message {
                     Some(message) => {
-                        context = self
-                            .handle_catchup_message(
-                                context_id,
-                                chosen_peer,
-                                context,
-                                from_json_slice(&message?.data)?,
-                            )
-                            .await?;
+                        self.handle_catchup_message(
+                            chosen_peer,
+                            &mut context,
+                            from_json_slice(&message?.data)?,
+                        )
+                        .await?;
                     }
                     None => break,
                 },
@@ -286,19 +246,14 @@ impl Node {
     #[allow(clippy::too_many_lines)]
     async fn handle_catchup_message(
         &mut self,
-        context_id: ContextId,
         chosen_peer: PeerId,
-        mut context: Option<Context>,
+        context: &mut Context,
         message: CatchupStreamMessage,
-    ) -> EyreResult<Option<Context>> {
+    ) -> EyreResult<()> {
         match message {
             CatchupStreamMessage::TransactionsBatch(batch) => {
-                let Some(ref mut context_) = context else {
-                    bail!("Received transactions batch for uninitialized context");
-                };
-
                 info!(
-                    context_id=%context_.id,
+                    context_id=%context.id,
                     transactions=%batch.transactions.len(),
                     "Processing catchup transactions batch"
                 );
@@ -309,11 +264,11 @@ impl Node {
                     status,
                 } in batch.transactions
                 {
-                    if context_.last_transaction_hash != transaction.prior_hash {
+                    if context.last_transaction_hash != transaction.prior_hash {
                         bail!(
                             "Transaction '{}' from the catchup batch doesn't build on last transaction '{}'",
                             transaction_hash,
-                            context_.last_transaction_hash,
+                            context.last_transaction_hash,
                         );
                     };
 
@@ -323,7 +278,7 @@ impl Node {
                                 let _ = self.tx_pool.insert(
                                     chosen_peer,
                                     Transaction::new(
-                                        context_.id,
+                                        context.id,
                                         transaction.method,
                                         transaction.payload,
                                         transaction.prior_hash,
@@ -335,7 +290,7 @@ impl Node {
                             NodeType::Coordinator => {
                                 let _ = self
                                     .validate_pending_transaction(
-                                        context_,
+                                        context,
                                         transaction,
                                         transaction_hash,
                                     )
@@ -349,7 +304,7 @@ impl Node {
                             NodeType::Peer => {
                                 drop(
                                     self.execute_transaction(
-                                        context_,
+                                        context,
                                         transaction,
                                         transaction_hash,
                                     )
@@ -359,51 +314,13 @@ impl Node {
                                 drop(self.tx_pool.remove(&transaction_hash));
                             }
                             NodeType::Coordinator => {
-                                self.persist_transaction(context_, transaction, transaction_hash)?;
+                                self.persist_transaction(context, transaction, transaction_hash)?;
                             }
                             _ => bail!("Unexpected node type"),
                         },
                     }
 
-                    context_.last_transaction_hash = transaction_hash;
-                }
-            }
-            CatchupStreamMessage::ApplicationChanged(change) => {
-                info!(?change, "Processing catchup application changed");
-
-                if !self
-                    .ctx_manager
-                    .is_application_installed(&change.application_id)?
-                {
-                    // note! for now, we assume all paths are urls
-                    // todo! for path sources, share the blob peer to peer
-
-                    let _ = self
-                        .ctx_manager
-                        .install_application_from_url(
-                            change.source.to_string().parse()?,
-                            change.version,
-                            Vec::new(),
-                        )
-                        .await?;
-                }
-
-                if let Some(ref mut context_) = context {
-                    self.ctx_manager
-                        .update_application_id(context_.id, change.application_id)?;
-
-                    context_.application_id = change.application_id;
-                } else {
-                    let context_inner = Context {
-                        id: context_id,
-                        application_id: change.application_id,
-                        last_transaction_hash: Hash::default(),
-                    };
-
-                    // todo! will be resolved in a coming PR
-                    // self.ctx_manager.add_context(&context_inner)?;
-
-                    context = Some(context_inner);
+                    context.last_transaction_hash = transaction_hash;
                 }
             }
             CatchupStreamMessage::Error(err) => {
@@ -415,6 +332,6 @@ impl Node {
             }
         }
 
-        Ok(context)
+        Ok(())
     }
 }
