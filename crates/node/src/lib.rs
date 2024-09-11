@@ -551,7 +551,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             break 'done;
                         };
 
-                        let Some(identity) = node
+                        let Some((context_id, identity)) = node
                             .ctx_manager
                             .join_context(private_key, invitation_payload)
                             .await?
@@ -561,7 +561,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         };
 
                         println!(
-                            "{IND} Joined context {private_key} as {identity}, waiting for catchup to complete..."
+                            "{IND} Joined context {context_id} as {identity}, waiting for catchup to complete..."
                         );
                     }
                     "leave" => {

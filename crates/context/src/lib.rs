@@ -250,7 +250,7 @@ impl ContextManager {
         &self,
         identity_secret: PrivateKey,
         invitation_payload: ContextInvitationPayload,
-    ) -> EyreResult<Option<PublicKey>> {
+    ) -> EyreResult<Option<(ContextId, PublicKey)>> {
         let (context_id, invitee_id, network_id, contract_id) = invitation_payload.parts()?;
 
         if self
@@ -337,7 +337,7 @@ impl ContextManager {
 
         info!(%context_id, "Joined context with pending catchup");
 
-        Ok(Some(invitee_id))
+        Ok(Some((context_id, invitee_id)))
     }
 
     pub async fn invite_to_context(
