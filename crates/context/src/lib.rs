@@ -322,15 +322,27 @@ impl ContextManager {
 
         self.add_context(&context, identity_secret).await?;
 
-        let application_id = self.install_application(
-            application.blob.as_bytes().into(),
-            &(application.source.0.parse()?),
-            None,
-            application.metadata.0.to_vec(),
-        )?;
+        if !self.is_application_installed(&context.application_id)? {
+            let source = Url::parse(&application.source.0)?;
 
-        if application_id != context.application_id {
-            bail!("application mismatch")
+            let metadata = application.metadata.0.to_vec();
+
+            let application_id = match source.scheme() {
+                "http" | "https" => {
+                    self.install_application_from_url(source, None, metadata)
+                        .await?
+                }
+                _ => self.install_application(
+                    application.blob.as_bytes().into(),
+                    &source.into(),
+                    None,
+                    metadata,
+                )?,
+            };
+
+            if application_id != context.application_id {
+                bail!("application mismatch")
+            }
         }
 
         let _ = self.state.write().await.pending_catchup.insert(context_id);
