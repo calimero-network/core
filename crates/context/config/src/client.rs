@@ -154,9 +154,9 @@ impl<T> Response<T> {
         }
     }
 
-    pub fn parse(&self) -> Result<T, serde_json::Error>
+    pub fn parse<'a>(&'a self) -> Result<T, serde_json::Error>
     where
-        T: for<'a> Deserialize<'a>,
+        T: Deserialize<'a>,
     {
         serde_json::from_slice(&self.bytes)
     }

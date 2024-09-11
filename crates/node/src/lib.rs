@@ -29,8 +29,9 @@ use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::key::{
-    ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
-    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
+    ApplicationMeta as ApplicationMetaKey, ContextIdentity as ContextIdentityKey,
+    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
+    ContextTransaction as ContextTransactionKey,
 };
 use calimero_store::types::{ContextMeta, ContextTransaction};
 use calimero_store::Store;
@@ -501,7 +502,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 match subcommand {
                     "ls" => {
                         println!(
-                            "{IND} {c1:44} | {c2:64} | Last Transaction",
+                            "{IND} {c1:44} | {c2:44} | Last Transaction",
                             c1 = "Context ID",
                             c2 = "Application ID",
                         );
@@ -527,37 +528,42 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         }
                     }
                     "join" => {
-                        let Some((context_id, private_key)) = args.and_then(|args| {
+                        let Some((private_key, invitation_payload)) = args.and_then(|args| {
                             let mut iter = args.split(' ');
-                            let context = iter.next()?;
-                            let private_key = iter.next();
+                            let private_key = iter.next()?;
+                            let invitation_payload = iter.next()?;
 
-                            Some((context, private_key))
+                            Some((private_key, invitation_payload))
                         }) else {
-                            println!("{IND} Usage: context join <context_id>");
-                            break 'done;
-                        };
-
-                        let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {context_id}");
-                            break 'done;
-                        };
-
-                        let Ok(private_key) = private_key.map(FromStr::from_str).transpose() else {
                             println!(
-                                "{IND} Invalid private key: {}",
-                                private_key.expect(
-                                    "the only way to have an `Err` is to have had a `Some`"
-                                )
+                                "{IND} Usage: context join <private_key> <invitation_payload>"
                             );
                             break 'done;
                         };
 
-                        let Some(identity) = node
+                        let Ok(private_key) = private_key.parse() else {
+                            println!("{IND} Invalid private key: {private_key}");
+                            break 'done;
+                        };
+
+                        let Ok(invitation_payload) = invitation_payload.parse() else {
+                            println!("{IND} Invalid context ID: {private_key}");
+                            break 'done;
+                        };
+
+                        let response = match node
                             .ctx_manager
-                            .join_context(context_id, private_key)
-                            .await?
-                        else {
+                            .join_context(private_key, invitation_payload)
+                            .await
+                        {
+                            Ok(response) => response,
+                            Err(err) => {
+                                println!("{IND} Unable to join context: {err}");
+                                break 'done;
+                            }
+                        };
+
+                        let Some((context_id, identity)) = response else {
                             println!("{IND} Unable to join context at this time, a catchup is in progress.");
                             break 'done;
                         };
@@ -633,6 +639,47 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
 
                         println!("{IND} Created context {} as {}", context_id, identity);
                     }
+                    "invite" => {
+                        let Some((context_id, inviter_id, invitee_id)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context_id = iter.next()?;
+                            let inviter_id = iter.next()?;
+                            let invitee_id = iter.next()?;
+                            Some((context_id, inviter_id, invitee_id))
+                        }) else {
+                            println!(
+                                "{IND} Usage: context invite <context_id> <inviter> <invitee>"
+                            );
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
+                            println!("{IND} Invalid context ID: {context_id}");
+                            break 'done;
+                        };
+
+                        let Ok(inviter_id) = inviter_id.parse() else {
+                            println!("{IND} Invalid public key for inviter: {inviter_id}");
+                            break 'done;
+                        };
+
+                        let Ok(invitee_id) = invitee_id.parse() else {
+                            println!("{IND} Invalid public key for invitee: {invitee_id}");
+                            break 'done;
+                        };
+
+                        let Some(invitation_payload) = node
+                            .ctx_manager
+                            .invite_to_context(context_id, inviter_id, invitee_id)
+                            .await?
+                        else {
+                            println!("{IND} Unable to invite {invitee_id} to context {context_id}");
+                            break 'done;
+                        };
+
+                        println!("{IND} Invited {invitee_id} to context {context_id}");
+                        println!("{IND} Invitation Payload: {invitation_payload}");
+                    }
                     "delete" => {
                         let Some(context_id) = args else {
                             println!("{IND} Usage: context delete <context_id>");
@@ -647,6 +694,72 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         let _ = node.ctx_manager.delete_context(&context_id).await?;
 
                         println!("{IND} Deleted context {context_id}");
+                    }
+                    "identity" => {
+                        let Some(args) = args else {
+                            println!(
+                                "{IND} Usage: context identity [ls <context_id>|new <context_id>]"
+                            );
+                            break 'done;
+                        };
+
+                        let (subcommand, args) = args
+                            .split_once(' ')
+                            .map_or_else(|| (args, None), |(a, b)| (a, Some(b)));
+
+                        match subcommand {
+                            "ls" => {
+                                let Some(context_id) = args else {
+                                    println!("{IND} Usage: context identity ls <context_id>");
+                                    break 'done;
+                                };
+
+                                let Ok(context_id) = context_id.parse() else {
+                                    println!("{IND} Invalid context ID: {context_id}");
+                                    break 'done;
+                                };
+
+                                let handle = node.store.handle();
+
+                                let mut iter = handle.iter::<ContextIdentityKey>()?;
+
+                                let first = 'first: {
+                                    let Some(k) = iter
+                                        .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
+                                        .transpose()
+                                    else {
+                                        break 'first None;
+                                    };
+
+                                    Some((k, iter.read()))
+                                };
+
+                                println!("{IND} {c1:44} | Owned", c1 = "Identity");
+
+                                for (k, v) in first.into_iter().chain(iter.entries()) {
+                                    let (k, v) = (k?, v?);
+                                    let entry = format!(
+                                        "{c1:44} | {}",
+                                        if v.private_key.is_some() { "*" } else { " " },
+                                        c1 = k.public_key(),
+                                    );
+                                    for line in entry.lines() {
+                                        println!("{IND} {}", line.cyan());
+                                    }
+                                }
+                            }
+                            "new" => {
+                                let identity = node.ctx_manager.new_identity();
+
+                                println!("{IND} Private Key: {}", identity.cyan());
+                                println!("{IND} Public Key: {}", identity.public_key().cyan());
+                            }
+                            unknown => {
+                                println!("{IND} Unknown command: `{unknown}`");
+                                println!("{IND} Usage: context identity [ls <context_id>|new]");
+                                break 'done;
+                            }
+                        }
                     }
                     "transactions" => {
                         let Some(context_id) = args else {
@@ -742,7 +855,9 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
 
                 break 'done;
             };
-            println!("{IND} Usage: context [ls|join|leave|create|delete|state] [args]");
+            println!(
+                "{IND} Usage: context [ls|join|leave|invite|create|delete|state|identity] [args]"
+            );
         }
         unknown => {
             println!("{IND} Unknown command: `{unknown}`");
