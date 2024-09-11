@@ -35,6 +35,7 @@ import { getOrCreateKeypair } from '../auth/ed25519';
 import { Account } from '../components/near/NearWallet';
 import translation from '../constants/en.global.json';
 import { useServerDown } from '../context/ServerDownContext';
+import { getNearEnvironment } from '../utils/node';
 
 const JSON_RPC_ENDPOINT = 'https://rpc.testnet.near.org';
 // @ts-ignore
@@ -279,9 +280,10 @@ export function useNear({ accountId, selector }: UseNearProps) {
         };
         const walletMetadata: WalletMetadata = {
           wallet: WalletType.NEAR({
-            networkId: selector.options.network.networkId,
+            networkId: getNearEnvironment(),
           }),
           verifyingKey: publicKey,
+          walletAddress: accId,
         };
 
         const nearRequest: LoginRequest = {
