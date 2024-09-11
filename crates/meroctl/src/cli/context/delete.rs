@@ -1,20 +1,19 @@
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
+use libp2p::Multiaddr;
 use reqwest::Client;
-use tracing::info;
 
 use crate::cli::RootArgs;
-use crate::common::RequestType::POST;
-use crate::common::{get_response, multiaddr_to_url};
+use crate::common::{get_response, multiaddr_to_url, RequestType};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
-pub struct JoinCommand {
+pub struct DeleteCommand {
     #[clap(long, short)]
-    context_id: String,
+    pub context_id: String,
 }
 
-impl JoinCommand {
+impl DeleteCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
         if !ConfigFile::exists(&path) {
@@ -27,19 +26,30 @@ impl JoinCommand {
             bail!("No address.")
         };
 
+        let client = Client::new();
+
+        self.delete_context(multiaddr, &client, &config.identity)
+            .await
+    }
+
+    async fn delete_context(
+        &self,
+        multiaddr: &Multiaddr,
+        client: &Client,
+        keypair: &libp2p::identity::Keypair,
+    ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
-            &format!("admin-api/dev/contexts/{}/join", self.context_id),
+            &format!("admin-api/dev/contexts/{}", self.context_id),
         )?;
-        let client = Client::new();
-        let response = get_response(&client, url, Some(()), &config.identity, POST).await?;
+        let response = get_response(client, url, None::<()>, keypair, RequestType::DELETE).await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())
         }
 
-        info!("Context {} sucesfully joined", self.context_id);
-
+        let text = response.text().await?;
+        println!("Context deleted successfully: {}", text);
         Ok(())
     }
 }
