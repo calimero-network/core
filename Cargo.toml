@@ -9,6 +9,7 @@ license-file = "LICENSE.md"
 resolver = "2"
 members = [
   "./crates/context",
+  "./crates/context/config",
   "./crates/identity",
   "./crates/meroctl",
   "./crates/network",
@@ -30,7 +31,7 @@ members = [
   "./apps/gen-ext",
 
   "./contracts/context-config",
-  "./contracts/package-manager",
+  "./contracts/registry",
 ]
 
 [workspace.dependencies]

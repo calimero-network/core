@@ -2,13 +2,26 @@ use std::borrow::Cow;
 use std::fmt;
 use std::ops::Deref;
 
-use near_sdk::{bs58, near};
+use borsh::{BorshDeserialize, BorshSerialize};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub type Result<T, E> = std::result::Result<T, Error<E>>;
 
-#[derive(Eq, Ord, Copy, Clone, Debug, Default, PartialEq, PartialOrd)]
-#[near(serializers = [borsh, json])]
+#[derive(
+    Eq,
+    Ord,
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[serde(transparent)]
 pub struct Repr<T> {
     #[serde(with = "serde_bytes", bound = "T: ReprBytes")]
@@ -45,6 +58,18 @@ pub enum Error<E> {
     DecodeError(E),
     #[error("invalid base58: {0}")]
     InvalidBase58(#[from] bs58::decode::Error),
+}
+
+impl<E> Error<E> {
+    pub fn map<F, O>(self, f: F) -> Error<O>
+    where
+        F: FnOnce(E) -> O,
+    {
+        match self {
+            Error::DecodeError(e) => Error::DecodeError(f(e)),
+            Error::InvalidBase58(e) => Error::InvalidBase58(e),
+        }
+    }
 }
 
 pub trait ReprBytes: Sized {
@@ -177,8 +202,7 @@ where
 mod serde_bytes {
     use std::borrow::Cow;
 
-    use near_sdk::bs58;
-    use near_sdk::serde::{de, ser, Deserialize};
+    use serde::{de, ser, Deserialize};
 
     use super::{Error, ReprBytes};
 
@@ -198,7 +222,6 @@ mod serde_bytes {
         D: de::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(crate = "near_sdk::serde")]
         struct Container<'a>(#[serde(borrow)] Cow<'a, str>);
 
         let encoded = Container::deserialize(deserializer)?;

@@ -1098,6 +1098,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-context-config"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "bs58 0.5.1",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "calimero-context-config-near"
+version = "0.1.0"
+dependencies = [
+ "calimero-context-config",
+ "ed25519-dalek",
+ "eyre",
+ "near-crypto",
+ "near-sdk",
+ "near-workspaces",
+ "rand 0.8.5",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "calimero-identity"
 version = "0.1.0"
 dependencies = [
@@ -1184,6 +1211,18 @@ dependencies = [
  "sha2 0.10.8",
  "thiserror",
  "url",
+]
+
+[[package]]
+name = "calimero-registry"
+version = "0.1.0"
+dependencies = [
+ "hex 0.4.3",
+ "near-sdk",
+ "near-workspaces",
+ "semver",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1693,21 +1732,6 @@ name = "constant_time_eq"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "245097e9a4535ee1e3e3931fcfcd55a796a44c643e8596ff6566d68f09b87bbc"
-
-[[package]]
-name = "context-config"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "eyre",
- "near-crypto",
- "near-sdk",
- "near-workspaces",
- "rand 0.8.5",
- "serde_json",
- "thiserror",
- "tokio",
-]
 
 [[package]]
 name = "convert_case"
@@ -6254,18 +6278,6 @@ name = "owo-colors"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1b04fb49957986fdce4d6ee7a65027d55d4b6d2265e5848bbb507b58ccfdb6f"
-
-[[package]]
-name = "package-manager"
-version = "0.1.0"
-dependencies = [
- "hex 0.4.3",
- "near-sdk",
- "near-workspaces",
- "semver",
- "serde_json",
- "tokio",
-]
 
 [[package]]
 name = "parity-scale-codec"
