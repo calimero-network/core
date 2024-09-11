@@ -57,4 +57,5 @@ TODO: Write about the transaction handling process and draw sequence diagram
 
 ### Catchup
 
-TODO: Write about the catchup process and draw sequence diagram
+Catchup process involves updating the context metadata and the application blob, followed up
+by replaying the transactions from the last current executed transaction.
