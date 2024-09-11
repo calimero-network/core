@@ -195,22 +195,22 @@ pub(crate) fn setup(
 
 // Create the router for serving static files and SPA fallback
 pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
-  let _config = match &config.admin {
-      Some(config) if config.enabled => config,
-      _ => {
-          info!("Admin site is disabled");
-          return None;
-      }
-  };
+    let _config = match &config.admin {
+        Some(config) if config.enabled => config,
+        _ => {
+            info!("Admin site is disabled");
+            return None;
+        }
+    };
 
-  let path = "/admin-dashboard";
+    let path = "/admin-dashboard";
 
-  // Create a router to serve static files and fallback to index.html
-  let router = Router::new()
-      .route("/", get(serve_embedded_file)) // Match /admin-dashboard
-      .route("/*path", get(serve_embedded_file)); // Match /admin-dashboard/* for all sub-paths
+    // Create a router to serve static files and fallback to index.html
+    let router = Router::new()
+        .route("/", get(serve_embedded_file)) // Match /admin-dashboard
+        .route("/*path", get(serve_embedded_file)); // Match /admin-dashboard/* for all sub-paths
 
-  Some((path, router))
+    Some((path, router))
 }
 
 // Embed the contents of the build directory into the binary
