@@ -67,17 +67,35 @@ impl<'a> NearTransport<'a> {
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("unknown network: {0}")]
+    #[error("unknown network `{0}`")]
     UnknownNetwork(String),
     #[error("invalid response from RPC while {operation}")]
-    InvalidResponse { operation: String },
-    #[error("invalid contract ID: {0}")]
+    InvalidResponse { operation: ErrorOperation },
+    #[error("invalid contract ID `{0}`")]
     InvalidContractId(near_primitives::account::id::ParseAccountError),
-    #[error("failed while {operation}: {reason}")]
+    #[error("access key does not have permission to call contract `{0}`")]
+    NotPermittedToCallContract(AccountId),
+    #[error(
+        "access key does not have permission to call method `{method}` on contract {contract}"
+    )]
+    NotPermittedToCallMethod { contract: AccountId, method: String },
+    #[error("transaction timed out")]
+    TransactionTimeout,
+    #[error("error while {operation}: {reason}")]
     Custom {
-        operation: &'static str,
+        operation: ErrorOperation,
         reason: String,
     },
+}
+
+#[derive(Copy, Clone, Debug, Error)]
+pub enum ErrorOperation {
+    #[error("querying contract")]
+    Query,
+    #[error("mutating contract")]
+    Mutate,
+    #[error("fetching account")]
+    FetchAccount,
 }
 
 impl Transport for NearTransport<'_> {
@@ -131,14 +149,14 @@ impl Network {
             })
             .await
             .map_err(|err| Error::Custom {
-                operation: "querying contract",
+                operation: ErrorOperation::Query,
                 reason: err.to_string(),
             })?;
 
         match response.kind {
             QueryResponseKind::CallResult(CallResult { result, logs: _ }) => Ok(result),
             _ => Err(Error::InvalidResponse {
-                operation: "querying contract".to_owned(),
+                operation: ErrorOperation::Query,
             }),
         }
     }
@@ -160,7 +178,7 @@ impl Network {
             })
             .await
             .map_err(|err| Error::Custom {
-                operation: "fetching account",
+                operation: ErrorOperation::FetchAccount,
                 reason: err.to_string(),
             })?;
 
@@ -172,7 +190,7 @@ impl Network {
             } => (nonce, permission, block_hash),
             _ => {
                 return Err(Error::InvalidResponse {
-                    operation: "fetching account".to_owned(),
+                    operation: ErrorOperation::FetchAccount,
                 })
             }
         };
@@ -184,22 +202,13 @@ impl Network {
         } = permission
         {
             if receiver_id != contract_id {
-                return Err(Error::Custom {
-                    operation: "mutating contract",
-                    reason: format!(
-                        "access key does not have permission to call contract: {}",
-                        contract_id
-                    ),
-                });
+                return Err(Error::NotPermittedToCallContract(contract_id));
             }
 
             if !(method_names.is_empty() || method_names.contains(&method)) {
-                return Err(Error::Custom {
-                    operation: "mutating contract",
-                    reason: format!(
-                        "access key does not have permission to call method on contract: {}",
-                        method
-                    ),
+                return Err(Error::NotPermittedToCallMethod {
+                    contract: contract_id,
+                    method,
                 });
             }
         }
@@ -241,16 +250,13 @@ impl Network {
                 Err(err) => {
                     let Some(RpcTransactionError::TimeoutError) = err.handler_error() else {
                         return Err(Error::Custom {
-                            operation: "mutating contract",
+                            operation: ErrorOperation::Mutate,
                             reason: err.to_string(),
                         });
                     };
 
                     if sent_at.elapsed().as_secs() > 60 {
-                        return Err(Error::Custom {
-                            operation: "mutating contract",
-                            reason: "transaction timed out".to_owned(),
-                        });
+                        return Err(Error::TransactionTimeout);
                     }
 
                     response = self
@@ -269,18 +275,18 @@ impl Network {
 
         let Some(outcome) = response.final_execution_outcome else {
             return Err(Error::InvalidResponse {
-                operation: "mutating contract".to_owned(),
+                operation: ErrorOperation::Mutate,
             });
         };
 
         match outcome.into_outcome().status {
             FinalExecutionStatus::SuccessValue(value) => Ok(value),
             FinalExecutionStatus::Failure(error) => Err(Error::Custom {
-                operation: "mutating contract",
+                operation: ErrorOperation::Mutate,
                 reason: error.to_string(),
             }),
             _ => Err(Error::InvalidResponse {
-                operation: "mutating contract".to_owned(),
+                operation: ErrorOperation::Mutate,
             }),
         }
     }
