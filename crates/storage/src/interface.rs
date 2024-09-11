@@ -83,8 +83,12 @@ impl Interface {
 
         match value {
             Some(slice) => {
-                let element =
+                let mut element =
                     Element::try_from_slice(&slice).map_err(StorageError::DeserializationError)?;
+                // TODO: This is needed for now, as the field gets stored. Later we will
+                // TODO: implement a custom serialiser that will skip this field along with
+                // TODO: any others that should not be stored.
+                element.is_dirty = false;
                 Ok(Some(element))
             }
             None => Ok(None),
@@ -137,6 +141,23 @@ impl Interface {
     /// record already exists, it will be updated with the new data. If the
     /// record does not exist, it will be created.
     ///
+    /// # Update guard
+    ///
+    /// If the provided [`Element`] is older than the existing record, the
+    /// update will be ignored, and the existing record will be kept. The
+    /// Boolean return value indicates whether the record was saved or not; a
+    /// value of `false` indicates that the record was not saved due to this
+    /// guard check — any other reason will be due to an error, and returned as
+    /// such.
+    ///
+    /// # Dirty flag
+    ///
+    /// Note, if the [`Element`] is not marked as dirty, it will not be saved,
+    /// but `true` will be returned. In this case, the record is considered to
+    /// be up-to-date and does not need saving, and so the save operation is
+    /// effectively a no-op. If necessary, this can be checked before calling
+    /// [`save()](Element::save()) by calling [`is_dirty()](Element::is_dirty()).
+    ///
     /// # Parameters
     ///
     /// * `id`      - The unique identifier of the [`Element`] to save.
@@ -148,7 +169,21 @@ impl Interface {
     /// If an error occurs when serialising data or interacting with the storage
     /// system, an error will be returned.
     ///
-    pub fn save(&self, id: Id, element: &Element) -> Result<(), StorageError> {
+    pub fn save(&self, id: Id, element: &mut Element) -> Result<bool, StorageError> {
+        if !element.is_dirty() {
+            return Ok(true);
+        }
+        // It is possible that the record gets added or updated after the call to
+        // this find() method, and before the put() to save the new data... however,
+        // this is very unlikely under our current operating model, and so the risk
+        // is considered acceptable. If this becomes a problem, we should change
+        // the RwLock to a ReentrantMutex, or reimplement the get() logic here to
+        // occur within the write lock. But this seems unnecessary at present.
+        if let Some(existing) = self.find_by_id(id)? {
+            if existing.metadata.updated_at >= element.metadata.updated_at {
+                return Ok(false);
+            }
+        }
         // TODO: It seems fairly bizarre/unexpected that the put() method is sync
         // TODO: and not async. The reasons and intentions need checking here, in
         // TODO: case this save() method should be async and wrap the blocking call
@@ -161,7 +196,8 @@ impl Interface {
                 Slice::from(to_vec(element).map_err(StorageError::SerializationError)?),
             )
             .map_err(StorageError::StoreError)?;
-        Ok(())
+        element.is_dirty = false;
+        Ok(true)
     }
 
     /// Validates the stored state.
