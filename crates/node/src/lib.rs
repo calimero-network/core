@@ -29,8 +29,9 @@ use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::key::{
-    ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
-    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
+    ApplicationMeta as ApplicationMetaKey, ContextIdentity as ContextIdentityKey,
+    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
+    ContextTransaction as ContextTransactionKey,
 };
 use calimero_store::types::{ContextMeta, ContextTransaction};
 use calimero_store::Store;

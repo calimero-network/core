@@ -1,4 +1,4 @@
-use core::fmt::{self, Display, Formatter};
+use core::fmt;
 use core::ops::Deref;
 use core::str::FromStr;
 use std::io;
@@ -35,8 +35,8 @@ impl ContextId {
     }
 }
 
-impl Display for ContextId {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl fmt::Display for ContextId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad(self.as_str())
     }
 }
