@@ -71,7 +71,8 @@ pub struct ContextInvitationPayload(Vec<u8>);
 
 impl fmt::Debug for ContextInvitationPayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (context_id, network, contract_id) = self.parts().map_err(|_| fmt::Error)?;
+        let (context_id, invitee_id, network, contract_id) =
+            self.parts().map_err(|_| fmt::Error)?;
 
         let is_alternate = f.alternate();
 
@@ -79,6 +80,7 @@ impl fmt::Debug for ContextInvitationPayload {
 
         let _ = d
             .field("context_id", &context_id)
+            .field("invitee_id", &invitee_id)
             .field("network", &network)
             .field("contract_id", &contract_id);
 
@@ -128,9 +130,12 @@ const _: () = {
 
     use borsh::{BorshDeserialize, BorshSerialize};
 
+    use crate::identity::PublicKey;
+
     #[derive(BorshSerialize, BorshDeserialize)]
     struct InvitationPayload<'a> {
         context_id: [u8; 32],
+        invitee_id: [u8; 32],
         network: Cow<'a, str>,
         contract_id: Cow<'a, str>,
     }
@@ -139,11 +144,13 @@ const _: () = {
         #[must_use]
         pub fn new(
             context_id: ContextId,
+            invitee_id: PublicKey,
             network: Cow<'_, str>,
             contract_id: Cow<'_, str>,
         ) -> io::Result<Self> {
             let payload = InvitationPayload {
                 context_id: *context_id,
+                invitee_id: *invitee_id,
                 network,
                 contract_id,
             };
@@ -152,11 +159,12 @@ const _: () = {
         }
 
         #[must_use]
-        pub fn parts(&self) -> io::Result<(ContextId, String, String)> {
+        pub fn parts(&self) -> io::Result<(ContextId, PublicKey, String, String)> {
             let payload: InvitationPayload<'_> = borsh::from_slice(&self.0)?;
 
             Ok((
                 payload.context_id.into(),
+                payload.invitee_id.into(),
                 payload.network.into_owned(),
                 payload.contract_id.into_owned(),
             ))

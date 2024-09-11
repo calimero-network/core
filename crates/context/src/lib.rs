@@ -370,6 +370,7 @@ impl ContextManager {
 
         let invitation_payload = ContextInvitationPayload::new(
             context_id,
+            requester,
             context_config.network.into_string().into(),
             context_config.contract.into_string().into(),
         )?;
