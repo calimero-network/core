@@ -684,6 +684,72 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
 
                         println!("{IND} Deleted context {context_id}");
                     }
+                    "identity" => {
+                        let Some(args) = args else {
+                            println!(
+                                "{IND} Usage: context identity [ls <context_id>|new <context_id>]"
+                            );
+                            break 'done;
+                        };
+
+                        let (subcommand, args) = args
+                            .split_once(' ')
+                            .map_or_else(|| (args, None), |(a, b)| (a, Some(b)));
+
+                        match subcommand {
+                            "ls" => {
+                                let Some(context_id) = args else {
+                                    println!("{IND} Usage: context identity ls <context_id>");
+                                    break 'done;
+                                };
+
+                                let Ok(context_id) = context_id.parse() else {
+                                    println!("{IND} Invalid context ID: {context_id}");
+                                    break 'done;
+                                };
+
+                                let handle = node.store.handle();
+
+                                let mut iter = handle.iter::<ContextIdentityKey>()?;
+
+                                let first = 'first: {
+                                    let Some(k) = iter
+                                        .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
+                                        .transpose()
+                                    else {
+                                        break 'first None;
+                                    };
+
+                                    Some((k, iter.read()))
+                                };
+
+                                println!("{IND} {c1:44} | Owned", c1 = "Identity");
+
+                                for (k, v) in first.into_iter().chain(iter.entries()) {
+                                    let (k, v) = (k?, v?);
+                                    let entry = format!(
+                                        "{c1:44} | {}",
+                                        c1 = k.public_key(),
+                                        if v.private_key.is_some() { "*" } else { " " }
+                                    );
+                                    for line in entry.lines() {
+                                        println!("{IND} {}", line.cyan());
+                                    }
+                                }
+                            }
+                            "new" => {
+                                let identity = node.ctx_manager.new_identity();
+
+                                println!("{IND} Private Key: {}", identity.cyan());
+                                println!("{IND} Public Key: {}", identity.public_key().cyan());
+                            }
+                            unknown => {
+                                println!("{IND} Unknown command: `{unknown}`");
+                                println!("{IND} Usage: context identity [ls <context_id>|new]");
+                                break 'done;
+                            }
+                        }
+                    }
                     "transactions" => {
                         let Some(context_id) = args else {
                             println!("{IND} Usage: context transactions <context_id>");

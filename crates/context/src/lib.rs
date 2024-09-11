@@ -129,6 +129,10 @@ impl ContextManager {
         Ok(())
     }
 
+    pub fn new_identity(&self) -> PrivateKey {
+        PrivateKey::random(&mut rand::thread_rng())
+    }
+
     pub async fn create_context(
         &self,
         seed: Option<[u8; 32]>,
@@ -144,8 +148,7 @@ impl ContextManager {
                 None => PrivateKey::random(&mut rng),
             };
 
-            let identity_secret =
-                identity_secret.map_or_else(|| PrivateKey::random(&mut rng), PrivateKey::from);
+            let identity_secret = identity_secret.unwrap_or_else(|| self.new_identity());
 
             (context_secret, identity_secret)
         };
