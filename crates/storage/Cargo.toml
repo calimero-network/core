@@ -8,7 +8,9 @@ license.workspace = true
 
 [dependencies]
 borsh.workspace = true
+eyre.workspace = true
 fixedstr.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
@@ -16,6 +18,7 @@ calimero-store = { path = "../store", features = ["datatypes"] }
 
 [dev-dependencies]
 claims.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
