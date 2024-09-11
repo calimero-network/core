@@ -442,6 +442,8 @@ impl ContextManager {
 
         handle.delete(&key)?;
 
+        handle.delete(&ContextConfigKey::new(*context_id))?;
+
         {
             let mut keys = vec![];
 
