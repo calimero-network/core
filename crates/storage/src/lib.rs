@@ -34,3 +34,4 @@
 
 pub mod address;
 pub mod entities;
+pub mod interface;
