@@ -249,7 +249,8 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
     }
 
     // Otherwise, serve index.html for SPA routes
-    let index_file = REACT_STATIC_FILES.get_file("index.html")
+    let index_file = REACT_STATIC_FILES
+        .get_file("index.html")
         .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(serve_file(index_file).await?)
@@ -268,14 +269,14 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
 /// - `Result<Response<Body>, StatusCode>`: If the response is successfully built, it returns the response.
 ///   If there is an error building the response, it returns an internal server error (500).
 async fn serve_file(file: &File<'_>) -> Result<Response<Body>, StatusCode> {
-  // Guess the MIME type based on the file path (important for JS, CSS, etc.)
-  let mime_type = from_path(file.path()).first_or_octet_stream();
+    // Guess the MIME type based on the file path (important for JS, CSS, etc.)
+    let mime_type = from_path(file.path()).first_or_octet_stream();
 
-  Response::builder()
-      .status(StatusCode::OK)
-      .header("Content-Type", mime_type.to_string())
-      .body(Body::from(Bytes::copy_from_slice(file.contents())))
-      .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", mime_type.to_string())
+        .body(Body::from(Bytes::copy_from_slice(file.contents())))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
