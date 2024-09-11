@@ -400,7 +400,8 @@ impl Node {
                         last_transaction_hash: Hash::default(),
                     };
 
-                    self.ctx_manager.add_context(&context_inner)?;
+                    // todo! will be resolved in a coming PR
+                    // self.ctx_manager.add_context(&context_inner)?;
 
                     context = Some(context_inner);
                 }
