@@ -1,7 +1,7 @@
 use calimero_primitives::application::{Application, ApplicationId};
-use calimero_primitives::context::{Context, ContextId};
+use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PublicKey, WalletType};
+use calimero_primitives::identity::{PrivateKey, PublicKey, WalletType};
 use camino::Utf8PathBuf;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -403,9 +403,21 @@ impl CreateContextResponse {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JoinContextRequest {
+    pub private_key: PrivateKey,
+    pub invitation_payload: ContextInvitationPayload,
+}
+
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 pub struct JoinContextResponseData {
+    pub context_id: ContextId,
     pub member_public_key: PublicKey,
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct JoinContextResponse {
+    pub data: Option<JoinContextResponseData>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

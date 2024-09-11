@@ -2,9 +2,9 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::entry::{Borsh, Identity};
 use crate::key::{
-    ApplicationMeta as ApplicationMetaKey, ContextIdentity as ContextIdentityKey,
-    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
-    ContextTransaction as ContextTransactionKey,
+    ApplicationMeta as ApplicationMetaKey, ContextConfig as ContextConfigKey,
+    ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
+    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
 };
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
@@ -34,6 +34,24 @@ impl ContextMeta {
 impl PredefinedEntry for ContextMetaKey {
     type Codec = Borsh;
     type DataType<'a> = ContextMeta;
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+pub struct ContextConfig {
+    pub network: Box<str>,
+    pub contract: Box<str>,
+}
+
+impl ContextConfig {
+    #[must_use]
+    pub const fn new(network: Box<str>, contract: Box<str>) -> Self {
+        Self { network, contract }
+    }
+}
+
+impl PredefinedEntry for ContextConfigKey {
+    type Codec = Borsh;
+    type DataType<'a> = ContextConfig;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

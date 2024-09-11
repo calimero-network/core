@@ -5,10 +5,11 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::context::{Context, ContextId};
-use calimero_primitives::identity::{ClientKey, ContextUser, PrivateKey, PublicKey};
+use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey};
 use calimero_server_primitives::admin::{
     ContextStorage, CreateContextRequest, CreateContextResponse, GetContextsResponse,
-    JoinContextResponseData, UpdateContextApplicationRequest,
+    JoinContextRequest, JoinContextResponse, JoinContextResponseData,
+    UpdateContextApplicationRequest,
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -276,33 +277,25 @@ pub async fn get_context_storage_handler(
     .into_response()
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[non_exhaustive]
-pub struct JoinContextRequest {
-    pub private_key: Option<PrivateKey>,
-}
-
-#[derive(Debug, Serialize)]
-struct JoinContextResponse {
-    data: Option<JoinContextResponseData>,
-}
-
 pub async fn join_context_handler(
-    Path(context_id): Path<ContextId>,
     Extension(state): Extension<Arc<AdminState>>,
-    request: Option<Json<JoinContextRequest>>,
+    Json(JoinContextRequest {
+        private_key,
+        invitation_payload,
+    }): Json<JoinContextRequest>,
 ) -> impl IntoResponse {
     let result = state
         .ctx_manager
-        .join_context(context_id, request.and_then(|r| r.private_key))
+        .join_context(private_key, invitation_payload)
         .await
         .map_err(parse_api_error);
 
     match result {
         Ok(r) => ApiResponse {
             payload: JoinContextResponse {
-                data: r.map(|r| JoinContextResponseData {
-                    member_public_key: r,
+                data: r.map(|(context_id, member_public_key)| JoinContextResponseData {
+                    context_id,
+                    member_public_key,
                 }),
             },
         }
