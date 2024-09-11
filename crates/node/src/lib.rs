@@ -502,7 +502,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 match subcommand {
                     "ls" => {
                         println!(
-                            "{IND} {c1:44} | {c2:64} | Last Transaction",
+                            "{IND} {c1:44} | {c2:44} | Last Transaction",
                             c1 = "Context ID",
                             c2 = "Application ID",
                         );
