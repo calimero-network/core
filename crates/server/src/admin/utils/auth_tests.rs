@@ -1,4 +1,6 @@
-use super::*;
+use web3::signing::recover;
+
+use super::auth::*;
 
 #[test]
 fn test_recover() {
