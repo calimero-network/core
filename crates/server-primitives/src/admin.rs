@@ -3,7 +3,6 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PublicKey, WalletType};
 use camino::Utf8PathBuf;
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
@@ -12,23 +11,16 @@ use url::Url;
 #[non_exhaustive]
 pub struct InstallApplicationRequest {
     pub url: Url,
-    pub version: Option<Version>,
     pub hash: Option<Hash>,
     pub metadata: Vec<u8>,
 }
 
 impl InstallApplicationRequest {
     #[must_use]
-    pub const fn new(
-        url: Url,
-        version: Option<Version>,
-        hash: Option<Hash>,
-        metadata: Vec<u8>,
-    ) -> Self {
+    pub const fn new(url: Url, hash: Option<Hash>, metadata: Vec<u8>) -> Self {
         Self {
             url,
             hash,
-            version,
             metadata,
         }
     }
@@ -38,18 +30,13 @@ impl InstallApplicationRequest {
 #[non_exhaustive]
 pub struct InstallDevApplicationRequest {
     pub path: Utf8PathBuf,
-    pub version: Option<Version>,
     pub metadata: Vec<u8>,
 }
 
 impl InstallDevApplicationRequest {
     #[must_use]
-    pub const fn new(path: Utf8PathBuf, version: Option<Version>, metadata: Vec<u8>) -> Self {
-        Self {
-            path,
-            version,
-            metadata,
-        }
+    pub const fn new(path: Utf8PathBuf, metadata: Vec<u8>) -> Self {
+        Self { path, metadata }
     }
 }
 

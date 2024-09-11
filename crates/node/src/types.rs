@@ -3,7 +3,6 @@ use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::transaction::Transaction;
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
@@ -55,7 +54,6 @@ pub struct CatchupRequest {
 pub struct CatchupApplicationChanged {
     pub application_id: ApplicationId,
     pub blob_id: BlobId,
-    pub version: Option<Version>,
     pub source: ApplicationSource,
     pub hash: Option<Hash>,
     pub metadata: Option<Vec<u8>>,

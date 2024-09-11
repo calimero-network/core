@@ -18,7 +18,7 @@ pub async fn install_dev_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application_from_path(req.path, req.version, req.metadata)
+        .install_application_from_path(req.path, req.metadata)
         .await
     {
         Ok(application_id) => ApiResponse {
@@ -48,7 +48,7 @@ pub async fn install_application_handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application_from_url(req.url, req.version, req.metadata /*, req.hash */)
+        .install_application_from_url(req.url, req.metadata /*, req.hash */)
         .await
     {
         Ok(application_id) => ApiResponse {
