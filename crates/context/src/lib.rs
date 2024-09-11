@@ -673,19 +673,13 @@ impl ContextManager {
     pub fn is_application_installed(&self, application_id: &ApplicationId) -> EyreResult<bool> {
         let handle = self.store.handle();
 
-        let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? else {
-            return Ok(false);
+        if let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? {
+            if handle.has(&application.blob)? {
+                return Ok(true);
+            }
         };
 
-        if !handle.has(&application.blob)? {
-            bail!(
-                "fatal: application `{}` points to danling blob `{}`",
-                application_id,
-                application.blob.blob_id()
-            );
-        }
-
-        Ok(true)
+        Ok(false)
     }
 
     pub fn get_application(
