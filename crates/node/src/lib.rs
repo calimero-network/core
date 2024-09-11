@@ -849,7 +849,9 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
 
                 break 'done;
             };
-            println!("{IND} Usage: context [ls|join|leave|create|delete|state] [args]");
+            println!(
+                "{IND} Usage: context [ls|join|leave|invite|create|delete|state|identity] [args]"
+            );
         }
         unknown => {
             println!("{IND} Unknown command: `{unknown}`");
