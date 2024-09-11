@@ -3,6 +3,7 @@ use std::io::Error as IoError;
 use std::sync::Arc;
 
 use calimero_blobstore::BlobManager;
+use calimero_context_config::client::{ContextConfigClient, RelayOrNearTransport};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, Finality, ServerSender};
@@ -37,7 +38,7 @@ use config::ContextConfig;
 
 #[derive(Clone, Debug)]
 pub struct ContextManager {
-    config: ContextConfig,
+    config_client: ContextConfigClient<RelayOrNearTransport>,
     store: Store,
     blob_manager: BlobManager,
     network_client: NetworkClient,
@@ -59,7 +60,7 @@ impl ContextManager {
         network_client: NetworkClient,
     ) -> EyreResult<Self> {
         let this = Self {
-            config: config.clone(),
+            config_client: ContextConfigClient::from_config(&config.client),
             store,
             blob_manager,
             network_client,

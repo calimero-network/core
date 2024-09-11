@@ -17,8 +17,10 @@ color-eyre.workspace = true
 const_format.workspace = true
 dirs.workspace = true
 eyre.workspace = true
+hex.workspace = true
 libp2p.workspace = true
 multiaddr.workspace = true
+near-crypto.workspace = true
 notify.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
@@ -34,6 +36,7 @@ url = { workspace = true, features = ["serde"] }
 
 calimero-blobstore = { path = "../store/blobs" }
 calimero-context = { path = "../context" }
+calimero-context-config = { path = "../context/config", features = ["client"] }
 calimero-node = { path = "../node" }
 calimero-network = { path = "../network" }
 calimero-node-primitives = { path = "../node-primitives" }

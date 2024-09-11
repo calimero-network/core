@@ -37,14 +37,14 @@ pub struct NearConfig<'a> {
     pub networks: BTreeMap<Cow<'a, str>, NetworkConfig>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Network {
     client: JsonRpcClient,
     account_id: AccountId,
     secret_key: SecretKey,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct NearTransport<'a> {
     networks: BTreeMap<Cow<'a, str>, Network>,
 }

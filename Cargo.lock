@@ -711,7 +711,7 @@ checksum = "93f2635620bf0b9d4576eb7bb9a38a55df78bd1205d26fa994b25911a69f212f"
 dependencies = [
  "bitcoin_hashes",
  "rand 0.8.5",
- "rand_core 0.4.2",
+ "rand_core 0.6.4",
  "serde",
  "unicode-normalization",
 ]
@@ -947,7 +947,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -957,6 +956,7 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "ed25519-dalek",
+ "either",
  "near-crypto",
  "near-jsonrpc-client 0.12.0",
  "near-jsonrpc-primitives",
@@ -4733,6 +4733,7 @@ dependencies = [
  "bs58 0.5.1",
  "calimero-blobstore",
  "calimero-context",
+ "calimero-context-config",
  "calimero-network",
  "calimero-node",
  "calimero-node-primitives",
@@ -4747,8 +4748,10 @@ dependencies = [
  "const_format",
  "dirs",
  "eyre",
+ "hex",
  "libp2p",
  "multiaddr",
+ "near-crypto",
  "notify",
  "rand 0.8.5",
  "reqwest 0.12.5",

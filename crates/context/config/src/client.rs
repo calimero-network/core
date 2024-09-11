@@ -4,6 +4,7 @@ use std::convert::Infallible;
 use std::mem;
 
 use ed25519_dalek::Signature;
+use either::Either;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use thiserror::Error;
@@ -12,8 +13,11 @@ use crate::repr::Repr;
 use crate::types::{self, Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
 use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 
+pub mod config;
 pub mod near;
 pub mod relayer;
+
+use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner};
 
 pub trait Transport {
     type Error: std::error::Error;
@@ -24,6 +28,21 @@ pub trait Transport {
         request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error>;
+}
+
+impl<L: Transport, R: Transport> Transport for Either<L, R> {
+    type Error = Either<L::Error, R::Error>;
+
+    async fn send(
+        &self,
+        request: TransportRequest<'_>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, Self::Error> {
+        match self {
+            Self::Left(left) => left.send(request, payload).await.map_err(Either::Left),
+            Self::Right(right) => right.send(request, payload).await.map_err(Either::Right),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -39,7 +58,7 @@ pub enum Operation<'a> {
     Write { method: Cow<'a, str> },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ContextConfigClient<T> {
     transport: T,
 }
@@ -47,6 +66,41 @@ pub struct ContextConfigClient<T> {
 impl<T: Transport> ContextConfigClient<T> {
     pub fn new(transport: T) -> Self {
         Self { transport }
+    }
+}
+
+pub type RelayOrNearTransport = Either<relayer::RelayerTransport, near::NearTransport<'static>>;
+
+impl ContextConfigClient<RelayOrNearTransport> {
+    pub fn from_config(config: &ContextConfigClientConfig) -> Self {
+        let transport = match config.signer.selected {
+            ContextConfigClientSelectedSigner::Relayer => {
+                Either::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
+                    url: config.signer.relayer.url.clone(),
+                }))
+            }
+            ContextConfigClientSelectedSigner::Local => {
+                Either::Right(near::NearTransport::new(&near::NearConfig {
+                    networks: config
+                        .signer
+                        .local
+                        .iter()
+                        .map(|(network, config)| {
+                            (
+                                network.clone().into(),
+                                near::NetworkConfig {
+                                    rpc_url: config.rpc_url.clone(),
+                                    account_id: config.credentials.account_id.clone(),
+                                    access_key: config.credentials.secret_key.clone(),
+                                },
+                            )
+                        })
+                        .collect(),
+                }))
+            }
+        };
+
+        Self::new(transport)
     }
 }
 
