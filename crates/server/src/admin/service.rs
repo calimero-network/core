@@ -1,22 +1,27 @@
 use core::fmt::{self, Display, Formatter};
 use core::str::from_utf8;
 use std::error::Error;
+use std::path::Path;
+// use std::path::Path;
 use std::str;
 use std::sync::Arc;
 
-use axum::body::Body;
-use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
+use axum::body::{Body, Bytes};
+// use axum::extract::Path;
+use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
 use calimero_context::ContextManager;
 use calimero_store::Store;
 use eyre::Report;
+use include_dir::{include_dir, Dir, File};
 use libp2p::identity::Keypair;
+use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
-use tower_http::services::{ServeDir, ServeFile};
-use tower_http::set_status::SetStatus;
+// use tower_http::services::{ServeDir, ServeFile};
+// use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
@@ -188,24 +193,64 @@ pub(crate) fn setup(
     Some((admin_path, admin_router))
 }
 
-pub(crate) fn site(
-    config: &ServerConfig,
-) -> Option<(&'static str, ServeDir<SetStatus<ServeFile>>)> {
-    let _config = match &config.admin {
-        Some(config) if config.enabled => config,
-        _ => {
-            info!("Admin site is disabled");
-            return None;
+// Create the router for serving static files and SPA fallback
+pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
+  let _config = match &config.admin {
+      Some(config) if config.enabled => config,
+      _ => {
+          info!("Admin site is disabled");
+          return None;
+      }
+  };
+
+  let path = "/admin-dashboard";
+
+  // Create a router to serve static files and fallback to index.html
+  let router = Router::new()
+      .route("/", get(serve_embedded_file)) // Match /admin-dashboard
+      .route("/*path", get(serve_embedded_file)); // Match /admin-dashboard/* for all sub-paths
+
+  Some((path, router))
+}
+
+// Embed the contents of the build directory into the binary
+static REACT_STATIC_FILES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../node-ui/build");
+
+async fn serve_embedded_file(uri: Uri) -> impl IntoResponse {
+    // Extract the path from the URI, removing the "/admin-dashboard/" prefix
+    let mut path = uri.path().trim_start_matches("/admin-dashboard/");
+
+    // Serve index.html for root or SPA routes
+    if path.is_empty() || path == "/" {
+        if let Some(index_file) = REACT_STATIC_FILES.get_file("index.html") {
+            return serve_file(index_file).await;
+        } else {
+            return (StatusCode::NOT_FOUND, "index.html not found").into_response();
         }
-    };
-    let path = "/admin-dashboard";
+    }
 
-    let react_static_files_path = "./node-ui/build";
-    let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
-        ServeFile::new(format!("{react_static_files_path}/index.html")),
-    );
+    // Remove any leading "/" from the path to match the embedded directory structure
+    path = path.trim_start_matches('/');
 
-    Some((path, react_app_serve_dir))
+    // Try to find the requested file in the embedded directory
+    if let Some(file) = REACT_STATIC_FILES.get_file(path) {
+        serve_file(file).await
+    } else {
+        // If the static file is not found, return a 404
+        (StatusCode::NOT_FOUND, "File not found").into_response()
+    }
+}
+
+// Serve a file with the correct MIME type
+async fn serve_file(file: &File<'_>) -> Response<Body> {
+    // Guess the MIME type based on the file path (important for JS, CSS, etc.)
+    let mime_type = from_path(file.path()).first_or_octet_stream();
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", mime_type.to_string())
+        .body(Body::from(Bytes::copy_from_slice(file.contents())))
+        .unwrap()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
