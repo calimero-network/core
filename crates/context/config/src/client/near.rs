@@ -12,6 +12,7 @@ use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_jsonrpc_primitives::types::transactions::{RpcTransactionError, TransactionInfo};
 use near_primitives::account::id::ParseAccountError;
 use near_primitives::action::{Action, FunctionCallAction};
+use near_primitives::hash::CryptoHash;
 use near_primitives::transaction::{Transaction, TransactionV0};
 pub use near_primitives::types::AccountId;
 use near_primitives::types::{BlockReference, FunctionArgs};
@@ -171,51 +172,7 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, Error> {
-        let response = self
-            .client
-            .call(RpcQueryRequest {
-                block_reference: BlockReference::latest(),
-                request: QueryRequest::ViewAccessKey {
-                    account_id: self.account_id.clone(),
-                    public_key: self.secret_key.public_key().clone(),
-                },
-            })
-            .await
-            .map_err(|err| Error::Custom {
-                operation: ErrorOperation::FetchAccount,
-                reason: err.to_string(),
-            })?;
-
-        let (nonce, permission, block_hash) = match response {
-            RpcQueryResponse {
-                kind: QueryResponseKind::AccessKey(AccessKeyView { nonce, permission }),
-                block_hash,
-                block_height: _,
-            } => (nonce, permission, block_hash),
-            _ => {
-                return Err(Error::InvalidResponse {
-                    operation: ErrorOperation::FetchAccount,
-                })
-            }
-        };
-
-        if let AccessKeyPermissionView::FunctionCall {
-            allowance: _,
-            receiver_id,
-            method_names,
-        } = permission
-        {
-            if receiver_id != contract_id {
-                return Err(Error::NotPermittedToCallContract(contract_id));
-            }
-
-            if !(method_names.is_empty() || method_names.contains(&method)) {
-                return Err(Error::NotPermittedToCallMethod {
-                    contract: contract_id,
-                    method,
-                });
-            }
-        }
+        let (nonce, block_hash) = self.get_nonce(contract_id.clone(), method.clone()).await?;
 
         let transaction = Transaction::V0(TransactionV0 {
             signer_id: self.account_id.clone(),
@@ -293,5 +250,59 @@ impl Network {
                 operation: ErrorOperation::Mutate,
             }),
         }
+    }
+
+    async fn get_nonce(
+        &self,
+        contract_id: AccountId,
+        method: String,
+    ) -> Result<(u64, CryptoHash), Error> {
+        let response = self
+            .client
+            .call(RpcQueryRequest {
+                block_reference: BlockReference::latest(),
+                request: QueryRequest::ViewAccessKey {
+                    account_id: self.account_id.clone(),
+                    public_key: self.secret_key.public_key().clone(),
+                },
+            })
+            .await
+            .map_err(|err| Error::Custom {
+                operation: ErrorOperation::FetchAccount,
+                reason: err.to_string(),
+            })?;
+
+        let (nonce, permission, block_hash) = match response {
+            RpcQueryResponse {
+                kind: QueryResponseKind::AccessKey(AccessKeyView { nonce, permission }),
+                block_hash,
+                block_height: _,
+            } => (nonce, permission, block_hash),
+            _ => {
+                return Err(Error::InvalidResponse {
+                    operation: ErrorOperation::FetchAccount,
+                })
+            }
+        };
+
+        if let AccessKeyPermissionView::FunctionCall {
+            allowance: _,
+            receiver_id,
+            method_names,
+        } = permission
+        {
+            if receiver_id != contract_id {
+                return Err(Error::NotPermittedToCallContract(contract_id));
+            }
+
+            if !(method_names.is_empty() || method_names.contains(&method)) {
+                return Err(Error::NotPermittedToCallMethod {
+                    contract: contract_id,
+                    method,
+                });
+            }
+        }
+
+        Ok((nonce, block_hash))
     }
 }
