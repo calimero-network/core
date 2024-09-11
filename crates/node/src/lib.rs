@@ -662,12 +662,17 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             break 'done;
                         };
 
-                        let _ = node
+                        let Some(invitation_payload) = node
                             .ctx_manager
                             .invite_to_context(context_id, inviter_id, invitee_id)
-                            .await?;
+                            .await?
+                        else {
+                            println!("{IND} Unable to invite {invitee_id} to context {context_id}");
+                            break 'done;
+                        };
 
                         println!("{IND} Invited {invitee_id} to context {context_id}");
+                        println!("{IND} Invitation Payload: {invitation_payload}");
                     }
                     "delete" => {
                         let Some(context_id) = args else {

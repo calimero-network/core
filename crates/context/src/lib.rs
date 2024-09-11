@@ -341,7 +341,7 @@ impl ContextManager {
         context_id: ContextId,
         requester: PublicKey,
         identity: PublicKey,
-    ) -> EyreResult<Option<()>> {
+    ) -> EyreResult<Option<ContextInvitationPayload>> {
         let handle = self.store.handle();
 
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
@@ -368,7 +368,13 @@ impl ContextManager {
             .send(|b| SigningKey::from_bytes(&requester_secret).sign(b))
             .await?;
 
-        Ok(Some(()))
+        let invitation_payload = ContextInvitationPayload::new(
+            context_id,
+            context_config.network.into_string().into(),
+            context_config.contract.into_string().into(),
+        )?;
+
+        Ok(Some(invitation_payload))
     }
 
     pub async fn is_context_pending_catchup(&self, context_id: &ContextId) -> bool {

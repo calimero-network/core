@@ -83,7 +83,7 @@ impl fmt::Debug for ContextInvitationPayload {
             .field("contract_id", &contract_id);
 
         if is_alternate {
-            let _ = d.field("raw", &self.0);
+            let _ = d.field("raw", &self.to_string());
         }
 
         d.finish()
