@@ -1196,7 +1196,7 @@ dependencies = [
  "claims",
  "eyre",
  "fixedstr",
- "parking_lot",
+ "parking_lot 0.12.3",
  "tempfile",
  "thiserror",
  "uuid 1.10.0",
