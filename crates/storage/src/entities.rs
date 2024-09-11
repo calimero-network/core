@@ -11,11 +11,13 @@ mod tests;
 
 use core::fmt::{self, Display, Formatter};
 
+use borsh::{BorshDeserialize, BorshSerialize};
+
 use crate::address::{Id, Path};
 
 /// The primary data for an [`Element`], that is, the data that the consumer
 /// application has stored in the [`Element`].
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub struct Data;
 
@@ -31,7 +33,7 @@ pub struct Data;
 /// handling via the storage [`Interface`](crate::interface::Interface). The
 /// actual nature of the [`Element`] can be determined by inspection.
 ///
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub struct Element {
     /// The unique identifier for the [`Element`].
@@ -164,6 +166,6 @@ impl Display for Element {
 /// This represents a range of system-managed properties that are used to
 /// process the [`Element`], but are not part of the primary data.
 ///
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub struct Metadata;

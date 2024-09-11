@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+use borsh::to_vec;
 use claims::assert_err;
 
 use super::*;
@@ -21,6 +22,33 @@ mod id__traits {
     use super::*;
 
     #[test]
+    fn borsh_deserialization__valid() {
+        assert_eq!(
+            Id::try_from_slice(&TEST_UUID).unwrap(),
+            Id(Uuid::from_bytes(TEST_UUID))
+        );
+    }
+
+    #[test]
+    fn borsh_deserialization__too_short() {
+        assert_err!(Id::try_from_slice(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn borsh_serialization__valid() {
+        let serialized = to_vec(&Id(Uuid::from_bytes(TEST_UUID))).unwrap();
+        assert_eq!(serialized.len(), 16);
+        assert_eq!(serialized, TEST_UUID);
+    }
+
+    #[test]
+    fn borsh_serialization__roundtrip() {
+        let id1 = Id::new();
+        let id2 = Id::try_from_slice(&to_vec(&id1).unwrap()).unwrap();
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
     fn from__for_uuid() {
         assert_eq!(
             Uuid::from(Id(Uuid::from_bytes(TEST_UUID))).as_bytes(),
@@ -37,7 +65,7 @@ mod path__constructor {
     fn new__valid() {
         let path1 = Path::new("::root").unwrap();
         assert_eq!(path1.path, "root");
-        assert_eq!(path1.offsets, vec![]);
+        assert_eq!(path1.offsets, Vec::<u8>::new());
 
         let path2 = Path::new("::root::node").unwrap();
         assert_eq!(path2.path, "rootnode");
@@ -71,7 +99,7 @@ mod path__constructor {
     fn new__valid_and_long() {
         let path = Path::new(format!("::{}", "a".repeat(255))).unwrap();
         assert_eq!(path.path, "a".repeat(255).as_str());
-        assert_eq!(path.offsets, vec![]);
+        assert_eq!(path.offsets, Vec::<u8>::new());
     }
 
     #[test]
@@ -245,6 +273,33 @@ mod path__public_methods {
 #[cfg(test)]
 mod path__traits {
     use super::*;
+
+    #[test]
+    fn borsh_deserialization__valid() {
+        assert_eq!(
+            Path::try_from_slice(&to_vec("::root::node::leaf").unwrap()).unwrap(),
+            Path::new("::root::node::leaf").unwrap()
+        );
+    }
+
+    #[test]
+    fn borsh_deserialization__invalid() {
+        assert_err!(Path::try_from_slice(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn borsh_serialization__valid() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let serialized = to_vec(&path).unwrap();
+        assert_eq!(serialized, to_vec("::root::node::leaf").unwrap());
+    }
+
+    #[test]
+    fn borsh_serialization__roundtrip() {
+        let path1 = Path::new("::root::node::leaf").unwrap();
+        let path2 = Path::try_from_slice(&to_vec(&path1).unwrap()).unwrap();
+        assert_eq!(path1, path2);
+    }
 
     #[test]
     fn display() {

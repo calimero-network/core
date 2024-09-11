@@ -7,10 +7,12 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+borsh.workspace = true
 fixedstr.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
+calimero-store = { path = "../store", features = ["datatypes"] }
 
 [dev-dependencies]
 claims.workspace = true
