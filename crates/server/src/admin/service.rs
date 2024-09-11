@@ -1,13 +1,10 @@
 use core::fmt::{self, Display, Formatter};
 use core::str::from_utf8;
 use std::error::Error;
-use std::path::Path;
-// use std::path::Path;
 use std::str;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-// use axum::extract::Path;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
@@ -20,8 +17,6 @@ use libp2p::identity::Keypair;
 use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
-// use tower_http::services::{ServeDir, ServeFile};
-// use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
@@ -68,6 +63,9 @@ pub struct AdminState {
     pub keypair: Keypair,
     pub ctx_manager: ContextManager,
 }
+
+// Embed the contents of the admin-ui build directory into the binary
+static REACT_STATIC_FILES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../node-ui/build");
 
 pub(crate) fn setup(
     config: &ServerConfig,
@@ -193,7 +191,19 @@ pub(crate) fn setup(
     Some((admin_path, admin_router))
 }
 
-// Create the router for serving static files and SPA fallback
+/// Creates a router for serving static node-ui files and providing fallback to `index.html` for SPA routing.
+///
+/// This function checks if the admin dashboard is enabled in the provided configuration.
+/// If the admin site is enabled, it returns a router that serves embedded static files
+/// and routes all SPA-related requests (like `/admin-dashboard/`) to `index.html`.
+///
+/// # Parameters
+/// - `config`: A reference to the server configuration that contains the admin site settings.
+///
+/// # Returns
+/// - `Option<(&'static str, Router)>`: If the admin site is enabled, it returns a tuple containing
+///   the base path ("/admin-dashboard") and the router for that path. If the admin site is disabled,
+///   it returns `None`.
 pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
     let _config = match &config.admin {
         Some(config) if config.enabled => config,
@@ -213,44 +223,59 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
     Some((path, router))
 }
 
-// Embed the contents of the build directory into the binary
-static REACT_STATIC_FILES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../node-ui/build");
-
-async fn serve_embedded_file(uri: Uri) -> impl IntoResponse {
+/// Serves embedded static files or falls back to `index.html` for SPA routing.
+///
+/// This function handles requests by removing the "/admin-dashboard/" prefix from the requested URI path,
+/// and then attempting to serve the requested file from the embedded directory. If the requested file
+/// is not found, and the request is for the root path or a client-side route, it serves `index.html`.
+///
+/// # Parameters
+/// - `uri`: The requested URI, which will be used to determine the file path in the embedded directory.
+///
+/// # Returns
+/// - `Result<impl IntoResponse, StatusCode>`: If the requested file is found, it serves the file with the correct MIME type.
+///   If the file is not found, it returns a 404 status code.
+async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> {
     // Extract the path from the URI, removing the "/admin-dashboard/" prefix
     let mut path = uri.path().trim_start_matches("/admin-dashboard/");
-
-    // Serve index.html for root or SPA routes
-    if path.is_empty() || path == "/" {
-        if let Some(index_file) = REACT_STATIC_FILES.get_file("index.html") {
-            return serve_file(index_file).await;
-        } else {
-            return (StatusCode::NOT_FOUND, "index.html not found").into_response();
-        }
-    }
 
     // Remove any leading "/" from the path to match the embedded directory structure
     path = path.trim_start_matches('/');
 
     // Try to find the requested file in the embedded directory
     if let Some(file) = REACT_STATIC_FILES.get_file(path) {
-        serve_file(file).await
-    } else {
-        // If the static file is not found, return a 404
-        (StatusCode::NOT_FOUND, "File not found").into_response()
+        // Serve the static file if it exists
+        return Ok(serve_file(file).await?);
     }
+
+    // Otherwise, serve index.html for SPA routes
+    let index_file = REACT_STATIC_FILES.get_file("index.html")
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(serve_file(index_file).await?)
 }
 
-// Serve a file with the correct MIME type
-async fn serve_file(file: &File<'_>) -> Response<Body> {
-    // Guess the MIME type based on the file path (important for JS, CSS, etc.)
-    let mime_type = from_path(file.path()).first_or_octet_stream();
+/// Serves a static file with the correct MIME type.
+///
+/// This function builds a `Response` with the appropriate content type for the given file
+/// and serves the file's content. It uses the `mime_guess` crate to determine the MIME type
+/// based on the file extension.
+///
+/// # Parameters
+/// - `file`: A reference to the embedded file to be served.
+///
+/// # Returns
+/// - `Result<Response<Body>, StatusCode>`: If the response is successfully built, it returns the response.
+///   If there is an error building the response, it returns an internal server error (500).
+async fn serve_file(file: &File<'_>) -> Result<Response<Body>, StatusCode> {
+  // Guess the MIME type based on the file path (important for JS, CSS, etc.)
+  let mime_type = from_path(file.path()).first_or_octet_stream();
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", mime_type.to_string())
-        .body(Body::from(Bytes::copy_from_slice(file.contents())))
-        .unwrap()
+  Response::builder()
+      .status(StatusCode::OK)
+      .header("Content-Type", mime_type.to_string())
+      .body(Body::from(Bytes::copy_from_slice(file.contents())))
+      .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
