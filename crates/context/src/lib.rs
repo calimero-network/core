@@ -345,8 +345,8 @@ impl ContextManager {
     pub async fn invite_to_context(
         &self,
         context_id: ContextId,
-        requester: PublicKey,
-        identity: PublicKey,
+        inviter_id: PublicKey,
+        invitee_id: PublicKey,
     ) -> EyreResult<Option<ContextInvitationPayload>> {
         let handle = self.store.handle();
 
@@ -356,7 +356,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(requester_secret),
-        }) = handle.get(&ContextIdentityKey::new(context_id, requester))?
+        }) = handle.get(&ContextIdentityKey::new(context_id, inviter_id))?
         else {
             return Ok(None);
         };
@@ -365,18 +365,18 @@ impl ContextManager {
             .mutate(
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
-                requester.rt().expect("infallible conversion"),
+                inviter_id.rt().expect("infallible conversion"),
             )
             .add_members(
                 context_id.rt().expect("infallible conversion"),
-                &[identity.rt().expect("infallible conversion")],
+                &[invitee_id.rt().expect("infallible conversion")],
             )
             .send(|b| SigningKey::from_bytes(&requester_secret).sign(b))
             .await?;
 
         let invitation_payload = ContextInvitationPayload::new(
             context_id,
-            requester,
+            invitee_id,
             context_config.network.into_string().into(),
             context_config.contract.into_string().into(),
         )?;
