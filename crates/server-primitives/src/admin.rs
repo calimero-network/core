@@ -415,6 +415,11 @@ pub struct JoinContextResponseData {
     pub member_public_key: PublicKey,
 }
 
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct JoinContextResponse {
+    pub data: Option<JoinContextResponseData>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]

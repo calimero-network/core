@@ -8,7 +8,8 @@ use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::identity::{ClientKey, ContextUser, PublicKey};
 use calimero_server_primitives::admin::{
     ContextStorage, CreateContextRequest, CreateContextResponse, GetContextsResponse,
-    JoinContextRequest, JoinContextResponseData, UpdateContextApplicationRequest,
+    JoinContextRequest, JoinContextResponse, JoinContextResponseData,
+    UpdateContextApplicationRequest,
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -274,11 +275,6 @@ pub async fn get_context_storage_handler(
         payload: GetContextStorageResponse::new(0),
     }
     .into_response()
-}
-
-#[derive(Debug, Serialize)]
-struct JoinContextResponse {
-    data: Option<JoinContextResponseData>,
 }
 
 pub async fn join_context_handler(

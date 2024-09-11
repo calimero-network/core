@@ -1,6 +1,6 @@
 use calimero_primitives::context::ContextInvitationPayload;
 use calimero_primitives::identity::PrivateKey;
-use calimero_server_primitives::admin::JoinContextRequest;
+use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
@@ -50,7 +50,14 @@ impl JoinCommand {
             bail!("Request failed with status: {}", response.status())
         }
 
-        info!("Context {} sucesfully joined", self.context_id);
+        let Some(body) = response.json::<JoinContextResponse>().await?.data else {
+            bail!("Unable to join context");
+        };
+
+        info!(
+            "Context {} sucesfully joined as {}",
+            body.context_id, body.member_public_key
+        );
 
         Ok(())
     }
