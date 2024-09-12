@@ -72,6 +72,10 @@ from the `ServerPeer`. `ServerPeer` collects executed and pending transactions
 from the given hash to the latest transaction. The transactions are sent in
 batches to the `ClientPeer` which applies the transactions to the store.
 
+Following diagram depicts the catchup process. The `ClientPeer` in this scenario
+is regular peer (not coordinator). The `ServerPeer` can be either regular peer
+or coordinator.
+
 ```mermaid
 sequenceDiagram
     ClientPeer->>+ServerPeer: OpenStream
