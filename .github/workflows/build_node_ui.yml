@@ -58,7 +58,7 @@ jobs:
       - name: Add and commit build folder
         run: |
           git add ./node-ui/build
-          git commit -m "Automated commit of node-ui build [skip-ci]"
+          git commit -m "Automated commit of node-ui build"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
