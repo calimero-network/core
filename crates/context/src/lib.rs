@@ -17,7 +17,8 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
-    ContextMeta as ContextMetaKey,
+    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
+    ContextTransaction as ContextTransactionKey,
 };
 use calimero_store::types::{
     ApplicationMeta as ApplicationMetaValue, ContextConfig as ContextConfigValue,
@@ -440,6 +441,86 @@ impl ContextManager {
         }
 
         handle.delete(&key)?;
+
+        handle.delete(&ContextConfigKey::new(*context_id))?;
+
+        {
+            let mut keys = vec![];
+
+            let mut iter = handle.iter::<ContextIdentityKey>()?;
+
+            let first = iter
+                .seek(ContextIdentityKey::new(*context_id, [0; 32].into()))
+                .transpose();
+
+            for k in first.into_iter().chain(iter.keys()) {
+                let k = k?;
+
+                if k.context_id() != *context_id {
+                    break;
+                }
+
+                keys.push(k);
+            }
+
+            drop(iter);
+
+            for k in keys {
+                handle.delete(&k)?;
+            }
+        }
+
+        {
+            let mut keys = vec![];
+
+            let mut iter = handle.iter::<ContextStateKey>()?;
+
+            let first = iter
+                .seek(ContextStateKey::new(*context_id, [0; 32].into()))
+                .transpose();
+
+            for k in first.into_iter().chain(iter.keys()) {
+                let k = k?;
+
+                if k.context_id() != *context_id {
+                    break;
+                }
+
+                keys.push(k);
+            }
+
+            drop(iter);
+
+            for k in keys {
+                handle.delete(&k)?;
+            }
+        }
+
+        {
+            let mut keys = vec![];
+
+            let mut iter = handle.iter::<ContextTransactionKey>()?;
+
+            let first = iter
+                .seek(ContextTransactionKey::new(*context_id, [0; 32].into()))
+                .transpose();
+
+            for k in first.into_iter().chain(iter.keys()) {
+                let k = k?;
+
+                if k.context_id() != *context_id {
+                    break;
+                }
+
+                keys.push(k);
+            }
+
+            drop(iter);
+
+            for k in keys {
+                handle.delete(&k)?;
+            }
+        }
 
         self.unsubscribe(context_id).await?;
 
