@@ -9,8 +9,8 @@ cd "$(dirname $0)"
 ./build-all-apps.sh
 
 # Prepare contracts
-# ../contracts/registry/build.sh
-# ../contracts/context-config/build.sh
+../contracts/registry/build.sh
+../contracts/context-config/build.sh
 
 # Run cargo test
 # cargo test
