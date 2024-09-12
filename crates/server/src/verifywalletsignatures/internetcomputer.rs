@@ -165,7 +165,6 @@ pub async fn verify_internet_identity_signature(
         message: format!("Invalid canister signature: {}", e),
     })?;
 
-    // println!("{:?}", Principal::self_authenticating(signed_delegation_chain.publicKey.as_slice()).to_text());
     Ok(())
 }
 
@@ -178,8 +177,9 @@ pub async fn verify_internet_identity_signature(
 /// # Returns
 /// A vector combining the domain separator and the message.
 fn msg_with_domain(sep: &[u8], bytes: &[u8]) -> Vec<u8> {
-    let mut msg = vec![sep.len() as u8];
-    msg.append(&mut sep.to_vec());
-    msg.append(&mut bytes.to_vec());
+    let mut msg = Vec::with_capacity(1 + sep.len() + bytes.len()); // Pre-allocate space for efficiency
+    msg.push(sep.len() as u8);
+    msg.extend_from_slice(sep);
+    msg.extend_from_slice(bytes);
     msg
 }
