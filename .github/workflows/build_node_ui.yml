@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - node-ui/** # Trigger workflow if changes are made in the node-ui folder
     paths-ignore:
       - 'node-ui/build/**' # Prevent workflow from triggering if only build folder changes
 
@@ -15,15 +17,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Check if there are changes in the node-ui folder before building
-      - name: Check for changes in node-ui
+      # Check if there are changes in the node-ui folder before building (excluding node-ui/build)
+      - name: Check for changes in node-ui (excluding build folder)
         id: check_changes
         run: |
-          if git diff --quiet HEAD ./node-ui; then
-            echo "No changes in node-ui."
+          # Check if there are changes only in node-ui/build folder
+          if git diff --quiet HEAD ./node-ui -- ':!node-ui/build'; then
+            echo "No changes in node-ui (excluding build folder)."
             echo "no_changes=true" >> $GITHUB_ENV
           else
-            echo "Changes found in node-ui."
+            echo "Changes found in node-ui (excluding build folder)."
             echo "no_changes=false" >> $GITHUB_ENV
           fi
 
