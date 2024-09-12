@@ -30,6 +30,5 @@ run_script() {
 
 # Iterate over each script in the array and run them synchronously
 for script in "${BUILD_SCRIPTS[@]}"; do
-    echo "[${script}]"
-    # run_script "$script"
+    run_script "$script"
 done
