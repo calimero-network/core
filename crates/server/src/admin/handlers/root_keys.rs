@@ -3,9 +3,7 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::identity::{RootKey, WalletType};
-use calimero_server_primitives::admin::{
-    AddPublicKeyRequest, AdminState, IntermediateAddPublicKeyRequest,
-};
+use calimero_server_primitives::admin::{AddPublicKeyRequest, IntermediateAddPublicKeyRequest};
 use calimero_store::Store;
 use chrono::Utc;
 use futures_util::TryFutureExt;
@@ -16,6 +14,7 @@ use super::add_client_key::transform_request;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse, Empty};
 use crate::admin::storage::root_key::{add_root_key, clean_auth_keys};
 use crate::admin::utils::auth::validate_challenge;
+use crate::AdminState;
 
 #[derive(Debug, Serialize)]
 struct CreateRootKeyResponse {

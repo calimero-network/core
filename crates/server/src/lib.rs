@@ -10,10 +10,10 @@ use axum_server_dual_protocol::bind_dual_protocol;
 use calimero_context::ContextManager;
 use calimero_node_primitives::ServerSender;
 use calimero_primitives::events::NodeEvent;
-use calimero_server_primitives::admin::AdminState;
 use calimero_store::Store;
 use config::ServerConfig;
 use eyre::{bail, Result as EyreResult};
+use libp2p::identity::Keypair;
 use multiaddr::Protocol;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
@@ -36,6 +36,24 @@ mod middleware;
 mod verifywalletsignatures;
 #[cfg(feature = "websocket")]
 pub mod ws;
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct AdminState {
+    pub store: Store,
+    pub keypair: Keypair,
+    pub ctx_manager: ContextManager,
+}
+
+impl AdminState {
+    pub fn new(store: Store, keypair: Keypair, ctx_manager: ContextManager) -> Self {
+        Self {
+            store,
+            keypair,
+            ctx_manager,
+        }
+    }
+}
 
 // TODO: Consider splitting this long function into multiple parts.
 #[allow(clippy::too_many_lines)]

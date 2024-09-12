@@ -1,33 +1,12 @@
-use calimero_context::ContextManager;
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PublicKey, WalletType};
-use calimero_store::Store;
 use camino::Utf8PathBuf;
-use libp2p::identity::Keypair;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct AdminState {
-    pub store: Store,
-    pub keypair: Keypair,
-    pub ctx_manager: ContextManager,
-}
-
-impl AdminState {
-    pub fn new(store: Store, keypair: Keypair, ctx_manager: ContextManager) -> Self {
-        Self {
-            store,
-            keypair,
-            ctx_manager,
-        }
-    }
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]

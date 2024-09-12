@@ -1289,13 +1289,10 @@ dependencies = [
 name = "calimero-server-primitives"
 version = "0.1.0"
 dependencies = [
- "calimero-context",
  "calimero-node-primitives",
  "calimero-primitives",
- "calimero-store",
  "camino",
  "eyre",
- "libp2p",
  "semver",
  "serde",
  "serde_json",

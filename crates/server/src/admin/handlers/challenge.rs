@@ -5,7 +5,7 @@ use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::{AdminState, NodeChallenge, NodeChallengeMessage};
+use calimero_server_primitives::admin::{NodeChallenge, NodeChallengeMessage};
 use chrono::Utc;
 use libp2p::identity::Keypair;
 use rand::{thread_rng, RngCore};
@@ -16,6 +16,7 @@ use tower_sessions::Session;
 use tracing::error;
 
 use crate::admin::service::{ApiError, ApiResponse};
+use crate::AdminState;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]

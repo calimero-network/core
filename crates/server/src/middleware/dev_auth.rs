@@ -4,8 +4,9 @@ use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::Extension;
-use calimero_server_primitives::admin::AdminState;
 use chrono::{Duration, TimeZone, Utc};
+
+use crate::AdminState;
 
 const TIMESTAMP_THRESHOLD: i64 = 5;
 

@@ -3,12 +3,12 @@ use std::sync::Arc;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::identity::Did;
-use calimero_server_primitives::admin::AdminState;
 use serde::Serialize;
 use tower_sessions::Session;
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::admin::storage::did::get_or_create_did;
+use crate::AdminState;
 
 #[derive(Debug, Serialize)]
 struct NodeDid {

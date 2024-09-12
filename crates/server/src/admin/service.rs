@@ -9,7 +9,6 @@ use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
-use calimero_server_primitives::admin::AdminState;
 use calimero_store::Store;
 use eyre::Report;
 use serde::{Deserialize, Serialize};
@@ -36,8 +35,8 @@ use crate::admin::handlers::context::{
 use crate::admin::handlers::fetch_did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
-use crate::middleware;
 use crate::middleware::auth::AuthSignatureLayer;
+use crate::{middleware, AdminState};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
