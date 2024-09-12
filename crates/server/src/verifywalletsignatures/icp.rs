@@ -92,8 +92,8 @@ pub async fn verify_internet_identity_signature(
     ii_canister_id: &str,
 ) -> Result<(), ApiError> {
     // Deserialize the `Value` into `DelegationChain`
-    let signed_delegation_chain: DelegationChain = serde_json::from_value(signed_delegation_chain_json)
-        .map_err(|e| ApiError {
+    let signed_delegation_chain: DelegationChain =
+        serde_json::from_value(signed_delegation_chain_json).map_err(|e| ApiError {
             status_code: StatusCode::BAD_REQUEST,
             message: format!("Error parsing delegation_chain: {}", e),
         })?;
