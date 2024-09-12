@@ -17,11 +17,9 @@ use tracing::info;
 use crate::admin::handlers::root_keys::store_root_key;
 use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::root_key::{get_root_key, has_near_account_root_key};
-use crate::verifywalletsignatures::{
-  icp::verify_internet_identity_signature,
-  near::{has_near_key, verify_near_signature},
-  starknet::{verify_argent_signature, verify_metamask_signature}
-};
+use crate::verifywalletsignatures::icp::verify_internet_identity_signature;
+use crate::verifywalletsignatures::near::{has_near_key, verify_near_signature};
+use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
 // TODO: Consider breaking this function up into pieces.
 /// Verifies a node signature based on the type of wallet (NEAR, ETH, STARKNET).
