@@ -18,6 +18,7 @@ pub use rocksdb::RocksDB;
 #[non_exhaustive]
 pub enum Column {
     Meta,
+    Config,
     Identity,
     State,
     Transaction,

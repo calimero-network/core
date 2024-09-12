@@ -1,5 +1,6 @@
 use calimero_node_primitives::CallError;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use eyre::Error as EyreError;
 use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -123,7 +124,7 @@ pub struct QueryRequest {
     pub context_id: ContextId,
     pub method: String,
     pub args_json: Value,
-    pub executor_public_key: [u8; 32],
+    pub executor_public_key: PublicKey,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -159,7 +160,7 @@ pub struct MutateRequest {
     pub context_id: ContextId,
     pub method: String,
     pub args_json: Value,
-    pub executor_public_key: [u8; 32],
+    pub executor_public_key: PublicKey,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

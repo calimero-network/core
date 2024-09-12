@@ -1,15 +1,25 @@
 use core::fmt;
 use std::borrow::Cow;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use near_sdk::serde::Deserialize;
-use near_sdk::{bs58, near, serde, serde_json};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::repr::{self, Repr, ReprBytes};
+use crate::repr::{self, Repr, ReprBytes, ReprTransmute};
 
-#[derive(Debug)]
-#[near(serializers = [borsh, json])]
+#[derive(
+    Eq,
+    Ord,
+    Clone,
+    Debug,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 pub struct Application<'a> {
     pub id: Repr<ApplicationId>,
     pub blob: Repr<BlobId>,
@@ -18,8 +28,7 @@ pub struct Application<'a> {
     pub metadata: ApplicationMetadata<'a>,
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd)]
-#[near(serializers = [borsh])]
+#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct Identity([u8; 32]);
 
 impl ReprBytes for Identity {
@@ -40,8 +49,7 @@ impl ReprBytes for Identity {
     }
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd)]
-#[near(serializers = [borsh])]
+#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct SignerId(Identity);
 
 impl ReprBytes for SignerId {
@@ -62,8 +70,7 @@ impl ReprBytes for SignerId {
     }
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd)]
-#[near(serializers = [borsh])]
+#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct ContextId(Identity);
 
 impl ReprBytes for ContextId {
@@ -84,8 +91,7 @@ impl ReprBytes for ContextId {
     }
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd)]
-#[near(serializers = [borsh])]
+#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct ContextIdentity(Identity);
 
 impl ReprBytes for ContextIdentity {
@@ -106,8 +112,7 @@ impl ReprBytes for ContextIdentity {
     }
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd)]
-#[near(serializers = [borsh])]
+#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct BlobId(Identity);
 
 impl ReprBytes for BlobId {
@@ -128,8 +133,7 @@ impl ReprBytes for BlobId {
     }
 }
 
-#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd)]
-#[near(serializers = [borsh])]
+#[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct ApplicationId(Identity);
 
 impl ReprBytes for ApplicationId {
@@ -150,8 +154,19 @@ impl ReprBytes for ApplicationId {
     }
 }
 
-#[derive(Eq, Ord, Debug, Default, Clone, PartialEq, PartialOrd)]
-#[near(serializers = [borsh, json])]
+#[derive(
+    Eq,
+    Ord,
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 pub struct ApplicationSource<'a>(#[serde(borrow)] pub Cow<'a, str>);
 
 impl ApplicationSource<'_> {
@@ -160,8 +175,19 @@ impl ApplicationSource<'_> {
     }
 }
 
-#[derive(Eq, Ord, Debug, Default, Clone, PartialEq, PartialOrd)]
-#[near(serializers = [borsh, json])]
+#[derive(
+    Eq,
+    Ord,
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 pub struct ApplicationMetadata<'a>(#[serde(borrow)] pub Repr<Cow<'a, [u8]>>);
 
 impl ApplicationMetadata<'_> {
@@ -188,15 +214,43 @@ impl ReprBytes for Signature {
     }
 }
 
-#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
-#[near(serializers = [json])]
+#[derive(Debug, Error)]
+pub enum VerificationKeyParseError {
+    #[error(transparent)]
+    LengthMismatch(repr::LengthMismatch),
+    #[error("invalid key: {0}")]
+    InvalidVerificationKey(ed25519_dalek::SignatureError),
+}
+
+impl ReprBytes for VerifyingKey {
+    type EncodeBytes<'a> = [u8; 32];
+    type DecodeBytes = [u8; 32];
+
+    type Error = VerificationKeyParseError;
+
+    fn as_bytes(&self) -> Self::EncodeBytes<'_> {
+        self.to_bytes()
+    }
+
+    fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
+    where
+        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+    {
+        use VerificationKeyParseError::{InvalidVerificationKey, LengthMismatch};
+
+        let bytes = Self::DecodeBytes::from_bytes(f).map_err(|e| e.map(LengthMismatch))?;
+
+        Self::from_bytes(&bytes).map_err(|e| repr::Error::DecodeError(InvalidVerificationKey(e)))
+    }
+}
+
+#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Capability {
     ManageApplication,
     ManageMembers,
 }
 
-#[derive(Eq, Debug, Clone, PartialEq)]
-#[near(serializers = [json])]
+#[derive(Eq, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Signed<T> {
     payload: Repr<Box<[u8]>>,
     signature: Repr<Signature>,
@@ -209,10 +263,12 @@ pub struct Signed<T> {
 pub enum Error<E> {
     #[error("invalid signature")]
     InvalidSignature,
-    #[error("failed to parse JSON payload: {0}")]
+    #[error("json error: {0}")]
     ParseError(#[from] serde_json::Error),
-    #[error("failed to derive verifing key: {0}")]
-    KeyDerivationError(E),
+    #[error("derivation error: {0}")]
+    DerivationError(E),
+    #[error(transparent)]
+    VerificationKeyParseError(#[from] repr::Error<VerificationKeyParseError>),
 }
 
 impl<E: fmt::Display> fmt::Debug for Error<E> {
@@ -221,25 +277,60 @@ impl<E: fmt::Display> fmt::Debug for Error<E> {
     }
 }
 
-impl<T: serde::Serialize> Signed<T> {
-    pub fn new(payload: &T, sign: impl FnOnce(&[u8]) -> Signature) -> serde_json::Result<Self> {
-        let payload = serde_json::to_vec(&payload)?;
-        let signature = sign(&payload);
+impl<T: Serialize> Signed<T> {
+    pub fn new<R: IntoResult<Signature>>(
+        payload: &T,
+        sign: impl FnOnce(&[u8]) -> R,
+    ) -> Result<Self, Error<R::Error>> {
+        let payload = serde_json::to_vec(&payload)?.into_boxed_slice();
+
+        let signature = sign(&payload)
+            .into_result()
+            .map_err(Error::DerivationError)?;
 
         Ok(Self {
-            payload: Repr::new(payload.into_boxed_slice()),
+            payload: Repr::new(payload),
             signature: Repr::new(signature),
             _priv: Default::default(),
         })
     }
 }
+
+pub trait IntoResult<T> {
+    type Error;
+
+    fn into_result(self) -> Result<T, Self::Error>;
+}
+
+impl<T> IntoResult<T> for T {
+    type Error = std::convert::Infallible;
+
+    fn into_result(self) -> Result<T, Self::Error> {
+        Ok(self)
+    }
+}
+
+impl<T, E> IntoResult<T> for Result<T, E> {
+    type Error = E;
+
+    fn into_result(self) -> Result<T, Self::Error> {
+        self
+    }
+}
+
 impl<'a, T: Deserialize<'a>> Signed<T> {
-    pub fn parse<E>(
+    pub fn parse<R: IntoResult<SignerId>>(
         &'a self,
-        f: impl FnOnce(&T) -> Result<VerifyingKey, E>,
-    ) -> Result<T, Error<E>> {
+        f: impl FnOnce(&T) -> R,
+    ) -> Result<T, Error<R::Error>> {
         let parsed = serde_json::from_slice(&self.payload)?;
-        let key = f(&parsed).map_err(Error::KeyDerivationError)?;
+
+        let bytes = f(&parsed).into_result().map_err(Error::DerivationError)?;
+
+        let key = bytes
+            .rt::<VerifyingKey>()
+            .map_err(Error::VerificationKeyParseError)?;
+
         key.verify(&self.payload, &self.signature)
             .map_or(Err(Error::InvalidSignature), |_| Ok(parsed))
     }

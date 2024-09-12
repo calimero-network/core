@@ -6,6 +6,7 @@ use calimero_node_primitives::{
     CallError as PrimitiveCallError, ExecutionRequest, Finality, ServerSender,
 };
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
     Request as PrimitiveRequest, RequestPayload, Response as PrimitiveResponse, ResponseBody,
     ResponseBodyError, ResponseBodyResult, ServerResponseError,
@@ -153,7 +154,7 @@ pub(crate) async fn call(
     method: String,
     args: Vec<u8>,
     writes: bool,
-    executor_public_key: [u8; 32],
+    executor_public_key: PublicKey,
 ) -> Result<Option<String>, CallError> {
     let (outcome_sender, outcome_receiver) = oneshot::channel();
 

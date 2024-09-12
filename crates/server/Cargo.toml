@@ -18,6 +18,7 @@ ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util = { workspace = true, optional = true }
 include_dir.workspace = true
+hex.workspace = true
 jsonwebtoken.workspace = true
 libp2p.workspace = true
 local-ip-address.workspace = true
@@ -38,11 +39,11 @@ tower.workspace = true
 tower-http = { workspace = true, features = ["cors", "fs"] }
 tower-sessions = { workspace = true, optional = true }
 tracing.workspace = true
+web3.workspace = true
 x509-parser.workspace = true
 
 calimero-context = { path = "../context" }
 calimero-node-primitives = { path = "../node-primitives" }
-calimero-identity = { path = "../identity" }
 calimero-primitives = { path = "../primitives" }
 calimero-server-primitives = { path = "../server-primitives" }
 calimero-store = { path = "../store", features = ["serde"] }

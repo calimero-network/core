@@ -9,7 +9,7 @@ license-file = "LICENSE.md"
 resolver = "2"
 members = [
   "./crates/context",
-  "./crates/identity",
+  "./crates/context/config",
   "./crates/meroctl",
   "./crates/network",
   "./crates/node",
@@ -30,7 +30,7 @@ members = [
   "./apps/gen-ext",
 
   "./contracts/context-config",
-  "./contracts/package-manager",
+  "./contracts/registry",
 ]
 
 [workspace.dependencies]
@@ -50,6 +50,7 @@ color-eyre = "0.6.2"
 const_format = "0.2.32"
 dirs = "5.0.1"
 ed25519-dalek = "2.1.1"
+either = "1.13.0"
 eyre = "0.6.12"
 fixedstr = { version = "0.5.7", features = ["flex-str", "serde", "std"] }
 fragile = "2.0.0"
@@ -66,12 +67,12 @@ libp2p-identity = "0.2.9"
 mime_guess = "2.0"
 multiaddr = "0.18.1"
 near-account-id = "1.0.0"
-near-crypto = "0.23.0"
-near-jsonrpc-client = "0.10.1"
-near-jsonrpc-primitives = "0.23.0"
-near-primitives = "0.23.0"
-near-sdk = "5.2.1"
-near-workspaces = "0.11.0"
+near-crypto = "0.24.1"
+near-jsonrpc-client = "0.12.0"
+near-jsonrpc-primitives = "0.24.1"
+near-primitives = "0.24.1"
+near-sdk = "5.3.0"
+near-workspaces = "0.12.0"
 notify = "6.1.1"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"

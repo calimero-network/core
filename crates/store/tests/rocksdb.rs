@@ -9,7 +9,9 @@ use eyre::Ok as EyreOk;
 
 #[test]
 fn rocks_store() {
-    let config = config::StoreConfig::new("corpus/rocks".into());
+    let config = config::StoreConfig {
+        path: "corpus/rocks".into(),
+    };
 
     if config.path.exists() {
         if config.path.metadata().unwrap().is_dir() {

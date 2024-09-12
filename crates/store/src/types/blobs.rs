@@ -9,14 +9,14 @@ use crate::types::PredefinedEntry;
 pub struct BlobMeta {
     // todo! impl proper entry reference count
     // pub refs: usize,
-    pub size: usize,
+    pub size: u64,
     pub hash: [u8; 32],
     pub links: Box<[BlobMetaKey]>,
 }
 
 impl BlobMeta {
     #[must_use]
-    pub const fn new(size: usize, hash: [u8; 32], links: Box<[BlobMetaKey]>) -> Self {
+    pub const fn new(size: u64, hash: [u8; 32], links: Box<[BlobMetaKey]>) -> Self {
         Self { size, hash, links }
     }
 }
