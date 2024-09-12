@@ -64,7 +64,7 @@ export interface RpcQueryParams<Args> {
   contextId: ContextId;
   method: string;
   argsJson: Args;
-  executorPublicKey: number[];
+  executorPublicKey: string;
 }
 
 export interface RpcQueryResponse<Output> {
@@ -75,7 +75,7 @@ export interface RpcMutateParams<Args> {
   contextId: ContextId;
   method: string;
   argsJson: Args;
-  executorPublicKey: number[];
+  executorPublicKey: string;
 }
 
 export interface RpcMutateResponse<Output> {
