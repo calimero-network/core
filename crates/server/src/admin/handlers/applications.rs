@@ -10,7 +10,8 @@ use calimero_server_primitives::admin::{
     InstallApplicationResponse, InstallDevApplicationRequest, ListApplicationsResponse,
 };
 
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
+use crate::AdminState;
 
 pub async fn install_dev_application_handler(
     Extension(state): Extension<Arc<AdminState>>,

@@ -7,6 +7,7 @@ use crate::cli::app::AppCommand;
 use crate::cli::config::ConfigCommand;
 use crate::cli::context::ContextCommand;
 use crate::cli::init::InitCommand;
+use crate::cli::jsonrpc::JsonRpcCommand;
 use crate::cli::run::RunCommand;
 use crate::defaults;
 
@@ -14,6 +15,7 @@ mod app;
 mod config;
 mod context;
 mod init;
+mod jsonrpc;
 mod run;
 
 pub const EXAMPLES: &str = r"
@@ -48,12 +50,14 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
-    Init(InitCommand),
+    App(AppCommand),
     Config(ConfigCommand),
+    Context(ContextCommand),
+    Init(InitCommand),
+    #[command(alias = "call")]
+    JsonRpc(JsonRpcCommand),
     #[command(alias = "up")]
     Run(RunCommand),
-    Context(ContextCommand),
-    App(AppCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -76,6 +80,7 @@ impl RootCommand {
             SubCommands::Run(run) => run.run(self.args).await,
             SubCommands::Context(context) => context.run(self.args).await,
             SubCommands::App(application) => application.run(self.args).await,
+            SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(self.args).await,
         }
     }
 }
