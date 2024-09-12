@@ -18,7 +18,6 @@ use tracing::error;
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse, Empty};
 use crate::admin::storage::client_keys::get_context_client_key;
-use crate::admin::utils::context::{create_context, join_context};
 use crate::AdminState;
 
 #[derive(Debug, Deserialize, Serialize)]

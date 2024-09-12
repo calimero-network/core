@@ -38,7 +38,7 @@ use crate::config::ServerConfig;
 use crate::middleware::auth::AuthSignatureLayer;
 #[cfg(feature = "host_layer")]
 use crate::middleware::host::HostLayer;
-use crate::AdminState;
+use crate::{middleware, AdminState};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]

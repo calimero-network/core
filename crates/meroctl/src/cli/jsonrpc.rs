@@ -7,6 +7,7 @@ use eyre::{bail, Result as EyreResult};
 use serde_json::Value;
 
 use super::RootArgs;
+use crate::common::RequestType::POST;
 use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
@@ -84,7 +85,7 @@ impl JsonRpcCommand {
         }
 
         let client = reqwest::Client::new();
-        let response = get_response(&client, url, Some(request), &config.identity).await?;
+        let response = get_response(&client, url, Some(request), &config.identity, POST).await?;
 
         println!("Response: {}", response.text().await?);
 

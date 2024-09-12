@@ -139,7 +139,7 @@ impl QueryRequest {
             context_id,
             method,
             args_json,
-            executor_public_key,
+            executor_public_key: executor_public_key.into(),
         }
     }
 }
@@ -192,7 +192,7 @@ impl MutateRequest {
             context_id,
             method,
             args_json,
-            executor_public_key,
+            executor_public_key: executor_public_key.into(),
         }
     }
 }
