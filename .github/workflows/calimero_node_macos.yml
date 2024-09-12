@@ -36,11 +36,11 @@ jobs:
       - name: Install pnpm
         run: npm install -g pnpm
 
-      # Install and build frontend
-      - name: Install frontend dependencies with pnpm
+      # Install and build node-ui
+      - name: Install node-ui dependencies with pnpm
         run: pnpm install --prefix ./node-ui
 
-      - name: Build frontend in node-ui
+      - name: Build node-ui
         run: pnpm --filter ./node-ui run build
       
       - name: Install rustup and Rust toolchain
