@@ -1,7 +1,10 @@
+#![allow(unused_crate_dependencies)]
+
 use std::env::args;
 use std::process::exit;
 
-use calimero_blobstore::{BlobManager, FileSystem};
+use calimero_blobstore::config::BlobStoreConfig;
+use calimero_blobstore::{BlobManager, FileSystem, Size};
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::Store;
@@ -9,7 +12,6 @@ use eyre::Result as EyreResult;
 use futures_util::TryStreamExt;
 use tokio::io::{stdin, stdout, AsyncWriteExt};
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tokio_util::io::ReaderStream;
 
 const DATA_DIR: &'static str = "blob-tests/data";
 const BLOB_DIR: &'static str = "blob-tests/blob";
@@ -22,14 +24,17 @@ async fn main() -> EyreResult<()> {
 
     let data_store = Store::open::<RocksDB>(&config)?;
 
-    let blob_store = FileSystem::new(BLOB_DIR.into()).await?;
+    let blob_store = FileSystem::new(&BlobStoreConfig {
+        path: BLOB_DIR.into(),
+    })
+    .await?;
 
     let blob_mgr = BlobManager::new(data_store, blob_store);
 
     let mut args = args().skip(1);
 
     match args.next() {
-        Some(hash) => match blob_mgr.get(hash.parse()?).await? {
+        Some(hash) => match blob_mgr.get(hash.parse()?)? {
             Some(mut blob) => {
                 let mut stdout = stdout();
 

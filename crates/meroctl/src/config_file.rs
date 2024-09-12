@@ -1,5 +1,6 @@
 use std::fs::{read_to_string, write};
 
+use calimero_context::config::ContextConfig;
 use calimero_network::config::{BootstrapConfig, CatchupConfig, DiscoveryConfig, SwarmConfig};
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
@@ -22,9 +23,11 @@ pub struct ConfigFile {
     #[serde(flatten)]
     pub network: NetworkConfig,
 
-    pub store: StoreConfig,
+    pub datastore: DataStoreConfig,
 
-    pub application: ApplicationConfig,
+    pub blobstore: BlobStoreConfig,
+
+    pub context: ContextConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -57,12 +60,12 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct StoreConfig {
+pub struct DataStoreConfig {
     pub path: Utf8PathBuf,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ApplicationConfig {
+pub struct BlobStoreConfig {
     pub path: Utf8PathBuf,
 }
 

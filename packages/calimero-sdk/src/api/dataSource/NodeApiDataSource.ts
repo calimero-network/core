@@ -49,8 +49,9 @@ export class NodeApiDataSource implements NodeApi {
   async getContextIdentity(
     rpcBaseUrl: string,
     contextId: string,
+    networkId: string = 'mainnet',
   ): ApiResponse<ContextResponse> {
-    const headers: Header | null = await createAuthHeader(contextId);
+    const headers: Header | null = await createAuthHeader(contextId, networkId);
 
     return await this.client.get<ContextResponse>(
       `${rpcBaseUrl}/admin-api/contexts/${contextId}/identities`,

@@ -1,11 +1,10 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_primitives::identity::{KeyPair, PublicKey};
 
 use crate::entry::{Borsh, Identity};
 use crate::key::{
-    ApplicationMeta as ApplicationMetaKey, ContextIdentity as ContextIdentityKey,
-    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
-    ContextTransaction as ContextTransactionKey,
+    ApplicationMeta as ApplicationMetaKey, ContextConfig as ContextConfigKey,
+    ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
+    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
 };
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
@@ -37,6 +36,24 @@ impl PredefinedEntry for ContextMetaKey {
     type DataType<'a> = ContextMeta;
 }
 
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+pub struct ContextConfig {
+    pub network: Box<str>,
+    pub contract: Box<str>,
+}
+
+impl ContextConfig {
+    #[must_use]
+    pub const fn new(network: Box<str>, contract: Box<str>) -> Self {
+        Self { network, contract }
+    }
+}
+
+impl PredefinedEntry for ContextConfigKey {
+    type Codec = Borsh;
+    type DataType<'a> = ContextConfig;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextState<'a> {
@@ -61,28 +78,8 @@ impl AsRef<[u8]> for ContextState<'_> {
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(clippy::exhaustive_structs)]
 pub struct ContextIdentity {
-    pub public_key: PublicKey,
     pub private_key: Option<[u8; 32]>,
-}
-
-impl From<KeyPair> for ContextIdentity {
-    fn from(id: KeyPair) -> Self {
-        Self {
-            public_key: id.public_key,
-            private_key: id.private_key,
-        }
-    }
-}
-
-impl From<ContextIdentity> for KeyPair {
-    fn from(id: ContextIdentity) -> Self {
-        Self {
-            public_key: id.public_key,
-            private_key: id.private_key,
-        }
-    }
 }
 
 impl PredefinedEntry for ContextIdentityKey {

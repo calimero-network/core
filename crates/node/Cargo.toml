@@ -7,14 +7,12 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-bs58.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
 futures-util.workspace = true
 libp2p.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
-semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
 use crate::hash::Hash;
+use crate::identity::PublicKey;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -10,7 +11,7 @@ pub struct Transaction {
     pub method: String,
     pub payload: Vec<u8>,
     pub prior_hash: Hash,
-    pub executor_public_key: [u8; 32],
+    pub executor_public_key: PublicKey,
 }
 
 impl Transaction {
@@ -20,7 +21,7 @@ impl Transaction {
         method: String,
         payload: Vec<u8>,
         prior_hash: Hash,
-        executor_public_key: [u8; 32],
+        executor_public_key: PublicKey,
     ) -> Self {
         Self {
             context_id,
