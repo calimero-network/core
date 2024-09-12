@@ -180,8 +180,7 @@ interface SNWalletType extends WalletTypeBase<'STARKNET'> {
   walletName: string;
 }
 
-interface ICPWalletType
-  extends WalletTypeBase<'ICP'> {
+interface ICPWalletType extends WalletTypeBase<'ICP'> {
   cannisterId: string;
 }
 // TODO: Legacy code, refacture to be used as Interface
@@ -212,7 +211,7 @@ export namespace WalletType {
   }): WalletType {
     return { type: 'STARKNET', walletName } as SNWalletType;
   }
-  
+
   export function ICP({
     cannisterId = 'rdmx6-jaaaa-aaaaa-aaadq-cai',
     walletName = 'II',
@@ -278,8 +277,7 @@ export interface EthSignatureMessageMetadata extends SignatureMetadata {}
 
 export interface StarknetSignatureMessageMetadata extends SignatureMetadata {}
 
-export interface ICPSignatureMessageMetadata
-  extends SignatureMetadata {}
+export interface ICPSignatureMessageMetadata extends SignatureMetadata {}
 
 export interface WalletSignatureData {
   payload: Payload | undefined;
