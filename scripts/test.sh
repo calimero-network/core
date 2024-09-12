@@ -13,4 +13,4 @@ cd "$(dirname $0)"
 ../contracts/context-config/build.sh
 
 # Run cargo test
-# cargo test
+cargo test
