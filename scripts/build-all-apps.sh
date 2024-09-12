@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # Exit immediately if a command exits with a non-zero status.
-set -e
+set -ex
 
 cd "$(dirname $0)"
 
 BUILD_SCRIPTS=(
-    "./../apps/gen-ext/build.sh"
-    "./../apps/kv-store/build.sh"
-    "./../apps/only-peers/build.sh"
+    "../apps/gen-ext/build.sh"
+    "../apps/kv-store/build.sh"
+    "../apps/only-peers/build.sh"
 )
 
 run_script() {

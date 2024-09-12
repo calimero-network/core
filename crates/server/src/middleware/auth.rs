@@ -7,7 +7,6 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use calimero_identity::auth::verify_near_public_key;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_store::Store;
@@ -19,6 +18,7 @@ use tracing::debug;
 
 use crate::admin::storage::client_keys::exists_client_key;
 use crate::admin::storage::root_key::exists_root_keys;
+use crate::admin::utils::auth::verify_near_public_key;
 
 #[derive(Clone)]
 pub struct AuthSignatureLayer {

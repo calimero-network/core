@@ -2,6 +2,12 @@ use core::net::IpAddr;
 use core::time::Duration;
 use std::fs::{create_dir, create_dir_all};
 
+use calimero_context::config::ContextConfig;
+use calimero_context_config::client::config::{
+    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
+    ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
+    Credentials,
+};
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RendezvousConfig, SwarmConfig,
 };
@@ -15,11 +21,13 @@ use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
+use near_crypto::{KeyType, SecretKey};
 use rand::{thread_rng, Rng};
 use tracing::{info, warn};
+use url::Url;
 
 use crate::config_file::{
-    ApplicationConfig, ConfigFile, NetworkConfig, ServerConfig, StoreConfig as StoreConfigFile,
+    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
 };
 use crate::{cli, defaults};
 
@@ -55,6 +63,10 @@ pub struct InitCommand {
     #[clap(long, value_name = "PORT")]
     #[clap(default_value_t = calimero_server::config::DEFAULT_PORT)]
     pub server_port: u16,
+
+    /// URL of the relayer for submitting NEAR transactions
+    #[clap(long, value_name = "URL")]
+    pub relayer_url: Option<Url>,
 
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
@@ -137,13 +149,41 @@ impl InitCommand {
             }
         }
 
+        let relayer = self
+            .relayer_url
+            .unwrap_or_else(defaults::default_relayer_url);
+
         let config = ConfigFile {
             identity,
-            store: StoreConfigFile {
+            datastore: StoreConfigFile {
                 path: "data".into(),
             },
-            application: ApplicationConfig {
-                path: "apps".into(),
+            blobstore: BlobStoreConfig {
+                path: "blobs".into(),
+            },
+            context: ContextConfig {
+                client: ContextConfigClientConfig {
+                    signer: ContextConfigClientSigner {
+                        selected: ContextConfigClientSelectedSigner::Relayer,
+                        relayer: ContextConfigClientRelayerSigner { url: relayer },
+                        local: [
+                            (
+                                "mainnet".to_owned(),
+                                generate_local_signer("https://rpc.mainnet.near.org".parse()?)?,
+                            ),
+                            (
+                                "testnet".to_owned(),
+                                generate_local_signer("https://rpc.testnet.near.org".parse()?)?,
+                            ),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    },
+                    new: ContextConfigClientNew {
+                        network: "testnet".into(),
+                        contract_id: "calimero-context-config.testnet".parse()?,
+                    },
+                },
             },
             network: NetworkConfig {
                 swarm: SwarmConfig::new(listen),
@@ -170,12 +210,29 @@ impl InitCommand {
 
         config.save(&path)?;
 
-        drop(Store::open::<RocksDB>(&StoreConfig::new(
-            path.join(config.store.path),
-        ))?);
+        drop(Store::open::<RocksDB>(&StoreConfig {
+            path: path.join(config.datastore.path),
+        })?);
 
         info!("Initialized a node in {:?}", path);
 
         Ok(())
     }
+}
+
+fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSigner> {
+    let secret_key = SecretKey::from_random(KeyType::ED25519);
+
+    let public_key = secret_key.public_key();
+
+    let account_id = public_key.unwrap_as_ed25519().0;
+
+    Ok(ContextConfigClientLocalSigner {
+        rpc_url,
+        credentials: Credentials {
+            account_id: hex::encode(account_id).parse()?,
+            public_key,
+            secret_key,
+        },
+    })
 }

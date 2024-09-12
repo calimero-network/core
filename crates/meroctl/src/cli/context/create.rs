@@ -2,6 +2,7 @@
 
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, GetApplicationResponse,
     InstallApplicationResponse, InstallDevApplicationRequest, UpdateContextApplicationRequest,
@@ -18,26 +19,28 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
+use crate::common::RequestType::{GET, POST};
 use crate::common::{get_response, multiaddr_to_url};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
 pub struct CreateCommand {
     /// The application ID to attach to the context
-    #[clap(long, short = 'a', conflicts_with = "watch")]
+    #[clap(long, short = 'a')]
     application_id: Option<ApplicationId>,
-
-    /// Path to the application file to watch and install locally
-    #[clap(long, short = 'w')]
-    watch: Option<Utf8PathBuf>,
-    #[clap(requires = "watch")]
-    metadata: Option<Vec<u8>>,
-
-    #[clap(long, short = 'c', requires = "watch")]
-    context_id: Option<ContextId>,
 
     #[clap(long, short = 'p')]
     params: Option<String>,
+
+    /// Path to the application file to watch and install locally
+    #[clap(long, short = 'w', conflicts_with = "application_id")]
+    watch: Option<Utf8PathBuf>,
+
+    #[clap(requires = "watch")]
+    metadata: Option<String>,
+
+    #[clap(short = 's', long = "seed")]
+    context_seed: Option<Hash>,
 }
 
 impl CreateCommand {
@@ -62,21 +65,30 @@ impl CreateCommand {
             Self {
                 application_id: Some(app_id),
                 watch: None,
-                context_id: None,
+                context_seed,
                 metadata: None,
                 params,
             } => {
-                let _ = create_context(&client, multiaddr, app_id, None, params, &config.identity)
-                    .await?;
+                let _ = create_context(
+                    &client,
+                    multiaddr,
+                    context_seed,
+                    app_id,
+                    params,
+                    &config.identity,
+                )
+                .await?;
             }
             Self {
                 application_id: None,
                 watch: Some(path),
-                context_id,
+                context_seed,
                 metadata,
                 params,
             } => {
                 let path = path.canonicalize_utf8()?;
+                let metadata = metadata.map(|m| m.into_bytes());
+
                 let application_id = install_app(
                     &client,
                     multiaddr,
@@ -85,30 +97,17 @@ impl CreateCommand {
                     &config.identity,
                 )
                 .await?;
-                let context_id = match context_id {
-                    Some(context_id) => {
-                        create_context(
-                            &client,
-                            multiaddr,
-                            application_id,
-                            Some(context_id),
-                            params,
-                            &config.identity,
-                        )
-                        .await?
-                    }
-                    None => {
-                        create_context(
-                            &client,
-                            multiaddr,
-                            application_id,
-                            None,
-                            params,
-                            &config.identity,
-                        )
-                        .await?
-                    }
-                };
+
+                let context_id = create_context(
+                    &client,
+                    multiaddr,
+                    context_seed,
+                    application_id,
+                    params,
+                    &config.identity,
+                )
+                .await?;
+
                 watch_app_and_update_context(
                     &client,
                     multiaddr,
@@ -129,8 +128,8 @@ impl CreateCommand {
 async fn create_context(
     client: &Client,
     base_multiaddr: &Multiaddr,
+    context_seed: Option<Hash>,
     application_id: ApplicationId,
-    context_id: Option<ContextId>,
     params: Option<String>,
     keypair: &Keypair,
 ) -> EyreResult<ContextId> {
@@ -141,24 +140,25 @@ async fn create_context(
     let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/contexts")?;
     let request = CreateContextRequest::new(
         application_id,
-        context_id,
+        context_seed,
         params.map(String::into_bytes).unwrap_or_default(),
     );
 
-    let response = get_response(client, url, Some(request), &keypair).await?;
+    let response = get_response(client, url, Some(request), &keypair, POST).await?;
 
     if response.status().is_success() {
         let context_response: CreateContextResponse = response.json().await?;
-        let context = context_response.data.context;
 
-        println!("Context `\x1b[36m{}\x1b[0m` created!", context.id);
+        let context_id = context_response.data.context_id;
+
+        println!("Context `\x1b[36m{}\x1b[0m` created!", context_id);
 
         println!(
             "Context{{\x1b[36m{}\x1b[0m}} -> Application{{\x1b[36m{}\x1b[0m}}",
-            context.id, context.application_id
+            context_id, application_id
         );
 
-        return Ok(context.id);
+        return Ok(context_id);
     }
 
     let status = response.status();
@@ -244,7 +244,7 @@ async fn update_context_application(
 
     let request = UpdateContextApplicationRequest::new(application_id);
 
-    let response = get_response(client, url, Some(request), keypair).await?;
+    let response = get_response(client, url, Some(request), keypair, POST).await?;
 
     if response.status().is_success() {
         println!(
@@ -275,7 +275,7 @@ async fn app_installed(
         &format!("admin-api/dev/application/{application_id}"),
     )?;
 
-    let response = get_response(client, url, None::<()>, keypair).await?;
+    let response = get_response(client, url, None::<()>, keypair, GET).await?;
 
     if !response.status().is_success() {
         bail!("Request failed with status: {}", response.status())
@@ -293,13 +293,13 @@ async fn install_app(
     metadata: Option<Vec<u8>>,
     keypair: &Keypair,
 ) -> EyreResult<ApplicationId> {
-    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-application")?;
+    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
 
     let install_request =
         InstallDevApplicationRequest::new(path, None, metadata.unwrap_or_default());
 
     let install_response =
-        get_response(client, install_url, Some(install_request), keypair).await?;
+        get_response(client, install_url, Some(install_request), keypair, POST).await?;
 
     if !install_response.status().is_success() {
         let status = install_response.status();

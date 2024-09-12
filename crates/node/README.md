@@ -55,59 +55,6 @@ the transaction, the sender of a transaction and the outcomen sender channel.
 
 TODO: Write about the transaction handling process and draw sequence diagram
 
-### Coordinator joining ceremony
-
-Coorindator joining ceremony is the process of acquiring the coordinator node
-for the context.
-
-Setup:
-
-- Coordinators and peers are subscribed to the dedicated coordinator ceremony
-  topic.
-- Context creator sends a message to the topic requesting a coordinator.
-- Interested coordinators send a message to the topic replying with the intent
-  to coordinate.
-- Context creator selects a coordinator from the interested coordinators.
-- Context creator stores `PeerId` of the selected coordinator.
-- Context creator sends a message to the topic with the information about the
-  selected coordinator.
-- Selected coordinator joins the context topic, while other coordinators clear
-  pending request.
-
-Following diagram depicts the coordinator joining ceremony which is initiated by
-a context creator peer. All the messages exchanged in diagram are GossipSub
-messages going throught dedicated coordinator ceremony topic. Additionally, node
-has a interval tick which is used to clean up pending requests and offers.
-
-```mermaid
-sequenceDiagram
-    activate Peer
-    Peer->>Peer:Generate request id
-    Peer->>Coordinator:Send [Request]
-    Peer->>Peer:Set pending request
-    deactivate Peer
-
-    Coordinator->>+Coordinator:Handle [Request]
-    Coordinator->>Peer:Send [Offer]
-    Coordinator->>-Coordinator:Set pending offer
-
-    Peer->>+Peer:Handle [Offer]
-    alt If pending request exists
-        Peer->>Coordinator: Send [OfferAccepted]
-        Peer->>Peer:Update context with the coordinator `PeerId`
-        Peer->>Peer:Clear pending request
-    else
-        Peer->>-Coordinator: Send [OfferDeclined]
-    end
-
-    Coordinator->>+Coordinator:Handle [OfferAccepted]
-    Coordinator->>Coordinator:Join context topic
-    Coordinator->>-Coordinator:Clear pending offer
-
-    Coordinator->>+Coordinator:Handle [OfferDeclined]
-    Coordinator->>-Coordinator:Clear pending offer
-```
-
 ### Catchup
 
 TODO: Write about the catchup process and draw sequence diagram

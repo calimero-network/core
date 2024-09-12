@@ -2,85 +2,24 @@
 
 use std::collections::BTreeMap;
 
-use context_config::repr::{Repr, ReprTransmute};
-use context_config::types::{Application, Capability, ContextIdentity, Signed, SignerId};
-use context_config::{ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest};
+use calimero_context_config::repr::{Repr, ReprTransmute};
+use calimero_context_config::types::{Application, Capability, ContextIdentity, Signed, SignerId};
+use calimero_context_config::{
+    ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest,
+};
 use ed25519_dalek::{Signer, SigningKey};
-use near_workspaces::operations::Function;
-use near_workspaces::types::{KeyType, SecretKey};
-use near_workspaces::Contract;
-use rand::{CryptoRng, Rng, RngCore};
+use rand::Rng;
 use serde_json::json;
 use tokio::{fs, time};
-
-fn new_secret<R: CryptoRng + RngCore>(rng: &mut R) -> (SigningKey, SecretKey) {
-    let rsk = SigningKey::generate(rng);
-
-    let wsk =
-        near_crypto::SecretKey::ED25519(near_crypto::ED25519SecretKey(rsk.to_keypair_bytes()))
-            .to_string()
-            .parse::<SecretKey>()
-            .unwrap();
-
-    (rsk, wsk)
-}
 
 #[tokio::test]
 async fn main() -> eyre::Result<()> {
     let worker = near_workspaces::sandbox().await?;
-    let wasm = fs::read("res/context_config.wasm").await?;
+    let wasm = fs::read("res/calimero_context_config_near.wasm").await?;
 
     let mut rng = rand::thread_rng();
 
-    let contract = worker
-        .create_tla(
-            "config-alt".parse()?,
-            SecretKey::from_random(KeyType::SECP256K1),
-        )
-        .await?
-        .into_result()?;
-
-    let res = contract
-        .batch(contract.id())
-        .deploy(&wasm)
-        .call(Function::new("init"))
-        .transact()
-        .await?
-        .into_result()
-        .expect_err("Secp256k1 should not be allowed");
-
-    {
-        let err = res.to_string();
-        assert!(err.contains("pweety please, sign the the contract initialization transaction with an ed25519 key: decode error: insufficient length, found: 64, expected: 32"), "{}", err);
-    }
-
-    let (config_rsk, config_wsk) = new_secret(&mut rng);
-    let config_pk = config_rsk.verifying_key();
-    let config_id: Repr<ContextIdentity> = config_pk.to_bytes().rt()?;
-
-    let contract = worker
-        .create_tla("config".parse()?, config_wsk)
-        .await?
-        .into_result()?;
-
-    let res = contract
-        .batch(contract.id())
-        .deploy(&wasm)
-        .call(Function::new("init"))
-        .transact()
-        .await?
-        .into_result()?;
-
-    assert_eq!(
-        res.logs(),
-        [format!("Contract initialized by `{}`", config_id)]
-    );
-
-    let contract = Contract::from_secret_key(
-        contract.id().clone(),
-        contract.secret_key().clone(),
-        &worker,
-    );
+    let contract = worker.dev_deploy(&wasm).await?;
 
     let root_account = worker.root_account()?;
 
@@ -114,6 +53,41 @@ async fn main() -> eyre::Result<()> {
 
     let application_id = rng.gen::<[_; 32]>().rt()?;
     let blob_id = rng.gen::<[_; 32]>().rt()?;
+
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest {
+                    context_id,
+                    kind: ContextRequestKind::Add {
+                        author_id: alice_cx_id,
+                        application: Application {
+                            id: application_id,
+                            blob: blob_id,
+                            source: Default::default(),
+                            metadata: Default::default(),
+                        },
+                    },
+                });
+
+                Request::new(alice_cx_id.rt()?, kind)
+            },
+            |p| alice_cx_sk.sign(p),
+        )?)
+        .transact()
+        .await?
+        .raw_bytes()
+        .expect_err("context creation should fail");
+
+    {
+        let err = res.to_string();
+        assert!(
+            err.contains("context addition must be signed by the context itself"),
+            "{}",
+            err
+        );
+    }
 
     let res = node1
         .call(contract.id(), "mutate")
@@ -472,8 +446,8 @@ async fn main() -> eyre::Result<()> {
     assert_eq!(
         res.logs(),
         [format!(
-            "Updated application `{}` -> `{}`",
-            application_id, new_application_id
+            "Updated application for context `{}` from `{}` to `{}`",
+            context_id, application_id, new_application_id
         )]
     );
 
@@ -550,18 +524,11 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, [alice_cx_id, carol_cx_id]);
 
-    let res = node1
-        .call(contract.id(), "mutate")
-        .args_json(Signed::new(
-            &{
-                let kind = RequestKind::System(SystemRequest::SetValidityThreshold {
-                    threshold_ms: 5_000,
-                });
-
-                Request::new(config_id.rt()?, kind)
-            },
-            |p| config_rsk.sign(p),
-        )?)
+    let res = contract
+        .call("set")
+        .args_json(SystemRequest::SetValidityThreshold {
+            threshold_ms: 5_000,
+        })
         .transact()
         .await?
         .into_result()?;
