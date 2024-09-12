@@ -1,16 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import ContentWrapper from '../components/login/ContentWrapper';
 import { useNavigate } from 'react-router-dom';
-import { InternetComputer } from '../components/internetComputer/internetComputer';
-import { useInternetComputer } from '../hooks/useInternetComputer';
+import { ICP } from '../components/icp/ICP';
+import { useICP } from '../hooks/useICP';
 
-interface InternetComputerProps {
+interface ICPProps {
   isLogin: boolean;
 }
 
-export default function InternetComputerLogin({
+export default function ICPLogin({
   isLogin,
-}: InternetComputerProps) {
+}: ICPProps) {
   const navigate = useNavigate();
   const {
     ready,
@@ -19,7 +19,7 @@ export default function InternetComputerLogin({
     walletSignatureData,
     requestNodeData,
     changeNetwork,
-  } = useInternetComputer();
+  } = useICP();
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   useEffect(() => {
@@ -30,7 +30,7 @@ export default function InternetComputerLogin({
 
   return (
     <ContentWrapper>
-      <InternetComputer
+      <ICP
         navigateBack={() =>
           isLogin ? navigate('/auth') : navigate('/identity/root-key')
         }

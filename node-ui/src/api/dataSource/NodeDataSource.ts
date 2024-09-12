@@ -17,7 +17,7 @@ export enum Network {
   ARB = 'ARB',
   ZK = 'ZK',
   STARKNET = 'STARKNET',
-  INTERNETCOMPUTER = 'INTERNETCOMPUTER',
+  ICP = 'ICP',
 }
 
 export interface ContextClientKeysList {
@@ -90,8 +90,8 @@ export interface StarknetRootKey extends RootKey {
   type: String;
 }
 
-export interface InternetComputerRootKey extends RootKey {
-  type: Network.INTERNETCOMPUTER;
+export interface ICPRootKey extends RootKey {
+  type: Network.ICP;
 }
 
 interface NetworkType {
@@ -180,16 +180,16 @@ interface SNWalletType extends WalletTypeBase<'STARKNET'> {
   walletName: string;
 }
 
-interface INTERNETCOMPUTERWalletType
-  extends WalletTypeBase<'INTERNETCOMPUTER'> {
+interface ICPWalletType
+  extends WalletTypeBase<'ICP'> {
   cannisterId: string;
 }
-
+// TODO: Legacy code, refacture to be used as Interface
 export type WalletType =
   | ETHWalletType
   | NEARWalletType
   | SNWalletType
-  | INTERNETCOMPUTERWalletType;
+  | ICPWalletType;
 
 // eslint-disable-next-line @typescript-eslint/no-redeclare
 export namespace WalletType {
@@ -212,8 +212,8 @@ export namespace WalletType {
   }): WalletType {
     return { type: 'STARKNET', walletName } as SNWalletType;
   }
-
-  export function INTERNETCOMPUTER({
+  
+  export function ICP({
     cannisterId = 'rdmx6-jaaaa-aaaaa-aaadq-cai',
     walletName = 'II',
   }: {
@@ -221,10 +221,10 @@ export namespace WalletType {
     walletName?: string;
   }): WalletType {
     return {
-      type: 'INTERNETCOMPUTER',
+      type: 'ICP',
       cannisterId,
       walletName,
-    } as INTERNETCOMPUTERWalletType;
+    } as ICPWalletType;
   }
 }
 
@@ -278,7 +278,7 @@ export interface EthSignatureMessageMetadata extends SignatureMetadata {}
 
 export interface StarknetSignatureMessageMetadata extends SignatureMetadata {}
 
-export interface InternetComputerSignatureMessageMetadata
+export interface ICPSignatureMessageMetadata
   extends SignatureMetadata {}
 
 export interface WalletSignatureData {

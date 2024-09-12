@@ -3,7 +3,7 @@ import Loading from '../common/Loading';
 import { WalletSignatureData } from '../../api/dataSource/NodeDataSource';
 import { styled } from 'styled-components';
 import translations from '../../constants/en.global.json';
-import { NetworkId } from '../../hooks/useInternetComputer';
+import { NetworkId } from '../../hooks/useICP';
 
 const Wrapper = styled.div`
   display: flex;
@@ -153,7 +153,7 @@ interface LoginWithIIProps {
   ) => void;
 }
 
-export function InternetComputer({
+export function ICP({
   navigateBack,
   isLogin,
   ready,
@@ -164,8 +164,8 @@ export function InternetComputer({
   changeNetwork,
 }: LoginWithIIProps) {
   const t = isLogin
-    ? translations.loginPage.internetComputerLogin
-    : translations.addRootKeyPage.internetComputerKey;
+    ? translations.loginPage.ICPLogin
+    : translations.addRootKeyPage.ICPKey;
 
   if (!ready) {
     return <Loading />;
