@@ -5,7 +5,7 @@ import {
   ApiRootKey,
   DidResponse,
   ETHRootKey,
-  InternetComputerRootKey,
+  ICPRootKey,
   NearRootKey,
   Network,
   StarknetRootKey,
@@ -80,48 +80,50 @@ export function mapApiResponseToObjects(
       | ETHRootKey
       | NearRootKey
       | StarknetRootKey
-      | InternetComputerRootKey
+      | ICPRootKey
     )[] = didResponse?.did?.root_keys?.map((obj: ApiRootKey) => {
-      if (obj.wallet.type === Network.NEAR) {
-        const nearObject: NearRootKey = {
-          signingKey: obj.signing_key,
-          createdAt: obj.created_at,
-          type: Network.NEAR,
-        };
-        return nearObject;
-      } else if (obj.wallet.type === Network.ETH) {
-        const ethObject: ETHRootKey = {
-          signingKey: obj.signing_key,
-          type: Network.ETH,
-          createdAt: obj.created_at,
-          chainId: obj.wallet.chainId ?? 1,
-        };
-        return ethObject;
-      } else if (obj.wallet.type === Network.INTERNETCOMPUTER) {
-        const internetComputerObject: InternetComputerRootKey = {
-          signingKey: obj.signing_key,
-          type: Network.INTERNETCOMPUTER,
-          createdAt: obj.created_at,
-        };
-        return internetComputerObject;
-      } else {
-        const starknetObject: StarknetRootKey = {
-          signingKey: obj.signing_key,
-          type: Network.STARKNET + ' ' + obj.wallet.walletName,
-          createdAt: obj.created_at,
-        };
-        return starknetObject;
+      switch (obj.wallet.type) {
+        case Network.NEAR:
+          return {
+            signingKey: obj.signing_key,
+            createdAt: obj.created_at,
+            type: Network.NEAR,
+          } as NearRootKey;
+
+        case Network.ETH:
+          return {
+            signingKey: obj.signing_key,
+            type: Network.ETH,
+            createdAt: obj.created_at,
+            chainId: obj.wallet.chainId ?? 1,
+          } as ETHRootKey;
+
+        case Network.ICP:
+          return {
+            signingKey: obj.signing_key,
+            type: Network.ICP,
+            createdAt: obj.created_at,
+          } as ICPRootKey;
+
+        case Network.STARKNET:
+        default:
+          return {
+            signingKey: obj.signing_key,
+            type: Network.STARKNET + ' ' + obj.wallet.walletName,
+            createdAt: obj.created_at,
+          } as StarknetRootKey;
       }
     });
+
     return rootKeys.map((item) => ({
       type:
         item.type === Network.ETH
-          ? getMetamaskType(item.chainId ?? 1)
+          ? getMetamaskType((item as ETHRootKey).chainId ?? 1)
           : item.type,
       createdAt: item.createdAt,
       publicKey:
         item.type === 'NEAR'
-          ? item.signingKey.split(':')[1]!.trim()
+          ? (item as NearRootKey).signingKey.split(':')[1]!.trim()
           : item.signingKey,
     }));
   } else {
