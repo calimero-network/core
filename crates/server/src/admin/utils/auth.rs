@@ -190,7 +190,7 @@ pub async fn verify_node_signature(
 
             Ok(true)
         }
-        WalletType::INTERNETCOMPUTER {
+        WalletType::ICP {
             ref cannister_id,
             ref wallet_name,
         } => {

@@ -150,7 +150,7 @@ pub enum WalletType {
         #[serde(rename = "walletName")]
         wallet_name: String,
     },
-    INTERNETCOMPUTER {
+    ICP {
         #[serde(rename = "cannisterId")]
         cannister_id: String,
         #[serde(rename = "walletName")]

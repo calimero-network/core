@@ -6,7 +6,7 @@ use axum::{Extension, Json};
 use calimero_primitives::identity::{ClientKey, WalletType};
 use calimero_server_primitives::admin::{
     AddPublicKeyRequest, EthSignatureMessageMetadata, IntermediateAddPublicKeyRequest,
-    InternetComputerSignatureMessageMetadata, JwtRefreshRequest, JwtTokenRequest,
+    ICPSignatureMessageMetadata, JwtRefreshRequest, JwtTokenRequest,
     NearSignatureMessageMetadata, Payload, SignatureMetadataEnum, StarknetSignatureMessageMetadata,
 };
 use calimero_store::Store;
@@ -54,15 +54,15 @@ pub fn transform_request(
                     })?;
             SignatureMetadataEnum::STARKNET(metadata)
         }
-        WalletType::INTERNETCOMPUTER { .. } => {
-            let metadata = from_json_value::<InternetComputerSignatureMessageMetadata>(
+        WalletType::ICP { .. } => {
+            let metadata = from_json_value::<ICPSignatureMessageMetadata>(
                 intermediate.payload.metadata,
             )
             .map_err(|_| ApiError {
                 status_code: StatusCode::BAD_REQUEST,
                 message: "Invalid metadata.".into(),
             })?;
-            SignatureMetadataEnum::INTERNETCOMPUTER(metadata)
+            SignatureMetadataEnum::ICP(metadata)
         }
         _ => {
             return Err(ApiError {
