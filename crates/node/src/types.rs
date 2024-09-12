@@ -1,5 +1,3 @@
-use calimero_primitives::application::{ApplicationId, ApplicationSource};
-use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::transaction::Transaction;
@@ -35,7 +33,6 @@ pub struct TransactionRejection {
 #[non_exhaustive]
 pub enum CatchupStreamMessage {
     Request(CatchupRequest),
-    ApplicationChanged(CatchupApplicationChanged),
     TransactionsBatch(CatchupTransactionBatch),
     Error(CatchupError),
 }
@@ -44,19 +41,8 @@ pub enum CatchupStreamMessage {
 #[non_exhaustive]
 pub struct CatchupRequest {
     pub context_id: ContextId,
-    pub application_id: Option<ApplicationId>,
     pub last_executed_transaction_hash: Hash,
     pub batch_size: u8,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct CatchupApplicationChanged {
-    pub application_id: ApplicationId,
-    pub blob_id: BlobId,
-    pub source: ApplicationSource,
-    pub hash: Option<Hash>,
-    pub metadata: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

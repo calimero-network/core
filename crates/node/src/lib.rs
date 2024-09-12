@@ -5,8 +5,9 @@ use core::mem::replace;
 use core::pin::Pin;
 use core::str::FromStr;
 
+use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
-use calimero_context::config::ApplicationConfig;
+use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
@@ -20,16 +21,17 @@ use calimero_primitives::events::{
     OutcomeEventPayload, PeerJoinedPayload,
 };
 use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PublicKey;
 use calimero_primitives::transaction::Transaction;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
-use calimero_server::admin::utils::context::{create_context, join_context};
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::key::{
-    ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
-    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
+    ApplicationMeta as ApplicationMetaKey, ContextIdentity as ContextIdentityKey,
+    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
+    ContextTransaction as ContextTransactionKey,
 };
 use calimero_store::types::{ContextMeta, ContextTransaction};
 use calimero_store::Store;
@@ -59,38 +61,15 @@ pub mod types;
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
     pub node_type: NodeType,
-    pub application: ApplicationConfig,
     pub network: NetworkConfig,
+    pub datastore: StoreConfig,
+    pub blobstore: BlobStoreConfig,
+    pub context: ContextConfig,
     pub server: ServerConfig,
-    pub store: StoreConfig,
-}
-
-impl NodeConfig {
-    #[must_use]
-    pub const fn new(
-        home: Utf8PathBuf,
-        node_type: NodeType,
-        identity: Keypair,
-        store: StoreConfig,
-        application: ApplicationConfig,
-        network: NetworkConfig,
-        server: ServerConfig,
-    ) -> Self {
-        Self {
-            home,
-            identity,
-            node_type,
-            application,
-            network,
-            server,
-            store,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -115,16 +94,14 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     let (network_client, mut network_events) = calimero_network::run(&config.network).await?;
 
-    let store = Store::open::<RocksDB>(&config.store)?;
+    let store = Store::open::<RocksDB>(&config.datastore)?;
 
-    let blob_manager = BlobManager::new(
-        store.clone(),
-        FileSystem::new(&config.application.dir).await?,
-    );
+    let blob_manager = BlobManager::new(store.clone(), FileSystem::new(&config.blobstore).await?);
 
     let (server_sender, mut server_receiver) = mpsc::channel(32);
 
     let ctx_manager = ContextManager::start(
+        &config.context,
         store.clone(),
         blob_manager,
         server_sender.clone(),
@@ -214,96 +191,89 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 let (method, rest) = rest.split_once(' ').unwrap_or((rest, "{}"));
                 let (payload, executor_key) = rest.split_once(' ').unwrap_or((rest, ""));
 
-                match from_json_str::<Value>(payload) {
-                    Ok(_) => {
-                        let (outcome_sender, outcome_receiver) = oneshot::channel();
-
-                        let context_id = context_id.parse()?;
-
-                        let Ok(Some(context)) = node.ctx_manager.get_context(&context_id) else {
-                            println!("{IND} Context not found: {context_id}");
+                let (payload, executor_key) = match executor_key.parse::<PublicKey>() {
+                    Ok(key) => (payload, key),
+                    Err(err) => match payload.parse::<PublicKey>() {
+                        Ok(key) => (rest, key),
+                        Err(err_payload) => {
+                            println!(
+                                "{IND} Invalid executor public key: {}",
+                                executor_key
+                                    .is_empty()
+                                    .then_some(err_payload)
+                                    .unwrap_or(err)
+                            );
                             return Ok(());
-                        };
+                        }
+                    },
+                };
 
-                        // Parse the executor's public key if provided
-                        let executor_public_key = if executor_key.is_empty() {
-                            return Err(eyre!("Executor public key is required"));
-                        } else {
-                            bs58::decode(executor_key)
-                                .into_vec()
-                                .map_err(|_| eyre!("Invalid executor public key"))?
-                                .try_into()
-                                .map_err(|_| eyre!("Executor public key must be 32 bytes"))?
-                        };
+                if let Err(e) = from_json_str::<Value>(payload) {
+                    println!("{IND} Failed to parse payload: {e}");
+                };
 
-                        let tx = Transaction::new(
-                            context.id,
-                            method.to_owned(),
-                            payload.as_bytes().to_owned(),
-                            context.last_transaction_hash,
-                            executor_public_key,
-                        );
+                let (outcome_sender, outcome_receiver) = oneshot::channel();
 
-                        let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {
-                            Ok(tx_hash) => tx_hash,
-                            Err(e) => {
-                                println!("{IND} Failed to execute transaction: {e}");
-                                return Ok(());
-                            }
-                        };
+                let Ok(context_id) = context_id.parse() else {
+                    println!("{IND} Invalid context ID: {context_id}");
+                    return Ok(());
+                };
 
-                        println!("{IND} Scheduled Transaction! {tx_hash:?}");
+                let Ok(Some(context)) = node.ctx_manager.get_context(&context_id) else {
+                    println!("{IND} Context not found: {context_id}");
+                    return Ok(());
+                };
 
-                        drop(spawn(async move {
-                            if let Ok(outcome_result) = outcome_receiver.await {
-                                println!("{IND} {tx_hash:?}");
+                let tx = Transaction::new(
+                    context.id,
+                    method.to_owned(),
+                    payload.as_bytes().to_owned(),
+                    context.last_transaction_hash,
+                    executor_key,
+                );
 
-                                match outcome_result {
-                                    Ok(outcome) => {
-                                        match outcome.returns {
-                                            Ok(result) => match result {
-                                                Some(result) => {
-                                                    println!("{IND}   Return Value:");
-                                                    #[allow(clippy::option_if_let_else)]
-                                                    let result = if let Ok(value) =
-                                                        from_json_slice::<Value>(&result)
-                                                    {
-                                                        format!(
-                                                            "(json): {}",
-                                                            format!("{value:#}")
-                                                                .lines()
-                                                                .map(|line| line.cyan().to_string())
-                                                                .collect::<Vec<_>>()
-                                                                .join("\n")
-                                                        )
-                                                    } else {
-                                                        format!("(raw): {:?}", result.cyan())
-                                                    };
+                let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {
+                    Ok(tx_hash) => tx_hash,
+                    Err(e) => {
+                        println!("{IND} Failed to execute transaction: {e}");
+                        return Ok(());
+                    }
+                };
 
-                                                    for line in result.lines() {
-                                                        println!("{IND}     > {line}");
-                                                    }
-                                                }
-                                                None => println!("{IND}   (No return value)"),
-                                            },
-                                            Err(err) => {
-                                                let err = format!("{err:#?}");
+                println!("{IND} Scheduled Transaction! {tx_hash:?}");
 
-                                                println!("{IND}   Error:");
-                                                for line in err.lines() {
-                                                    println!("{IND}     > {}", line.yellow());
-                                                }
+                drop(spawn(async move {
+                    if let Ok(outcome_result) = outcome_receiver.await {
+                        println!("{IND} {tx_hash:?}");
+
+                        match outcome_result {
+                            Ok(outcome) => {
+                                match outcome.returns {
+                                    Ok(result) => match result {
+                                        Some(result) => {
+                                            println!("{IND}   Return Value:");
+                                            #[allow(clippy::option_if_let_else)]
+                                            let result = if let Ok(value) =
+                                                from_json_slice::<Value>(&result)
+                                            {
+                                                format!(
+                                                    "(json): {}",
+                                                    format!("{value:#}")
+                                                        .lines()
+                                                        .map(|line| line.cyan().to_string())
+                                                        .collect::<Vec<_>>()
+                                                        .join("\n")
+                                                )
+                                            } else {
+                                                format!("(raw): {:?}", result.cyan())
+                                            };
+
+                                            for line in result.lines() {
+                                                println!("{IND}     > {line}");
                                             }
                                         }
-
-                                        if !outcome.logs.is_empty() {
-                                            println!("{IND}   Logs:");
-
-                                            for log in outcome.logs {
-                                                println!("{IND}     > {}", log.cyan());
-                                            }
-                                        }
-                                    }
+                                        None => println!("{IND}   (No return value)"),
+                                    },
                                     Err(err) => {
                                         let err = format!("{err:#?}");
 
@@ -313,13 +283,26 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                         }
                                     }
                                 }
+
+                                if !outcome.logs.is_empty() {
+                                    println!("{IND}   Logs:");
+
+                                    for log in outcome.logs {
+                                        println!("{IND}     > {}", log.cyan());
+                                    }
+                                }
                             }
-                        }));
+                            Err(err) => {
+                                let err = format!("{err:#?}");
+
+                                println!("{IND}   Error:");
+                                for line in err.lines() {
+                                    println!("{IND}     > {}", line.yellow());
+                                }
+                            }
+                        }
                     }
-                    Err(e) => {
-                        println!("{IND} Failed to parse payload: {e}");
-                    }
-                }
+                }));
             } else {
                 println!(
                     "{IND} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
@@ -533,26 +516,48 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         }
                     }
                     "join" => {
-                        let Some((context_id, private_key)) = args.and_then(|args| {
+                        let Some((private_key, invitation_payload)) = args.and_then(|args| {
                             let mut iter = args.split(' ');
-                            let context = iter.next()?;
-                            let private_key = iter.next();
+                            let private_key = iter.next()?;
+                            let invitation_payload = iter.next()?;
 
-                            Some((context, private_key))
+                            Some((private_key, invitation_payload))
                         }) else {
-                            println!("{IND} Usage: context join <context_id> [private_key]");
+                            println!(
+                                "{IND} Usage: context join <private_key> <invitation_payload>"
+                            );
                             break 'done;
                         };
 
-                        let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {context_id}");
+                        let Ok(private_key) = private_key.parse() else {
+                            println!("{IND} Invalid private key: {private_key}");
                             break 'done;
                         };
 
-                        join_context(&node.ctx_manager, context_id, private_key).await?;
+                        let Ok(invitation_payload) = invitation_payload.parse() else {
+                            println!("{IND} Invalid context ID: {private_key}");
+                            break 'done;
+                        };
+
+                        let response = match node
+                            .ctx_manager
+                            .join_context(private_key, invitation_payload)
+                            .await
+                        {
+                            Ok(response) => response,
+                            Err(err) => {
+                                println!("{IND} Unable to join context: {err}");
+                                break 'done;
+                            }
+                        };
+
+                        let Some((context_id, identity)) = response else {
+                            println!("{IND} Unable to join context at this time, a catchup is in progress.");
+                            break 'done;
+                        };
 
                         println!(
-                            "{IND} Joined context {context_id}, waiting for catchup to complete..."
+                            "{IND} Joined context {context_id} as {identity}, waiting for catchup to complete..."
                         );
                     }
                     "leave" => {
@@ -571,16 +576,16 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         println!("{IND} Left context {context_id}");
                     }
                     "create" => {
-                        let Some((application_id, context_id, mut params)) =
+                        let Some((application_id, context_seed, mut params)) =
                             args.and_then(|args| {
                                 let mut iter = args.split(' ');
                                 let application = iter.next()?;
-                                let context_id = iter.next();
+                                let context_seed = iter.next();
                                 let params = iter.next();
-                                Some((application, context_id, params))
+                                Some((application, context_seed, params))
                             })
                         else {
-                            println!("{IND} Usage: context create <application_id> [context_id] [initialization params]");
+                            println!("{IND} Usage: context create <application_id> [context_seed] [initialization params]");
                             break 'done;
                         };
 
@@ -589,35 +594,79 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             break 'done;
                         };
 
-                        let (context_id, params) = 'infer: {
-                            let Some(context_id) = context_id else {
+                        let (context_seed, params) = 'infer: {
+                            let Some(context_seed) = context_seed else {
                                 break 'infer (None, None);
                             };
 
-                            if let Ok(context_id) = context_id.parse() {
-                                break 'infer (Some(context_id), params);
+                            if let Ok(context_seed) = context_seed.parse::<Hash>() {
+                                break 'infer (Some(context_seed), params);
                             };
 
-                            match replace(&mut params, Some(context_id)).map(FromStr::from_str) {
-                                Some(Ok(context_id)) => break 'infer (Some(context_id), params),
+                            match replace(&mut params, Some(context_seed)).map(FromStr::from_str) {
+                                Some(Ok(context_seed)) => {
+                                    break 'infer (Some(context_seed), params)
+                                }
                                 None => break 'infer (None, params),
                                 _ => {}
                             };
 
+                            println!("{IND} Invalid context seed: {context_seed}");
+                            break 'done;
+                        };
+
+                        let (context_id, identity) = node
+                            .ctx_manager
+                            .create_context(
+                                context_seed.map(Into::into),
+                                application_id,
+                                None,
+                                params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                            )
+                            .await?;
+
+                        println!("{IND} Created context {} as {}", context_id, identity);
+                    }
+                    "invite" => {
+                        let Some((context_id, inviter_id, invitee_id)) = args.and_then(|args| {
+                            let mut iter = args.split(' ');
+                            let context_id = iter.next()?;
+                            let inviter_id = iter.next()?;
+                            let invitee_id = iter.next()?;
+                            Some((context_id, inviter_id, invitee_id))
+                        }) else {
+                            println!(
+                                "{IND} Usage: context invite <context_id> <inviter> <invitee>"
+                            );
+                            break 'done;
+                        };
+
+                        let Ok(context_id) = context_id.parse() else {
                             println!("{IND} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
-                        let context_create_result = create_context(
-                            &node.ctx_manager,
-                            application_id,
-                            None,
-                            context_id,
-                            params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
-                        )
-                        .await?;
+                        let Ok(inviter_id) = inviter_id.parse() else {
+                            println!("{IND} Invalid public key for inviter: {inviter_id}");
+                            break 'done;
+                        };
 
-                        println!("{IND} Created context {}", context_create_result.context.id);
+                        let Ok(invitee_id) = invitee_id.parse() else {
+                            println!("{IND} Invalid public key for invitee: {invitee_id}");
+                            break 'done;
+                        };
+
+                        let Some(invitation_payload) = node
+                            .ctx_manager
+                            .invite_to_context(context_id, inviter_id, invitee_id)
+                            .await?
+                        else {
+                            println!("{IND} Unable to invite {invitee_id} to context {context_id}");
+                            break 'done;
+                        };
+
+                        println!("{IND} Invited {invitee_id} to context {context_id}");
+                        println!("{IND} Invitation Payload: {invitation_payload}");
                     }
                     "delete" => {
                         let Some(context_id) = args else {
@@ -633,6 +682,72 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         let _ = node.ctx_manager.delete_context(&context_id).await?;
 
                         println!("{IND} Deleted context {context_id}");
+                    }
+                    "identity" => {
+                        let Some(args) = args else {
+                            println!(
+                                "{IND} Usage: context identity [ls <context_id>|new <context_id>]"
+                            );
+                            break 'done;
+                        };
+
+                        let (subcommand, args) = args
+                            .split_once(' ')
+                            .map_or_else(|| (args, None), |(a, b)| (a, Some(b)));
+
+                        match subcommand {
+                            "ls" => {
+                                let Some(context_id) = args else {
+                                    println!("{IND} Usage: context identity ls <context_id>");
+                                    break 'done;
+                                };
+
+                                let Ok(context_id) = context_id.parse() else {
+                                    println!("{IND} Invalid context ID: {context_id}");
+                                    break 'done;
+                                };
+
+                                let handle = node.store.handle();
+
+                                let mut iter = handle.iter::<ContextIdentityKey>()?;
+
+                                let first = 'first: {
+                                    let Some(k) = iter
+                                        .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
+                                        .transpose()
+                                    else {
+                                        break 'first None;
+                                    };
+
+                                    Some((k, iter.read()))
+                                };
+
+                                println!("{IND} {c1:44} | Owned", c1 = "Identity");
+
+                                for (k, v) in first.into_iter().chain(iter.entries()) {
+                                    let (k, v) = (k?, v?);
+                                    let entry = format!(
+                                        "{c1:44} | {}",
+                                        if v.private_key.is_some() { "*" } else { " " },
+                                        c1 = k.public_key(),
+                                    );
+                                    for line in entry.lines() {
+                                        println!("{IND} {}", line.cyan());
+                                    }
+                                }
+                            }
+                            "new" => {
+                                let identity = node.ctx_manager.new_identity();
+
+                                println!("{IND} Private Key: {}", identity.cyan());
+                                println!("{IND} Public Key: {}", identity.public_key().cyan());
+                            }
+                            unknown => {
+                                println!("{IND} Unknown command: `{unknown}`");
+                                println!("{IND} Usage: context identity [ls <context_id>|new]");
+                                break 'done;
+                            }
+                        }
                     }
                     "transactions" => {
                         let Some(context_id) = args else {
@@ -728,7 +843,9 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
 
                 break 'done;
             };
-            println!("{IND} Usage: context [ls|join|leave|create|delete|state] [args]");
+            println!(
+                "{IND} Usage: context [ls|join|leave|invite|create|delete|state|identity] [args]"
+            );
         }
         unknown => {
             println!("{IND} Unknown command: `{unknown}`");
@@ -1062,7 +1179,7 @@ impl Node {
         context: &Context,
         method: String,
         payload: Vec<u8>,
-        executor_public_key: [u8; 32],
+        executor_public_key: PublicKey,
     ) -> Result<Outcome, QueryCallError> {
         if !self
             .ctx_manager
@@ -1218,7 +1335,7 @@ impl Node {
                 transaction.method.into(),
                 transaction.payload.into(),
                 *transaction.prior_hash,
-                transaction.executor_public_key,
+                *transaction.executor_public_key,
             ),
         )?;
 
@@ -1239,7 +1356,7 @@ impl Node {
         hash: Option<Hash>,
         method: String,
         payload: Vec<u8>,
-        executor_public_key: [u8; 32],
+        executor_public_key: PublicKey,
     ) -> EyreResult<Outcome> {
         let mut storage = match hash {
             Some(_) => RuntimeCompatStore::temporal(&mut self.store, context.id),
@@ -1260,7 +1377,7 @@ impl Node {
         let outcome = calimero_runtime::run(
             &blob,
             &method,
-            VMContext::new(payload, executor_public_key),
+            VMContext::new(payload, *executor_public_key),
             &mut storage,
             &get_runtime_limits()?,
         )?;

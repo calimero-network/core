@@ -115,7 +115,7 @@ pub(crate) fn setup(
             "/contexts/:context_id/identities",
             get(get_context_identities_handler),
         )
-        .route("/contexts/:context_id/join", post(join_context_handler))
+        .route("/contexts/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
@@ -147,7 +147,7 @@ pub(crate) fn setup(
             "/dev/contexts",
             get(get_contexts_handler).post(create_context_handler),
         )
-        .route("/dev/contexts/:context_id/join", post(join_context_handler))
+        .route("/dev/contexts/join", post(join_context_handler))
         .route(
             "/dev/contexts/:context_id/application",
             post(update_application_id),
