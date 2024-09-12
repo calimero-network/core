@@ -133,13 +133,13 @@ impl QueryRequest {
         context_id: ContextId,
         method: String,
         args_json: Value,
-        executor_public_key: [u8; 32],
+        executor_public_key: PublicKey,
     ) -> Self {
         Self {
             context_id,
             method,
             args_json,
-            executor_public_key: executor_public_key.into(),
+            executor_public_key,
         }
     }
 }
@@ -186,13 +186,13 @@ impl MutateRequest {
         context_id: ContextId,
         method: String,
         args_json: Value,
-        executor_public_key: [u8; 32],
+        executor_public_key: PublicKey,
     ) -> Self {
         Self {
             context_id,
             method,
             args_json,
-            executor_public_key: executor_public_key.into(),
+            executor_public_key,
         }
     }
 }

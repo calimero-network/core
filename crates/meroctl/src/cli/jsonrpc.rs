@@ -63,13 +63,23 @@ impl JsonRpcCommand {
                 self.context_id,
                 self.method,
                 self.args_json,
-                config.identity.public().try_into_ed25519()?.to_bytes(),
+                config
+                    .identity
+                    .public()
+                    .try_into_ed25519()?
+                    .to_bytes()
+                    .into(),
             )),
             CallType::Mutate => RequestPayload::Mutate(MutateRequest::new(
                 self.context_id,
                 self.method,
                 self.args_json,
-                config.identity.public().try_into_ed25519()?.to_bytes(),
+                config
+                    .identity
+                    .public()
+                    .try_into_ed25519()?
+                    .to_bytes()
+                    .into(),
             )),
         };
 
