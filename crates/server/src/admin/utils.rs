@@ -1,4 +1,4 @@
 pub mod auth;
-pub mod context;
-pub mod identity;
+#[cfg(test)]
+mod auth_tests;
 pub mod jwt;

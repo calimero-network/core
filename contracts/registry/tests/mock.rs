@@ -1,9 +1,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(unused_crate_dependencies)]
 
+use calimero_registry::PackageManager;
 use near_sdk::test_utils::VMContextBuilder;
 use near_sdk::{testing_env, VMContext};
-use package_manager::PackageManager;
 
 fn get_context(is_view: bool) -> VMContext {
     VMContextBuilder::new()

@@ -1,107 +1,66 @@
-#![allow(
-    unused_results,
-    single_use_lifetimes,
-    variant_size_differences,
-    unused_crate_dependencies
-)]
+#![allow(unused_results, unused_crate_dependencies)]
 
-use std::borrow::Cow;
-use std::time;
+use calimero_context_config::types::{Application, ContextId, ContextIdentity};
+use calimero_context_config::Timestamp;
+use near_sdk::store::{IterableMap, IterableSet};
+use near_sdk::{near, BorshStorageKey};
 
-use near_sdk::{near, Timestamp};
+mod guard;
+mod mutate;
+mod query;
 
-mod app;
-pub mod repr;
-pub mod types;
+use guard::Guard;
 
-use repr::Repr;
-use types::{Application, Capability, ContextId, ContextIdentity, SignerId};
+const DEFAULT_VALIDITY_THRESHOLD_MS: Timestamp = 10_000;
 
-#[doc(hidden)]
-pub mod __private {
-    pub use super::app::ContextConfigs as near;
+#[derive(Debug)]
+#[near(contract_state)]
+pub struct ContextConfigs {
+    contexts: IterableMap<ContextId, Context>,
+    config: Config,
 }
 
 #[derive(Debug)]
-#[near(serializers = [json])]
-#[serde(rename_all = "camelCase")]
-#[serde(deny_unknown_fields)]
-pub struct Request<'a> {
-    #[serde(borrow, flatten)]
-    pub kind: RequestKind<'a>,
-
-    signer_id: Repr<SignerId>,
-    timestamp_ms: Timestamp,
-}
-
-impl<'a> Request<'a> {
-    pub fn new(signer_id: SignerId, kind: RequestKind<'a>) -> Self {
-        let timestamp_ms = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .expect("system time is before epoch?")
-            .as_millis() as _;
-
-        Request {
-            signer_id: Repr::new(signer_id),
-            timestamp_ms,
-            kind,
-        }
-    }
+#[near(serializers = [borsh])]
+struct Config {
+    validity_threshold_ms: Timestamp,
 }
 
 #[derive(Debug)]
-#[near(serializers = [json])]
-#[serde(tag = "scope", content = "params")]
-pub enum RequestKind<'a> {
-    #[serde(borrow)]
-    Context(ContextRequest<'a>),
-    System(SystemRequest),
+#[near(serializers = [borsh])]
+struct Context {
+    pub application: Guard<Application<'static>>,
+    pub members: Guard<IterableSet<ContextIdentity>>,
 }
 
-#[derive(Debug)]
-#[near(serializers = [json])]
-#[serde(rename_all = "camelCase")]
-#[serde(deny_unknown_fields)]
-pub struct ContextRequest<'a> {
-    pub context_id: Repr<ContextId>,
-
-    #[serde(borrow, flatten)]
-    pub kind: ContextRequestKind<'a>,
-}
-
-#[derive(Debug)]
-#[near(serializers = [json])]
-#[serde(tag = "scope", content = "params")]
-#[serde(deny_unknown_fields)]
-pub enum ContextRequestKind<'a> {
-    Add {
-        author_id: Repr<ContextIdentity>,
-        #[serde(borrow)]
-        application: Application<'a>,
-    },
-    UpdateApplication {
-        #[serde(borrow)]
-        application: Application<'a>,
-    },
-    AddMembers {
-        members: Cow<'a, [Repr<ContextIdentity>]>,
-    },
-    RemoveMembers {
-        members: Cow<'a, [Repr<ContextIdentity>]>,
-    },
-    Grant {
-        capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
-    },
-    Revoke {
-        capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
-    },
+#[derive(Copy, Clone, Debug, BorshStorageKey)]
+#[near(serializers = [borsh])]
+enum Prefix {
+    Contexts,
+    Members(ContextId),
+    Privileges(PrivilegeScope),
 }
 
 #[derive(Copy, Clone, Debug)]
-#[near(serializers = [json])]
-#[serde(tag = "scope", content = "params")]
-#[serde(deny_unknown_fields)]
-pub enum SystemRequest {
-    #[serde(rename_all = "camelCase")]
-    SetValidityThreshold { threshold_ms: Timestamp },
+#[near(serializers = [borsh])]
+enum PrivilegeScope {
+    Context(ContextId, ContextPrivilegeScope),
+}
+
+#[derive(Copy, Clone, Debug)]
+#[near(serializers = [borsh])]
+enum ContextPrivilegeScope {
+    Application,
+    MemberList,
+}
+
+impl Default for ContextConfigs {
+    fn default() -> Self {
+        Self {
+            contexts: IterableMap::new(Prefix::Contexts),
+            config: Config {
+                validity_threshold_ms: DEFAULT_VALIDITY_THRESHOLD_MS,
+            },
+        }
+    }
 }
