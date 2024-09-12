@@ -57,23 +57,20 @@ TODO: Write about the transaction handling process and draw sequence diagram
 
 ### Catchup
 
-Catchup process involves updating the context metadata and the application blob, followed up
-by replaying the transactions from the last current executed transaction.
+The catchup process is initiated by the `ClientPeer` by opening a stream to the
+`ServerPeer`.
 
-In the catchup process one node is the initiator of stream connection (called `ClientPeer`) and
-the other node is the responder (called `ServerPeer`).
+Once the connection is established, the `ClientPeer` requests the application
+information from the ContextConfig contract. If the application blob id has
+changed, the `ClientPeer` attempts to fetch new application blob and store it in
+the store. Depending on the application source, the `ClientPeer` either fetches
+the application blob from the remote BlobRegistry or requests the `ServerPeer`
+to send the application blob.
 
-The catchup process is initiated by the `ClientPeer` by opening a stream to the `ServerPeer`.
-
-Once the connection is established, the `ClientPeer` requests the application information from the
-ContextConfig contract. If the application blob id has changed, the `ClientPeer` attempts to fetch
-new application blob and store it in the store. Depending on the application source, the `ClientPeer`
-either fetches the application blob from the remote BlobRegistry or requests the `ServerPeer` to send
-the application blob.
-
-After the application is updated, the `ClientPeer` requests the transactions from the `ServerPeer`.
-`ServerPeer` collects executed and pending transactions from the given hash to the latest transaction.
-The transactions are sent in batches to the `ClientPeer` which applies the transactions to the store.
+After the application is updated, the `ClientPeer` requests the transactions
+from the `ServerPeer`. `ServerPeer` collects executed and pending transactions
+from the given hash to the latest transaction. The transactions are sent in
+batches to the `ClientPeer` which applies the transactions to the store.
 
 ```mermaid
 sequenceDiagram
