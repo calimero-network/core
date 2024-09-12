@@ -8,9 +8,7 @@ interface ICPProps {
   isLogin: boolean;
 }
 
-export default function ICPLogin({
-  isLogin,
-}: ICPProps) {
+export default function ICPLogin({ isLogin }: ICPProps) {
   const navigate = useNavigate();
   const {
     ready,
