@@ -235,7 +235,9 @@ export const NearLogin: React.FC<NearLoginProps> = ({
         publicKey: publicKey,
       };
       const walletMetadata: WalletMetadata = {
-        wallet: WalletType.NEAR,
+        wallet: WalletType.NEAR({
+          networkId: selector.options.network.networkId,
+        }),
         verifyingKey: publicKey,
       };
       const loginRequest: LoginRequest = {
@@ -256,7 +258,11 @@ export const NearLogin: React.FC<NearLoginProps> = ({
         try {
           const identity = await apiClient
             .node()
-            .getContextIdentity(rpcBaseUrl, contextId);
+            .getContextIdentity(
+              rpcBaseUrl,
+              contextId,
+              selector.options.network.networkId,
+            );
 
           if (
             !identity ||

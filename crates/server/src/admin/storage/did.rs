@@ -59,3 +59,11 @@ pub fn update_did(store: &Store, did: &Did) -> EyreResult<()> {
 
     Ok(())
 }
+
+pub fn delete_did(store: &Store) -> EyreResult<()> {
+    let entry = DidEntry::new();
+    let mut handle = store.handle();
+    handle.delete(&entry)?;
+
+    Ok(())
+}

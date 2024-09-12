@@ -20,6 +20,7 @@ use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
+use super::handlers::did::delete_did_handler;
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::add_client_key::{
     add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
@@ -34,11 +35,13 @@ use crate::admin::handlers::context::{
     get_context_handler, get_context_identities_handler, get_context_storage_handler,
     get_context_users_handler, get_contexts_handler, join_context_handler, update_application_id,
 };
-use crate::admin::handlers::fetch_did::fetch_did_handler;
+use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
 use crate::middleware;
 use crate::middleware::auth::AuthSignatureLayer;
+#[cfg(feature = "host_layer")]
+use crate::middleware::host::HostLayer;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -93,7 +96,7 @@ pub(crate) fn setup(
             "/applications/:app_id",
             get(get_application_details_handler),
         )
-        .route("/did", get(fetch_did_handler))
+        .route("/did", get(fetch_did_handler).delete(delete_did_handler))
         .route("/contexts", post(create_context_handler))
         .route("/contexts/:context_id", delete(delete_context_handler))
         .route("/contexts/:context_id", get(get_context_handler))
@@ -113,7 +116,7 @@ pub(crate) fn setup(
             "/contexts/:context_id/identities",
             get(get_context_identities_handler),
         )
-        .route("/contexts/:context_id/join", post(join_context_handler))
+        .route("/contexts/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
@@ -145,7 +148,7 @@ pub(crate) fn setup(
             "/dev/contexts",
             get(get_contexts_handler).post(create_context_handler),
         )
-        .route("/dev/contexts/:context_id/join", post(join_context_handler))
+        .route("/dev/contexts/join", post(join_context_handler))
         .route(
             "/dev/contexts/:context_id/application",
             post(update_application_id),

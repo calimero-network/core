@@ -11,8 +11,8 @@ cargo build --target wasm32-unknown-unknown --profile app-release
 
 mkdir -p res
 
-cp $TARGET/wasm32-unknown-unknown/app-release/context_config.wasm ./res/
+cp $TARGET/wasm32-unknown-unknown/app-release/calimero_context_config_near.wasm ./res/
 
 if command -v wasm-opt > /dev/null; then
-  wasm-opt -Oz ./res/context_config.wasm -o ./res/context_config.wasm
+  wasm-opt -Oz ./res/calimero_context_config_near.wasm -o ./res/calimero_context_config_near.wasm
 fi

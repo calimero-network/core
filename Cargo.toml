@@ -9,7 +9,7 @@ license-file = "LICENSE.md"
 resolver = "2"
 members = [
   "./crates/context",
-  "./crates/identity",
+  "./crates/context/config",
   "./crates/meroctl",
   "./crates/network",
   "./crates/node",
@@ -21,6 +21,7 @@ members = [
   "./crates/sdk/macros",
   "./crates/server",
   "./crates/server-primitives",
+  "./crates/storage",
   "./crates/store",
   "./crates/store/blobs",
 
@@ -29,7 +30,7 @@ members = [
   "./apps/gen-ext",
 
   "./contracts/context-config",
-  "./contracts/package-manager",
+  "./contracts/registry",
 ]
 
 [workspace.dependencies]
@@ -43,12 +44,15 @@ bytes = "1.6.0"
 camino = "1.1.6"
 cfg-if = "1.0.0"
 chrono = "0.4.37"
+claims = "0.7.1"
 clap = "4.4.18"
 color-eyre = "0.6.2"
 const_format = "0.2.32"
 dirs = "5.0.1"
 ed25519-dalek = "2.1.1"
+either = "1.13.0"
 eyre = "0.6.12"
+fixedstr = { version = "0.5.7", features = ["flex-str", "serde", "std"] }
 fragile = "2.0.0"
 futures-util = "0.3.30"
 generic-array = "1.0.0"
@@ -61,15 +65,16 @@ libp2p-stream = "0.1.0-alpha.1"
 libp2p-identity = "0.2.9"
 multiaddr = "0.18.1"
 near-account-id = "1.0.0"
-near-crypto = "0.23.0"
-near-jsonrpc-client = "0.10.1"
-near-jsonrpc-primitives = "0.23.0"
-near-primitives = "0.23.0"
-near-sdk = "5.2.1"
-near-workspaces = "0.11.0"
+near-crypto = "0.24.1"
+near-jsonrpc-client = "0.12.0"
+near-jsonrpc-primitives = "0.24.1"
+near-primitives = "0.24.1"
+near-sdk = "5.3.0"
+near-workspaces = "0.12.0"
 notify = "6.1.1"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
+parking_lot = "0.12.3"
 prettyplease = "0.2.17"
 proc-macro2 = "1.0"
 quote = "1.0"
@@ -90,6 +95,7 @@ starknet-providers = "0.11.0"
 strum = "0.26.2"
 syn = "2.0"
 tempdir = "0.3.7"
+tempfile = "3.12.0"
 thiserror = "1.0.56"
 thunderdome = "0.6.1"
 tokio = "1.35.1"
@@ -105,6 +111,7 @@ tracing-subscriber = "0.3.17"
 trybuild = "1.0"
 ureq = "2.9.7"
 url = "2.5.2"
+uuid = { version = "1.10.0", features = ["v4"] }
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
 web3 = "0.19.0"

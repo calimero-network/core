@@ -1,6 +1,7 @@
 use core::convert::Infallible;
 use core::fmt::{self, Debug, Formatter};
 
+#[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_primitives::context::ContextId as PrimitiveContextId;
 use calimero_primitives::identity::PublicKey as PrimitivePublicKey;
@@ -63,6 +64,50 @@ impl Debug for ContextMeta {
     }
 }
 
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
+pub struct ContextConfig(Key<ContextId>);
+
+impl ContextConfig {
+    #[must_use]
+    pub fn new(context_id: PrimitiveContextId) -> Self {
+        Self(Key((*context_id).into()))
+    }
+
+    #[must_use]
+    pub fn context_id(&self) -> PrimitiveContextId {
+        (*AsRef::<[_; 32]>::as_ref(&self.0)).into()
+    }
+}
+
+impl AsKeyParts for ContextConfig {
+    type Components = (ContextId,);
+
+    fn column() -> Column {
+        Column::Config
+    }
+
+    fn as_key(&self) -> &Key<Self::Components> {
+        (&self.0).into()
+    }
+}
+
+impl FromKeyParts for ContextConfig {
+    type Error = Infallible;
+
+    fn try_from_parts(parts: Key<Self::Components>) -> Result<Self, Self::Error> {
+        Ok(Self(*<&_>::from(&parts)))
+    }
+}
+
+impl Debug for ContextConfig {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContextConfig")
+            .field("id", &self.context_id())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PublicKey;
 
@@ -78,7 +123,7 @@ impl ContextIdentity {
     #[must_use]
     pub fn new(context_id: PrimitiveContextId, context_pk: PrimitivePublicKey) -> Self {
         Self(Key(
-            GenericArray::from(*context_id).concat(GenericArray::from(context_pk.0))
+            GenericArray::from(*context_id).concat(GenericArray::from(*context_pk))
         ))
     }
 
@@ -92,12 +137,12 @@ impl ContextIdentity {
     }
 
     #[must_use]
-    pub fn public_key(&self) -> [u8; 32] {
+    pub fn public_key(&self) -> PrimitivePublicKey {
         let mut public_key = [0; 32];
 
         public_key.copy_from_slice(&AsRef::<[_; 64]>::as_ref(&self.0)[32..]);
 
-        public_key
+        public_key.into()
     }
 }
 
