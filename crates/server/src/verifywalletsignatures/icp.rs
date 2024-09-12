@@ -7,6 +7,7 @@ use ic_canister_sig_creation::{
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::admin::service::ApiError;
 
@@ -87,26 +88,15 @@ const IC_ROOT_PUBLIC_KEY: [u8; 96] = [
 /// This function will return an `ApiError` in case of issues like invalid input, signature mismatches, or verification failure.
 pub async fn verify_internet_identity_signature(
     challenge: &[u8],
-    signed_delegation_chain_json: &str,
+    signed_delegation_chain_json: Value,
     ii_canister_id: &str,
 ) -> Result<(), ApiError> {
-    // Parses the signed delegation chain and checks if exactly one delegation exists
-    let signed_delegation_chain: DelegationChain =
-        serde_json::from_str(signed_delegation_chain_json)
-            .map_err(|e| ApiError {
-                status_code: StatusCode::BAD_REQUEST,
-                message: format!("Error parsing delegation_chain: {}", e),
-            })
-            .and_then(|chain: DelegationChain| {
-                if chain.delegations.len() == 1 {
-                    Ok(chain)
-                } else {
-                    Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Expected exactly one signed delegation.".into(),
-                    })
-                }
-            })?;
+    // Deserialize the `Value` into `DelegationChain`
+    let signed_delegation_chain: DelegationChain = serde_json::from_value(signed_delegation_chain_json)
+        .map_err(|e| ApiError {
+            status_code: StatusCode::BAD_REQUEST,
+            message: format!("Error parsing delegation_chain: {}", e),
+        })?;
 
     let signed_delegation = &signed_delegation_chain.delegations[0];
     let delegation = &signed_delegation.delegation;

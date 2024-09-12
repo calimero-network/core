@@ -206,9 +206,14 @@ pub async fn verify_node_signature(
             };
 
             if wallet_name == "Internet Identity" {
+                let signed_delegation_chain_json = serde_json::from_str(&delegation_chain)
+                    .map_err(|_| ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Failed to serialize delegation chain.".into(),
+                    })?;
                 verify_internet_identity_signature(
                     payload.message.message.as_bytes(),
-                    &delegation_chain,
+                    signed_delegation_chain_json,
                     cannister_id,
                 )
                 .await?;
