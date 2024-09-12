@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::add_client_key::transform_request;
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse, Empty};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse, Empty};
 use crate::admin::storage::root_key::{add_root_key, clean_auth_keys};
 use crate::admin::utils::auth::validate_challenge;
+use crate::AdminState;
 
 #[derive(Debug, Serialize)]
 struct CreateRootKeyResponse {

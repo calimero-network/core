@@ -9,11 +9,9 @@ use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
-use calimero_context::ContextManager;
 use calimero_store::Store;
 use eyre::Report;
 use include_dir::{include_dir, Dir, File};
-use libp2p::identity::Keypair;
 use mime_guess::from_path;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
@@ -38,10 +36,10 @@ use crate::admin::handlers::context::{
 use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
-use crate::middleware;
 use crate::middleware::auth::AuthSignatureLayer;
 #[cfg(feature = "host_layer")]
 use crate::middleware::host::HostLayer;
+use crate::{middleware, AdminState};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -57,21 +55,13 @@ impl AdminConfig {
     }
 }
 
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct AdminState {
-    pub store: Store,
-    pub keypair: Keypair,
-    pub ctx_manager: ContextManager,
-}
-
 // Embed the contents of the admin-ui build directory into the binary
 static REACT_STATIC_FILES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../node-ui/build");
 
 pub(crate) fn setup(
     config: &ServerConfig,
     store: Store,
-    ctx_manager: ContextManager,
+    shared_state: Arc<AdminState>,
 ) -> Option<(&'static str, Router)> {
     let _ = match &config.admin {
         Some(config) if config.enabled => config,
@@ -86,11 +76,6 @@ pub(crate) fn setup(
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
-    let shared_state = Arc::new(AdminState {
-        store: store.clone(),
-        keypair: config.identity.clone(),
-        ctx_manager,
-    });
     let protected_router = Router::new()
         .route("/root-key", post(create_root_key_handler))
         .route("/install-application", post(install_application_handler))

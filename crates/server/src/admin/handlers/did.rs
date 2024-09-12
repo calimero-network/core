@@ -6,8 +6,9 @@ use calimero_primitives::identity::Did;
 use serde::Serialize;
 use tower_sessions::Session;
 
-use crate::admin::service::{parse_api_error, AdminState, ApiResponse, Empty};
+use crate::admin::service::{parse_api_error, ApiResponse, Empty};
 use crate::admin::storage::did::{delete_did, get_or_create_did};
+use crate::AdminState;
 
 #[derive(Debug, Serialize)]
 struct NodeDid {
