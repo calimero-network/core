@@ -5,10 +5,6 @@ on:
   push:
     branches:
       - master
-    paths:
-      - node-ui/** # Trigger workflow if changes are made in the node-ui folder
-    paths-ignore:
-      - 'node-ui/build/**' # Prevent workflow from triggering if only build folder changes
 
 jobs:
   build_node_ui:
@@ -17,12 +13,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Check if there are changes in the node-ui folder before building (excluding node-ui/build)
+      # Check if there are changes in the node-ui folder (excluding build)
       - name: Check for changes in node-ui (excluding build folder)
         id: check_changes
         run: |
-          # Check if there are changes only in node-ui/build folder
-          if git diff --quiet HEAD ./node-ui -- ':!node-ui/build'; then
+          # Check if there are changes in the node-ui folder excluding the build directory
+          if git diff --quiet HEAD^ HEAD -- 'node-ui' ':!node-ui/build'; then
             echo "No changes in node-ui (excluding build folder)."
             echo "no_changes=true" >> $GITHUB_ENV
           else
@@ -32,7 +28,7 @@ jobs:
 
       # Stop the workflow if no changes were found
       - name: Stop if no changes
-        if: steps.check_changes.outputs.no_changes == 'true'
+        if: env.no_changes == 'true'
         run: exit 0
 
       # Set up Node.js and install pnpm
@@ -61,7 +57,7 @@ jobs:
       - name: Add and commit build folder
         run: |
           git add ./node-ui/build
-          git commit -m "Automated commit of node-ui build"
+          git commit --no-verify -m "Automated commit of node-ui build"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
