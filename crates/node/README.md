@@ -59,3 +59,69 @@ TODO: Write about the transaction handling process and draw sequence diagram
 
 Catchup process involves updating the context metadata and the application blob, followed up
 by replaying the transactions from the last current executed transaction.
+
+In the catchup process one node is the initiator of stream connection (called `ClientPeer`) and
+the other node is the responder (called `ServerPeer`).
+
+The catchup process is initiated by the `ClientPeer` by opening a stream to the `ServerPeer`.
+
+Once the connection is established, the `ClientPeer` requests the application information from the
+ContextConfig contract. If the application blob id has changed, the `ClientPeer` attempts to fetch
+new application blob and store it in the store. Depending on the application source, the `ClientPeer`
+either fetches the application blob from the remote BlobRegistry or requests the `ServerPeer` to send
+the application blob.
+
+After the application is updated, the `ClientPeer` requests the transactions from the `ServerPeer`.
+`ServerPeer` collects executed and pending transactions from the given hash to the latest transaction.
+The transactions are sent in batches to the `ClientPeer` which applies the transactions to the store.
+
+```mermaid
+sequenceDiagram
+    ClientPeer->>+ServerPeer: OpenStream
+    Activate ClientPeer
+
+    ClientPeer->>+ContextConfigContract: GetApplication(ctx_id)
+    ContextConfigContract-->-ClientPeer: Application
+
+    ClientPeer->>ClientPeer: GetApplication(app_id)
+
+    opt If ApplicationBlobId has changed
+
+    alt ApplicationSource == HTTP
+    ClientPeer->>BlobRegistry: GetApplicationBlob
+    BlobRegistry-->>ClientPeer: ApplicationBlob
+    ClientPeer->>ClientPeer: blobs.Put(app)
+
+    else ApplicationSource == Path
+    ClientPeer->>ServerPeer: Send [ApplicationBlobRequest(ctx_id, hash)]
+    ServerPeer->>ClientPeer: Send [ApplicationBlobSize]
+    loop
+    ServerPeer->>ClientPeer: Send [ApplicationBlobBatch]
+    ClientPeer->>ClientPeer: blobs.Put(app)
+    end
+
+    end
+
+    ClientPeer->>ClientPeer: store.PutApplication(app)
+
+    end
+
+    ClientPeer->>ServerPeer: Send [TransactionsRequest(ctx_id, hash)]
+    ServerPeer->>ServerPeer: CollectExecutedAndPendingTransactions(ctx_id, hash)
+
+    loop
+    ServerPeer->>-ClientPeer: Send [TransactionsBatch]
+    ClientPeer->>ClientPeer: ApplyBatch
+    loop For Transaction in Batch
+    alt Transaction.Status == Executed
+    ClientPeer->>ClientPeer: ExecuteTransaction
+
+    else Transaction.Status == Pending
+    ClientPeer->>ClientPeer: ExecuteTransaction
+    end
+
+    end
+    end
+
+    Deactivate ClientPeer
+```
