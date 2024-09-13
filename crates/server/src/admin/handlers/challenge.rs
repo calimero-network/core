@@ -15,7 +15,8 @@ use serde_json::to_vec as to_json_vec;
 use tower_sessions::Session;
 use tracing::error;
 
-use crate::admin::service::{AdminState, ApiError, ApiResponse};
+use crate::admin::service::{ApiError, ApiResponse};
+use crate::AdminState;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
