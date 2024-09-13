@@ -40,13 +40,13 @@ pub fn create_test_store() -> (Store, TempDir) {
     // InMemoryDB as well as RocksDB, in which case the storage Interface could
     // be changed to work against Database implementations and not just Store.
     let temp_dir = tempdir().expect("Could not create temp dir");
-    let config = StoreConfig::new(
-        temp_dir
+    let config = StoreConfig {
+        path: temp_dir
             .path()
             .to_path_buf()
             .try_into()
             .expect("Invalid UTF-8 path"),
-    );
+    };
     (
         Store::open::<RocksDB>(&config).expect("Could not create store"),
         temp_dir,

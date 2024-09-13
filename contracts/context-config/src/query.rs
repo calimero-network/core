@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
+use calimero_context_config::repr::{Repr, ReprTransmute};
+use calimero_context_config::types::{
+    Application, Capability, ContextId, ContextIdentity, SignerId,
+};
 use near_sdk::near;
 
 use super::{ContextConfigs, ContextConfigsExt};
-use crate::repr::{Repr, ReprTransmute};
-use crate::types::{Application, Capability, ContextId, ContextIdentity, SignerId};
 
 #[near]
 impl ContextConfigs {

@@ -6,8 +6,9 @@ use calimero_primitives::identity::Did;
 use serde::Serialize;
 use tower_sessions::Session;
 
-use crate::admin::service::{parse_api_error, AdminState, ApiResponse};
-use crate::admin::storage::did::get_or_create_did;
+use crate::admin::service::{parse_api_error, ApiResponse, Empty};
+use crate::admin::storage::did::{delete_did, get_or_create_did};
+use crate::AdminState;
 
 #[derive(Debug, Serialize)]
 struct NodeDid {
@@ -30,6 +31,25 @@ pub async fn fetch_did_handler(
             payload: DidResponse {
                 data: NodeDid { did },
             },
+        }
+        .into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteDidResponse {
+    data: Empty,
+}
+
+pub async fn delete_did_handler(
+    _session: Session,
+    Extension(state): Extension<Arc<AdminState>>,
+) -> impl IntoResponse {
+    let result = delete_did(&state.store.clone()).map_err(parse_api_error);
+    match result {
+        Ok(_) => ApiResponse {
+            payload: DeleteDidResponse { data: Empty {} },
         }
         .into_response(),
         Err(err) => err.into_response(),

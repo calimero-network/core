@@ -17,11 +17,12 @@ use serde_json::from_value as from_json_value;
 use tracing::info;
 
 use crate::admin::handlers::root_keys::store_root_key;
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::admin::storage::client_keys::add_client_key;
 use crate::admin::storage::root_key::exists_root_keys;
 use crate::admin::utils::auth::{validate_challenge, validate_root_key_exists};
 use crate::admin::utils::jwt::{generate_jwt_tokens, refresh_access_token};
+use crate::AdminState;
 
 pub fn transform_request(
     intermediate: IntermediateAddPublicKeyRequest,
@@ -92,10 +93,10 @@ pub async fn add_client_key_handler(
 ) -> impl IntoResponse {
     async { transform_request(intermediate_req) }
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        .and_then(|req| async { check_root_key(req, &state.store.clone()) })
+        .and_then(|req| check_root_key(req, &state.store))
         .and_then(|req| validate_challenge(req, &state.keypair))
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        .and_then(|req| async { store_client_key(req, &state.store.clone()) })
+        .and_then(|req| async { store_client_key(req, &state.store) })
         .await
         .map_or_else(IntoResponse::into_response, |_| {
             let data: String = "Client key stored".to_owned();
@@ -164,20 +165,32 @@ pub fn store_client_key(
     Ok(req)
 }
 
-fn check_root_key(
+async fn check_root_key(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
     let root_keys = exists_root_keys(store).map_err(parse_api_error)?;
     if root_keys {
-        validate_root_key_exists(req, store)
+        // If root keys exist, validate and return the request
+        validate_root_key_exists(req, store).await
     } else {
-        //first login so store root key as well
+        // Attempt to store the root key, then return the request
+        let wallet_address = match req.wallet_metadata.wallet_type {
+            WalletType::NEAR { .. } => req
+                .wallet_metadata
+                .wallet_address
+                .clone()
+                .unwrap_or(String::new()),
+            _ => String::new(), // Handle other cases appropriately
+        };
+
         let _ = store_root_key(
             req.wallet_metadata.verifying_key.clone(),
             req.wallet_metadata.wallet_type.clone(),
+            wallet_address,
             store,
         )?;
+
         Ok(req)
     }
 }

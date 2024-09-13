@@ -1,27 +1,52 @@
 use std::time;
 
-use ed25519_dalek::VerifyingKey;
+use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use calimero_context_config::types::{
+    Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
+};
+use calimero_context_config::{
+    ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest, Timestamp,
+};
 use near_sdk::store::IterableSet;
-use near_sdk::{env, near, require, serde_json, Timestamp};
+use near_sdk::{env, near, require, serde_json};
 
 use super::{
     Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
-    PrivilegeScope, MIN_VALIDITY_THRESHOLD_MS,
+    PrivilegeScope,
 };
-use crate::repr::{Repr, ReprBytes, ReprTransmute};
-use crate::types::{Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
-use crate::{ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest};
+
+const MIN_VALIDITY_THRESHOLD_MS: Timestamp = 5_000;
+
+macro_rules! parse_input {
+    ($input:ident $(: $input_ty:ty)?) => {
+        let $input = env::input().unwrap_or_default();
+
+        let $input $(: $input_ty )? = serde_json::from_slice(&$input).expect("failed to parse input");
+    };
+}
 
 #[near]
 impl ContextConfigs {
-    pub fn mutate(&mut self) {
-        let input = env::input().unwrap_or_default();
+    pub fn set(&mut self) {
+        require!(
+            env::predecessor_account_id() == env::current_account_id(),
+            "access denied"
+        );
 
-        let request: Signed<Request<'_>> =
-            serde_json::from_slice(&input).expect("failed to parse input");
+        parse_input!(request);
+
+        match request {
+            SystemRequest::SetValidityThreshold { threshold_ms } => {
+                self.set_validity_threshold_ms(threshold_ms);
+            }
+        }
+    }
+
+    pub fn mutate(&mut self) {
+        parse_input!(request: Signed<Request<'_>>);
 
         let request = request
-            .parse(|i| VerifyingKey::from_bytes(&i.signer_id.as_bytes()))
+            .parse(|i| *i.signer_id)
             .expect("failed to parse input");
 
         require!(
@@ -36,7 +61,7 @@ impl ContextConfigs {
                     author_id,
                     application,
                 } => {
-                    self.add_context(context_id, author_id, application);
+                    self.add_context(&request.signer_id, context_id, author_id, application);
                 }
                 ContextRequestKind::UpdateApplication { application } => {
                     self.update_application(&request.signer_id, context_id, application);
@@ -54,9 +79,6 @@ impl ContextConfigs {
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
             },
-            RequestKind::System(SystemRequest::SetValidityThreshold { threshold_ms }) => {
-                self.set_validity_threshold_ms(threshold_ms);
-            }
         }
     }
 }
@@ -64,10 +86,16 @@ impl ContextConfigs {
 impl ContextConfigs {
     fn add_context(
         &mut self,
+        signer_id: &SignerId,
         context_id: Repr<ContextId>,
         author_id: Repr<ContextIdentity>,
         application: Application<'_>,
     ) {
+        require!(
+            signer_id.as_bytes() == context_id.as_bytes(),
+            "context addition must be signed by the context itself"
+        );
+
         let mut members = IterableSet::new(Prefix::Members(*context_id));
 
         members.insert(*author_id);
@@ -130,8 +158,8 @@ impl ContextConfigs {
         );
 
         env::log_str(&format!(
-            "Updated application `{}` -> `{}`",
-            old_application.id, new_application_id
+            "Updated application for context `{}` from `{}` to `{}`",
+            context_id, old_application.id, new_application_id
         ))
     }
 

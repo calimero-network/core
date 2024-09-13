@@ -1,0 +1,36 @@
+[package]
+name = "calimero-context-config"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+bs58.workspace = true
+borsh = { workspace = true, features = ["derive"] }
+ed25519-dalek.workspace = true
+either = { workspace = true, optional = true }
+near-crypto = { workspace = true, optional = true }
+near-jsonrpc-client = { workspace = true, optional = true }
+near-jsonrpc-primitives = { workspace = true, optional = true }
+near-primitives = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+url = { workspace = true, optional = true }
+
+[lints]
+workspace = true
+
+[features]
+client = [
+  "dep:either",
+  "dep:near-crypto",
+  "dep:near-jsonrpc-client",
+  "dep:near-jsonrpc-primitives",
+  "dep:near-primitives",
+  "reqwest/json",
+  "dep:url",
+]

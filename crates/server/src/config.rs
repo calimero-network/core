@@ -14,7 +14,6 @@ pub const DEFAULT_ADDRS: [IpAddr; 2] = [
 ];
 
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
@@ -28,25 +27,6 @@ pub struct ServerConfig {
 
     #[cfg(feature = "websocket")]
     pub websocket: Option<WsConfig>,
-}
-
-impl ServerConfig {
-    #[must_use]
-    pub const fn new(
-        listen: Vec<Multiaddr>,
-        identity: Keypair,
-        admin: Option<AdminConfig>,
-        jsonrpc: Option<JsonRpcConfig>,
-        websocket: Option<WsConfig>,
-    ) -> Self {
-        Self {
-            listen,
-            identity,
-            admin,
-            jsonrpc,
-            websocket,
-        }
-    }
 }
 
 #[must_use]

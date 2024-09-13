@@ -9,10 +9,8 @@ use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
-use calimero_context::ContextManager;
 use calimero_store::Store;
 use eyre::Report;
-use libp2p::identity::Keypair;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
 use tower_http::services::{ServeDir, ServeFile};
@@ -20,6 +18,7 @@ use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
+use super::handlers::did::delete_did_handler;
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::add_client_key::{
     add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
@@ -34,13 +33,13 @@ use crate::admin::handlers::context::{
     get_context_handler, get_context_identities_handler, get_context_storage_handler,
     get_context_users_handler, get_contexts_handler, join_context_handler, update_application_id,
 };
-use crate::admin::handlers::fetch_did::fetch_did_handler;
+use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
-use crate::middleware;
 use crate::middleware::auth::AuthSignatureLayer;
 #[cfg(feature = "host_layer")]
 use crate::middleware::host::HostLayer;
+use crate::{middleware, AdminState};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -56,18 +55,10 @@ impl AdminConfig {
     }
 }
 
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct AdminState {
-    pub store: Store,
-    pub keypair: Keypair,
-    pub ctx_manager: ContextManager,
-}
-
 pub(crate) fn setup(
     config: &ServerConfig,
     store: Store,
-    ctx_manager: ContextManager,
+    shared_state: Arc<AdminState>,
 ) -> Option<(&'static str, Router)> {
     let _ = match &config.admin {
         Some(config) if config.enabled => config,
@@ -82,11 +73,6 @@ pub(crate) fn setup(
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
-    let shared_state = Arc::new(AdminState {
-        store: store.clone(),
-        keypair: config.identity.clone(),
-        ctx_manager,
-    });
     let protected_router = Router::new()
         .route("/root-key", post(create_root_key_handler))
         .route("/install-application", post(install_application_handler))
@@ -95,7 +81,7 @@ pub(crate) fn setup(
             "/applications/:app_id",
             get(get_application_details_handler),
         )
-        .route("/did", get(fetch_did_handler))
+        .route("/did", get(fetch_did_handler).delete(delete_did_handler))
         .route("/contexts", post(create_context_handler))
         .route("/contexts/:context_id", delete(delete_context_handler))
         .route("/contexts/:context_id", get(get_context_handler))
@@ -115,7 +101,7 @@ pub(crate) fn setup(
             "/contexts/:context_id/identities",
             get(get_context_identities_handler),
         )
-        .route("/contexts/:context_id/join", post(join_context_handler))
+        .route("/contexts/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
@@ -147,7 +133,7 @@ pub(crate) fn setup(
             "/dev/contexts",
             get(get_contexts_handler).post(create_context_handler),
         )
-        .route("/dev/contexts/:context_id/join", post(join_context_handler))
+        .route("/dev/contexts/join", post(join_context_handler))
         .route(
             "/dev/contexts/:context_id/application",
             post(update_application_id),

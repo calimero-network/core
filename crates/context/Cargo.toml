@@ -8,8 +8,10 @@ license.workspace = true
 
 [dependencies]
 camino = { workspace = true, features = ["serde1"] }
+ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 semver.workspace = true
 serde.workspace = true
@@ -17,8 +19,9 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true
 
+calimero-context-config = { path = "./config", features = ["client"] }
 calimero-blobstore = { path = "../store/blobs" }
-calimero-primitives = { path = "../primitives", features = ["borsh"] }
+calimero-primitives = { path = "../primitives", features = ["borsh", "rand"] }
 calimero-network = { path = "../network" }
 calimero-node-primitives = { path = "../node-primitives" }
 calimero-store = { path = "../store", features = ["datatypes"] }
