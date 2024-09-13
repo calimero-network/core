@@ -56,8 +56,8 @@ impl AdminState {
 }
 
 // TODO: Consider splitting this long function into multiple parts.
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::print_stderr)]
+#[expect(clippy::too_many_lines)]
+#[expect(clippy::print_stderr)]
 pub async fn start(
     config: ServerConfig,
     server_sender: ServerSender,

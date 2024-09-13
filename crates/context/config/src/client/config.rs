@@ -55,8 +55,9 @@ pub struct Credentials {
 }
 
 mod serde_creds {
-
-    use super::*;
+    use near_crypto::{PublicKey, SecretKey};
+    use near_primitives::types::AccountId;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Credentials {

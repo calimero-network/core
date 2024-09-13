@@ -26,6 +26,7 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
 ];
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NetworkConfig {
     pub identity: Keypair,
     pub node_type: NodeType,
@@ -34,6 +35,27 @@ pub struct NetworkConfig {
     pub bootstrap: BootstrapConfig,
     pub discovery: DiscoveryConfig,
     pub catchup: CatchupConfig,
+}
+
+impl NetworkConfig {
+    #[must_use]
+    pub const fn new(
+        identity: Keypair,
+        node_type: NodeType,
+        swarm: SwarmConfig,
+        bootstrap: BootstrapConfig,
+        discovery: DiscoveryConfig,
+        catchup: CatchupConfig,
+    ) -> Self {
+        Self {
+            identity,
+            node_type,
+            swarm,
+            bootstrap,
+            discovery,
+            catchup,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

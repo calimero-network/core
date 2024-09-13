@@ -11,7 +11,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 #[derive(Debug)]
-#[allow(clippy::exhaustive_enums)]
+#[expect(clippy::exhaustive_enums)]
 pub enum RuntimeCompatStoreInner<'this, 'entry> {
     Read(ReadOnly<'this, Store>),
     Write(Temporal<'this, 'entry, Store>),

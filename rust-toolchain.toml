@@ -1,6 +1,6 @@
 [toolchain]
-channel = "1.80.1"
-components = ["clippy"]
+channel = "1.81.0"
+components = ["cargo", "clippy"]
 
 [profile.dev]
 opt-level = 0

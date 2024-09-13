@@ -219,10 +219,7 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
         message: format!("Failed to generate access token: {}", err),
     })?;
 
-    let payload: JwtTokenRequest = JwtTokenRequest {
-        context_id,
-        executor_public_key: executor,
-    };
+    let payload: JwtTokenRequest = JwtTokenRequest::new(context_id, executor);
 
     let jwt_tokens = generate_jwt_tokens(payload, store.clone()).map_err(|err| ApiError {
         status_code: StatusCode::BAD_REQUEST,

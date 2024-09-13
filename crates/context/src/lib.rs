@@ -163,11 +163,7 @@ impl ContextManager {
                 bail!("Context already exists on node.")
             }
 
-            Context {
-                id: context_id,
-                application_id,
-                last_transaction_hash: Default::default(),
-            }
+            Context::new(context_id, application_id, Hash::default())
         };
 
         let Some(application) = self.get_application(&context.application_id)? else {
@@ -236,10 +232,10 @@ impl ContextManager {
         if is_new {
             handle.put(
                 &ContextConfigKey::new(context.id),
-                &ContextConfigValue {
-                    network: self.client_config.new.network.as_str().into(),
-                    contract: self.client_config.new.contract_id.as_str().into(),
-                },
+                &ContextConfigValue::new(
+                    self.client_config.new.network.as_str().into(),
+                    self.client_config.new.contract_id.as_str().into(),
+                ),
             )?;
 
             handle.put(
@@ -314,11 +310,11 @@ impl ContextManager {
 
         let application = response.parse()?;
 
-        let context = Context {
-            id: context_id,
-            application_id: application.id.as_bytes().into(),
-            last_transaction_hash: Default::default(),
-        };
+        let context = Context::new(
+            context_id,
+            application.id.as_bytes().into(),
+            Hash::default(),
+        );
 
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
 
@@ -424,11 +420,11 @@ impl ContextManager {
             return Ok(None);
         };
 
-        Ok(Some(Context {
-            id: *context_id,
-            application_id: ctx_meta.application.application_id(),
-            last_transaction_hash: ctx_meta.last_transaction_hash.into(),
-        }))
+        Ok(Some(Context::new(
+            *context_id,
+            ctx_meta.application.application_id(),
+            ctx_meta.last_transaction_hash.into(),
+        )))
     }
 
     pub async fn delete_context(&self, context_id: &ContextId) -> EyreResult<bool> {
@@ -611,21 +607,21 @@ impl ContextManager {
             if let Some(key) = iter.seek(ContextMetaKey::new(start))? {
                 let value = iter.read()?;
 
-                contexts.push(Context {
-                    id: key.context_id(),
-                    application_id: value.application.application_id(),
-                    last_transaction_hash: value.last_transaction_hash.into(),
-                });
+                contexts.push(Context::new(
+                    key.context_id(),
+                    value.application.application_id(),
+                    value.last_transaction_hash.into(),
+                ));
             }
         }
 
         for (k, v) in iter.entries() {
             let (k, v) = (k?, v?);
-            contexts.push(Context {
-                id: k.context_id(),
-                application_id: v.application.application_id(),
-                last_transaction_hash: v.last_transaction_hash.into(),
-            });
+            contexts.push(Context::new(
+                k.context_id(),
+                v.application.application_id(),
+                v.last_transaction_hash.into(),
+            ));
         }
 
         Ok(contexts)
@@ -701,7 +697,7 @@ impl ContextManager {
         self.install_application(blob_id, &(uri.as_str().parse()?), version, metadata)
     }
 
-    #[allow(clippy::similar_names)]
+    #[expect(clippy::similar_names)]
     pub async fn install_application_from_url(
         &self,
         url: Url,

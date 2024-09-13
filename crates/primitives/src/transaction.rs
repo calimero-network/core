@@ -16,7 +16,7 @@ pub struct Transaction {
 
 impl Transaction {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         context_id: ContextId,
         method: String,
         payload: Vec<u8>,

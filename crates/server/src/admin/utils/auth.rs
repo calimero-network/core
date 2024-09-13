@@ -32,7 +32,7 @@ use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_me
 /// # Returns
 /// * `Ok(true)` - If the signature is valid.
 /// * `Err(ApiError)` - If the signature is invalid or the wallet type is unsupported.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub async fn verify_node_signature(
     wallet_metadata: &WalletMetadata,
     wallet_signature: &WalletSignature,
@@ -40,7 +40,7 @@ pub async fn verify_node_signature(
 ) -> Result<bool, ApiError> {
     match wallet_metadata.wallet_type {
         WalletType::NEAR { .. } => {
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm)]
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::NEAR(metadata) => metadata,
                 SignatureMetadataEnum::ETH(_) => {
@@ -82,7 +82,7 @@ pub async fn verify_node_signature(
             Ok(true)
         }
         WalletType::ETH { .. } => {
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm)]
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => Ok(metadata), // Return Ok for the valid case
                 SignatureMetadataEnum::NEAR(_) => Err(ApiError {
@@ -113,7 +113,7 @@ pub async fn verify_node_signature(
             Ok(true)
         }
         WalletType::STARKNET { ref wallet_name } => {
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm)]
             let _sn_metadata: &StarknetSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::STARKNET(metadata) => metadata,
                 _ => {
@@ -124,7 +124,7 @@ pub async fn verify_node_signature(
                 }
             };
 
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm)]
             let (message_hash, signature) = match wallet_signature {
                 WalletSignature::StarknetPayload(payload) => {
                     (&payload.message_hash, &payload.signature)

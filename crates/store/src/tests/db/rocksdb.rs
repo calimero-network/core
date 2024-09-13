@@ -1,3 +1,5 @@
+use core::mem;
+
 use eyre::Ok as EyreOk;
 use tempdir::TempDir;
 
@@ -51,8 +53,8 @@ fn test_rocksdb() {
                     (Some(k.into_boxed()), Some(v.into_boxed()))
                 });
 
-            let last_key = std::mem::replace(&mut key, k).unwrap();
-            let last_value = std::mem::replace(&mut value, v).unwrap();
+            let last_key = mem::replace(&mut key, k).unwrap();
+            let last_value = mem::replace(&mut value, v).unwrap();
 
             let bytes = [b1, b2];
 

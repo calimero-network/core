@@ -48,20 +48,16 @@ impl RunCommand {
             home: path.clone(),
             node_type: self.node_type.into(),
             identity: config.identity.clone(),
-            network: NetworkConfig {
-                identity: config.identity.clone(),
-                node_type: self.node_type.into(),
-                swarm: config.network.swarm,
-                bootstrap: config.network.bootstrap,
-                discovery: config.network.discovery,
-                catchup: config.network.catchup,
-            },
-            datastore: StoreConfig {
-                path: path.join(config.datastore.path),
-            },
-            blobstore: BlobStoreConfig {
-                path: path.join(config.blobstore.path),
-            },
+            network: NetworkConfig::new(
+                config.identity.clone(),
+                self.node_type.into(),
+                config.network.swarm,
+                config.network.bootstrap,
+                config.network.discovery,
+                config.network.catchup,
+            ),
+            datastore: StoreConfig::new(path.join(config.datastore.path)),
+            blobstore: BlobStoreConfig::new(path.join(config.blobstore.path)),
             context: config.context,
             server: ServerConfig {
                 listen: config.network.server.listen,

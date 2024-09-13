@@ -71,7 +71,7 @@ pub struct ContextInvitationPayload(Vec<u8>);
 
 impl fmt::Debug for ContextInvitationPayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _is_alternate = f.alternate();
+        let is_alternate = f.alternate();
 
         let mut d = f.debug_struct("ContextInvitationPayload");
 
@@ -80,18 +80,18 @@ impl fmt::Debug for ContextInvitationPayload {
             let (context_id, invitee_id, network, contract_id) =
                 self.parts().map_err(|_| fmt::Error)?;
 
-            let _ = d
+            _ = d
                 .field("context_id", &context_id)
                 .field("invitee_id", &invitee_id)
                 .field("network", &network)
                 .field("contract_id", &contract_id);
 
-            if !_is_alternate {
+            if !is_alternate {
                 return d.finish();
             }
         }
 
-        let _ = d.field("raw", &self.to_string());
+        _ = d.field("raw", &self.to_string());
 
         d.finish()
     }
@@ -129,7 +129,7 @@ impl TryFrom<&str> for ContextInvitationPayload {
 }
 
 #[cfg(feature = "borsh")]
-#[allow(single_use_lifetimes)]
+#[expect(single_use_lifetimes, reason = "False positive")]
 const _: () = {
     use std::borrow::Cow;
 
@@ -146,7 +146,6 @@ const _: () = {
     }
 
     impl ContextInvitationPayload {
-        #[must_use]
         pub fn new(
             context_id: ContextId,
             invitee_id: PublicKey,
@@ -163,7 +162,6 @@ const _: () = {
             borsh::to_vec(&payload).map(Self)
         }
 
-        #[must_use]
         pub fn parts(&self) -> io::Result<(ContextId, PublicKey, String, String)> {
             let payload: InvitationPayload<'_> = borsh::from_slice(&self.0)?;
 
@@ -177,8 +175,9 @@ const _: () = {
     }
 };
 
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct Context {
     pub id: ContextId,
     pub application_id: ApplicationId,

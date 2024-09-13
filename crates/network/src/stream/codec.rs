@@ -18,7 +18,7 @@ pub struct Message {
 
 impl Message {
     #[must_use]
-    pub fn new(data: Vec<u8>) -> Self {
+    pub const fn new(data: Vec<u8>) -> Self {
         Self { data }
     }
 }

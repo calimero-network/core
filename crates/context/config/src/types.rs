@@ -1,12 +1,16 @@
+use core::convert::Infallible;
 use core::fmt;
+use core::fmt::{Debug, Display, Formatter};
+use core::marker::PhantomData;
 use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use bs58::decode::Result as Bs58Result;
+use ed25519_dalek::{Signature, SignatureError, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
-use crate::repr::{self, Repr, ReprBytes, ReprTransmute};
+use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
 
 #[derive(
     Eq,
@@ -35,7 +39,7 @@ impl ReprBytes for Identity {
     type EncodeBytes<'a> = [u8; 32];
     type DecodeBytes = [u8; 32];
 
-    type Error = repr::LengthMismatch;
+    type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
         self.0
@@ -43,7 +47,7 @@ impl ReprBytes for Identity {
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         Self::DecodeBytes::from_bytes(f).map(Self)
     }
@@ -56,7 +60,7 @@ impl ReprBytes for SignerId {
     type EncodeBytes<'a> = [u8; 32];
     type DecodeBytes = [u8; 32];
 
-    type Error = repr::LengthMismatch;
+    type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
         self.0.as_bytes()
@@ -64,7 +68,7 @@ impl ReprBytes for SignerId {
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         ReprBytes::from_bytes(f).map(Self)
     }
@@ -77,7 +81,7 @@ impl ReprBytes for ContextId {
     type EncodeBytes<'a> = [u8; 32];
     type DecodeBytes = [u8; 32];
 
-    type Error = repr::LengthMismatch;
+    type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
         self.0.as_bytes()
@@ -85,7 +89,7 @@ impl ReprBytes for ContextId {
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         ReprBytes::from_bytes(f).map(Self)
     }
@@ -98,7 +102,7 @@ impl ReprBytes for ContextIdentity {
     type EncodeBytes<'a> = [u8; 32];
     type DecodeBytes = [u8; 32];
 
-    type Error = repr::LengthMismatch;
+    type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
         self.0.as_bytes()
@@ -106,7 +110,7 @@ impl ReprBytes for ContextIdentity {
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         ReprBytes::from_bytes(f).map(Self)
     }
@@ -119,7 +123,7 @@ impl ReprBytes for BlobId {
     type EncodeBytes<'a> = [u8; 32];
     type DecodeBytes = [u8; 32];
 
-    type Error = repr::LengthMismatch;
+    type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
         self.0.as_bytes()
@@ -127,7 +131,7 @@ impl ReprBytes for BlobId {
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         ReprBytes::from_bytes(f).map(Self)
     }
@@ -140,7 +144,7 @@ impl ReprBytes for ApplicationId {
     type EncodeBytes<'a> = [u8; 32];
     type DecodeBytes = [u8; 32];
 
-    type Error = repr::LengthMismatch;
+    type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
         self.0.as_bytes()
@@ -148,7 +152,7 @@ impl ReprBytes for ApplicationId {
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         ReprBytes::from_bytes(f).map(Self)
     }
@@ -170,6 +174,7 @@ impl ReprBytes for ApplicationId {
 pub struct ApplicationSource<'a>(#[serde(borrow)] pub Cow<'a, str>);
 
 impl ApplicationSource<'_> {
+    #[must_use]
     pub fn to_owned(self) -> ApplicationSource<'static> {
         ApplicationSource(Cow::Owned(self.0.into_owned()))
     }
@@ -191,6 +196,7 @@ impl ApplicationSource<'_> {
 pub struct ApplicationMetadata<'a>(#[serde(borrow)] pub Repr<Cow<'a, [u8]>>);
 
 impl ApplicationMetadata<'_> {
+    #[must_use]
     pub fn to_owned(self) -> ApplicationMetadata<'static> {
         ApplicationMetadata(Repr::new(Cow::Owned(self.0.into_inner().into_owned())))
     }
@@ -200,7 +206,7 @@ impl ReprBytes for Signature {
     type EncodeBytes<'a> = [u8; 64];
     type DecodeBytes = [u8; 64];
 
-    type Error = repr::LengthMismatch;
+    type Error = LengthMismatch;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
         self.to_bytes()
@@ -208,18 +214,18 @@ impl ReprBytes for Signature {
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         Self::DecodeBytes::from_bytes(f).map(|b| Self::from_bytes(&b))
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum VerificationKeyParseError {
     #[error(transparent)]
-    LengthMismatch(repr::LengthMismatch),
+    LengthMismatch(LengthMismatch),
     #[error("invalid key: {0}")]
-    InvalidVerificationKey(ed25519_dalek::SignatureError),
+    InvalidVerificationKey(SignatureError),
 }
 
 impl ReprBytes for VerifyingKey {
@@ -234,13 +240,14 @@ impl ReprBytes for VerifyingKey {
 
     fn from_bytes<F>(f: F) -> repr::Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         use VerificationKeyParseError::{InvalidVerificationKey, LengthMismatch};
 
         let bytes = Self::DecodeBytes::from_bytes(f).map_err(|e| e.map(LengthMismatch))?;
 
-        Self::from_bytes(&bytes).map_err(|e| repr::Error::DecodeError(InvalidVerificationKey(e)))
+        Self::from_bytes(&bytes)
+            .map_err(|e| repr::ReprError::DecodeError(InvalidVerificationKey(e)))
     }
 }
 
@@ -256,11 +263,11 @@ pub struct Signed<T> {
     signature: Repr<Signature>,
 
     #[serde(skip)]
-    _priv: std::marker::PhantomData<T>,
+    _priv: PhantomData<T>,
 }
 
-#[derive(Error)]
-pub enum Error<E> {
+#[derive(ThisError)]
+pub enum ConfigError<E> {
     #[error("invalid signature")]
     InvalidSignature,
     #[error("json error: {0}")]
@@ -268,12 +275,12 @@ pub enum Error<E> {
     #[error("derivation error: {0}")]
     DerivationError(E),
     #[error(transparent)]
-    VerificationKeyParseError(#[from] repr::Error<VerificationKeyParseError>),
+    VerificationKeyParseError(#[from] repr::ReprError<VerificationKeyParseError>),
 }
 
-impl<E: fmt::Display> fmt::Debug for Error<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+impl<E: Display> Debug for ConfigError<E> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, f)
     }
 }
 
@@ -281,17 +288,17 @@ impl<T: Serialize> Signed<T> {
     pub fn new<R: IntoResult<Signature>>(
         payload: &T,
         sign: impl FnOnce(&[u8]) -> R,
-    ) -> Result<Self, Error<R::Error>> {
+    ) -> Result<Self, ConfigError<R::Error>> {
         let payload = serde_json::to_vec(&payload)?.into_boxed_slice();
 
         let signature = sign(&payload)
             .into_result()
-            .map_err(Error::DerivationError)?;
+            .map_err(ConfigError::DerivationError)?;
 
         Ok(Self {
             payload: Repr::new(payload),
             signature: Repr::new(signature),
-            _priv: Default::default(),
+            _priv: PhantomData,
         })
     }
 }
@@ -303,7 +310,7 @@ pub trait IntoResult<T> {
 }
 
 impl<T> IntoResult<T> for T {
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
 
     fn into_result(self) -> Result<T, Self::Error> {
         Ok(self)
@@ -322,16 +329,18 @@ impl<'a, T: Deserialize<'a>> Signed<T> {
     pub fn parse<R: IntoResult<SignerId>>(
         &'a self,
         f: impl FnOnce(&T) -> R,
-    ) -> Result<T, Error<R::Error>> {
+    ) -> Result<T, ConfigError<R::Error>> {
         let parsed = serde_json::from_slice(&self.payload)?;
 
-        let bytes = f(&parsed).into_result().map_err(Error::DerivationError)?;
+        let bytes = f(&parsed)
+            .into_result()
+            .map_err(ConfigError::DerivationError)?;
 
         let key = bytes
             .rt::<VerifyingKey>()
-            .map_err(Error::VerificationKeyParseError)?;
+            .map_err(ConfigError::VerificationKeyParseError)?;
 
         key.verify(&self.payload, &self.signature)
-            .map_or(Err(Error::InvalidSignature), |_| Ok(parsed))
+            .map_or(Err(ConfigError::InvalidSignature), |()| Ok(parsed))
     }
 }

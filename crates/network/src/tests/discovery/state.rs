@@ -11,7 +11,7 @@ fn test_get_preferred_addr() {
 
     assert_eq!(peer_info.get_preferred_addr(), None);
 
-    let _ = peer_info.addrs.insert(tcp_addr_1.clone());
+    let _ = peer_info.addrs.insert(tcp_addr_1);
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -22,7 +22,7 @@ fn test_get_preferred_addr() {
         Protocol::Tcp(4001)
     );
 
-    let _ = peer_info.addrs.insert(quic_addr.clone());
+    let _ = peer_info.addrs.insert(quic_addr);
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -33,7 +33,7 @@ fn test_get_preferred_addr() {
         Protocol::Udp(4001)
     );
 
-    let _ = peer_info.addrs.insert(tcp_addr_2.clone());
+    let _ = peer_info.addrs.insert(tcp_addr_2);
     assert_eq!(
         peer_info
             .get_preferred_addr()
@@ -48,75 +48,75 @@ fn test_get_preferred_addr() {
 #[test]
 fn test_is_relay_reservation_required() {
     let mut peer_info = PeerInfo::default();
-    assert_eq!(peer_info.is_relay_reservation_required(), true);
+    assert!(peer_info.is_relay_reservation_required());
 
     peer_info.relay = Some(PeerRelayInfo {
         reservation_status: RelayReservationStatus::Requested,
     });
-    assert_eq!(peer_info.is_relay_reservation_required(), false);
+    assert!(!peer_info.is_relay_reservation_required());
 
     peer_info.relay = Some(PeerRelayInfo {
         reservation_status: RelayReservationStatus::Accepted,
     });
-    assert_eq!(peer_info.is_relay_reservation_required(), false);
+    assert!(!peer_info.is_relay_reservation_required());
 
     peer_info.relay = Some(PeerRelayInfo {
         reservation_status: RelayReservationStatus::Discovered,
     });
-    assert_eq!(peer_info.is_relay_reservation_required(), true);
+    assert!(peer_info.is_relay_reservation_required());
 
     peer_info.relay = Some(PeerRelayInfo {
         reservation_status: RelayReservationStatus::Expired,
     });
-    assert_eq!(peer_info.is_relay_reservation_required(), true);
+    assert!(peer_info.is_relay_reservation_required());
 }
 
 #[test]
 fn test_is_rendezvous_discovery_throttled() {
     let mut peer_info = PeerInfo::default();
-    assert_eq!(peer_info.is_rendezvous_discover_throttled(1.0), false);
+    assert!(peer_info.is_rendezvous_discover_throttled(1.0));
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
         last_discovery_at: Some(Instant::now() - Duration::from_secs(30)),
         ..Default::default()
     });
-    assert_eq!(peer_info.is_rendezvous_discover_throttled(1.0), true);
+    assert!(peer_info.is_rendezvous_discover_throttled(1.0));
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
         last_discovery_at: Some(Instant::now() - Duration::from_secs(61)),
         ..Default::default()
     });
-    assert_eq!(peer_info.is_rendezvous_discover_throttled(1.0), false);
+    assert!(!peer_info.is_rendezvous_discover_throttled(1.0));
 }
 
 #[test]
 fn test_is_rendezvous_registration_required() {
     let mut peer_info = PeerInfo::default();
-    assert_eq!(peer_info.is_rendezvous_registration_required(), true);
+    assert!(peer_info.is_rendezvous_registration_required());
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
         registration_status: RendezvousRegistrationStatus::Requested,
         ..Default::default()
     });
-    assert_eq!(peer_info.is_rendezvous_registration_required(), false);
+    assert!(!peer_info.is_rendezvous_registration_required());
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
         registration_status: RendezvousRegistrationStatus::Registered,
         ..Default::default()
     });
-    assert_eq!(peer_info.is_rendezvous_registration_required(), false);
+    assert!(!peer_info.is_rendezvous_registration_required());
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
         registration_status: RendezvousRegistrationStatus::Discovered,
         ..Default::default()
     });
-    assert_eq!(peer_info.is_rendezvous_registration_required(), true);
+    assert!(peer_info.is_rendezvous_registration_required());
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
         registration_status: RendezvousRegistrationStatus::Expired,
         ..Default::default()
     });
-    assert_eq!(peer_info.is_rendezvous_registration_required(), true);
+    assert!(peer_info.is_rendezvous_registration_required());
 }
 
 #[test]
@@ -133,8 +133,8 @@ fn test_state_mutations() {
     let rendezvous_status = RendezvousRegistrationStatus::Registered;
 
     state.update_peer_protocols(&peer_id, &protocols);
-    assert_eq!(state.is_peer_relay(&peer_id), true);
-    assert_eq!(state.is_peer_rendezvous(&peer_id), true);
+    assert!(state.is_peer_relay(&peer_id));
+    assert!(state.is_peer_rendezvous(&peer_id));
     assert_eq!(
         state.peers[&peer_id]
             .rendezvous
@@ -152,8 +152,8 @@ fn test_state_mutations() {
         RelayReservationStatus::Discovered
     );
 
-    state.add_peer_addr(peer_id.clone(), &quic_addr);
-    state.add_peer_addr(peer_id.clone(), &tcp_addr);
+    state.add_peer_addr(peer_id, &quic_addr);
+    state.add_peer_addr(peer_id, &tcp_addr);
     assert_eq!(state.peers.len(), 1);
     assert_eq!(state.peers[&peer_id].addrs.len(), 2);
     assert!(state.peers[&peer_id].addrs.contains(&tcp_addr));

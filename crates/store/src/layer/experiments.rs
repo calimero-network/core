@@ -1,4 +1,4 @@
-#![allow(unused)]
+#![allow(unused, reason = "Will be used in the future")]
 
 // Experiments at specialized mutable behavior over any `WriteLayer`
 // Baking expectations of interior mutability into the type system

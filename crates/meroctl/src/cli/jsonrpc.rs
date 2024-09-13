@@ -83,11 +83,11 @@ impl JsonRpcCommand {
             )),
         };
 
-        let request = Request {
-            jsonrpc: Version::TwoPointZero,
-            id: Some(RequestId::String(self.id)),
+        let request = Request::new(
+            Version::TwoPointZero,
+            Some(RequestId::String(self.id)),
             payload,
-        };
+        );
 
         match serde_json::to_string_pretty(&request) {
             Ok(json) => println!("Request JSON:\n{}", json),

@@ -50,6 +50,7 @@ pub struct NearTransport<'a> {
 }
 
 impl<'a> NearTransport<'a> {
+    #[must_use]
     pub fn new(config: &NearConfig<'a>) -> Self {
         let mut networks = BTreeMap::new();
 
@@ -71,7 +72,7 @@ impl<'a> NearTransport<'a> {
 }
 
 #[derive(Debug, Error)]
-pub enum Error {
+pub enum NearError {
     #[error("unknown network `{0}`")]
     UnknownNetwork(String),
     #[error("invalid response from RPC while {operation}")]
@@ -104,7 +105,7 @@ pub enum ErrorOperation {
 }
 
 impl Transport for NearTransport<'_> {
-    type Error = Error;
+    type Error = NearError;
 
     async fn send(
         &self,
@@ -112,13 +113,13 @@ impl Transport for NearTransport<'_> {
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
         let Some(network) = self.networks.get(&request.network_id) else {
-            return Err(Error::UnknownNetwork(request.network_id.into_owned()));
+            return Err(NearError::UnknownNetwork(request.network_id.into_owned()));
         };
 
         let contract_id = request
             .contract_id
             .parse()
-            .map_err(Error::InvalidContractId)?;
+            .map_err(NearError::InvalidContractId)?;
 
         match request.operation {
             Operation::Read { method } => {
@@ -141,7 +142,7 @@ impl Network {
         contract_id: AccountId,
         method: String,
         args: Vec<u8>,
-    ) -> Result<Vec<u8>, Error> {
+    ) -> Result<Vec<u8>, NearError> {
         let response = self
             .client
             .call(RpcQueryRequest {
@@ -153,14 +154,14 @@ impl Network {
                 },
             })
             .await
-            .map_err(|err| Error::Custom {
+            .map_err(|err| NearError::Custom {
                 operation: ErrorOperation::Query,
                 reason: err.to_string(),
             })?;
 
         match response.kind {
-            QueryResponseKind::CallResult(CallResult { result, logs: _ }) => Ok(result),
-            _ => Err(Error::InvalidResponse {
+            QueryResponseKind::CallResult(CallResult { result, .. }) => Ok(result),
+            _ => Err(NearError::InvalidResponse {
                 operation: ErrorOperation::Query,
             }),
         }
@@ -171,12 +172,12 @@ impl Network {
         contract_id: AccountId,
         method: String,
         args: Vec<u8>,
-    ) -> Result<Vec<u8>, Error> {
+    ) -> Result<Vec<u8>, NearError> {
         let (nonce, block_hash) = self.get_nonce(contract_id.clone(), method.clone()).await?;
 
         let transaction = Transaction::V0(TransactionV0 {
             signer_id: self.account_id.clone(),
-            public_key: self.secret_key.public_key().clone(),
+            public_key: self.secret_key.public_key(),
             nonce: nonce + 1,
             receiver_id: contract_id,
             block_hash,
@@ -210,14 +211,14 @@ impl Network {
                 Ok(response) => break response,
                 Err(err) => {
                     let Some(RpcTransactionError::TimeoutError) = err.handler_error() else {
-                        return Err(Error::Custom {
+                        return Err(NearError::Custom {
                             operation: ErrorOperation::Mutate,
                             reason: err.to_string(),
                         });
                     };
 
                     if sent_at.elapsed().as_secs() > 60 {
-                        return Err(Error::TransactionTimeout);
+                        return Err(NearError::TransactionTimeout);
                     }
 
                     response = self
@@ -235,18 +236,18 @@ impl Network {
         };
 
         let Some(outcome) = response.final_execution_outcome else {
-            return Err(Error::InvalidResponse {
+            return Err(NearError::InvalidResponse {
                 operation: ErrorOperation::Mutate,
             });
         };
 
         match outcome.into_outcome().status {
             FinalExecutionStatus::SuccessValue(value) => Ok(value),
-            FinalExecutionStatus::Failure(error) => Err(Error::Custom {
+            FinalExecutionStatus::Failure(error) => Err(NearError::Custom {
                 operation: ErrorOperation::Mutate,
                 reason: error.to_string(),
             }),
-            _ => Err(Error::InvalidResponse {
+            _ => Err(NearError::InvalidResponse {
                 operation: ErrorOperation::Mutate,
             }),
         }
@@ -256,7 +257,7 @@ impl Network {
         &self,
         contract_id: AccountId,
         method: String,
-    ) -> Result<(u64, CryptoHash), Error> {
+    ) -> Result<(u64, CryptoHash), NearError> {
         let response = self
             .client
             .call(RpcQueryRequest {
@@ -267,7 +268,7 @@ impl Network {
                 },
             })
             .await
-            .map_err(|err| Error::Custom {
+            .map_err(|err| NearError::Custom {
                 operation: ErrorOperation::FetchAccount,
                 reason: err.to_string(),
             })?;
@@ -276,27 +277,27 @@ impl Network {
             RpcQueryResponse {
                 kind: QueryResponseKind::AccessKey(AccessKeyView { nonce, permission }),
                 block_hash,
-                block_height: _,
+                ..
             } => (nonce, permission, block_hash),
             _ => {
-                return Err(Error::InvalidResponse {
+                return Err(NearError::InvalidResponse {
                     operation: ErrorOperation::FetchAccount,
                 })
             }
         };
 
         if let AccessKeyPermissionView::FunctionCall {
-            allowance: _,
             receiver_id,
             method_names,
+            ..
         } = permission
         {
             if receiver_id != contract_id {
-                return Err(Error::NotPermittedToCallContract(contract_id));
+                return Err(NearError::NotPermittedToCallContract(contract_id));
             }
 
             if !(method_names.is_empty() || method_names.contains(&method)) {
-                return Err(Error::NotPermittedToCallMethod {
+                return Err(NearError::NotPermittedToCallMethod {
                     contract: contract_id,
                     method,
                 });

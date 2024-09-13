@@ -59,6 +59,7 @@ impl Default for PackageManager {
     }
 }
 
+#[expect(clippy::needless_pass_by_value, reason = "Needed for WASM")]
 #[near_bindgen]
 impl PackageManager {
     pub fn add_package(&mut self, name: String, description: String, repository: String) -> String {

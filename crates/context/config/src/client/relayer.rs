@@ -17,6 +17,7 @@ pub struct RelayerTransport {
 }
 
 impl RelayerTransport {
+    #[must_use]
     pub fn new(config: &RelayerConfig) -> Self {
         let client = reqwest::Client::new();
 

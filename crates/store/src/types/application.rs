@@ -17,7 +17,7 @@ pub struct ApplicationMeta {
 
 impl ApplicationMeta {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         blob: BlobMetaKey,
         version: Option<Box<str>>,
         source: Box<str>,

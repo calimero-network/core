@@ -1,10 +1,15 @@
+#![allow(
+    clippy::allow_attributes,
+    reason = "Needed for lints that don't follow expect"
+)]
+
 #[cfg(test)]
 #[path = "../tests/db/memory.rs"]
 mod tests;
 
 use core::borrow::Borrow;
 use core::fmt::Debug;
-use std::mem::transmute;
+use core::mem::transmute;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use eyre::{eyre, Result as EyreResult};
@@ -64,7 +69,7 @@ impl<'a> InMemoryDBImpl<'a> for Owned {
 
 #[derive(Debug)]
 // TODO: Remove this lint exception once the is multi-thread-capable.
-#[allow(clippy::non_send_fields_in_send_ty)]
+#[allow(clippy::non_send_fields_in_send_ty, reason = "TODO: This is temporary")]
 pub struct InMemoryDB<T> {
     inner: T,
 }

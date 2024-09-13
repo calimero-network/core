@@ -37,10 +37,10 @@ impl JoinCommand {
         let response = get_response(
             &client,
             url,
-            Some(JoinContextRequest {
-                private_key: self.private_key,
-                invitation_payload: self.invitation_payload,
-            }),
+            Some(JoinContextRequest::new(
+                self.private_key,
+                self.invitation_payload,
+            )),
             &config.identity,
             POST,
         )

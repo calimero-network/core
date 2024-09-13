@@ -107,7 +107,7 @@ pub struct Application {
 
 impl Application {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         id: ApplicationId,
         blob: BlobId,
         version: Option<Version>,

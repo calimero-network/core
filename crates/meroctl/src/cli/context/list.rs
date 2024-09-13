@@ -36,7 +36,7 @@ impl ListCommand {
         let api_response: GetContextsResponse = response.json().await?;
         let contexts = api_response.data.contexts;
 
-        #[allow(clippy::print_stdout)]
+        #[expect(clippy::print_stdout)]
         for context in contexts {
             println!("{}", context.id);
         }

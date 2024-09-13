@@ -35,7 +35,7 @@ impl ListCommand {
         let api_response: ListApplicationsResponse = response.json().await?;
         let app_list = api_response.data.apps;
 
-        #[allow(clippy::print_stdout)]
+        #[expect(clippy::print_stdout)]
         for app in app_list {
             println!("{}", app.id);
         }

@@ -117,7 +117,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         store.clone(),
     );
 
-    #[allow(trivial_casts)]
+    #[expect(trivial_casts)]
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,
@@ -146,7 +146,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         config.network.catchup.interval,
     );
 
-    #[allow(clippy::redundant_pub_crate)]
+    #[expect(clippy::redundant_pub_crate)]
     loop {
         select! {
             event = network_events.recv() => {
@@ -174,14 +174,14 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 }
 
 // TODO: Consider splitting this long function into multiple parts.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
     let (command, args) = match line.split_once(' ') {
         Some((method, payload)) => (method, Some(payload)),
         None => (line.as_str(), None),
     };
 
-    #[allow(non_snake_case)]
+    #[expect(non_snake_case)]
     let IND = " │".yellow();
 
     // TODO: should be replaced with RPC endpoints
@@ -252,7 +252,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                     Ok(result) => match result {
                                         Some(result) => {
                                             println!("{IND}   Return Value:");
-                                            #[allow(clippy::option_if_let_else)]
+                                            #[expect(clippy::option_if_let_else)]
                                             let result = if let Ok(value) =
                                                 from_json_slice::<Value>(&result)
                                             {
@@ -329,7 +329,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 println!("{IND}     Sender: {}", entry.sender.cyan());
                 println!("{IND}     Method: {:?}", entry.transaction.method.cyan());
                 println!("{IND}     Payload:");
-                #[allow(clippy::option_if_let_else)]
+                #[expect(clippy::option_if_let_else)]
                 let payload =
                     if let Ok(value) = from_json_slice::<Value>(&entry.transaction.payload) {
                         format!(
@@ -871,7 +871,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
     Ok(())
 }
 
-#[allow(clippy::multiple_inherent_impl)]
+#[expect(clippy::multiple_inherent_impl)]
 impl Node {
     #[must_use]
     pub fn new(

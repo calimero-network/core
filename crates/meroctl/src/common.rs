@@ -7,7 +7,7 @@ use reqwest::{Client, Response, Url};
 use serde::Serialize;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
-    #[allow(clippy::wildcard_enum_match_arm)]
+    #[expect(clippy::wildcard_enum_match_arm)]
     let (ip, port, scheme) = multiaddr.iter().fold(
         (None, None, None),
         |(ip, port, scheme), protocol| match protocol {

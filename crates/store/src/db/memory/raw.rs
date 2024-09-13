@@ -1,7 +1,7 @@
 use core::borrow::Borrow;
+use core::mem::transmute;
 use core::ops::Bound;
 use std::collections::btree_map::{BTreeMap, Range as BTreeMapRange, Range};
-use std::mem::transmute;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use eyre::{bail, eyre, Result as EyreResult};
@@ -132,7 +132,10 @@ impl<K: Ord + Clone + Borrow<[u8]>, V> InMemoryDBInner<K, V> {
     }
 
     // TODO: We should consider returning Iterator here.
-    #[allow(clippy::iter_not_returning_iterator)]
+    #[expect(
+        clippy::iter_not_returning_iterator,
+        reason = "TODO: This should be implemented"
+    )]
     pub fn iter<'a>(&self, col: Column) -> InMemoryIterInner<'a, K, V> {
         InMemoryIterInner {
             arena: self.arena.clone(),

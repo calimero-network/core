@@ -195,7 +195,7 @@ pub(crate) fn site(
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[allow(clippy::exhaustive_structs)]
+#[expect(clippy::exhaustive_structs)]
 pub struct Empty;
 
 #[derive(Debug)]
@@ -276,7 +276,7 @@ async fn health_check_handler() -> impl IntoResponse {
 }
 
 async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
-    #[allow(clippy::print_stderr)]
+    #[expect(clippy::print_stderr)]
     let certificate = match get_ssl(&state.store) {
         Ok(Some(cert)) => Some(cert),
         Ok(None) => None,

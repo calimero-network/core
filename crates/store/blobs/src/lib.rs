@@ -22,7 +22,7 @@ pub mod config;
 use config::BlobStoreConfig;
 
 const CHUNK_SIZE: usize = 1 << 20; // 1MiB
-const _: [(); { (usize::BITS - CHUNK_SIZE.leading_zeros()) > 32 } as _] = [
+const _: [(); { (usize::BITS - CHUNK_SIZE.leading_zeros()) > 32 } as usize] = [
     /* CHUNK_SIZE must be a 32-bit number */
 ];
 
@@ -47,6 +47,7 @@ struct State {
     size: usize,
 }
 
+#[expect(clippy::exhaustive_enums, reason = "There are no more variants to add")]
 #[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub enum Size {
     Hint(u64),
@@ -54,20 +55,19 @@ pub enum Size {
 }
 
 impl Size {
-    fn hint(&self) -> usize {
+    const fn hint(&self) -> usize {
         match self {
-            Size::Hint(size) => *size as usize,
-            Size::Exact(size) => *size as usize,
+            Self::Hint(size) | Self::Exact(size) => *size as usize,
         }
     }
 
     fn overflows(this: Option<&Self>, size: usize) -> Option<u64> {
         let size = u64::try_from(size);
 
-        match dbg!(this) {
-            None | Some(Size::Hint(_)) => size.err().map(|_| u64::MAX),
-            Some(Size::Exact(exact)) => {
-                size.map_or_else(|_| Some(*exact), |s| (s > *exact).then(|| *exact))
+        match this {
+            None | Some(Self::Hint(_)) => size.err().map(|_| u64::MAX),
+            Some(Self::Exact(exact)) => {
+                size.map_or_else(|_| Some(*exact), |s| (s > *exact).then_some(*exact))
             }
         }
     }
@@ -125,7 +125,7 @@ impl BlobManager {
                     blob.size = new_blob_size;
                     file.size = new_file_size;
 
-                    if let Some(expected) = dbg!(Size::overflows(size.as_ref(), new_file_size)) {
+                    if let Some(expected) = Size::overflows(size.as_ref(), new_file_size) {
                         break Some(expected);
                     }
 
@@ -225,7 +225,7 @@ pub struct Blob {
     // meta: BlobMeta,
 
     // blob_mgr: BlobManager,
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity, reason = "Acceptable here")]
     stream: Pin<Box<dyn Stream<Item = Result<Box<[u8]>, BlobError>>>>,
 }
 
@@ -235,7 +235,10 @@ impl Blob {
             return Ok(None);
         };
 
-        #[allow(clippy::semicolon_if_nothing_returned)]
+        #[expect(
+            clippy::semicolon_if_nothing_returned,
+            reason = "False positive; not possible with macro"
+        )]
         let stream = Box::pin(try_stream!({
             if blob_meta.links.is_empty() {
                 let maybe_blob = blob_mgr.blob_store.get(id).await;
@@ -266,7 +269,7 @@ impl Debug for Blob {
 }
 
 #[derive(Debug, ThisError)]
-#[allow(variant_size_differences)]
+#[expect(variant_size_differences, reason = "Doesn't matter here")]
 #[non_exhaustive]
 pub enum BlobError {
     #[error("encountered a dangling Blob ID: `{id}`, the blob store may be corrupt")]
@@ -284,7 +287,7 @@ impl Stream for Blob {
 }
 
 trait BlobRepository {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "Will be used in future")]
     async fn has(&self, id: BlobId) -> EyreResult<bool>;
     async fn get(&self, id: BlobId) -> EyreResult<Option<Box<[u8]>>>;
     async fn put(&self, id: BlobId, data: &[u8]) -> EyreResult<()>;
@@ -305,7 +308,7 @@ impl FileSystem {
         create_dir_all(&config.path).await?;
 
         Ok(Self {
-            root: config.path.to_owned(),
+            root: config.path.clone(),
         })
     }
 

@@ -1,5 +1,3 @@
-#![allow(non_snake_case)]
-
 use claims::{assert_ge, assert_le};
 
 use super::*;
@@ -82,7 +80,7 @@ mod element__public_methods {
         assert!(!element.has_children());
 
         let child_ids = vec![Id::new(), Id::new(), Id::new()];
-        element.child_ids = child_ids.clone();
+        element.child_ids = child_ids;
         assert!(element.has_children());
     }
 

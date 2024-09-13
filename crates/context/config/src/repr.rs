@@ -1,26 +1,31 @@
+use core::convert::Infallible;
+use core::error::Error as CoreError;
+use core::fmt::{Debug, Display, Formatter};
+use core::ops::Deref;
+use core::result::Result as CoreResult;
 use std::borrow::Cow;
 use std::fmt;
-use std::ops::Deref;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use bs58::decode::{DecodeTarget, Error as Bs58Error, Result as Bs58Result};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub type Result<T, E> = std::result::Result<T, Error<E>>;
+pub type Result<T, E> = CoreResult<T, ReprError<E>>;
 
 #[derive(
-    Eq,
-    Ord,
-    Copy,
+    BorshDeserialize,
+    BorshSerialize,
     Clone,
+    Copy,
     Debug,
     Default,
+    Deserialize,
+    Eq,
+    Ord,
     PartialEq,
     PartialOrd,
     Serialize,
-    Deserialize,
-    BorshSerialize,
-    BorshDeserialize,
 )]
 #[serde(transparent)]
 #[repr(transparent)]
@@ -30,7 +35,7 @@ pub struct Repr<T> {
 }
 
 impl<T> Repr<T> {
-    pub fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         Self { inner }
     }
 
@@ -39,8 +44,8 @@ impl<T> Repr<T> {
     }
 }
 
-impl<T: ReprBytes> fmt::Display for Repr<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl<T: ReprBytes> Display for Repr<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(&bs58::encode(self.inner.as_bytes()).into_string())
     }
 }
@@ -54,21 +59,21 @@ impl<T> Deref for Repr<T> {
 }
 
 #[derive(Debug, Error)]
-pub enum Error<E> {
+pub enum ReprError<E> {
     #[error("decode error: {0}")]
     DecodeError(E),
     #[error("invalid base58: {0}")]
-    InvalidBase58(#[from] bs58::decode::Error),
+    InvalidBase58(#[from] Bs58Error),
 }
 
-impl<E> Error<E> {
-    pub fn map<F, O>(self, f: F) -> Error<O>
+impl<E> ReprError<E> {
+    pub fn map<F, O>(self, f: F) -> ReprError<O>
     where
         F: FnOnce(E) -> O,
     {
         match self {
-            Error::DecodeError(e) => Error::DecodeError(f(e)),
-            Error::InvalidBase58(e) => Error::InvalidBase58(e),
+            Self::DecodeError(e) => ReprError::DecodeError(f(e)),
+            Self::InvalidBase58(e) => ReprError::InvalidBase58(e),
         }
     }
 }
@@ -77,14 +82,14 @@ pub trait ReprBytes: Sized {
     type EncodeBytes<'a>: AsRef<[u8]>
     where
         Self: 'a;
-    type DecodeBytes: bs58::decode::DecodeTarget;
-    type Error: std::error::Error;
+    type DecodeBytes: DecodeTarget;
+    type Error: CoreError;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_>;
 
     fn from_bytes<F>(f: F) -> Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>;
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>;
 }
 
 pub trait ReprTransmute<'a>: ReprBytes + 'a {
@@ -115,9 +120,9 @@ impl<T: ReprBytes> ReprBytes for Repr<T> {
 
     fn from_bytes<F>(f: F) -> Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
-        Ok(Repr {
+        Ok(Self {
             inner: ReprBytes::from_bytes(f)?,
         })
     }
@@ -131,9 +136,9 @@ pub struct LengthMismatch {
     _priv: (),
 }
 
-impl fmt::Debug for LengthMismatch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
+impl Debug for LengthMismatch {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, f)
     }
 }
 
@@ -149,14 +154,14 @@ impl<const N: usize> ReprBytes for [u8; N] {
 
     fn from_bytes<F>(f: F) -> Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         let mut bytes = [0; N];
 
-        let len = f(&mut bytes).map_err(Error::InvalidBase58)?;
+        let len = f(&mut bytes).map_err(ReprError::InvalidBase58)?;
 
         if len != N {
-            return Err(Error::DecodeError(LengthMismatch {
+            return Err(ReprError::DecodeError(LengthMismatch {
                 found: len,
                 expected: N,
                 _priv: (),
@@ -180,7 +185,7 @@ where
     type EncodeBytes<'b> = &'b [u8] where T: 'b;
     type DecodeBytes = Vec<u8>;
 
-    type Error = std::convert::Infallible;
+    type Error = Infallible;
 
     fn as_bytes(&self) -> Self::EncodeBytes<'_> {
         self.as_ref()
@@ -188,7 +193,7 @@ where
 
     fn from_bytes<F>(f: F) -> Result<Self, Self::Error>
     where
-        F: FnOnce(&mut Self::DecodeBytes) -> bs58::decode::Result<usize>,
+        F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         let mut bytes = Vec::new();
 
@@ -203,14 +208,16 @@ where
 mod serde_bytes {
     use std::borrow::Cow;
 
-    use serde::{de, ser, Deserialize};
+    use serde::de::{Deserializer, Error as SerdeError};
+    use serde::ser::Serializer;
+    use serde::Deserialize;
 
-    use super::{Error, ReprBytes};
+    use super::{ReprBytes, ReprError};
 
     pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
     where
         T: ReprBytes,
-        S: ser::Serializer,
+        S: Serializer,
     {
         let encoded = bs58::encode(value.as_bytes()).into_string();
 
@@ -220,7 +227,7 @@ mod serde_bytes {
     pub fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
     where
         T: ReprBytes,
-        D: de::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
         struct Container<'a>(#[serde(borrow)] Cow<'a, str>);
@@ -228,8 +235,8 @@ mod serde_bytes {
         let encoded = Container::deserialize(deserializer)?;
 
         T::from_bytes(|bytes| bs58::decode(&*encoded.0).onto(bytes)).map_err(|e| match e {
-            Error::DecodeError(err) => de::Error::custom(err),
-            Error::InvalidBase58(err) => de::Error::custom(err),
+            ReprError::DecodeError(err) => SerdeError::custom(err),
+            ReprError::InvalidBase58(err) => SerdeError::custom(err),
         })
     }
 }

@@ -1,4 +1,4 @@
-#![allow(single_use_lifetimes)]
+#![allow(single_use_lifetimes, reason = "False positive")]
 
 use std::borrow::Cow;
 use std::time;
@@ -27,11 +27,12 @@ pub struct Request<'a> {
 }
 
 impl<'a> Request<'a> {
+    #[must_use]
     pub fn new(signer_id: SignerId, kind: RequestKind<'a>) -> Self {
         let timestamp_ms = time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
             .expect("system time is before epoch?")
-            .as_millis() as _;
+            .as_millis() as u64;
 
         Request {
             signer_id: Repr::new(signer_id),
