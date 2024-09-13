@@ -94,10 +94,10 @@ sequenceDiagram
     ClientPeer->>ClientPeer: blobs.Put(app)
 
     else ApplicationSource == Path
-    ClientPeer->>ServerPeer: Send [ApplicationBlobRequest(ctx_id, hash)]
+    ClientPeer->>ServerPeer: Send [ApplicationBlobRequest(app_id)]
     ServerPeer->>ClientPeer: Send [ApplicationBlobSize]
     loop
-    ServerPeer->>ClientPeer: Send [ApplicationBlobBatch]
+    ServerPeer->>ClientPeer: Send [ApplicationBlobChunk]
     ClientPeer->>ClientPeer: blobs.Put(app)
     end
 
