@@ -19,7 +19,8 @@ use tracing::{error, info, warn};
 use crate::catchup::batch::CatchupBatchSender;
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::types::{
-    CatchupError, CatchupRequest, CatchupStreamMessage, TransactionStatus, TransactionWithStatus,
+    CatchupError, CatchupStreamMessage, CatchupTransactionsRequest, TransactionStatus,
+    TransactionWithStatus,
 };
 use crate::Node;
 
@@ -35,8 +36,11 @@ impl Node {
         };
 
         let request = match from_json_slice(&message?.data)? {
-            CatchupStreamMessage::Request(req) => req,
+            CatchupStreamMessage::TransactionsRequest(req) => req,
             message @ (CatchupStreamMessage::TransactionsBatch(_)
+            | CatchupStreamMessage::ApplicationBlobRequest(_)
+            | CatchupStreamMessage::ApplicationBlobSize(_)
+            | CatchupStreamMessage::ApplicationBlobChunk(_)
             | CatchupStreamMessage::Error(_)) => {
                 bail!("Unexpected message: {:?}", message)
             }
@@ -200,7 +204,7 @@ impl Node {
             bail!("catching up for non-existent context?");
         };
 
-        let request = CatchupRequest {
+        let request = CatchupTransactionsRequest {
             context_id,
             last_executed_transaction_hash: context.last_transaction_hash,
             batch_size: self.network_client.catchup_config.batch_size,
@@ -208,7 +212,7 @@ impl Node {
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
-        let data = to_json_vec(&CatchupStreamMessage::Request(request))?;
+        let data = to_json_vec(&CatchupStreamMessage::TransactionsRequest(request))?;
 
         stream.send(Message::new(data)).await?;
 
@@ -327,8 +331,13 @@ impl Node {
                 error!(?err, "Received error during catchup");
                 bail!(err);
             }
-            CatchupStreamMessage::Request(request) => {
+            CatchupStreamMessage::TransactionsRequest(request) => {
                 warn!("Unexpected message: {:?}", request);
+            }
+            CatchupStreamMessage::ApplicationBlobRequest(_)
+            | CatchupStreamMessage::ApplicationBlobSize(_)
+            | CatchupStreamMessage::ApplicationBlobChunk(_) => {
+                bail!("Unexpected message");
             }
         }
 

@@ -1,6 +1,6 @@
-use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::transaction::Transaction;
+use calimero_primitives::{application::ApplicationId, context::ContextId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
@@ -32,14 +32,33 @@ pub struct TransactionRejection {
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub enum CatchupStreamMessage {
-    Request(CatchupRequest),
-    TransactionsBatch(CatchupTransactionBatch),
+    ApplicationBlobRequest(CatchupApplicationBlobRequest),
+    ApplicationBlobSize(CatchupApplicationBlobSize),
+    ApplicationBlobChunk(CatchupApplicationBlobChunk),
+    TransactionsRequest(CatchupTransactionsRequest),
+    TransactionsBatch(CatchupTransactionsBatch),
     Error(CatchupError),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
-pub struct CatchupRequest {
+pub struct CatchupApplicationBlobRequest {
+    pub context_id: ApplicationId,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct CatchupApplicationBlobSize {
+    pub size: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct CatchupApplicationBlobChunk(Box<[u8]>);
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct CatchupTransactionsRequest {
     pub context_id: ContextId,
     pub last_executed_transaction_hash: Hash,
     pub batch_size: u8,
@@ -47,7 +66,7 @@ pub struct CatchupRequest {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
-pub struct CatchupTransactionBatch {
+pub struct CatchupTransactionsBatch {
     pub transactions: Vec<TransactionWithStatus>,
 }
 
