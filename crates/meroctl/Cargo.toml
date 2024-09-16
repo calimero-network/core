@@ -24,7 +24,6 @@ near-crypto.workspace = true
 notify.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["json"] }
-semver.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
