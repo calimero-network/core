@@ -54,7 +54,10 @@ pub struct CatchupApplicationBlobSize {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
-pub struct CatchupApplicationBlobChunk(Box<[u8]>);
+pub struct CatchupApplicationBlobChunk {
+    pub sequential_id: u64,
+    pub chunk: Box<[u8]>,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
