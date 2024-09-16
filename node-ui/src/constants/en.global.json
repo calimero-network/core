@@ -298,6 +298,7 @@
     "methodLabelText": "method name",
     "argsLabelText": "arguments json",
     "buttonFormatText": "format",
+    "popupTitleText": "Start a new context",
     "applicationList": {
       "listTitle": "Select Available Application",
       "noAvailableAppsText": "No applications available",
@@ -362,7 +363,8 @@
       "noContextsText": "No contexts found",
       "selectedContextText": "Selected context Id:",
       "buttonNextText": "Confirm context Id",
-      "buttonBackText": "Return to application"
+      "buttonBackText": "Return to application",
+      "buttonCreateText": "Create new context"
     },
     "selectIdentity": {
       "title": "Sign-in request",
