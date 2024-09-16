@@ -225,7 +225,8 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
 ///   a 404 NOT_FOUND status code.
 async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> {
     // Extract the path from the URI, removing the "/admin-dashboard/" prefix and any leading slashes
-    let path = uri.path()
+    let path = uri
+        .path()
         .trim_start_matches("/admin-dashboard/")
         .trim_start_matches('/')
         .to_string();
@@ -243,10 +244,10 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
         if let Some(index_file) = NodeUiStaticFiles::get("index.html") {
             return serve_file(&index_file).await;
         }
-  }
+    }
 
-  // Return 404 if the file is not found and we can't fallback to index.html
-  Err(StatusCode::NOT_FOUND)
+    // Return 404 if the file is not found and we can't fallback to index.html
+    Err(StatusCode::NOT_FOUND)
 }
 
 /// Serves a static file with the correct MIME type.
@@ -262,11 +263,11 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
 ///   with the response. If there is an error building the response, it returns an `Err` with a
 ///   500 INTERNAL_SERVER_ERROR status code.
 async fn serve_file(file: &EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
-  Response::builder()
-      .status(StatusCode::OK)
-      .header("Content-Type", file.metadata.mimetype())
-      .body(Body::from(file.data.to_vec()))
-      .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", file.metadata.mimetype())
+        .body(Body::from(file.data.to_vec()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
