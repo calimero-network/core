@@ -438,24 +438,25 @@ export class NodeDataSource implements NodeApi {
 
   async startContexts(
     applicationId: string,
-    initFunction: string,
     initArguments: string,
   ): ApiResponse<Context> {
     try {
       const headers: Header | null = await createAuthHeader(
         JSON.stringify({
           applicationId,
-          initFunction,
           initArguments,
         }),
         getNearEnvironment(),
       );
+      const encoder = new TextEncoder();
+      const encodedArgs = encoder.encode(JSON.stringify(initArguments));
+      const initializationParams = Array.from(encodedArgs);
+
       const response = await this.client.post<Context>(
         `${getAppEndpointKey()}/admin-api/contexts`,
         {
-          applicationId: applicationId,
-          ...(initFunction && { initFunction }),
-          ...(initArguments && { initArgs: JSON.stringify(initArguments) }),
+          applicationId,
+          initializationParams: initializationParams,
         },
         headers ?? {},
       );
