@@ -17,11 +17,12 @@ use serde_json::from_value as from_json_value;
 use tracing::info;
 
 use crate::admin::handlers::root_keys::store_root_key;
-use crate::admin::service::{parse_api_error, AdminState, ApiError, ApiResponse};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::admin::storage::client_keys::add_client_key;
 use crate::admin::storage::root_key::exists_root_keys;
 use crate::admin::utils::auth::{validate_challenge, validate_root_key_exists};
 use crate::admin::utils::jwt::{generate_jwt_tokens, refresh_access_token};
+use crate::AdminState;
 
 pub fn transform_request(
     intermediate: IntermediateAddPublicKeyRequest,
