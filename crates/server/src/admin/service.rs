@@ -4,15 +4,14 @@ use std::error::Error;
 use std::str;
 use std::sync::Arc;
 
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
 use calimero_store::Store;
 use eyre::Report;
-use include_dir::{include_dir, Dir, File};
-use mime_guess::from_path;
+use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
 use tower_sessions::{MemoryStore, SessionManagerLayer};
@@ -56,7 +55,9 @@ impl AdminConfig {
 }
 
 // Embed the contents of the admin-ui build directory into the binary
-static REACT_STATIC_FILES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../node-ui/build");
+#[derive(RustEmbed)]
+#[folder = "../../node-ui/build/"]
+struct NodeUiStaticFiles;
 
 pub(crate) fn setup(
     config: &ServerConfig,
@@ -213,56 +214,59 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
 ///
 /// This function handles requests by removing the "/admin-dashboard/" prefix from the requested URI path,
 /// and then attempting to serve the requested file from the embedded directory. If the requested file
-/// is not found, and the request is for the root path or a client-side route, it serves `index.html`.
+/// is not found, it serves `index.html` to support client-side routing.
 ///
 /// # Parameters
 /// - `uri`: The requested URI, which will be used to determine the file path in the embedded directory.
 ///
 /// # Returns
-/// - `Result<impl IntoResponse, StatusCode>`: If the requested file is found, it serves the file with the correct MIME type.
-///   If the file is not found, it returns a 404 status code.
+/// - `Result<impl IntoResponse, StatusCode>`: If the requested file is found or the fallback to index.html
+///   succeeds, it returns an `Ok` with the response. If no file can be served, it returns an `Err` with
+///   a 404 NOT_FOUND status code.
 async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> {
-    // Extract the path from the URI, removing the "/admin-dashboard/" prefix
-    let mut path = uri.path().trim_start_matches("/admin-dashboard/");
+    // Extract the path from the URI, removing the "/admin-dashboard/" prefix and any leading slashes
+    let path = uri.path()
+        .trim_start_matches("/admin-dashboard/")
+        .trim_start_matches('/')
+        .to_string();
 
-    // Remove any leading "/" from the path to match the embedded directory structure
-    path = path.trim_start_matches('/');
+    // Use "index.html" for empty paths (root requests)
+    let path = if path.is_empty() { "index.html" } else { &path };
 
-    // Try to find the requested file in the embedded directory
-    if let Some(file) = REACT_STATIC_FILES.get_file(path) {
-        // Serve the static file if it exists
-        return Ok(serve_file(file).await?);
+    // Attempt to serve the requested file
+    if let Some(file) = NodeUiStaticFiles::get(path) {
+        return serve_file(&file).await;
     }
 
-    // Otherwise, serve index.html for SPA routes
-    let index_file = REACT_STATIC_FILES
-        .get_file("index.html")
-        .ok_or(StatusCode::NOT_FOUND)?;
+    // Fallback to index.html for SPA routing if the file wasn't found and it's not already "index.html"
+    if path != "index.html" {
+        if let Some(index_file) = NodeUiStaticFiles::get("index.html") {
+            return serve_file(&index_file).await;
+        }
+  }
 
-    Ok(serve_file(index_file).await?)
+  // Return 404 if the file is not found and we can't fallback to index.html
+  Err(StatusCode::NOT_FOUND)
 }
 
 /// Serves a static file with the correct MIME type.
 ///
 /// This function builds a `Response` with the appropriate content type for the given file
-/// and serves the file's content. It uses the `mime_guess` crate to determine the MIME type
-/// based on the file extension.
+/// and serves the file's content.
 ///
 /// # Parameters
-/// - `file`: A reference to the embedded file to be served.
+/// - `file`: A reference to the `EmbeddedFile` to be served.
 ///
 /// # Returns
-/// - `Result<Response<Body>, StatusCode>`: If the response is successfully built, it returns the response.
-///   If there is an error building the response, it returns an internal server error (500).
-async fn serve_file(file: &File<'_>) -> Result<Response<Body>, StatusCode> {
-    // Guess the MIME type based on the file path (important for JS, CSS, etc.)
-    let mime_type = from_path(file.path()).first_or_octet_stream();
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", mime_type.to_string())
-        .body(Body::from(Bytes::copy_from_slice(file.contents())))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+/// - `Result<impl IntoResponse, StatusCode>`: If the response is successfully built, it returns an `Ok`
+///   with the response. If there is an error building the response, it returns an `Err` with a
+///   500 INTERNAL_SERVER_ERROR status code.
+async fn serve_file(file: &EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
+  Response::builder()
+      .status(StatusCode::OK)
+      .header("Content-Type", file.metadata.mimetype())
+      .body(Body::from(file.data.to_vec()))
+      .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
