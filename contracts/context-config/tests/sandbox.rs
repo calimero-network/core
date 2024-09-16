@@ -65,6 +65,7 @@ async fn main() -> eyre::Result<()> {
                         application: Application {
                             id: application_id,
                             blob: blob_id,
+                            size: 0,
                             source: Default::default(),
                             metadata: Default::default(),
                         },
@@ -100,6 +101,7 @@ async fn main() -> eyre::Result<()> {
                         application: Application {
                             id: application_id,
                             blob: blob_id,
+                            size: 0,
                             source: Default::default(),
                             metadata: Default::default(),
                         },
@@ -127,6 +129,7 @@ async fn main() -> eyre::Result<()> {
                         application: Application {
                             id: application_id,
                             blob: blob_id,
+                            size: 0,
                             source: Default::default(),
                             metadata: Default::default(),
                         },
@@ -383,6 +386,7 @@ async fn main() -> eyre::Result<()> {
                         application: Application {
                             id: new_application_id,
                             blob: new_blob_id,
+                            size: 0,
                             source: Default::default(),
                             metadata: Default::default(),
                         },
@@ -429,6 +433,7 @@ async fn main() -> eyre::Result<()> {
                         application: Application {
                             id: new_application_id,
                             blob: new_blob_id,
+                            size: 0,
                             source: Default::default(),
                             metadata: Default::default(),
                         },
