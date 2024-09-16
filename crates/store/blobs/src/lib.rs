@@ -64,7 +64,7 @@ impl Size {
     fn overflows(this: Option<&Self>, size: usize) -> Option<u64> {
         let size = u64::try_from(size);
 
-        match dbg!(this) {
+        match this {
             None | Some(Size::Hint(_)) => size.err().map(|_| u64::MAX),
             Some(Size::Exact(exact)) => {
                 size.map_or_else(|_| Some(*exact), |s| (s > *exact).then(|| *exact))
@@ -91,14 +91,14 @@ impl BlobManager {
         Blob::new(id, self.clone())
     }
 
-    pub async fn put<T>(&self, stream: T) -> EyreResult<BlobId>
+    pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, u64)>
     where
         T: AsyncRead,
     {
         self.put_sized(None, stream).await
     }
 
-    pub async fn put_sized<T>(&self, size: Option<Size>, stream: T) -> EyreResult<BlobId>
+    pub async fn put_sized<T>(&self, size: Option<Size>, stream: T) -> EyreResult<(BlobId, u64)>
     where
         T: AsyncRead,
     {
@@ -125,7 +125,7 @@ impl BlobManager {
                     blob.size = new_blob_size;
                     file.size = new_file_size;
 
-                    if let Some(expected) = dbg!(Size::overflows(size.as_ref(), new_file_size)) {
+                    if let Some(expected) = Size::overflows(size.as_ref(), new_file_size) {
                         break Some(expected);
                     }
 
@@ -212,7 +212,7 @@ impl BlobManager {
             &BlobMetaValue::new(size, *hash, links.into_boxed_slice()),
         )?;
 
-        Ok(id) // todo!: Ok(Blob { id, size, hash }::{fn stream()})
+        Ok((id, size)) // todo!: Ok(Blob { id, size, hash }::{fn stream()})
     }
 }
 
