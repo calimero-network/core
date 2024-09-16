@@ -2,7 +2,6 @@ use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::str::FromStr;
 
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use url::{ParseError, Url};
@@ -119,13 +118,4 @@ impl Application {
             metadata,
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct Release {
-    pub version: Version,
-    pub notes: String,
-    pub path: String,
-    pub hash: String,
 }
