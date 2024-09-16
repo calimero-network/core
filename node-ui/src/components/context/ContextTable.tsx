@@ -33,6 +33,7 @@ interface ContextTableProps {
 
 export default function ContextTable({
   nodeContextList,
+  navigateToStartContext,
   navigateToJoinContext,
   currentOption,
   setCurrentOption,
@@ -51,9 +52,11 @@ export default function ContextTable({
   return (
     <ContentCard
       headerTitle={t.contextPageTitle}
-      headerOptionText={t.joinContextText}
+      headerOptionText={t.startNewContextText}
       headerDescription={t.contextPageDescription}
-      headerOnOptionClick={navigateToJoinContext}
+      headerOnOptionClick={navigateToStartContext}
+      headerSecondOptionText={t.joinContextText}
+      headerOnSecondOptionClick={navigateToJoinContext}
     >
       <StatusModal
         show={showStatusModal}
