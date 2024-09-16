@@ -12,5 +12,7 @@ cd "$(dirname $0)"
 ../contracts/registry/build.sh
 ../contracts/context-config/build.sh
 
+chmod +x test.sh
+
 # Run cargo test
 cargo test
