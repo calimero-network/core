@@ -28,10 +28,12 @@ const CardWrapper = styled.div`
 
 interface ConnectWalletAccountCardProps {
   onClick: () => void;
+  deployerAccount: string | undefined;
 }
 
 export function ConnectWalletAccountCard({
   onClick,
+  deployerAccount,
 }: ConnectWalletAccountCardProps) {
   const t = translations.applicationsPage.publishApplication;
   return (
@@ -40,7 +42,7 @@ export function ConnectWalletAccountCard({
       <div className="subtitle">{t.connectAccountSubtitle}</div>
       <Button
         onClick={onClick}
-        text={t.connectAccountButtonText}
+        text={deployerAccount ? deployerAccount : t.connectAccountButtonText}
         width="11.375rem"
       />
     </CardWrapper>
