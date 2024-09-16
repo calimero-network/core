@@ -16,9 +16,10 @@ pub enum RequestId {
     Null,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 #[non_exhaustive]
 pub enum Version {
+    #[default]
     TwoPointZero,
 }
 
@@ -47,9 +48,8 @@ impl<'de> Deserialize<'de> for Version {
 }
 
 // **************************** request *******************************
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-#[non_exhaustive]
 pub struct Request<P> {
     pub jsonrpc: Version,
     pub id: Option<RequestId>,
@@ -127,6 +127,23 @@ pub struct QueryRequest {
     pub executor_public_key: PublicKey,
 }
 
+impl QueryRequest {
+    #[must_use]
+    pub fn new(
+        context_id: ContextId,
+        method: String,
+        args_json: Value,
+        executor_public_key: PublicKey,
+    ) -> Self {
+        Self {
+            context_id,
+            method,
+            args_json,
+            executor_public_key,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -161,6 +178,23 @@ pub struct MutateRequest {
     pub method: String,
     pub args_json: Value,
     pub executor_public_key: PublicKey,
+}
+
+impl MutateRequest {
+    #[must_use]
+    pub fn new(
+        context_id: ContextId,
+        method: String,
+        args_json: Value,
+        executor_public_key: PublicKey,
+    ) -> Self {
+        Self {
+            context_id,
+            method,
+            args_json,
+            executor_public_key,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

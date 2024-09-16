@@ -49,11 +49,55 @@ pub struct Data;
 /// hashes that represent the sum of all data at that part in the hierarchy and
 /// below.
 ///
+/// # Structure
+///
+/// TODO: Update when the `child_ids` field is replaced with an index.
+///
+/// At present the [`Element`] has a `child_ids` field, which memoises the IDs
+/// of the children. This is because it is better than traversing the whole
+/// database to find the children (!).
+///
+/// Having a `child_ids` field is however non-optimal — this should come from
+/// outside the struct. We should be able to look up the children by path, and
+/// so given that the path is the primary method of determining that an
+/// [`Element`] is a child of another, this should be the mechanism relied upon.
+/// Therefore, maintaining a list of child IDs is a second point of maintenance
+/// and undesirable, as well as being restrictive for larger child sets.
+///
+/// An index would be a better approach, but this will be done later, as that is
+/// purely an optimisation aspect and not a functional one, and it is better to
+/// get the shape of the functionality correct, working, and testable first.
+///
+/// Given that we do need to obtain the children, and given also that indexes
+/// are a later optimisation, the best interim approach is therefore to simply
+/// store the child IDs against the struct.
+///
+/// This reasoning is, however, why we do not have a parent ID field. The path
+/// should be sufficient to determine the parent, and so a parent ID is
+/// redundant. It is also another point of maintenance and data to keep
+/// consistent. For instance, moving an item in the tree should be as simple as
+/// updating the path and recalculating affected [`Element`]s' hashes. If there
+/// is a parent ID then that also has to be synced, and that does not give us
+/// anything that we cannot already get via the path.
+///
+/// There are approaches that work with relational database when storing
+/// hierarchies, such as BetterNestedSet to combine a NestedSet (with left and
+/// right partitioning) with an AdjacencyList (parent IDs). However, operations
+/// to update things like that are fast in relational databases but slow in
+/// key-value stores. Therefore, this approach and other similar patterns are
+/// not suitable for our use case.
+///
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub struct Element {
     /// The unique identifier for the [`Element`].
     id: Id,
+
+    /// The unique identifiers of the children of the [`Element`]. This is
+    /// considered somewhat temporary, as there are efficiency gains to be made
+    /// by storing this list elsewhere — but for now, it helps to get the data
+    /// in place and usable, and establish a basis to test against and enhance.
+    pub(crate) child_ids: Vec<Id>,
 
     /// The primary data for the [`Element`], that is, the data that the
     /// consumer application has stored in the [`Element`].
@@ -62,6 +106,14 @@ pub struct Element {
     /// Whether the [`Element`] is dirty, i.e. has been modified since it was
     /// last saved.
     pub(crate) is_dirty: bool,
+
+    /// The Merkle hash of the [`Element`]. This is a cryptographic hash of the
+    /// significant data in the "scope" of the [`Element`], and is used to
+    /// determine whether the data has changed and is valid. It is calculated by
+    /// hashing the substantive data in the [`Element`], along with the hashes
+    /// of the children of the [`Element`], thereby representing the state of
+    /// the entire hierarchy below the [`Element`].
+    pub(crate) merkle_hash: [u8; 32],
 
     /// The metadata for the [`Element`]. This represents a range of
     /// system-managed properties that are used to process the [`Element`], but
@@ -84,6 +136,14 @@ impl Element {
     /// intended approach there is that these will be created through
     /// deserialisation.
     ///
+    /// # Merkle hash
+    ///
+    /// The Merkle hash will be empty for a brand-new [`Element`], as it has not
+    /// been saved. When saved to the database, the hash will be calculated and
+    /// stored, and set against the object. The way to tell if the hash is
+    /// up-to-date is simply to check the [`is_dirty()`](Element::is_dirty())
+    /// flag.
+    ///
     /// # Parameters
     ///
     /// * `path` - The path to the [`Element`] in the hierarchy of the storage.
@@ -103,31 +163,29 @@ impl Element {
             .as_nanos() as u64;
         Self {
             id: Id::new(),
+            child_ids: Vec::new(),
             data: Data {},
             is_dirty: true,
             metadata: Metadata {
                 created_at: timestamp,
                 updated_at: timestamp,
             },
+            merkle_hash: [0; 32],
             path: path.clone(),
         }
     }
 
-    /// The children of the [`Element`].
+    /// The unique identifiers of the children of the [`Element`].
     ///
-    /// This gets the children of the [`Element`], which are the [`Element`]s
-    /// that are directly below this [`Element`] in the hierarchy. This is a
-    /// simple method that returns the children as a list, and does not provide
-    /// any filtering or ordering.
+    /// This gets only the IDs of the children of the [`Element`], which are the
+    /// [`Element`]s that are directly below this [`Element`] in the hierarchy.
     ///
-    /// Notably, there is no real concept of ordering in the storage system, as
-    /// the records are not ordered in any way. They are simply stored in the
-    /// hierarchy, and so the order of the children is not guaranteed. Any
-    /// required ordering must be done as required upon retrieval.
+    /// TODO: This method will likely move to the [`Interface`] when the index
+    ///       is implemented.
     ///
     #[must_use]
-    pub fn children(&self) -> Vec<Self> {
-        unimplemented!()
+    pub fn child_ids(&self) -> Vec<Id> {
+        self.child_ids.clone()
     }
 
     /// The timestamp when the [`Element`] was first created.
@@ -153,9 +211,12 @@ impl Element {
     /// This checks whether the [`Element`] has children, which are the
     /// [`Element`]s that are directly below this [`Element`] in the hierarchy.
     ///
+    /// TODO: This method will likely move to the [`Interface`] when the index
+    ///       is implemented.
+    ///
     #[must_use]
     pub fn has_children(&self) -> bool {
-        unimplemented!()
+        !self.child_ids.is_empty()
     }
 
     /// The unique identifier for the [`Element`].
@@ -216,6 +277,15 @@ impl Element {
     /// It also updates the [`updated_at()`](Element::updated_at()) timestamp to
     /// reflect the time that the [`Element`] was last updated.
     ///
+    /// # Merkle hash
+    ///
+    /// The Merkles hash will NOT be updated when the data is updated. It will
+    /// also not be cleared. Rather, it will continue to represent the state of
+    /// the *stored* data, until the data changes are saved, at which point the
+    /// hash will be recalculated and updated. The way to tell if the hash is
+    /// up-to-date is simply to check the [`is_dirty()`](Element::is_dirty())
+    /// flag.
+    ///
     /// # Parameters
     ///
     /// * `data` - The new data for the [`Element`].
@@ -240,6 +310,14 @@ impl Element {
     #[must_use]
     pub const fn updated_at(&self) -> u64 {
         self.metadata.updated_at
+    }
+}
+
+#[cfg(test)]
+impl Element {
+    /// Sets the ID of the [`Element`]. This is **ONLY** for use in tests.
+    pub fn set_id(&mut self, id: Id) {
+        self.id = id;
     }
 }
 
@@ -279,4 +357,13 @@ pub struct Metadata {
     /// freshness of the data. It is critical for the "last write wins" strategy
     /// that is used to resolve conflicts.
     pub(crate) updated_at: u64,
+}
+
+#[cfg(test)]
+impl Metadata {
+    /// Sets the created timestamp of the [`Element`]. This is **ONLY** for use
+    /// in tests.
+    pub fn set_created_at(&mut self, created_at: u64) {
+        self.created_at = created_at;
+    }
 }

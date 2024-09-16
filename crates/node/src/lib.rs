@@ -625,7 +625,10 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             )
                             .await?;
 
-                        println!("{IND} Created context {} as {}", context_id, identity);
+                        println!(
+                            "{IND} Created context {} with identity {}",
+                            context_id, identity
+                        );
                     }
                     "invite" => {
                         let Some((context_id, inviter_id, invitee_id)) = args.and_then(|args| {
@@ -636,7 +639,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             Some((context_id, inviter_id, invitee_id))
                         }) else {
                             println!(
-                                "{IND} Usage: context invite <context_id> <inviter> <invitee>"
+                                "{IND} Usage: context invite <context_id> <inviter_id> <invitee_id>"
                             );
                             break 'done;
                         };
