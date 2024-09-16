@@ -107,6 +107,7 @@ interface SelectContextStepProps {
   setSelectedContextId: (selectedContextId: string) => void;
   updateLoginStep: () => void;
   finishLogin: () => void;
+  createContext: () => void;
 }
 
 export default function SelectContextStep({
@@ -117,6 +118,7 @@ export default function SelectContextStep({
   setSelectedContextId,
   updateLoginStep,
   finishLogin,
+  createContext,
 }: SelectContextStepProps) {
   const t = translations.appLoginPopup.selectContext;
   return (
@@ -142,28 +144,40 @@ export default function SelectContextStep({
       <div className="wrapper">
         <div className="context-title">{t.contextsTitle}</div>
         <div className="context-subtitle">{t.contextsSubtitle}</div>
-        <div className="context-list">
-          {contextList.length > 0 ? (
-            contextList.map((context, i) => (
-              <ListItem
-                item={context.id}
-                id={i}
-                count={contextList.length}
-                onRowItemClick={setSelectedContextId}
-                key={i}
-              />
-            ))
-          ) : (
-            <div className="flex-container">
-              <div className="no-context-text">{t.noContextsText}</div>
-              <Button
-                text={t.buttonBackText}
-                onClick={finishLogin}
-                width="100%"
-              />
+        {contextList.length > 0 ? (
+          <>
+            <div className="context-list">
+              {contextList.map((context, i) => (
+                <ListItem
+                  item={context.id}
+                  id={i}
+                  count={contextList.length}
+                  onRowItemClick={setSelectedContextId}
+                  key={i}
+                />
+              ))}
             </div>
-          )}
-        </div>
+            <Button
+              text={t.buttonCreateText}
+              onClick={createContext}
+              width="100%"
+            />
+          </>
+        ) : (
+          <div className="flex-container">
+            <div className="no-context-text">{t.noContextsText}</div>
+            <Button
+              text={t.buttonCreateText}
+              onClick={createContext}
+              width="100%"
+            />
+            <Button
+              text={t.buttonBackText}
+              onClick={finishLogin}
+              width="100%"
+            />
+          </div>
+        )}
       </div>
       <div>
         {selectedContextId && (
