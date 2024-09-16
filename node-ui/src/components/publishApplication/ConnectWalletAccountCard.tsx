@@ -33,7 +33,7 @@ interface ConnectWalletAccountCardProps {
 
 export function ConnectWalletAccountCard({
   onClick,
-  deployerAccount
+  deployerAccount,
 }: ConnectWalletAccountCardProps) {
   const t = translations.applicationsPage.publishApplication;
   return (
