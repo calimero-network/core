@@ -47,9 +47,12 @@ mod element__public_methods {
     use super::*;
 
     #[test]
-    #[ignore]
-    fn children() {
-        todo!()
+    fn child_ids() {
+        let child_ids = vec![Id::new(), Id::new(), Id::new()];
+        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        element.child_ids = child_ids.clone();
+        assert_eq!(element.child_ids(), element.child_ids);
+        assert_eq!(element.child_ids(), child_ids);
     }
 
     #[test]
@@ -74,9 +77,13 @@ mod element__public_methods {
     }
 
     #[test]
-    #[ignore]
     fn has_children() {
-        todo!()
+        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        assert!(!element.has_children());
+
+        let child_ids = vec![Id::new(), Id::new(), Id::new()];
+        element.child_ids = child_ids.clone();
+        assert!(element.has_children());
     }
 
     #[test]
