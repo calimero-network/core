@@ -249,8 +249,8 @@ export default function StartContextPopup({
             onClick={navigateBack}
             isDisabled={isLoading}
             color="#6b7280"
-            highlightColor='#6b7280'
-            disabledColor='#6b7280'
+            highlightColor="#6b7280"
+            disabledColor="#6b7280"
           />
           <Button
             text="Start"
