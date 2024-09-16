@@ -11,7 +11,6 @@ import apiClient from '../api';
 import { ResponseData } from '../api/response';
 import { AppMetadata, parseAppMetadata } from '../utils/metadata';
 import { InstalledApplication } from '../api/dataSource/NodeDataSource';
-import { execFileSync } from 'child_process';
 import { useServerDown } from '../context/ServerDownContext';
 
 export interface AppDetails {
