@@ -23,10 +23,10 @@ runs:
         if git diff --cached --name-only | grep -qE '\.rs$'; then
           echo "Running checks for the Rust code..."
           rustup install nightly
-             if ! cargo +nightly fmt -- --check; then
-              echo "Rust code is not properly formatted."
-              exit 1  # Exit with a non-zero status code if formatting fails
-            fi
+          if ! cargo +nightly fmt -- --check; then
+            echo "Rust code is not properly formatted."
+            exit 1  # Exit with a non-zero status code if formatting fails
+          fi
         fi
 
     # Check for changes in the 'node-ui' directory and run formatting/linting
