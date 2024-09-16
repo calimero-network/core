@@ -33,7 +33,6 @@ use futures_util::TryStreamExt;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use reqwest::{Client, Url};
-use semver::Version;
 use tokio::fs::File;
 use tokio::sync::{oneshot, RwLock};
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -331,14 +330,10 @@ impl ContextManager {
             let metadata = application.metadata.0.to_vec();
 
             let application_id = match source.scheme() {
-                "http" | "https" => {
-                    self.install_application_from_url(source, None, metadata)
-                        .await?
-                }
+                "http" | "https" => self.install_application_from_url(source, metadata).await?,
                 _ => self.install_application(
                     application.blob.as_bytes().into(),
                     &source.into(),
-                    None,
                     metadata,
                 )?,
             };
@@ -657,12 +652,10 @@ impl ContextManager {
         &self,
         blob_id: BlobId,
         source: &ApplicationSource,
-        version: Option<Version>,
         metadata: Vec<u8>,
     ) -> EyreResult<ApplicationId> {
         let application = ApplicationMetaValue::new(
             BlobMetaKey::new(blob_id),
-            version.map(|v| v.to_string().into_boxed_str()),
             source.to_string().into_boxed_str(),
             metadata.into_boxed_slice(),
         );
@@ -679,7 +672,6 @@ impl ContextManager {
     pub async fn install_application_from_path(
         &self,
         path: Utf8PathBuf,
-        version: Option<Version>,
         metadata: Vec<u8>,
     ) -> EyreResult<ApplicationId> {
         let file = File::open(&path).await?;
@@ -698,14 +690,13 @@ impl ContextManager {
             bail!("non-absolute path")
         };
 
-        self.install_application(blob_id, &(uri.as_str().parse()?), version, metadata)
+        self.install_application(blob_id, &(uri.as_str().parse()?), metadata)
     }
 
     #[allow(clippy::similar_names)]
     pub async fn install_application_from_url(
         &self,
         url: Url,
-        version: Option<Version>,
         metadata: Vec<u8>,
         // hash: Hash,
         // todo! BlobMgr should return hash of content
@@ -729,7 +720,7 @@ impl ContextManager {
 
         // todo! if blob hash doesn't match, remove it
 
-        self.install_application(blob_id, &uri, version, metadata)
+        self.install_application(blob_id, &uri, metadata)
     }
 
     pub fn list_installed_applications(&self) -> EyreResult<Vec<Application>> {
@@ -744,7 +735,6 @@ impl ContextManager {
             applications.push(Application::new(
                 id.application_id(),
                 app.blob.blob_id(),
-                app.version.as_deref().map(str::parse).transpose()?,
                 app.source.parse()?,
                 app.metadata.to_vec(),
             ));
@@ -778,7 +768,6 @@ impl ContextManager {
         Ok(Some(Application::new(
             *application_id,
             application.blob.blob_id(),
-            application.version.as_deref().map(str::parse).transpose()?,
             application.source.parse()?,
             application.metadata.to_vec(),
         )))

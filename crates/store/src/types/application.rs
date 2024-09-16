@@ -10,22 +10,15 @@ pub struct ApplicationMeta {
     // todo! impl proper entry reference count
     // pub refs: usize,
     pub blob: BlobMetaKey,
-    pub version: Option<Box<str>>,
     pub source: Box<str>,
     pub metadata: Box<[u8]>,
 }
 
 impl ApplicationMeta {
     #[must_use]
-    pub fn new(
-        blob: BlobMetaKey,
-        version: Option<Box<str>>,
-        source: Box<str>,
-        metadata: Box<[u8]>,
-    ) -> Self {
+    pub fn new(blob: BlobMetaKey, source: Box<str>, metadata: Box<[u8]>) -> Self {
         Self {
             blob,
-            version,
             source,
             metadata,
         }
