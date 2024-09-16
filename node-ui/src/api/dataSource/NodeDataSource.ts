@@ -90,7 +90,7 @@ export interface StarknetRootKey extends RootKey {
   type: String;
 }
 
-export interface ICPRootKey extends RootKey {
+export interface IcpRootKey extends RootKey {
   type: Network.ICP;
 }
 
@@ -180,15 +180,15 @@ interface SNWalletType extends WalletTypeBase<'STARKNET'> {
   walletName: string;
 }
 
-interface ICPWalletType extends WalletTypeBase<'ICP'> {
-  cannisterId: string;
+interface IcpWalletType extends WalletTypeBase<'ICP'> {
+  canisterId: string;
 }
 // TODO: Legacy code, refacture to be used as Interface
 export type WalletType =
   | ETHWalletType
   | NEARWalletType
   | SNWalletType
-  | ICPWalletType;
+  | IcpWalletType;
 
 // eslint-disable-next-line @typescript-eslint/no-redeclare
 export namespace WalletType {
@@ -212,18 +212,21 @@ export namespace WalletType {
     return { type: 'STARKNET', walletName } as SNWalletType;
   }
 
+  // ID of production ICP canister used for signing messages
+  const IcpCanisterId = 'rdmx6-jaaaa-aaaaa-aaadq-cai';
+
   export function ICP({
-    cannisterId = 'rdmx6-jaaaa-aaaaa-aaadq-cai',
+    canisterId = IcpCanisterId,
     walletName = 'II',
   }: {
-    cannisterId?: string;
+    canisterId?: string;
     walletName?: string;
   }): WalletType {
     return {
       type: 'ICP',
-      cannisterId,
+      canisterId,
       walletName,
-    } as ICPWalletType;
+    } as IcpWalletType;
   }
 }
 
@@ -237,7 +240,7 @@ export interface WalletMetadata {
 export interface NetworkMetadata {
   chainId: String;
   rpcUrl: String;
-  cannisterId?: String;
+  canisterId?: String;
 }
 
 export interface Payload {
@@ -277,7 +280,7 @@ export interface EthSignatureMessageMetadata extends SignatureMetadata {}
 
 export interface StarknetSignatureMessageMetadata extends SignatureMetadata {}
 
-export interface ICPSignatureMessageMetadata extends SignatureMetadata {}
+export interface IcpSignatureMessageMetadata extends SignatureMetadata {}
 
 export interface WalletSignatureData {
   payload: Payload | undefined;

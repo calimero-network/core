@@ -29,7 +29,7 @@
     "walletNotFound": "Wallet not found",
     "errorLogin": "Error while login"
   },
-  "useICP": {
+  "useIcp": {
     "requestNodeDataError": "Error while requesting node data",
     "errorChangingNetwork": "Error changing network",
     "loginError": "Error while login",
@@ -46,7 +46,7 @@
       "metamaskButtonText": "Metamask wallet",
       "nearButtonText": "Near wallet",
       "starknetButtonText": "Starknet wallet",
-      "ICPButtonText": "Internet Computer"
+      "IcpButtonText": "Internet Computer"
     },
     "nearLogin": {
       "title": "Login with NEAR",
@@ -58,7 +58,7 @@
       "switchAccountButtonText": "Switch Account",
       "backButtonText": "Back to wallet selector"
     },
-    "ICPLogin": {
+    "IcpLogin": {
       "title": "Login with Internet Identity",
       "subtitle": "Choose from which account you want to log in with",
       "accountIdText": "Account Id",
@@ -117,7 +117,7 @@
       "backToWalletSelector": "Back to wallet selector",
       "backToLoginPage": "Back to login selector"
     },
-    "ICPKey": {
+    "IcpKey": {
       "title": "Add Internet Identity root key",
       "subtitle": "Choose which account from your wallet you want to add a node root key for. Each key, and therefore each account, can only be added once",
       "accountIdText": "Account Id",

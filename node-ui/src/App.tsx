@@ -25,7 +25,7 @@ import InstallApplication from './pages/InstallApplication';
 import StarknetLogin from './pages/Starknet';
 
 import 'bootstrap/dist/css/bootstrap.min.css';
-import ICPLogin from './pages/ICP';
+import IcpLogin from './pages/Icp';
 
 export default function App() {
   const { showServerDownPopup } = useServerDown();
@@ -66,10 +66,10 @@ export default function App() {
               path="/identity/root-key/starknet"
               element={<StarknetLogin isLogin={false} />}
             />
-            <Route path="/auth/icp" element={<ICPLogin isLogin={true} />} />
+            <Route path="/auth/icp" element={<IcpLogin isLogin={true} />} />
             <Route
               path="/identity/root-key/icp"
-              element={<ICPLogin isLogin={false} />}
+              element={<IcpLogin isLogin={false} />}
             />
             <Route path="/identity" element={<Identity />} />
             <Route path="/identity/root-key" element={<AddRootKey />} />

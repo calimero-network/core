@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import ContentWrapper from '../components/login/ContentWrapper';
 import { useNavigate } from 'react-router-dom';
-import { ICP } from '../components/icp/ICP';
-import { useICP } from '../hooks/useICP';
+import { Icp } from '../components/icp/Icp';
+import { useIcp } from '../hooks/useIcp';
 
-interface ICPProps {
+interface IcpProps {
   isLogin: boolean;
 }
 
-export default function ICPLogin({ isLogin }: ICPProps) {
+export default function IcpLogin({ isLogin }: IcpProps) {
   const navigate = useNavigate();
   const {
     ready,
@@ -17,7 +17,7 @@ export default function ICPLogin({ isLogin }: ICPProps) {
     walletSignatureData,
     requestNodeData,
     changeNetwork,
-  } = useICP();
+  } = useIcp();
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   useEffect(() => {
@@ -28,7 +28,7 @@ export default function ICPLogin({ isLogin }: ICPProps) {
 
   return (
     <ContentWrapper>
-      <ICP
+      <Icp
         navigateBack={() =>
           isLogin ? navigate('/auth') : navigate('/identity/root-key')
         }

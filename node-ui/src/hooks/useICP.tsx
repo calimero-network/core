@@ -6,7 +6,7 @@ import { DelegationIdentity } from '@dfinity/identity';
 
 import apiClient from '../api';
 import {
-  ICPSignatureMessageMetadata,
+  IcpSignatureMessageMetadata,
   NodeChallenge,
   Payload,
   SignatureMessage,
@@ -29,7 +29,7 @@ interface RequestNodeDataProps {
 }
 
 /**
- * The `useICPReturn` interface encapsulates the state and methods needed to interact with the Internet Computer (IC) for user authentication, network switching, and signing messages.
+ * The `useIcpReturn` interface encapsulates the state and methods needed to interact with the Internet Computer (IC) for user authentication, network switching, and signing messages.
  *
  * This interface provides a hook-based approach to managing the user's authentication status, including requesting node data, signing messages for login or root key addition, and handling network changes.
  * It manages the underlying state for wallet signatures, user readiness, and interactions with the IC Identity service.
@@ -40,7 +40,7 @@ interface RequestNodeDataProps {
  * - Switching between different Internet Computer networks (production or staging).
  * - Managing the user's authentication state and error handling throughout the process.
  */
-interface useICPReturn {
+interface useIcpReturn {
   /**
    * Indicates whether the system is ready for a new action (e.g., switching networks or signing messages).
    * This is useful for showing loading indicators while operations are in progress.
@@ -97,21 +97,26 @@ interface useICPReturn {
   ) => void;
 }
 
-const t = translations.useICP;
+const t = translations.useIcp;
+
+/**
+ * A dictionary of possible Internet Computer (IC) networks that the user can interact with.
+ * Each network has a URL and a corresponding canister ID for authentication.
+ */
 const possibleNetworks = {
   production: {
     url: 'https://identity.ic0.app',
-    cannisterId: 'rdmx6-jaaaa-aaaaa-aaadq-cai',
+    canisterId: 'rdmx6-jaaaa-aaaaa-aaadq-cai',
   },
   staging: {
     url: 'https://beta.identity.ic0.app/',
-    cannisterId: 'fgte5-ciaaa-aaaad-aaatq-cai',
+    canisterId: 'fgte5-ciaaa-aaaad-aaatq-cai',
   },
 };
 
 export type NetworkId = keyof typeof possibleNetworks;
 
-export function useICP(): useICPReturn {
+export function useIcp(): useIcpReturn {
   const navigate = useNavigate();
   const [ready, setReady] = useState<boolean>(true);
   const { showServerDownPopup } = useServerDown();
@@ -153,7 +158,7 @@ export function useICP(): useICPReturn {
           challengeResponseData.data?.timestamp ?? new Date().getTime(),
         message: JSON.stringify(signatureMessage),
       };
-      const signatureMetadata: ICPSignatureMessageMetadata = {};
+      const signatureMetadata: IcpSignatureMessageMetadata = {};
       const payload: Payload = {
         message: signatureMessageMetadata,
         metadata: signatureMetadata,
@@ -205,7 +210,7 @@ export function useICP(): useICPReturn {
                 error.message || 'An error occurred during authentication.',
               );
               setReady(true);
-              return; // Exit the function if there's an error
+              return;
             }
 
             if (delegationIdentity) {
@@ -235,13 +240,13 @@ export function useICP(): useICPReturn {
 
               const walletMetadata: WalletMetadata = {
                 wallet: WalletType.ICP({
-                  cannisterId: currentNetwork.cannisterId,
+                  canisterId: currentNetwork.canisterId,
                   walletName: 'Internet Identity',
                 }),
                 verifyingKey: publicKey,
               };
               if (walletSignatureData?.payload) {
-                const ICPRequest: LoginRequest = {
+                const IcpRequest: LoginRequest = {
                   walletSignature: JSON.stringify(delegationChain),
                   payload: walletSignatureData.payload,
                   walletMetadata: walletMetadata,
@@ -250,10 +255,10 @@ export function useICP(): useICPReturn {
                 const result: ResponseData<LoginResponse> = isLogin
                   ? await apiClient(showServerDownPopup)
                       .node()
-                      .login(ICPRequest)
+                      .login(IcpRequest)
                   : await apiClient(showServerDownPopup)
                       .node()
-                      .addRootKey(ICPRequest);
+                      .addRootKey(IcpRequest);
 
                 if (result.error) {
                   const errorMessage = isLogin ? t.loginError : t.rootkeyError;
@@ -292,7 +297,6 @@ export function useICP(): useICPReturn {
     sessionPublicKey: Uint8Array;
   }): Promise<DelegationIdentity> => {
     try {
-      // Figure out the II URL to use
       const iiUrl = new URL(url_);
       iiUrl.hash = '#authorize';
 
@@ -309,7 +313,7 @@ export function useICP(): useICPReturn {
             clearInterval(checkWindowClosed);
             reject(new Error('User closed the window.'));
           }
-        }, 500); // Check every 500ms
+        }, 500);
       });
 
       // Wait for II to say it's ready

@@ -5,7 +5,7 @@ import {
   ApiRootKey,
   DidResponse,
   ETHRootKey,
-  ICPRootKey,
+  IcpRootKey,
   NearRootKey,
   Network,
   StarknetRootKey,
@@ -80,7 +80,7 @@ export function mapApiResponseToObjects(
       | ETHRootKey
       | NearRootKey
       | StarknetRootKey
-      | ICPRootKey
+      | IcpRootKey
     )[] = didResponse?.did?.root_keys?.map((obj: ApiRootKey) => {
       switch (obj.wallet.type) {
         case Network.NEAR:
@@ -103,7 +103,7 @@ export function mapApiResponseToObjects(
             signingKey: obj.signing_key,
             type: Network.ICP,
             createdAt: obj.created_at,
-          } as ICPRootKey;
+          } as IcpRootKey;
 
         case Network.STARKNET:
         default:

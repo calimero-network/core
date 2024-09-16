@@ -4,13 +4,13 @@ import translations from '../../../constants/en.global.json';
 import MetamaskIcon from '../../../assets/metamask-icon.svg';
 import NearIcon from '../../../assets/near-icon.svg';
 import StarknetIcon from '../../../assets/starknet-icon.svg';
-import ICPIcon from '../../../assets/icp.svg';
+import IcpIcon from '../../../assets/icp.svg';
 
 export interface LoginSelectorProps {
   navigateMetamaskLogin: () => void | undefined;
   navigateNearLogin: () => void | undefined;
   navigateStarknetLogin: () => void | undefined;
-  navigateICPLogin: () => void | undefined;
+  navigateIcpLogin: () => void | undefined;
 }
 
 const Wrapper = styled.div`
@@ -73,7 +73,7 @@ export default function LoginSelector({
   navigateMetamaskLogin,
   navigateNearLogin,
   navigateStarknetLogin,
-  navigateICPLogin,
+  navigateIcpLogin,
 }: LoginSelectorProps) {
   const t = translations.loginPage.loginSelector;
   return (
@@ -96,9 +96,9 @@ export default function LoginSelector({
             <img src={StarknetIcon as unknown as string} alt="starknet-icon" />
             <span>{t.starknetButtonText}</span>
           </button>
-          <button className="login-btn" onClick={navigateICPLogin}>
-            <img src={ICPIcon as unknown as string} alt="icp-icon" />
-            <span>{t.ICPButtonText}</span>
+          <button className="login-btn" onClick={navigateIcpLogin}>
+            <img src={IcpIcon as unknown as string} alt="icp-icon" />
+            <span>{t.IcpButtonText}</span>
           </button>
         </div>
       </div>
