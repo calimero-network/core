@@ -51,21 +51,16 @@ impl InstallCommand {
 
         let mut is_dev_installation = false;
 
-        let metadata = self.metadata.map(|m| m.into_bytes());
+        let metadata = self.metadata.map(|m| m.into_bytes()).unwrap_or_default();
 
         let install_request = if let Some(app_path) = self.path {
-            let install_dev_request = InstallDevApplicationRequest::new(
-                app_path.canonicalize_utf8()?,
-                metadata.unwrap_or_default(),
-            );
+            let install_dev_request =
+                InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?, metadata);
             is_dev_installation = true;
             serde_json::to_value(install_dev_request)?
         } else if let Some(app_url) = self.url {
-            let install_request = InstallApplicationRequest::new(
-                Url::parse(&app_url)?,
-                self.hash,
-                metadata.unwrap_or_default(),
-            );
+            let install_request =
+                InstallApplicationRequest::new(Url::parse(&app_url)?, self.hash, metadata);
             serde_json::to_value(install_request)?
         } else {
             bail!("Either path or url must be provided");
