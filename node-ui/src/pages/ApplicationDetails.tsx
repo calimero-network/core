@@ -76,7 +76,7 @@ export default function ApplicationDetailsPage() {
       }
     };
     fetchApplicationData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   return (
