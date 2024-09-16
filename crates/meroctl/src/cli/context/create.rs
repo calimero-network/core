@@ -295,8 +295,7 @@ async fn install_app(
 ) -> EyreResult<ApplicationId> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
 
-    let install_request =
-        InstallDevApplicationRequest::new(path, None, metadata.unwrap_or_default());
+    let install_request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
     let install_response =
         get_response(client, install_url, Some(install_request), keypair, POST).await?;
