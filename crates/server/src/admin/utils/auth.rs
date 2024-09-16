@@ -192,7 +192,7 @@ pub async fn verify_node_signature(
             Ok(true)
         }
         WalletType::ICP {
-            ref cannister_id,
+            ref canister_id,
             ref wallet_name,
         } => {
             let delegation_chain = match wallet_signature {
@@ -214,7 +214,7 @@ pub async fn verify_node_signature(
                 verify_internet_identity_signature(
                     payload.message.message.as_bytes(),
                     signed_delegation_chain_json,
-                    cannister_id,
+                    canister_id,
                 )
                 .await?;
             } else {

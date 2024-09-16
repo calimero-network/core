@@ -234,8 +234,8 @@ pub enum WalletType {
         wallet_name: String,
     },
     ICP {
-        #[serde(rename = "cannisterId")]
-        cannister_id: String,
+        #[serde(rename = "canisterId")]
+        canister_id: String,
         #[serde(rename = "walletName")]
         wallet_name: String,
     },
