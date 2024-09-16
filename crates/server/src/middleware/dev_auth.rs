@@ -6,7 +6,7 @@ use axum::response::Response;
 use axum::Extension;
 use chrono::{Duration, TimeZone, Utc};
 
-use crate::admin::service::AdminState;
+use crate::AdminState;
 
 const TIMESTAMP_THRESHOLD: i64 = 5;
 
