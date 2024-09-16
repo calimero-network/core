@@ -22,7 +22,7 @@ pub struct InstallCommand {
     pub path: Option<Utf8PathBuf>,
 
     /// Url of the application
-    #[clap(long, short, conflicts_with = "path", requires = "metadata")]
+    #[clap(long, short, conflicts_with = "path")]
     pub url: Option<String>,
 
     #[clap(short, long, help = "Version of the application")]
