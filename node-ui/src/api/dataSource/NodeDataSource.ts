@@ -7,7 +7,6 @@ import translations from '../../constants/en.global.json';
 import { createAppMetadata } from '../../utils/metadata';
 import { Signature } from 'starknet';
 import { getNearEnvironment } from '../../utils/node';
-import bs58 from 'bs58';
 
 const t = translations.nodeDataSource;
 
