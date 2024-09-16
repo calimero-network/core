@@ -34,7 +34,6 @@ export interface NodeApi {
   deleteContext(contextId: string): ApiResponse<DeleteContextResponse>;
   startContexts(
     applicationId: string,
-    initFunction: string,
     initArguments: string,
   ): ApiResponse<Context>;
   getDidList(): ApiResponse<DidResponse>;
