@@ -110,6 +110,7 @@ impl ContextConfigs {
                 Application {
                     id: application.id,
                     blob: application.blob,
+                    size: application.size,
                     source: application.source.to_owned(),
                     metadata: application.metadata.to_owned(),
                 },
@@ -152,6 +153,7 @@ impl ContextConfigs {
             Application {
                 id: application.id,
                 blob: application.blob,
+                size: application.size,
                 source: application.source.to_owned(),
                 metadata: application.metadata.to_owned(),
             },
