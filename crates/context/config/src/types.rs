@@ -13,17 +13,18 @@ use thiserror::Error as ThisError;
 use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
 
 #[derive(
-    Eq,
-    Ord,
+    BorshDeserialize,
+    BorshSerialize,
     Clone,
     Debug,
+    Deserialize,
+    Eq,
+    Ord,
     PartialEq,
     PartialOrd,
     Serialize,
-    Deserialize,
-    BorshSerialize,
-    BorshDeserialize,
 )]
+#[non_exhaustive]
 pub struct Application<'a> {
     pub id: Repr<ApplicationId>,
     pub blob: Repr<BlobId>,
@@ -31,6 +32,25 @@ pub struct Application<'a> {
     #[serde(borrow)]
     pub source: ApplicationSource<'a>,
     pub metadata: ApplicationMetadata<'a>,
+}
+
+impl<'a> Application<'a> {
+    #[must_use]
+    pub const fn new(
+        id: Repr<ApplicationId>,
+        blob: Repr<BlobId>,
+        size: u64,
+        source: ApplicationSource<'a>,
+        metadata: ApplicationMetadata<'a>,
+    ) -> Self {
+        Application {
+            id,
+            blob,
+            size,
+            source,
+            metadata,
+        }
+    }
 }
 
 #[derive(Eq, Ord, Copy, Debug, Clone, PartialEq, PartialOrd, BorshSerialize, BorshDeserialize)]
@@ -160,18 +180,19 @@ impl ReprBytes for ApplicationId {
 }
 
 #[derive(
-    Eq,
-    Ord,
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
     Debug,
     Default,
-    Clone,
+    Deserialize,
+    Eq,
+    Ord,
     PartialEq,
     PartialOrd,
     Serialize,
-    Deserialize,
-    BorshSerialize,
-    BorshDeserialize,
 )]
+#[expect(clippy::exhaustive_structs, reason = "Exhaustive")]
 pub struct ApplicationSource<'a>(#[serde(borrow)] pub Cow<'a, str>);
 
 impl ApplicationSource<'_> {
@@ -182,18 +203,19 @@ impl ApplicationSource<'_> {
 }
 
 #[derive(
-    Eq,
-    Ord,
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
     Debug,
     Default,
-    Clone,
+    Deserialize,
+    Eq,
+    Ord,
     PartialEq,
     PartialOrd,
     Serialize,
-    Deserialize,
-    BorshSerialize,
-    BorshDeserialize,
 )]
+#[expect(clippy::exhaustive_structs, reason = "Exhaustive")]
 pub struct ApplicationMetadata<'a>(#[serde(borrow)] pub Repr<Cow<'a, [u8]>>);
 
 impl ApplicationMetadata<'_> {
@@ -222,6 +244,7 @@ impl ReprBytes for Signature {
 }
 
 #[derive(Debug, ThisError)]
+#[non_exhaustive]
 pub enum VerificationKeyParseError {
     #[error(transparent)]
     LengthMismatch(LengthMismatch),
@@ -253,6 +276,7 @@ impl ReprBytes for VerifyingKey {
 }
 
 #[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub enum Capability {
     ManageApplication,
     ManageMembers,
@@ -268,6 +292,7 @@ pub struct Signed<T> {
 }
 
 #[derive(ThisError)]
+#[non_exhaustive]
 pub enum ConfigError<E> {
     #[error("invalid signature")]
     InvalidSignature,
@@ -286,10 +311,11 @@ impl<E: Display> Debug for ConfigError<E> {
 }
 
 impl<T: Serialize> Signed<T> {
-    pub fn new<R: IntoResult<Signature>>(
-        payload: &T,
-        sign: impl FnOnce(&[u8]) -> R,
-    ) -> Result<Self, ConfigError<R::Error>> {
+    pub fn new<R, F>(payload: &T, sign: F) -> Result<Self, ConfigError<R::Error>>
+    where
+        R: IntoResult<Signature>,
+        F: FnOnce(&[u8]) -> R,
+    {
         let payload = serde_json::to_vec(&payload)?.into_boxed_slice();
 
         let signature = sign(&payload)
@@ -327,10 +353,11 @@ impl<T, E> IntoResult<T> for Result<T, E> {
 }
 
 impl<'a, T: Deserialize<'a>> Signed<T> {
-    pub fn parse<R: IntoResult<SignerId>>(
-        &'a self,
-        f: impl FnOnce(&T) -> R,
-    ) -> Result<T, ConfigError<R::Error>> {
+    pub fn parse<R, F>(&'a self, f: F) -> Result<T, ConfigError<R::Error>>
+    where
+        R: IntoResult<SignerId>,
+        F: FnOnce(&T) -> R,
+    {
         let parsed = serde_json::from_slice(&self.payload)?;
 
         let bytes = f(&parsed)

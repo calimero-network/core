@@ -59,6 +59,7 @@ impl<T> Deref for Repr<T> {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ReprError<E> {
     #[error("decode error: {0}")]
     DecodeError(E),
@@ -96,11 +97,14 @@ pub trait ReprTransmute<'a>: ReprBytes + 'a {
     fn rt<O: ReprBytes<DecodeBytes = Self::EncodeBytes<'a>>>(&'a self) -> Result<O, O::Error>;
 }
 
-impl<'a, T: 'a> ReprTransmute<'a> for T
+impl<'a, T> ReprTransmute<'a> for T
 where
-    T: ReprBytes<EncodeBytes<'a>: AsRef<[u8]>>,
+    T: 'a + ReprBytes<EncodeBytes<'a>: AsRef<[u8]>>,
 {
-    fn rt<O: ReprBytes<DecodeBytes = Self::EncodeBytes<'a>>>(&'a self) -> Result<O, O::Error> {
+    fn rt<O>(&'a self) -> Result<O, O::Error>
+    where
+        O: ReprBytes<DecodeBytes = T::EncodeBytes<'a>>,
+    {
         O::from_bytes(|buf| {
             *buf = self.as_bytes();
             Ok(buf.as_ref().len())
@@ -196,11 +200,7 @@ where
         F: FnOnce(&mut Self::DecodeBytes) -> Bs58Result<usize>,
     {
         let mut bytes = Vec::new();
-
-        let len = f(&mut bytes)?;
-
-        assert_eq!(len, bytes.len());
-
+        let _ = f(&mut bytes)?;
         Ok(bytes.into())
     }
 }

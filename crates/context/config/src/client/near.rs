@@ -1,3 +1,5 @@
+#![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time;
@@ -72,6 +74,7 @@ impl<'a> NearTransport<'a> {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum NearError {
     #[error("unknown network `{0}`")]
     UnknownNetwork(String),
@@ -95,6 +98,7 @@ pub enum NearError {
 }
 
 #[derive(Copy, Clone, Debug, Error)]
+#[non_exhaustive]
 pub enum ErrorOperation {
     #[error("querying contract")]
     Query,
@@ -159,6 +163,7 @@ impl Network {
                 reason: err.to_string(),
             })?;
 
+        #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match response.kind {
             QueryResponseKind::CallResult(CallResult { result, .. }) => Ok(result),
             _ => Err(NearError::InvalidResponse {
@@ -178,7 +183,7 @@ impl Network {
         let transaction = Transaction::V0(TransactionV0 {
             signer_id: self.account_id.clone(),
             public_key: self.secret_key.public_key(),
-            nonce: nonce + 1,
+            nonce: nonce.saturating_add(1),
             receiver_id: contract_id,
             block_hash,
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
@@ -247,9 +252,11 @@ impl Network {
                 operation: ErrorOperation::Mutate,
                 reason: error.to_string(),
             }),
-            _ => Err(NearError::InvalidResponse {
-                operation: ErrorOperation::Mutate,
-            }),
+            FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
+                Err(NearError::InvalidResponse {
+                    operation: ErrorOperation::Mutate,
+                })
+            }
         }
     }
 
@@ -273,17 +280,15 @@ impl Network {
                 reason: err.to_string(),
             })?;
 
-        let (nonce, permission, block_hash) = match response {
-            RpcQueryResponse {
-                kind: QueryResponseKind::AccessKey(AccessKeyView { nonce, permission }),
-                block_hash,
-                ..
-            } => (nonce, permission, block_hash),
-            _ => {
-                return Err(NearError::InvalidResponse {
-                    operation: ErrorOperation::FetchAccount,
-                })
-            }
+        let RpcQueryResponse {
+            kind: QueryResponseKind::AccessKey(AccessKeyView { nonce, permission }),
+            block_hash,
+            ..
+        } = response
+        else {
+            return Err(NearError::InvalidResponse {
+                operation: ErrorOperation::FetchAccount,
+            });
         };
 
         if let AccessKeyPermissionView::FunctionCall {

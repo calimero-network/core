@@ -1,4 +1,9 @@
-use std::time;
+#![allow(
+    clippy::multiple_inherent_impl,
+    reason = "Needed to separate NEAR functionality"
+)]
+
+use core::{mem, time};
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
@@ -56,7 +61,9 @@ impl ContextConfigs {
         );
 
         match request.kind {
-            RequestKind::Context(ContextRequest { context_id, kind }) => match kind {
+            RequestKind::Context(ContextRequest {
+                context_id, kind, ..
+            }) => match kind {
                 ContextRequestKind::Add {
                     author_id,
                     application,
@@ -97,8 +104,7 @@ impl ContextConfigs {
         );
 
         let mut members = IterableSet::new(Prefix::Members(*context_id));
-
-        members.insert(*author_id);
+        let _ = members.insert(*author_id);
 
         let context = Context {
             application: Guard::new(
@@ -107,13 +113,13 @@ impl ContextConfigs {
                     ContextPrivilegeScope::Application,
                 )),
                 author_id.rt().expect("infallible conversion"),
-                Application {
-                    id: application.id,
-                    blob: application.blob,
-                    size: application.size,
-                    source: application.source.to_owned(),
-                    metadata: application.metadata.to_owned(),
-                },
+                Application::new(
+                    application.id,
+                    application.blob,
+                    application.size,
+                    application.source.to_owned(),
+                    application.metadata.to_owned(),
+                ),
             ),
             members: Guard::new(
                 Prefix::Privileges(PrivilegeScope::Context(
@@ -129,7 +135,7 @@ impl ContextConfigs {
             env::panic_str("context already exists");
         }
 
-        env::log_str(&format!("Context `{}` added", context_id));
+        env::log_str(&format!("Context `{context_id}` added"));
     }
 
     fn update_application(
@@ -145,24 +151,24 @@ impl ContextConfigs {
 
         let new_application_id = application.id;
 
-        let old_application = std::mem::replace(
+        let old_application = mem::replace(
             &mut *context
                 .application
                 .get_mut(signer_id)
                 .expect("unable to update application"),
-            Application {
-                id: application.id,
-                blob: application.blob,
-                size: application.size,
-                source: application.source.to_owned(),
-                metadata: application.metadata.to_owned(),
-            },
+            Application::new(
+                application.id,
+                application.blob,
+                application.size,
+                application.source.to_owned(),
+                application.metadata.to_owned(),
+            ),
         );
 
         env::log_str(&format!(
             "Updated application for context `{}` from `{}` to `{}`",
             context_id, old_application.id, new_application_id
-        ))
+        ));
     }
 
     fn add_members(
@@ -182,12 +188,9 @@ impl ContextConfigs {
             .expect("unable to update member list");
 
         for member in members {
-            env::log_str(&format!(
-                "Added `{}` as a member of `{}`",
-                member, context_id
-            ));
+            env::log_str(&format!("Added `{member}` as a member of `{context_id}`"));
 
-            ctx_members.insert(*member);
+            let _ = ctx_members.insert(*member);
         }
     }
 
@@ -208,8 +211,7 @@ impl ContextConfigs {
             .expect("unable to update member list");
 
         for member in members {
-            ctx_members.remove(&member);
-
+            let _ = ctx_members.remove(&member);
             let member = member.rt().expect("infallible conversion");
 
             env::log_str(&format!(

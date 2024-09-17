@@ -1,5 +1,5 @@
+use core::ops::{Deref, DerefMut};
 use std::fmt;
-use std::ops::{Deref, DerefMut};
 
 use calimero_context_config::types::SignerId;
 use near_sdk::near;
@@ -34,8 +34,7 @@ impl fmt::Debug for UnauthorizedAccess {
 impl<T> Guard<T> {
     pub fn new(prefix: Prefix, signer_id: SignerId, inner: T) -> Self {
         let mut priviledged = IterableSet::new(prefix);
-
-        priviledged.insert(signer_id);
+        let _ = priviledged.insert(signer_id);
 
         Self { inner, priviledged }
     }
@@ -48,7 +47,7 @@ impl<T> Guard<T> {
         Ok(GuardMut { inner: self })
     }
 
-    pub fn priviledged(&self) -> &IterableSet<SignerId> {
+    pub const fn priviledged(&self) -> &IterableSet<SignerId> {
         &self.priviledged
     }
 
@@ -84,7 +83,7 @@ impl<T> Deref for GuardMut<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        &self.inner
+        self.inner
     }
 }
 
@@ -101,10 +100,10 @@ pub struct Priviledges<'a> {
 
 impl Priviledges<'_> {
     pub fn grant(&mut self, signer_id: SignerId) {
-        self.inner.insert(signer_id);
+        let _ = self.inner.insert(signer_id);
     }
 
     pub fn revoke(&mut self, signer_id: &SignerId) {
-        self.inner.remove(signer_id);
+        let _ = self.inner.remove(signer_id);
     }
 }

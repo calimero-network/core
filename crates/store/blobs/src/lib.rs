@@ -56,6 +56,11 @@ pub enum Size {
 
 impl Size {
     const fn hint(&self) -> usize {
+        // TODO: Check this, as the incoming int is a u64
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "This is never expected to overflow"
+        )]
         match self {
             Self::Hint(size) | Self::Exact(size) => *size as usize,
         }

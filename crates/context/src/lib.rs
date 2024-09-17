@@ -2,10 +2,14 @@ use std::collections::HashSet;
 use std::io::Error as IoError;
 use std::sync::Arc;
 
-use calimero_blobstore::BlobManager;
+use calimero_blobstore::{BlobManager, Size};
 use calimero_context_config::client::config::ContextConfigClientConfig;
 use calimero_context_config::client::{ContextConfigClient, RelayOrNearTransport};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use calimero_context_config::types::{
+    Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
+    ApplicationSource as ApplicationSourceConfig,
+};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, Finality, ServerSender};
@@ -129,6 +133,7 @@ impl ContextManager {
         Ok(())
     }
 
+    #[must_use]
     pub fn new_identity(&self) -> PrivateKey {
         PrivateKey::random(&mut rand::thread_rng())
     }
@@ -143,6 +148,7 @@ impl ContextManager {
         let (context_secret, identity_secret) = {
             let mut rng = rand::thread_rng();
 
+            #[expect(clippy::option_if_let_else, reason = "Clearer this way")]
             let context_secret = match seed {
                 Some(seed) => PrivateKey::random(&mut StdRng::from_seed(seed)),
                 None => PrivateKey::random(&mut rng),
@@ -181,19 +187,15 @@ impl ContextManager {
                     .public_key()
                     .rt()
                     .expect("infallible conversion"),
-                calimero_context_config::types::Application {
-                    id: application.id.rt().expect("infallible conversion"),
-                    blob: application.blob.rt().expect("infallible conversion"),
-                    size: application.size,
-                    source: calimero_context_config::types::ApplicationSource(
-                        application.source.to_string().into(),
-                    ),
-                    metadata: calimero_context_config::types::ApplicationMetadata(Repr::new(
-                        application.metadata.into(),
-                    )),
-                },
+                ApplicationConfig::new(
+                    application.id.rt().expect("infallible conversion"),
+                    application.blob.rt().expect("infallible conversion"),
+                    application.size,
+                    ApplicationSourceConfig(application.source.to_string().into()),
+                    ApplicationMetadataConfig(Repr::new(application.metadata.into())),
+                ),
             )
-            .send(|b| SigningKey::from_bytes(&*context_secret).sign(b))
+            .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
             .await?;
 
         self.add_context(&context, identity_secret, true).await?;
@@ -275,7 +277,7 @@ impl ContextManager {
             .config_client
             .query(network_id.into(), contract_id.into());
 
-        for (offset, length) in (0..).map(|i| (i * 100, 100)) {
+        for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
             let members = client
                 .members(
                     context_id.rt().expect("infallible conversion"),
@@ -348,6 +350,7 @@ impl ContextManager {
         Ok(Some((context_id, invitee_id)))
     }
 
+    #[expect(clippy::similar_names, reason = "Different enough")]
     pub async fn invite_to_context(
         &self,
         context_id: ContextId,
@@ -469,7 +472,7 @@ impl ContextManager {
             let mut iter = handle.iter::<ContextStateKey>()?;
 
             let first = iter
-                .seek(ContextStateKey::new(*context_id, [0; 32].into()))
+                .seek(ContextStateKey::new(*context_id, [0; 32]))
                 .transpose();
 
             for k in first.into_iter().chain(iter.keys()) {
@@ -495,7 +498,7 @@ impl ContextManager {
             let mut iter = handle.iter::<ContextTransactionKey>()?;
 
             let first = iter
-                .seek(ContextTransactionKey::new(*context_id, [0; 32].into()))
+                .seek(ContextTransactionKey::new(*context_id, [0; 32]))
                 .transpose();
 
             for k in first.into_iter().chain(iter.keys()) {
@@ -684,10 +687,7 @@ impl ContextManager {
 
         let (blob_id, size) = self
             .blob_manager
-            .put_sized(
-                Some(calimero_blobstore::Size::Exact(expected_size)),
-                file.compat(),
-            )
+            .put_sized(Some(Size::Exact(expected_size)), file.compat())
             .await?;
 
         if size != expected_size {
@@ -701,7 +701,7 @@ impl ContextManager {
         self.install_application(blob_id, size, &(uri.as_str().parse()?), metadata)
     }
 
-    #[expect(clippy::similar_names)]
+    #[expect(clippy::similar_names, reason = "Different enough")]
     pub async fn install_application_from_url(
         &self,
         url: Url,
@@ -718,7 +718,7 @@ impl ContextManager {
         let (blob_id, size) = self
             .blob_manager
             .put_sized(
-                expected_size.clone().map(calimero_blobstore::Size::Exact),
+                expected_size.map(Size::Exact),
                 response
                     .bytes_stream()
                     .map_err(IoError::other)

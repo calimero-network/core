@@ -6,6 +6,7 @@ use url::Url;
 use super::{Operation, Transport, TransportRequest};
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct RelayerConfig {
     pub url: Url,
 }
@@ -29,6 +30,7 @@ impl RelayerTransport {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct RelayRequest<'a> {
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,

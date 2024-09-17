@@ -48,6 +48,7 @@ impl<L: Transport, R: Transport> Transport for Either<L, R> {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TransportRequest<'a> {
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,
@@ -55,6 +56,7 @@ pub struct TransportRequest<'a> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub enum Operation<'a> {
     Read { method: Cow<'a, str> },
     Write { method: Cow<'a, str> },
@@ -136,6 +138,7 @@ impl<T: Transport> ContextConfigClient<T> {
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ConfigError<T: Transport> {
     #[error("transport error: {0}")]
     Transport(T::Error),
@@ -262,7 +265,7 @@ pub struct ClientRequest<'a, 'b, T> {
 }
 
 impl<T: Transport> ClientRequest<'_, '_, T> {
-    pub async fn send(self, sign: impl FnOnce(&[u8]) -> Signature) -> Result<(), ConfigError<T>> {
+    pub async fn send<F: FnOnce(&[u8]) -> Signature>(self, sign: F) -> Result<(), ConfigError<T>> {
         let signed = Signed::new(&Request::new(self.client.signer_id, self.kind), sign)?;
 
         let request = TransportRequest {
