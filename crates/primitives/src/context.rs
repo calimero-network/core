@@ -71,12 +71,10 @@ pub struct ContextInvitationPayload(Vec<u8>);
 
 impl fmt::Debug for ContextInvitationPayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let is_alternate = f.alternate();
-
-        let mut d = f.debug_struct("ContextInvitationPayload");
-
         #[cfg(feature = "borsh")]
         {
+            let is_alternate = f.alternate();
+            let mut d = f.debug_struct("ContextInvitationPayload");
             let (context_id, invitee_id, network, contract_id) =
                 self.parts().map_err(|_| fmt::Error)?;
 
@@ -91,6 +89,7 @@ impl fmt::Debug for ContextInvitationPayload {
             }
         }
 
+        let mut d = f.debug_struct("ContextInvitationPayload");
         _ = d.field("raw", &self.to_string());
 
         d.finish()

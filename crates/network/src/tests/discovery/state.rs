@@ -74,7 +74,7 @@ fn test_is_relay_reservation_required() {
 #[test]
 fn test_is_rendezvous_discovery_throttled() {
     let mut peer_info = PeerInfo::default();
-    assert!(peer_info.is_rendezvous_discover_throttled(1.0));
+    assert!(!peer_info.is_rendezvous_discover_throttled(1.0));
 
     peer_info.rendezvous = Some(PeerRendezvousInfo {
         last_discovery_at: Some(Instant::now() - Duration::from_secs(30)),

@@ -6,8 +6,6 @@ use crate::tests::common::create_test_store;
 
 #[cfg(test)]
 mod data__constructor {
-    use super::*;
-
     #[test]
     #[ignore]
     fn new() {
@@ -177,7 +175,6 @@ mod element__traits {
 
 #[cfg(test)]
 mod metadata__constructor {
-    use super::*;
 
     #[test]
     #[ignore]

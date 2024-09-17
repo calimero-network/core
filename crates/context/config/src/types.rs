@@ -27,6 +27,7 @@ use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
 pub struct Application<'a> {
     pub id: Repr<ApplicationId>,
     pub blob: Repr<BlobId>,
+    pub size: u64,
     #[serde(borrow)]
     pub source: ApplicationSource<'a>,
     pub metadata: ApplicationMetadata<'a>,
