@@ -31,6 +31,7 @@ export default function App() {
 
   useEffect(() => {
     setNodeUrlFromQuery(showServerDownPopup);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (

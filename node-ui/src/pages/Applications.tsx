@@ -24,19 +24,6 @@ export enum Tabs {
   INSTALLED,
 }
 
-function mapStringToTab(tabName: string): Tabs {
-  switch (tabName.toUpperCase()) {
-    case 'AVAILABLE':
-      return Tabs.AVAILABLE;
-    case 'OWNED':
-      return Tabs.OWNED;
-    case 'INSTALLED':
-      return Tabs.INSTALLED;
-    default:
-      return Tabs.AVAILABLE;
-  }
-}
-
 export interface Package {
   id: string; // this is contract app id
   name: string;
@@ -80,7 +67,6 @@ export default function ApplicationsPage() {
   const navigate = useNavigate();
   const { showServerDownPopup } = useServerDown();
   const { getPackages, getLatestRelease, getPackage } = useRPC();
-  const [_selectedTab, setSelectedTab] = useState(Tabs.AVAILABLE);
   const [errorMessage, setErrorMessage] = useState('');
   const [currentOption, setCurrentOption] = useState<string>(
     ApplicationOptions.AVAILABLE,
@@ -212,9 +198,6 @@ export default function ApplicationsPage() {
           }}
           navigateToPublishApp={() => navigate('/publish-application')}
           navigateToInstallApp={() => navigate('/applications/install')}
-          changeSelectedTab={(option: string) =>
-            setSelectedTab(mapStringToTab(option))
-          }
           errorMessage={errorMessage}
         />
       </PageContentWrapper>
