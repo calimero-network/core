@@ -678,6 +678,8 @@ impl ContextManager {
         path: Utf8PathBuf,
         metadata: Vec<u8>,
     ) -> EyreResult<ApplicationId> {
+        let path = path.canonicalize_utf8()?;
+
         let file = File::open(&path).await?;
 
         let meta = file.metadata().await?;
