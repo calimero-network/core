@@ -5,6 +5,7 @@ import { ModalWrapper } from './SelectIdentityStep';
 import { truncateText } from '../../../utils/displayFunctions';
 import { Tooltip } from 'react-tooltip';
 import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
+import { copyToClipboard } from '../../../utils/copyToClipboard';
 
 interface CreateAccessTokenStepProps {
   applicationId: string;
@@ -26,12 +27,6 @@ export default function CreateAccessTokenStep({
   backLoginStep,
 }: CreateAccessTokenStepProps) {
   const t = translations.appLoginPopup.createToken;
-
-  const copyToClippboard = (text: string) => {
-    navigator.clipboard.writeText(text).catch((err) => {
-      console.error('Failed to copy text to clipboard: ', err);
-    });
-  };
 
   return (
     <ModalWrapper>
@@ -59,7 +54,7 @@ export default function CreateAccessTokenStep({
             <Tooltip id="tooltip" content={applicationId} />
             <ClipboardDocumentIcon
               className="copy-icon"
-              onClick={() => copyToClippboard(applicationId)}
+              onClick={() => copyToClipboard(applicationId)}
             />
           </div>
         </div>
@@ -70,7 +65,7 @@ export default function CreateAccessTokenStep({
             <Tooltip id="tooltip" content={selectedContextId} />
             <ClipboardDocumentIcon
               className="copy-icon"
-              onClick={() => copyToClippboard(selectedContextId)}
+              onClick={() => copyToClipboard(selectedContextId)}
             />
           </div>
         </div>
@@ -81,7 +76,7 @@ export default function CreateAccessTokenStep({
             <Tooltip id="tooltip" content={selectedIdentity} />
             <ClipboardDocumentIcon
               className="copy-icon"
-              onClick={() => copyToClippboard(selectedIdentity)}
+              onClick={() => copyToClipboard(selectedIdentity)}
             />
           </div>
         </div>

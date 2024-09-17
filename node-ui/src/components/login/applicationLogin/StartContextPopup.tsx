@@ -7,6 +7,7 @@ import { DisplayApplication } from './StartContextStep';
 import { truncateText } from '../../../utils/displayFunctions';
 import { Tooltip } from 'react-tooltip';
 import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
+import { copyToClipboard } from '../../../utils/copyToClipboard';
 
 const Wrapper = styled.div`
   display: flex;
@@ -219,12 +220,6 @@ export default function StartContextPopup({
     }
   };
 
-  const copyToClippboard = (text: string) => {
-    navigator.clipboard.writeText(text).catch((err) => {
-      console.error('Failed to copy text to clipboard: ', err);
-    });
-  };
-
   return (
     <Wrapper>
       <StatusModal
@@ -243,7 +238,7 @@ export default function StartContextPopup({
             <Tooltip id="tooltip" content={application?.appId ?? '-'} />
             <ClipboardDocumentIcon
               className="copy-icon"
-              onClick={() => copyToClippboard(application?.appId ?? '-')}
+              onClick={() => copyToClipboard(application?.appId ?? '-')}
             />
           </div>
         </div>

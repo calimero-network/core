@@ -7,6 +7,7 @@ import translations from '../../../constants/en.global.json';
 import { truncateText } from '../../../utils/displayFunctions';
 import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
 import { Tooltip } from 'react-tooltip';
+import { copyToClipboard } from '../../../utils/copyToClipboard';
 
 export const ModalWrapper = styled.div`
   display: flex;
@@ -151,12 +152,6 @@ export default function SelectContextStep({
 }: SelectContextStepProps) {
   const t = translations.appLoginPopup.selectContext;
 
-  const copyToClippboard = (text: string) => {
-    navigator.clipboard.writeText(text).catch((err) => {
-      console.error('Failed to copy text to clipboard: ', err);
-    });
-  };
-
   return (
     <ModalWrapper>
       <div className="step">1/3</div>
@@ -183,7 +178,7 @@ export default function SelectContextStep({
             <Tooltip id="tooltip" content={applicationId} />
             <ClipboardDocumentIcon
               className="copy-icon"
-              onClick={() => copyToClippboard(applicationId)}
+              onClick={() => copyToClipboard(applicationId)}
             />
           </div>
         </div>
