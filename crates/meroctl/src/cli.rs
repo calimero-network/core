@@ -3,12 +3,6 @@ use clap::{Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
-use crate::cli::app::AppCommand;
-use crate::cli::config::ConfigCommand;
-use crate::cli::context::ContextCommand;
-use crate::cli::init::InitCommand;
-use crate::cli::jsonrpc::JsonRpcCommand;
-use crate::cli::run::RunCommand;
 use crate::defaults;
 
 mod app;
@@ -16,7 +10,16 @@ mod config;
 mod context;
 mod init;
 mod jsonrpc;
+mod relay;
 mod run;
+
+use app::AppCommand;
+use config::ConfigCommand;
+use context::ContextCommand;
+use init::InitCommand;
+use jsonrpc::JsonRpcCommand;
+use relay::RelayCommand;
+use run::RunCommand;
 
 pub const EXAMPLES: &str = r"
   # Initialize a new node
@@ -50,14 +53,15 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
-    App(AppCommand),
-    Config(ConfigCommand),
-    Context(ContextCommand),
     Init(InitCommand),
-    #[command(alias = "call")]
-    JsonRpc(JsonRpcCommand),
+    Config(ConfigCommand),
     #[command(alias = "up")]
     Run(RunCommand),
+    Context(ContextCommand),
+    App(AppCommand),
+    #[command(alias = "call")]
+    JsonRpc(JsonRpcCommand),
+    Relay(RelayCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -81,6 +85,7 @@ impl RootCommand {
             SubCommands::Context(context) => context.run(self.args).await,
             SubCommands::App(application) => application.run(self.args).await,
             SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(self.args).await,
+            SubCommands::Relay(relay) => relay.run(self.args).await,
         }
     }
 }

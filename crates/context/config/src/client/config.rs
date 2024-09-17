@@ -55,7 +55,6 @@ pub struct Credentials {
 }
 
 mod serde_creds {
-
     use super::*;
 
     #[derive(Debug, Deserialize, Serialize)]

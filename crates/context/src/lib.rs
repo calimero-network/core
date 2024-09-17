@@ -9,7 +9,7 @@ use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, Finality, ServerSender};
-use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
+use calimero_primitives::application::{self, Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
