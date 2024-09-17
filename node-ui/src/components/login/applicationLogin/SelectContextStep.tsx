@@ -159,7 +159,7 @@ export default function SelectContextStep({
 
   return (
     <ModalWrapper>
-      <div className='step'>1/3</div>
+      <div className="step">1/3</div>
       <div className="title">{t.title}</div>
       <div className="wrapper">
         <div className="subtitle separator">

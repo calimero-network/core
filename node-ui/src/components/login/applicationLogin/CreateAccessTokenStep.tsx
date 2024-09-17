@@ -23,7 +23,7 @@ export default function CreateAccessTokenStep({
   selectedIdentity,
   onCreateToken,
   errorMessage,
-  backLoginStep
+  backLoginStep,
 }: CreateAccessTokenStepProps) {
   const t = translations.appLoginPopup.createToken;
 
@@ -35,7 +35,7 @@ export default function CreateAccessTokenStep({
 
   return (
     <ModalWrapper>
-      <div className='step'>3/3</div>
+      <div className="step">3/3</div>
       <div className="title">{t.title}</div>
       <div className="wrapper">
         <div className="subtitle separator">
@@ -86,7 +86,7 @@ export default function CreateAccessTokenStep({
           </div>
         </div>
       </div>
-      
+
       <div className="wrapper">
         <Button text={t.buttonNextText} onClick={onCreateToken} width="100%" />
       </div>
