@@ -33,7 +33,6 @@ pub struct TransactionRejection {
 #[non_exhaustive]
 pub enum CatchupStreamMessage {
     ApplicationBlobRequest(CatchupApplicationBlobRequest),
-    ApplicationBlobSize(CatchupApplicationBlobSize),
     ApplicationBlobChunk(CatchupApplicationBlobChunk),
     TransactionsRequest(CatchupTransactionsRequest),
     TransactionsBatch(CatchupTransactionsBatch),
@@ -44,12 +43,6 @@ pub enum CatchupStreamMessage {
 #[non_exhaustive]
 pub struct CatchupApplicationBlobRequest {
     pub context_id: ApplicationId,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct CatchupApplicationBlobSize {
-    pub size: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -39,7 +39,6 @@ impl Node {
             CatchupStreamMessage::TransactionsRequest(req) => req,
             message @ (CatchupStreamMessage::TransactionsBatch(_)
             | CatchupStreamMessage::ApplicationBlobRequest(_)
-            | CatchupStreamMessage::ApplicationBlobSize(_)
             | CatchupStreamMessage::ApplicationBlobChunk(_)
             | CatchupStreamMessage::Error(_)) => {
                 bail!("Unexpected message: {:?}", message)
@@ -335,7 +334,6 @@ impl Node {
                 warn!("Unexpected message: {:?}", request);
             }
             CatchupStreamMessage::ApplicationBlobRequest(_)
-            | CatchupStreamMessage::ApplicationBlobSize(_)
             | CatchupStreamMessage::ApplicationBlobChunk(_) => {
                 bail!("Unexpected message");
             }
