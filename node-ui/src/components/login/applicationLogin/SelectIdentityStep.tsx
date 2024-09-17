@@ -1,8 +1,10 @@
 import React from 'react';
 import { styled } from 'styled-components';
-import Button from '../../common/Button';
 import ListItem from './ListItem';
 import translations from '../../../constants/en.global.json';
+import { truncateText } from '../../../utils/displayFunctions';
+import { Tooltip } from 'react-tooltip';
+import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
 
 export const ModalWrapper = styled.div`
   display: flex;
@@ -13,15 +15,18 @@ export const ModalWrapper = styled.div`
   items-align: center;
   background-color: #17191b;
 
-  .title,
-  .context-title {
-    font-size: 1rem;
-    font-weight: 700;
-    line-height: 1.25rem;
-    color: #fff;
-  }
   .title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 2rem;
+    color: #fff;
     text-align: center;
+  }
+
+  .context-title {
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 500;
   }
 
   .subtitle,
@@ -33,15 +38,23 @@ export const ModalWrapper = styled.div`
 
   .subtitle {
     word-break: break-all;
+    display: flex;
+    gap: 0.5rem;
   }
 
   .wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
     margin-top: 1.25rem;
     color: #fff;
   }
 
-  .app-id {
-    color: #6b7280;
+  .label {
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 
   .app-callbackurl {
@@ -72,10 +85,6 @@ export const ModalWrapper = styled.div`
     color: #4cfafc;
   }
 
-  .list-wrapper {
-    background-color: #17191b;
-  }
-
   .flex-container {
     margin-top: 1rem;
     display: flex;
@@ -83,12 +92,53 @@ export const ModalWrapper = styled.div`
     gap: 1rem;
   }
 
-  .selected-text-wrapper {
-    display: flex;
-    flex-direction: column;
-  }
   .no-context-text {
     text-align: center;
+    font-size: 0.875rem;
+  }
+
+  .back-button {
+    margin-top: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    color: #fff;
+    cursor: pointer;
+  }
+
+  .back-text {
+    color: #6b7280;
+    font-size: 0.875rem;
+  }
+  .back-text:hover {
+    color: #fff;
+  }
+
+  .copy-icon {
+    height: 1rem;
+    width: 1rem;
+    color: #fff;
+    cursor: pointer;
+  }
+  .copy-icon:hover {
+    color: #9c9da3;
+  }
+
+  .separator {
+    border-bottom: 1px solid #23262d;
+  }
+
+  .flex {
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .step {
+    color: #fff;
+    font-size: 0.875rem;
+    position: absolute;
+    top: 1rem;
   }
 `;
 
@@ -96,26 +146,35 @@ interface SelectIdentityStepProps {
   applicationId: string;
   callbackUrl: string;
   contextIdentities: string[];
-  selectedIdentity: string;
-  setSelectedIdentity: (selectedIdentity: string) => void;
-  updateLoginStep: () => void;
-  finishLogin: () => void;
+  selectedContextId: string;
+  updateLoginStep: (selectedIdentity: string) => void;
+  backLoginStep: () => void;
 }
 
 export default function SelectIdentityStep({
   applicationId,
   callbackUrl,
   contextIdentities,
-  selectedIdentity,
-  setSelectedIdentity,
+  selectedContextId,
   updateLoginStep,
-  finishLogin,
+  backLoginStep,
 }: SelectIdentityStepProps) {
   const t = translations.appLoginPopup.selectIdentity;
+
+  const copyToClippboard = (text: string) => {
+    navigator.clipboard.writeText(text).catch((err) => {
+      console.error('Failed to copy text to clipboard: ', err);
+    });
+  };
+
   return (
     <ModalWrapper>
+      <span className="step">2/3</span>
       <div className="title">{t.title}</div>
       <div className="wrapper">
+        <div className="subtitle separator">
+          <span>{t.detailsText}</span>
+        </div>
         <div className="subtitle">
           {t.websiteText}
           <a
@@ -129,16 +188,32 @@ export default function SelectIdentityStep({
         </div>
         <div className="subtitle">
           {t.appIdText}
-          <span className="app-id">{applicationId}</span>
+          <div className="label" data-tooltip-id="tooltip">
+            <span>{truncateText(applicationId)}</span>
+            <Tooltip id="tooltip" content={applicationId} />
+            <ClipboardDocumentIcon
+              className="copy-icon"
+              onClick={() => copyToClippboard(applicationId)}
+            />
+          </div>
         </div>
         <div className="subtitle">
           {t.contextIdText}
-          <span className="app-id">{applicationId}</span>
+          <div className="label" data-tooltip-id="tooltip">
+            <span>{truncateText(selectedContextId)}</span>
+            <Tooltip id="tooltip" content={selectedContextId} />
+            <ClipboardDocumentIcon
+              className="copy-icon"
+              onClick={() => copyToClippboard(selectedContextId)}
+            />
+          </div>
         </div>
       </div>
       <div className="wrapper">
-        <div className="context-title">{t.contextsTitle}</div>
-        <div className="context-subtitle">{t.contextsSubtitle}</div>
+        <div>
+          <div className="context-title">{t.contextsTitle}</div>
+          <div className="context-subtitle">{t.contextsSubtitle}</div>
+        </div>
         <div className="context-list">
           {contextIdentities.length > 0 ? (
             contextIdentities.map((identity, i) => (
@@ -146,36 +221,21 @@ export default function SelectIdentityStep({
                 item={identity}
                 id={i}
                 count={contextIdentities.length}
-                onRowItemClick={setSelectedIdentity}
+                onRowItemClick={updateLoginStep}
                 key={i}
               />
             ))
           ) : (
             <div className="flex-container">
               <div className="no-context-text">{t.noContextsText}</div>
-              <Button
-                text={t.buttonBackText}
-                onClick={finishLogin}
-                width="100%"
-              />
             </div>
           )}
         </div>
       </div>
-      <div>
-        {selectedIdentity && (
-          <div className="flex-container">
-            <div className="selected-text-wrapper">
-              <span className="subtitle">{t.selectedContextText}</span>
-              <span className="context-title">{selectedIdentity}</span>
-            </div>
-            <Button
-              text={t.buttonNextText}
-              onClick={updateLoginStep}
-              width="100%"
-            />
-          </div>
-        )}
+      <div className="flex-center">
+        <div className="back-button" onClick={backLoginStep}>
+          <span className="back-text">{t.backButtonText}</span>
+        </div>
       </div>
     </ModalWrapper>
   );

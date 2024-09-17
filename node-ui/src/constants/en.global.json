@@ -128,6 +128,7 @@
       "installErrorTitle": "Failed to install application",
       "selectApplicationTitle": "Select app from the marketplace or publish new application",
       "selectedApplicationTitle": "Selected Application",
+      "installButtonText": "Install application",
       "idLabelText": "Application ID: ",
       "nameLabelText": "Application Name: ",
       "versionLabelText": "Version: ",
@@ -261,15 +262,16 @@
     }
   },
   "startContextPage": {
-    "backButtonText": "Back to Contexts",
+    "backButtonText": "back to context select",
     "selectApplicationTitle": "Select app from the marketplace or publish new application",
     "selectedApplicationTitle": "Selected Application",
-    "initSectionTitle": "Initialize state",
+    "initSectionTitle": "Initialize application state",
     "argsTitleText": "Arguments",
     "methodLabelText": "method name",
     "argsLabelText": "arguments json",
     "buttonFormatText": "format",
-    "popupTitleText": "Start a new context",
+    "loginRequestPopupTitle": "Application Sign-in Request - Start Context",
+    "detailsText": "Details",
     "applicationList": {
       "listTitle": "Select Available Application",
       "noAvailableAppsText": "No applications available",
@@ -326,35 +328,40 @@
   "appLoginPopup": {
     "createTokenError": "Error creating token, please try again",
     "selectContext": {
-      "title": "Sign-in request",
+      "title": "Application Sign-in Request",
+      "detailsText": "Details",
       "websiteText": "From site: ",
       "appIdText": "Application Id: ",
-      "contextsTitle": "Available contexts",
-      "contextsSubtitle": "Select context",
+      "contextsTitle": "Select Context",
+      "contextsSubtitle": "To continue select available or start a new context for the application",
       "noContextsText": "No contexts found",
       "selectedContextText": "Selected context Id:",
       "buttonNextText": "Confirm context Id",
       "buttonBackText": "Return to application",
-      "buttonCreateText": "Create new context"
+      "buttonCreateText": "Start new"
     },
     "selectIdentity": {
-      "title": "Sign-in request",
+      "title": "Application Sign-in Request",
+      "detailsText": "Details",
       "websiteText": "From site: ",
       "appIdText": "Application Id: ",
       "contextIdText": "Context Id: ",
-      "contextsTitle": "Available contexts identities",
-      "contextsSubtitle": "Select context identity",
+      "contextsTitle": "Select context identity",
+      "contextsSubtitle": "To continue select available context identity for the application",
       "noContextsText": "No contexts identities found",
       "selectedContextText": "Selected context identity:",
+      "backButtonText": "back to context select",
       "buttonNextText": "Confirm context identity",
       "buttonBackText": "Return to application"
     },
     "createToken": {
-      "title": "Sign-in request",
+      "title": "Application Sign-in Request",
       "websiteText": "From site: ",
       "appIdText": "Application Id: ",
       "contextIdText": "Context Id: ",
+      "backButtonText": "back to select context identity",
       "contextIdentityText": "Context Identity: ",
+      "detailsText": "Details",
       "buttonNextText": "Create token"
     }
   }

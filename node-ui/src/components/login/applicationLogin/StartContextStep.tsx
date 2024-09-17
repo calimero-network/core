@@ -16,14 +16,11 @@ export const ModalWrapper = styled.div`
   items-align: center;
   background-color: #17191b;
 
-  .title,
-  .context-title {
-    font-size: 1rem;
-    font-weight: 700;
-    line-height: 1.25rem;
-    color: #fff;
-  }
   .title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 2rem;
+    color: #fff;
     text-align: center;
   }
 `;
@@ -104,7 +101,7 @@ export default function StartContextStep({
 
   return (
     <ModalWrapper>
-      <div className="title">{t.popupTitleText}</div>
+      <div className="title">{t.loginRequestPopupTitle}</div>
       <StartContextPopup
         application={application}
         isArgsChecked={isArgsChecked}
@@ -116,7 +113,7 @@ export default function StartContextStep({
         showStatusModal={startFinished}
         closeModal={() => setStartFinished(false)}
         startContextStatus={startContextStatus}
-        navigateBack={backLoginStep}
+        backLoginStep={backLoginStep}
       />
     </ModalWrapper>
   );
