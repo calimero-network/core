@@ -99,6 +99,7 @@ impl Display for ApplicationSource {
 pub struct Application {
     pub id: ApplicationId,
     pub blob: BlobId,
+    pub size: u64,
     pub source: ApplicationSource,
     pub metadata: Vec<u8>,
 }
@@ -108,12 +109,14 @@ impl Application {
     pub fn new(
         id: ApplicationId,
         blob: BlobId,
+        size: u64,
         source: ApplicationSource,
         metadata: Vec<u8>,
     ) -> Self {
         Self {
             id,
             blob,
+            size,
             source,
             metadata,
         }
