@@ -64,16 +64,14 @@
     "dev": "pnpm compile -w",
     "build": "pnpm compile && pnpm browserify",
     "test": "jest test",
-    "lint": "concurrently \"pnpm:lint:*(!fix)\"",
-    "lint:src": "eslint . --ext .ts,.tsx src",
-    "lint:fix": "concurrently \"pnpm:lint:*:fix\"",
-    "lint:src:fix": "eslint . --ext .ts,.tsx --fix src",
+    "lint": "eslint . --ext .ts,.tsx src",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix src",
     "prefuzz": "pnpm build",
     "fuzz": "jsfuzz test/fuzz/borsh-roundtrip.js test/fuzz/corpus/",
     "clean": "pnpm rimraf lib node_modules",
-    "prepare": "husky",
     "bundlewatch": "bundlewatch",
-    "prettier": "exec prettier . --write"
+    "prettier": "exec prettier . --write",
+    "prettier:check": "exec prettier . --check"
   },
   "eslintConfig": {
     "extends": [

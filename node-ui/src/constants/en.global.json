@@ -112,6 +112,7 @@
       "title": "Applications",
       "publishNewAppText": "Publish new application",
       "noAvailableAppsText": "No applications available",
+      "noAvailableReleasesText": "No available releases",
       "noInstalledAppsText": "No installed applications",
       "noOwnedAppsText": "No owned applications",
       "installNewAppText": "install new application"

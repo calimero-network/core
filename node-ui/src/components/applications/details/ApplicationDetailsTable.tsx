@@ -47,7 +47,7 @@ export default function ApplicationDetailsTable({
           listItems={applicationInformation.releases || []}
           rowItem={releaseRowItem}
           roundTopItem={true}
-          noItemsText={t.noAvailableAppsText}
+          noItemsText={t.noAvailableReleasesText}
         />
       </FlexWrapper>
     </ContentCard>

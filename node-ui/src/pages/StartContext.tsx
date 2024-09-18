@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Navigation } from '../components/Navigation';
 import { FlexLayout } from '../components/layout/FlexLayout';
 import PageContentWrapper from '../components/common/PageContentWrapper';
@@ -29,7 +29,6 @@ export default function StartContextPage() {
     hash: '',
   });
   const [isArgsChecked, setIsArgsChecked] = useState(false);
-  const [methodName, setMethodName] = useState('');
   const [argumentsJson, setArgumentsJson] = useState('');
   const [showBrowseApplication, setShowBrowseApplication] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -38,10 +37,6 @@ export default function StartContextPage() {
     title: '',
     message: '',
     error: false,
-  });
-
-  useEffect(() => {
-    navigate('/contexts');
   });
 
   const startContext = async () => {
@@ -54,7 +49,7 @@ export default function StartContextPage() {
     }
     const startContextResponse = await apiClient(showServerDownPopup)
       .node()
-      .startContexts(appId, methodName, argumentsJson);
+      .startContexts(appId, argumentsJson);
     if (startContextResponse.error) {
       setStartContextStatus({
         title: t.startContextErrorTitle,
@@ -128,8 +123,6 @@ export default function StartContextPage() {
             setApplication={setApplication}
             isArgsChecked={isArgsChecked}
             setIsArgsChecked={setIsArgsChecked}
-            methodName={methodName}
-            setMethodName={setMethodName}
             argumentsJson={argumentsJson}
             setArgumentsJson={setArgumentsJson}
             startContext={startContext}

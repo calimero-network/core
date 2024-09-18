@@ -400,23 +400,17 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
 
                 match subcommand {
                     "install" => {
-                        let Some((type_, resource, version, metadata)) = args.and_then(|args| {
+                        let Some((type_, resource, metadata)) = args.and_then(|args| {
                             let mut iter = args.split(' ');
                             let type_ = iter.next()?;
                             let resource = iter.next()?;
-                            let version = iter.next()?;
                             let metadata = iter.next();
 
-                            Some((type_, resource, version, metadata))
+                            Some((type_, resource, metadata))
                         }) else {
                             println!(
-                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> <version> [metadata]"
+                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [metadata]"
                             );
-                            break 'done;
-                        };
-
-                        let Ok(version) = version.parse() else {
-                            println!("{IND} Invalid version: {version:?}");
                             break 'done;
                         };
 
@@ -430,7 +424,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 println!("{IND} Downloading application..");
 
                                 node.ctx_manager
-                                    .install_application_from_url(url, Some(version), Vec::new())
+                                    .install_application_from_url(url, vec![])
                                     .await?
                             }
                             "file" => {
@@ -439,7 +433,6 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 node.ctx_manager
                                     .install_application_from_path(
                                         path,
-                                        Some(version),
                                         metadata
                                             .map(|x| x.as_bytes().to_owned())
                                             .unwrap_or_default(),
@@ -456,22 +449,17 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     }
                     "ls" => {
                         println!(
-                            "{IND} {c1:44} | {c2:44} | {c3:12} | Source",
+                            "{IND} {c1:44} | {c2:44} | Source",
                             c1 = "Application ID",
                             c2 = "Blob ID",
-                            c3 = "Version",
                         );
 
                         for application in node.ctx_manager.list_installed_applications()? {
                             let entry = format!(
-                                "{c1:44} | {c2:44} | {c3:>12} | {c4}",
+                                "{c1:44} | {c2:44} | {c3}",
                                 c1 = application.id,
                                 c2 = application.blob,
-                                c3 = application
-                                    .version
-                                    .map(|ver| ver.to_string())
-                                    .unwrap_or_default(),
-                                c4 = application.source
+                                c3 = application.source
                             );
                             for line in entry.lines() {
                                 println!("{IND} {}", line.cyan());
