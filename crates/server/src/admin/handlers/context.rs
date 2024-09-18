@@ -41,7 +41,7 @@ pub async fn get_context_handler(
         .get_context(&context_id)
         .map_err(|err| parse_api_error(err).into_response());
 
-    #[expect(clippy::option_if_let_else)]
+    #[expect(clippy::option_if_let_else, reason = "Clearer here")]
     match context {
         Ok(ctx) => match ctx {
             Some(context) => ApiResponse {
@@ -81,7 +81,7 @@ pub async fn get_context_identities_handler(
         .map_err(|err| parse_api_error(err).into_response());
 
     match context {
-        #[expect(clippy::option_if_let_else)]
+        #[expect(clippy::option_if_let_else, reason = "Clearer here")]
         Ok(ctx) => match ctx {
             Some(context) => {
                 let context_identities = state

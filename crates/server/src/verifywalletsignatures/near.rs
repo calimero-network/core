@@ -205,14 +205,14 @@ pub async fn has_near_key(
 ) -> EyreResult<bool, ApiError> {
     let client = Client::new();
     let body = RpcRequest {
-        jsonrpc: "2.0".to_string(),
-        id: "dontcare".to_string(),
-        method: "query".to_string(),
+        jsonrpc: "2.0".to_owned(),
+        id: "dontcare".to_owned(),
+        method: "query".to_owned(),
         params: RpcParams {
-            request_type: "view_access_key".to_string(),
-            finality: "final".to_string(),
-            account_id: account_id.to_string(),
-            public_key: current_near_root_key.to_string(),
+            request_type: "view_access_key".to_owned(),
+            finality: "final".to_owned(),
+            account_id: account_id.to_owned(),
+            public_key: current_near_root_key.to_owned(),
         },
     };
 
@@ -223,13 +223,13 @@ pub async fn has_near_key(
         .await
         .map_err(|e| ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: format!("Request failed: {}", e),
+            message: format!("Request failed: {e}"),
         })?
         .json::<NearJsonRpcResponse<ResultDataWithPermission>>()
         .await
         .map_err(|e| ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: format!("Failed to parse response: {}", e),
+            message: format!("Failed to parse response: {e}"),
         })?;
 
     // Check if there is a top-level error
@@ -247,7 +247,7 @@ pub async fn has_near_key(
             info!("Error within result: {}", error);
             return Err(ApiError {
                 status_code: StatusCode::BAD_REQUEST,
-                message: format!("Result error: {}", error),
+                message: format!("Result error: {error}"),
             });
         }
 

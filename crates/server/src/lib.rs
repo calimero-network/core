@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use admin::storage::jwt_secret::get_or_create_jwt_secret;
 use axum::http::Method;
+use axum::middleware::from_fn;
 use axum::{Extension, Router};
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server_dual_protocol::bind_dual_protocol;
@@ -23,6 +24,8 @@ use tracing::warn;
 
 use crate::admin::service::{setup, site};
 use crate::certificates::get_certificate;
+use crate::middleware::dev_auth::dev_mode_auth;
+use crate::middleware::jwt::JwtLayer;
 
 pub mod certificates;
 
@@ -46,7 +49,8 @@ pub struct AdminState {
 }
 
 impl AdminState {
-    pub fn new(store: Store, keypair: Keypair, ctx_manager: ContextManager) -> Self {
+    #[must_use]
+    pub const fn new(store: Store, keypair: Keypair, ctx_manager: ContextManager) -> Self {
         Self {
             store,
             keypair,
@@ -56,8 +60,8 @@ impl AdminState {
 }
 
 // TODO: Consider splitting this long function into multiple parts.
-#[expect(clippy::too_many_lines)]
-#[expect(clippy::print_stderr)]
+#[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
+#[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
 pub async fn start(
     config: ServerConfig,
     server_sender: ServerSender,
@@ -71,8 +75,8 @@ pub async fn start(
     let mut want_listeners = config.listen.into_iter().peekable();
 
     if let Err(e) = get_or_create_jwt_secret(&store) {
-        eprintln!("Failed to get JWT key: {:?}", e);
-        return Err(e.into());
+        eprintln!("Failed to get JWT key: {e:?}");
+        return Err(e);
     }
 
     while let Some(addr) = want_listeners.next() {
@@ -121,15 +125,13 @@ pub async fn start(
         if let Some((path, handler)) = jsonrpc::service(&config, server_sender.clone()) {
             app = app
                 .route(path, handler.clone())
-                .route_layer(middleware::jwt::JwtLayer::new(store.clone()))
+                .route_layer(JwtLayer::new(store.clone()))
                 .nest(
                     "/jsonrpc/dev",
                     Router::new()
                         .route("/", handler)
-                        .route_layer(axum::middleware::from_fn(
-                            middleware::dev_auth::dev_mode_auth,
-                        ))
-                        .layer(Extension(shared_state.clone())),
+                        .route_layer(from_fn(dev_mode_auth))
+                        .layer(Extension(Arc::clone(&shared_state))),
                 );
 
             serviced = true;

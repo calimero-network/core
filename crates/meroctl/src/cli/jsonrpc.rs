@@ -7,8 +7,7 @@ use eyre::{bail, Result as EyreResult};
 use serde_json::Value;
 
 use super::RootArgs;
-use crate::common::RequestType::POST;
-use crate::common::{get_response, multiaddr_to_url};
+use crate::common::{get_response, multiaddr_to_url, RequestType};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -40,6 +39,7 @@ pub enum CallType {
     Mutate,
 }
 
+#[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
 impl JsonRpcCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
@@ -90,12 +90,19 @@ impl JsonRpcCommand {
         );
 
         match serde_json::to_string_pretty(&request) {
-            Ok(json) => println!("Request JSON:\n{}", json),
-            Err(e) => println!("Error serializing request to JSON: {}", e),
+            Ok(json) => println!("Request JSON:\n{json}"),
+            Err(e) => println!("Error serializing request to JSON: {e}"),
         }
 
         let client = reqwest::Client::new();
-        let response = get_response(&client, url, Some(request), &config.identity, POST).await?;
+        let response = get_response(
+            &client,
+            url,
+            Some(request),
+            &config.identity,
+            RequestType::Post,
+        )
+        .await?;
 
         println!("Response: {}", response.text().await?);
 

@@ -1,4 +1,8 @@
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, reason = "Acceptable for CLI")]
+#![allow(
+    clippy::multiple_inherent_impl,
+    reason = "TODO: Check if this is necessary"
+)]
 
 use core::future::{pending, Future};
 use core::mem::replace;
@@ -61,6 +65,7 @@ pub mod types;
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
@@ -70,6 +75,32 @@ pub struct NodeConfig {
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
     pub server: ServerConfig,
+}
+
+impl NodeConfig {
+    #[expect(clippy::too_many_arguments, reason = "Okay for now")]
+    #[must_use]
+    pub const fn new(
+        home: Utf8PathBuf,
+        identity: Keypair,
+        node_type: NodeType,
+        network: NetworkConfig,
+        datastore: StoreConfig,
+        blobstore: BlobStoreConfig,
+        context: ContextConfig,
+        server: ServerConfig,
+    ) -> Self {
+        Self {
+            home,
+            identity,
+            node_type,
+            network,
+            datastore,
+            blobstore,
+            context,
+            server,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -117,7 +148,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         store.clone(),
     );
 
-    #[expect(trivial_casts)]
+    #[expect(trivial_casts, reason = "Necessary here")]
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,
@@ -146,7 +177,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
         config.network.catchup.interval,
     );
 
-    #[expect(clippy::redundant_pub_crate)]
+    #[expect(clippy::redundant_pub_crate, reason = "Tokio code")]
     loop {
         select! {
             event = network_events.recv() => {
@@ -174,15 +205,15 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 }
 
 // TODO: Consider splitting this long function into multiple parts.
-#[expect(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
+#[expect(clippy::similar_names, reason = "Difference is clear enough")]
 async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
     let (command, args) = match line.split_once(' ') {
         Some((method, payload)) => (method, Some(payload)),
         None => (line.as_str(), None),
     };
 
-    #[expect(non_snake_case)]
-    let IND = " │".yellow();
+    let ind = " │".yellow();
 
     // TODO: should be replaced with RPC endpoints
     match command {
@@ -197,11 +228,12 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         Ok(key) => (rest, key),
                         Err(err_payload) => {
                             println!(
-                                "{IND} Invalid executor public key: {}",
-                                executor_key
-                                    .is_empty()
-                                    .then_some(err_payload)
-                                    .unwrap_or(err)
+                                "{ind} Invalid executor public key: {}",
+                                if executor_key.is_empty() {
+                                    err_payload
+                                } else {
+                                    err
+                                }
                             );
                             return Ok(());
                         }
@@ -209,18 +241,18 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 };
 
                 if let Err(e) = from_json_str::<Value>(payload) {
-                    println!("{IND} Failed to parse payload: {e}");
+                    println!("{ind} Failed to parse payload: {e}");
                 };
 
                 let (outcome_sender, outcome_receiver) = oneshot::channel();
 
                 let Ok(context_id) = context_id.parse() else {
-                    println!("{IND} Invalid context ID: {context_id}");
+                    println!("{ind} Invalid context ID: {context_id}");
                     return Ok(());
                 };
 
                 let Ok(Some(context)) = node.ctx_manager.get_context(&context_id) else {
-                    println!("{IND} Context not found: {context_id}");
+                    println!("{ind} Context not found: {context_id}");
                     return Ok(());
                 };
 
@@ -235,24 +267,27 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {
                     Ok(tx_hash) => tx_hash,
                     Err(e) => {
-                        println!("{IND} Failed to execute transaction: {e}");
+                        println!("{ind} Failed to execute transaction: {e}");
                         return Ok(());
                     }
                 };
 
-                println!("{IND} Scheduled Transaction! {tx_hash:?}");
+                println!("{ind} Scheduled Transaction! {tx_hash:?}");
 
                 drop(spawn(async move {
                     if let Ok(outcome_result) = outcome_receiver.await {
-                        println!("{IND} {tx_hash:?}");
+                        println!("{ind} {tx_hash:?}");
 
                         match outcome_result {
                             Ok(outcome) => {
                                 match outcome.returns {
                                     Ok(result) => match result {
                                         Some(result) => {
-                                            println!("{IND}   Return Value:");
-                                            #[expect(clippy::option_if_let_else)]
+                                            println!("{ind}   Return Value:");
+                                            #[expect(
+                                                clippy::option_if_let_else,
+                                                reason = "Clearer here"
+                                            )]
                                             let result = if let Ok(value) =
                                                 from_json_slice::<Value>(&result)
                                             {
@@ -269,35 +304,35 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                             };
 
                                             for line in result.lines() {
-                                                println!("{IND}     > {line}");
+                                                println!("{ind}     > {line}");
                                             }
                                         }
-                                        None => println!("{IND}   (No return value)"),
+                                        None => println!("{ind}   (No return value)"),
                                     },
                                     Err(err) => {
                                         let err = format!("{err:#?}");
 
-                                        println!("{IND}   Error:");
+                                        println!("{ind}   Error:");
                                         for line in err.lines() {
-                                            println!("{IND}     > {}", line.yellow());
+                                            println!("{ind}     > {}", line.yellow());
                                         }
                                     }
                                 }
 
                                 if !outcome.logs.is_empty() {
-                                    println!("{IND}   Logs:");
+                                    println!("{ind}   Logs:");
 
                                     for log in outcome.logs {
-                                        println!("{IND}     > {}", log.cyan());
+                                        println!("{ind}     > {}", log.cyan());
                                     }
                                 }
                             }
                             Err(err) => {
                                 let err = format!("{err:#?}");
 
-                                println!("{IND}   Error:");
+                                println!("{ind}   Error:");
                                 for line in err.lines() {
-                                    println!("{IND}     > {}", line.yellow());
+                                    println!("{ind}     > {}", line.yellow());
                                 }
                             }
                         }
@@ -305,16 +340,16 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 }));
             } else {
                 println!(
-                    "{IND} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
+                    "{ind} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
                 );
             }
         }
         "gc" => {
             if node.tx_pool.transactions.is_empty() {
-                println!("{IND} Transaction pool is empty.");
+                println!("{ind} Transaction pool is empty.");
             } else {
                 println!(
-                    "{IND} Garbage collecting {} transactions.",
+                    "{ind} Garbage collecting {} transactions.",
                     node.tx_pool.transactions.len().cyan()
                 );
                 node.tx_pool = TransactionPool::default();
@@ -322,14 +357,14 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
         }
         "pool" => {
             if node.tx_pool.transactions.is_empty() {
-                println!("{IND} Transaction pool is empty.");
+                println!("{ind} Transaction pool is empty.");
             }
             for (hash, entry) in &node.tx_pool.transactions {
-                println!("{IND} • {:?}", hash.cyan());
-                println!("{IND}     Sender: {}", entry.sender.cyan());
-                println!("{IND}     Method: {:?}", entry.transaction.method.cyan());
-                println!("{IND}     Payload:");
-                #[expect(clippy::option_if_let_else)]
+                println!("{ind} • {:?}", hash.cyan());
+                println!("{ind}     Sender: {}", entry.sender.cyan());
+                println!("{ind}     Method: {:?}", entry.transaction.method.cyan());
+                println!("{ind}     Payload:");
+                #[expect(clippy::option_if_let_else, reason = "Clearer here")]
                 let payload =
                     if let Ok(value) = from_json_slice::<Value>(&entry.transaction.payload) {
                         format!(
@@ -345,14 +380,14 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     };
 
                 for line in payload.lines() {
-                    println!("{IND}       > {line}");
+                    println!("{ind}       > {line}");
                 }
-                println!("{IND}     Prior: {:?}", entry.transaction.prior_hash.cyan());
+                println!("{ind}     Prior: {:?}", entry.transaction.prior_hash.cyan());
             }
         }
         "peers" => {
             println!(
-                "{IND} Peers (General): {:#?}",
+                "{ind} Peers (General): {:#?}",
                 node.network_client.peer_count().await.cyan()
             );
 
@@ -360,7 +395,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 // TODO: implement print all and/or specific topic
                 let topic = TopicHash::from_raw(args);
                 println!(
-                    "{IND} Peers (Session) for Topic {}: {:#?}",
+                    "{ind} Peers (Session) for Topic {}: {:#?}",
                     topic.clone(),
                     node.network_client.mesh_peer_count(topic).await.cyan()
                 );
@@ -371,7 +406,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
             // todo! test this
 
             println!(
-                "{IND} {c1:44} | {c2:44} | Value",
+                "{ind} {c1:44} | {c2:44} | Value",
                 c1 = "Context ID",
                 c2 = "State Key",
             );
@@ -384,7 +419,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 let sk = Hash::from(state_key);
                 let entry = format!("{c1:44} | {c2:44}| {c3:?}", c1 = cx, c2 = sk, c3 = v.value);
                 for line in entry.lines() {
-                    println!("{IND} {}", line.cyan());
+                    println!("{ind} {}", line.cyan());
                 }
             }
         }
@@ -409,7 +444,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             Some((type_, resource, metadata))
                         }) else {
                             println!(
-                                "{IND} Usage: application install <\"url\"|\"file\"> <resource> [metadata]"
+                                "{ind} Usage: application install <\"url\"|\"file\"> <resource> [metadata]"
                             );
                             break 'done;
                         };
@@ -417,11 +452,11 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         let application_id = match type_ {
                             "url" => {
                                 let Ok(url) = resource.parse() else {
-                                    println!("{IND} Invalid URL: {resource}");
+                                    println!("{ind} Invalid URL: {resource}");
                                     break 'done;
                                 };
 
-                                println!("{IND} Downloading application..");
+                                println!("{ind} Downloading application..");
 
                                 node.ctx_manager
                                     .install_application_from_url(url, vec![])
@@ -440,16 +475,16 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                     .await?
                             }
                             unknown => {
-                                println!("{IND} Unknown resource type: `{unknown}`");
+                                println!("{ind} Unknown resource type: `{unknown}`");
                                 break 'done;
                             }
                         };
 
-                        println!("{IND} Installed application: {application_id}");
+                        println!("{ind} Installed application: {application_id}");
                     }
                     "ls" => {
                         println!(
-                            "{IND} {c1:44} | {c2:44} | Source",
+                            "{ind} {c1:44} | {c2:44} | Source",
                             c1 = "Application ID",
                             c2 = "Blob ID",
                         );
@@ -462,20 +497,20 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 c3 = application.source
                             );
                             for line in entry.lines() {
-                                println!("{IND} {}", line.cyan());
+                                println!("{ind} {}", line.cyan());
                             }
                         }
                     }
                     // todo! a "show" subcommand should help keep "ls" compact
                     unknown => {
-                        println!("{IND} Unknown command: `{unknown}`");
+                        println!("{ind} Unknown command: `{unknown}`");
                         break 'usage;
                     }
                 }
 
                 break 'done;
             };
-            println!("{IND} Usage: application [ls|install]");
+            println!("{ind} Usage: application [ls|install]");
         }
         "context" => 'done: {
             'usage: {
@@ -490,7 +525,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 match subcommand {
                     "ls" => {
                         println!(
-                            "{IND} {c1:44} | {c2:44} | Last Transaction",
+                            "{ind} {c1:44} | {c2:44} | Last Transaction",
                             c1 = "Context ID",
                             c2 = "Application ID",
                         );
@@ -511,7 +546,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 c3 = Hash::from(last_tx)
                             );
                             for line in entry.lines() {
-                                println!("{IND} {}", line.cyan());
+                                println!("{ind} {}", line.cyan());
                             }
                         }
                     }
@@ -524,18 +559,18 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             Some((private_key, invitation_payload))
                         }) else {
                             println!(
-                                "{IND} Usage: context join <private_key> <invitation_payload>"
+                                "{ind} Usage: context join <private_key> <invitation_payload>"
                             );
                             break 'done;
                         };
 
                         let Ok(private_key) = private_key.parse() else {
-                            println!("{IND} Invalid private key: {private_key}");
+                            println!("{ind} Invalid private key: {private_key}");
                             break 'done;
                         };
 
                         let Ok(invitation_payload) = invitation_payload.parse() else {
-                            println!("{IND} Invalid context ID: {private_key}");
+                            println!("{ind} Invalid context ID: {private_key}");
                             break 'done;
                         };
 
@@ -546,34 +581,34 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         {
                             Ok(response) => response,
                             Err(err) => {
-                                println!("{IND} Unable to join context: {err}");
+                                println!("{ind} Unable to join context: {err}");
                                 break 'done;
                             }
                         };
 
                         let Some((context_id, identity)) = response else {
-                            println!("{IND} Unable to join context at this time, a catchup is in progress.");
+                            println!("{ind} Unable to join context at this time, a catchup is in progress.");
                             break 'done;
                         };
 
                         println!(
-                            "{IND} Joined context {context_id} as {identity}, waiting for catchup to complete..."
+                            "{ind} Joined context {context_id} as {identity}, waiting for catchup to complete..."
                         );
                     }
                     "leave" => {
                         let Some(context_id) = args else {
-                            println!("{IND} Usage: context leave <context_id>");
+                            println!("{ind} Usage: context leave <context_id>");
                             break 'done;
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {context_id}");
+                            println!("{ind} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
                         let _ = node.ctx_manager.delete_context(&context_id).await?;
 
-                        println!("{IND} Left context {context_id}");
+                        println!("{ind} Left context {context_id}");
                     }
                     "create" => {
                         let Some((application_id, context_seed, mut params)) =
@@ -585,12 +620,12 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 Some((application, context_seed, params))
                             })
                         else {
-                            println!("{IND} Usage: context create <application_id> [context_seed] [initialization params]");
+                            println!("{ind} Usage: context create <application_id> [context_seed] [initialization params]");
                             break 'done;
                         };
 
                         let Ok(application_id) = application_id.parse() else {
-                            println!("{IND} Invalid application ID: {application_id}");
+                            println!("{ind} Invalid application ID: {application_id}");
                             break 'done;
                         };
 
@@ -611,7 +646,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 _ => {}
                             };
 
-                            println!("{IND} Invalid context seed: {context_seed}");
+                            println!("{ind} Invalid context seed: {context_seed}");
                             break 'done;
                         };
 
@@ -625,10 +660,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             )
                             .await?;
 
-                        println!(
-                            "{IND} Created context {} with identity {}",
-                            context_id, identity
-                        );
+                        println!("{ind} Created context {context_id} with identity {identity}");
                     }
                     "invite" => {
                         let Some((context_id, inviter_id, invitee_id)) = args.and_then(|args| {
@@ -639,23 +671,23 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             Some((context_id, inviter_id, invitee_id))
                         }) else {
                             println!(
-                                "{IND} Usage: context invite <context_id> <inviter_id> <invitee_id>"
+                                "{ind} Usage: context invite <context_id> <inviter_id> <invitee_id>"
                             );
                             break 'done;
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {context_id}");
+                            println!("{ind} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
                         let Ok(inviter_id) = inviter_id.parse() else {
-                            println!("{IND} Invalid public key for inviter: {inviter_id}");
+                            println!("{ind} Invalid public key for inviter: {inviter_id}");
                             break 'done;
                         };
 
                         let Ok(invitee_id) = invitee_id.parse() else {
-                            println!("{IND} Invalid public key for invitee: {invitee_id}");
+                            println!("{ind} Invalid public key for invitee: {invitee_id}");
                             break 'done;
                         };
 
@@ -664,32 +696,32 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             .invite_to_context(context_id, inviter_id, invitee_id)
                             .await?
                         else {
-                            println!("{IND} Unable to invite {invitee_id} to context {context_id}");
+                            println!("{ind} Unable to invite {invitee_id} to context {context_id}");
                             break 'done;
                         };
 
-                        println!("{IND} Invited {invitee_id} to context {context_id}");
-                        println!("{IND} Invitation Payload: {invitation_payload}");
+                        println!("{ind} Invited {invitee_id} to context {context_id}");
+                        println!("{ind} Invitation Payload: {invitation_payload}");
                     }
                     "delete" => {
                         let Some(context_id) = args else {
-                            println!("{IND} Usage: context delete <context_id>");
+                            println!("{ind} Usage: context delete <context_id>");
                             break 'done;
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {context_id}");
+                            println!("{ind} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
                         let _ = node.ctx_manager.delete_context(&context_id).await?;
 
-                        println!("{IND} Deleted context {context_id}");
+                        println!("{ind} Deleted context {context_id}");
                     }
                     "identity" => {
                         let Some(args) = args else {
                             println!(
-                                "{IND} Usage: context identity [ls <context_id>|new <context_id>]"
+                                "{ind} Usage: context identity [ls <context_id>|new <context_id>]"
                             );
                             break 'done;
                         };
@@ -701,12 +733,12 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                         match subcommand {
                             "ls" => {
                                 let Some(context_id) = args else {
-                                    println!("{IND} Usage: context identity ls <context_id>");
+                                    println!("{ind} Usage: context identity ls <context_id>");
                                     break 'done;
                                 };
 
                                 let Ok(context_id) = context_id.parse() else {
-                                    println!("{IND} Invalid context ID: {context_id}");
+                                    println!("{ind} Invalid context ID: {context_id}");
                                     break 'done;
                                 };
 
@@ -725,7 +757,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                     Some((k, iter.read()))
                                 };
 
-                                println!("{IND} {c1:44} | Owned", c1 = "Identity");
+                                println!("{ind} {c1:44} | Owned", c1 = "Identity");
 
                                 for (k, v) in first.into_iter().chain(iter.entries()) {
                                     let (k, v) = (k?, v?);
@@ -735,31 +767,31 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                         c1 = k.public_key(),
                                     );
                                     for line in entry.lines() {
-                                        println!("{IND} {}", line.cyan());
+                                        println!("{ind} {}", line.cyan());
                                     }
                                 }
                             }
                             "new" => {
                                 let identity = node.ctx_manager.new_identity();
 
-                                println!("{IND} Private Key: {}", identity.cyan());
-                                println!("{IND} Public Key: {}", identity.public_key().cyan());
+                                println!("{ind} Private Key: {}", identity.cyan());
+                                println!("{ind} Public Key: {}", identity.public_key().cyan());
                             }
                             unknown => {
-                                println!("{IND} Unknown command: `{unknown}`");
-                                println!("{IND} Usage: context identity [ls <context_id>|new]");
+                                println!("{ind} Unknown command: `{unknown}`");
+                                println!("{ind} Usage: context identity [ls <context_id>|new]");
                                 break 'done;
                             }
                         }
                     }
                     "transactions" => {
                         let Some(context_id) = args else {
-                            println!("{IND} Usage: context transactions <context_id>");
+                            println!("{ind} Usage: context transactions <context_id>");
                             break 'done;
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {context_id}");
+                            println!("{ind} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
@@ -778,7 +810,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             Some((k, iter.read()))
                         };
 
-                        println!("{IND} {c1:44} | {c2:44}", c1 = "Hash", c2 = "Prior Hash");
+                        println!("{ind} {c1:44} | {c2:44}", c1 = "Hash", c2 = "Prior Hash");
 
                         for (k, v) in first.into_iter().chain(iter.entries()) {
                             let (k, v) = (k?, v?);
@@ -788,24 +820,24 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 c2 = Hash::from(v.prior_hash),
                             );
                             for line in entry.lines() {
-                                println!("{IND} {}", line.cyan());
+                                println!("{ind} {}", line.cyan());
                             }
                         }
                     }
                     "state" => {
                         let Some(context_id) = args else {
-                            println!("{IND} Usage: context state <context_id>");
+                            println!("{ind} Usage: context state <context_id>");
                             break 'done;
                         };
 
                         let Ok(context_id) = context_id.parse() else {
-                            println!("{IND} Invalid context ID: {context_id}");
+                            println!("{ind} Invalid context ID: {context_id}");
                             break 'done;
                         };
 
                         let handle = node.store.handle();
 
-                        println!("{IND} {c1:44} | {c2:44}", c1 = "State Key", c2 = "Value");
+                        println!("{ind} {c1:44} | {c2:44}", c1 = "State Key", c2 = "Value");
 
                         let mut iter = handle.iter::<ContextStateKey>()?;
 
@@ -834,12 +866,12 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 c2 = v.value,
                             );
                             for line in entry.lines() {
-                                println!("{IND} {}", line.cyan());
+                                println!("{ind} {}", line.cyan());
                             }
                         }
                     }
                     unknown => {
-                        println!("{IND} Unknown command: `{unknown}`");
+                        println!("{ind} Unknown command: `{unknown}`");
                         break 'usage;
                     }
                 }
@@ -847,19 +879,18 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 break 'done;
             };
             println!(
-                "{IND} Usage: context [ls|join|leave|invite|create|delete|state|identity] [args]"
+                "{ind} Usage: context [ls|join|leave|invite|create|delete|state|identity] [args]"
             );
         }
         unknown => {
-            println!("{IND} Unknown command: `{unknown}`");
-            println!("{IND} Usage: [call|peers|pool|gc|store|context|application] [args]");
+            println!("{ind} Unknown command: `{unknown}`");
+            println!("{ind} Usage: [call|peers|pool|gc|store|context|application] [args]");
         }
     }
 
     Ok(())
 }
 
-#[expect(clippy::multiple_inherent_impl)]
 impl Node {
     #[must_use]
     pub fn new(

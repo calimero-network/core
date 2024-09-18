@@ -95,7 +95,7 @@ pub async fn get_application_details_handler(
         .get_application(&app_id_result)
         .map_err(|err| parse_api_error(err).into_response());
 
-    #[expect(clippy::option_if_let_else)]
+    #[expect(clippy::option_if_let_else, reason = "Clearer here")]
     match application {
         Ok(application) => match application {
             Some(application) => ApiResponse {

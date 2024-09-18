@@ -25,10 +25,9 @@ use crate::Node;
 
 mod batch;
 
-#[expect(clippy::multiple_inherent_impl)]
 impl Node {
     // TODO: Consider splitting this long function into multiple parts.
-    #[expect(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) -> EyreResult<()> {
         let Some(message) = stream.next().await else {
             bail!("Stream closed unexpectedly")
@@ -242,8 +241,6 @@ impl Node {
         Ok(())
     }
 
-    // TODO: Consider splitting this long function into multiple parts.
-    #[expect(clippy::too_many_lines)]
     async fn handle_catchup_message(
         &mut self,
         chosen_peer: PeerId,

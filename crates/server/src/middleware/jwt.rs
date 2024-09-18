@@ -1,7 +1,7 @@
 use core::convert::Infallible;
+use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 use core::task::{Context, Poll};
-use std::error::Error;
 
 use axum::body::Body;
 use axum::extract::Request;
@@ -59,16 +59,16 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, request: Request<Body>) -> Self::Future {
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        let result = auth(request.headers(), &self.store);
+        let result = auth(req.headers(), &self.store);
 
         if let Err(err) = result {
             let error_response = err.into_response();
             return Box::pin(async move { Ok(error_response) });
         }
 
-        Box::pin(self.inner.call(request))
+        Box::pin(self.inner.call(req))
     }
 }
 
@@ -83,7 +83,7 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
         UnauthorizedError::new("Failed to extract authentication headers.")
     })?;
 
-    let jwt_secret = match get_jwt_secret(&store) {
+    let jwt_secret = match get_jwt_secret(store) {
         Ok(Some(secret)) => *secret.jwt_secret(),
         Ok(None) => {
             return Err(UnauthorizedError::new("JWT secret not found."));
@@ -100,6 +100,11 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
     )
     .map_err(|_| UnauthorizedError::new("Token not valid."))?;
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Essentially infallible"
+    )]
     let now = Utc::now().timestamp() as usize;
     if token_data.claims.exp < now {
         return Err(UnauthorizedError::new("Token expired."));
@@ -120,12 +125,13 @@ fn get_jwt_token_from_headers(headers: &HeaderMap) -> Result<JwtHeader, Unauthor
     let token = extract_token_from_header(authorization_str)?;
 
     let auth = JwtHeader {
-        token: token.to_string(),
+        token: token.to_owned(),
     };
     Ok(auth)
 }
 
 fn extract_token_from_header(authorization_header: &str) -> Result<&str, UnauthorizedError<'_>> {
+    #[expect(clippy::option_if_let_else, reason = "Clearer here")]
     if let Some(token) = authorization_header.strip_prefix("Bearer ") {
         Ok(token)
     } else {

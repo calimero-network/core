@@ -42,13 +42,14 @@ pub fn store_root(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
+    #[expect(clippy::wildcard_in_or_patterns, reason = "Acceptable here")]
     let wallet_address = match req.wallet_metadata.wallet_type {
         WalletType::NEAR { .. } => req
             .wallet_metadata
             .wallet_address
             .clone()
-            .unwrap_or(String::new()),
-        _ => String::new(), // If wallet type is not NEAR, wallet address is not required
+            .unwrap_or_default(),
+        WalletType::ETH { .. } | WalletType::STARKNET { .. } | _ => String::new(), // If wallet type is not NEAR, wallet address is not required
     };
     let _ = store_root_key(
         req.wallet_metadata.verifying_key.clone(),
@@ -65,7 +66,7 @@ pub fn store_root_key(
     wallet_address: String,
     store: &Store,
 ) -> Result<bool, ApiError> {
-    #[expect(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss, reason = "Essentially infallible")]
     let root_key = RootKey::new(
         signing_key,
         wallet_type,
