@@ -1,6 +1,7 @@
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::transaction::Transaction;
-use calimero_primitives::{application::ApplicationId, context::ContextId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
