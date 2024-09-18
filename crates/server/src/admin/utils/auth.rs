@@ -18,6 +18,7 @@ use web3::signing::{keccak256, recover};
 use crate::admin::handlers::root_keys::store_root_key;
 use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::root_key::{get_root_key, has_near_account_root_key};
+use crate::verifywalletsignatures::icp::verify_internet_identity_signature;
 use crate::verifywalletsignatures::near::{has_near_key, verify_near_signature};
 use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
@@ -186,6 +187,41 @@ pub async fn verify_node_signature(
 
             if let Err(err) = result {
                 return Err(parse_api_error(err));
+            }
+
+            Ok(true)
+        }
+        WalletType::ICP {
+            ref canister_id,
+            ref wallet_name,
+        } => {
+            let delegation_chain = match wallet_signature {
+                WalletSignature::String(delegation_chain) => delegation_chain,
+                _ => {
+                    return Err(ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Invalid wallet signature type.".into(),
+                    })
+                }
+            };
+
+            if wallet_name == "Internet Identity" {
+                let signed_delegation_chain_json = serde_json::from_str(&delegation_chain)
+                    .map_err(|_| ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Failed to serialize delegation chain.".into(),
+                    })?;
+                verify_internet_identity_signature(
+                    payload.message.message.as_bytes(),
+                    signed_delegation_chain_json,
+                    canister_id,
+                )
+                .await?;
+            } else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid wallet name for Internet Computer.".into(),
+                });
             }
 
             Ok(true)

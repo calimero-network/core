@@ -71,6 +71,7 @@ const Container = styled.div<{ $isOverflow: boolean }>`
       line-height: 1.25rem;
       text-align: left;
       color: #6b7280;
+      word-break: break-all;
     }
   }
 
