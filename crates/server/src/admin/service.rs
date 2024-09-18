@@ -228,8 +228,7 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
     let path = uri
         .path()
         .trim_start_matches("/admin-dashboard/")
-        .trim_start_matches('/')
-        .to_string();
+        .trim_start_matches('/');
 
     // Use "index.html" for empty paths (root requests)
     let path = if path.is_empty() { "index.html" } else { &path };
@@ -266,7 +265,7 @@ async fn serve_file(file: &EmbeddedFile) -> Result<impl IntoResponse, StatusCode
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", file.metadata.mimetype())
-        .body(Body::from(file.data.to_vec()))
+        .body(Body::from(file.data.to_owned()))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
