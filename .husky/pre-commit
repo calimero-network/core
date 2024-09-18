@@ -13,6 +13,7 @@ fi
 if git diff --cached --name-only | grep -qE '\.rs$'; then
   echo "Running checks for the Rust code..."
   cargo +nightly fmt
+  cargo clippy
 fi
 
 # Check for changes in the 'node-ui' directory (Next.js app)
