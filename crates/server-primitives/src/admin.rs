@@ -196,6 +196,7 @@ pub enum SignatureMetadataEnum {
     NEAR(NearSignatureMessageMetadata),
     ETH(EthSignatureMessageMetadata),
     STARKNET(StarknetSignatureMessageMetadata),
+    ICP(ICPSignatureMessageMetadata),
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,6 +219,12 @@ pub struct EthSignatureMessageMetadata {}
 #[allow(clippy::exhaustive_structs)]
 #[allow(clippy::empty_structs_with_brackets)]
 pub struct StarknetSignatureMessageMetadata {}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::exhaustive_structs)]
+#[allow(clippy::empty_structs_with_brackets)]
+pub struct ICPSignatureMessageMetadata {}
 
 // Intermediate structs for initial parsing
 #[derive(Debug, Deserialize)]

@@ -10,9 +10,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  setup:
+    name: Project setup
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,8 +33,11 @@ jobs:
       - name: Build node-ui
         run: pnpm --filter ./node-ui run build
 
-      - name: Setup rust toolchain
-        run: rustup toolchain install stable --profile minimal
+      - name: Run code style checks
+        uses: ./.github/actions/style
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: rustup toolchain install stable --profile minimal
 
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2

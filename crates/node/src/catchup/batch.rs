@@ -6,7 +6,7 @@ use futures_util::SinkExt;
 use serde_json::to_vec as to_json_vec;
 
 use crate::types::{
-    CatchupError, CatchupStreamMessage, CatchupTransactionBatch, TransactionWithStatus,
+    CatchupError, CatchupStreamMessage, CatchupTransactionsBatch, TransactionWithStatus,
 };
 
 pub struct CatchupBatchSender {
@@ -28,7 +28,7 @@ impl CatchupBatchSender {
         self.batch.push(tx_with_status);
 
         if self.batch.len() == self.batch_size as usize {
-            let message = CatchupStreamMessage::TransactionsBatch(CatchupTransactionBatch {
+            let message = CatchupStreamMessage::TransactionsBatch(CatchupTransactionsBatch {
                 transactions: take(&mut self.batch),
             });
 
@@ -44,7 +44,7 @@ impl CatchupBatchSender {
 
     pub(crate) async fn flush(&mut self) -> EyreResult<()> {
         if !self.batch.is_empty() {
-            let message = CatchupStreamMessage::TransactionsBatch(CatchupTransactionBatch {
+            let message = CatchupStreamMessage::TransactionsBatch(CatchupTransactionsBatch {
                 transactions: take(&mut self.batch),
             });
 
