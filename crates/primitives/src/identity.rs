@@ -234,6 +234,12 @@ pub enum WalletType {
         #[serde(rename = "walletName")]
         wallet_name: String,
     },
+    ICP {
+        #[serde(rename = "canisterId")]
+        canister_id: String,
+        #[serde(rename = "walletName")]
+        wallet_name: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

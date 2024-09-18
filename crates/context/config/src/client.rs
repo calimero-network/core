@@ -55,6 +55,21 @@ pub struct TransportRequest<'a> {
     pub operation: Operation<'a>,
 }
 
+impl<'a> TransportRequest<'a> {
+    #[must_use]
+    pub const fn new(
+        network_id: Cow<'a, str>,
+        contract_id: Cow<'a, str>,
+        operation: Operation<'a>,
+    ) -> Self {
+        Self {
+            network_id,
+            contract_id,
+            operation,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub enum Operation<'a> {

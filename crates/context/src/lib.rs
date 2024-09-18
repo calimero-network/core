@@ -224,13 +224,6 @@ impl ContextManager {
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
 
-        handle.put(
-            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
-            &ContextIdentityValue {
-                private_key: Some(*identity_secret),
-            },
-        )?;
-
         if is_new {
             handle.put(
                 &ContextConfigKey::new(context.id),
@@ -250,6 +243,13 @@ impl ContextManager {
 
             self.subscribe(&context.id).await?;
         }
+
+        handle.put(
+            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
+            &ContextIdentityValue {
+                private_key: Some(*identity_secret),
+            },
+        )?;
 
         Ok(())
     }
@@ -320,9 +320,6 @@ impl ContextManager {
 
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
 
-        self.add_context(&context, identity_secret, !context_exists)
-            .await?;
-
         if !self.is_application_installed(&context.application_id)? {
             let source = Url::parse(&application.source.0)?;
 
@@ -342,6 +339,9 @@ impl ContextManager {
                 bail!("application mismatch")
             }
         }
+
+        self.add_context(&context, identity_secret, !context_exists)
+            .await?;
 
         let _ = self.state.write().await.pending_catchup.insert(context_id);
 
