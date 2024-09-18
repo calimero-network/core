@@ -91,13 +91,11 @@ jobs:
           echo "artifact_path=meroctl_${{ matrix.target }}.tar.gz" >> $GITHUB_OUTPUT
           echo "target=${{ matrix.target }}" >> $GITHUB_OUTPUT
 
-      - name: Cache build artifact
-        uses: actions/cache@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
+          name: meroctl_${{ matrix.target }}.tar.gz
           path: meroctl_${{ matrix.target }}.tar.gz
-          key: build-artifact-meroctl-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-meroctl-${{ matrix.target }}
 
   upload_branch_artifact:
     runs-on: ubuntu-latest
@@ -108,13 +106,10 @@ jobs:
     if: ${{ github.ref != 'refs/heads/master' }}
 
     steps:
-      - name: Restore build artifact
-        uses: actions/cache@v4
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
         with:
-          path: meroctl_${{ matrix.target }}.tar.gz
-          key: build-artifact-meroctl-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-meroctl-${{ matrix.target }}
+          name: meroctl_${{ matrix.target }}.tar.gz
 
       - name: Sanitize ref name
         id: sanitize
@@ -171,13 +166,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifact
-        uses: actions/cache@v4
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
         with:
-          path: meroctl_${{ matrix.target }}.tar.gz
-          key: build-artifact-meroctl-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-meroctl-${{ matrix.target }}
+          name: meroctl_${{ matrix.target }}.tar.gz
 
       - name: Check if artifact exists in release
         id: check_artifact
