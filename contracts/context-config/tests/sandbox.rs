@@ -579,5 +579,23 @@ async fn main() -> eyre::Result<()> {
 
     assert_eq!(res, [alice_cx_id, carol_cx_id]);
 
+    let state = contract.view_state().await?;
+
+    assert_eq!(state.len(), 11);
+
+    let res = contract
+        .call("erase")
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+
+    assert!(res.logs().contains(&"Erasing contract"), "{:?}", res.logs());
+
+    let state = contract.view_state().await?;
+
+    assert_eq!(state.len(), 1);
+    assert_eq!(state.get(&b"STATE"[..]).map(|v| v.len()), Some(24));
+
     Ok(())
 }
