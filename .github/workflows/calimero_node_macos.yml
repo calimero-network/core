@@ -61,6 +61,7 @@ jobs:
         with:
           name: meroctl_${{ matrix.target }}.tar.gz
           path: meroctl_${{ matrix.target }}.tar.gz
+          retention-days: 2
 
   upload_branch_artifact:
     runs-on: ubuntu-latest
@@ -81,13 +82,6 @@ jobs:
         run: |
           sanitized_ref_name=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9_-]/-/g; s/^-*//; s/-*$//')
           echo "sanitized_ref_name=${sanitized_ref_name}" >> $GITHUB_OUTPUT
-
-      - name: Upload meroctl as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: meroctl_${{ steps.sanitize.outputs.sanitized_ref_name }}_${{ matrix.target }}.tar.gz
-          path: meroctl_${{ matrix.target }}.tar.gz
-          retention-days: 2
 
   create_release:
     runs-on: ubuntu-latest
