@@ -13,7 +13,6 @@ eyre.workspace = true
 futures-util.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
-semver.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-util.workspace = true

@@ -33,7 +33,6 @@ use futures_util::TryStreamExt;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use reqwest::{Client, Url};
-use semver::Version;
 use tokio::fs::File;
 use tokio::sync::{oneshot, RwLock};
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -189,6 +188,7 @@ impl ContextManager {
                 calimero_context_config::types::Application {
                     id: application.id.rt().expect("infallible conversion"),
                     blob: application.blob.rt().expect("infallible conversion"),
+                    size: application.size,
                     source: calimero_context_config::types::ApplicationSource(
                         application.source.to_string().into(),
                     ),
@@ -226,13 +226,6 @@ impl ContextManager {
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
 
-        handle.put(
-            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
-            &ContextIdentityValue {
-                private_key: Some(*identity_secret),
-            },
-        )?;
-
         if is_new {
             handle.put(
                 &ContextConfigKey::new(context.id),
@@ -252,6 +245,13 @@ impl ContextManager {
 
             self.subscribe(&context.id).await?;
         }
+
+        handle.put(
+            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
+            &ContextIdentityValue {
+                private_key: Some(*identity_secret),
+            },
+        )?;
 
         Ok(())
     }
@@ -322,23 +322,17 @@ impl ContextManager {
 
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
 
-        self.add_context(&context, identity_secret, !context_exists)
-            .await?;
-
         if !self.is_application_installed(&context.application_id)? {
             let source = Url::parse(&application.source.0)?;
 
             let metadata = application.metadata.0.to_vec();
 
             let application_id = match source.scheme() {
-                "http" | "https" => {
-                    self.install_application_from_url(source, None, metadata)
-                        .await?
-                }
+                "http" | "https" => self.install_application_from_url(source, metadata).await?,
                 _ => self.install_application(
                     application.blob.as_bytes().into(),
+                    application.size,
                     &source.into(),
-                    None,
                     metadata,
                 )?,
             };
@@ -347,6 +341,9 @@ impl ContextManager {
                 bail!("application mismatch")
             }
         }
+
+        self.add_context(&context, identity_secret, !context_exists)
+            .await?;
 
         let _ = self.state.write().await.pending_catchup.insert(context_id);
 
@@ -656,13 +653,13 @@ impl ContextManager {
     fn install_application(
         &self,
         blob_id: BlobId,
+        size: u64,
         source: &ApplicationSource,
-        version: Option<Version>,
         metadata: Vec<u8>,
     ) -> EyreResult<ApplicationId> {
         let application = ApplicationMetaValue::new(
             BlobMetaKey::new(blob_id),
-            version.map(|v| v.to_string().into_boxed_str()),
+            size,
             source.to_string().into_boxed_str(),
             metadata.into_boxed_slice(),
         );
@@ -679,33 +676,39 @@ impl ContextManager {
     pub async fn install_application_from_path(
         &self,
         path: Utf8PathBuf,
-        version: Option<Version>,
         metadata: Vec<u8>,
     ) -> EyreResult<ApplicationId> {
+        let path = path.canonicalize_utf8()?;
+
         let file = File::open(&path).await?;
 
         let meta = file.metadata().await?;
 
-        let blob_id = self
+        let expected_size = meta.len();
+
+        let (blob_id, size) = self
             .blob_manager
             .put_sized(
-                Some(calimero_blobstore::Size::Exact(meta.len())),
+                Some(calimero_blobstore::Size::Exact(expected_size)),
                 file.compat(),
             )
             .await?;
+
+        if size != expected_size {
+            bail!("fatal: file size mismatch")
+        }
 
         let Ok(uri) = Url::from_file_path(path) else {
             bail!("non-absolute path")
         };
 
-        self.install_application(blob_id, &(uri.as_str().parse()?), version, metadata)
+        self.install_application(blob_id, size, &(uri.as_str().parse()?), metadata)
     }
 
     #[allow(clippy::similar_names)]
     pub async fn install_application_from_url(
         &self,
         url: Url,
-        version: Option<Version>,
         metadata: Vec<u8>,
         // hash: Hash,
         // todo! BlobMgr should return hash of content
@@ -714,12 +717,12 @@ impl ContextManager {
 
         let response = Client::new().get(url).send().await?;
 
-        let blob_id = self
+        let expected_size = response.content_length();
+
+        let (blob_id, size) = self
             .blob_manager
             .put_sized(
-                response
-                    .content_length()
-                    .map(calimero_blobstore::Size::Exact),
+                expected_size.clone().map(calimero_blobstore::Size::Exact),
                 response
                     .bytes_stream()
                     .map_err(IoError::other)
@@ -727,9 +730,13 @@ impl ContextManager {
             )
             .await?;
 
+        if matches!(expected_size, Some(expected_size) if size != expected_size) {
+            bail!("fatal: content size mismatch")
+        }
+
         // todo! if blob hash doesn't match, remove it
 
-        self.install_application(blob_id, &uri, version, metadata)
+        self.install_application(blob_id, size, &uri, metadata)
     }
 
     pub fn list_installed_applications(&self) -> EyreResult<Vec<Application>> {
@@ -744,7 +751,7 @@ impl ContextManager {
             applications.push(Application::new(
                 id.application_id(),
                 app.blob.blob_id(),
-                app.version.as_deref().map(str::parse).transpose()?,
+                app.size,
                 app.source.parse()?,
                 app.metadata.to_vec(),
             ));
@@ -778,7 +785,7 @@ impl ContextManager {
         Ok(Some(Application::new(
             *application_id,
             application.blob.blob_id(),
-            application.version.as_deref().map(str::parse).transpose()?,
+            application.size,
             application.source.parse()?,
             application.metadata.to_vec(),
         )))

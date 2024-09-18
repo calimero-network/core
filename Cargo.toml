@@ -68,12 +68,12 @@ libp2p-stream = "0.1.0-alpha.1"
 libp2p-identity = "0.2.9"
 multiaddr = "0.18.1"
 near-account-id = "1.0.0"
-near-crypto = "0.24.1"
-near-jsonrpc-client = "0.12.0"
-near-jsonrpc-primitives = "0.24.1"
-near-primitives = "0.24.1"
-near-sdk = "5.3.0"
-near-workspaces = "0.12.0"
+near-crypto = "0.26.0"
+near-jsonrpc-client = "0.13.0"
+near-jsonrpc-primitives = "0.26.0"
+near-primitives = "0.26.0"
+near-sdk = "5.5.0"
+near-workspaces = "0.14.0"
 notify = "6.1.1"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
@@ -123,6 +123,13 @@ rcgen = "0.13.1"
 x509-parser = "0.16.0"
 axum-server = { version = "0.6", features = ["tls-rustls"] }
 axum-server-dual-protocol = "0.6.0"
+
+[profile.release]
+strip = "symbols"
+lto = "fat"
+codegen-units = 1
+opt-level = "z"
+panic = "abort"
 
 [profile.app-release]
 inherits = "release"
