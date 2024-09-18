@@ -1,5 +1,5 @@
+use core::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr};
 use std::env;
-use std::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr};
 
 use axum::extract::State;
 use axum::http::status::StatusCode;
@@ -11,6 +11,7 @@ use calimero_context_config::client::{near, Transport, TransportRequest};
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 use futures_util::FutureExt;
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
@@ -86,7 +87,7 @@ impl RelayCommand {
 
         let app = Router::new().route("/", post(handler)).with_state(tx);
 
-        let listener = tokio::net::TcpListener::bind(self.listen).await?;
+        let listener = TcpListener::bind(self.listen).await?;
 
         info!("Listening on '\x1b[1;33mhttp://{}\x1b[0m'", self.listen);
 
@@ -134,12 +135,11 @@ pub fn addr_from_str(s: &str) -> Result<SocketAddr, AddrParseError> {
         if let Ok(env_port) = env::var("PORT") {
             if let Ok(env_port) = env_port.parse() {
                 break 'port Some(env_port);
-            } else {
-                warn!(
-                    "invalid '\x1b[1mPORT\x1b[0m' environment variable: '\x1b[33m{}\x1b[0m', ignoring..",
-                    env_port
-                );
             }
+            warn!(
+                "invalid '\x1b[1mPORT\x1b[0m' environment variable: '\x1b[33m{}\x1b[0m', ignoring..",
+                env_port
+            );
         }
         None
     };

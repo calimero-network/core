@@ -228,8 +228,11 @@ pub struct StarknetSignatureMessageMetadata {}
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::exhaustive_structs)]
-#[allow(clippy::empty_structs_with_brackets)]
+#[expect(clippy::exhaustive_structs, reason = "Considered to be exhaustive")]
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "Needed for serialisation"
+)]
 pub struct ICPSignatureMessageMetadata {}
 
 // Intermediate structs for initial parsing

@@ -128,6 +128,8 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: &Store) -> Result<JwtTok
 }
 
 // Check if the refresh token is valid and generate new tokens
+// TODO: Consider splitting this function into smaller pieces
+#[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
 pub fn refresh_access_token(refresh_token: &str, store: &Store) -> Result<JwtToken, ApiError> {
     // Get the JWT secret from the DB
     let jwt_secret = match get_jwt_secret(store) {

@@ -195,19 +195,16 @@ pub async fn verify_node_signature(
             ref canister_id,
             ref wallet_name,
         } => {
-            let delegation_chain = match wallet_signature {
-                WalletSignature::String(delegation_chain) => delegation_chain,
-                _ => {
-                    return Err(ApiError {
-                        status_code: StatusCode::BAD_REQUEST,
-                        message: "Invalid wallet signature type.".into(),
-                    })
-                }
+            let WalletSignature::String(delegation_chain) = wallet_signature else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid wallet signature type.".into(),
+                });
             };
 
             if wallet_name == "Internet Identity" {
-                let signed_delegation_chain_json = serde_json::from_str(&delegation_chain)
-                    .map_err(|_| ApiError {
+                let signed_delegation_chain_json =
+                    serde_json::from_str(delegation_chain).map_err(|_| ApiError {
                         status_code: StatusCode::BAD_REQUEST,
                         message: "Failed to serialize delegation chain.".into(),
                     })?;
