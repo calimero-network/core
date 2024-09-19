@@ -47,6 +47,30 @@ impl ContextConfigs {
         }
     }
 
+    pub fn erase(&mut self) {
+        require!(
+            env::signer_account_id() == env::current_account_id(),
+            "Not so fast, chief.."
+        );
+
+        env::log_str(&format!(
+            "Pre-erase storage usage: {}",
+            env::storage_usage()
+        ));
+
+        env::log_str("Erasing contract");
+
+        for (_, context) in self.contexts.drain() {
+            drop(context.application.into_inner());
+            context.members.into_inner().clear();
+        }
+
+        env::log_str(&format!(
+            "Post-erase storage usage: {}",
+            env::storage_usage()
+        ));
+    }
+
     pub fn mutate(&mut self) {
         parse_input!(request: Signed<Request<'_>>);
 

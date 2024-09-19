@@ -47,6 +47,12 @@ impl<T> Guard<T> {
         Ok(GuardMut { inner: self })
     }
 
+    pub fn into_inner(self) -> T {
+        let mut this = self;
+        this.priviledged.clear();
+        this.inner
+    }
+
     pub const fn priviledged(&self) -> &IterableSet<SignerId> {
         &self.priviledged
     }
