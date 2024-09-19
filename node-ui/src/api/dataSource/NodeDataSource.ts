@@ -17,6 +17,7 @@ export enum Network {
   ARB = 'ARB',
   ZK = 'ZK',
   STARKNET = 'STARKNET',
+  ICP = 'ICP',
 }
 
 export interface ContextClientKeysList {
@@ -87,6 +88,10 @@ export interface NearRootKey extends RootKey {
 
 export interface StarknetRootKey extends RootKey {
   type: String;
+}
+
+export interface IcpRootKey extends RootKey {
+  type: Network.ICP;
 }
 
 interface NetworkType {
@@ -175,7 +180,15 @@ interface SNWalletType extends WalletTypeBase<'STARKNET'> {
   walletName: string;
 }
 
-export type WalletType = ETHWalletType | NEARWalletType | SNWalletType;
+interface IcpWalletType extends WalletTypeBase<'ICP'> {
+  canisterId: string;
+}
+// TODO: Legacy code, refacture to be used as Interface
+export type WalletType =
+  | ETHWalletType
+  | NEARWalletType
+  | SNWalletType
+  | IcpWalletType;
 
 // eslint-disable-next-line @typescript-eslint/no-redeclare
 export namespace WalletType {
@@ -198,6 +211,23 @@ export namespace WalletType {
   }): WalletType {
     return { type: 'STARKNET', walletName } as SNWalletType;
   }
+
+  // ID of production ICP canister used for signing messages
+  const IcpCanisterId = 'rdmx6-jaaaa-aaaaa-aaadq-cai';
+
+  export function ICP({
+    canisterId = IcpCanisterId,
+    walletName = 'II',
+  }: {
+    canisterId?: string;
+    walletName?: string;
+  }): WalletType {
+    return {
+      type: 'ICP',
+      canisterId,
+      walletName,
+    } as IcpWalletType;
+  }
 }
 
 export interface WalletMetadata {
@@ -210,6 +240,7 @@ export interface WalletMetadata {
 export interface NetworkMetadata {
   chainId: String;
   rpcUrl: String;
+  canisterId?: String;
 }
 
 export interface Payload {
@@ -248,6 +279,8 @@ export interface NearSignatureMessageMetadata extends SignatureMetadata {
 export interface EthSignatureMessageMetadata extends SignatureMetadata {}
 
 export interface StarknetSignatureMessageMetadata extends SignatureMetadata {}
+
+export interface IcpSignatureMessageMetadata extends SignatureMetadata {}
 
 export interface WalletSignatureData {
   payload: Payload | undefined;
