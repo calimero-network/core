@@ -101,7 +101,7 @@ fn check_certificate(store: &Store, cert: &SSLCert) -> EyreResult<(Vec<u8>, Vec<
     Ok((cert_pem.clone(), key_pem.clone()))
 }
 
-#[allow(clippy::print_stdout)]
+#[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
 fn write_out_instructions() {
     println!("*******************************************************************************");
     println!("To install the generated self-signed SSL certificate, follow the steps in our documentation:");

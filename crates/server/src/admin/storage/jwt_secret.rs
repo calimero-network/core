@@ -31,7 +31,8 @@ pub struct JwtTokenSecret {
 }
 
 impl JwtTokenSecret {
-    pub fn jwt_secret(&self) -> &[u8; 32] {
+    #[must_use]
+    pub const fn jwt_secret(&self) -> &[u8; 32] {
         &self.jwt_secret
     }
 }
@@ -44,7 +45,7 @@ fn generate_jwt_secret() -> [u8; 32] {
 // Method to insert the JWT key if it doesn't exist
 pub fn get_or_create_jwt_secret(store: &Store) -> eyre::Result<JwtTokenSecret> {
     // Check if the key already exists
-    if let Some(existing_secret) = get_jwt_secret(&store)? {
+    if let Some(existing_secret) = get_jwt_secret(store)? {
         return Ok(existing_secret);
     }
 
@@ -57,7 +58,7 @@ pub fn get_or_create_jwt_secret(store: &Store) -> eyre::Result<JwtTokenSecret> {
     let entry = JwtTokenSecretEntry::new();
     let mut handle = store.handle();
     match handle.put(&entry, &jwt_secret) {
-        Ok(_) => Ok(jwt_secret),
+        Ok(()) => Ok(jwt_secret),
         Err(e) => Err(e.into()),
     }
 }

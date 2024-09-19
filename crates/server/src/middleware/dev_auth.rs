@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -12,7 +13,7 @@ const TIMESTAMP_THRESHOLD: i64 = 5;
 
 pub async fn dev_mode_auth(
     state: Extension<Arc<AdminState>>,
-    request: Request<axum::body::Body>,
+    request: Request<Body>,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let public_key = &state.keypair.public();

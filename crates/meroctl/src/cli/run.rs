@@ -44,33 +44,29 @@ impl RunCommand {
 
         let config = ConfigFile::load(&path)?;
 
-        start(NodeConfig {
-            home: path.clone(),
-            node_type: self.node_type.into(),
-            identity: config.identity.clone(),
-            network: NetworkConfig {
-                identity: config.identity.clone(),
-                node_type: self.node_type.into(),
-                swarm: config.network.swarm,
-                bootstrap: config.network.bootstrap,
-                discovery: config.network.discovery,
-                catchup: config.network.catchup,
-            },
-            datastore: StoreConfig {
-                path: path.join(config.datastore.path),
-            },
-            blobstore: BlobStoreConfig {
-                path: path.join(config.blobstore.path),
-            },
-            context: config.context,
-            server: ServerConfig {
-                listen: config.network.server.listen,
-                identity: config.identity.clone(),
-                admin: config.network.server.admin,
-                jsonrpc: config.network.server.jsonrpc,
-                websocket: config.network.server.websocket,
-            },
-        })
+        start(NodeConfig::new(
+            path.clone(),
+            config.identity.clone(),
+            self.node_type.into(),
+            NetworkConfig::new(
+                config.identity.clone(),
+                self.node_type.into(),
+                config.network.swarm,
+                config.network.bootstrap,
+                config.network.discovery,
+                config.network.catchup,
+            ),
+            StoreConfig::new(path.join(config.datastore.path)),
+            BlobStoreConfig::new(path.join(config.blobstore.path)),
+            config.context,
+            ServerConfig::new(
+                config.network.server.listen,
+                config.identity.clone(),
+                config.network.server.admin,
+                config.network.server.jsonrpc,
+                config.network.server.websocket,
+            ),
+        ))
         .await
     }
 }

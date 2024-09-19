@@ -7,5 +7,5 @@ pub mod ws;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
 #[error("Infallible")]
-#[allow(clippy::exhaustive_enums)]
+#[expect(clippy::exhaustive_enums, reason = "This will never have any variants")]
 pub enum Infallible {}

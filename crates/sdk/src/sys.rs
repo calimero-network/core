@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, reason = "Will be used in the future")]
 
 mod types;
 
@@ -43,7 +43,7 @@ macro_rules! wasm_imports {
                 }
             } else {
                 $(
-                    #[allow(unused_variables)]
+                    #[expect(unused_variables, reason = "Needed due to macro expansion")]
                     pub unsafe fn $func_name($($arg: $arg_ty),*) $(-> $returns)? {
                         panic!("host function `{}` is only available when compiled for wasm32", stringify!($func_name));
                     }

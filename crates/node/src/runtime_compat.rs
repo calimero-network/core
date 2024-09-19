@@ -1,5 +1,5 @@
 use core::cell::RefCell;
-use std::mem::transmute;
+use core::mem::transmute;
 
 use calimero_primitives::context::ContextId;
 use calimero_runtime::store::{Key, Storage, Value};
@@ -11,7 +11,7 @@ use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 #[derive(Debug)]
-#[allow(clippy::exhaustive_enums)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub enum RuntimeCompatStoreInner<'this, 'entry> {
     Read(ReadOnly<'this, Store>),
     Write(Temporal<'this, 'entry, Store>),

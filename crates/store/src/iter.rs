@@ -58,7 +58,10 @@ impl<'a, K, V> Iter<'a, K, V> {
 }
 
 // TODO: We should consider using std::iter::Iterator here
-#[allow(clippy::should_implement_trait)]
+#[expect(
+    clippy::should_implement_trait,
+    reason = "TODO: This should be implemented"
+)]
 impl<V> Iter<'_, Unstructured, V> {
     pub fn seek(&mut self, key: Key<'_>) -> EyreResult<Option<Key<'_>>> {
         self.inner.seek(key)
@@ -70,7 +73,10 @@ impl<V> Iter<'_, Unstructured, V> {
 }
 
 // TODO: We should consider using std::iter::Iterator here
-#[allow(clippy::should_implement_trait)]
+#[expect(
+    clippy::should_implement_trait,
+    reason = "TODO: This should be implemented"
+)]
 impl<K: FromKeyParts, V> Iter<'_, Structured<K>, V>
 where
     Report: From<IterError<K::Error>>,
@@ -236,7 +242,7 @@ pub struct Structured<K> {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[allow(clippy::exhaustive_enums)]
+#[expect(clippy::exhaustive_enums, reason = "This will never have variants")]
 pub enum Unstructured {}
 
 mod private {
@@ -254,7 +260,7 @@ pub trait TryIntoValue<'a>: Sealed {
     type Value;
     type Error;
 
-    fn try_into_value(key: Value<'a>) -> Result<Self::Value, Self::Error>;
+    fn try_into_value(value: Value<'a>) -> Result<Self::Value, Self::Error>;
 }
 
 #[derive(Debug, ThisError)]
@@ -323,7 +329,6 @@ impl<I: DBIter> FusedIter<I> {
     }
 
     fn next(&mut self) -> EyreResult<Option<Key<'_>>> {
-        #[allow(trivial_casts)]
         let this = unsafe { &mut *ptr::from_mut::<Self>(self) };
 
         if let Self::Active(iter) = this {

@@ -1,3 +1,4 @@
+#![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
 use std::collections::BTreeMap;
 
 use near_crypto::{PublicKey, SecretKey};
@@ -28,6 +29,7 @@ pub struct ContextConfigClientSigner {
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ContextConfigClientSelectedSigner {
     Relayer,
     #[serde(rename = "self")]
@@ -55,7 +57,9 @@ pub struct Credentials {
 }
 
 mod serde_creds {
-    use super::*;
+    use near_crypto::{PublicKey, SecretKey};
+    use near_primitives::types::AccountId;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Credentials {
@@ -89,11 +93,9 @@ mod serde_creds {
             };
 
             if creds.account_id.get_account_type().is_implicit() {
-                let public_key = match PublicKey::from_near_implicit_account(&creds.account_id) {
-                    Ok(key) => key,
-                    Err(_) => {
-                        return Err("fatal: failed to derive public key from implicit account ID")
-                    }
+                let Ok(public_key) = PublicKey::from_near_implicit_account(&creds.account_id)
+                else {
+                    return Err("fatal: failed to derive public key from implicit account ID");
                 };
 
                 if creds.public_key != public_key {

@@ -1,12 +1,14 @@
+use core::convert::Infallible;
+use core::error::Error as CoreError;
+use core::marker::PhantomData;
+use core::ptr;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::convert::Infallible;
-use std::mem;
 
 use ed25519_dalek::Signature;
 use either::Either;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Error as JsonError};
 use thiserror::Error;
 
 use crate::repr::Repr;
@@ -20,9 +22,9 @@ pub mod relayer;
 use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner};
 
 pub trait Transport {
-    type Error: std::error::Error;
+    type Error: CoreError;
 
-    #[allow(async_fn_in_trait)]
+    #[expect(async_fn_in_trait, reason = "Should be fine")]
     async fn send(
         &self,
         request: TransportRequest<'_>,
@@ -46,13 +48,30 @@ impl<L: Transport, R: Transport> Transport for Either<L, R> {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct TransportRequest<'a> {
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,
     pub operation: Operation<'a>,
 }
 
+impl<'a> TransportRequest<'a> {
+    #[must_use]
+    pub const fn new(
+        network_id: Cow<'a, str>,
+        contract_id: Cow<'a, str>,
+        operation: Operation<'a>,
+    ) -> Self {
+        Self {
+            network_id,
+            contract_id,
+            operation,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub enum Operation<'a> {
     Read { method: Cow<'a, str> },
     Write { method: Cow<'a, str> },
@@ -64,7 +83,7 @@ pub struct ContextConfigClient<T> {
 }
 
 impl<T: Transport> ContextConfigClient<T> {
-    pub fn new(transport: T) -> Self {
+    pub const fn new(transport: T) -> Self {
         Self { transport }
     }
 }
@@ -72,6 +91,7 @@ impl<T: Transport> ContextConfigClient<T> {
 pub type RelayOrNearTransport = Either<relayer::RelayerTransport, near::NearTransport<'static>>;
 
 impl ContextConfigClient<RelayOrNearTransport> {
+    #[must_use]
     pub fn from_config(config: &ContextConfigClientConfig) -> Self {
         let transport = match config.signer.selected {
             ContextConfigClientSelectedSigner::Relayer => {
@@ -105,7 +125,7 @@ impl ContextConfigClient<RelayOrNearTransport> {
 }
 
 impl<T: Transport> ContextConfigClient<T> {
-    pub fn query<'a>(
+    pub const fn query<'a>(
         &'a self,
         network_id: Cow<'a, str>,
         contract_id: Cow<'a, str>,
@@ -117,7 +137,7 @@ impl<T: Transport> ContextConfigClient<T> {
         }
     }
 
-    pub fn mutate<'a>(
+    pub const fn mutate<'a>(
         &'a self,
         network_id: Cow<'a, str>,
         contract_id: Cow<'a, str>,
@@ -133,28 +153,29 @@ impl<T: Transport> ContextConfigClient<T> {
 }
 
 #[derive(Debug, Error)]
-pub enum Error<T: Transport> {
+#[non_exhaustive]
+pub enum ConfigError<T: Transport> {
     #[error("transport error: {0}")]
     Transport(T::Error),
     #[error(transparent)]
-    Other(#[from] types::Error<Infallible>),
+    Other(#[from] types::ConfigError<Infallible>),
 }
 
 #[derive(Debug)]
 pub struct Response<T> {
     bytes: Vec<u8>,
-    _priv: std::marker::PhantomData<T>,
+    _priv: PhantomData<T>,
 }
 
 impl<T> Response<T> {
-    fn new(bytes: Vec<u8>) -> Self {
+    const fn new(bytes: Vec<u8>) -> Self {
         Self {
             bytes,
-            _priv: Default::default(),
+            _priv: PhantomData,
         }
     }
 
-    pub fn parse<'a>(&'a self) -> Result<T, serde_json::Error>
+    pub fn parse<'a>(&'a self) -> Result<T, JsonError>
     where
         T: Deserialize<'a>,
     {
@@ -170,8 +191,12 @@ pub struct ContextConfigQueryClient<'a, T> {
 }
 
 impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
-    async fn read<I: Serialize, O>(&self, method: &str, body: I) -> Result<Response<O>, Error<T>> {
-        let payload = serde_json::to_vec(&body).map_err(|err| Error::Other(err.into()))?;
+    async fn read<I: Serialize, O>(
+        &self,
+        method: &str,
+        body: I,
+    ) -> Result<Response<O>, ConfigError<T>> {
+        let payload = serde_json::to_vec(&body).map_err(|err| ConfigError::Other(err.into()))?;
 
         let request = TransportRequest {
             network_id: Cow::Borrowed(&self.network_id),
@@ -185,7 +210,7 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
             .transport
             .send(request, payload)
             .await
-            .map_err(Error::Transport)?;
+            .map_err(ConfigError::Transport)?;
 
         Ok(Response::new(response))
     }
@@ -193,7 +218,7 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
     pub async fn application(
         &self,
         context_id: ContextId,
-    ) -> Result<Response<Application<'static>>, Error<T>> {
+    ) -> Result<Response<Application<'static>>, ConfigError<T>> {
         self.read(
             "application",
             json!({
@@ -208,7 +233,7 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
         context_id: ContextId,
         offset: usize,
         length: usize,
-    ) -> Result<Response<Vec<Repr<ContextIdentity>>>, Error<T>> {
+    ) -> Result<Response<Vec<Repr<ContextIdentity>>>, ConfigError<T>> {
         self.read(
             "members",
             json!({
@@ -224,8 +249,10 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
         &self,
         context_id: ContextId,
         identities: &[ContextIdentity],
-    ) -> Result<Response<BTreeMap<Repr<SignerId>, Vec<Capability>>>, Error<T>> {
-        let identities = unsafe { mem::transmute::<_, &[Repr<ContextIdentity>]>(identities) };
+    ) -> Result<Response<BTreeMap<Repr<SignerId>, Vec<Capability>>>, ConfigError<T>> {
+        let identities = unsafe {
+            &*(ptr::from_ref::<[ContextIdentity]>(identities) as *const [Repr<ContextIdentity>])
+        };
 
         self.read(
             "privileges",
@@ -253,7 +280,7 @@ pub struct ClientRequest<'a, 'b, T> {
 }
 
 impl<T: Transport> ClientRequest<'_, '_, T> {
-    pub async fn send(self, sign: impl FnOnce(&[u8]) -> Signature) -> Result<(), Error<T>> {
+    pub async fn send<F: FnOnce(&[u8]) -> Signature>(self, sign: F) -> Result<(), ConfigError<T>> {
         let signed = Signed::new(&Request::new(self.client.signer_id, self.kind), sign)?;
 
         let request = TransportRequest {
@@ -264,21 +291,22 @@ impl<T: Transport> ClientRequest<'_, '_, T> {
             },
         };
 
-        let payload = serde_json::to_vec(&signed).map_err(|err| Error::Other(err.into()))?;
+        let payload = serde_json::to_vec(&signed).map_err(|err| ConfigError::Other(err.into()))?;
 
         let _unused = self
             .client
             .transport
             .send(request, payload)
             .await
-            .map_err(Error::Transport)?;
+            .map_err(ConfigError::Transport)?;
 
         Ok(())
     }
 }
 
 impl<T: Transport> ContextConfigMutateClient<'_, T> {
-    pub fn add_context<'a>(
+    #[must_use]
+    pub const fn add_context<'a>(
         &self,
         context_id: ContextId,
         author_id: ContextIdentity,
@@ -295,7 +323,8 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub fn update_application<'a>(
+    #[must_use]
+    pub const fn update_application<'a>(
         &self,
         context_id: ContextId,
         application: Application<'a>,
@@ -308,12 +337,15 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub fn add_members(
+    #[must_use]
+    pub const fn add_members(
         &self,
         context_id: ContextId,
         members: &[ContextIdentity],
     ) -> ClientRequest<'_, 'static, T> {
-        let members = unsafe { mem::transmute(members) };
+        let members = unsafe {
+            &*(ptr::from_ref::<[ContextIdentity]>(members) as *const [Repr<ContextIdentity>])
+        };
 
         let kind = RequestKind::Context(ContextRequest {
             context_id: Repr::new(context_id),
@@ -325,12 +357,15 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub fn remove_members(
+    #[must_use]
+    pub const fn remove_members(
         &self,
         context_id: ContextId,
         members: &[ContextIdentity],
     ) -> ClientRequest<'_, 'static, T> {
-        let members = unsafe { mem::transmute(members) };
+        let members = unsafe {
+            &*(ptr::from_ref::<[ContextIdentity]>(members) as *const [Repr<ContextIdentity>])
+        };
 
         let kind = RequestKind::Context(ContextRequest {
             context_id: Repr::new(context_id),
@@ -342,12 +377,16 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub fn grant(
+    #[must_use]
+    pub const fn grant(
         &self,
         context_id: ContextId,
         capabilities: &[(ContextIdentity, Capability)],
     ) -> ClientRequest<'_, 'static, T> {
-        let capabilities = unsafe { mem::transmute(capabilities) };
+        let capabilities = unsafe {
+            &*(ptr::from_ref::<[(ContextIdentity, Capability)]>(capabilities)
+                as *const [(Repr<ContextIdentity>, Capability)])
+        };
 
         let kind = RequestKind::Context(ContextRequest {
             context_id: Repr::new(context_id),
@@ -359,12 +398,16 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         ClientRequest { client: self, kind }
     }
 
-    pub fn revoke(
+    #[must_use]
+    pub const fn revoke(
         &self,
         context_id: ContextId,
         capabilities: &[(ContextIdentity, Capability)],
     ) -> ClientRequest<'_, 'static, T> {
-        let capabilities = unsafe { mem::transmute(capabilities) };
+        let capabilities = unsafe {
+            &*(ptr::from_ref::<[(ContextIdentity, Capability)]>(capabilities)
+                as *const [(Repr<ContextIdentity>, Capability)])
+        };
 
         let kind = RequestKind::Context(ContextRequest {
             context_id: Repr::new(context_id),

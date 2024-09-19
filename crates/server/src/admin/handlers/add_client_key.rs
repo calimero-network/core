@@ -14,7 +14,7 @@ use chrono::Utc;
 use futures_util::TryFutureExt;
 use serde::Serialize;
 use serde_json::from_value as from_json_value;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::admin::handlers::root_keys::store_root_key;
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
@@ -121,7 +121,7 @@ pub async fn generate_jwt_token_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<JwtTokenRequest>,
 ) -> impl IntoResponse {
-    match generate_jwt_tokens(req, state.store.clone()) {
+    match generate_jwt_tokens(req, &state.store) {
         Ok(jwt_tokens) => {
             let tokens = JwtTokens {
                 access_token: jwt_tokens.access_token,
@@ -131,7 +131,7 @@ pub async fn generate_jwt_token_handler(
             ApiResponse { payload: response }.into_response()
         }
         Err(err) => {
-            eprintln!("Error generating JWT tokens: {}", err.message);
+            error!("Error generating JWT tokens: {}", err.message);
             err.into_response()
         }
     }
@@ -142,7 +142,7 @@ pub async fn refresh_jwt_token_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<JwtRefreshRequest>,
 ) -> impl IntoResponse {
-    match refresh_access_token(&req.refresh_token, state.store.clone()) {
+    match refresh_access_token(&req.refresh_token, &state.store) {
         Ok(jwt_tokens) => {
             let tokens = JwtTokens {
                 access_token: jwt_tokens.access_token,
@@ -152,7 +152,7 @@ pub async fn refresh_jwt_token_handler(
             ApiResponse { payload: response }.into_response()
         }
         Err(err) => {
-            eprintln!("Error generating JWT tokens: {}", err.message);
+            error!("Error generating JWT tokens: {}", err.message);
             err.into_response()
         }
     }
@@ -162,7 +162,7 @@ pub fn store_client_key(
     req: AddPublicKeyRequest,
     store: &Store,
 ) -> Result<AddPublicKeyRequest, ApiError> {
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss, reason = "Essentially infallible")]
     let client_key = ClientKey::new(
         req.wallet_metadata.wallet_type.clone(),
         req.payload.message.public_key.clone(),
@@ -184,13 +184,14 @@ async fn check_root_key(
         validate_root_key_exists(req, store).await
     } else {
         // Attempt to store the root key, then return the request
+        #[expect(clippy::wildcard_in_or_patterns, reason = "Acceptable here")]
         let wallet_address = match req.wallet_metadata.wallet_type {
             WalletType::NEAR { .. } => req
                 .wallet_metadata
                 .wallet_address
                 .clone()
-                .unwrap_or(String::new()),
-            _ => String::new(), // Handle other cases appropriately
+                .unwrap_or_default(),
+            WalletType::ETH { .. } | WalletType::STARKNET { .. } | _ => String::new(),
         };
 
         let _ = store_root_key(

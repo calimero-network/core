@@ -1,4 +1,4 @@
-#![allow(unused_crate_dependencies)]
+#![allow(unused_crate_dependencies, reason = "False positives")]
 
 use std::fs::{remove_dir_all, remove_file};
 
@@ -9,9 +9,7 @@ use eyre::Ok as EyreOk;
 
 #[test]
 fn rocks_store() {
-    let config = config::StoreConfig {
-        path: "corpus/rocks".into(),
-    };
+    let config = config::StoreConfig::new("corpus/rocks".into());
 
     if config.path.exists() {
         if config.path.metadata().unwrap().is_dir() {
@@ -23,8 +21,8 @@ fn rocks_store() {
 
     let mut store = Store::open::<db::RocksDB>(&config).unwrap();
 
-    let context_id1 = [0u8; 32].into();
-    let state_key1 = [0u8; 32];
+    let context_id1 = [0_u8; 32].into();
+    let state_key1 = [0_u8; 32];
     let key1 = ContextStateKey::new(context_id1, state_key1);
 
     assert!(!store.has(&key1).unwrap());
@@ -41,7 +39,7 @@ fn rocks_store() {
     assert_ne!(Some(b"Hello, World".into()), store.get(&key1).unwrap());
     assert_eq!(Some(b"Some Other Value".into()), store.get(&key1).unwrap());
 
-    let state_key2 = [1u8; 32];
+    let state_key2 = [1_u8; 32];
     let key2 = ContextStateKey::new(context_id1, state_key2);
 
     assert!(store.has(&key1).unwrap());
@@ -101,13 +99,13 @@ fn rocks_store() {
         );
     }
 
-    let public_key1 = [0u8; 32];
+    let public_key1 = [0_u8; 32];
 
     let key3 = ContextIdentityKey::new(context_id1, public_key1.into());
 
     store.put(&key3, b"Some Associated Value".into()).unwrap();
 
-    let public_key2 = [1u8; 32];
+    let public_key2 = [1_u8; 32];
 
     let key4 = ContextIdentityKey::new(context_id1, public_key2.into());
 

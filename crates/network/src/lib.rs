@@ -1,3 +1,8 @@
+#![allow(
+    clippy::allow_attributes,
+    reason = "Needed for lints that don't follow expect"
+)]
+
 use std::collections::hash_map::{Entry, HashMap};
 use std::collections::HashSet;
 
@@ -192,7 +197,10 @@ pub(crate) struct EventLoop {
     pending_get_providers: HashMap<QueryId, oneshot::Sender<HashSet<PeerId>>>,
 }
 
-#[allow(clippy::multiple_inherent_impl)]
+#[allow(
+    clippy::multiple_inherent_impl,
+    reason = "Currently necessary due to code structure"
+)]
 impl EventLoop {
     fn new(
         swarm: Swarm<Behaviour>,
@@ -218,7 +226,7 @@ impl EventLoop {
         let mut rendezvous_discover_tick =
             interval(self.discovery.rendezvous_config.discovery_interval);
 
-        #[allow(clippy::redundant_pub_crate)]
+        #[expect(clippy::redundant_pub_crate, reason = "Needed for Tokio code")]
         loop {
             select! {
                 event = self.swarm.next() => {
@@ -237,7 +245,7 @@ impl EventLoop {
     }
 
     // TODO: Consider splitting this long function into multiple parts.
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     async fn handle_command(&mut self, command: Command) {
         match command {
             Command::ListenOn { addr, sender } => {

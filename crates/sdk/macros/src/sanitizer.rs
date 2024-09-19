@@ -1,3 +1,5 @@
+#![allow(dead_code, reason = "Will be used in future")]
+
 #[cfg(test)]
 #[path = "tests/sanitizer.rs"]
 mod tests;
@@ -159,7 +161,6 @@ impl<'a> SanitizationResult<'a> {
         &mut self.errors
     }
 
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.counts.len()
     }
@@ -180,7 +181,7 @@ impl Sanitizer<'_> {
         };
 
         for entry in entries.iter_mut() {
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
             match entry {
                 SanitizerAtom::Group { entry, .. } => {
                     let SanitizationResult {
@@ -270,7 +271,7 @@ impl Parse for Sanitizer<'_> {
                         entries.push(SanitizerAtom::Lifetime(LifetimeAtom::Elided(and_span)));
                     }
                 } else {
-                    #[allow(clippy::wildcard_enum_match_arm)]
+                    #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
                     match input.parse::<TokenTree>()? {
                         TokenTree::Group(group) => {
                             let entry = parse2(group.stream())?;

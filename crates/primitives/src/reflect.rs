@@ -47,7 +47,6 @@ impl dyn Reflect + '_ {
 
     pub fn downcast_ref<T: Reflect>(&self) -> Option<&T> {
         if self.is::<T>() {
-            #[allow(trivial_casts)]
             return Some(unsafe { &*ptr::from_ref::<dyn Reflect>(self).cast::<T>() });
         }
 

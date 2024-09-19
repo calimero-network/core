@@ -28,7 +28,7 @@ impl<'a, 'b> TryFrom<LogicTyInput<'a, 'b>> for LogicTy {
     type Error = Errors<'a, Type>;
 
     // TODO: This unwrap() call needs to be corrected to return an error.
-    #[allow(clippy::unwrap_in_result)]
+    #[expect(clippy::unwrap_in_result, reason = "TODO: This is temporary")]
     fn try_from(input: LogicTyInput<'a, 'b>) -> Result<Self, Self::Error> {
         let errors = Errors::new(input.ty);
 

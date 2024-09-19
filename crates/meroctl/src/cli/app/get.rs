@@ -3,8 +3,7 @@ use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::RequestType::GET;
-use crate::common::{get_response, multiaddr_to_url};
+use crate::common::{get_response, multiaddr_to_url, RequestType};
 use crate::config_file::ConfigFile;
 
 #[derive(Parser, Debug)]
@@ -21,6 +20,7 @@ pub enum GetValues {
 }
 
 impl GetCommand {
+    #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         let path = args.home.join(&args.node_name);
 
@@ -43,7 +43,8 @@ impl GetCommand {
             &format!("admin-api/dev/applications/{}", self.app_id),
         )?;
 
-        let response = get_response(&client, url, None::<()>, &config.identity, GET).await?;
+        let response =
+            get_response(&client, url, None::<()>, &config.identity, RequestType::Get).await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())

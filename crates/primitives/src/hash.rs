@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
 const BYTES_LEN: usize = 32;
-#[allow(clippy::integer_division)]
+#[expect(clippy::integer_division, reason = "Not harmful here")]
 const MAX_STR_LEN: usize = (BYTES_LEN + 1) * 4 / 3;
 
 #[derive(Clone, Copy)]

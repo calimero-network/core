@@ -41,7 +41,7 @@ pub async fn get_context_handler(
         .get_context(&context_id)
         .map_err(|err| parse_api_error(err).into_response());
 
-    #[allow(clippy::option_if_let_else)]
+    #[expect(clippy::option_if_let_else, reason = "Clearer here")]
     match context {
         Ok(ctx) => match ctx {
             Some(context) => ApiResponse {
@@ -81,7 +81,7 @@ pub async fn get_context_identities_handler(
         .map_err(|err| parse_api_error(err).into_response());
 
     match context {
-        #[allow(clippy::option_if_let_else)]
+        #[expect(clippy::option_if_let_else, reason = "Clearer here")]
         Ok(ctx) => match ctx {
             Some(context) => {
                 let context_identities = state
@@ -283,6 +283,7 @@ pub async fn join_context_handler(
     Json(JoinContextRequest {
         private_key,
         invitation_payload,
+        ..
     }): Json<JoinContextRequest>,
 ) -> impl IntoResponse {
     let result = state
@@ -293,12 +294,9 @@ pub async fn join_context_handler(
 
     match result {
         Ok(r) => ApiResponse {
-            payload: JoinContextResponse {
-                data: r.map(|(context_id, member_public_key)| JoinContextResponseData {
-                    context_id,
-                    member_public_key,
-                }),
-            },
+            payload: JoinContextResponse::new(r.map(|(context_id, member_public_key)| {
+                JoinContextResponseData::new(context_id, member_public_key)
+            })),
         }
         .into_response(),
         Err(err) => err.into_response(),

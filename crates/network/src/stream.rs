@@ -1,3 +1,8 @@
+#![allow(
+    clippy::allow_attributes,
+    reason = "Needed for lints that don't follow expect"
+)]
+
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
@@ -65,8 +70,14 @@ impl FuturesSink<Message> for Stream {
 // TODO: The &mut self usages are needed for reasons not yet apparent, despite
 // TODO: not actually making any self-modifications. If removed, they cause
 // TODO: errors about Send compatibility.
-#[allow(clippy::needless_pass_by_ref_mut)]
-#[allow(clippy::multiple_inherent_impl)]
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "TODO: This should be refactored"
+)]
+#[allow(
+    clippy::multiple_inherent_impl,
+    reason = "Currently needed due to code structure"
+)]
 impl EventLoop {
     pub(crate) async fn handle_incoming_stream(&mut self, (peer, stream): (PeerId, P2pStream)) {
         self.event_sender

@@ -10,8 +10,7 @@ use tracing::info;
 use url::Url;
 
 use crate::cli::RootArgs;
-use crate::common::RequestType::POST;
-use crate::common::{get_response, multiaddr_to_url};
+use crate::common::{get_response, multiaddr_to_url, RequestType};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -51,7 +50,7 @@ impl InstallCommand {
 
         let mut is_dev_installation = false;
 
-        let metadata = self.metadata.map(|m| m.into_bytes()).unwrap_or_default();
+        let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
 
         let install_request = if let Some(app_path) = self.path {
             let install_dev_request =
@@ -77,7 +76,7 @@ impl InstallCommand {
             install_url,
             Some(install_request),
             &config.identity,
-            POST,
+            RequestType::Post,
         )
         .await?;
 
