@@ -20,17 +20,20 @@ export const AccessTokenWrapper: React.FC<AccessTokenWrapperProps> = ({
     }
   }, []);
 
-  const isTokenExpiringSoon = useCallback((token: string) => {
-    const decodedToken = decodeToken(token);
-    if (!decodedToken || !decodedToken.exp) {
-      return true;
-    }
+  const isTokenExpiringSoon = useCallback(
+    (token: string) => {
+      const decodedToken = decodeToken(token);
+      if (!decodedToken || !decodedToken.exp) {
+        return true;
+      }
 
-    const currentTime = Math.floor(Date.now() / 1000);
-    const timeUntilExpiry = decodedToken.exp - currentTime;
+      const currentTime = Math.floor(Date.now() / 1000);
+      const timeUntilExpiry = decodedToken.exp - currentTime;
 
-    return timeUntilExpiry <= 5 * 60;
-  }, [decodeToken]);
+      return timeUntilExpiry <= 5 * 60;
+    },
+    [decodeToken],
+  );
 
   const validateAccessToken = useCallback(async () => {
     const accessToken = getAccessToken();
@@ -52,9 +55,12 @@ export const AccessTokenWrapper: React.FC<AccessTokenWrapperProps> = ({
   useEffect(() => {
     validateAccessToken();
 
-    const intervalId = setInterval(() => {
-      validateAccessToken();
-    }, 20 * 60 * 1000);
+    const intervalId = setInterval(
+      () => {
+        validateAccessToken();
+      },
+      20 * 60 * 1000,
+    );
 
     return () => clearInterval(intervalId);
   }, [validateAccessToken]);
