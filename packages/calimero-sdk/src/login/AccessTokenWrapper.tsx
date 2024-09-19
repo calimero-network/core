@@ -56,9 +56,12 @@ export const AccessTokenWrapper: React.FC<AccessTokenWrapperProps> = ({
   useEffect(() => {
     validateAccessToken();
 
-    const intervalId = setInterval(() => {
-      validateAccessToken();
-    }, 20 * 60 * 1000);
+    const intervalId = setInterval(
+      () => {
+        validateAccessToken();
+      },
+      20 * 60 * 1000,
+    );
 
     return () => clearInterval(intervalId);
   }, [validateAccessToken]);
