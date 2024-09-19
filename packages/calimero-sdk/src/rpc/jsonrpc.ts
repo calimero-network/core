@@ -101,12 +101,11 @@ export class JsonRpcClient implements RpcClient {
             error: {
               type: 'RpcExecutionError',
               inner: response.data.error,
-              code: response.data.error?.response?.status,
-              message: response.data.error?.response?.data,
+              code: response.status,
+              message: response.data.error.message,
             },
           };
         }
-
         return {
           result: response.data.result,
           error: null,
