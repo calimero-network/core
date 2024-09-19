@@ -6409,7 +6409,6 @@ version = "8.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa66af4a4fdd5e7ebc276f115e895611a34739a9c1c01028383d612d550953c0"
 dependencies = [
- "mime_guess",
  "rust-embed-impl",
  "rust-embed-utils",
  "walkdir",
