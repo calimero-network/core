@@ -1,11 +1,12 @@
+use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 use core::str::from_utf8;
-use std::error::Error;
 use std::str;
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
+use axum::middleware::from_fn;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
@@ -36,9 +37,10 @@ use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
 use crate::middleware::auth::AuthSignatureLayer;
+use crate::middleware::dev_auth::dev_mode_auth;
 #[cfg(feature = "host_layer")]
 use crate::middleware::host::HostLayer;
-use crate::{middleware, AdminState};
+use crate::AdminState;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -59,6 +61,10 @@ impl AdminConfig {
 #[folder = "../../node-ui/build/"]
 struct NodeUiStaticFiles;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Acceptable here - mostly repetitive setup"
+)]
 pub(crate) fn setup(
     config: &ServerConfig,
     store: Store,
@@ -161,15 +167,13 @@ pub(crate) fn setup(
             get(get_context_identities_handler),
         )
         .route("/dev/contexts/:context_id", delete(delete_context_handler))
-        .route_layer(axum::middleware::from_fn(
-            middleware::dev_auth::dev_mode_auth,
-        ));
+        .route_layer(from_fn(dev_mode_auth));
 
     let admin_router = Router::new()
         .merge(unprotected_router)
         .merge(protected_router)
         .merge(dev_router)
-        .layer(Extension(shared_state.clone()))
+        .layer(Extension(shared_state))
         .layer(session_layer);
 
     #[cfg(feature = "host_layer")]
@@ -270,7 +274,7 @@ async fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode>
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[allow(clippy::exhaustive_structs)]
+#[expect(clippy::exhaustive_structs, reason = "Exhaustive")]
 pub struct Empty;
 
 #[derive(Debug)]
@@ -351,7 +355,7 @@ async fn health_check_handler() -> impl IntoResponse {
 }
 
 async fn certificate_handler(Extension(state): Extension<Arc<AdminState>>) -> impl IntoResponse {
-    #[allow(clippy::print_stderr)]
+    #[expect(clippy::print_stderr, reason = "Acceptable for CLI")]
     let certificate = match get_ssl(&state.store) {
         Ok(Some(cert)) => Some(cert),
         Ok(None) => None,

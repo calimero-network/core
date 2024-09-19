@@ -1,5 +1,3 @@
-#![allow(non_snake_case)]
-
 use borsh::to_vec;
 use claims::assert_err;
 

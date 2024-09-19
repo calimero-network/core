@@ -1,5 +1,5 @@
-#![allow(single_use_lifetimes, unused_lifetimes)]
-#![allow(clippy::mem_forget)]
+#![allow(single_use_lifetimes, unused_lifetimes, reason = "False positive")]
+#![allow(clippy::mem_forget, reason = "Safe for now")]
 
 use core::num::NonZeroU64;
 
@@ -29,7 +29,7 @@ pub struct VMContext {
 
 impl VMContext {
     #[must_use]
-    pub fn new(input: Vec<u8>, executor_public_key: [u8; 32]) -> Self {
+    pub const fn new(input: Vec<u8>, executor_public_key: [u8; 32]) -> Self {
         Self {
             input,
             executor_public_key,
@@ -59,7 +59,7 @@ pub struct VMLimits {
 }
 
 impl VMLimits {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
     #[must_use]
     pub const fn new(
         max_memory_pages: u32,
@@ -377,7 +377,7 @@ impl VMHostFunctions<'_> {
         Ok(0)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
     pub fn fetch(
         &mut self,
         url_ptr: u64,

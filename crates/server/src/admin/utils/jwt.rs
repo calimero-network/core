@@ -1,4 +1,4 @@
-use std::str::from_utf8;
+use core::str::from_utf8;
 
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash;
@@ -24,6 +24,7 @@ pub struct Claims {
 }
 
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct JwtToken {
     pub access_token: String,
     pub refresh_token: String,
@@ -36,8 +37,8 @@ enum TokenType {
     Refresh,
 }
 
-pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToken, ApiError> {
-    let jwt_secret = match get_jwt_secret(&store.clone()) {
+pub fn generate_jwt_tokens(req: JwtTokenRequest, store: &Store) -> Result<JwtToken, ApiError> {
+    let jwt_secret = match get_jwt_secret(store) {
         Ok(Some(secret)) => secret.jwt_secret().to_vec(),
         Ok(None) => {
             return Err(ApiError {
@@ -48,7 +49,7 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
         Err(err) => {
             return Err(ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to get JWT secret: {}", err),
+                message: format!("Failed to get JWT secret: {err}"),
             });
         }
     };
@@ -56,10 +57,17 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
     let context_id = req.context_id;
     let executor_public_key = req.executor_public_key;
     // Generate Access Token
-    let access_expiration = Utc::now() + Duration::hours(1);
+    let access_expiration = Utc::now()
+        .checked_add_signed(Duration::hours(1))
+        .unwrap_or_else(Utc::now);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Essentially infallible"
+    )]
     let access_claims = Claims {
         context_id,
-        executor_public_key: executor_public_key.to_string(),
+        executor_public_key: executor_public_key.clone(),
         exp: access_expiration.timestamp() as usize,
         token_type: TokenType::Access,
     };
@@ -71,14 +79,21 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
     )
     .map_err(|err| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: format!("Failed to generate access token: {}", err),
+        message: format!("Failed to generate access token: {err}"),
     })?;
 
     // Generate Refresh Token
-    let refresh_expiration = Utc::now() + Duration::days(30);
+    let refresh_expiration = Utc::now()
+        .checked_add_signed(Duration::days(30))
+        .unwrap_or_else(Utc::now);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Essentially infallible"
+    )]
     let refresh_claims = Claims {
         context_id,
-        executor_public_key: executor_public_key.to_string(),
+        executor_public_key,
         exp: refresh_expiration.timestamp() as usize,
         token_type: TokenType::Refresh,
     };
@@ -90,20 +105,20 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
     )
     .map_err(|err| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: format!("Failed to generate refresh token: {}", err),
+        message: format!("Failed to generate refresh token: {err}"),
     })?;
 
     let db_key = format!("{}{}", refresh_claims.context_id, refresh_claims.exp);
     let db_key_hash = hash::Hash::new(db_key.as_bytes());
     // Store the refresh token in the database
     create_refresh_token(
-        store.clone(),
+        store,
         refresh_token.as_bytes().to_vec(),
         db_key_hash.as_bytes(),
     )
     .map_err(|err| ApiError {
         status_code: StatusCode::INTERNAL_SERVER_ERROR,
-        message: format!("Failed to store refresh token: {}", err),
+        message: format!("Failed to store refresh token: {err}"),
     })?;
 
     Ok(JwtToken {
@@ -113,9 +128,11 @@ pub fn generate_jwt_tokens(req: JwtTokenRequest, store: Store) -> Result<JwtToke
 }
 
 // Check if the refresh token is valid and generate new tokens
-pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToken, ApiError> {
+// TODO: Consider splitting this function into smaller pieces
+#[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
+pub fn refresh_access_token(refresh_token: &str, store: &Store) -> Result<JwtToken, ApiError> {
     // Get the JWT secret from the DB
-    let jwt_secret = match get_jwt_secret(&store.clone()) {
+    let jwt_secret = match get_jwt_secret(store) {
         Ok(Some(secret)) => secret.jwt_secret().to_vec(),
         Ok(None) => {
             return Err(ApiError {
@@ -126,7 +143,7 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
         Err(err) => {
             return Err(ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to get JWT secret: {}", err),
+                message: format!("Failed to get JWT secret: {err}"),
             });
         }
     };
@@ -139,7 +156,7 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
     )
     .map_err(|err| ApiError {
         status_code: StatusCode::FORBIDDEN,
-        message: format!("Invalid refresh token: {}", err),
+        message: format!("Invalid refresh token: {err}"),
     })?;
 
     // Check if the token type is "refresh"
@@ -151,6 +168,11 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
     }
 
     // Check if the token is expired
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Essentially infallible"
+    )]
     let now = Utc::now().timestamp() as usize;
     if token_data.claims.exp < now {
         return Err(ApiError {
@@ -159,20 +181,20 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
         });
     }
 
-    let context_id = token_data.claims.context_id.clone();
+    let context_id = token_data.claims.context_id;
     let executor = token_data.claims.executor_public_key.clone();
 
     let db_key = format!("{}{}", context_id, token_data.claims.exp);
     let db_key_hash = hash::Hash::new(db_key.as_bytes());
 
     // Check if the refresh token from the database is present
-    let refresh_token_db = match get_refresh_token(store.clone(), db_key_hash.as_bytes()) {
+    let refresh_token_db = match get_refresh_token(store, db_key_hash.as_bytes()) {
         Ok(Some(token)) => {
             let refresh_token = from_utf8(token.refresh_token()).map_err(|err| ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to parse refresh token: {}", err),
+                message: format!("Failed to parse refresh token: {err}"),
             })?;
-            refresh_token.to_string()
+            refresh_token.to_owned()
         }
         Ok(None) => {
             return Err(ApiError {
@@ -183,7 +205,7 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
         Err(err) => {
             return Err(ApiError {
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("Failed to get refresh token: {}", err),
+                message: format!("Failed to get refresh token: {err}"),
             });
         }
     };
@@ -195,15 +217,22 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
         });
     }
 
-    delete_refresh_token(store.clone(), &db_key_hash).map_err(|err| ApiError {
+    delete_refresh_token(store, &db_key_hash).map_err(|err| ApiError {
         status_code: StatusCode::INTERNAL_SERVER_ERROR,
-        message: format!("Failed to delete refresh token: {}", err),
+        message: format!("Failed to delete refresh token: {err}"),
     })?;
 
     // Generate new Access Token
-    let access_expiration = Utc::now() + Duration::hours(1);
+    let access_expiration = Utc::now()
+        .checked_add_signed(Duration::hours(1))
+        .unwrap_or_else(Utc::now);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Essentially infallible"
+    )]
     let access_claims = Claims {
-        context_id: context_id.clone(),
+        context_id,
         executor_public_key: executor.clone(),
         exp: access_expiration.timestamp() as usize,
         token_type: TokenType::Access,
@@ -216,17 +245,13 @@ pub fn refresh_access_token(refresh_token: &str, store: Store) -> Result<JwtToke
     )
     .map_err(|err| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: format!("Failed to generate access token: {}", err),
+        message: format!("Failed to generate access token: {err}"),
     })?;
 
-    let payload: JwtTokenRequest = JwtTokenRequest {
-        context_id,
-        executor_public_key: executor,
-    };
-
-    let jwt_tokens = generate_jwt_tokens(payload, store.clone()).map_err(|err| ApiError {
+    let payload = JwtTokenRequest::new(context_id, executor);
+    let jwt_tokens = generate_jwt_tokens(payload, store).map_err(|err| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: format!("Failed to generate access token: {}", err),
+        message: format!("Failed to generate access token: {err}"),
     })?;
 
     Ok(JwtToken {

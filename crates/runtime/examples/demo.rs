@@ -1,4 +1,4 @@
-#![allow(unused_crate_dependencies)]
+#![allow(unused_crate_dependencies, reason = "Not actually unused")]
 
 use std::env;
 use std::fs::File;
@@ -15,7 +15,7 @@ use serde_json::{json, to_vec as to_json_vec};
 fn main() -> EyreResult<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
-        println!("Usage: {:?} <path-to-wasm>", args);
+        println!("Usage: {args:?} <path-to-wasm>");
         return Ok(());
     }
 
@@ -25,7 +25,7 @@ fn main() -> EyreResult<()> {
         eyre::bail!("KV wasm file not found");
     }
 
-    let file = File::open(&path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
+    let file = File::open(path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
 
     let mut storage = InMemoryStorage::default();
 

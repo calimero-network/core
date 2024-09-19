@@ -1,3 +1,5 @@
+#![allow(clippy::multiple_inherent_impl, reason = "Used for test-only methods")]
+
 //! Entities for the storage system.
 //!
 //! This module contains the entities that are used to represent the elements in
@@ -155,8 +157,11 @@ impl Element {
     ///
     #[must_use]
     pub fn new(path: &Path) -> Self {
-        #[allow(clippy::cast_possible_truncation)] // Impossible to overflow in normal circumstances
-        #[allow(clippy::expect_used)] // Effectively infallible here
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "Impossible to overflow in normal circumstances"
+        )]
+        #[expect(clippy::expect_used, reason = "Effectively infallible here")]
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards to before the Unix epoch!")
@@ -295,8 +300,11 @@ impl Element {
     /// This method can technically panic if the system time goes backwards, to
     /// before the Unix epoch, which should never ever happen!
     ///
-    #[allow(clippy::cast_possible_truncation)] // Impossible to overflow in normal circumstances
-    #[allow(clippy::expect_used)] // Effectively infallible here
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Impossible to overflow in normal circumstances"
+    )]
+    #[expect(clippy::expect_used, reason = "Effectively infallible here")]
     pub fn update_data(&mut self, data: Data) {
         self.data = data;
         self.is_dirty = true;

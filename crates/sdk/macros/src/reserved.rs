@@ -58,7 +58,7 @@ macro_rules! _lazy {
 
             thread_local! {
                 $(
-                    #[allow(non_upper_case_globals)]
+                    #[expect(non_upper_case_globals)]
                     pub static $name: RefCell<Rc<$ty>> = panic!("uninitialized lazy item");
                 )*
             }

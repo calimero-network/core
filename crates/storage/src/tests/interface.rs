@@ -1,5 +1,3 @@
-#![allow(non_snake_case)]
-
 use claims::{assert_none, assert_ok};
 
 use super::*;

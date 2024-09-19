@@ -46,7 +46,10 @@ impl Response {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::exhaustive_enums)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "This will only ever have these variants"
+)]
 pub enum ResponseBody {
     Result(Value),
     Error(ResponseBodyError),
@@ -89,7 +92,7 @@ pub struct SubscribeResponse {
 
 impl SubscribeResponse {
     #[must_use]
-    pub fn new(context_ids: Vec<ContextId>) -> Self {
+    pub const fn new(context_ids: Vec<ContextId>) -> Self {
         Self { context_ids }
     }
 }
@@ -112,7 +115,7 @@ pub struct UnsubscribeResponse {
 
 impl UnsubscribeResponse {
     #[must_use]
-    pub fn new(context_ids: Vec<ContextId>) -> Self {
+    pub const fn new(context_ids: Vec<ContextId>) -> Self {
         Self { context_ids }
     }
 }

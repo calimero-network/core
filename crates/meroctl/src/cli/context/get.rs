@@ -1,11 +1,11 @@
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
+use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::RequestType::GET;
-use crate::common::{get_response, multiaddr_to_url};
+use crate::common::{get_response, multiaddr_to_url, RequestType};
 use crate::config_file::ConfigFile;
 
 #[derive(Parser, Debug)]
@@ -44,20 +44,20 @@ impl GetCommand {
         match self.method {
             GetRequest::Context => {
                 self.get_context(multiaddr, &client, &config.identity)
-                    .await?
+                    .await?;
             }
             GetRequest::Users => self.get_users(multiaddr, &client, &config.identity).await?,
             GetRequest::ClientKeys => {
                 self.get_client_keys(multiaddr, &client, &config.identity)
-                    .await?
+                    .await?;
             }
             GetRequest::Storage => {
                 self.get_storage(multiaddr, &client, &config.identity)
-                    .await?
+                    .await?;
             }
             GetRequest::Identities => {
                 self.get_identities(multiaddr, &client, &config.identity)
-                    .await?
+                    .await?;
             }
         }
 
@@ -68,7 +68,7 @@ impl GetCommand {
         &self,
         multiaddr: &Multiaddr,
         client: &Client,
-        keypair: &libp2p::identity::Keypair,
+        keypair: &Keypair,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
@@ -81,7 +81,7 @@ impl GetCommand {
         &self,
         multiaddr: &Multiaddr,
         client: &Client,
-        keypair: &libp2p::identity::Keypair,
+        keypair: &Keypair,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
@@ -94,7 +94,7 @@ impl GetCommand {
         &self,
         multiaddr: &Multiaddr,
         client: &Client,
-        keypair: &libp2p::identity::Keypair,
+        keypair: &Keypair,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
@@ -107,7 +107,7 @@ impl GetCommand {
         &self,
         multiaddr: &Multiaddr,
         client: &Client,
-        keypair: &libp2p::identity::Keypair,
+        keypair: &Keypair,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
@@ -120,7 +120,7 @@ impl GetCommand {
         &self,
         multiaddr: &Multiaddr,
         client: &Client,
-        keypair: &libp2p::identity::Keypair,
+        keypair: &Keypair,
     ) -> EyreResult<()> {
         let url = multiaddr_to_url(
             multiaddr,
@@ -129,20 +129,21 @@ impl GetCommand {
         self.make_request(client, url, keypair).await
     }
 
+    #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
     async fn make_request(
         &self,
         client: &Client,
         url: reqwest::Url,
-        keypair: &libp2p::identity::Keypair,
+        keypair: &Keypair,
     ) -> EyreResult<()> {
-        let response = get_response(client, url, None::<()>, keypair, GET).await?;
+        let response = get_response(client, url, None::<()>, keypair, RequestType::Get).await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())
         }
 
         let text = response.text().await?;
-        println!("{}", text);
+        println!("{text}");
         Ok(())
     }
 }

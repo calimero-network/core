@@ -42,13 +42,13 @@ fn expected_boolean<T>(e: u32) -> T {
 
 #[must_use]
 pub fn get_executor_identity() -> [u8; 32] {
-    unsafe { sys::get_executor_identity(DATA_REGISTER) };
+    unsafe { sys::get_executor_identity(DATA_REGISTER) }
     read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
 }
 
 pub fn setup_panic_hook() {
     set_hook(Box::new(|info| {
-        #[allow(clippy::option_if_let_else)]
+        #[expect(clippy::option_if_let_else, reason = "Clearer this way")]
         let message = match info.payload().downcast_ref::<&'static str>() {
             Some(message) => *message,
             None => info
@@ -125,7 +125,7 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
 #[inline]
 #[must_use]
 pub fn input() -> Option<Vec<u8>> {
-    unsafe { sys::input(DATA_REGISTER) };
+    unsafe { sys::input(DATA_REGISTER) }
     read_register(DATA_REGISTER)
 }
 

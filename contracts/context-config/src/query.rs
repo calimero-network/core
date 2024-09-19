@@ -1,3 +1,8 @@
+#![allow(
+    clippy::multiple_inherent_impl,
+    reason = "Needed to separate NEAR functionality"
+)]
+
 use std::collections::BTreeMap;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};

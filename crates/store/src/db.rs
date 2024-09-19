@@ -38,7 +38,10 @@ pub trait Database<'a>: Debug + Send + Sync + 'static {
     fn delete(&self, col: Column, key: Slice<'_>) -> EyreResult<()>;
 
     // TODO: We should consider returning Iterator here.
-    #[allow(clippy::iter_not_returning_iterator)]
+    #[expect(
+        clippy::iter_not_returning_iterator,
+        reason = "TODO: This should be implemented"
+    )]
     fn iter(&self, col: Column) -> EyreResult<Iter<'_>>;
 
     // todo! redesign this, each DB should return a transaction

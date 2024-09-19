@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn compilation_error() {
     let error = FunctionCallError::CompilationError {
-        source: CompileError::Validate("invalid wasm".to_string()),
+        source: CompileError::Validate("invalid wasm".to_owned()),
     };
 
     let expected = json!({
@@ -24,7 +24,7 @@ fn compilation_error() {
 #[test]
 fn link_error() {
     let error = FunctionCallError::LinkError {
-        source: LinkError::Resource("missing function".to_string()),
+        source: LinkError::Resource("missing function".to_owned()),
     };
 
     let expected = json!({
@@ -42,7 +42,7 @@ fn link_error() {
 #[test]
 fn invalid_signature() {
     let error = FunctionCallError::MethodResolutionError(MethodResolutionError::InvalidSignature {
-        name: "foo".to_string(),
+        name: "foo".to_owned(),
     });
 
     let expected = json!({
@@ -65,7 +65,7 @@ fn invalid_signature() {
 #[test]
 fn method_not_found() {
     let error = FunctionCallError::MethodResolutionError(MethodResolutionError::MethodNotFound {
-        name: "bar".to_string(),
+        name: "bar".to_owned(),
     });
 
     let expected = json!({

@@ -1,4 +1,8 @@
-#![allow(unused_crate_dependencies)]
+#![allow(unused_crate_dependencies, reason = "False positives")]
+#![allow(
+    clippy::tests_outside_test_module,
+    reason = "Allowable in integration tests"
+)]
 
 #[ignore]
 #[test]
