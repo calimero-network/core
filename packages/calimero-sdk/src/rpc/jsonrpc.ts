@@ -102,7 +102,7 @@ export class JsonRpcClient implements RpcClient {
               type: 'RpcExecutionError',
               inner: response.data.error,
               code: response.data.error?.response?.status,
-              message: response.data.error?.response?.data
+              message: response.data.error?.response?.data,
             },
           };
         }
@@ -128,7 +128,7 @@ export class JsonRpcClient implements RpcClient {
           type: 'UnknownServerError',
           inner: error,
           code: error?.response?.status,
-          message: error?.response?.data
+          message: error?.response?.data,
         },
       };
     }

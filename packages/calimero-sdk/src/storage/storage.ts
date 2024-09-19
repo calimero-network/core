@@ -98,4 +98,4 @@ export const getAppEndpointKey = (): String | null => {
 export const clearJWT = () => {
   localStorage.removeItem(ACCESS_TOKEN);
   localStorage.removeItem(REFRESH_TOKEN);
-}
+};

@@ -72,7 +72,8 @@
     "clean": "pnpm rimraf lib node_modules",
     "bundlewatch": "bundlewatch",
     "prettier": "exec prettier . --write",
-    "prettier:check": "exec prettier . --check"
+    "prettier:check": "exec prettier . --check",
+    "watch": "tsc -watch"
   },
   "eslintConfig": {
     "extends": [
