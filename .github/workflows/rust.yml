@@ -17,6 +17,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+        # Install Node.js (version 20) and pnpm
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      # Install and build node-ui
+      - name: Install node-ui dependencies with pnpm
+        run: pnpm install --prefix ./node-ui
+
+      - name: Build node-ui
+        run: pnpm --filter ./node-ui run build
+
       - name: Run code style checks
         uses: ./.github/actions/style
 
