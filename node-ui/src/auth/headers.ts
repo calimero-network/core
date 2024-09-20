@@ -5,7 +5,6 @@ import { getStorageClientKey } from './storage';
 import { ClientKey } from './types';
 import { WalletType } from '../api/dataSource/NodeDataSource';
 
-
 export interface Header {
   [key: string]: string;
 }
@@ -53,4 +52,3 @@ export async function getPrivateKey(): Promise<PrivateKey | null> {
     return null;
   }
 }
-

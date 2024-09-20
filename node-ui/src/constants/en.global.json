@@ -384,7 +384,7 @@
       "contextIdentityText": "Context Identity: ",
       "buttonNextText": "Create token"
     }
-  }, 
+  },
   "setupModal": {
     "inputIdLengthError": "Application ID must be between 32 and 44 characters long.",
     "inputEncodeError": "Application ID must contain only base58 characters.",

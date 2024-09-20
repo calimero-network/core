@@ -23,7 +23,7 @@ export function SetupModal({
 
   useEffect(() => {
     setUrl(getNodeUrl());
-  }, []);
+  }, [getNodeUrl]);
 
   function validateUrl(value: string): boolean {
     try {
