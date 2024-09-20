@@ -7,6 +7,11 @@ const AUTHORIZED = 'node-authorized';
 const CLIENT_KEY = 'client-key';
 const NODE_URL = 'node-url';
 
+export interface ClientKey {
+  privateKey: string;
+  publicKey: string;
+}
+
 export const getAppEndpointKey = (): string | null => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
@@ -69,4 +74,18 @@ const verifyNodeUrl = async (
   } catch (error) {
     return false;
   }
+};
+
+export const getStorageClientKey = (): ClientKey | null => {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const clientKey = localStorage.getItem(CLIENT_KEY);
+    if (!clientKey) {
+      return null;
+    }
+    let clientKeystore: ClientKey = JSON.parse(clientKey);
+    if (clientKeystore) {
+      return clientKeystore;
+    }
+  }
+  return null;
 };
