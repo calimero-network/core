@@ -27,6 +27,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Install Node.js (version 20) and pnpm
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      # Install and build node-ui
+      - name: Install node-ui dependencies with pnpm
+        run: pnpm install --prefix ./node-ui
+
+      - name: Build node-ui
+        run: pnpm --filter ./node-ui run build
+      
+      - name: Install rustup and Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source $HOME/.cargo/env
+          rustup toolchain install stable
+          rustup default stable
+
       - name: Setup rust toolchain
         run: rustup toolchain install stable --profile minimal
 
@@ -56,13 +79,12 @@ jobs:
           echo "artifact_path=meroctl_${{ matrix.target }}.tar.gz" >> $GITHUB_OUTPUT
           echo "target=${{ matrix.target }}" >> $GITHUB_OUTPUT
 
-      - name: Cache build artifact
-        uses: actions/cache@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
+          name: meroctl_${{ matrix.target }}.tar.gz
           path: meroctl_${{ matrix.target }}.tar.gz
-          key: build-artifact-meroctl-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-meroctl-${{ matrix.target }}
+          retention-days: 2
 
   upload_branch_artifact:
     runs-on: ubuntu-latest
@@ -73,26 +95,16 @@ jobs:
     if: ${{ github.ref != 'refs/heads/master' }}
 
     steps:
-      - name: Restore build artifact
-        uses: actions/cache@v4
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
         with:
-          path: meroctl_${{ matrix.target }}.tar.gz
-          key: build-artifact-meroctl-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-meroctl-${{ matrix.target }}
+          name: meroctl_${{ matrix.target }}.tar.gz
 
       - name: Sanitize ref name
         id: sanitize
         run: |
           sanitized_ref_name=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9_-]/-/g; s/^-*//; s/-*$//')
           echo "sanitized_ref_name=${sanitized_ref_name}" >> $GITHUB_OUTPUT
-
-      - name: Upload meroctl as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: meroctl_${{ steps.sanitize.outputs.sanitized_ref_name }}_${{ matrix.target }}.tar.gz
-          path: meroctl_${{ matrix.target }}.tar.gz
-          retention-days: 2
 
   create_release:
     runs-on: ubuntu-latest
@@ -137,13 +149,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifact
-        uses: actions/cache@v4
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
         with:
-          path: meroctl_${{ matrix.target }}.tar.gz
-          key: build-artifact-meroctl-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-meroctl-${{ matrix.target }}
+          name: meroctl_${{ matrix.target }}.tar.gz
 
       - name: Check if artifact exists in release
         id: check_artifact

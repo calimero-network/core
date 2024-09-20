@@ -196,6 +196,7 @@ pub enum SignatureMetadataEnum {
     NEAR(NearSignatureMessageMetadata),
     ETH(EthSignatureMessageMetadata),
     STARKNET(StarknetSignatureMessageMetadata),
+    ICP(ICPSignatureMessageMetadata),
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,14 +211,29 @@ pub struct NearSignatureMessageMetadata {
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-#[allow(clippy::empty_structs_with_brackets)]
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "Needed for serialisation"
+)]
 pub struct EthSignatureMessageMetadata {}
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::exhaustive_structs)]
-#[allow(clippy::empty_structs_with_brackets)]
+#[non_exhaustive]
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "Needed for serialisation"
+)]
 pub struct StarknetSignatureMessageMetadata {}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[expect(clippy::exhaustive_structs, reason = "Considered to be exhaustive")]
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "Needed for serialisation"
+)]
+pub struct ICPSignatureMessageMetadata {}
 
 // Intermediate structs for initial parsing
 #[derive(Debug, Deserialize)]
@@ -240,13 +256,25 @@ pub enum WalletSignature {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct JwtTokenRequest {
     pub context_id: ContextId,
     pub executor_public_key: String,
 }
 
+impl JwtTokenRequest {
+    #[must_use]
+    pub const fn new(context_id: ContextId, executor_public_key: String) -> Self {
+        Self {
+            context_id,
+            executor_public_key,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct JwtRefreshRequest {
     pub refresh_token: String,
 }
@@ -391,20 +419,53 @@ impl CreateContextResponse {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct JoinContextRequest {
     pub private_key: PrivateKey,
     pub invitation_payload: ContextInvitationPayload,
 }
 
+impl JoinContextRequest {
+    #[must_use]
+    pub const fn new(
+        private_key: PrivateKey,
+        invitation_payload: ContextInvitationPayload,
+    ) -> Self {
+        Self {
+            private_key,
+            invitation_payload,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct JoinContextResponseData {
     pub context_id: ContextId,
     pub member_public_key: PublicKey,
 }
 
+impl JoinContextResponseData {
+    #[must_use]
+    pub const fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
+        Self {
+            context_id,
+            member_public_key,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct JoinContextResponse {
     pub data: Option<JoinContextResponseData>,
+}
+
+impl JoinContextResponse {
+    #[must_use]
+    pub const fn new(data: Option<JoinContextResponseData>) -> Self {
+        Self { data }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

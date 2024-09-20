@@ -31,13 +31,14 @@ pub struct JwtRefreshToken {
 }
 
 impl JwtRefreshToken {
-    pub fn refresh_token(&self) -> &Vec<u8> {
+    #[must_use]
+    pub const fn refresh_token(&self) -> &Vec<u8> {
         &self.refresh_token
     }
 }
 
 pub fn create_refresh_token(
-    store: Store,
+    store: &Store,
     refresh_token: Vec<u8>,
     db_key: &[u8; 32],
 ) -> eyre::Result<()> {
@@ -47,12 +48,15 @@ pub fn create_refresh_token(
     let mut handle = store.handle();
 
     match handle.put(&entry, &jwt_refresh_token) {
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
         Err(e) => Err(e.into()),
     }
 }
 
-pub fn get_refresh_token(store: Store, db_key: &[u8; 32]) -> eyre::Result<Option<JwtRefreshToken>> {
+pub fn get_refresh_token(
+    store: &Store,
+    db_key: &[u8; 32],
+) -> eyre::Result<Option<JwtRefreshToken>> {
     let entry = JwtRefreshTokenEntry::new(*db_key);
     let handle = store.handle();
 
@@ -63,12 +67,12 @@ pub fn get_refresh_token(store: Store, db_key: &[u8; 32]) -> eyre::Result<Option
     }
 }
 
-pub fn delete_refresh_token(store: Store, db_key: &[u8; 32]) -> eyre::Result<()> {
+pub fn delete_refresh_token(store: &Store, db_key: &[u8; 32]) -> eyre::Result<()> {
     let entry = JwtRefreshTokenEntry::new(*db_key);
     let mut handle = store.handle();
 
     match handle.delete(&entry) {
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
         Err(e) => Err(e.into()),
     }
 }

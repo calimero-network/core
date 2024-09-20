@@ -2,10 +2,14 @@ use std::collections::HashSet;
 use std::io::Error as IoError;
 use std::sync::Arc;
 
-use calimero_blobstore::BlobManager;
+use calimero_blobstore::{BlobManager, Size};
 use calimero_context_config::client::config::ContextConfigClientConfig;
 use calimero_context_config::client::{ContextConfigClient, RelayOrNearTransport};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
+use calimero_context_config::types::{
+    Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
+    ApplicationSource as ApplicationSourceConfig,
+};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, Finality, ServerSender};
@@ -129,6 +133,7 @@ impl ContextManager {
         Ok(())
     }
 
+    #[must_use]
     pub fn new_identity(&self) -> PrivateKey {
         PrivateKey::random(&mut rand::thread_rng())
     }
@@ -143,6 +148,7 @@ impl ContextManager {
         let (context_secret, identity_secret) = {
             let mut rng = rand::thread_rng();
 
+            #[expect(clippy::option_if_let_else, reason = "Clearer this way")]
             let context_secret = match seed {
                 Some(seed) => PrivateKey::random(&mut StdRng::from_seed(seed)),
                 None => PrivateKey::random(&mut rng),
@@ -162,11 +168,7 @@ impl ContextManager {
                 bail!("Context already exists on node.")
             }
 
-            Context {
-                id: context_id,
-                application_id,
-                last_transaction_hash: Default::default(),
-            }
+            Context::new(context_id, application_id, Hash::default())
         };
 
         let Some(application) = self.get_application(&context.application_id)? else {
@@ -185,19 +187,15 @@ impl ContextManager {
                     .public_key()
                     .rt()
                     .expect("infallible conversion"),
-                calimero_context_config::types::Application {
-                    id: application.id.rt().expect("infallible conversion"),
-                    blob: application.blob.rt().expect("infallible conversion"),
-                    size: application.size,
-                    source: calimero_context_config::types::ApplicationSource(
-                        application.source.to_string().into(),
-                    ),
-                    metadata: calimero_context_config::types::ApplicationMetadata(Repr::new(
-                        application.metadata.into(),
-                    )),
-                },
+                ApplicationConfig::new(
+                    application.id.rt().expect("infallible conversion"),
+                    application.blob.rt().expect("infallible conversion"),
+                    application.size,
+                    ApplicationSourceConfig(application.source.to_string().into()),
+                    ApplicationMetadataConfig(Repr::new(application.metadata.into())),
+                ),
             )
-            .send(|b| SigningKey::from_bytes(&*context_secret).sign(b))
+            .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
             .await?;
 
         self.add_context(&context, identity_secret, true).await?;
@@ -226,20 +224,13 @@ impl ContextManager {
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
 
-        handle.put(
-            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
-            &ContextIdentityValue {
-                private_key: Some(*identity_secret),
-            },
-        )?;
-
         if is_new {
             handle.put(
                 &ContextConfigKey::new(context.id),
-                &ContextConfigValue {
-                    network: self.client_config.new.network.as_str().into(),
-                    contract: self.client_config.new.contract_id.as_str().into(),
-                },
+                &ContextConfigValue::new(
+                    self.client_config.new.network.as_str().into(),
+                    self.client_config.new.contract_id.as_str().into(),
+                ),
             )?;
 
             handle.put(
@@ -252,6 +243,13 @@ impl ContextManager {
 
             self.subscribe(&context.id).await?;
         }
+
+        handle.put(
+            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
+            &ContextIdentityValue {
+                private_key: Some(*identity_secret),
+            },
+        )?;
 
         Ok(())
     }
@@ -279,7 +277,7 @@ impl ContextManager {
             .config_client
             .query(network_id.into(), contract_id.into());
 
-        for (offset, length) in (0..).map(|i| (i * 100, 100)) {
+        for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
             let members = client
                 .members(
                     context_id.rt().expect("infallible conversion"),
@@ -314,16 +312,13 @@ impl ContextManager {
 
         let application = response.parse()?;
 
-        let context = Context {
-            id: context_id,
-            application_id: application.id.as_bytes().into(),
-            last_transaction_hash: Default::default(),
-        };
+        let context = Context::new(
+            context_id,
+            application.id.as_bytes().into(),
+            Hash::default(),
+        );
 
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
-
-        self.add_context(&context, identity_secret, !context_exists)
-            .await?;
 
         if !self.is_application_installed(&context.application_id)? {
             let source = Url::parse(&application.source.0)?;
@@ -345,6 +340,9 @@ impl ContextManager {
             }
         }
 
+        self.add_context(&context, identity_secret, !context_exists)
+            .await?;
+
         let _ = self.state.write().await.pending_catchup.insert(context_id);
 
         info!(%context_id, "Joined context with pending catchup");
@@ -352,6 +350,7 @@ impl ContextManager {
         Ok(Some((context_id, invitee_id)))
     }
 
+    #[expect(clippy::similar_names, reason = "Different enough")]
     pub async fn invite_to_context(
         &self,
         context_id: ContextId,
@@ -421,11 +420,11 @@ impl ContextManager {
             return Ok(None);
         };
 
-        Ok(Some(Context {
-            id: *context_id,
-            application_id: ctx_meta.application.application_id(),
-            last_transaction_hash: ctx_meta.last_transaction_hash.into(),
-        }))
+        Ok(Some(Context::new(
+            *context_id,
+            ctx_meta.application.application_id(),
+            ctx_meta.last_transaction_hash.into(),
+        )))
     }
 
     pub async fn delete_context(&self, context_id: &ContextId) -> EyreResult<bool> {
@@ -473,7 +472,7 @@ impl ContextManager {
             let mut iter = handle.iter::<ContextStateKey>()?;
 
             let first = iter
-                .seek(ContextStateKey::new(*context_id, [0; 32].into()))
+                .seek(ContextStateKey::new(*context_id, [0; 32]))
                 .transpose();
 
             for k in first.into_iter().chain(iter.keys()) {
@@ -499,7 +498,7 @@ impl ContextManager {
             let mut iter = handle.iter::<ContextTransactionKey>()?;
 
             let first = iter
-                .seek(ContextTransactionKey::new(*context_id, [0; 32].into()))
+                .seek(ContextTransactionKey::new(*context_id, [0; 32]))
                 .transpose();
 
             for k in first.into_iter().chain(iter.keys()) {
@@ -608,21 +607,21 @@ impl ContextManager {
             if let Some(key) = iter.seek(ContextMetaKey::new(start))? {
                 let value = iter.read()?;
 
-                contexts.push(Context {
-                    id: key.context_id(),
-                    application_id: value.application.application_id(),
-                    last_transaction_hash: value.last_transaction_hash.into(),
-                });
+                contexts.push(Context::new(
+                    key.context_id(),
+                    value.application.application_id(),
+                    value.last_transaction_hash.into(),
+                ));
             }
         }
 
         for (k, v) in iter.entries() {
             let (k, v) = (k?, v?);
-            contexts.push(Context {
-                id: k.context_id(),
-                application_id: v.application.application_id(),
-                last_transaction_hash: v.last_transaction_hash.into(),
-            });
+            contexts.push(Context::new(
+                k.context_id(),
+                v.application.application_id(),
+                v.last_transaction_hash.into(),
+            ));
         }
 
         Ok(contexts)
@@ -678,6 +677,8 @@ impl ContextManager {
         path: Utf8PathBuf,
         metadata: Vec<u8>,
     ) -> EyreResult<ApplicationId> {
+        let path = path.canonicalize_utf8()?;
+
         let file = File::open(&path).await?;
 
         let meta = file.metadata().await?;
@@ -686,10 +687,7 @@ impl ContextManager {
 
         let (blob_id, size) = self
             .blob_manager
-            .put_sized(
-                Some(calimero_blobstore::Size::Exact(expected_size)),
-                file.compat(),
-            )
+            .put_sized(Some(Size::Exact(expected_size)), file.compat())
             .await?;
 
         if size != expected_size {
@@ -703,7 +701,7 @@ impl ContextManager {
         self.install_application(blob_id, size, &(uri.as_str().parse()?), metadata)
     }
 
-    #[allow(clippy::similar_names)]
+    #[expect(clippy::similar_names, reason = "Different enough")]
     pub async fn install_application_from_url(
         &self,
         url: Url,
@@ -720,7 +718,7 @@ impl ContextManager {
         let (blob_id, size) = self
             .blob_manager
             .put_sized(
-                expected_size.clone().map(calimero_blobstore::Size::Exact),
+                expected_size.map(Size::Exact),
                 response
                     .bytes_stream()
                     .map_err(IoError::other)

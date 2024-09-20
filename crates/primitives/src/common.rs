@@ -7,7 +7,7 @@ pub const fn bool_true() -> bool {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(remote = "Result")]
-#[allow(clippy::exhaustive_enums)]
+#[expect(clippy::exhaustive_enums, reason = "This cannot have more variants")]
 pub enum ResultAlt<T, E> {
     #[serde(rename = "result")]
     Ok(T),

@@ -58,19 +58,19 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::Add {
+                    ContextRequestKind::Add {
                         author_id: alice_cx_id,
-                        application: Application {
-                            id: application_id,
-                            blob: blob_id,
-                            size: 0,
-                            source: Default::default(),
-                            metadata: Default::default(),
-                        },
+                        application: Application::new(
+                            application_id,
+                            blob_id,
+                            0,
+                            Default::default(),
+                            Default::default(),
+                        ),
                     },
-                });
+                ));
 
                 Request::new(alice_cx_id.rt()?, kind)
             },
@@ -94,19 +94,19 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::Add {
+                    ContextRequestKind::Add {
                         author_id: alice_cx_id,
-                        application: Application {
-                            id: application_id,
-                            blob: blob_id,
-                            size: 0,
-                            source: Default::default(),
-                            metadata: Default::default(),
-                        },
+                        application: Application::new(
+                            application_id,
+                            blob_id,
+                            0,
+                            Default::default(),
+                            Default::default(),
+                        ),
                     },
-                });
+                ));
 
                 Request::new(context_id.rt()?, kind)
             },
@@ -122,19 +122,19 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::Add {
+                    ContextRequestKind::Add {
                         author_id: alice_cx_id,
-                        application: Application {
-                            id: application_id,
-                            blob: blob_id,
-                            size: 0,
-                            source: Default::default(),
-                            metadata: Default::default(),
-                        },
+                        application: Application::new(
+                            application_id,
+                            blob_id,
+                            0,
+                            Default::default(),
+                            Default::default(),
+                        ),
                     },
-                });
+                ));
 
                 Request::new(context_id.rt()?, kind)
             },
@@ -198,12 +198,12 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::AddMembers {
+                    ContextRequestKind::AddMembers {
                         members: vec![bob_cx_id].into(),
                     },
-                });
+                ));
 
                 Request::new(alice_cx_id.rt()?, kind)
             },
@@ -254,12 +254,12 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::AddMembers {
+                    ContextRequestKind::AddMembers {
                         members: vec![carol_cx_id].into(),
                     },
-                });
+                ));
 
                 Request::new(bob_cx_id.rt()?, kind)
             },
@@ -283,12 +283,12 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::Grant {
+                    ContextRequestKind::Grant {
                         capabilities: (vec![(bob_cx_id, Capability::ManageMembers)]).into(),
                     },
-                });
+                ));
 
                 Request::new(alice_cx_id.rt()?, kind)
             },
@@ -310,12 +310,12 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::AddMembers {
+                    ContextRequestKind::AddMembers {
                         members: vec![carol_cx_id].into(),
                     },
-                });
+                ));
 
                 Request::new(bob_cx_id.rt()?, kind)
             },
@@ -380,18 +380,18 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::UpdateApplication {
-                        application: Application {
-                            id: new_application_id,
-                            blob: new_blob_id,
-                            size: 0,
-                            source: Default::default(),
-                            metadata: Default::default(),
-                        },
+                    ContextRequestKind::UpdateApplication {
+                        application: Application::new(
+                            new_application_id,
+                            new_blob_id,
+                            0,
+                            Default::default(),
+                            Default::default(),
+                        ),
                     },
-                });
+                ));
 
                 Request::new(bob_cx_id.rt()?, kind)
             },
@@ -427,18 +427,18 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::UpdateApplication {
-                        application: Application {
-                            id: new_application_id,
-                            blob: new_blob_id,
-                            size: 0,
-                            source: Default::default(),
-                            metadata: Default::default(),
-                        },
+                    ContextRequestKind::UpdateApplication {
+                        application: Application::new(
+                            new_application_id,
+                            new_blob_id,
+                            0,
+                            Default::default(),
+                            Default::default(),
+                        ),
                     },
-                });
+                ));
 
                 Request::new(alice_cx_id.rt()?, kind)
             },
@@ -472,12 +472,12 @@ async fn main() -> eyre::Result<()> {
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
             &{
-                let kind = RequestKind::Context(ContextRequest {
+                let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    kind: ContextRequestKind::RemoveMembers {
+                    ContextRequestKind::RemoveMembers {
                         members: vec![bob_cx_id].into(),
                     },
-                });
+                ));
 
                 Request::new(alice_cx_id.rt()?, kind)
             },
@@ -542,12 +542,12 @@ async fn main() -> eyre::Result<()> {
 
     let req = node1.call(contract.id(), "mutate").args_json(Signed::new(
         &{
-            let kind = RequestKind::Context(ContextRequest {
+            let kind = RequestKind::Context(ContextRequest::new(
                 context_id,
-                kind: ContextRequestKind::RemoveMembers {
+                ContextRequestKind::RemoveMembers {
                     members: vec![carol_cx_id].into(),
                 },
-            });
+            ));
 
             Request::new(alice_cx_id.rt()?, kind)
         },
@@ -578,6 +578,24 @@ async fn main() -> eyre::Result<()> {
         .json()?;
 
     assert_eq!(res, [alice_cx_id, carol_cx_id]);
+
+    let state = contract.view_state().await?;
+
+    assert_eq!(state.len(), 11);
+
+    let res = contract
+        .call("erase")
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+
+    assert!(res.logs().contains(&"Erasing contract"), "{:?}", res.logs());
+
+    let state = contract.view_state().await?;
+
+    assert_eq!(state.len(), 1);
+    assert_eq!(state.get(&b"STATE"[..]).map(|v| v.len()), Some(24));
 
     Ok(())
 }

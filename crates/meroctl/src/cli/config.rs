@@ -1,4 +1,4 @@
-#![allow(unused_results)]
+#![allow(unused_results, reason = "Occurs in macro")]
 
 use core::net::IpAddr;
 use std::fs::{read_to_string, write};
@@ -67,7 +67,7 @@ pub enum BootstrapNetwork {
 #[warn(unused_results)]
 impl ConfigCommand {
     // TODO: Consider splitting this long function into multiple parts.
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     pub fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
         let path = root_args
             .home
@@ -79,7 +79,7 @@ impl ConfigCommand {
             read_to_string(&path).map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
         let mut doc = toml_str.parse::<DocumentMut>()?;
 
-        #[allow(clippy::print_stdout)]
+        #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
         if self.print {
             println!("{doc}");
             return Ok(());
@@ -115,7 +115,7 @@ impl ConfigCommand {
                             new_addr.push(Protocol::Ip6(ipv6_host));
                         }
                         (Protocol::Tcp(_) | Protocol::Udp(_), _, _, Some(new_port)) => {
-                            #[allow(clippy::wildcard_enum_match_arm)]
+                            #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
                             new_addr.push(match &protocol {
                                 Protocol::Tcp(_) => Protocol::Tcp(new_port),
                                 Protocol::Udp(_) => Protocol::Udp(new_port),

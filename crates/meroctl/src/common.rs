@@ -7,7 +7,7 @@ use reqwest::{Client, Response, Url};
 use serde::Serialize;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
-    #[allow(clippy::wildcard_enum_match_arm)]
+    #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
     let (ip, port, scheme) = multiaddr.iter().fold(
         (None, None, None),
         |(ip, port, scheme), protocol| match protocol {
@@ -30,20 +30,23 @@ pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url
     Ok(url)
 }
 
-pub async fn get_response(
+pub async fn get_response<S>(
     client: &Client,
     url: Url,
-    body: Option<impl Serialize>,
+    body: Option<S>,
     keypair: &Keypair,
     req_type: RequestType,
-) -> EyreResult<Response> {
+) -> EyreResult<Response>
+where
+    S: Serialize,
+{
     let timestamp = Utc::now().timestamp().to_string();
     let signature = keypair.sign(timestamp.as_bytes())?;
 
     let mut builder = match req_type {
-        RequestType::GET => client.get(url),
-        RequestType::POST => client.post(url).json(&body),
-        RequestType::DELETE => client.delete(url),
+        RequestType::Get => client.get(url),
+        RequestType::Post => client.post(url).json(&body),
+        RequestType::Delete => client.delete(url),
     };
 
     builder = builder
@@ -57,7 +60,7 @@ pub async fn get_response(
 }
 
 pub enum RequestType {
-    GET,
-    POST,
-    DELETE,
+    Get,
+    Post,
+    Delete,
 }

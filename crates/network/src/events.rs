@@ -1,3 +1,8 @@
+#![allow(
+    clippy::allow_attributes,
+    reason = "Needed for lints that don't follow expect"
+)]
+
 use eyre::eyre;
 use libp2p::core::ConnectedPoint;
 use multiaddr::Protocol;
@@ -20,12 +25,15 @@ pub trait EventHandler<E> {
     async fn handle(&mut self, event: E);
 }
 
-#[allow(clippy::multiple_inherent_impl)]
+#[allow(
+    clippy::multiple_inherent_impl,
+    reason = "Currently necessary due to code structure"
+)]
 impl EventLoop {
     // TODO: Consider splitting this long function into multiple parts.
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     pub(super) async fn handle_swarm_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
-        #[allow(clippy::wildcard_enum_match_arm)]
+        #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
         match event {
             SwarmEvent::Behaviour(event) => match event {
                 BehaviourEvent::Dcutr(event) => EventHandler::handle(self, event).await,
@@ -181,7 +189,7 @@ impl TryFrom<&Multiaddr> for RelayedMultiaddr {
         let mut iter = value.iter();
 
         while let Some(protocol) = iter.next() {
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm, reason = "This is reasonable here")]
             match protocol {
                 Protocol::P2pCircuit => {
                     if peer_ids.is_empty() {

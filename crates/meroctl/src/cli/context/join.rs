@@ -7,8 +7,7 @@ use reqwest::Client;
 use tracing::info;
 
 use crate::cli::RootArgs;
-use crate::common::RequestType::POST;
-use crate::common::{get_response, multiaddr_to_url};
+use crate::common::{get_response, multiaddr_to_url, RequestType};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -37,12 +36,12 @@ impl JoinCommand {
         let response = get_response(
             &client,
             url,
-            Some(JoinContextRequest {
-                private_key: self.private_key,
-                invitation_payload: self.invitation_payload,
-            }),
+            Some(JoinContextRequest::new(
+                self.private_key,
+                self.invitation_payload,
+            )),
             &config.identity,
-            POST,
+            RequestType::Post,
         )
         .await?;
 

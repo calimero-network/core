@@ -48,7 +48,7 @@ pub async fn delete_did_handler(
 ) -> impl IntoResponse {
     let result = delete_did(&state.store.clone()).map_err(parse_api_error);
     match result {
-        Ok(_) => ApiResponse {
+        Ok(()) => ApiResponse {
             payload: DeleteDidResponse { data: Empty {} },
         }
         .into_response(),

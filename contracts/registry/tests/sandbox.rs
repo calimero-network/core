@@ -1,12 +1,14 @@
 #![allow(unused_crate_dependencies)]
 
+use core::error::Error;
+
 use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract};
 use serde_json::{json, Value};
 use tokio::fs::read as async_read;
 
 #[tokio::test]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let worker = near_workspaces::sandbox().await?;
     let wasm = async_read("res/calimero_registry.wasm").await?;
     let contract = worker.dev_deploy(&wasm).await?;
@@ -30,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_add_package_and_release(
     user: &Account,
     contract: &Contract,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn Error>> {
     let package_id: Value = user
         .call(contract.id(), "add_package")
         .args_json(json!({
@@ -50,7 +52,7 @@ async fn test_add_package_and_release(
         .await?
         .json()?;
 
-    assert_eq!(package["name"], "application".to_string());
+    assert_eq!(package["name"], "application".to_owned());
     assert_eq!(package["owner"], user.id().to_string());
 
     drop(
@@ -75,7 +77,7 @@ async fn test_add_package_and_release(
         .await?
         .json()?;
 
-    assert_eq!(release["version"], "0.1.0".to_string());
+    assert_eq!(release["version"], "0.1.0".to_owned());
 
     Ok(())
 }

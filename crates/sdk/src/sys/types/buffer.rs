@@ -41,7 +41,7 @@ impl<'a, T> Slice<'a, T> {
     // TODO: but this function is meant to be infallible. That is a concern, as
     // TODO: we want to eliminate all potential panics. This needs future
     // TODO: assessment.
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation, reason = "TODO: See above")]
     #[inline]
     pub const fn len(&self) -> usize {
         self.len as usize

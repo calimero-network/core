@@ -105,7 +105,10 @@ pub enum HostError {
 }
 
 #[derive(Copy, Clone, Debug, Serialize)]
-#[allow(clippy::exhaustive_enums)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "There are no more possible variants"
+)]
 pub enum PanicContext {
     Guest,
     Host,
@@ -176,7 +179,10 @@ impl From<ExportError> for FunctionCallError {
 }
 
 // TODO: We should change this to use TryFrom instead of panicking in a From.
-#[allow(clippy::fallible_impl_from)]
+#[expect(
+    clippy::fallible_impl_from,
+    reason = "TODO: This needs to be refactored"
+)]
 impl From<InstantiationError> for FunctionCallError {
     fn from(err: InstantiationError) -> Self {
         match err {

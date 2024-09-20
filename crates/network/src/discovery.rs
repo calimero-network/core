@@ -31,9 +31,9 @@ impl EventLoop {
     // Sends rendezvous discovery requests to all rendezvous peers which are not throttled.
     // If rendezvous peer is not connected, it will be dialed which will trigger the discovery during identify exchange.
     // TODO: Consider splitting this function up to reduce complexity.
-    #[allow(clippy::cognitive_complexity)]
+    #[expect(clippy::cognitive_complexity, reason = "TODO: Will be refactored")]
     pub(crate) fn broadcast_rendezvous_discoveries(&mut self) {
-        #[allow(clippy::needless_collect)]
+        #[expect(clippy::needless_collect, reason = "Necessary here; false positive")]
         for peer_id in self
             .discovery
             .state
@@ -101,9 +101,9 @@ impl EventLoop {
     // Sends rendezvous registrations request to all rendezvous peers which require registration.
     // If rendezvous peer is not connected, it will be dialed which will trigger the registration during identify exchange.
     // TODO: Consider splitting this function up to reduce complexity.
-    #[allow(clippy::cognitive_complexity)]
+    #[expect(clippy::cognitive_complexity, reason = "TODO: Will be refactored")]
     pub(crate) fn broadcast_rendezvous_registrations(&mut self) {
-        #[allow(clippy::needless_collect)]
+        #[expect(clippy::needless_collect, reason = "Necessary here; false positive")]
         for peer_id in self
             .discovery
             .state

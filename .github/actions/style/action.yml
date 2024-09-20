@@ -1,0 +1,70 @@
+name: Code Style Checks
+description: 'Run linter and formatter'
+runs:
+  using: 'composite'
+  steps:
+    # Check for Markdown/MDX changes
+    - name: Check for Markdown/MDX changes
+      shell: bash
+      run: |
+        echo "Checking for Markdown/MDX changes..."
+        if git diff --cached --name-only | grep -qE '\.mdx?$'; then
+           if ! pnpm check:md; then
+            echo "Markdown or MDX files are not properly formatted."
+            exit 1  # Exit with a non-zero status code to indicate failure
+           fi
+        fi
+
+    # Check for Rust code changes and run Rust formatting
+    - name: Check for Rust code changes
+      shell: bash
+      run: |
+        echo "Checking for Rust code changes..."
+        if git diff --cached --name-only | grep -qE '\.rs$'; then
+          echo "Running checks for the Rust code..."
+          rustup install nightly
+          if ! cargo +nightly fmt -- --check; then
+            echo "Rust code is not properly formatted."
+            exit 1  # Exit with a non-zero status code if formatting fails
+          fi
+          if ! cargo clippy -- -D warnings; then
+            echo "Rust code is not properly linted."
+            exit 1  # Exit with a non-zero status code if formatting fails
+          fi
+        fi
+
+    # Check for changes in the 'node-ui' directory and run formatting/linting
+    - name: Check for changes in node-ui
+      shell: bash
+      run: |
+        echo "Checking for changes in node-ui..."
+        if git diff --cached --name-only | grep -q '^node-ui/'; then
+          cd node-ui
+          if ! pnpm prettier:check .; then
+            echo "Prettier found unformatted files in node-ui."
+            exit 1  # Fail if Prettier detects issues
+          fi
+          # TODO: Uncomment after fixing linting issues
+          # if ! pnpm lint; then
+          #   echo "Linting issues found in node-ui."
+          #   exit 1  # Fail if linter detects issues
+          # fi
+        fi
+
+    # Check for changes in the 'packages/calimero-sdk' directory and run formatting/linting
+    - name: Check for changes in calimero-sdk
+      shell: bash
+      run: |
+        echo "Checking for changes in calimero-sdk..."
+        if git diff --cached --name-only | grep -q '^packages/calimero-sdk/'; then
+          cd packages/calimero-sdk
+          if ! pnpm prettier:check .; then
+            echo "Prettier found unformatted files in calimero-sdk."
+            exit 1  # Fail if Prettier detects issues
+          fi
+          # TODO: Uncomment after fixing linting issues
+          # if ! pnpm lint; then
+          #   echo "Linting issues found in calimero-sdk."
+          #   exit 1  # Fail if linter detects issues
+          # fi
+        fi

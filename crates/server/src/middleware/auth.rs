@@ -1,7 +1,7 @@
 use core::convert::Infallible;
+use core::error::Error;
 use core::fmt::{self, Display, Formatter};
 use core::task::{Context, Poll};
-use std::error::Error;
 
 use axum::body::Body;
 use axum::extract::Request;
@@ -62,16 +62,16 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, request: Request<Body>) -> Self::Future {
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
         // todo! experiment with Interior<Store>: WriteLayer<Interior>
-        let result = auth(request.headers(), &self.store.clone());
+        let result = auth(req.headers(), &self.store.clone());
 
         if let Err(err) = result {
             let error_response = err.into_response();
             return Box::pin(async move { Ok(error_response) });
         }
 
-        let future = self.inner.call(request);
+        let future = self.inner.call(req);
 
         Box::pin(async move {
             let response: Response = future.await?;
@@ -95,7 +95,7 @@ pub fn auth(headers: &HeaderMap, store: &Store) -> Result<(), UnauthorizedError<
         UnauthorizedError::new("Failed to extract authentication headers.")
     })?;
 
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss, reason = "Essentially infallible")]
     let client_key = ClientKey::new(
         auth_headers.wallet_type,
         auth_headers.signing_key.clone(),

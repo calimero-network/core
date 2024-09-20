@@ -18,6 +18,7 @@ use web3::signing::{keccak256, recover};
 use crate::admin::handlers::root_keys::store_root_key;
 use crate::admin::service::{parse_api_error, ApiError};
 use crate::admin::storage::root_key::{get_root_key, has_near_account_root_key};
+use crate::verifywalletsignatures::icp::verify_internet_identity_signature;
 use crate::verifywalletsignatures::near::{has_near_key, verify_near_signature};
 use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_metamask_signature};
 
@@ -32,7 +33,7 @@ use crate::verifywalletsignatures::starknet::{verify_argent_signature, verify_me
 /// # Returns
 /// * `Ok(true)` - If the signature is valid.
 /// * `Err(ApiError)` - If the signature is invalid or the wallet type is unsupported.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "TODO: Refactor this function")]
 pub async fn verify_node_signature(
     wallet_metadata: &WalletMetadata,
     wallet_signature: &WalletSignature,
@@ -40,7 +41,7 @@ pub async fn verify_node_signature(
 ) -> Result<bool, ApiError> {
     match wallet_metadata.wallet_type {
         WalletType::NEAR { .. } => {
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
             let near_metadata: &NearSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::NEAR(metadata) => metadata,
                 SignatureMetadataEnum::ETH(_) => {
@@ -82,7 +83,7 @@ pub async fn verify_node_signature(
             Ok(true)
         }
         WalletType::ETH { .. } => {
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
             let _eth_metadata: &EthSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::ETH(metadata) => Ok(metadata), // Return Ok for the valid case
                 SignatureMetadataEnum::NEAR(_) => Err(ApiError {
@@ -113,7 +114,7 @@ pub async fn verify_node_signature(
             Ok(true)
         }
         WalletType::STARKNET { ref wallet_name } => {
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
             let _sn_metadata: &StarknetSignatureMessageMetadata = match &payload.metadata {
                 SignatureMetadataEnum::STARKNET(metadata) => metadata,
                 _ => {
@@ -124,7 +125,7 @@ pub async fn verify_node_signature(
                 }
             };
 
-            #[allow(clippy::wildcard_enum_match_arm)]
+            #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
             let (message_hash, signature) = match wallet_signature {
                 WalletSignature::StarknetPayload(payload) => {
                     (&payload.message_hash, &payload.signature)
@@ -169,7 +170,7 @@ pub async fn verify_node_signature(
                     };
                     verify_metamask_signature(
                         message_hash,
-                        &signature,
+                        signature,
                         &wallet_metadata.verifying_key,
                         &payload.message.message,
                         wallet_address,
@@ -186,6 +187,38 @@ pub async fn verify_node_signature(
 
             if let Err(err) = result {
                 return Err(parse_api_error(err));
+            }
+
+            Ok(true)
+        }
+        WalletType::ICP {
+            ref canister_id,
+            ref wallet_name,
+        } => {
+            let WalletSignature::String(delegation_chain) = wallet_signature else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid wallet signature type.".into(),
+                });
+            };
+
+            if wallet_name == "Internet Identity" {
+                let signed_delegation_chain_json =
+                    serde_json::from_str(delegation_chain).map_err(|_| ApiError {
+                        status_code: StatusCode::BAD_REQUEST,
+                        message: "Failed to serialize delegation chain.".into(),
+                    })?;
+                verify_internet_identity_signature(
+                    payload.message.message.as_bytes(),
+                    signed_delegation_chain_json,
+                    canister_id,
+                )
+                .await?;
+            } else {
+                return Err(ApiError {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Invalid wallet name for Internet Computer.".into(),
+                });
             }
 
             Ok(true)
@@ -364,7 +397,7 @@ pub async fn validate_root_key_exists(
                 .as_deref()
                 .ok_or(ApiError {
                     status_code: StatusCode::BAD_REQUEST,
-                    message: "Wallet address not present".to_string(),
+                    message: "Wallet address not present".to_owned(),
                 })?;
 
             let near_keys: String = has_near_account_root_key(store, wallet_address)
@@ -386,10 +419,11 @@ pub async fn validate_root_key_exists(
                     }
                 })??;
 
+            #[expect(clippy::wildcard_in_or_patterns, reason = "Acceptable here")]
             let rpc_url = match network_id {
                 NearNetworkId::Mainnet => Ok("https://rpc.mainnet.near.org"),
                 NearNetworkId::Testnet => Ok("https://rpc.testnet.near.org"),
-                _ => Err(ApiError {
+                NearNetworkId::Custom(_) | _ => Err(ApiError {
                     status_code: StatusCode::BAD_REQUEST,
                     message: "Unknown NEAR network ID".into(),
                 }),
@@ -399,8 +433,7 @@ pub async fn validate_root_key_exists(
                 return Err(ApiError {
                     status_code: StatusCode::BAD_REQUEST,
                     message: format!(
-                        "Provided public key does not belong to account {:?}",
-                        wallet_address
+                        "Provided public key does not belong to account {wallet_address:?}",
                     ),
                 });
             }
@@ -409,10 +442,9 @@ pub async fn validate_root_key_exists(
                 let _ = store_root_key(
                     req.wallet_metadata.verifying_key.clone(),
                     req.wallet_metadata.wallet_type.clone(),
-                    wallet_address.to_string(),
+                    wallet_address.to_owned(),
                     store,
-                )
-                .map_err(|err| err)?;
+                )?;
             } else {
                 return Err(ApiError {
                     status_code: StatusCode::BAD_REQUEST,
@@ -471,6 +503,7 @@ pub fn verify_eth_signature(account: &str, message: &str, signature: &str) -> Ey
     }
 }
 
+#[must_use]
 pub fn eth_message(message: &str) -> [u8; 32] {
     keccak256(format!("\x19Ethereum Signed Message:\n{}{message}", message.len()).as_bytes())
 }

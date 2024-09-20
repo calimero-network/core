@@ -106,10 +106,7 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<T>) -> Self {
-        #[allow(trivial_casts)]
-        unsafe {
-            &*ptr::from_ref(key).cast()
-        }
+        unsafe { &*ptr::from_ref(key).cast() }
     }
 }
 
@@ -119,10 +116,7 @@ where
     (T,): KeyComponents<LEN = T::LEN>,
 {
     fn from(key: &Key<(T,)>) -> Self {
-        #[allow(trivial_casts)]
-        unsafe {
-            &*ptr::from_ref(key).cast()
-        }
+        unsafe { &*ptr::from_ref(key).cast() }
     }
 }
 

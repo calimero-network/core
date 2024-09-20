@@ -56,7 +56,10 @@ impl ExecutionRequest {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(clippy::exhaustive_enums)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "There will never be any other variants"
+)]
 pub enum Finality {
     Local,
     Global,
@@ -86,7 +89,7 @@ pub enum QueryCallError {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
 #[error("MutateCallError")]
 #[serde(tag = "type", content = "data")]
-#[allow(variant_size_differences)]
+#[expect(variant_size_differences, reason = "This doesn't matter here")]
 #[non_exhaustive]
 pub enum MutateCallError {
     InvalidNodeType { node_type: NodeType },

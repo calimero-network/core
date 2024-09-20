@@ -1,6 +1,6 @@
-use std::fmt;
-use std::ops::Deref;
-use std::str::FromStr;
+use core::fmt;
+use core::ops::Deref;
+use core::str::FromStr;
 
 #[cfg(feature = "rand")]
 use rand::{CryptoRng, RngCore};
@@ -28,8 +28,9 @@ impl Deref for PrivateKey {
 }
 
 impl PrivateKey {
+    #[must_use]
     pub fn public_key(&self) -> PublicKey {
-        ed25519_dalek::SigningKey::from_bytes(&self)
+        ed25519_dalek::SigningKey::from_bytes(self)
             .verifying_key()
             .to_bytes()
             .into()
@@ -230,6 +231,12 @@ pub enum WalletType {
         chain_id: u64,
     },
     STARKNET {
+        #[serde(rename = "walletName")]
+        wallet_name: String,
+    },
+    ICP {
+        #[serde(rename = "canisterId")]
+        canister_id: String,
         #[serde(rename = "walletName")]
         wallet_name: String,
     },

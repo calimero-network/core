@@ -27,6 +27,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Install Node.js (version 20) and pnpm
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      # Install and build node-ui
+      - name: Install node-ui dependencies with pnpm
+        run: pnpm install --prefix ./node-ui
+
+      - name: Build node-ui
+        run: pnpm --filter ./node-ui run build
+
       - name: Setup rust toolchain
         run: rustup toolchain install stable --profile minimal
 
@@ -37,13 +53,20 @@ jobs:
 
       - name: Install target for ${{ matrix.target }}
         run: rustup target add ${{ matrix.target }}
-
+      
       - name: Install dependencies for cross-compilation
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            libssl-dev pkg-config
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+          libstdc++-11-dev-arm64-cross \
+          zlib1g-dev \
+          libsnappy-dev \
+          libbz2-dev \
+          liblz4-dev \
+          libzstd-dev \
+          clang \
+          libc6-dev-arm64-cross
 
       - name: Download and set up OpenSSL for cross-compilation
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -56,24 +79,39 @@ jobs:
           make install_sw
           cd ..
           echo "OPENSSL_DIR=$HOME/openssl-aarch64" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=$HOME/openssl-aarch64/lib" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=$HOME/openssl-aarch64/include" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$HOME/openssl-aarch64/lib/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=/" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+
+      - name: Install and configure Zig for aarch64 cross-compilation
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          wget https://ziglang.org/download/0.11.0/zig-linux-x86_64-0.11.0.tar.xz
+          tar -xf zig-linux-x86_64-0.11.0.tar.xz
+          echo "ZIG_PATH=$PWD/zig-linux-x86_64-0.11.0/zig" >> $GITHUB_ENV
+          echo "$PWD/zig-linux-x86_64-0.11.0" >> $GITHUB_PATH
+          zig-linux-x86_64-0.11.0/zig version
+          echo "CARGO_ZIGBUILD_ZIG=$PWD/zig-linux-x86_64-0.11.0/zig" >> $GITHUB_ENV
+          cargo install cargo-zigbuild
 
       - name: Build meroctl for AArch64
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         env:
+          C_INCLUDE_PATH: /usr/lib/gcc-cross/aarch64-linux-gnu/11/include
+          CXX_INCLUDE_PATH: /usr/lib/gcc-cross/aarch64-linux-gnu/11/include/c++
           OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
+          OPENSSL_LIB_DIR: ${{ env.OPENSSL_LIB_DIR }}
+          OPENSSL_INCLUDE_DIR: ${{ env.OPENSSL_INCLUDE_DIR }}
           PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
           PKG_CONFIG_ALLOW_CROSS: ${{ env.PKG_CONFIG_ALLOW_CROSS }}
           PKG_CONFIG_SYSROOT_DIR: ${{ env.PKG_CONFIG_SYSROOT_DIR }}
-          CC: aarch64-linux-gnu-gcc
-          CXX: aarch64-linux-gnu-g++
-          AR: aarch64-linux-gnu-ar
-          RANLIB: aarch64-linux-gnu-ranlib
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build -p meroctl --release --target ${{ matrix.target }}
-
+          OPENSSL_STATIC: ${{ env.OPENSSL_STATIC }}
+          RUSTFLAGS: "-C link-arg=-lstdc++ -C link-arg=-lpthread -C link-arg=-lc"
+        run: cargo zigbuild -p meroctl --release --target ${{ matrix.target }}
+      
       - name: Build meroctl for x86_64
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo build -p meroctl --release --target ${{ matrix.target }}
@@ -91,13 +129,12 @@ jobs:
           echo "artifact_path=meroctl_${{ matrix.target }}.tar.gz" >> $GITHUB_OUTPUT
           echo "target=${{ matrix.target }}" >> $GITHUB_OUTPUT
 
-      - name: Cache build artifact
-        uses: actions/cache@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
+          name: meroctl_${{ matrix.target }}.tar.gz
           path: meroctl_${{ matrix.target }}.tar.gz
-          key: build-artifact-meroctl-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-meroctl-${{ matrix.target }}
+          retention-days: 2
 
   upload_branch_artifact:
     runs-on: ubuntu-latest
@@ -108,26 +145,16 @@ jobs:
     if: ${{ github.ref != 'refs/heads/master' }}
 
     steps:
-      - name: Restore build artifact
-        uses: actions/cache@v4
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
         with:
-          path: meroctl_${{ matrix.target }}.tar.gz
-          key: build-artifact-meroctl-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-meroctl-${{ matrix.target }}
+          name: meroctl_${{ matrix.target }}.tar.gz
 
       - name: Sanitize ref name
         id: sanitize
         run: |
           sanitized_ref_name=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9_-]/-/g; s/^-*//; s/-*$//')
           echo "sanitized_ref_name=${sanitized_ref_name}" >> $GITHUB_OUTPUT
-
-      - name: Upload binary as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: meroctl_${{ steps.sanitize.outputs.sanitized_ref_name }}_${{ matrix.target }}.tar.gz
-          path: meroctl_${{ matrix.target }}.tar.gz
-          retention-days: 2
 
   create_release:
     runs-on: ubuntu-latest
@@ -171,13 +198,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Restore build artifact
-        uses: actions/cache@v4
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
         with:
-          path: meroctl_${{ matrix.target }}.tar.gz
-          key: build-artifact-meroctl-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-artifact-meroctl-${{ matrix.target }}
+          name: meroctl_${{ matrix.target }}.tar.gz
 
       - name: Check if artifact exists in release
         id: check_artifact

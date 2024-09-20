@@ -3,26 +3,27 @@
 
 echo "Running pre-commit hook..."
 
-if git diff --cached  --name-only | grep -qE '\.mdx?$'; then
+# Check for changes in Markdown or MDX files
+if git diff --cached --name-only | grep -qE '\.mdx?$'; then
   echo "Markdown or MDX files have been changed."
   pnpm format:md
 fi
 
-
-# Check for change in Rust code
-if git diff --cached  --name-only | grep -qE '\.rs$'; then
+# Check for changes in Rust files
+if git diff --cached --name-only | grep -qE '\.rs$'; then
   echo "Running checks for the Rust code..."
   cargo +nightly fmt
+  cargo clippy
 fi
 
-# Check for changes in the 'node-ui' directory
-if git diff --cached  --name-only | grep -q '^node-ui/'; then
-  echo "Running checks for the node-ui..."
+# Check for changes in the 'node-ui' directory (Next.js app)
+if git diff --cached --name-only | grep -q '^node-ui/'; then
+  echo "Running checks for the node-ui (Next.js app)..."
   (cd node-ui && pnpm prettier && pnpm lint:fix)
 fi
 
 # Check for changes in the 'packages/calimero-sdk' directory
-if git diff --cached  --name-only | grep -q '^packages/calimero-sdk/'; then
+if git diff --cached --name-only | grep -q '^packages/calimero-sdk/'; then
   echo "Running checks for the packages/calimero-sdk..."
   (cd packages/calimero-sdk && pnpm prettier && pnpm lint:fix)
 fi

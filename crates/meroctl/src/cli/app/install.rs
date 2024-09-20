@@ -10,8 +10,7 @@ use tracing::info;
 use url::Url;
 
 use crate::cli::RootArgs;
-use crate::common::RequestType::POST;
-use crate::common::{get_response, multiaddr_to_url};
+use crate::common::{get_response, multiaddr_to_url, RequestType};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -21,11 +20,11 @@ pub struct InstallCommand {
     pub path: Option<Utf8PathBuf>,
 
     /// Url of the application
-    #[clap(long, short, conflicts_with = "path", requires = "metadata")]
+    #[clap(long, short, conflicts_with = "path")]
     pub url: Option<String>,
 
     #[clap(short, long, help = "Metadata for the application")]
-    pub metadata: Option<Vec<u8>>,
+    pub metadata: Option<String>,
 
     #[clap(long, help = "Hash of the application")]
     pub hash: Option<Hash>,
@@ -51,19 +50,16 @@ impl InstallCommand {
 
         let mut is_dev_installation = false;
 
+        let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
+
         let install_request = if let Some(app_path) = self.path {
-            let install_dev_request = InstallDevApplicationRequest::new(
-                app_path.canonicalize_utf8()?,
-                self.metadata.unwrap_or_default(),
-            );
+            let install_dev_request =
+                InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?, metadata);
             is_dev_installation = true;
             serde_json::to_value(install_dev_request)?
         } else if let Some(app_url) = self.url {
-            let install_request = InstallApplicationRequest::new(
-                Url::parse(&app_url)?,
-                self.hash,
-                self.metadata.unwrap_or_default(),
-            );
+            let install_request =
+                InstallApplicationRequest::new(Url::parse(&app_url)?, self.hash, metadata);
             serde_json::to_value(install_request)?
         } else {
             bail!("Either path or url must be provided");
@@ -80,7 +76,7 @@ impl InstallCommand {
             install_url,
             Some(install_request),
             &config.identity,
-            POST,
+            RequestType::Post,
         )
         .await?;
 
