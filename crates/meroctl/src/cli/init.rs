@@ -77,6 +77,9 @@ pub struct InitCommand {
     #[clap(overrides_with("mdns"))]
     pub no_mdns: bool,
 
+    #[clap(long, default_value = "3")]
+    pub rendezvous_nominated_peers: usize,
+
     /// Force initialization even if the directory already exists
     #[clap(long)]
     pub force: bool,
@@ -192,7 +195,10 @@ impl InitCommand {
             network: NetworkConfig {
                 swarm: SwarmConfig::new(listen),
                 bootstrap: BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
-                discovery: DiscoveryConfig::new(mdns, RendezvousConfig::default()),
+                discovery: DiscoveryConfig::new(
+                    mdns,
+                    RendezvousConfig::new(self.rendezvous_nominated_peers),
+                ),
                 server: ServerConfig {
                     listen: self
                         .server_host

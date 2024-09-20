@@ -141,7 +141,14 @@ impl EventLoop {
             .get_peer_info(rendezvous_peer)
             .wrap_err("Failed to get peer info")?;
 
-        if !peer_info.is_rendezvous_registration_required() {
+        if !peer_info.is_rendezvous_registration_required()
+            || self.discovery.state.rendezvous_nominated_peers_size()
+                >= self.discovery.rendezvous_config.nominated_peers_size
+            || self
+                .discovery
+                .state
+                .is_peer_rendezvous_nominated(rendezvous_peer)
+        {
             return Ok(());
         }
 

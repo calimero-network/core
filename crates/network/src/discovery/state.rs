@@ -24,6 +24,7 @@ pub struct DiscoveryState {
     peers: BTreeMap<PeerId, PeerInfo>,
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
+    rendezvous_nominations: BTreeSet<PeerId>,
 }
 
 impl DiscoveryState {
@@ -145,6 +146,22 @@ impl DiscoveryState {
             .peers
             .entry(*rendezvous_peer)
             .and_modify(|info| info.update_rendezvous_registartion_status(status));
+    }
+
+    pub(crate) fn add_rendezvous_nominated_peer(&mut self, peer_id: &PeerId) {
+        let _ = self.rendezvous_nominations.insert(*peer_id);
+    }
+
+    pub(crate) fn rendezvous_nominated_peers_size(&self) -> usize {
+        self.rendezvous_nominations.len()
+    }
+
+    pub(crate) fn is_peer_rendezvous_nominated(&self, peer_id: &PeerId) -> bool {
+        self.rendezvous_nominations.contains(peer_id)
+    }
+
+    pub(crate) fn remove_rendezvous_nominated_peer(&mut self, peer_id: &PeerId) {
+        let _ = self.rendezvous_nominations.remove(peer_id);
     }
 
     pub(crate) fn get_peer_info(&self, peer_id: &PeerId) -> Option<&PeerInfo> {

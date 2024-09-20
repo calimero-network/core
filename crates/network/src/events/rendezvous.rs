@@ -61,6 +61,10 @@ impl EventHandler<Event> for EventLoop {
                     RendezvousRegistrationStatus::Registered,
                 );
 
+                self.discovery
+                    .state
+                    .add_rendezvous_nominated_peer(&rendezvous_node);
+
                 if let Some(peer_info) = self.discovery.state.get_peer_info(&rendezvous_node) {
                     if peer_info
                         .rendezvous()
@@ -89,10 +93,32 @@ impl EventHandler<Event> for EventLoop {
                 error!(?rendezvous_node, ?namespace, error_code=?error, "Rendezvous registration failed");
             }
             Event::Expired { peer } => {
+                self.discovery.state.remove_rendezvous_nominated_peer(&peer);
+
                 self.discovery.state.update_rendezvous_registration_status(
                     &peer,
                     RendezvousRegistrationStatus::Expired,
                 );
+
+                let nominated_peer = self.discovery.state.get_rendezvous_peer_ids().find(|&p| {
+                    if let Some(peer_info) = self.discovery.state.get_peer_info(&p) {
+                        if let Some(rendezvous_info) = peer_info.rendezvous() {
+                            return matches!(
+                                rendezvous_info.registration_status(),
+                                RendezvousRegistrationStatus::Discovered
+                            );
+                        }
+                    }
+                    false
+                });
+
+                if let Some(peer) = nominated_peer {
+                    if let Err(err) = self.rendezvous_register(&peer) {
+                        error!(%err, "Failed to update registration discovery");
+                    };
+                } else {
+                    error!("Couldn't find new peer to nominate for rendezvous registration.");
+                }
             }
         }
     }

@@ -157,6 +157,21 @@ pub struct RendezvousConfig {
     pub discovery_rpm: f32,
 
     pub discovery_interval: Duration,
+
+    pub nominated_peers_size: usize,
+}
+
+impl RendezvousConfig {
+    #[must_use]
+    pub fn new(nominated_peers_size: usize) -> Self {
+        let default = Self::default();
+        Self {
+            namespace: default.namespace,
+            discovery_rpm: default.discovery_rpm,
+            discovery_interval: default.discovery_interval,
+            nominated_peers_size,
+        }
+    }
 }
 
 impl Default for RendezvousConfig {
@@ -165,6 +180,7 @@ impl Default for RendezvousConfig {
             namespace: Namespace::from_static("/calimero/devnet/global"),
             discovery_rpm: 0.5,
             discovery_interval: Duration::from_secs(90),
+            nominated_peers_size: 3,
         }
     }
 }
