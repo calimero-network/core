@@ -1,7 +1,8 @@
-use calimero_primitives::application::ApplicationId;
+use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::transaction::Transaction;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
@@ -43,7 +44,7 @@ pub enum CatchupStreamMessage {
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct CatchupApplicationBlobRequest {
-    pub context_id: ApplicationId,
+    pub id: BlobId,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

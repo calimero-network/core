@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 use calimero_network::stream::{Message, Stream};
 use calimero_node_primitives::NodeType;
+use calimero_primitives::application::Application;
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::transaction::Transaction;
@@ -13,37 +14,58 @@ use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
+use tokio::spawn;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use crate::catchup::batch::CatchupBatchSender;
+use crate::catchup::blobs::ChunkStream;
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::types::{
-    CatchupError, CatchupStreamMessage, CatchupTransactionsRequest, TransactionStatus,
-    TransactionWithStatus,
+    CatchupApplicationBlobRequest, CatchupError, CatchupStreamMessage, CatchupTransactionsRequest,
+    TransactionStatus, TransactionWithStatus,
 };
 use crate::Node;
 
 mod batch;
+mod blobs;
 
 impl Node {
-    // TODO: Consider splitting this long function into multiple parts.
-    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) -> EyreResult<()> {
         let Some(message) = stream.next().await else {
             bail!("Stream closed unexpectedly")
         };
 
-        let request = match from_json_slice(&message?.data)? {
-            CatchupStreamMessage::TransactionsRequest(req) => req,
+        match from_json_slice(&message?.data)? {
+            CatchupStreamMessage::TransactionsRequest(req) => {
+                self.handle_transaction_catchup(req, stream).await
+            }
+            CatchupStreamMessage::ApplicationBlobRequest(req) => {
+                self.handle_blob_catchup(req, stream).await
+            }
             message @ (CatchupStreamMessage::TransactionsBatch(_)
-            | CatchupStreamMessage::ApplicationBlobRequest(_)
             | CatchupStreamMessage::ApplicationBlobChunk(_)
             | CatchupStreamMessage::Error(_)) => {
                 bail!("Unexpected message: {:?}", message)
             }
-        };
+        }
+    }
 
+    async fn handle_blob_catchup(
+        &self,
+        request: CatchupApplicationBlobRequest,
+        mut stream: Box<Stream>,
+    ) -> Result<(), eyre::Error> {
+        todo!()
+    }
+
+    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
+    async fn handle_transaction_catchup(
+        &self,
+        request: CatchupTransactionsRequest,
+        mut stream: Box<Stream>,
+    ) -> EyreResult<()> {
         let Some(context) = self.ctx_manager.get_context(&request.context_id)? else {
             let message = to_json_vec(&CatchupStreamMessage::Error(
                 CatchupError::ContextNotFound {
@@ -164,7 +186,6 @@ impl Node {
 
         Ok(())
     }
-
     pub(crate) async fn handle_interval_catchup(&mut self) {
         let Some(context_id) = self.ctx_manager.get_any_pending_catchup_context().await else {
             return;
@@ -202,8 +223,85 @@ impl Node {
             bail!("catching up for non-existent context?");
         };
 
+        let latest_application = self.ctx_manager.get_latest_application(context_id).await?;
+        let local_application = self.ctx_manager.get_application(&latest_application.id)?;
+
+        if local_application.map_or(true, |app| app.blob != latest_application.blob) {
+            self.perform_blob_catchup(chosen_peer, latest_application)
+                .await?;
+        }
+
+        self.perform_transaction_catchup(chosen_peer, &mut context)
+            .await
+    }
+
+    async fn perform_blob_catchup(
+        &mut self,
+        chosen_peer: PeerId,
+        latest_application: Application,
+    ) -> EyreResult<()> {
+        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+
+        let request = CatchupApplicationBlobRequest {
+            id: latest_application.blob,
+        };
+
+        let data = to_json_vec(&request)?;
+
+        stream.send(Message::new(data)).await?;
+
+        let (tx, rx) = mpsc::channel(100);
+        let chunk_stream = ChunkStream::new(rx);
+
+        let ctx_manager = self.ctx_manager.clone();
+        let metedata = latest_application.metadata.clone();
+
+        let handle = spawn(async move {
+            let _ = ctx_manager
+                .install_application_from_stream(
+                    latest_application.size,
+                    chunk_stream,
+                    &latest_application.source,
+                    metedata,
+                )
+                .await
+                .map_err(|e| error!(%e, "Failed to install application from blob stream"));
+        });
+
+        loop {
+            match timeout(
+                self.network_client.catchup_config.receive_timeout,
+                stream.next(),
+            )
+            .await
+            {
+                Ok(message) => match message {
+                    Some(message) => match from_json_slice(&message?.data)? {
+                        CatchupStreamMessage::ApplicationBlobChunk(chunk) => {
+                            tx.send(chunk).await?;
+                        }
+                        _ => {}
+                    },
+                    None => break,
+                },
+                Err(err) => bail!("Timeout while waiting for catchup message: {}", err),
+            }
+        }
+
+        drop(tx);
+
+        let _ = handle.await?;
+
+        Ok(())
+    }
+
+    async fn perform_transaction_catchup(
+        &mut self,
+        chosen_peer: PeerId,
+        context: &mut Context,
+    ) -> EyreResult<()> {
         let request = CatchupTransactionsRequest {
-            context_id,
+            context_id: context.id,
             last_executed_transaction_hash: context.last_transaction_hash,
             batch_size: self.network_client.catchup_config.batch_size,
         };
@@ -228,7 +326,7 @@ impl Node {
                     Some(message) => {
                         self.handle_catchup_message(
                             chosen_peer,
-                            &mut context,
+                            context,
                             from_json_slice(&message?.data)?,
                         )
                         .await?;
@@ -323,6 +421,7 @@ impl Node {
                     context.last_transaction_hash = transaction_hash;
                 }
             }
+            CatchupStreamMessage::ApplicationBlobChunk(chunk) => {}
             CatchupStreamMessage::Error(err) => {
                 error!(?err, "Received error during catchup");
                 bail!(err);
@@ -330,9 +429,8 @@ impl Node {
             CatchupStreamMessage::TransactionsRequest(request) => {
                 warn!("Unexpected message: {:?}", request);
             }
-            CatchupStreamMessage::ApplicationBlobRequest(_)
-            | CatchupStreamMessage::ApplicationBlobChunk(_) => {
-                bail!("Unexpected message");
+            CatchupStreamMessage::ApplicationBlobRequest(request) => {
+                warn!("Unexpected message: {:?}", request);
             }
         }
 

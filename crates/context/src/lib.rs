@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::io::Error as IoError;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use calimero_blobstore::{BlobManager, Size};
@@ -33,7 +34,7 @@ use camino::Utf8PathBuf;
 use ed25519_dalek::ed25519::signature::SignerMut;
 use ed25519_dalek::SigningKey;
 use eyre::{bail, Result as EyreResult};
-use futures_util::TryStreamExt;
+use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use reqwest::{Client, Url};
@@ -735,6 +736,30 @@ impl ContextManager {
         self.install_application(blob_id, size, &uri, metadata)
     }
 
+    #[expect(clippy::similar_names, reason = "Different enough")]
+    pub async fn install_application_from_stream(
+        &self,
+        expected_size: u64,
+        stream: impl AsyncRead,
+        source: &ApplicationSource,
+        metadata: Vec<u8>,
+        // hash: Hash,
+        // todo! BlobMgr should return hash of content
+    ) -> EyreResult<ApplicationId> {
+        let (blob_id, size) = self
+            .blob_manager
+            .put_sized(Some(Size::Exact(expected_size)), stream)
+            .await?;
+
+        if size != expected_size {
+            bail!("fatal: content size mismatch")
+        }
+
+        // todo! if blob hash doesn't match, remove it
+
+        self.install_application(blob_id, size, source, metadata)
+    }
+
     pub fn list_installed_applications(&self) -> EyreResult<Vec<Application>> {
         let handle = self.store.handle();
 
@@ -766,6 +791,27 @@ impl ContextManager {
         };
 
         Ok(false)
+    }
+
+    pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
+        let client = self.config_client.query(
+            self.client_config.new.network.as_str().into(),
+            self.client_config.new.contract_id.as_str().into(),
+        );
+
+        let response = client
+            .application(context_id.rt().expect("infallible conversion"))
+            .await?;
+
+        let application = response.parse()?;
+
+        Ok(Application::new(
+            application.id.as_bytes().into(),
+            application.blob.as_bytes().into(),
+            application.size,
+            ApplicationSource::from_str(&application.source.0)?,
+            application.metadata.0.as_bytes().into(),
+        ))
     }
 
     pub fn get_application(
