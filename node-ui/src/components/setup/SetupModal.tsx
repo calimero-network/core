@@ -3,6 +3,79 @@ import React from 'react';
 import apiClient from '../../api';
 import LoaderSpinner from '../common/LoaderSpinner';
 import translations from '../../constants/en.global.json';
+import { styled } from 'styled-components';
+
+const Wrapper = styled.div`
+    display: flex;
+    height: 100vh;
+    justify-content: center;
+    background-color: #111111;
+
+    .flex-wrapper {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+
+        .inner-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #1c1c1c;
+            padding: 2rem;
+            gap: 1rem;
+            border-radius: 0.5rem;
+
+            .content-wrapper {
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                gap: 2rem;
+                padding: 0 3.5rem;
+
+                .title {
+                    color: white;
+                    font-size: 2.5rem;
+                    font-weight: 600;
+                }
+
+                .popup-wrapper {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 0.5rem;
+
+                    .input-field {
+                        width: 400px;
+                        padding: 0.5rem;
+                        border-radius: 0.375rem;
+                    }
+
+                    .error {
+                        color: #ef4444;
+                        font-size: 0.875;
+                    }
+
+                    .button {
+                        background-color: #6b7280;
+                        color: white;
+                        width: 100%;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        padding: 0.5rem;
+                        border-radius: 0.375rem;
+                        border: none;
+                        outline: none;
+                        gap: 0.5rem;
+                        height: 46px;
+                        font-size: 1rem;
+                        font-weight: 500;
+                    }
+                }
+        }
+    }
+`;
 
 export interface SetupModalProps {
   successRoute: () => void;
@@ -79,63 +152,16 @@ export function SetupModal({
   };
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        height: '100vh',
-        justifyContent: 'center',
-        backgroundColor: '#111111',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          alignItems: 'center',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            backgroundColor: '#1c1c1c',
-            padding: '2rem',
-            gap: '1rem',
-            borderRadius: '0.5rem',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              alignItems: 'center',
-              gap: '2rem',
-              padding: '0 3.5rem',
-            }}
-          >
-            <div
-              style={{
-                color: 'white',
-                fontSize: '2.5rem',
-                fontWeight: 600,
-              }}
-            >
-              {t.modalTitle}
-            </div>
+    <Wrapper>
+      <div className="flex-wrapper">
+        <div className="inner-wrapper">
+          <div className="content-wrapper">
+            <div className="title">{t.modalTitle}</div>
             {loading ? (
               <LoaderSpinner />
             ) : (
               <>
-                <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.5rem',
-                  }}
-                >
+                <div className="popup-wrapper">
                   <input
                     type="text"
                     placeholder={t.urlInputPlacerholder}
@@ -144,36 +170,12 @@ export function SetupModal({
                     onChange={(e: { target: { value: string } }) => {
                       handleChange(e.target.value);
                     }}
-                    style={{
-                      width: '400px',
-                      padding: '0.5rem',
-                      borderRadius: '0.375rem',
-                    }}
+                    className="input-field"
                   />
-                  <div
-                    style={{
-                      color: '#ef4444',
-                      fontSize: '0.875rem',
-                    }}
-                  >
-                    {error}
-                  </div>
+                  <div className="error">{error}</div>
                   <button
+                    className="button"
                     style={{
-                      backgroundColor: '#6b7280',
-                      color: 'white',
-                      width: '100%',
-                      display: 'flex',
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      gap: '0.5rem',
-                      height: '46px',
-                      fontSize: '1rem',
-                      fontWeight: 500,
-                      borderRadius: '0.375rem',
-                      border: 'none',
-                      outline: 'none',
-                      padding: '0.5rem',
                       cursor: isDisabled() ? 'not-allowed' : 'pointer',
                     }}
                     disabled={isDisabled()}
@@ -187,6 +189,6 @@ export function SetupModal({
           </div>
         </div>
       </div>
-    </div>
+    </Wrapper>
   );
 }
