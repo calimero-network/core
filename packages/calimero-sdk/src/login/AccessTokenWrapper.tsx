@@ -16,6 +16,7 @@ export const AccessTokenWrapper: React.FC<AccessTokenWrapperProps> = ({
     try {
       return jwtDecode(token);
     } catch (error) {
+      console.error(error);
       return null;
     }
   }, []);
@@ -47,7 +48,7 @@ export const AccessTokenWrapper: React.FC<AccessTokenWrapperProps> = ({
       try {
         await getNewJwtToken({ refreshToken, getNodeUrl });
       } catch (error) {
-        console.log(error);
+        console.error(error);
       }
     }
   }, [getNodeUrl, isTokenExpiringSoon]);

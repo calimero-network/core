@@ -40,39 +40,41 @@ export const handleRpcError = async (
   const expiredSession = {
     message:
       'Your session expired, but we have refreshed it. Please try again.',
-    code: 500,
+    code: 403,
   };
   const unknownMessage = {
     message: 'Server Error: Something went wrong. Please try again.',
     code: 500,
   };
-  if (error.code === 401 && error.message === 'Token expired.') {
-    const refreshToken = getRefreshToken();
-    try {
-      const response = await getNewJwtToken({ refreshToken, getNodeUrl });
-      if (response?.error) {
+
+  if (error.code === 401) {
+    if (error.message === 'Token expired.') {
+      try {
+        const refreshToken = getRefreshToken();
+        const response = await getNewJwtToken({ refreshToken, getNodeUrl });
+        if (response?.error) {
+          clearJWT();
+          return invalidSession;
+        }
+        return expiredSession;
+      } catch (error) {
         clearJWT();
         return invalidSession;
       }
-      return expiredSession;
-    } catch (error) {
-      clearJWT();
-      return invalidSession;
     }
-  } else if (error.code === 401) {
     clearJWT();
     return invalidSession;
+  }
+
+  if (
+    error.type === 'UnknownServerError' ||
+    error.type === 'RpcExecutionError'
+  ) {
+    return {
+      message: `Error: ${error?.inner?.data?.data?.type}`,
+      code: 500,
+    };
   } else {
-    if (
-      error.type === 'UnknownServerError' ||
-      error.type === 'RpcExecutionError'
-    ) {
-      return {
-        message: `Error: ${error?.inner?.data?.data?.type}`,
-        code: 500,
-      };
-    } else {
-      return unknownMessage;
-    }
+    return unknownMessage;
   }
 };
