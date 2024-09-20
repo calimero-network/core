@@ -40,7 +40,7 @@ impl ToTokens for LogicMethod<'_> {
 
 impl ToTokens for PublicLogicMethod<'_> {
     // TODO: Consider splitting this long function into multiple parts.
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "TODO: This needs refactoring")]
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let self_ = &self.self_;
         let name = &self.name;
@@ -90,7 +90,7 @@ impl ToTokens for PublicLogicMethod<'_> {
             }
         };
 
-        #[allow(clippy::option_if_let_else)]
+        #[expect(clippy::option_if_let_else, reason = "This is clearer this way")]
         let (def, mut call) = match &self.self_type {
             Some(type_) => (
                 {
@@ -127,7 +127,7 @@ impl ToTokens for PublicLogicMethod<'_> {
             call = quote! {
                 let output = #call;
                 let output = {
-                    #[allow(unused_imports)]
+                    #[expect(unused_imports)]
                     use ::calimero_sdk::__private::IntoResult;
                     match ::calimero_sdk::__private::WrappedReturn::new(output)
                         .into_result()
@@ -194,7 +194,7 @@ impl<'a, 'b> TryFrom<LogicMethodImplInput<'a, 'b>> for LogicMethod<'a> {
     type Error = Errors<'a, ImplItemFn>;
 
     // TODO: Consider splitting this long function into multiple parts.
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines, reason = "TODO: This needs refactoring")]
     fn try_from(input: LogicMethodImplInput<'a, 'b>) -> Result<Self, Self::Error> {
         let errors = Errors::new(input.item);
 

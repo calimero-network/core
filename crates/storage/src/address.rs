@@ -196,7 +196,7 @@ impl Path {
             return Err(PathError::NotAbsolute);
         }
 
-        #[allow(clippy::string_slice)] // We know the string starts with `::`
+        #[expect(clippy::string_slice, reason = "We know the string starts with `::`")]
         let segments = string[2..].split("::").collect::<Vec<&str>>();
 
         if segments.is_empty() {
@@ -214,7 +214,7 @@ impl Path {
                 return Err(PathError::Overflow);
             }
             if str.len() > 0 {
-                #[allow(clippy::cast_possible_truncation)] // Can't occur here
+                #[expect(clippy::cast_possible_truncation, reason = "Can't occur here")]
                 offsets.push(str.len() as u8);
             }
             let _: bool = str.push_str(segment);
@@ -290,8 +290,6 @@ impl Path {
         let mut last_offset = 0_usize;
 
         for &offset in &self.offsets {
-            #[allow(clippy::cast_sign_loss)] // Can't occur here
-            #[allow(trivial_numeric_casts)] // Not harmful here
             if self.path[last_offset..offset as usize] != other.path[last_offset..offset as usize] {
                 return false;
             }
@@ -374,9 +372,9 @@ impl Path {
         let _: bool = path.push_str(&self.path);
         let _: bool = path.push_str(&other.path);
         let mut offsets = self.offsets.clone();
-        #[allow(clippy::cast_possible_truncation)] // Can't occur here
+        #[expect(clippy::cast_possible_truncation, reason = "Can't occur here")]
         offsets.push(self.path.len() as u8);
-        #[allow(clippy::cast_possible_truncation)] // Can't occur here
+        #[expect(clippy::cast_possible_truncation, reason = "Can't occur here")]
         offsets.extend(
             other
                 .offsets
@@ -457,7 +455,7 @@ impl Path {
             return None;
         }
         let start = index.checked_sub(1).map_or(0, |i| self.offsets[i] as usize);
-        #[allow(clippy::cast_possible_truncation)] // Can't occur here
+        #[expect(clippy::cast_possible_truncation, reason = "Can't occur here")]
         let end = self
             .offsets
             .get(index)

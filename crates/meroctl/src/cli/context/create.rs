@@ -1,4 +1,8 @@
-#![allow(clippy::print_stdout, clippy::print_stderr)]
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "Acceptable for CLI"
+)]
 
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
@@ -19,8 +23,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
-use crate::common::RequestType::{GET, POST};
-use crate::common::{get_response, multiaddr_to_url};
+use crate::common::{get_response, multiaddr_to_url, RequestType};
 use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
@@ -87,7 +90,7 @@ impl CreateCommand {
                 params,
             } => {
                 let path = path.canonicalize_utf8()?;
-                let metadata = metadata.map(|m| m.into_bytes());
+                let metadata = metadata.map(String::into_bytes);
 
                 let application_id = install_app(
                     &client,
@@ -133,7 +136,7 @@ async fn create_context(
     params: Option<String>,
     keypair: &Keypair,
 ) -> EyreResult<ContextId> {
-    if !app_installed(base_multiaddr, &application_id, client, &keypair).await? {
+    if !app_installed(base_multiaddr, &application_id, client, keypair).await? {
         bail!("Application is not installed on node.")
     }
 
@@ -144,18 +147,17 @@ async fn create_context(
         params.map(String::into_bytes).unwrap_or_default(),
     );
 
-    let response = get_response(client, url, Some(request), &keypair, POST).await?;
+    let response = get_response(client, url, Some(request), keypair, RequestType::Post).await?;
 
     if response.status().is_success() {
         let context_response: CreateContextResponse = response.json().await?;
 
         let context_id = context_response.data.context_id;
 
-        println!("Context `\x1b[36m{}\x1b[0m` created!", context_id);
+        println!("Context `\x1b[36m{context_id}\x1b[0m` created!");
 
         println!(
-            "Context{{\x1b[36m{}\x1b[0m}} -> Application{{\x1b[36m{}\x1b[0m}}",
-            context_id, application_id
+            "Context{{\x1b[36m{context_id}\x1b[0m}} -> Application{{\x1b[36m{application_id}\x1b[0m}}",
         );
 
         return Ok(context_id);
@@ -219,7 +221,7 @@ async fn watch_app_and_update_context(
             base_multiaddr,
             path.clone(),
             metadata.clone(),
-            &keypair,
+            keypair,
         )
         .await?;
 
@@ -244,7 +246,7 @@ async fn update_context_application(
 
     let request = UpdateContextApplicationRequest::new(application_id);
 
-    let response = get_response(client, url, Some(request), keypair, POST).await?;
+    let response = get_response(client, url, Some(request), keypair, RequestType::Post).await?;
 
     if response.status().is_success() {
         println!(
@@ -275,7 +277,7 @@ async fn app_installed(
         &format!("admin-api/dev/application/{application_id}"),
     )?;
 
-    let response = get_response(client, url, None::<()>, keypair, GET).await?;
+    let response = get_response(client, url, None::<()>, keypair, RequestType::Get).await?;
 
     if !response.status().is_success() {
         bail!("Request failed with status: {}", response.status())
@@ -297,8 +299,14 @@ async fn install_app(
 
     let install_request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
-    let install_response =
-        get_response(client, install_url, Some(install_request), keypair, POST).await?;
+    let install_response = get_response(
+        client,
+        install_url,
+        Some(install_request),
+        keypair,
+        RequestType::Post,
+    )
+    .await?;
 
     if !install_response.status().is_success() {
         let status = install_response.status();

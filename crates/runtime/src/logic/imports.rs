@@ -14,8 +14,7 @@ thread_local! {
 }
 
 impl VMLogic<'_> {
-    #[allow(clippy::too_many_arguments)]
-    #[allow(trivial_casts)]
+    #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
     pub fn imports(&mut self, store: &mut Store) -> Imports {
         imports! {
             store;
@@ -68,7 +67,8 @@ macro_rules! _imports {
     ($store:ident; logic: $logic:ident; $(fn $func:ident($($arg:ident: $arg_ty:ty),*$(,)?) $(-> $returns:ty)?;)*) => {
         {
             $(
-                #[allow(unused_parens)]
+                #[expect(clippy::allow_attributes, reason = "Needed for the macro")]
+                #[allow(unused_parens, reason = "Needed for the macro")]
                 fn $func(
                     mut env: wasmer::FunctionEnvMut<'_, fragile::Fragile<*mut ()>>,
                     $($arg: $arg_ty),*
@@ -118,7 +118,7 @@ macro_rules! _imports {
 
                     #[cfg(feature = "host-traces")]
                     {
-                        #[allow(unused_mut, unused_assignments)]
+                        #[expect(unused_mut, unused_assignments)]
                         let mut return_ty = "()";
                         $( return_ty = stringify!($returns); )?
                         println!(

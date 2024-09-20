@@ -49,5 +49,5 @@ async fn test_multiple_objects_stream() {
     assert_eq!(decoded_response, response);
 
     let decoded3 = framed.next().await;
-    assert_eq!(decoded3.is_none(), true);
+    assert!(decoded3.is_none());
 }

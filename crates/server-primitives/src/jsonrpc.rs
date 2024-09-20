@@ -50,11 +50,23 @@ impl<'de> Deserialize<'de> for Version {
 // **************************** request *******************************
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct Request<P> {
     pub jsonrpc: Version,
     pub id: Option<RequestId>,
     #[serde(flatten)]
     pub payload: P,
+}
+
+impl Request<RequestPayload> {
+    #[must_use]
+    pub const fn new(jsonrpc: Version, id: Option<RequestId>, payload: RequestPayload) -> Self {
+        Self {
+            jsonrpc,
+            id,
+            payload,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -86,14 +98,20 @@ impl Response {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::exhaustive_enums)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "This will never have any other variants"
+)]
 pub enum ResponseBody {
     Result(ResponseBodyResult),
     Error(ResponseBodyError),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(clippy::exhaustive_structs)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "This will never have any other fields"
+)]
 pub struct ResponseBodyResult(pub Value);
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -129,7 +147,7 @@ pub struct QueryRequest {
 
 impl QueryRequest {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         context_id: ContextId,
         method: String,
         args_json: Value,
@@ -182,7 +200,7 @@ pub struct MutateRequest {
 
 impl MutateRequest {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         context_id: ContextId,
         method: String,
         args_json: Value,

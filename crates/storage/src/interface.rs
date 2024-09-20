@@ -168,7 +168,7 @@ impl Interface {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    #[allow(clippy::significant_drop_tightening)]
+    #[expect(clippy::significant_drop_tightening, reason = "False positive")]
     pub fn find_by_id(&self, id: Id) -> Result<Option<Element>, StorageError> {
         // TODO: It seems fairly bizarre/unexpected that the put() method is sync
         // TODO: and not async. The reasons and intentions need checking here, in

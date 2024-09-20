@@ -46,11 +46,10 @@ struct SignedDelegation {
 /// - `delegations`: A vector of signed delegations.
 /// - `publicKey`: The public key that signs the delegations, serialized as a hex string.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[allow(non_snake_case)]
 struct DelegationChain {
     delegations: Vec<SignedDelegation>,
-    #[serde(with = "hex::serde")]
-    publicKey: Vec<u8>,
+    #[serde(with = "hex::serde", rename = "publicKey")]
+    public_key: Vec<u8>,
 }
 
 impl Delegation {
@@ -95,7 +94,7 @@ pub async fn verify_internet_identity_signature(
     let signed_delegation_chain: DelegationChain =
         serde_json::from_value(signed_delegation_chain_json).map_err(|e| ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: format!("Error parsing delegation_chain: {}", e),
+            message: format!("Error parsing delegation_chain: {e}"),
         })?;
 
     let signed_delegation = &signed_delegation_chain.delegations[0];
@@ -113,15 +112,15 @@ pub async fn verify_internet_identity_signature(
     }
 
     // Validates the canister signature public key and compares it to the II canister ID
-    let cs_pk = CanisterSigPublicKey::try_from(signed_delegation_chain.publicKey.as_slice())
+    let cs_pk = CanisterSigPublicKey::try_from(signed_delegation_chain.public_key.as_slice())
         .map_err(|e| ApiError {
             status_code: StatusCode::BAD_REQUEST,
-            message: format!("Invalid publicKey in delegation chain: {}", e),
+            message: format!("Invalid publicKey in delegation chain: {e}"),
         })?;
 
     let expected_ii_canister_id = Principal::from_text(ii_canister_id).map_err(|e| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: format!("Invalid ii_canister_id: {}", e),
+        message: format!("Invalid ii_canister_id: {e}"),
     })?;
 
     if cs_pk.canister_id != expected_ii_canister_id {
@@ -152,7 +151,7 @@ pub async fn verify_internet_identity_signature(
     )
     .map_err(|e| ApiError {
         status_code: StatusCode::BAD_REQUEST,
-        message: format!("Invalid canister signature: {}", e),
+        message: format!("Invalid canister signature: {e}"),
     })?;
 
     Ok(())
@@ -167,7 +166,13 @@ pub async fn verify_internet_identity_signature(
 /// # Returns
 /// A vector combining the domain separator and the message.
 fn msg_with_domain(sep: &[u8], bytes: &[u8]) -> Vec<u8> {
-    let mut msg = Vec::with_capacity(1 + sep.len() + bytes.len()); // Pre-allocate space for efficiency
+    let mut msg = Vec::with_capacity(
+        1_usize
+            .saturating_add(sep.len())
+            .saturating_add(bytes.len()),
+    ); // Pre-allocate space for efficiency
+       // TODO: Check the possible truncation
+    #[expect(clippy::cast_possible_truncation, reason = "TODO: Check this")]
     msg.push(sep.len() as u8);
     msg.extend_from_slice(sep);
     msg.extend_from_slice(bytes);

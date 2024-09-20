@@ -53,7 +53,7 @@ struct GameOver {
 fn main() -> EyreResult<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
-        println!("Usage: {:?} <path-to-wasm>", args);
+        println!("Usage: {args:?} <path-to-wasm>");
         return Ok(());
     }
 
@@ -63,7 +63,7 @@ fn main() -> EyreResult<()> {
         eyre::bail!("RPS wasm file not found");
     }
 
-    let file = File::open(&path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
+    let file = File::open(path)?.bytes().collect::<Result<Vec<u8>, _>>()?;
 
     let mut storage = InMemoryStorage::default();
 
@@ -357,9 +357,9 @@ fn main() -> EyreResult<()> {
         if event.kind == "GameOver" {
             let winner = from_json_slice::<GameOver>(&event.data)?.winner;
             match winner {
-                Some(0) => println!("[{:?} x {:?}] Joe won!", joe_choice, melissa_choice),
-                Some(1) => println!("[{:?} x {:?}] Melissa won!", joe_choice, melissa_choice),
-                _ => println!("[{:?} x {:?}] It was a draw!", joe_choice, melissa_choice),
+                Some(0) => println!("[{joe_choice:?} x {melissa_choice:?}] Joe won!"),
+                Some(1) => println!("[{joe_choice:?} x {melissa_choice:?}] Melissa won!"),
+                _ => println!("[{joe_choice:?} x {melissa_choice:?}] It was a draw!"),
             }
         }
     }

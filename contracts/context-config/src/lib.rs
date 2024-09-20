@@ -1,4 +1,4 @@
-#![allow(unused_results, unused_crate_dependencies)]
+#![allow(unused_crate_dependencies, reason = "False positives")]
 
 use calimero_context_config::types::{Application, ContextId, ContextIdentity};
 use calimero_context_config::Timestamp;

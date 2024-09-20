@@ -90,7 +90,11 @@ pub enum BootstrapNetwork {
 
 impl InitCommand {
     // TODO: Consider splitting this function up to reduce complexity.
-    #[allow(clippy::cognitive_complexity)]
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "TODO: Will be refactored"
+    )]
     pub fn run(self, root_args: cli::RootArgs) -> EyreResult<()> {
         let mdns = self.mdns && !self.no_mdns;
 
@@ -210,9 +214,9 @@ impl InitCommand {
 
         config.save(&path)?;
 
-        drop(Store::open::<RocksDB>(&StoreConfig {
-            path: path.join(config.datastore.path),
-        })?);
+        drop(Store::open::<RocksDB>(&StoreConfig::new(
+            path.join(config.datastore.path),
+        ))?);
 
         info!("Initialized a node in {:?}", path);
 

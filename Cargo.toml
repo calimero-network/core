@@ -85,6 +85,7 @@ rand = "0.8.5"
 rand_chacha = "0.3.1"
 reqwest = "0.12.2"
 rocksdb = "0.22.0"
+rust-embed = "8.5.0"
 sha2 = "0.10.8"
 sha3 = "0.10.8"
 semver = "1.0.22"
@@ -233,17 +234,20 @@ multiple_inherent_impl = "deny"
 print_stderr = "deny"
 print_stdout = "deny"
 rc_mutex = "deny"
+renamed_function_params = "deny"
 try_err = "deny"
 #unwrap_used = "deny" TODO: Enable as soon as possible
 wildcard_enum_match_arm = "deny"
 ## Warn
 absolute_paths = "warn"
+allow_attributes = "warn"
 arithmetic_side_effects = "warn"
 as_underscore = "warn"
 decimal_literal_representation = "warn"
 default_numeric_fallback = "warn"
 deref_by_slicing = "warn"
 empty_drop = "warn"
+#field_scoped_visibility_modifiers = "warn" TODO: Enable later
 filetype_is_file = "warn"
 if_then_some_else_none = "warn"
 #indexing_slicing = "warn" TODO: Enable this later when dealing with unwraps
@@ -260,7 +264,7 @@ rc_buffer = "warn"
 redundant_type_annotations = "warn"
 rest_pat_in_fully_bound_structs = "warn"
 #same_name_method = "warn" TODO: Consider enabling later
-semicolon_outside_block = "warn"
+semicolon_inside_block = "warn"
 #shadow_reuse = "warn" TODO: Consider enabling later
 #shadow_same = "warn" TODO: Consider enabling later
 #shadow_unrelated = "warn" TODO: Consider enabling later
@@ -278,7 +282,12 @@ unseparated_literal_suffix = "warn"
 verbose_file_reads = "warn"
 
 # Clippy suspicious lints
+const_is_empty = "deny"
+deprecated_clippy_cfg_attr = "deny"
+incompatible_msrv = "deny"
+multiple_bound_locations = "deny"
 unconditional_recursion = "deny"
+unnecessary_clippy_cfg = "deny"
 
 # Lint customisations
 doc_markdown = "allow" # Annoying number of false positives

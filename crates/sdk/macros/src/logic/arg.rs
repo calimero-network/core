@@ -75,7 +75,7 @@ impl<'a, 'b> TryFrom<LogicArgInput<'a, 'b>> for LogicArg<'a> {
                             reference.unwrap_or(SelfType::Owned(&receiver.ty)),
                         ));
                     }
-                };
+                }
 
                 Err(errors.finish(SynError::new_spanned(
                     &receiver.ty,

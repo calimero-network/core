@@ -23,9 +23,7 @@ impl Display for Pretty<'_> {
             Self::Path(path) => (quote! { impl #path {} }, (5, 3)),
         };
 
-        let item = parse2(tokens).map_err(|err| {
-            panic!("failed to parse tokens: {err}");
-        })?;
+        let item = parse2(tokens).map_err(|_err| fmt::Error)?;
 
         let parsed = unparse(&File {
             shebang: None,
@@ -38,7 +36,7 @@ impl Display for Pretty<'_> {
         f.pad(
             parsed
                 .get(pre..parsed.len().saturating_sub(post))
-                .ok_or_else(|| panic!("Invalid string slice range"))?,
+                .ok_or(fmt::Error)?,
         )
     }
 }
@@ -48,7 +46,7 @@ static TAG: &str = "(calimero)>";
 // This module is a workaround for not being able to allow single_use_lifetimes
 // directly on the enum and/or its variant in order to suppress the false
 // positive warning.
-#[allow(single_use_lifetimes)]
+#[expect(single_use_lifetimes, reason = "False positive")]
 mod parse_error {
     use super::{Pretty, ThisError};
 
@@ -126,7 +124,7 @@ impl Default for Errors<'_> {
 
 impl<'a, T> Errors<'a, T> {
     #[track_caller]
-    pub fn new(item: &'a T) -> Self {
+    pub const fn new(item: &'a T) -> Self {
         Self {
             inner: RefCell::new(Some(ErrorsInner {
                 item,

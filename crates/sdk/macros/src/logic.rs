@@ -15,7 +15,7 @@ mod ty;
 mod utils;
 
 pub struct LogicImpl<'a> {
-    #[allow(dead_code)]
+    #[expect(dead_code, reason = "This will be used in future")]
     type_: Path,
     methods: Vec<PublicLogicMethod<'a>>,
     orig: &'a ItemImpl,
@@ -42,7 +42,7 @@ impl<'a> TryFrom<LogicImplInput<'a>> for LogicImpl<'a> {
     type Error = Errors<'a, ItemImpl>;
 
     // TODO: This unwrap() call needs to be corrected to return an error.
-    #[allow(clippy::unwrap_in_result)]
+    #[expect(clippy::unwrap_in_result, reason = "TODO: This is temporary")]
     fn try_from(input: LogicImplInput<'a>) -> Result<Self, Self::Error> {
         let errors = Errors::new(input.item);
 

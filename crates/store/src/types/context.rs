@@ -37,6 +37,7 @@ impl PredefinedEntry for ContextMetaKey {
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ContextConfig {
     pub network: Box<str>,
     pub contract: Box<str>,
@@ -78,6 +79,10 @@ impl AsRef<[u8]> for ContextState<'_> {
 }
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "This is not expected to have additional fields"
+)]
 pub struct ContextIdentity {
     pub private_key: Option<[u8; 32]>,
 }
@@ -98,7 +103,7 @@ pub struct ContextTransaction {
 
 impl ContextTransaction {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         method: Box<str>,
         payload: Box<[u8]>,
         prior_hash: TransactionHash,

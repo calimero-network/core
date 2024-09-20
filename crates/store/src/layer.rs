@@ -23,7 +23,10 @@ pub trait ReadLayer: Layer {
     fn get<K: AsKeyParts>(&self, key: &K) -> EyreResult<Option<Slice<'_>>>;
 
     // TODO: We should consider returning Iterator here.
-    #[allow(clippy::iter_not_returning_iterator)]
+    #[expect(
+        clippy::iter_not_returning_iterator,
+        reason = "TODO: This should be implemented"
+    )]
     fn iter<K: FromKeyParts>(&self) -> EyreResult<Iter<'_, Structured<K>>>;
 }
 

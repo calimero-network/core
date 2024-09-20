@@ -1,3 +1,5 @@
+use core::mem;
+
 use eyre::Ok as EyreOk;
 
 use super::InMemoryDB;
@@ -43,8 +45,8 @@ fn test_owned_memory() {
                     (Some(k.into_boxed()), Some(v.into_boxed()))
                 });
 
-            let last_key = std::mem::replace(&mut key, k).unwrap();
-            let last_value = std::mem::replace(&mut value, v).unwrap();
+            let last_key = mem::replace(&mut key, k).unwrap();
+            let last_value = mem::replace(&mut value, v).unwrap();
 
             let bytes = [b1, b2];
 
@@ -97,8 +99,8 @@ fn test_ref_memory() {
                     (Some(k.into_boxed()), Some(v.into_boxed()))
                 });
 
-            let last_key = std::mem::replace(&mut key, k).unwrap();
-            let last_value = std::mem::replace(&mut value, v).unwrap();
+            let last_key = mem::replace(&mut key, k).unwrap();
+            let last_value = mem::replace(&mut value, v).unwrap();
 
             let bytes = [b1, b2];
 

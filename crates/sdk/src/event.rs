@@ -1,7 +1,7 @@
 use core::any::TypeId;
 use core::cell::RefCell;
+use core::mem::transmute;
 use std::borrow::Cow;
-use std::mem::transmute;
 
 use crate::env;
 use crate::state::AppState;
@@ -94,7 +94,7 @@ pub fn downcast<T: AppEventExt + 'static>(
 }
 
 #[derive(Clone, Copy, Debug)]
-#[allow(clippy::exhaustive_enums)]
+#[expect(clippy::exhaustive_enums, reason = "This will never have variants")]
 pub enum NoEvent {}
 impl AppEvent for NoEvent {
     fn kind(&self) -> Cow<'_, str> {
