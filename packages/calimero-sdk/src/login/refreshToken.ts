@@ -63,17 +63,17 @@ export const handleRpcError = async (
     }
     clearJWT();
     return invalidSession;
+  }
+
+  if (
+    error.type === 'UnknownServerError' ||
+    error.type === 'RpcExecutionError'
+  ) {
+    return {
+      message: `Error: ${error?.inner?.data?.data?.type}`,
+      code: 500,
+    };
   } else {
-    if (
-      error.type === 'UnknownServerError' ||
-      error.type === 'RpcExecutionError'
-    ) {
-      return {
-        message: `Error: ${error?.inner?.data?.data?.type}`,
-        code: 500,
-      };
-    } else {
-      return unknownMessage;
-    }
+    return unknownMessage;
   }
 };
