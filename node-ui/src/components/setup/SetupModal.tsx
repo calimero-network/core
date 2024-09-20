@@ -98,7 +98,6 @@ export function SetupModal({
     setUrl(getNodeUrl());
   }, [getNodeUrl]);
 
-
   function validateUrl(value: string): boolean {
     try {
       new URL(value);

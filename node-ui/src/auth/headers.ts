@@ -52,4 +52,3 @@ export async function getPrivateKey(): Promise<PrivateKey | null> {
     return null;
   }
 }
-
