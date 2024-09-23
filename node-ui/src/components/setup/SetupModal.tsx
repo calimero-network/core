@@ -158,7 +158,11 @@ export function SetupModal({
           <div className="content-wrapper">
             <div className="title">{t.modalTitle}</div>
             {loading ? (
-               <Loading loaderColor={'#FF7A00'} loaderSize={'48px'} borderSize={'5px'} />
+              <Loading
+                loaderColor={'#FF7A00'}
+                loaderSize={'48px'}
+                borderSize={'5px'}
+              />
             ) : (
               <>
                 <div className="popup-wrapper">

@@ -92,7 +92,9 @@ export function WalletSelectorContextProvider({
   );
 
   if (loading) {
-    return <Loading loaderColor={'#FF7A00'} loaderSize={'48px'} borderSize={'5px'} />;
+    return (
+      <Loading loaderColor={'#FF7A00'} loaderSize={'48px'} borderSize={'5px'} />
+    );
   }
 
   return (
