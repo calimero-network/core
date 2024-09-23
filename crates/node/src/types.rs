@@ -1,4 +1,4 @@
-use calimero_primitives::blobs::BlobId;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::transaction::Transaction;
@@ -44,7 +44,7 @@ pub enum CatchupStreamMessage {
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct CatchupApplicationBlobRequest {
-    pub id: BlobId,
+    pub application_id: ApplicationId,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -75,6 +75,8 @@ pub enum CatchupError {
     ContextNotFound { context_id: ContextId },
     #[error("transaction `{transaction_hash:?}` not found")]
     TransactionNotFound { transaction_hash: Hash },
+    #[error("application `{application_id:?}` not found")]
+    ApplicationNotFound { application_id: ApplicationId },
     #[error("internal error")]
     InternalError,
 }

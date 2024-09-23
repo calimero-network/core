@@ -197,7 +197,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
                 continue;
             }
             Some(request) = server_receiver.recv() => node.handle_call(request).await,
-            _ = catchup_interval_tick.tick() => node.handle_interval_catchup().await,
+            _ = catchup_interval_tick.tick() => node.perform_interval_catchup().await,
         }
     }
 

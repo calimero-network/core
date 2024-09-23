@@ -21,7 +21,7 @@ pub mod config;
 
 use config::BlobStoreConfig;
 
-const CHUNK_SIZE: usize = 1 << 20; // 1MiB
+pub const CHUNK_SIZE: usize = 1 << 20; // 1MiB
 const _: [(); { (usize::BITS - CHUNK_SIZE.leading_zeros()) > 32 } as usize] = [
     /* CHUNK_SIZE must be a 32-bit number */
 ];

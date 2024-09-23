@@ -3,7 +3,7 @@ use std::io::Error as IoError;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use calimero_blobstore::{BlobManager, Size};
+use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ContextConfigClientConfig;
 use calimero_context_config::client::{ContextConfigClient, RelayOrNearTransport};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
@@ -857,5 +857,22 @@ impl ContextManager {
         }
 
         Ok(Some(buf))
+    }
+
+    pub fn stream_application_blob(
+        &self,
+        application_id: &ApplicationId,
+    ) -> EyreResult<Option<Blob>> {
+        let handle = self.store.handle();
+
+        let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? else {
+            return Ok(None);
+        };
+
+        let Some(stream) = self.blob_manager.get(application.blob.blob_id())? else {
+            bail!("fatal: application points to dangling blob");
+        };
+
+        Ok(Some(stream))
     }
 }

@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use blobs::ApplicationBlobChunkSender;
 use calimero_network::stream::{Message, Stream};
 use calimero_node_primitives::NodeType;
 use calimero_primitives::application::Application;
@@ -8,7 +9,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::transaction::Transaction;
 use calimero_store::key::ContextTransaction as ContextTransactionKey;
 use eyre::{bail, Result as EyreResult};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
@@ -19,17 +20,17 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
-use crate::catchup::batch::CatchupBatchSender;
-use crate::catchup::blobs::ChunkStream;
+use crate::catchup::blobs::ApplicationBlobChunkStream;
+use crate::catchup::transactions::TransactionsBatchSender;
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::types::{
-    CatchupApplicationBlobRequest, CatchupError, CatchupStreamMessage, CatchupTransactionsRequest,
-    TransactionStatus, TransactionWithStatus,
+    CatchupApplicationBlobRequest, CatchupError, CatchupStreamMessage, CatchupTransactionsBatch,
+    CatchupTransactionsRequest, TransactionStatus, TransactionWithStatus,
 };
 use crate::Node;
 
-mod batch;
 mod blobs;
+mod transactions;
 
 impl Node {
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) -> EyreResult<()> {
@@ -57,6 +58,31 @@ impl Node {
         request: CatchupApplicationBlobRequest,
         mut stream: Box<Stream>,
     ) -> Result<(), eyre::Error> {
+        let Some(mut blob) = self
+            .ctx_manager
+            .stream_application_blob(&request.application_id)?
+        else {
+            let message = to_json_vec(&CatchupStreamMessage::Error(
+                CatchupError::ApplicationNotFound {
+                    application_id: request.application_id,
+                },
+            ))?;
+            stream.send(Message::new(message)).await?;
+
+            return Ok(());
+        };
+
+        // Stream messages are encoded with length delimited codec.
+        // Max message size is 8MB and blob chunk size 1MB (atm).
+        // So, collect 7 chunks and push them to over the stream.
+        let mut blob_sender = ApplicationBlobChunkSender::new(7, stream);
+
+        while let Some(chunk) = blob.try_next().await? {
+            blob_sender.send(chunk).await?;
+        }
+
+        blob_sender.flush().await?;
+
         todo!()
     }
 
@@ -135,7 +161,7 @@ impl Node {
             last_transaction_hash = transaction.prior_hash.into();
         }
 
-        let mut batch_writer = CatchupBatchSender::new(request.batch_size, stream);
+        let mut batch_writer = TransactionsBatchSender::new(request.batch_size, stream);
 
         for hash in hashes {
             let key = ContextTransactionKey::new(request.context_id, hash.into());
@@ -186,7 +212,8 @@ impl Node {
 
         Ok(())
     }
-    pub(crate) async fn handle_interval_catchup(&mut self) {
+
+    pub(crate) async fn perform_interval_catchup(&mut self) {
         let Some(context_id) = self.ctx_manager.get_any_pending_catchup_context().await else {
             return;
         };
@@ -243,7 +270,7 @@ impl Node {
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
         let request = CatchupApplicationBlobRequest {
-            id: latest_application.blob,
+            application_id: latest_application.id,
         };
 
         let data = to_json_vec(&request)?;
@@ -251,13 +278,13 @@ impl Node {
         stream.send(Message::new(data)).await?;
 
         let (tx, rx) = mpsc::channel(100);
-        let chunk_stream = ChunkStream::new(rx);
+        let chunk_stream = ApplicationBlobChunkStream::new(rx);
 
         let ctx_manager = self.ctx_manager.clone();
         let metedata = latest_application.metadata.clone();
 
         let handle = spawn(async move {
-            let _ = ctx_manager
+            ctx_manager
                 .install_application_from_stream(
                     latest_application.size,
                     chunk_stream,
@@ -265,7 +292,7 @@ impl Node {
                     metedata,
                 )
                 .await
-                .map_err(|e| error!(%e, "Failed to install application from blob stream"));
+                .map(|_| ())
         });
 
         loop {
@@ -280,19 +307,25 @@ impl Node {
                         CatchupStreamMessage::ApplicationBlobChunk(chunk) => {
                             tx.send(chunk).await?;
                         }
-                        _ => {}
+                        message @ (CatchupStreamMessage::TransactionsBatch(_)
+                        | CatchupStreamMessage::TransactionsRequest(_)
+                        | CatchupStreamMessage::ApplicationBlobRequest(_)) => {
+                            warn!("Ignoring unexpected message: {:?}", message);
+                        }
+                        CatchupStreamMessage::Error(err) => {
+                            error!(?err, "Received error during application blob catchup");
+                            bail!(err);
+                        }
                     },
                     None => break,
                 },
-                Err(err) => bail!("Timeout while waiting for catchup message: {}", err),
+                Err(err) => bail!("Failed to await application blob chunk message: {}", err),
             }
         }
 
         drop(tx);
 
-        let _ = handle.await?;
-
-        Ok(())
+        handle.await?
     }
 
     async fn perform_transaction_catchup(
@@ -312,126 +345,105 @@ impl Node {
 
         stream.send(Message::new(data)).await?;
 
-        // todo! ask peer for the application if we don't have it
-
         loop {
-            let message = timeout(
+            match timeout(
                 self.network_client.catchup_config.receive_timeout,
                 stream.next(),
             )
-            .await;
-
-            match message {
+            .await
+            {
                 Ok(message) => match message {
-                    Some(message) => {
-                        self.handle_catchup_message(
-                            chosen_peer,
-                            context,
-                            from_json_slice(&message?.data)?,
-                        )
-                        .await?;
-                    }
+                    Some(message) => match from_json_slice(&message?.data)? {
+                        CatchupStreamMessage::TransactionsBatch(batch) => {
+                            self.apply_transactions_batch(chosen_peer, context, batch)
+                                .await?;
+                        }
+                        message @ (CatchupStreamMessage::ApplicationBlobChunk(_)
+                        | CatchupStreamMessage::TransactionsRequest(_)
+                        | CatchupStreamMessage::ApplicationBlobRequest(_)) => {
+                            warn!("Ignoring unexpected message: {:?}", message);
+                        }
+                        CatchupStreamMessage::Error(err) => {
+                            error!(?err, "Received error during transaction catchup");
+                            bail!(err);
+                        }
+                    },
                     None => break,
                 },
-                Err(err) => {
-                    bail!("Timeout while waiting for catchup message: {}", err);
-                }
+                Err(err) => bail!("Failed to await transactions catchup message: {}", err),
             }
         }
 
         Ok(())
     }
 
-    async fn handle_catchup_message(
+    async fn apply_transactions_batch(
         &mut self,
         chosen_peer: PeerId,
         context: &mut Context,
-        message: CatchupStreamMessage,
+        batch: CatchupTransactionsBatch,
     ) -> EyreResult<()> {
-        match message {
-            CatchupStreamMessage::TransactionsBatch(batch) => {
-                info!(
-                    context_id=%context.id,
-                    transactions=%batch.transactions.len(),
-                    "Processing catchup transactions batch"
-                );
+        info!(
+            context_id=%context.id,
+            transactions=%batch.transactions.len(),
+            "Processing catchup transactions batch"
+        );
 
-                for TransactionWithStatus {
-                    transaction_hash,
-                    transaction,
-                    status,
-                } in batch.transactions
-                {
-                    if context.last_transaction_hash != transaction.prior_hash {
-                        bail!(
-                            "Transaction '{}' from the catchup batch doesn't build on last transaction '{}'",
-                            transaction_hash,
-                            context.last_transaction_hash,
-                        );
-                    };
+        for TransactionWithStatus {
+            transaction_hash,
+            transaction,
+            status,
+        } in batch.transactions
+        {
+            if context.last_transaction_hash != transaction.prior_hash {
+                bail!(
+                        "Transaction '{}' from the catchup batch doesn't build on last transaction '{}'",
+                        transaction_hash,
+                        context.last_transaction_hash,
+                    );
+            };
 
-                    match status {
-                        TransactionStatus::Pending => match self.typ {
-                            NodeType::Peer => {
-                                let _ = self.tx_pool.insert(
-                                    chosen_peer,
-                                    Transaction::new(
-                                        context.id,
-                                        transaction.method,
-                                        transaction.payload,
-                                        transaction.prior_hash,
-                                        transaction.executor_public_key,
-                                    ),
-                                    None,
-                                )?;
-                            }
-                            NodeType::Coordinator => {
-                                let _ = self
-                                    .validate_pending_transaction(
-                                        context,
-                                        transaction,
-                                        transaction_hash,
-                                    )
-                                    .await?;
-
-                                drop(self.tx_pool.remove(&transaction_hash));
-                            }
-                            _ => bail!("Unexpected node type"),
-                        },
-                        TransactionStatus::Executed => match self.typ {
-                            NodeType::Peer => {
-                                drop(
-                                    self.execute_transaction(
-                                        context,
-                                        transaction,
-                                        transaction_hash,
-                                    )
-                                    .await?,
-                                );
-
-                                drop(self.tx_pool.remove(&transaction_hash));
-                            }
-                            NodeType::Coordinator => {
-                                self.persist_transaction(context, transaction, transaction_hash)?;
-                            }
-                            _ => bail!("Unexpected node type"),
-                        },
+            match status {
+                TransactionStatus::Pending => match self.typ {
+                    NodeType::Peer => {
+                        let _ = self.tx_pool.insert(
+                            chosen_peer,
+                            Transaction::new(
+                                context.id,
+                                transaction.method,
+                                transaction.payload,
+                                transaction.prior_hash,
+                                transaction.executor_public_key,
+                            ),
+                            None,
+                        )?;
                     }
+                    NodeType::Coordinator => {
+                        let _ = self
+                            .validate_pending_transaction(context, transaction, transaction_hash)
+                            .await?;
 
-                    context.last_transaction_hash = transaction_hash;
-                }
+                        drop(self.tx_pool.remove(&transaction_hash));
+                    }
+                    _ => bail!("Unexpected node type"),
+                },
+                TransactionStatus::Executed => match self.typ {
+                    NodeType::Peer => {
+                        drop(
+                            self.execute_transaction(context, transaction, transaction_hash)
+                                .await?,
+                        );
+
+                        drop(self.tx_pool.remove(&transaction_hash));
+                    }
+                    NodeType::Coordinator => {
+                        self.persist_transaction(context, transaction, transaction_hash)?;
+                    }
+                    _ => bail!("Unexpected node type"),
+                },
             }
-            CatchupStreamMessage::ApplicationBlobChunk(chunk) => {}
-            CatchupStreamMessage::Error(err) => {
-                error!(?err, "Received error during catchup");
-                bail!(err);
-            }
-            CatchupStreamMessage::TransactionsRequest(request) => {
-                warn!("Unexpected message: {:?}", request);
-            }
-            CatchupStreamMessage::ApplicationBlobRequest(request) => {
-                warn!("Unexpected message: {:?}", request);
-            }
+
+            context.last_transaction_hash = transaction_hash;
         }
 
         Ok(())

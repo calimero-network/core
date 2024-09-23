@@ -1,18 +1,23 @@
-use futures_util::AsyncRead;
-use futures_util::{ready, Stream as StreamFutures};
+use core::mem::take;
+
+use calimero_blobstore::CHUNK_SIZE as BLOB_CHUNK_SIZE;
+use calimero_network::stream::{Message, Stream};
+use eyre::Result as EyreResult;
+use futures_util::{ready, AsyncRead, SinkExt, Stream as StreamFutures};
+use serde_json::to_vec as to_json_vec;
 use std::pin::Pin;
 use std::task::{Context as StdContext, Poll};
 use tokio::sync::mpsc;
 
-use crate::types::CatchupApplicationBlobChunk;
+use crate::types::{CatchupApplicationBlobChunk, CatchupStreamMessage};
 
-pub struct ChunkStream {
+pub struct ApplicationBlobChunkStream {
     receiver: mpsc::Receiver<CatchupApplicationBlobChunk>,
     buffer: Option<Box<[u8]>>,
     offset: usize,
 }
 
-impl ChunkStream {
+impl ApplicationBlobChunkStream {
     pub fn new(receiver: mpsc::Receiver<CatchupApplicationBlobChunk>) -> Self {
         Self {
             receiver,
@@ -22,7 +27,7 @@ impl ChunkStream {
     }
 }
 
-impl StreamFutures for ChunkStream {
+impl StreamFutures for ApplicationBlobChunkStream {
     type Item = CatchupApplicationBlobChunk;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext<'_>) -> Poll<Option<Self::Item>> {
@@ -34,7 +39,8 @@ impl StreamFutures for ChunkStream {
         }
     }
 }
-impl AsyncRead for ChunkStream {
+
+impl AsyncRead for ApplicationBlobChunkStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut StdContext<'_>,
@@ -59,5 +65,57 @@ impl AsyncRead for ChunkStream {
         } else {
             Poll::Ready(Ok(0))
         }
+    }
+}
+
+pub struct ApplicationBlobChunkSender {
+    batch_size: u8,
+    batch: Vec<u8>,
+    stream: Box<Stream>,
+    sequential_id: u64,
+}
+
+impl ApplicationBlobChunkSender {
+    pub(crate) fn new(batch_size: u8, stream: Box<Stream>) -> Self {
+        Self {
+            batch_size,
+            batch: Vec::with_capacity((batch_size as usize) * BLOB_CHUNK_SIZE),
+            stream,
+            sequential_id: 0,
+        }
+    }
+
+    pub(crate) async fn send(&mut self, chunk: Box<[u8]>) -> EyreResult<()> {
+        self.batch.extend_from_slice(&chunk);
+
+        if self.batch.len() >= (self.batch_size as usize) * BLOB_CHUNK_SIZE {
+            let message = to_json_vec(&CatchupStreamMessage::ApplicationBlobChunk(
+                CatchupApplicationBlobChunk {
+                    sequential_id: self.sequential_id,
+                    chunk: take(&mut self.batch).into_boxed_slice(),
+                },
+            ))?;
+
+            self.stream.send(Message::new(message)).await?;
+
+            self.sequential_id += 1;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn flush(&mut self) -> EyreResult<()> {
+        if !self.batch.is_empty() {
+            let message = to_json_vec(&CatchupStreamMessage::ApplicationBlobChunk(
+                CatchupApplicationBlobChunk {
+                    sequential_id: self.sequential_id,
+                    chunk: take(&mut self.batch).into_boxed_slice(),
+                },
+            ))?;
+
+            self.stream.send(Message::new(message)).await?;
+        }
+
+        Ok(())
     }
 }
