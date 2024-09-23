@@ -1,4 +1,3 @@
-import { Header, createAuthHeader } from '@calimero-is-near/calimero-p2p-sdk';
 import { getAppEndpointKey } from '../../utils/storage';
 import { HttpClient } from '../httpClient';
 import { ApiResponse, ResponseData } from '../response';
@@ -7,6 +6,7 @@ import translations from '../../constants/en.global.json';
 import { createAppMetadata } from '../../utils/metadata';
 import { Signature } from 'starknet';
 import { getNearEnvironment } from '../../utils/node';
+import { createAuthHeader, Header } from '../../auth/headers';
 
 const t = translations.nodeDataSource;
 

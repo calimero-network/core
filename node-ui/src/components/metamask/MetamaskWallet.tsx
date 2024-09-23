@@ -131,7 +131,9 @@ export function MetamaskWallet({
   const t = translations.loginPage.metamaskLogin;
 
   if (!ready) {
-    return <Loading />;
+    return (
+      <Loading loaderColor={'#FF7A00'} loaderSize={'48px'} borderSize={'5px'} />
+    );
   }
 
   return (
