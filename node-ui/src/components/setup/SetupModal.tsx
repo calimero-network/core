@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import React from 'react';
 import apiClient from '../../api';
-import LoaderSpinner from '../common/LoaderSpinner';
 import translations from '../../constants/en.global.json';
 import { styled } from 'styled-components';
+import Loading from '../common/Loading';
 
 const Wrapper = styled.div`
     display: flex;
@@ -158,7 +158,7 @@ export function SetupModal({
           <div className="content-wrapper">
             <div className="title">{t.modalTitle}</div>
             {loading ? (
-              <LoaderSpinner />
+               <Loading loaderColor={'#FF7A00'} loaderSize={'48px'} borderSize={'5px'} />
             ) : (
               <>
                 <div className="popup-wrapper">

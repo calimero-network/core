@@ -1,6 +1,6 @@
 import React from 'react';
 import styled from 'styled-components';
-import LoaderSpinner from './LoaderSpinner';
+import Loading from './Loading';
 
 interface StyledButtonProps {
   $btnWidth?: string;
@@ -84,7 +84,7 @@ export default function Button({
       $padding={padding}
       $borderRadius={borderRadius}
     >
-      {isLoading ? <LoaderSpinner /> : text}
+      {isLoading ? <Loading /> : text}
     </ButtonStyled>
   );
 }
