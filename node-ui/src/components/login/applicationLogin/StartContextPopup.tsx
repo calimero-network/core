@@ -4,12 +4,15 @@ import Button from '../../common/Button';
 import translations from '../../../constants/en.global.json';
 import StatusModal, { ModalContent } from '../../common/StatusModal';
 import { DisplayApplication } from './StartContextStep';
+import { truncateText } from '../../../utils/displayFunctions';
+import { Tooltip } from 'react-tooltip';
+import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
+import { copyToClipboard } from '../../../utils/copyToClipboard';
 
 const Wrapper = styled.div`
   display: flex;
   flex: 1;
   flex-direction: column;
-  padding: 1rem;
   font-optical-sizing: auto;
   font-weight: 500;
   font-style: normal;
@@ -26,42 +29,68 @@ const Wrapper = styled.div`
     color: #6b7280;
   }
 
-  .cancel-icon {
-    position: relative;
-    right: -0.25rem;
-    cursor: pointer;
-    height: 1.25rem;
-    width: 1.25rem;
-    color: #fff;
-    cursor: pointer;
-    &:hover {
-      color: #4cfafc;
-    }
+  .subtitle {
+    color: #6b7280;
+    font-weigth: 500;
+    font-size: 0.875rem;
+    word-break: break-all;
+    display: flex;
+    gap: 0.5rem;
   }
 
-  .select-app-section {
-    .button-container {
-      display: flex;
-      padding-top: 1rem;
-      gap: 1rem;
-    }
+  .separator {
+    border-bottom: 1px solid #23262d;
+  }
 
-    .selected-app {
-      display: flex;
-      flex-direction: column;
-      padding-top: 0.25rem;
-      padding-left: 0.5rem;
-      font-size: 0.875rem;
-      font-weight: 500;
-      line-height: 1.25rem;
-      text-align: left;
-      .label {
-        color: #6b7280;
-      }
-      .value {
-        color: #fff;
-      }
-    }
+  .app-info-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 1.25rem;
+    color: #fff;
+  }
+
+  .info-item {
+    display: flex;
+    gap: 0.5rem;
+    color: #6b7280;
+    font-weigth: 500;
+    font-size: 0.875rem;
+  }
+
+  .label-id {
+    color: #fff;
+    display: flex;
+    align-items: center;
+    word-break: break-all;
+    gap: 0.5rem;
+  }
+
+  .copy-icon {
+    height: 1rem;
+    width: 1rem;
+    color: #fff;
+    cursor: pointer;
+  }
+  .copy-icon:hover {
+    color: #9c9da3;
+  }
+
+  .back-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    color: #fff;
+    cursor: pointer;
+  }
+
+  .back-text {
+    color: #6b7280;
+    font-size: 0.875rem;
+  }
+  .back-text:hover {
+    color: #fff;
   }
 
   .flex-wrapper-buttons {
@@ -74,7 +103,7 @@ const Wrapper = styled.div`
     padding-top: 1rem;
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.5rem;
 
     .init-title {
       display: flex;
@@ -97,6 +126,8 @@ const Wrapper = styled.div`
       gap: 0.5rem;
 
       .label {
+        display: flex;
+        gap: 0.5rem;
         font-size: 0.75rem;
         font-weight: 500;
         line-height: 0.875rem;
@@ -114,7 +145,7 @@ const Wrapper = styled.div`
 
       .args-input {
         position: relative;
-        height: 12.5rem;
+        height: 5rem;
         font-size: 0.875rem;
         font-weight: 500;
         line-height: 0.875rem;
@@ -153,7 +184,7 @@ interface StartContextPopupProps {
   showStatusModal: boolean;
   closeModal: () => void;
   startContextStatus: ModalContent;
-  navigateBack: () => void;
+  backLoginStep: () => void;
 }
 
 export default function StartContextPopup({
@@ -167,7 +198,7 @@ export default function StartContextPopup({
   showStatusModal,
   closeModal,
   startContextStatus,
-  navigateBack,
+  backLoginStep,
 }: StartContextPopupProps) {
   const t = translations.startContextPage;
   const onStartContextClick = async () => {
@@ -196,20 +227,28 @@ export default function StartContextPopup({
         closeModal={closeModal}
         modalContent={startContextStatus}
       />
-      <div className="select-app-section">
-        <div className="selected-app">
-          <p className="label">
-            {t.idLabelText}
-            <span className="value">{application?.appId}</span>
-          </p>
-          <p className="label">
-            {t.nameLabelText}
-            <span className="value">{application?.name}</span>
-          </p>
-          <p className="label">
-            {t.versionLabelText}
-            <span className="value">{application?.version}</span>
-          </p>
+      <div className="app-info-wrapper">
+        <div className="subtitle separator">
+          <span>{t.detailsText}</span>
+        </div>
+        <div className="info-item">
+          <span>{t.idLabelText}</span>
+          <div className="label-id" data-tooltip-id="tooltip">
+            <span>{truncateText(application?.appId ?? '-')}</span>
+            <Tooltip id="tooltip" content={application?.appId ?? '-'} />
+            <ClipboardDocumentIcon
+              className="copy-icon"
+              onClick={() => copyToClipboard(application?.appId ?? '-')}
+            />
+          </div>
+        </div>
+        <div className="info-item">
+          <span>{t.nameLabelText}</span>
+          <span className="label-id">{application?.name ?? '-'}</span>
+        </div>
+        <div className="info-item">
+          <span>{t.versionLabelText}</span>
+          <span className="label-id">{application?.version ?? '-'}</span>
         </div>
       </div>
       <div className="init-section">
@@ -226,7 +265,6 @@ export default function StartContextPopup({
         </div>
         {isArgsChecked && (
           <div className="args-section">
-            <div className="section-title">{t.argsTitleText}</div>
             <div className="input">
               <label className="label">{t.argsLabelText}</label>
               <textarea
@@ -244,21 +282,17 @@ export default function StartContextPopup({
         )}
         <div className="flex-wrapper-buttons">
           <Button
-            text="Back to context list"
-            width="100%"
-            onClick={navigateBack}
-            isDisabled={isLoading}
-            color="#6b7280"
-            highlightColor="#6b7280"
-            disabledColor="#6b7280"
-          />
-          <Button
             text="Start"
             width="100%"
             onClick={onStartContextClick}
             isLoading={isLoading}
             isDisabled={isLoading}
           />
+        </div>
+        <div className="flex-center">
+          <div className="back-button" onClick={backLoginStep}>
+            <span className="back-text">{t.backButtonText}</span>
+          </div>
         </div>
       </div>
     </Wrapper>
