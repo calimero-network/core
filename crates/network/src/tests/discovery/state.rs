@@ -89,35 +89,35 @@ fn test_is_rendezvous_discovery_throttled() {
     assert!(!peer_info.is_rendezvous_discover_throttled(1.0));
 }
 
-#[test]
-fn test_is_rendezvous_registration_required() {
-    let mut peer_info = PeerInfo::default();
-    assert!(peer_info.is_rendezvous_registration_required());
+// #[test]
+// fn test_is_rendezvous_registration_required() {
+//     let mut peer_info = PeerInfo::default();
+//     assert!(peer_info.is_rendezvous_registration_required());
 
-    peer_info.rendezvous = Some(PeerRendezvousInfo {
-        registration_status: RendezvousRegistrationStatus::Requested,
-        ..Default::default()
-    });
-    assert!(!peer_info.is_rendezvous_registration_required());
+//     peer_info.rendezvous = Some(PeerRendezvousInfo {
+//         registration_status: RendezvousRegistrationStatus::Requested,
+//         ..Default::default()
+//     });
+//     assert!(!peer_info.is_rendezvous_registration_required());
 
-    peer_info.rendezvous = Some(PeerRendezvousInfo {
-        registration_status: RendezvousRegistrationStatus::Registered,
-        ..Default::default()
-    });
-    assert!(!peer_info.is_rendezvous_registration_required());
+//     peer_info.rendezvous = Some(PeerRendezvousInfo {
+//         registration_status: RendezvousRegistrationStatus::Registered,
+//         ..Default::default()
+//     });
+//     assert!(!peer_info.is_rendezvous_registration_required());
 
-    peer_info.rendezvous = Some(PeerRendezvousInfo {
-        registration_status: RendezvousRegistrationStatus::Discovered,
-        ..Default::default()
-    });
-    assert!(peer_info.is_rendezvous_registration_required());
+//     peer_info.rendezvous = Some(PeerRendezvousInfo {
+//         registration_status: RendezvousRegistrationStatus::Discovered,
+//         ..Default::default()
+//     });
+//     assert!(peer_info.is_rendezvous_registration_required());
 
-    peer_info.rendezvous = Some(PeerRendezvousInfo {
-        registration_status: RendezvousRegistrationStatus::Expired,
-        ..Default::default()
-    });
-    assert!(peer_info.is_rendezvous_registration_required());
-}
+//     peer_info.rendezvous = Some(PeerRendezvousInfo {
+//         registration_status: RendezvousRegistrationStatus::Expired,
+//         ..Default::default()
+//     });
+//     assert!(peer_info.is_rendezvous_registration_required());
+// }
 
 #[test]
 fn test_state_mutations() {

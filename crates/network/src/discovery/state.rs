@@ -156,10 +156,6 @@ impl DiscoveryState {
         self.rendezvous_nominations.len()
     }
 
-    pub(crate) fn is_peer_rendezvous_nominated(&self, peer_id: &PeerId) -> bool {
-        self.rendezvous_nominations.contains(peer_id)
-    }
-
     pub(crate) fn remove_rendezvous_nominated_peer(&mut self, peer_id: &PeerId) {
         let _ = self.rendezvous_nominations.remove(peer_id);
     }
@@ -178,6 +174,10 @@ impl DiscoveryState {
 
     pub(crate) fn is_peer_rendezvous(&self, peer_id: &PeerId) -> bool {
         self.rendezvous_index.contains(peer_id)
+    }
+
+    pub(crate) fn is_rendezvous_registration_required(&self, max: usize) -> bool {
+        self.rendezvous_nominated_peers_size() < max
     }
 }
 
@@ -223,15 +223,6 @@ impl PeerInfo {
             info.last_discovery_at().map_or(false, |instant| {
                 instant.elapsed() < Duration::from_secs_f32(60.0 / rpm)
             })
-        })
-    }
-
-    pub(crate) fn is_rendezvous_registration_required(&self) -> bool {
-        self.rendezvous.as_ref().map_or(true, |info| {
-            matches!(
-                info.registration_status(),
-                RendezvousRegistrationStatus::Discovered | RendezvousRegistrationStatus::Expired
-            )
         })
     }
 
