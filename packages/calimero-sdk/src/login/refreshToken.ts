@@ -38,8 +38,7 @@ export const handleRpcError = async (
     code: 401,
   };
   const expiredSession = {
-    message:
-      'Your session expired, but we have refreshed it. Please try again.',
+    message: '',
     code: 403,
   };
   const unknownMessage = {
