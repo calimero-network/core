@@ -18,6 +18,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 tracing.workspace = true
+url.workspace = true
 
 calimero-context = { path = "../context" }
 calimero-blobstore = { path = "../store/blobs" }

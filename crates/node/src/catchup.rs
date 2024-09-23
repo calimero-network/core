@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 
-use blobs::ApplicationBlobChunkSender;
 use calimero_network::stream::{Message, Stream};
 use calimero_node_primitives::NodeType;
 use calimero_primitives::application::Application;
@@ -19,8 +18,9 @@ use tokio::spawn;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
+use url::Url;
 
-use crate::catchup::blobs::ApplicationBlobChunkStream;
+use crate::catchup::blobs::{ApplicationBlobChunkSender, ApplicationBlobChunkStream};
 use crate::catchup::transactions::TransactionsBatchSender;
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::types::{
@@ -60,7 +60,7 @@ impl Node {
     ) -> Result<(), eyre::Error> {
         let Some(mut blob) = self
             .ctx_manager
-            .stream_application_blob(&request.application_id)?
+            .get_application_blob(&request.application_id)?
         else {
             let message = to_json_vec(&CatchupStreamMessage::Error(
                 CatchupError::ApplicationNotFound {
@@ -267,6 +267,35 @@ impl Node {
         chosen_peer: PeerId,
         latest_application: Application,
     ) -> EyreResult<()> {
+        let source = Url::from(latest_application.source.clone());
+
+        match source.scheme() {
+            "http" | "https" => {
+                match self
+                    .ctx_manager
+                    .install_application_from_url(source, latest_application.metadata.clone())
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(err) => {
+                        error!(%err, "Failed to install application from URL");
+                        self.perform_blob_stream_catchup(chosen_peer, latest_application)
+                            .await
+                    }
+                }
+            }
+            _ => {
+                self.perform_blob_stream_catchup(chosen_peer, latest_application)
+                    .await
+            }
+        }
+    }
+
+    async fn perform_blob_stream_catchup(
+        &mut self,
+        chosen_peer: PeerId,
+        latest_application: Application,
+    ) -> EyreResult<()> {
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
         let request = CatchupApplicationBlobRequest {
@@ -319,7 +348,9 @@ impl Node {
                     },
                     None => break,
                 },
-                Err(err) => bail!("Failed to await application blob chunk message: {}", err),
+                Err(err) => {
+                    bail!("Failed to await application blob chunk message: {}", err)
+                }
             }
         }
 
