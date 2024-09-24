@@ -22,6 +22,8 @@ jobs:
   build_node_ui:
     if: github.event.pull_request.merged == true || github.event_name == 'push' || github.event.inputs.deploy == 'false'
     runs-on: ubuntu-latest
+    outputs:
+      changes_detected: ${{ steps.check_changes.outputs.changes_detected }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -51,6 +53,8 @@ jobs:
               echo "No changes in node-ui (excluding build folder)."
             fi
           fi
+        env:
+          CHANGES_DETECTED: ${{ steps.check_changes.outputs.changes_detected }}
 
       # Conditional steps, executed only if changes were detected
       - name: Set up Node.js
@@ -96,8 +100,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy:
-    if: github.event.inputs.deploy == 'true' || env.CHANGES_DETECTED == 'true'
+    if: github.event.inputs.deploy == 'true' || needs.build_node_ui.outputs.changes_detected == 'true'
     runs-on: ubuntu-latest
+    needs: build_node_ui
     steps:
       - name: Checkout
         uses: actions/checkout@v4
