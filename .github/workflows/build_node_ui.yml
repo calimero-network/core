@@ -2,6 +2,15 @@ name: Build and Commit node-ui
 
 on:
   workflow_dispatch: # Allow manual triggering of the workflow
+    inputs:
+      deploy:
+        description: 'Deploy the build to GitHub Pages'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
   push:
     branches:
       - master
@@ -11,13 +20,13 @@ on:
 
 jobs:
   build_node_ui:
-    if: github.event.pull_request.merged == true || github.event_name == 'push'
+    if: github.event.pull_request.merged == true || github.event_name == 'push' || github.event.inputs.deploy == 'false'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Check if there are changes in the node-ui folder (excluding build)
+      # Check for changes in the node-ui folder (excluding build)
       - name: Check for changes in node-ui (excluding build folder)
         id: check_changes
         run: |
@@ -85,3 +94,30 @@ jobs:
         run: git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    if: github.event.inputs.deploy == 'true' || env.CHANGES_DETECTED == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        with:
+          static_site_generator: next
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          name: github-pages
+          path: ./node-ui/build
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
