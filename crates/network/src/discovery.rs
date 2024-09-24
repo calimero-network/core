@@ -5,7 +5,7 @@ use multiaddr::Protocol;
 use tracing::{debug, error};
 
 use super::EventLoop;
-use crate::config::RendezvousConfig;
+use crate::config::{RelayConfig, RendezvousConfig};
 use crate::discovery::state::{
     DiscoveryState, RelayReservationStatus, RendezvousRegistrationStatus,
 };
@@ -16,13 +16,15 @@ pub mod state;
 pub struct Discovery {
     pub(crate) state: DiscoveryState,
     pub(crate) rendezvous_config: RendezvousConfig,
+    pub(crate) relay_config: RelayConfig,
 }
 
 impl Discovery {
-    pub(crate) fn new(rendezvous_config: &RendezvousConfig) -> Self {
+    pub(crate) fn new(rendezvous_config: &RendezvousConfig, relay_config: &RelayConfig) -> Self {
         Self {
             state: DiscoveryState::default(),
             rendezvous_config: rendezvous_config.clone(),
+            relay_config: relay_config.clone(),
         }
     }
 }
@@ -188,7 +190,11 @@ impl EventLoop {
             .get_peer_info(relay_peer)
             .wrap_err("Failed to get peer info")?;
 
-        if !peer_info.is_relay_reservation_required() {
+        if !self
+            .discovery
+            .state
+            .is_relay_reservation_required(self.discovery.relay_config.registrations_limit)
+        {
             return Ok(());
         }
 

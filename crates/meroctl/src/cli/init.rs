@@ -9,7 +9,8 @@ use calimero_context_config::client::config::{
     Credentials,
 };
 use calimero_network::config::{
-    BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RendezvousConfig, SwarmConfig,
+    BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
+    SwarmConfig,
 };
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
@@ -79,6 +80,9 @@ pub struct InitCommand {
 
     #[clap(long, default_value = "3")]
     pub rendezvous_registrations_limit: usize,
+
+    #[clap(long, default_value = "3")]
+    pub relay_registrations_limit: usize,
 
     /// Force initialization even if the directory already exists
     #[clap(long)]
@@ -198,6 +202,7 @@ impl InitCommand {
                 discovery: DiscoveryConfig::new(
                     mdns,
                     RendezvousConfig::new(self.rendezvous_registrations_limit),
+                    RelayConfig::new(self.relay_registrations_limit),
                 ),
                 server: ServerConfig {
                     listen: self

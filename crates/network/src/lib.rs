@@ -172,7 +172,7 @@ fn init(
         sender: command_sender,
     };
 
-    let discovery = Discovery::new(&config.discovery.rendezvous);
+    let discovery = Discovery::new(&config.discovery.rendezvous, &config.discovery.relay);
 
     let event_loop = EventLoop::new(
         swarm,
