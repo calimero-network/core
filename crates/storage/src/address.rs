@@ -33,7 +33,7 @@ use uuid::{Bytes, Uuid};
 /// system operation. Abstracting the true type away provides a level of
 /// insulation that is useful for any future changes.
 ///
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Id(Uuid);
 
 impl Id {
@@ -150,7 +150,7 @@ impl From<Id> for Uuid {
 /// There is no formal limit to the levels of hierarchy allowed, but in practice
 /// this is limited to 255 levels (assuming a single byte per segment name).
 ///
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Path {
     /// A list of path segment offsets, where offset `0` is assumed, and not
     /// stored.
@@ -528,7 +528,7 @@ impl TryFrom<String> for Path {
 }
 
 /// Errors that can occur when working with [`Path`]s.
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, ThisError)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, ThisError)]
 #[non_exhaustive]
 pub enum PathError {
     /// The path is empty.
