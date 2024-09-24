@@ -18,6 +18,11 @@ on:
     types:
       - closed
 
+permissions:
+  id-token: write
+  contents: write
+  pages: write
+
 jobs:
   build_node_ui:
     if: github.event.pull_request.merged == true || github.event_name == 'push' || github.event.inputs.deploy == 'true'
