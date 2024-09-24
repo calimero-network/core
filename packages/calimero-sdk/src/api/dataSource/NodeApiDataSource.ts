@@ -3,6 +3,7 @@ import {
   ContextResponse,
   HealthRequest,
   HealthStatus,
+  JwtTokenResponse,
   LoginRequest,
   LoginResponse,
   NodeApi,
@@ -77,6 +78,18 @@ export class NodeApiDataSource implements NodeApi {
         ...rootKeyRequest,
       },
       headers,
+    );
+  }
+
+  async refreshToken(
+    refreshToken: string,
+    rpcBaseUrl: string,
+  ): ApiResponse<JwtTokenResponse> {
+    return await this.client.post<JwtTokenResponse>(
+      `${rpcBaseUrl}/admin-api/refresh-jwt-token`,
+      {
+        refreshToken,
+      },
     );
   }
 

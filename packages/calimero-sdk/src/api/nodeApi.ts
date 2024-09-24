@@ -158,6 +158,11 @@ export interface ContextResponse {
   identities: string[];
 }
 
+export interface JwtTokenResponse {
+  access_token: string;
+  refresh_token: string;
+}
+
 export interface NodeApi {
   login(
     loginRequest: LoginRequest,
@@ -177,5 +182,9 @@ export interface NodeApi {
     contextId: string,
     networkId?: string,
   ): ApiResponse<ContextResponse>;
+  refreshToken(
+    refreshToken: string,
+    rpcBaseUrl: string,
+  ): ApiResponse<JwtTokenResponse>;
   health(request: HealthRequest): ApiResponse<HealthStatus>;
 }

@@ -1,11 +1,17 @@
 import React from 'react';
 import { styled } from 'styled-components';
 
-const Loader = styled.span`
-    width: 48px;
-    height: 48px;
-    border: 5px solid #FFF;
-    border-bottom-color: #FF7A00;
+interface LoaderComponentProps {
+  $loaderColor: string;
+  $loaderSize: string;
+  $borderSize: string;
+}
+
+const Loader = styled.span<LoaderComponentProps>`
+    width: ${(props) => props.$loaderSize};
+    height: ${(props) => props.$loaderSize};
+    border: ${(props) => props.$borderSize} solid #FFF;
+    border-bottom-color: ${(props) => props.$loaderColor};
     border-radius: 50%;
     display: inline-block;
     box-sizing: border-box;
@@ -21,6 +27,22 @@ const Loader = styled.span`
     }
 `;
 
-export default function Loading() {
-  return <Loader></Loader>;
+interface LoadingProps {
+  loaderColor?: string;
+  loaderSize?: string;
+  borderSize?: string;
+}
+
+export default function Loading({
+  loaderColor = '#111',
+  loaderSize = '20px',
+  borderSize = '2px',
+}: LoadingProps) {
+  return (
+    <Loader
+      $loaderColor={loaderColor}
+      $loaderSize={loaderSize}
+      $borderSize={borderSize}
+    ></Loader>
+  );
 }

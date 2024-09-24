@@ -3,9 +3,7 @@ import { PrivateKey } from '@libp2p/interface';
 import bs58 from 'bs58';
 import { getStorageClientKey } from './storage';
 import { ClientKey } from './types';
-import translations from '../constants/en.global.json';
-
-const t = translations.authHeaders;
+import { WalletType } from '../api/dataSource/NodeDataSource';
 
 export interface Header {
   [key: string]: string;
@@ -13,6 +11,7 @@ export interface Header {
 
 export async function createAuthHeader(
   payload: string,
+  networkId: string,
 ): Promise<Header | null> {
   const privateKey: PrivateKey | null = await getPrivateKey();
 
@@ -31,8 +30,8 @@ export async function createAuthHeader(
   const signature = await privateKey.sign(hashArray);
   const signatureBase58 = bs58.encode(signature);
   const contentBase58 = bs58.encode(hashArray);
-
   const headers: Header = {
+    wallet_type: JSON.stringify(WalletType.NEAR({ networkId: networkId })),
     signing_key: signingKey,
     signature: signatureBase58,
     challenge: contentBase58,
@@ -49,7 +48,7 @@ export async function getPrivateKey(): Promise<PrivateKey | null> {
     }
     return await unmarshalPrivateKey(bs58.decode(clientKey.privateKey));
   } catch (error) {
-    console.error(`${t.errorText}: ${error}`);
+    console.error('Error extracting private key:', error);
     return null;
   }
 }
