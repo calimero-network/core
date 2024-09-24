@@ -24,7 +24,6 @@ pub struct DiscoveryState {
     peers: BTreeMap<PeerId, PeerInfo>,
     relay_index: BTreeSet<PeerId>,
     rendezvous_index: BTreeSet<PeerId>,
-    rendezvous_nominations: BTreeSet<PeerId>,
 }
 
 impl DiscoveryState {
@@ -148,18 +147,6 @@ impl DiscoveryState {
             .and_modify(|info| info.update_rendezvous_registartion_status(status));
     }
 
-    pub(crate) fn add_rendezvous_nominated_peer(&mut self, peer_id: &PeerId) {
-        let _ = self.rendezvous_nominations.insert(*peer_id);
-    }
-
-    pub(crate) fn rendezvous_nominated_peers_size(&self) -> usize {
-        self.rendezvous_nominations.len()
-    }
-
-    pub(crate) fn remove_rendezvous_nominated_peer(&mut self, peer_id: &PeerId) {
-        let _ = self.rendezvous_nominations.remove(peer_id);
-    }
-
     pub(crate) fn get_peer_info(&self, peer_id: &PeerId) -> Option<&PeerInfo> {
         self.peers.get(peer_id)
     }
@@ -177,7 +164,21 @@ impl DiscoveryState {
     }
 
     pub(crate) fn is_rendezvous_registration_required(&self, max: usize) -> bool {
-        self.rendezvous_nominated_peers_size() < max
+        let sum = self
+            .get_rendezvous_peer_ids()
+            .filter_map(|peer_id| self.get_peer_info(&peer_id))
+            .fold(0, |acc, peer_info| {
+                if let Some(rendezvous_info) = peer_info.rendezvous() {
+                    match rendezvous_info.registration_status() {
+                        RendezvousRegistrationStatus::Requested
+                        | RendezvousRegistrationStatus::Registered => acc + 1,
+                        _ => acc,
+                    }
+                } else {
+                    acc
+                }
+            });
+        sum < max
     }
 }
 
