@@ -78,7 +78,7 @@ pub struct InitCommand {
     pub no_mdns: bool,
 
     #[clap(long, default_value = "3")]
-    pub rendezvous_nominated_peers: usize,
+    pub rendezvous_registrations_limit: usize,
 
     /// Force initialization even if the directory already exists
     #[clap(long)]
@@ -197,7 +197,7 @@ impl InitCommand {
                 bootstrap: BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
                 discovery: DiscoveryConfig::new(
                     mdns,
-                    RendezvousConfig::new(self.rendezvous_nominated_peers),
+                    RendezvousConfig::new(self.rendezvous_registrations_limit),
                 ),
                 server: ServerConfig {
                     listen: self
