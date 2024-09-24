@@ -162,6 +162,24 @@ impl DiscoveryState {
     pub(crate) fn is_peer_rendezvous(&self, peer_id: &PeerId) -> bool {
         self.rendezvous_index.contains(peer_id)
     }
+
+    pub(crate) fn is_rendezvous_registration_required(&self, max: usize) -> bool {
+        let sum = self
+            .get_rendezvous_peer_ids()
+            .filter_map(|peer_id| self.get_peer_info(&peer_id))
+            .fold(0, |acc, peer_info| {
+                if let Some(rendezvous_info) = peer_info.rendezvous() {
+                    match rendezvous_info.registration_status() {
+                        RendezvousRegistrationStatus::Requested
+                        | RendezvousRegistrationStatus::Registered => acc + 1,
+                        _ => acc,
+                    }
+                } else {
+                    acc
+                }
+            });
+        sum < max
+    }
 }
 
 /// PeerInfo is a struct that holds information about a peer.
@@ -206,15 +224,6 @@ impl PeerInfo {
             info.last_discovery_at().map_or(false, |instant| {
                 instant.elapsed() < Duration::from_secs_f32(60.0 / rpm)
             })
-        })
-    }
-
-    pub(crate) fn is_rendezvous_registration_required(&self) -> bool {
-        self.rendezvous.as_ref().map_or(true, |info| {
-            matches!(
-                info.registration_status(),
-                RendezvousRegistrationStatus::Discovered | RendezvousRegistrationStatus::Expired
-            )
         })
     }
 
