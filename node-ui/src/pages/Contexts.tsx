@@ -158,7 +158,6 @@ export default function ContextsPage() {
         <ContextTable
           nodeContextList={nodeContextList}
           navigateToStartContext={() => navigate('/contexts/start-context')}
-          navigateToJoinContext={() => navigate('/contexts/join-context')}
           currentOption={currentOption}
           setCurrentOption={setCurrentOption}
           tableOptions={tableOptions}

@@ -16,6 +16,7 @@ import {
   setStorageCallbackUrl,
 } from '../../../auth/storage';
 import translations from '../../../constants/en.global.json';
+import StartContextStep from './StartContextStep';
 
 interface AppLoginPopupProps {
   showPopup: boolean;
@@ -28,6 +29,7 @@ export const enum LoginStep {
   SELECT_CONTEXT,
   SELECT_IDENTITY,
   CREATE_ACCESS_TOKEN,
+  START_NEW_CONTEXT,
 }
 
 export default function AppLoginPopup({
@@ -58,7 +60,7 @@ export default function AppLoginPopup({
       setContextList(contexts);
     };
     fetchAvailableContexts();
-  }, [showPopup, applicationId, showServerDownPopup]);
+  }, [showPopup, applicationId, showServerDownPopup, loginStep]);
 
   useEffect(() => {
     const fetchAvailableContextIdentities = async () => {
@@ -121,26 +123,37 @@ export default function AppLoginPopup({
       aria-labelledby="contained-modal-title-vcenter"
       centered
     >
+      {loginStep === LoginStep.START_NEW_CONTEXT && (
+        <StartContextStep
+          applicationId={applicationId}
+          updateLoginStep={() => setLoginStep(LoginStep.SELECT_CONTEXT)}
+          backLoginStep={() => setLoginStep(LoginStep.SELECT_CONTEXT)}
+        />
+      )}
       {loginStep === LoginStep.SELECT_CONTEXT && (
         <SelectContextStep
           applicationId={applicationId}
           callbackUrl={callbackUrl}
           contextList={contextList}
-          selectedContextId={selectedContextId}
           setSelectedContextId={setSelectedContextId}
           updateLoginStep={() => setLoginStep(LoginStep.SELECT_IDENTITY)}
-          finishLogin={finishLogin}
+          createContext={() => {
+            setSelectedContextId('');
+            setLoginStep(LoginStep.START_NEW_CONTEXT);
+          }}
         />
       )}
       {loginStep === LoginStep.SELECT_IDENTITY && (
         <SelectIdentityStep
           applicationId={applicationId}
           callbackUrl={callbackUrl}
+          selectedContextId={selectedContextId}
           contextIdentities={contextIdentities}
-          selectedIdentity={selectedIdentity}
-          setSelectedIdentity={setSelectedIdentity}
-          updateLoginStep={() => setLoginStep(LoginStep.CREATE_ACCESS_TOKEN)}
-          finishLogin={finishLogin}
+          updateLoginStep={(selectedIdentity: string) => {
+            setSelectedIdentity(selectedIdentity);
+            setLoginStep(LoginStep.CREATE_ACCESS_TOKEN);
+          }}
+          backLoginStep={() => setLoginStep(LoginStep.SELECT_CONTEXT)}
         />
       )}
       {loginStep === LoginStep.CREATE_ACCESS_TOKEN && (
@@ -151,6 +164,7 @@ export default function AppLoginPopup({
           selectedIdentity={selectedIdentity}
           onCreateToken={onCreateToken}
           errorMessage={errorMessage}
+          backLoginStep={() => setLoginStep(LoginStep.SELECT_IDENTITY)}
         />
       )}
     </Modal>

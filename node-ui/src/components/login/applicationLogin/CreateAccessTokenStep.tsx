@@ -1,7 +1,11 @@
 import React from 'react';
 import Button from '../../common/Button';
-import { ModalWrapper } from './SelectContextStep';
 import translations from '../../../constants/en.global.json';
+import { ModalWrapper } from './SelectIdentityStep';
+import { truncateText } from '../../../utils/displayFunctions';
+import { Tooltip } from 'react-tooltip';
+import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
+import { copyToClipboard } from '../../../utils/copyToClipboard';
 
 interface CreateAccessTokenStepProps {
   applicationId: string;
@@ -10,6 +14,7 @@ interface CreateAccessTokenStepProps {
   selectedIdentity: string;
   onCreateToken: () => void;
   errorMessage: string;
+  backLoginStep: () => void;
 }
 
 export default function CreateAccessTokenStep({
@@ -19,12 +24,18 @@ export default function CreateAccessTokenStep({
   selectedIdentity,
   onCreateToken,
   errorMessage,
+  backLoginStep,
 }: CreateAccessTokenStepProps) {
   const t = translations.appLoginPopup.createToken;
+
   return (
     <ModalWrapper>
+      <div className="step">3/3</div>
       <div className="title">{t.title}</div>
       <div className="wrapper">
+        <div className="subtitle separator">
+          <span>{t.detailsText}</span>
+        </div>
         <div className="subtitle">
           {t.websiteText}
           <a
@@ -38,22 +49,49 @@ export default function CreateAccessTokenStep({
         </div>
         <div className="subtitle">
           {t.appIdText}
-          <span className="app-id">{applicationId}</span>
+          <div className="label" data-tooltip-id="tooltip">
+            <span>{truncateText(applicationId)}</span>
+            <Tooltip id="tooltip" content={applicationId} />
+            <ClipboardDocumentIcon
+              className="copy-icon"
+              onClick={() => copyToClipboard(applicationId)}
+            />
+          </div>
         </div>
         <div className="subtitle">
           {t.contextIdText}
-          <span className="app-id">{selectedContextId}</span>
+          <div className="label" data-tooltip-id="tooltip">
+            <span>{truncateText(selectedContextId)}</span>
+            <Tooltip id="tooltip" content={selectedContextId} />
+            <ClipboardDocumentIcon
+              className="copy-icon"
+              onClick={() => copyToClipboard(selectedContextId)}
+            />
+          </div>
         </div>
         <div className="subtitle">
           {t.contextIdentityText}
-          <span className="app-id">{selectedIdentity}</span>
+          <div className="label" data-tooltip-id="tooltip">
+            <span>{truncateText(selectedIdentity)}</span>
+            <Tooltip id="tooltip" content={selectedIdentity} />
+            <ClipboardDocumentIcon
+              className="copy-icon"
+              onClick={() => copyToClipboard(selectedIdentity)}
+            />
+          </div>
         </div>
       </div>
+
       <div className="wrapper">
         <Button text={t.buttonNextText} onClick={onCreateToken} width="100%" />
       </div>
       <div className="no-context-text">
         <span className="app-id error">{errorMessage}</span>
+      </div>
+      <div className="flex-center">
+        <div className="back-button" onClick={backLoginStep}>
+          <span className="back-text">{t.backButtonText}</span>
+        </div>
       </div>
     </ModalWrapper>
   );

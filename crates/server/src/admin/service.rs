@@ -5,17 +5,16 @@ use std::str;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Response, StatusCode, Uri};
 use axum::middleware::from_fn;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
 use calimero_store::Store;
 use eyre::Report;
+use rust_embed::{EmbeddedFile, RustEmbed};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_string as to_json_string};
-use tower_http::services::{ServeDir, ServeFile};
-use tower_http::set_status::SetStatus;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
@@ -56,6 +55,11 @@ impl AdminConfig {
         Self { enabled }
     }
 }
+
+// Embed the contents of the admin-ui build directory into the binary
+#[derive(RustEmbed)]
+#[folder = "../../node-ui/build/"]
+struct NodeUiStaticFiles;
 
 #[expect(
     clippy::too_many_lines,
@@ -110,7 +114,6 @@ pub(crate) fn setup(
         .route("/contexts/join", post(join_context_handler))
         .route("/contexts", get(get_contexts_handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
-        .route("/refresh-jwt-token", post(refresh_jwt_token_handler))
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .layer(AuthSignatureLayer::new(store))
         .layer(Extension(Arc::clone(&shared_state)));
@@ -119,7 +122,8 @@ pub(crate) fn setup(
         .route("/health", get(health_check_handler))
         .route("/certificate", get(certificate_handler))
         .route("/request-challenge", post(request_challenge_handler))
-        .route("/add-client-key", post(add_client_key_handler));
+        .route("/add-client-key", post(add_client_key_handler))
+        .route("/refresh-jwt-token", post(refresh_jwt_token_handler));
 
     let dev_router = Router::new()
         .route(
@@ -178,9 +182,20 @@ pub(crate) fn setup(
     Some((admin_path, admin_router))
 }
 
-pub(crate) fn site(
-    config: &ServerConfig,
-) -> Option<(&'static str, ServeDir<SetStatus<ServeFile>>)> {
+/// Creates a router for serving static node-ui files and providing fallback to `index.html` for SPA routing.
+///
+/// This function checks if the admin dashboard is enabled in the provided configuration.
+/// If the admin site is enabled, it returns a router that serves embedded static files
+/// and routes all SPA-related requests (like `/admin-dashboard/`) to `index.html`.
+///
+/// # Parameters
+/// - `config`: A reference to the server configuration that contains the admin site settings.
+///
+/// # Returns
+/// - `Option<(&'static str, Router)>`: If the admin site is enabled, it returns a tuple containing
+///   the base path ("/admin-dashboard") and the router for that path. If the admin site is disabled,
+///   it returns `None`.
+pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
     let _config = match &config.admin {
         Some(config) if config.enabled => config,
         _ => {
@@ -188,14 +203,74 @@ pub(crate) fn site(
             return None;
         }
     };
+
     let path = "/admin-dashboard";
 
-    let react_static_files_path = "./node-ui/build";
-    let react_app_serve_dir = ServeDir::new(react_static_files_path).not_found_service(
-        ServeFile::new(format!("{react_static_files_path}/index.html")),
-    );
+    // Create a router to serve static files and fallback to index.html
+    let router = Router::new()
+        .route("/", get(serve_embedded_file)) // Match /admin-dashboard
+        .route("/*path", get(serve_embedded_file)); // Match /admin-dashboard/* for all sub-paths
 
-    Some((path, react_app_serve_dir))
+    Some((path, router))
+}
+
+/// Serves embedded static files or falls back to `index.html` for SPA routing.
+///
+/// This function handles requests by removing the "/admin-dashboard/" prefix from the requested URI path,
+/// and then attempting to serve the requested file from the embedded directory. If the requested file
+/// is not found, it serves `index.html` to support client-side routing.
+///
+/// # Parameters
+/// - `uri`: The requested URI, which will be used to determine the file path in the embedded directory.
+///
+/// # Returns
+/// - `Result<impl IntoResponse, StatusCode>`: If the requested file is found or the fallback to index.html
+///   succeeds, it returns an `Ok` with the response. If no file can be served, it returns an `Err` with
+///   a 404 NOT_FOUND status code.
+async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> {
+    // Extract the path from the URI, removing the "/admin-dashboard/" prefix and any leading slashes
+    let path = uri
+        .path()
+        .trim_start_matches("/admin-dashboard/")
+        .trim_start_matches('/');
+
+    // Use "index.html" for empty paths (root requests)
+    let path = if path.is_empty() { "index.html" } else { &path };
+
+    // Attempt to serve the requested file
+    if let Some(file) = NodeUiStaticFiles::get(path) {
+        return serve_file(file).await;
+    }
+
+    // Fallback to index.html for SPA routing if the file wasn't found and it's not already "index.html"
+    if path != "index.html" {
+        if let Some(index_file) = NodeUiStaticFiles::get("index.html") {
+            return serve_file(index_file).await;
+        }
+    }
+
+    // Return 404 if the file is not found and we can't fallback to index.html
+    Err(StatusCode::NOT_FOUND)
+}
+
+/// Serves a static file with the correct MIME type.
+///
+/// This function builds a `Response` with the appropriate content type for the given file
+/// and serves the file's content.
+///
+/// # Parameters
+/// - `file`: A reference to the `EmbeddedFile` to be served.
+///
+/// # Returns
+/// - `Result<impl IntoResponse, StatusCode>`: If the response is successfully built, it returns an `Ok`
+///   with the response. If there is an error building the response, it returns an `Err` with a
+///   500 INTERNAL_SERVER_ERROR status code.
+async fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", file.metadata.mimetype())
+        .body(Body::from(file.data.into_owned()))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

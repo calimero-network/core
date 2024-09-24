@@ -4,7 +4,7 @@ import styled from 'styled-components';
 import { Options } from '../../../constants/ApplicationsConstants';
 import ApplicationsTable from './ApplicationsTable';
 import { useRPC } from '../../../hooks/useNear';
-import { Application, Package } from '../../../pages/Applications';
+import { Package } from '../../../pages/Applications';
 import { TableOptions } from '../../../components/common/OptionsHeader';
 import { ContextApplication } from '../../../pages/StartContext';
 
@@ -33,8 +33,8 @@ interface ApplicationsPopupProps {
 }
 
 export interface Applications {
-  available: Application[];
-  owned: Application[];
+  available: Package[];
+  owned: Package[];
 }
 
 export default function ApplicationsPopup({

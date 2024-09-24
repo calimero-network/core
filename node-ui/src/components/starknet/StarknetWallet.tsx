@@ -173,7 +173,9 @@ export function StarknetWallet({
     : translations.addRootKeyPage.starknetRootKey;
 
   if (!ready) {
-    return <Loading />;
+    return (
+      <Loading loaderColor={'#FF7A00'} loaderSize={'48px'} borderSize={'5px'} />
+    );
   }
 
   return (
