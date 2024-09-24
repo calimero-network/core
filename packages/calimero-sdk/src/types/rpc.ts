@@ -41,23 +41,30 @@ export type RpcError =
 export interface UnknownServerError {
   type: 'UnknownServerError';
   inner: any;
+  code?: number;
+  message?: string;
 }
 
 export interface InvalidRequestError {
   type: 'InvalidRequestError';
   data: any;
   code: number;
+  message?: string;
 }
 
 export interface MissmatchedRequestIdError {
   type: 'MissmatchedRequestIdError';
   expected: RpcRequestId;
   got: RpcRequestId;
+  code?: number;
+  message?: string;
 }
 
 export interface RpcExecutionError {
   type: 'RpcExecutionError';
   inner: any;
+  code?: number;
+  message?: string;
 }
 
 export interface RpcQueryParams<Args> {

@@ -1,4 +1,3 @@
-import { ApiResponse } from '@calimero-is-near/calimero-p2p-sdk';
 import {
   ContextStorage,
   Context,
@@ -21,6 +20,7 @@ import {
   ContextIdentitiesResponse,
   CreateTokenResponse,
 } from './dataSource/NodeDataSource';
+import { ApiResponse } from './response';
 
 export interface NodeApi {
   getInstalledApplications(): ApiResponse<GetInstalledApplicationsResponse>;
