@@ -1,3 +1,6 @@
+use std::thread::sleep;
+use std::time::Duration;
+
 use calimero_test_utils::storage::create_test_store;
 use claims::{assert_none, assert_ok};
 
@@ -250,5 +253,161 @@ mod interface__public_methods {
     #[ignore]
     fn validate() {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod interface__comparison {
+    use super::*;
+
+    #[test]
+    fn compare_trees__identical() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let element = Element::new(&Path::new("::root::node").unwrap());
+        let mut local = Page::new_from_element("Test Page", element);
+        let mut foreign = local.clone();
+
+        assert!(interface.save(local.id(), &mut local).unwrap());
+        foreign.element_mut().merkle_hash = foreign
+            .calculate_full_merkle_hash(&interface, false)
+            .unwrap();
+        assert_eq!(
+            local.element().merkle_hash(),
+            foreign.element().merkle_hash()
+        );
+
+        let result = interface.compare_trees(&foreign).unwrap();
+        assert_eq!(result, (vec![], vec![]));
+    }
+
+    #[test]
+    fn compare_trees__local_newer() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let element = Element::new(&Path::new("::root::node").unwrap());
+        let mut local = Page::new_from_element("Test Page", element.clone());
+        let mut foreign = Page::new_from_element("Old Test Page", element);
+
+        // Make local newer
+        sleep(Duration::from_millis(10));
+        local.element_mut().update();
+
+        assert!(interface.save(local.id(), &mut local).unwrap());
+        foreign.element_mut().merkle_hash = foreign
+            .calculate_full_merkle_hash(&interface, false)
+            .unwrap();
+
+        let result = interface.compare_trees(&foreign).unwrap();
+        assert_eq!(result, (vec![], vec![Action::Update(local.id())]));
+    }
+
+    #[test]
+    fn compare_trees__foreign_newer() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let element = Element::new(&Path::new("::root::node").unwrap());
+        let mut local = Page::new_from_element("Old Test Page", element.clone());
+        let mut foreign = Page::new_from_element("Test Page", element);
+
+        assert!(interface.save(local.id(), &mut local).unwrap());
+        foreign.element_mut().merkle_hash = foreign
+            .calculate_full_merkle_hash(&interface, false)
+            .unwrap();
+
+        // Make foreign newer
+        sleep(Duration::from_millis(10));
+        foreign.element_mut().update();
+
+        let result = interface.compare_trees(&foreign).unwrap();
+        assert_eq!(result, (vec![Action::Update(local.id())], vec![]));
+    }
+
+    #[test]
+    fn compare_trees__with_collections() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+
+        let page_element = Element::new(&Path::new("::root::node").unwrap());
+        let para1_element = Element::new(&Path::new("::root::node::leaf1").unwrap());
+        let para2_element = Element::new(&Path::new("::root::node::leaf2").unwrap());
+        let para3_element = Element::new(&Path::new("::root::node::leaf3").unwrap());
+
+        let mut local_page = Page::new_from_element("Local Page", page_element.clone());
+        let mut local_para1 =
+            Paragraph::new_from_element("Local Paragraph 1", para1_element.clone());
+        let mut local_para2 = Paragraph::new_from_element("Local Paragraph 2", para2_element);
+
+        let mut foreign_page = Page::new_from_element("Foreign Page", page_element);
+        let mut foreign_para1 = Paragraph::new_from_element("Updated Paragraph 1", para1_element);
+        let mut foreign_para3 = Paragraph::new_from_element("Foreign Paragraph 3", para3_element);
+
+        local_page.paragraphs.child_info = vec![
+            ChildInfo::new(
+                local_para1.id(),
+                local_para1.calculate_merkle_hash().unwrap(),
+            ),
+            ChildInfo::new(
+                local_para2.id(),
+                local_para2.calculate_merkle_hash().unwrap(),
+            ),
+        ];
+
+        foreign_page.paragraphs.child_info = vec![
+            ChildInfo::new(
+                local_para1.id(),
+                foreign_para1.calculate_merkle_hash().unwrap(),
+            ),
+            ChildInfo::new(
+                foreign_para3.id(),
+                foreign_para3.calculate_merkle_hash().unwrap(),
+            ),
+        ];
+
+        assert!(interface.save(local_page.id(), &mut local_page).unwrap());
+        assert!(interface.save(local_para1.id(), &mut local_para1).unwrap());
+        assert!(interface.save(local_para2.id(), &mut local_para2).unwrap());
+        foreign_page.element_mut().merkle_hash = foreign_page
+            .calculate_full_merkle_hash(&interface, false)
+            .unwrap();
+        foreign_para1.element_mut().merkle_hash = foreign_para1
+            .calculate_full_merkle_hash(&interface, false)
+            .unwrap();
+        foreign_para3.element_mut().merkle_hash = foreign_para3
+            .calculate_full_merkle_hash(&interface, false)
+            .unwrap();
+
+        let (local_actions, mut foreign_actions) = interface.compare_trees(&foreign_page).unwrap();
+        foreign_actions.sort();
+
+        assert_eq!(
+            local_actions,
+            vec![
+                Action::Update(local_page.id()), // Page needs update due to different child structure
+                Action::Compare(local_para1.id()), // Para1 needs comparison due to different hash
+                Action::Add(foreign_para3.id()), // Para3 needs to be added locally
+            ]
+        );
+        assert_eq!(
+            foreign_actions,
+            vec![
+                Action::Add(local_para2.id()),     // Para2 needs to be added to foreign
+                Action::Compare(local_para1.id()), // Para1 needs comparison due to different hash
+            ]
+        );
+
+        // Compare the updated para1
+        let (local_para1_actions, foreign_para1_actions) =
+            interface.compare_trees(&foreign_para1).unwrap();
+
+        assert_eq!(local_para1_actions, vec![Action::Update(local_para1.id())]);
+        assert_eq!(foreign_para1_actions, vec![]);
+
+        // Compare para3 which doesn't exist locally
+        let (local_para3_actions, foreign_para3_actions) =
+            interface.compare_trees(&foreign_para3).unwrap();
+
+        assert_eq!(local_para3_actions, vec![Action::Add(foreign_para3.id())]);
+        assert_eq!(foreign_para3_actions, vec![]);
     }
 }
