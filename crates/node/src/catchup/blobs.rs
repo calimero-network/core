@@ -1,29 +1,23 @@
 use core::mem::take;
+use std::pin::Pin;
+use std::task::{Context as StdContext, Poll};
 
 use calimero_blobstore::CHUNK_SIZE as BLOB_CHUNK_SIZE;
 use calimero_network::stream::{Message, Stream};
 use eyre::Result as EyreResult;
-use futures_util::{ready, AsyncRead, SinkExt, Stream as StreamFutures};
+use futures_util::{AsyncRead, SinkExt, Stream as StreamFutures};
 use serde_json::to_vec as to_json_vec;
-use std::pin::Pin;
-use std::task::{Context as StdContext, Poll};
 use tokio::sync::mpsc;
 
 use crate::types::{CatchupApplicationBlobChunk, CatchupStreamMessage};
 
 pub struct ApplicationBlobChunkStream {
     receiver: mpsc::Receiver<CatchupApplicationBlobChunk>,
-    buffer: Option<Box<[u8]>>,
-    offset: usize,
 }
 
 impl ApplicationBlobChunkStream {
     pub fn new(receiver: mpsc::Receiver<CatchupApplicationBlobChunk>) -> Self {
-        Self {
-            receiver,
-            buffer: None,
-            offset: 0,
-        }
+        Self { receiver }
     }
 }
 
@@ -42,28 +36,21 @@ impl StreamFutures for ApplicationBlobChunkStream {
 
 impl AsyncRead for ApplicationBlobChunkStream {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut StdContext<'_>,
         buf: &mut [u8],
     ) -> Poll<std::io::Result<usize>> {
-        if self.buffer.is_none() || self.offset >= self.buffer.as_ref().unwrap().len() {
-            match ready!(Pin::new(&mut self).poll_next(cx)) {
-                Some(chunk) => {
-                    self.buffer = Some(chunk.chunk);
-                    self.offset = 0;
-                }
-                None => return Poll::Ready(Ok(0)),
-            }
-        }
+        let this = self.get_mut();
 
-        if let Some(buffer) = &self.buffer {
-            let remaining = &buffer[self.offset..];
-            let len = remaining.len().min(buf.len());
-            buf[..len].copy_from_slice(&remaining[..len]);
-            self.offset += len;
-            Poll::Ready(Ok(len))
-        } else {
-            Poll::Ready(Ok(0))
+        match Pin::new(&mut this.receiver).poll_recv(cx) {
+            Poll::Ready(Some(chunk)) => {
+                let data = &chunk.chunk;
+                let len = data.len().min(buf.len());
+                buf[..len].copy_from_slice(&data[..len]);
+                Poll::Ready(Ok(len))
+            }
+            Poll::Ready(None) => Poll::Ready(Ok(0)),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -85,7 +72,7 @@ impl ApplicationBlobChunkSender {
         }
     }
 
-    pub(crate) async fn send(&mut self, chunk: Box<[u8]>) -> EyreResult<()> {
+    pub(crate) async fn send(&mut self, chunk: &[u8]) -> EyreResult<()> {
         self.batch.extend_from_slice(&chunk);
 
         if self.batch.len() >= (self.batch_size as usize) * BLOB_CHUNK_SIZE {

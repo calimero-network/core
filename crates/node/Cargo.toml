@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, features = ["io"] }
 libp2p.workspace = true
 owo-colors.workspace = true
 rand.workspace = true

@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
-use calimero_network::stream::{Message, Stream};
+use calimero_blobstore::CHUNK_SIZE as BLOB_CHUNK_SIZE;
+use calimero_network::stream::{Message, Stream, MAX_MESSAGE_SIZE as MAX_STREAM_MESSAGE_SIZE};
 use calimero_node_primitives::NodeType;
 use calimero_primitives::application::Application;
 use calimero_primitives::context::{Context, ContextId};
@@ -8,6 +9,7 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::transaction::Transaction;
 use calimero_store::key::ContextTransaction as ContextTransactionKey;
 use eyre::{bail, Result as EyreResult};
+use futures_util::io::BufReader;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
@@ -73,12 +75,19 @@ impl Node {
         };
 
         // Stream messages are encoded with length delimited codec.
-        // Max message size is 8MB and blob chunk size 1MB (atm).
-        // So, collect 7 chunks and push them to over the stream.
-        let mut blob_sender = ApplicationBlobChunkSender::new(7, stream);
+        // Calculate batch size based on the maximum message size and blob chunk size.
+        // Leave some space for the message header.
+        let batch_size = match (MAX_STREAM_MESSAGE_SIZE / BLOB_CHUNK_SIZE) - 1 {
+            size if size <= u8::MAX as usize => size as u8,
+            _ => {
+                bail!("Max message size is too small for blob chunk size");
+            }
+        };
+
+        let mut blob_sender = ApplicationBlobChunkSender::new(batch_size, stream);
 
         while let Some(chunk) = blob.try_next().await? {
-            blob_sender.send(chunk).await?;
+            blob_sender.send(&chunk).await?;
         }
 
         blob_sender.flush().await?;
@@ -278,7 +287,7 @@ impl Node {
                 {
                     Ok(_) => Ok(()),
                     Err(err) => {
-                        error!(%err, "Failed to install application from URL");
+                        error!(%err, "Failed to install application from URL, falling back to stream catchup");
                         self.perform_blob_stream_catchup(chosen_peer, latest_application)
                             .await
                     }
@@ -308,9 +317,10 @@ impl Node {
 
         let (tx, rx) = mpsc::channel(100);
         let chunk_stream = ApplicationBlobChunkStream::new(rx);
+        let chunk_stream = BufReader::new(chunk_stream);
 
         let ctx_manager = self.ctx_manager.clone();
-        let metedata = latest_application.metadata.clone();
+        let metadata = latest_application.metadata.clone();
 
         let handle = spawn(async move {
             ctx_manager
@@ -318,7 +328,7 @@ impl Node {
                     latest_application.size,
                     chunk_stream,
                     &latest_application.source,
-                    metedata,
+                    metadata,
                 )
                 .await
                 .map(|_| ())
