@@ -1,6 +1,6 @@
 use libp2p::rendezvous::client::Event;
 use owo_colors::OwoColorize;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use super::{EventHandler, EventLoop};
 use crate::discovery::state::{PeerDiscoveryMechanism, RendezvousRegistrationStatus};
@@ -93,6 +93,26 @@ impl EventHandler<Event> for EventLoop {
                     &peer,
                     RendezvousRegistrationStatus::Expired,
                 );
+
+                let nominated_peer = self.discovery.state.get_rendezvous_peer_ids().find(|&p| {
+                    if let Some(peer_info) = self.discovery.state.get_peer_info(&p) {
+                        if let Some(rendezvous_info) = peer_info.rendezvous() {
+                            return matches!(
+                                rendezvous_info.registration_status(),
+                                RendezvousRegistrationStatus::Discovered
+                            );
+                        }
+                    }
+                    false
+                });
+
+                if let Some(peer) = nominated_peer {
+                    if let Err(err) = self.rendezvous_register(&peer) {
+                        error!(%err, "Failed to update registration discovery");
+                    };
+                } else {
+                    info!("Couldn't find new peer to nominate for rendezvous registration.");
+                }
             }
         }
     }

@@ -11,14 +11,6 @@ const RowItem = styled.div<RowItemProps>`
   align-items: center;
   gap: 1px;
   font-size: 0.875rem;
-  font-optical-sizing: auto;
-  font-weight: 500;
-  font-style: normal;
-  font-variation-settings: 'slnt' 0;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-smooth: never;
-  line-height: 1.25rem;
   text-align: left;
   padding-right: 1.5rem;
   border-top: 1px solid #23262d;

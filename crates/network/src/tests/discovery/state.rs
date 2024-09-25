@@ -90,33 +90,74 @@ fn test_is_rendezvous_discovery_throttled() {
 }
 
 #[test]
-fn test_is_rendezvous_registration_required() {
-    let mut peer_info = PeerInfo::default();
-    assert!(peer_info.is_rendezvous_registration_required());
+fn test_discovery_state_rendezvous_registration_required() {
+    let mut state = DiscoveryState::default();
 
-    peer_info.rendezvous = Some(PeerRendezvousInfo {
-        registration_status: RendezvousRegistrationStatus::Requested,
-        ..Default::default()
-    });
-    assert!(!peer_info.is_rendezvous_registration_required());
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    let peer3 = PeerId::random();
+    let peer4 = PeerId::random();
 
-    peer_info.rendezvous = Some(PeerRendezvousInfo {
-        registration_status: RendezvousRegistrationStatus::Registered,
-        ..Default::default()
-    });
-    assert!(!peer_info.is_rendezvous_registration_required());
+    state.update_peer_protocols(&peer1, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&peer2, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&peer3, &[RENDEZVOUS_PROTOCOL_NAME]);
+    state.update_peer_protocols(&peer4, &[RENDEZVOUS_PROTOCOL_NAME]);
 
-    peer_info.rendezvous = Some(PeerRendezvousInfo {
-        registration_status: RendezvousRegistrationStatus::Discovered,
-        ..Default::default()
-    });
-    assert!(peer_info.is_rendezvous_registration_required());
+    // Initially, no peers are registered or requested
+    assert!(
+        state.is_rendezvous_registration_required(3),
+        "Should require registration when no peers are registered/requested"
+    );
 
-    peer_info.rendezvous = Some(PeerRendezvousInfo {
-        registration_status: RendezvousRegistrationStatus::Expired,
-        ..Default::default()
-    });
-    assert!(peer_info.is_rendezvous_registration_required());
+    // Register one peer
+    state.update_rendezvous_registration_status(&peer1, RendezvousRegistrationStatus::Registered);
+    assert!(
+        state.is_rendezvous_registration_required(3),
+        "Should require registration when 1 peer is registered"
+    );
+
+    // Request registration for another peer
+    state.update_rendezvous_registration_status(&peer2, RendezvousRegistrationStatus::Requested);
+    assert!(
+        state.is_rendezvous_registration_required(3),
+        "Should require registration when 2 peers are registered/requested"
+    );
+
+    // Register the third peer
+    state.update_rendezvous_registration_status(&peer3, RendezvousRegistrationStatus::Registered);
+    assert!(
+        !state.is_rendezvous_registration_required(3),
+        "Should not require registration when 3 peers are registered/requested"
+    );
+
+    // Update the fourth peer to Discovered status (should not affect the count)
+    state.update_rendezvous_registration_status(&peer4, RendezvousRegistrationStatus::Discovered);
+    assert!(
+        !state.is_rendezvous_registration_required(3),
+        "Should not require registration when 3 peers are registered/requested and 1 is discovered"
+    );
+
+    // Remove a registered peer
+    state.remove_peer(&peer1);
+    assert!(
+        state.is_rendezvous_registration_required(3),
+        "Should require registration when 1 peer is removed and only 2 are registered/requested"
+    );
+
+    // Change a peer's status to Expired
+    state.update_rendezvous_registration_status(&peer2, RendezvousRegistrationStatus::Expired);
+    assert!(
+        state.is_rendezvous_registration_required(3),
+        "Should require registration when 1 peer is expired and only 1 is registered"
+    );
+
+    // Register two more peers to reach the limit again
+    state.update_rendezvous_registration_status(&peer2, RendezvousRegistrationStatus::Registered);
+    state.update_rendezvous_registration_status(&peer4, RendezvousRegistrationStatus::Requested);
+    assert!(
+        !state.is_rendezvous_registration_required(3),
+        "Should not require registration when 3 peers are again registered/requested"
+    );
 }
 
 #[test]

@@ -115,7 +115,9 @@ impl EventLoop {
                 continue;
             };
 
-            if !peer_info.is_rendezvous_registration_required() {
+            if !self.discovery.state.is_rendezvous_registration_required(
+                self.discovery.rendezvous_config.registrations_limit,
+            ) {
                 continue;
             }
 
@@ -141,7 +143,9 @@ impl EventLoop {
             .get_peer_info(rendezvous_peer)
             .wrap_err("Failed to get peer info")?;
 
-        if !peer_info.is_rendezvous_registration_required() {
+        if !self.discovery.state.is_rendezvous_registration_required(
+            self.discovery.rendezvous_config.registrations_limit,
+        ) {
             return Ok(());
         }
 

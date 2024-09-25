@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Navigation } from '../components/Navigation';
 import { FlexLayout } from '../components/layout/FlexLayout';
 import { useNavigate } from 'react-router-dom';
@@ -74,6 +74,10 @@ export default function JoinContextPage() {
       navigate('/contexts');
     }
   };
+
+  useEffect(() => {
+    navigate('/contexts');
+  }, [navigate]);
 
   return (
     <FlexLayout>
