@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
+use std::io::{Error as StdIoError, ErrorKind as StdIoErrorKind};
 
-use calimero_blobstore::CHUNK_SIZE as BLOB_CHUNK_SIZE;
-use calimero_network::stream::{Message, Stream, MAX_MESSAGE_SIZE as MAX_STREAM_MESSAGE_SIZE};
+use calimero_network::stream::{Message, Stream};
 use calimero_node_primitives::NodeType;
 use calimero_primitives::application::Application;
 use calimero_primitives::context::{Context, ContextId};
@@ -10,6 +10,7 @@ use calimero_primitives::transaction::Transaction;
 use calimero_store::key::ContextTransaction as ContextTransactionKey;
 use eyre::{bail, Result as EyreResult};
 use futures_util::io::BufReader;
+use futures_util::stream::poll_fn;
 use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
@@ -22,12 +23,12 @@ use tokio::time::timeout;
 use tracing::{error, info, warn};
 use url::Url;
 
-use crate::catchup::blobs::{ApplicationBlobChunkSender, ApplicationBlobChunkStream};
+use crate::catchup::blobs::ApplicationBlobChunkSender;
 use crate::catchup::transactions::TransactionsBatchSender;
 use crate::transaction_pool::TransactionPoolEntry;
 use crate::types::{
-    CatchupApplicationBlobRequest, CatchupError, CatchupStreamMessage, CatchupTransactionsBatch,
-    CatchupTransactionsRequest, TransactionStatus, TransactionWithStatus,
+    CatchupApplicationBlobChunk, CatchupApplicationBlobRequest, CatchupError, CatchupStreamMessage,
+    CatchupTransactionsBatch, CatchupTransactionsRequest, TransactionStatus, TransactionWithStatus,
 };
 use crate::Node;
 
@@ -74,17 +75,7 @@ impl Node {
             return Ok(());
         };
 
-        // Stream messages are encoded with length delimited codec.
-        // Calculate batch size based on the maximum message size and blob chunk size.
-        // Leave some space for the message header.
-        let batch_size = match (MAX_STREAM_MESSAGE_SIZE / BLOB_CHUNK_SIZE) - 1 {
-            size if size <= u8::MAX as usize => size as u8,
-            _ => {
-                bail!("Max message size is too small for blob chunk size");
-            }
-        };
-
-        let mut blob_sender = ApplicationBlobChunkSender::new(batch_size, stream);
+        let mut blob_sender = ApplicationBlobChunkSender::new(stream)?;
 
         while let Some(chunk) = blob.try_next().await? {
             blob_sender.send(&chunk).await?;
@@ -315,9 +306,29 @@ impl Node {
 
         stream.send(Message::new(data)).await?;
 
-        let (tx, rx) = mpsc::channel(100);
-        let chunk_stream = ApplicationBlobChunkStream::new(rx);
-        let chunk_stream = BufReader::new(chunk_stream);
+        let (tx, mut rx) = mpsc::channel(100);
+        let mut current_sequential_id = 0;
+
+        let chunk_stream = BufReader::new(
+            poll_fn(move |cx| rx.poll_recv(cx))
+                .map(move |chunk: CatchupApplicationBlobChunk| {
+                    if chunk.sequential_id != current_sequential_id {
+                        return Err(StdIoError::new(
+                            StdIoErrorKind::InvalidData,
+                            format!(
+                                "invalid sequential id, expected: {expected}, got: {got}",
+                                expected = current_sequential_id,
+                                got = chunk.sequential_id
+                            ),
+                        ));
+                    }
+
+                    current_sequential_id += 1;
+
+                    Ok(chunk.chunk)
+                })
+                .into_async_read(),
+        );
 
         let ctx_manager = self.ctx_manager.clone();
         let metadata = latest_application.metadata.clone();

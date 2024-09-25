@@ -810,7 +810,7 @@ impl ContextManager {
             application.blob.as_bytes().into(),
             application.size,
             ApplicationSource::from_str(&application.source.0)?,
-            application.metadata.0.as_bytes().into(),
+            application.metadata.0.into_inner().into_owned(),
         ))
     }
 
