@@ -473,7 +473,7 @@ pub struct ChildInfo {
     /// The Merkle hash of the child [`Element`]. This is a cryptographic hash
     /// of the significant data in the "scope" of the child [`Element`], and is
     /// used to determine whether the data has changed and is valid.
-    merkle_hash: [u8; 32],
+    pub(crate) merkle_hash: [u8; 32],
 }
 
 impl ChildInfo {
