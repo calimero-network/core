@@ -3,10 +3,7 @@ import React from 'react';
 import apiClient from '../../api';
 import translations from '../../constants/en.global.json';
 import { styled } from 'styled-components';
-<<<<<<< HEAD
 import Loading from '../common/Loading';
-=======
->>>>>>> 2e17bab7 (feat:(1) admin remove sdk components 3)
 
 const Wrapper = styled.div`
     display: flex;
