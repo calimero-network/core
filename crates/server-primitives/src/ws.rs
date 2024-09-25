@@ -83,6 +83,13 @@ pub struct SubscribeRequest {
     pub context_ids: Vec<ContextId>,
 }
 
+impl SubscribeRequest {
+    #[must_use]
+    pub const fn new(context_ids: Vec<ContextId>) -> Self {
+        Self { context_ids }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
