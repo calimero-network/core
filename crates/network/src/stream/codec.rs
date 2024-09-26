@@ -37,9 +37,12 @@ pub struct MessageJsonCodec {
 }
 
 impl MessageJsonCodec {
-    pub fn new() -> Self {
+    pub fn new(max_message_size: usize) -> Self {
+        let mut codec = LengthDelimitedCodec::new();
+        codec.set_max_frame_length(max_message_size);
+
         Self {
-            length_codec: LengthDelimitedCodec::new(),
+            length_codec: codec,
         }
     }
 }
