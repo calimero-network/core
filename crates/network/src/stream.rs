@@ -21,6 +21,8 @@ mod codec;
 
 pub use codec::{CodecError, Message};
 
+pub const MAX_MESSAGE_SIZE: usize = 8 * 1_024 * 1_024;
+
 pub(crate) const CALIMERO_STREAM_PROTOCOL: StreamProtocol =
     StreamProtocol::new("/calimero/stream/0.0.1");
 
@@ -33,7 +35,7 @@ impl Stream {
     #[must_use]
     pub fn new(stream: P2pStream) -> Self {
         let stream = BufStream::new(stream.compat());
-        let stream = Framed::new(stream, MessageJsonCodec::new());
+        let stream = Framed::new(stream, MessageJsonCodec::new(MAX_MESSAGE_SIZE));
         Self { inner: stream }
     }
 }

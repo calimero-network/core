@@ -9,13 +9,13 @@ use crate::types::{
     CatchupError, CatchupStreamMessage, CatchupTransactionsBatch, TransactionWithStatus,
 };
 
-pub struct CatchupBatchSender {
+pub struct TransactionsBatchSender {
     batch_size: u8,
     batch: Vec<TransactionWithStatus>,
     stream: Box<Stream>,
 }
 
-impl CatchupBatchSender {
+impl TransactionsBatchSender {
     pub(crate) fn new(batch_size: u8, stream: Box<Stream>) -> Self {
         Self {
             batch_size,

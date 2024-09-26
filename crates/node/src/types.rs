@@ -43,7 +43,7 @@ pub enum CatchupStreamMessage {
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct CatchupApplicationBlobRequest {
-    pub context_id: ApplicationId,
+    pub application_id: ApplicationId,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -74,6 +74,8 @@ pub enum CatchupError {
     ContextNotFound { context_id: ContextId },
     #[error("transaction `{transaction_hash:?}` not found")]
     TransactionNotFound { transaction_hash: Hash },
+    #[error("application `{application_id:?}` not found")]
+    ApplicationNotFound { application_id: ApplicationId },
     #[error("internal error")]
     InternalError,
 }
