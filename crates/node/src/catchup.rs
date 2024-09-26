@@ -75,7 +75,7 @@ impl Node {
             return Ok(());
         };
 
-        let mut blob_sender = ApplicationBlobChunkSender::new(stream)?;
+        let mut blob_sender = ApplicationBlobChunkSender::new(stream);
 
         while let Some(chunk) = blob.try_next().await? {
             blob_sender.send(&chunk).await?;
