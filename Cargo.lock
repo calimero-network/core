@@ -1116,6 +1116,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-storage-macros"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "calimero-storage",
+ "calimero-test-utils",
+ "quote",
+ "syn 2.0.72",
+ "trybuild",
+]
+
+[[package]]
 name = "calimero-store"
 version = "0.1.0"
 dependencies = [
