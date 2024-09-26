@@ -19,11 +19,16 @@ interface JsonRpcRequest<Params> {
   params: Params;
 }
 
+interface RpcError {
+  message: string;
+  code: number;
+}
+
 interface JsonRpcResponse<Result> {
   jsonrpc: JsonRpcVersion;
   id: RpcRequestId | null;
   result?: Result;
-  error?: any; // TODO define error types
+  error?: RpcError;
 }
 
 export class JsonRpcClient implements RpcClient {
@@ -83,31 +88,31 @@ export class JsonRpcClient implements RpcClient {
         data,
         config,
       );
-      if (response.status === 200) {
-        if (response.data.id !== requestId) {
+      if (response?.status === 200) {
+        if (response?.data?.id !== requestId) {
           return {
             result: null,
             error: {
               type: 'MissmatchedRequestIdError',
-              expected: requestId,
-              got: response.data.id,
+              expected: requestId ?? null,
+              got: response?.data?.id ?? null,
             },
           };
         }
 
-        if (response.data.error) {
+        if (response?.data?.error) {
           return {
             result: null,
             error: {
               type: 'RpcExecutionError',
-              inner: response.data.error,
-              code: response.status,
-              message: response.data.error.message,
+              inner: response?.data?.error ?? null,
+              code: response?.status ?? null,
+              message: response?.data?.error?.message ?? null,
             },
           };
         }
         return {
-          result: response.data.result,
+          result: response?.data?.result ?? null,
           error: null,
         };
       } else {
@@ -115,8 +120,8 @@ export class JsonRpcClient implements RpcClient {
           result: null,
           error: {
             type: 'InvalidRequestError',
-            data: response.data,
-            code: response.status,
+            data: response?.data ?? null,
+            code: response?.status ?? null,
           },
         };
       }
@@ -126,8 +131,8 @@ export class JsonRpcClient implements RpcClient {
         error: {
           type: 'UnknownServerError',
           inner: error,
-          code: error?.response?.status,
-          message: error?.response?.data,
+          code: error?.response?.status ?? null,
+          message: error?.response?.data ?? null,
         },
       };
     }
