@@ -46,29 +46,74 @@ fn test_get_preferred_addr() {
 }
 
 #[test]
-fn test_is_relay_reservation_required() {
-    let mut peer_info = PeerInfo::default();
-    assert!(peer_info.is_relay_reservation_required());
+fn test_discovery_state_relay_reservation_required() {
+    let mut state = DiscoveryState::default();
 
-    peer_info.relay = Some(PeerRelayInfo {
-        reservation_status: RelayReservationStatus::Requested,
-    });
-    assert!(!peer_info.is_relay_reservation_required());
+    let peer1 = PeerId::random();
+    let peer2 = PeerId::random();
+    let peer3 = PeerId::random();
+    let peer4 = PeerId::random();
 
-    peer_info.relay = Some(PeerRelayInfo {
-        reservation_status: RelayReservationStatus::Accepted,
-    });
-    assert!(!peer_info.is_relay_reservation_required());
+    state.update_peer_protocols(&peer1, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&peer2, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&peer3, &[HOP_PROTOCOL_NAME]);
+    state.update_peer_protocols(&peer4, &[HOP_PROTOCOL_NAME]);
 
-    peer_info.relay = Some(PeerRelayInfo {
-        reservation_status: RelayReservationStatus::Discovered,
-    });
-    assert!(peer_info.is_relay_reservation_required());
+    // Initially, no peers have reservations
+    assert!(
+        state.is_relay_reservation_required(3),
+        "Should require reservation when no peers have reservations"
+    );
 
-    peer_info.relay = Some(PeerRelayInfo {
-        reservation_status: RelayReservationStatus::Expired,
-    });
-    assert!(peer_info.is_relay_reservation_required());
+    // Request reservation for one peer
+    state.update_relay_reservation_status(&peer1, RelayReservationStatus::Requested);
+    assert!(
+        state.is_relay_reservation_required(3),
+        "Should require reservation when 1 peer has requested reservation"
+    );
+
+    // Accept reservation for another peer
+    state.update_relay_reservation_status(&peer2, RelayReservationStatus::Accepted);
+    assert!(
+        state.is_relay_reservation_required(3),
+        "Should require reservation when 2 peers have reservations"
+    );
+
+    // Request reservation for the third peer
+    state.update_relay_reservation_status(&peer3, RelayReservationStatus::Requested);
+    assert!(
+        !state.is_relay_reservation_required(3),
+        "Should not require reservation when 3 peers have reservations"
+    );
+
+    // Set the fourth peer to Discovered status (should not affect the count)
+    state.update_relay_reservation_status(&peer4, RelayReservationStatus::Discovered);
+    assert!(
+        !state.is_relay_reservation_required(3),
+        "Should not require reservation when 3 peers have reservations and 1 is discovered"
+    );
+
+    // Remove a peer with an accepted reservation
+    state.remove_peer(&peer2);
+    assert!(
+        state.is_relay_reservation_required(3),
+        "Should require reservation when 1 peer is removed and only 2 have reservations"
+    );
+
+    // Change a peer's status to Expired
+    state.update_relay_reservation_status(&peer1, RelayReservationStatus::Expired);
+    assert!(
+        state.is_relay_reservation_required(3),
+        "Should require reservation when 1 peer is expired and only 1 has a reservation"
+    );
+
+    // Accept reservations for two more peers to reach the limit again
+    state.update_relay_reservation_status(&peer1, RelayReservationStatus::Accepted);
+    state.update_relay_reservation_status(&peer4, RelayReservationStatus::Requested);
+    assert!(
+        !state.is_relay_reservation_required(3),
+        "Should not require reservation when 3 peers again have reservations"
+    );
 }
 
 #[test]

@@ -155,6 +155,10 @@ impl DiscoveryState {
         self.rendezvous_index.iter().copied()
     }
 
+    pub(crate) fn get_relay_peer_ids(&self) -> impl Iterator<Item = PeerId> + '_ {
+        self.relay_index.iter().copied()
+    }
+
     pub(crate) fn is_peer_relay(&self, peer_id: &PeerId) -> bool {
         self.relay_index.contains(peer_id)
     }
@@ -178,6 +182,24 @@ impl DiscoveryState {
                     acc
                 }
             });
+        sum < max
+    }
+
+    pub(crate) fn is_relay_reservation_required(&self, max: usize) -> bool {
+        let sum =
+            self.get_relay_peer_ids()
+                .filter_map(|peer_id| self.get_peer_info(&peer_id))
+                .fold(0, |acc, peer_info| {
+                    if let Some(rendezvous_info) = peer_info.relay() {
+                        match rendezvous_info.reservation_status() {
+                            RelayReservationStatus::Accepted
+                            | RelayReservationStatus::Requested => acc + 1,
+                            _ => acc,
+                        }
+                    } else {
+                        acc
+                    }
+                });
         sum < max
     }
 }
@@ -210,15 +232,6 @@ impl PeerInfo {
         }
     }
 
-    pub(crate) fn is_relay_reservation_required(&self) -> bool {
-        self.relay.as_ref().map_or(true, |info| {
-            matches!(
-                info.reservation_status(),
-                RelayReservationStatus::Discovered | RelayReservationStatus::Expired
-            )
-        })
-    }
-
     pub(crate) fn is_rendezvous_discover_throttled(&self, rpm: f32) -> bool {
         self.rendezvous.as_ref().map_or(false, |info| {
             info.last_discovery_at().map_or(false, |instant| {
@@ -229,6 +242,10 @@ impl PeerInfo {
 
     pub(crate) const fn rendezvous(&self) -> Option<&PeerRendezvousInfo> {
         self.rendezvous.as_ref()
+    }
+
+    pub(crate) const fn relay(&self) -> Option<&PeerRelayInfo> {
+        self.relay.as_ref()
     }
 
     fn add_discovery_mechanism(&mut self, mechanism: PeerDiscoveryMechanism) {

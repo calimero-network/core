@@ -7,6 +7,7 @@ use crate::cli::context::delete::DeleteCommand;
 use crate::cli::context::get::GetCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
+use crate::cli::context::watch::WatchCommand;
 use crate::cli::RootArgs;
 
 mod create;
@@ -14,6 +15,7 @@ mod delete;
 mod get;
 mod join;
 mod list;
+mod watch;
 
 pub const EXAMPLES: &str = r"
   # List all contexts
@@ -46,6 +48,8 @@ pub enum ContextSubCommands {
     Get(GetCommand),
     #[command(alias = "del")]
     Delete(DeleteCommand),
+    #[command(alias = "ws")]
+    Watch(WatchCommand),
 }
 
 impl ContextCommand {
@@ -56,6 +60,7 @@ impl ContextCommand {
             ContextSubCommands::Get(get) => get.run(args).await,
             ContextSubCommands::Join(join) => join.run(args).await,
             ContextSubCommands::List(list) => list.run(args).await,
+            ContextSubCommands::Watch(watch) => watch.run(args).await,
         }
     }
 }

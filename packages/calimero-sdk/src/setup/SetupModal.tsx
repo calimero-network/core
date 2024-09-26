@@ -7,8 +7,8 @@ export interface SetupModalProps {
   successRoute: () => void;
   getNodeUrl: () => string | null;
   setNodeUrl: (url: string) => void;
-  getApplicationId?: () => string | null;
-  setApplicationId?: (applicationId: string) => void;
+  getApplicationId: () => string | null;
+  setApplicationId: (applicationId: string) => void;
 }
 
 export const SetupModal: React.FC<SetupModalProps> = (
@@ -23,9 +23,7 @@ export const SetupModal: React.FC<SetupModalProps> = (
 
   useEffect(() => {
     setUrl(props.getNodeUrl());
-    if (props.getApplicationId) {
-      setApplicationId(props.getApplicationId());
-    }
+    setApplicationId(props.getApplicationId());
   }, [props]);
 
   function validateUrl(value: string): boolean {
@@ -79,7 +77,7 @@ export const SetupModal: React.FC<SetupModalProps> = (
         if (response.data) {
           setError('');
           props.setNodeUrl(url);
-          props.setApplicationId && props.setApplicationId(applicationId || '');
+          props.setApplicationId(applicationId || '');
           props.successRoute();
         } else {
           setError('Connection failed. Please check if node url is correct.');
@@ -93,10 +91,8 @@ export const SetupModal: React.FC<SetupModalProps> = (
 
   const disableButton = (): boolean => {
     if (!url) return true;
-    if (props.getApplicationId && props.setApplicationId) {
-      if (applicationError) return true;
-      if (!applicationId) return true;
-    }
+    if (applicationError) return true;
+    if (!applicationId) return true;
     return false;
   };
 
@@ -158,31 +154,29 @@ export const SetupModal: React.FC<SetupModalProps> = (
                     gap: '0.5rem',
                   }}
                 >
-                  {props.setApplicationId && props.getApplicationId && (
-                    <>
-                      <input
-                        type="text"
-                        placeholder="application id"
-                        value={applicationId?.toString() || ''}
-                        onChange={(e: { target: { value: string } }) => {
-                          handleChangeContextId(e.target.value);
-                        }}
-                        style={{
-                          width: '400px',
-                          padding: '0.5rem',
-                          borderRadius: '0.375rem',
-                        }}
-                      />
-                      <div
-                        style={{
-                          color: '#ef4444',
-                          fontSize: '0.875rem',
-                        }}
-                      >
-                        {applicationError}
-                      </div>
-                    </>
-                  )}
+                  <>
+                    <input
+                      type="text"
+                      placeholder="application id"
+                      value={applicationId?.toString() || ''}
+                      onChange={(e: { target: { value: string } }) => {
+                        handleChangeContextId(e.target.value);
+                      }}
+                      style={{
+                        width: '400px',
+                        padding: '0.5rem',
+                        borderRadius: '0.375rem',
+                      }}
+                    />
+                    <div
+                      style={{
+                        color: '#ef4444',
+                        fontSize: '0.875rem',
+                      }}
+                    >
+                      {applicationError}
+                    </div>
+                  </>
                   <input
                     type="text"
                     placeholder="node url"

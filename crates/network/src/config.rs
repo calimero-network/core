@@ -127,12 +127,18 @@ pub struct DiscoveryConfig {
     pub mdns: bool,
 
     pub rendezvous: RendezvousConfig,
+
+    pub relay: RelayConfig,
 }
 
 impl DiscoveryConfig {
     #[must_use]
-    pub const fn new(mdns: bool, rendezvous: RendezvousConfig) -> Self {
-        Self { mdns, rendezvous }
+    pub const fn new(mdns: bool, rendezvous: RendezvousConfig, relay: RelayConfig) -> Self {
+        Self {
+            mdns,
+            rendezvous,
+            relay,
+        }
     }
 }
 
@@ -141,6 +147,30 @@ impl Default for DiscoveryConfig {
         Self {
             mdns: true,
             rendezvous: RendezvousConfig::default(),
+            relay: RelayConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct RelayConfig {
+    pub registrations_limit: usize,
+}
+
+impl RelayConfig {
+    #[must_use]
+    pub fn new(registrations_limit: usize) -> Self {
+        Self {
+            registrations_limit,
+        }
+    }
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            registrations_limit: 3,
         }
     }
 }
