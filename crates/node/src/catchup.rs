@@ -253,7 +253,11 @@ impl Node {
         let latest_application = self.ctx_manager.get_latest_application(context_id).await?;
         let local_application = self.ctx_manager.get_application(&latest_application.id)?;
 
-        if local_application.map_or(true, |app| app.blob != latest_application.blob) {
+        if local_application.map_or(true, |app| app.blob != latest_application.blob)
+            || !self
+                .ctx_manager
+                .is_application_blob_installed(latest_application.blob)?
+        {
             self.perform_blob_catchup(chosen_peer, latest_application)
                 .await?;
         }
@@ -271,18 +275,8 @@ impl Node {
 
         match source.scheme() {
             "http" | "https" => {
-                match self
-                    .ctx_manager
-                    .install_application_from_url(source, latest_application.metadata.clone())
-                    .await
-                {
-                    Ok(_) => Ok(()),
-                    Err(err) => {
-                        error!(%err, "Failed to install application from URL, falling back to stream catchup");
-                        self.perform_blob_stream_catchup(chosen_peer, latest_application)
-                            .await
-                    }
-                }
+                info!("Skipping blob catchup for HTTP/HTTPS source");
+                return Ok(());
             }
             _ => {
                 self.perform_blob_stream_catchup(chosen_peer, latest_application)

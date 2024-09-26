@@ -86,14 +86,9 @@ sequenceDiagram
 
     ClientPeer->>ClientPeer: GetApplication(app_id)
 
-    opt If ApplicationBlobId has changed
+    opt If ApplicationId has changed or Blob is not present
 
-    alt ApplicationSource == HTTP
-    ClientPeer->>BlobRegistry: GetApplicationBlob
-    BlobRegistry-->>ClientPeer: ApplicationBlob
-    ClientPeer->>ClientPeer: blobs.Put(app)
-
-    else ApplicationSource == Path
+    alt ApplicationSource == Path
     ClientPeer->>ServerPeer: Send [ApplicationBlobRequest(app_id)]
     ServerPeer->>ClientPeer: Send [ApplicationBlobSize]
     loop
