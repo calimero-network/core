@@ -126,18 +126,21 @@ impl Interface {
     ///
     /// # Determinism
     ///
-    /// TODO: Update when the `child_ids` field is replaced with an index.
+    /// TODO: Update when the `child_info` field is replaced with an index.
     ///
     /// Depending on the source, simply looping through the children may be
     /// non-deterministic. At present we are using a [`Vec`], which is
     /// deterministic, but this is a temporary measure, and the order of
     /// children under a given path is not enforced, and therefore
-    /// non-deterministic. When the `child_ids` field is replaced with an index,
-    /// the order will be enforced using `created_at` timestamp and/or ID.
+    /// non-deterministic.
+    ///
+    /// When the `child_info` field is replaced with an index, the order may be
+    /// enforced using `created_at` timestamp, which then allows performance
+    /// optimisations with sharding and other techniques.
     ///
     /// # Performance
     ///
-    /// TODO: Update when the `child_ids` field is replaced with an index.
+    /// TODO: Update when the `child_info` field is replaced with an index.
     ///
     /// Looping through children and combining their hashes into the parent is
     /// logically correct. However, it does necessitate loading all the children
@@ -160,8 +163,11 @@ impl Interface {
         collection: &C,
     ) -> Result<Vec<C::Child>, StorageError> {
         let mut children = Vec::new();
-        for id in collection.child_ids() {
-            children.push(self.find_by_id(*id)?.ok_or(StorageError::NotFound(*id))?);
+        for info in collection.child_info() {
+            children.push(
+                self.find_by_id(info.id())?
+                    .ok_or(StorageError::NotFound(info.id()))?,
+            );
         }
         Ok(children)
     }

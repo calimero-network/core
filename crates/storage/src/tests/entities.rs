@@ -12,12 +12,16 @@ mod collection__public_methods {
     use super::*;
 
     #[test]
-    fn child_ids() {
-        let child_ids = vec![Id::new(), Id::new(), Id::new()];
+    fn child_info() {
+        let child_info = vec![
+            ChildInfo::new(Id::new(), Sha256::digest(b"1").into()),
+            ChildInfo::new(Id::new(), Sha256::digest(b"2").into()),
+            ChildInfo::new(Id::new(), Sha256::digest(b"3").into()),
+        ];
         let mut paras = Paragraphs::new();
-        paras.child_ids = child_ids.clone();
-        assert_eq!(paras.child_ids(), &paras.child_ids);
-        assert_eq!(paras.child_ids(), &child_ids);
+        paras.child_info = child_info.clone();
+        assert_eq!(paras.child_info(), &paras.child_info);
+        assert_eq!(paras.child_info(), &child_info);
     }
 
     #[test]
@@ -25,8 +29,12 @@ mod collection__public_methods {
         let mut paras = Paragraphs::new();
         assert!(!paras.has_children());
 
-        let child_ids = vec![Id::new(), Id::new(), Id::new()];
-        paras.child_ids = child_ids;
+        let child_info = vec![
+            ChildInfo::new(Id::new(), Sha256::digest(b"1").into()),
+            ChildInfo::new(Id::new(), Sha256::digest(b"2").into()),
+            ChildInfo::new(Id::new(), Sha256::digest(b"3").into()),
+        ];
+        paras.child_info = child_info;
         assert!(paras.has_children());
     }
 }
@@ -53,7 +61,11 @@ mod data__public_methods {
         assert!(interface.save(para1.id(), &mut para1).unwrap());
         assert!(interface.save(para2.id(), &mut para2).unwrap());
         assert!(interface.save(para3.id(), &mut para3).unwrap());
-        page.paragraphs.child_ids = vec![para1.id(), para2.id(), para3.id()];
+        page.paragraphs.child_info = vec![
+            ChildInfo::new(para1.id(), para1.element().merkle_hash()),
+            ChildInfo::new(para2.id(), para2.element().merkle_hash()),
+            ChildInfo::new(para3.id(), para3.element().merkle_hash()),
+        ];
         assert!(interface.save(page.id(), &mut page).unwrap());
 
         let mut hasher0 = Sha256::new();
@@ -194,6 +206,63 @@ mod data__public_methods {
             storage: element,
         };
         assert_eq!(person.path(), path);
+    }
+}
+
+#[cfg(test)]
+mod child_info__constructor {
+    use super::*;
+
+    #[test]
+    fn new() {
+        let id = Id::new();
+        let hash = Sha256::digest(b"1").into();
+        let info = ChildInfo::new(id, hash);
+        assert_eq!(info.id, id);
+        assert_eq!(info.merkle_hash, hash);
+    }
+}
+
+#[cfg(test)]
+mod child_info__public_methods {
+    use super::*;
+
+    #[test]
+    fn id() {
+        let info = ChildInfo::new(Id::new(), Sha256::digest(b"1").into());
+        assert_eq!(info.id(), info.id);
+    }
+
+    #[test]
+    fn merkle_hash() {
+        let info = ChildInfo::new(Id::new(), Sha256::digest(b"1").into());
+        assert_eq!(info.merkle_hash(), info.merkle_hash);
+    }
+}
+
+#[cfg(test)]
+mod child_info__traits {
+    use super::*;
+
+    #[test]
+    fn display() {
+        let info = ChildInfo::new(Id::new(), Sha256::digest(b"1").into());
+        assert_eq!(
+            format!("{info}"),
+            format!(
+                "ChildInfo {}: {}",
+                info.id(),
+                hex::encode(info.merkle_hash())
+            )
+        );
+        assert_eq!(
+            info.to_string(),
+            format!(
+                "ChildInfo {}: {}",
+                info.id(),
+                hex::encode(info.merkle_hash())
+            )
+        );
     }
 }
 

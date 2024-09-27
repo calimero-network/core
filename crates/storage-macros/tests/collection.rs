@@ -26,8 +26,8 @@
 )]
 
 use borsh::{to_vec, BorshDeserialize};
-use calimero_storage::address::{Id, Path};
-use calimero_storage::entities::{Data, Element};
+use calimero_storage::address::Path;
+use calimero_storage::entities::{ChildInfo, Data, Element};
 use calimero_storage::exports::{Digest, Sha256};
 use calimero_storage::interface::Interface;
 use calimero_storage_macros::{AtomicUnit, Collection};
@@ -52,14 +52,14 @@ impl Child {
 #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[children(Child)]
 struct Group {
-    #[child_ids]
-    child_ids: Vec<Id>,
+    #[child_info]
+    child_info: Vec<ChildInfo>,
 }
 
 impl Group {
     fn new() -> Self {
         Self {
-            child_ids: Vec::new(),
+            child_info: Vec::new(),
         }
     }
 }
@@ -148,7 +148,11 @@ mod hashing {
         assert!(interface.save(child1.id(), &mut child1).unwrap());
         assert!(interface.save(child2.id(), &mut child2).unwrap());
         assert!(interface.save(child3.id(), &mut child3).unwrap());
-        parent.children.child_ids = vec![child1.id(), child2.id(), child3.id()];
+        parent.children.child_info = vec![
+            ChildInfo::new(child1.id(), child1.element().merkle_hash()),
+            ChildInfo::new(child2.id(), child2.element().merkle_hash()),
+            ChildInfo::new(child3.id(), child3.element().merkle_hash()),
+        ];
         assert!(interface.save(parent.id(), &mut parent).unwrap());
 
         let mut hasher0 = Sha256::new();

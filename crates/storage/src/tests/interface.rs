@@ -2,7 +2,7 @@ use calimero_test_utils::storage::create_test_store;
 use claims::{assert_none, assert_ok};
 
 use super::*;
-use crate::entities::{Data, Element};
+use crate::entities::{ChildInfo, Data, Element};
 use crate::tests::common::{EmptyData, Page, Paragraph, TEST_ID};
 
 #[cfg(test)]
@@ -69,7 +69,11 @@ mod interface__public_methods {
         assert!(interface.save(para1.id(), &mut para1).unwrap());
         assert!(interface.save(para2.id(), &mut para2).unwrap());
         assert!(interface.save(para3.id(), &mut para3).unwrap());
-        page.paragraphs.child_ids = vec![para1.id(), para2.id(), para3.id()];
+        page.paragraphs.child_info = vec![
+            ChildInfo::new(para1.id(), para1.element().merkle_hash()),
+            ChildInfo::new(para2.id(), para2.element().merkle_hash()),
+            ChildInfo::new(para3.id(), para3.element().merkle_hash()),
+        ];
         assert!(interface.save(page.id(), &mut page).unwrap());
 
         assert_eq!(
@@ -108,7 +112,11 @@ mod interface__public_methods {
         assert!(interface.save(para1.id(), &mut para1).unwrap());
         assert!(interface.save(para2.id(), &mut para2).unwrap());
         assert!(interface.save(para3.id(), &mut para3).unwrap());
-        page.paragraphs.child_ids = vec![para1.id(), para2.id(), para3.id()];
+        page.paragraphs.child_info = vec![
+            ChildInfo::new(para1.id(), para1.calculate_merkle_hash().unwrap()),
+            ChildInfo::new(para2.id(), para2.calculate_merkle_hash().unwrap()),
+            ChildInfo::new(para3.id(), para3.calculate_merkle_hash().unwrap()),
+        ];
         assert!(interface.save(page.id(), &mut page).unwrap());
         assert_eq!(
             interface.children_of(&page.paragraphs).unwrap(),
