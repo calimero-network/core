@@ -752,7 +752,7 @@ impl ContextManager {
             .await?;
 
         if size != expected_size {
-            bail!("fatal: content size mismatch")
+            bail!("fatal: content size mismatch: {} {}", size, expected_size)
         }
 
         // todo! if blob hash doesn't match, remove it
