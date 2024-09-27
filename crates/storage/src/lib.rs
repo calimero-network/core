@@ -70,3 +70,8 @@ pub mod interface;
 pub mod tests {
     pub mod common;
 }
+
+#[cfg(test)]
+mod doc_tests_package_usage {
+    use calimero_storage_macros as _;
+}

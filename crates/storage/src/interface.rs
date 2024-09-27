@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
-use crate::entities::Data;
+use crate::entities::{Collection, Data};
 
 /// The primary interface for the storage system.
 #[derive(Debug, Clone)]
@@ -103,9 +103,11 @@ impl Interface {
         hasher
             .update(&to_vec(&entity.element().metadata).map_err(StorageError::SerializationError)?);
 
-        for child in self.children_of(entity)? {
-            hasher.update(child.element().merkle_hash);
-        }
+        // TODO: This needs to be reimplemented when it is possible to obtain
+        // TODO: all Collection fields for an element.
+        // for child in self.children_of(entity)? {
+        //     hasher.update(child.element().merkle_hash);
+        // }
 
         Ok(hasher.finalize().into())
     }
@@ -154,10 +156,13 @@ impl Interface {
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn children_of<D: Data>(&self, entity: &D) -> Result<Vec<D::Child>, StorageError> {
+    pub fn children_of<C: Collection>(
+        &self,
+        collection: &C,
+    ) -> Result<Vec<C::Child>, StorageError> {
         let mut children = Vec::new();
-        for id in entity.element().child_ids() {
-            children.push(self.find_by_id(id)?.ok_or(StorageError::NotFound(id))?);
+        for id in collection.child_ids() {
+            children.push(self.find_by_id(*id)?.ok_or(StorageError::NotFound(*id))?);
         }
         Ok(children)
     }
