@@ -1103,6 +1103,7 @@ name = "calimero-storage"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "calimero-storage-macros",
  "calimero-store",
  "calimero-test-utils",
  "claims",

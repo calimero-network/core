@@ -36,7 +36,7 @@ mod interface__public_methods {
         let hash = interface.calculate_merkle_hash_for(&data).unwrap();
         assert_eq!(
             hex::encode(hash),
-            "aefc29aae587eb4a3bc44cb29dc30624db9936566aa2f0d0df1cd07793a94e6e"
+            "0cdafdf4e3769863428e5fef22a1f35578c00c1e63696c7e6d6db231653ef703"
         );
     }
 
@@ -69,24 +69,24 @@ mod interface__public_methods {
         assert!(interface.save(para1.id(), &mut para1).unwrap());
         assert!(interface.save(para2.id(), &mut para2).unwrap());
         assert!(interface.save(para3.id(), &mut para3).unwrap());
-        page.element_mut().child_ids = vec![para1.id(), para2.id(), para3.id()];
+        page.paragraphs.child_ids = vec![para1.id(), para2.id(), para3.id()];
         assert!(interface.save(page.id(), &mut page).unwrap());
 
         assert_eq!(
             hex::encode(interface.calculate_merkle_hash_for(&para1).unwrap()),
-            "a93a438ee86aee5ae8b89207e41dff50aa4c7a2e4854bebb56399dd78cbb1b3c",
+            "6004e665d1a8f66bc95a2611eb6b5422df0ac73a6ceeb9780cb56f19a64253b5",
         );
         assert_eq!(
             hex::encode(interface.calculate_merkle_hash_for(&para2).unwrap()),
-            "c3800c5d62756a45d03934b150526728a4e2d880274c04dda8a2c574847c8639",
+            "386405876b770596170a2921cf9ac1193afff6898e9560db5a308d0ae32ac081",
         );
         assert_eq!(
             hex::encode(interface.calculate_merkle_hash_for(&para3).unwrap()),
-            "ce9ec97a0f52e9a2ecfd0e7e5c35da4330746d22c373d65f9ff28c4931ea1210",
+            "774224bb89212596e0eb0609973dd273ef49eca69c9e1728a28e3f6aa39f0621",
         );
         assert_eq!(
             hex::encode(interface.calculate_merkle_hash_for(&page).unwrap()),
-            "9b042f16801a9acfe607b01e626f5642ce15d5da893d00a19d751f48caccc5e6",
+            "f1ca3914e9128857a4329853a183b388c888860bd4941188f796884daf33727d",
         );
     }
 
@@ -97,7 +97,7 @@ mod interface__public_methods {
         let element = Element::new(&Path::new("::root::node").unwrap());
         let mut page = Page::new_from_element("Node", element);
         assert!(interface.save(page.id(), &mut page).unwrap());
-        assert_eq!(interface.children_of(&page).unwrap(), vec![]);
+        assert_eq!(interface.children_of(&page.paragraphs).unwrap(), vec![]);
 
         let child1 = Element::new(&Path::new("::root::node::leaf1").unwrap());
         let child2 = Element::new(&Path::new("::root::node::leaf2").unwrap());
@@ -108,10 +108,10 @@ mod interface__public_methods {
         assert!(interface.save(para1.id(), &mut para1).unwrap());
         assert!(interface.save(para2.id(), &mut para2).unwrap());
         assert!(interface.save(para3.id(), &mut para3).unwrap());
-        page.element_mut().child_ids = vec![para1.id(), para2.id(), para3.id()];
+        page.paragraphs.child_ids = vec![para1.id(), para2.id(), para3.id()];
         assert!(interface.save(page.id(), &mut page).unwrap());
         assert_eq!(
-            interface.children_of(&page).unwrap(),
+            interface.children_of(&page.paragraphs).unwrap(),
             vec![para1, para2, para3]
         );
     }

@@ -6,7 +6,7 @@
 //! the storage system. These are the building blocks that are used to construct
 //! the hierarchy of the storage, and to apply updates to the elements.
 //!
-//! # Design
+//! # Design: Elements, data, and atomic units
 //!
 //! There are a number of requirements that need to be catered for by the
 //! solution, and it is worth exploring some of the possible structures and
@@ -186,6 +186,27 @@
 //! user interface over that of the internals — if there are a couple of hoops
 //! to jump through then it is best for these to be in the library code.
 //!
+//! # Design: Collections
+//!
+//! There are three main ways to implement the collection functionality, i.e.
+//! where a parent [`Element`] has children. These are:
+//!
+//!   1. **Struct-based**: Annotate the struct as being a `Collection`, meaning
+//!      it can then have children. In this situation the child type is supplied
+//!      as an associated type. This is the most straightforward approach, but
+//!      it does not allow for the parent to have multiple types of children.
+//!
+//!   2. **Enum-based**: E.g. `enum ChildType { Page(Page), Author(Author) }`.
+//!      This is more flexible, but it requires a match to determine the child
+//!      type, and although the type formality is good in some ways, it adds
+//!      a level of complexity and maintenance that is not desirable.
+//!
+//!   3. **Field-based**: E.g. `entity.pages` and `entity.authors` annotated as
+//!      `Collection`, with some way to look up which fields are needed. This is
+//!      the most flexible, and the easiest developer interface to use.
+//!
+//! The approach taken is Option 3, for the reasons given above.
+//!
 
 #[cfg(test)]
 #[path = "tests/entities.rs"]
@@ -206,7 +227,95 @@ use crate::address::{Id, Path};
 ///
 /// This is a marker trait, and does not have any special functionality.
 ///
+/// # Examples
+///
+/// ```
+/// use calimero_storage::entities::Element;
+/// use calimero_storage_macros::AtomicUnit;
+///
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// struct Page {
+///     title: String,
+///     #[private]
+///     secret: String,
+///     #[storage]
+///     storage: Element,
+/// }
+/// ```
+///
 pub trait AtomicUnit: Data {}
+
+/// A collection of child elements in the storage system.
+///
+/// [`Collection`]s are logical groupings of child [`Element`]s. They do not
+/// have their own storage or [`Element`], but instead provide a way to
+/// logically group and access child elements of a specific type.
+///
+/// # Examples
+///
+/// ```
+/// use calimero_storage_macros::{AtomicUnit, Collection};
+/// use calimero_storage::address::Id;
+/// use calimero_storage::entities::{Data, Element};
+///
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// struct Book {
+///     title: String,
+///     pages: Pages,
+///     #[storage]
+///     storage: Element,
+/// }
+///
+/// #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[children(Page)]
+/// struct Pages {
+///     #[child_ids]
+///     child_ids: Vec<Id>,
+/// }
+///
+/// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// struct Page {
+///     content: String,
+///     #[storage]
+///     storage: Element,
+/// }
+/// ```
+///
+pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
+    /// The associated type of any children that the [`Collection`] may have.
+    type Child: Data;
+
+    /// The unique identifiers of the children of the [`Collection`].
+    ///
+    /// This gets only the IDs of the children of the [`Collection`], which are
+    /// the [`Element`]s that are directly below the [`Collection`] in the
+    /// hierarchy.
+    ///
+    /// The order of the IDs is not guaranteed to be stable between calls.
+    ///
+    /// This is considered somewhat temporary, as there are efficiency gains to
+    /// be made by storing this list elsewhere — but for now, it helps to get
+    /// the data in place and usable, and establish a basis to test against and
+    /// enhance.
+    ///
+    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
+    ///       when the index is implemented.
+    ///
+    #[must_use]
+    fn child_ids(&self) -> &Vec<Id>;
+
+    /// Whether the [`Collection`] has children.
+    ///
+    /// This checks whether the [`Collection`] has children, which are the
+    /// [`Element`]s that are directly below the [`Collection`] in the
+    /// hierarchy.
+    ///
+    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
+    ///       when the index is implemented.
+    ///
+    #[must_use]
+    fn has_children(&self) -> bool;
+}
 
 /// The primary data for the [`Element`].
 ///
@@ -230,13 +339,6 @@ pub trait AtomicUnit: Data {}
 pub trait Data:
     BorshDeserialize + BorshSerialize + Clone + Debug + PartialEq + PartialOrd + Send + Sync
 {
-    /// The associated type of any children that the [`Element`] may have. If
-    /// the node type is not one that can have any children, the [`NoChildren`]
-    /// type can be used. *Note that this is potentially a temporary measure to
-    /// allow for a simplified initial implementation of child functionality,
-    /// and will be refined in forthcoming iterations.*
-    type Child: Data;
-
     /// The associated [`Element`].
     ///
     /// The [`Element`] contains additional metadata and storage-related
@@ -374,12 +476,6 @@ pub struct Element {
     /// The unique identifier for the [`Element`].
     id: Id,
 
-    /// The unique identifiers of the children of the [`Element`]. This is
-    /// considered somewhat temporary, as there are efficiency gains to be made
-    /// by storing this list elsewhere — but for now, it helps to get the data
-    /// in place and usable, and establish a basis to test against and enhance.
-    pub(crate) child_ids: Vec<Id>,
-
     /// Whether the [`Element`] is dirty, i.e. has been modified since it was
     /// last saved.
     pub(crate) is_dirty: bool,
@@ -443,7 +539,6 @@ impl Element {
             .as_nanos() as u64;
         Self {
             id: Id::new(),
-            child_ids: Vec::new(),
             is_dirty: true,
             metadata: Metadata {
                 created_at: timestamp,
@@ -454,36 +549,10 @@ impl Element {
         }
     }
 
-    /// The unique identifiers of the children of the [`Element`].
-    ///
-    /// This gets only the IDs of the children of the [`Element`], which are the
-    /// [`Element`]s that are directly below this [`Element`] in the hierarchy.
-    ///
-    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
-    ///       when the index is implemented.
-    ///
-    #[must_use]
-    pub fn child_ids(&self) -> Vec<Id> {
-        self.child_ids.clone()
-    }
-
     /// The timestamp when the [`Element`] was first created.
     #[must_use]
     pub const fn created_at(&self) -> u64 {
         self.metadata.created_at
-    }
-
-    /// Whether the [`Element`] has children.
-    ///
-    /// This checks whether the [`Element`] has children, which are the
-    /// [`Element`]s that are directly below this [`Element`] in the hierarchy.
-    ///
-    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
-    ///       when the index is implemented.
-    ///
-    #[must_use]
-    pub fn has_children(&self) -> bool {
-        !self.child_ids.is_empty()
     }
 
     /// The unique identifier for the [`Element`].
@@ -639,34 +708,5 @@ impl Metadata {
     /// in tests.
     pub fn set_created_at(&mut self, created_at: u64) {
         self.created_at = created_at;
-    }
-}
-
-/// A [`Data`] type that has no children.
-///
-/// This is a special type to represent the type of the children of a [`Data`]
-/// type that has no children, in the absence of being able to use something
-/// like `None` to represent no type.
-///
-/// *Note that this is potentially a temporary measure to allow for a simplified
-/// initial implementation of child functionality, and will be refined in
-/// forthcoming iterations.*
-///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-#[expect(
-    clippy::exhaustive_structs,
-    reason = "Exhaustive - this will never have fields"
-)]
-pub struct NoChildren;
-
-impl Data for NoChildren {
-    type Child = Self;
-
-    fn element(&self) -> &Element {
-        unimplemented!()
-    }
-
-    fn element_mut(&mut self) -> &mut Element {
-        unimplemented!()
     }
 }

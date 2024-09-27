@@ -3,7 +3,31 @@ use claims::{assert_ge, assert_le};
 
 use super::*;
 use crate::interface::Interface;
-use crate::tests::common::Person;
+use crate::tests::common::{Paragraphs, Person};
+
+#[cfg(test)]
+mod collection__public_methods {
+    use super::*;
+
+    #[test]
+    fn child_ids() {
+        let child_ids = vec![Id::new(), Id::new(), Id::new()];
+        let mut paras = Paragraphs::new();
+        paras.child_ids = child_ids.clone();
+        assert_eq!(paras.child_ids(), &paras.child_ids);
+        assert_eq!(paras.child_ids(), &child_ids);
+    }
+
+    #[test]
+    fn has_children() {
+        let mut paras = Paragraphs::new();
+        assert!(!paras.has_children());
+
+        let child_ids = vec![Id::new(), Id::new(), Id::new()];
+        paras.child_ids = child_ids;
+        assert!(paras.has_children());
+    }
+}
 
 #[cfg(test)]
 mod data__public_methods {
@@ -93,15 +117,6 @@ mod element__public_methods {
     use super::*;
 
     #[test]
-    fn child_ids() {
-        let child_ids = vec![Id::new(), Id::new(), Id::new()];
-        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
-        element.child_ids = child_ids.clone();
-        assert_eq!(element.child_ids(), element.child_ids);
-        assert_eq!(element.child_ids(), child_ids);
-    }
-
-    #[test]
     fn created_at() {
         let timestamp1 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -114,16 +129,6 @@ mod element__public_methods {
             .as_nanos() as u64;
         assert_ge!(element.created_at(), timestamp1);
         assert_le!(element.created_at(), timestamp2);
-    }
-
-    #[test]
-    fn has_children() {
-        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
-        assert!(!element.has_children());
-
-        let child_ids = vec![Id::new(), Id::new(), Id::new()];
-        element.child_ids = child_ids;
-        assert!(element.has_children());
     }
 
     #[test]

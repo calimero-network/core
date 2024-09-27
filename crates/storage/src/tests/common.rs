@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::address::Id;
-use crate::entities::{Data, Element, NoChildren};
+use crate::entities::{AtomicUnit, Collection, Data, Element};
 
 /// A set of non-empty test UUIDs.
 pub const TEST_UUID: [[u8; 16]; 5] = [
@@ -32,8 +32,6 @@ pub struct EmptyData {
 }
 
 impl Data for EmptyData {
-    type Child = NoChildren;
-
     fn element(&self) -> &Element {
         &self.storage
     }
@@ -47,6 +45,7 @@ impl Data for EmptyData {
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct Page {
     pub title: String,
+    pub paragraphs: Paragraphs,
     pub storage: Element,
 }
 
@@ -55,14 +54,15 @@ impl Page {
     pub fn new_from_element(title: &str, element: Element) -> Self {
         Self {
             title: title.to_owned(),
+            paragraphs: Paragraphs::new(),
             storage: element,
         }
     }
 }
 
-impl Data for Page {
-    type Child = Paragraph;
+impl AtomicUnit for Page {}
 
+impl Data for Page {
     fn element(&self) -> &Element {
         &self.storage
     }
@@ -89,15 +89,40 @@ impl Paragraph {
     }
 }
 
-impl Data for Paragraph {
-    type Child = NoChildren;
+impl AtomicUnit for Paragraph {}
 
+impl Data for Paragraph {
     fn element(&self) -> &Element {
         &self.storage
     }
 
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
+    }
+}
+
+/// A collection of paragraphs for a page.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
+pub struct Paragraphs {
+    pub child_ids: Vec<Id>,
+}
+
+impl Paragraphs {
+    /// Creates a new paragraph collection.
+    pub fn new() -> Self {
+        Self { child_ids: vec![] }
+    }
+}
+
+impl Collection for Paragraphs {
+    type Child = Paragraph;
+
+    fn child_ids(&self) -> &Vec<Id> {
+        &self.child_ids
+    }
+
+    fn has_children(&self) -> bool {
+        !self.child_ids.is_empty()
     }
 }
 
@@ -110,8 +135,6 @@ pub struct Person {
 }
 
 impl Data for Person {
-    type Child = NoChildren;
-
     fn element(&self) -> &Element {
         &self.storage
     }

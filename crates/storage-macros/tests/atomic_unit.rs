@@ -27,43 +27,10 @@
 
 use borsh::{to_vec, BorshDeserialize};
 use calimero_storage::address::Path;
-use calimero_storage::entities::{Data, Element, NoChildren};
+use calimero_storage::entities::{Data, Element};
 use calimero_storage::interface::Interface;
 use calimero_storage_macros::AtomicUnit;
 use calimero_test_utils::storage::create_test_store;
-
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-struct Child {
-    content: String,
-    #[storage]
-    storage: Element,
-}
-
-impl Child {
-    fn new(path: &Path) -> Self {
-        Self {
-            content: String::new(),
-            storage: Element::new(path),
-        }
-    }
-}
-
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-#[children(Child)]
-struct Parent {
-    title: String,
-    #[storage]
-    storage: Element,
-}
-
-impl Parent {
-    fn new(path: &Path) -> Self {
-        Self {
-            title: String::new(),
-            storage: Element::new(path),
-        }
-    }
-}
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 struct Private {
@@ -265,37 +232,6 @@ mod visibility {
         // assert_ne!(unit.skipped(), deserialized.skipped());
         assert_ne!(unit.skipped, deserialized.skipped);
         assert_eq!(deserialized.skipped, "");
-    }
-}
-
-#[cfg(test)]
-mod hierarchy {
-    use super::*;
-
-    #[test]
-    fn parent_child() {
-        let parent_path = Path::new("::root::node").unwrap();
-        let mut parent = Parent::new(&parent_path);
-        _ = parent.set_title("Parent Title".to_owned());
-
-        let child_path = Path::new("::root::node::leaf").unwrap();
-        let mut child = Child::new(&child_path);
-        _ = child.set_content("Child Content".to_owned());
-
-        assert_eq!(parent.title(), "Parent Title");
-
-        // TODO: Add in tests for loading and checking children
-    }
-
-    #[test]
-    fn no_children() {
-        let _unit: Simple = Simple::new(&Path::new("::root::node").unwrap());
-        let _: Option<<Simple as Data>::Child> = None::<NoChildren>;
-    }
-
-    #[test]
-    fn compile_fail() {
-        trybuild::TestCases::new().compile_fail("tests/compile_fail/atomic_unit.rs");
     }
 }
 
