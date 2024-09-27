@@ -342,6 +342,18 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 Ok(hasher.finalize().into())
             }
 
+            fn collections(&self) -> std::collections::HashMap<String, Vec<calimero_storage::entities::ChildInfo>> {
+                use calimero_storage::entities::Collection;
+                let mut collections = std::collections::HashMap::new();
+                #(
+                    collections.insert(
+                        stringify!(#collection_fields).to_owned(),
+                        self.#collection_fields.child_info().clone()
+                    );
+                )*
+                collections
+            }
+
             fn element(&self) -> &calimero_storage::entities::Element {
                 &self.#storage_ident
             }

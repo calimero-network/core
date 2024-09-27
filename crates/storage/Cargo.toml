@@ -21,6 +21,7 @@ calimero-store = { path = "../store", features = ["datatypes"] }
 [dev-dependencies]
 claims.workspace = true
 hex.workspace = true
+velcro.workspace = true
 
 calimero-storage-macros = { path = "../storage-macros" }
 calimero-test-utils = { path = "../test-utils" }

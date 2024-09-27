@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
+use velcro::hash_map;
 
 use crate::address::Id;
 use crate::entities::{AtomicUnit, ChildInfo, Collection, Data, Element};
@@ -49,6 +51,10 @@ impl Data for EmptyData {
         hasher.update(self.element().id().as_bytes());
         hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
         Ok(hasher.finalize().into())
+    }
+
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>> {
+        HashMap::new()
     }
 
     fn element(&self) -> &Element {
@@ -113,6 +119,12 @@ impl Data for Page {
         Ok(hasher.finalize().into())
     }
 
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>> {
+        hash_map! {
+            "paragraphs".to_owned(): self.paragraphs.child_info.clone()
+        }
+    }
+
     fn element(&self) -> &Element {
         &self.storage
     }
@@ -158,6 +170,10 @@ impl Data for Paragraph {
         hasher.update(&to_vec(&self.text).map_err(StorageError::SerializationError)?);
         hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
         Ok(hasher.finalize().into())
+    }
+
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>> {
+        HashMap::new()
     }
 
     fn element(&self) -> &Element {
@@ -220,6 +236,10 @@ impl Data for Person {
         hasher.update(&to_vec(&self.age).map_err(StorageError::SerializationError)?);
         hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
         Ok(hasher.finalize().into())
+    }
+
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>> {
+        HashMap::new()
     }
 
     fn element(&self) -> &Element {

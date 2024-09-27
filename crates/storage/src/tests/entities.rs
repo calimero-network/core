@@ -2,6 +2,7 @@ use borsh::to_vec;
 use calimero_test_utils::storage::create_test_store;
 use claims::{assert_ge, assert_le};
 use sha2::{Digest, Sha256};
+use velcro::hash_map;
 
 use super::*;
 use crate::interface::Interface;
@@ -153,6 +154,22 @@ mod data__public_methods {
         let expected_hash: [u8; 32] = hasher.finalize().into();
 
         assert_eq!(person.calculate_merkle_hash().unwrap(), expected_hash);
+    }
+
+    #[test]
+    fn collections() {
+        let parent = Element::new(&Path::new("::root::node").unwrap());
+        let page = Page::new_from_element("Node", parent);
+        assert_eq!(
+            page.collections(),
+            hash_map! {
+                "paragraphs".to_owned(): page.paragraphs.child_info().clone()
+            }
+        );
+
+        let child = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let para = Paragraph::new_from_element("Leaf", child);
+        assert_eq!(para.collections(), HashMap::new());
     }
 
     #[test]
