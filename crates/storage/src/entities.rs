@@ -213,6 +213,7 @@
 mod tests;
 
 use core::fmt::{self, Debug, Display, Formatter};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -394,6 +395,14 @@ pub trait Data:
     /// * [`calculate_full_merkle_hash()`](Data::calculate_full_merkle_hash())
     ///
     fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError>;
+
+    /// Information about the [`Collection`]s present in the [`Data`].
+    ///
+    /// This method allows details about the subtree structure and children to
+    /// be obtained. It does not return the actual [`Collection`] types, but
+    /// provides their names and child information.
+    ///
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>>;
 
     /// The associated [`Element`].
     ///
