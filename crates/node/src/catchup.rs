@@ -75,15 +75,18 @@ impl Node {
             return Ok(());
         };
 
+        info!(
+            request=?request,
+            "Processing application blob catchup request",
+        );
+
         let mut blob_sender = ApplicationBlobChunkSender::new(stream);
 
         while let Some(chunk) = blob.try_next().await? {
             blob_sender.send(&chunk).await?;
         }
 
-        blob_sender.flush().await?;
-
-        todo!()
+        blob_sender.flush().await
     }
 
     #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
@@ -106,7 +109,7 @@ impl Node {
         info!(
             request=?request,
             last_transaction_hash=%context.last_transaction_hash,
-            "Processing catchup request for context",
+            "Processing transaction catchup request",
         );
 
         let handle = self.store.handle();
@@ -296,7 +299,7 @@ impl Node {
             application_id: latest_application.id,
         };
 
-        let data = to_json_vec(&request)?;
+        let data = to_json_vec(&CatchupStreamMessage::ApplicationBlobRequest(request))?;
 
         stream.send(Message::new(data)).await?;
 
