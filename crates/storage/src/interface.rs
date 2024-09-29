@@ -18,9 +18,9 @@
 //!      resulting actions need to be taken to bring the nodes into sync.
 //!
 //! The entry points for synchronisation are therefore either the
-//! [`apply_actions()`](Interface::apply_actions()) method, to carry out
-//! actions; or the [`compare_trees()`](Interface::compare_trees()) method, to
-//! compare two nodes, which will emit actions to pass to [`apply_actions()`](Interface::apply_actions())
+//! [`apply_action()`](Interface::apply_action()) method, to carry out actions;
+//! or the [`compare_trees()`](Interface::compare_trees()) method, to compare
+//! two nodes, which will emit actions to pass to [`apply_action()`](Interface::apply_action())
 //! on either the local or remote node, or both.
 //!
 //! ## CRDT model
@@ -89,7 +89,7 @@
 //! to other nodes. An action list will be generated, which can be made up of
 //! [`Add`](Action::Add), [`Delete`](Action::Delete), and [`Update`](Action::Update)
 //! actions. These actions are then propagated to all the other nodes in the
-//! network, where they are executed using the [`apply_actions()`](Interface::apply_actions())
+//! network, where they are executed using the [`apply_action()`](Interface::apply_action())
 //! method.
 //!
 //! This is a straightforward process, as the actions are known and are fully
@@ -213,6 +213,7 @@
 #[path = "tests/interface.rs"]
 mod tests;
 
+use core::fmt::Debug;
 use std::collections::HashMap;
 use std::io::Error as IoError;
 use std::sync::Arc;
@@ -249,29 +250,30 @@ use crate::entities::{Collection, Data};
 ///     entity is compared, and the resulting actions are added to the list of
 ///     actions to be taken. This process is recursive.
 ///
-/// Note: The actions temporarily contain only the entity ID, and not the full
-/// entity data. This will be changed when action execution is implemented.
+/// Note: Some actions contain the full entity, and not just the entity ID, as
+/// the actions will often be in context of data that is not available locally
+/// and cannot be sourced otherwise. The actions are stored in serialised form
+/// because of type restrictions, and they are due to be sent around the network
+/// anyway.
 ///
-#[derive(
-    BorshDeserialize, BorshSerialize, Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd,
-)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[expect(clippy::exhaustive_enums, reason = "Exhaustive")]
 pub enum Action {
     /// Add an entity with the given ID.
-    Add(Id),
+    Add(Id, Vec<u8>),
 
-    /// Compare the entity with the given ID. Note that this results in a direct
-    /// comparison of the specific entity in question, including data that is
-    /// immediately available to it, such as the hashes of its children. This
-    /// may well result in further actions being generated if children differ,
-    /// leading to a recursive comparison.
+    /// Compare the given entity. Note that this results in a direct comparison
+    /// of the specific entity in question, including data that is immediately
+    /// available to it, such as the hashes of its children. This may well
+    /// result in further actions being generated if children differ, leading to
+    /// a recursive comparison.
     Compare(Id),
 
     /// Delete an entity with the given ID.
     Delete(Id),
 
     /// Update the entity with the given ID.
-    Update(Id),
+    Update(Id, Vec<u8>),
 }
 
 /// The primary interface for the storage system.
@@ -294,6 +296,50 @@ impl Interface {
         Self {
             store: Arc::new(RwLock::new(store)),
         }
+    }
+
+    /// Applies an [`Action`] to the storage system.
+    ///
+    /// This function accepts a single incoming [`Action`] and applies it to the
+    /// storage system. The action is deserialised into the specified type, and
+    /// then applied as appropriate.
+    ///
+    /// Note: In order to call this function, the caller needs to know the type
+    /// of the entity that the action is for, and this type must implement the
+    /// [`Data`] trait. One of the possible ways to achieve this is to use the
+    /// path information externally to match against the entity type, using
+    /// knowledge available in the system. It is also possible to extend this
+    /// function to deal with the type being indicated in the serialised data,
+    /// if appropriate, or in the ID or accompanying metadata.
+    ///
+    /// TODO: Establish whether any additional data encoding is needed, to help
+    /// TODO: with deserialisation.
+    ///
+    /// # Parameters
+    ///
+    /// * `action` - The [`Action`] to apply to the storage system.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error when deserialising into the specified type, or when
+    /// applying the [`Action`], an error will be returned.
+    ///
+    pub fn apply_action<D: Data>(&self, action: Action) -> Result<(), StorageError> {
+        match action {
+            Action::Add(id, serialized_data) | Action::Update(id, serialized_data) => {
+                let mut entity = D::try_from_slice(&serialized_data)
+                    .map_err(StorageError::DeserializationError)?;
+                _ = self.save(id, &mut entity)?;
+            }
+            Action::Compare(_) => return Err(StorageError::ActionNotAllowed("Compare".to_owned())),
+            Action::Delete(id) => {
+                let mut store = self.store.write();
+                store
+                    .delete(&StorageKey::new(id.into()))
+                    .map_err(StorageError::StoreError)?;
+            }
+        }
+        Ok(())
     }
 
     /// Calculates the Merkle hash for the [`Element`](crate::entities::Element).
@@ -357,13 +403,12 @@ impl Interface {
         entity.calculate_full_merkle_hash(self, recalculate)
     }
 
-    /// The children of the [`Element`](crate::entities::Element).
+    /// The children of the [`Collection`].
     ///
-    /// This gets the children of the [`Element`](crate::entities::Element),
-    /// which are the [`Element`](crate::entities::Element)s that are directly
-    /// below this [`Element`](crate::entities::Element) in the hierarchy. This
-    /// is a simple method that returns the children as a list, and does not
-    /// provide any filtering or ordering.
+    /// This gets the children of the [`Collection`], which are the [`Element`](crate::entities::Element)s
+    /// that are directly below the [`Collection`]'s owner in the hierarchy.
+    /// This is a simple method that returns the children as a list, and does
+    /// not provide any filtering or ordering.
     ///
     /// Notably, there is no real concept of ordering in the storage system, as
     /// the records are not ordered in any way. They are simply stored in the
@@ -395,8 +440,7 @@ impl Interface {
     ///
     /// # Parameters
     ///
-    /// * `element` - The [`Element`](crate::entities::Element) to get the
-    ///               children of.
+    /// * `collection` - The [`Collection`] to get the children of.
     ///
     /// # Errors
     ///
@@ -446,7 +490,10 @@ impl Interface {
         let mut actions = (vec![], vec![]);
         let Some(local_entity) = self.find_by_id::<D>(foreign_entity.id())? else {
             // Local entity doesn't exist, so we need to add it
-            actions.0.push(Action::Add(foreign_entity.id()));
+            actions.0.push(Action::Add(
+                foreign_entity.id(),
+                to_vec(foreign_entity).map_err(StorageError::SerializationError)?,
+            ));
             return Ok(actions);
         };
 
@@ -454,9 +501,15 @@ impl Interface {
             return Ok(actions);
         }
         if local_entity.element().updated_at() <= foreign_entity.element().updated_at() {
-            actions.0.push(Action::Update(local_entity.id()));
+            actions.0.push(Action::Update(
+                local_entity.id(),
+                to_vec(foreign_entity).map_err(StorageError::SerializationError)?,
+            ));
         } else {
-            actions.1.push(Action::Update(foreign_entity.id()));
+            actions.1.push(Action::Update(
+                foreign_entity.id(),
+                to_vec(&local_entity).map_err(StorageError::SerializationError)?,
+            ));
         }
 
         let local_collections = local_entity.collections();
@@ -481,7 +534,12 @@ impl Interface {
                             actions.0.push(Action::Compare(*id));
                             actions.1.push(Action::Compare(*id));
                         }
-                        None => actions.1.push(Action::Add(*id)),
+                        None => {
+                            // We need to fetch the child entity and serialize it
+                            if let Some(local_child) = self.find_by_id_raw(*id)? {
+                                actions.1.push(Action::Add(*id, local_child));
+                            }
+                        }
                         // Hashes match, no action needed
                         _ => {}
                     }
@@ -490,13 +548,16 @@ impl Interface {
                 #[expect(clippy::iter_over_hash_type, reason = "Order doesn't matter here")]
                 for id in foreign_child_map.keys() {
                     if !local_child_map.contains_key(id) {
-                        actions.0.push(Action::Add(*id));
+                        // We can't get the full data for the foreign child, so we flag it for comparison
+                        actions.1.push(Action::Compare(*id));
                     }
                 }
             } else {
                 // The entire collection is missing from the foreign entity
                 for child in local_children {
-                    actions.1.push(Action::Add(child.id()));
+                    if let Some(local_child) = self.find_by_id_raw(child.id())? {
+                        actions.1.push(Action::Add(child.id(), local_child));
+                    }
                 }
             }
         }
@@ -506,7 +567,8 @@ impl Interface {
         for (foreign_coll_name, foreign_children) in &foreign_collections {
             if !local_collections.contains_key(foreign_coll_name) {
                 for child in foreign_children {
-                    actions.0.push(Action::Add(child.id()));
+                    // We can't get the full data for the foreign child, so we flag it for comparison
+                    actions.1.push(Action::Compare(child.id()));
                 }
             }
         }
@@ -559,6 +621,35 @@ impl Interface {
             }
             None => Ok(None),
         }
+    }
+
+    /// Finds an [`Element`](crate::entities::Element) by its unique identifier
+    /// without deserialising it.
+    ///
+    /// This will always retrieve a single [`Element`](crate::entities::Element),
+    /// if it exists, regardless of where it may be in the hierarchy, or what
+    /// state it may be in.
+    ///
+    /// Notably it returns the raw [`Slice`] without attempting to deserialise
+    /// it into a [`Data`] type.
+    ///
+    /// # Parameters
+    ///
+    /// * `id` - The unique identifier of the [`Element`](crate::entities::Element)
+    ///          to find.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    ///
+    #[expect(clippy::significant_drop_tightening, reason = "False positive")]
+    pub fn find_by_id_raw(&self, id: Id) -> Result<Option<Vec<u8>>, StorageError> {
+        let store = self.store.read();
+        let value = store
+            .get(&StorageKey::new(id.into()))
+            .map_err(StorageError::StoreError)?;
+        Ok(value.map(|slice| slice.to_vec()))
     }
 
     /// Finds one or more [`Element`](crate::entities::Element)s by path in the
@@ -711,6 +802,10 @@ impl Interface {
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum StorageError {
+    /// The requested action is not allowed.
+    #[error("Action not allowed: {0}")]
+    ActionNotAllowed(String),
+
     /// An error occurred during serialization.
     #[error("Deserialization error: {0}")]
     DeserializationError(IoError),

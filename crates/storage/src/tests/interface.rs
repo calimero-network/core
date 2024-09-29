@@ -149,6 +149,12 @@ mod interface__public_methods {
 
     #[test]
     #[ignore]
+    fn find_by_id_raw() {
+        todo!()
+    }
+
+    #[test]
+    #[ignore]
     fn find_by_path() {
         todo!()
     }
@@ -257,6 +263,104 @@ mod interface__public_methods {
 }
 
 #[cfg(test)]
+mod interface__apply_actions {
+    use super::*;
+
+    #[test]
+    fn apply_action__add() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        let serialized = to_vec(&page).unwrap();
+        let action = Action::Add(page.id(), serialized);
+
+        assert!(interface.apply_action::<Page>(action).is_ok());
+
+        // Verify the page was added
+        let retrieved_page = interface.find_by_id::<Page>(page.id()).unwrap();
+        assert!(retrieved_page.is_some());
+        assert_eq!(retrieved_page.unwrap().title, "Test Page");
+    }
+
+    #[test]
+    fn apply_action__update() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let mut page =
+            Page::new_from_element("Old Title", Element::new(&Path::new("::test").unwrap()));
+        assert!(interface.save(page.id(), &mut page).unwrap());
+
+        page.title = "New Title".to_owned();
+        page.element_mut().update();
+        let serialized = to_vec(&page).unwrap();
+        let action = Action::Update(page.id(), serialized);
+
+        assert!(interface.apply_action::<Page>(action).is_ok());
+
+        // Verify the page was updated
+        let retrieved_page = interface.find_by_id::<Page>(page.id()).unwrap().unwrap();
+        assert_eq!(retrieved_page.title, "New Title");
+    }
+
+    #[test]
+    fn apply_action__delete() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let mut page =
+            Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        assert!(interface.save(page.id(), &mut page).unwrap());
+
+        let action = Action::Delete(page.id());
+
+        assert!(interface.apply_action::<Page>(action).is_ok());
+
+        // Verify the page was deleted
+        let retrieved_page = interface.find_by_id::<Page>(page.id()).unwrap();
+        assert!(retrieved_page.is_none());
+    }
+
+    #[test]
+    fn apply_action__compare() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        let action = Action::Compare(page.id());
+
+        // Compare should fail
+        assert!(interface.apply_action::<Page>(action).is_err());
+    }
+
+    #[test]
+    fn apply_action__wrong_type() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        let serialized = to_vec(&page).unwrap();
+        let action = Action::Add(page.id(), serialized);
+
+        // Trying to apply a Page action as if it were a Paragraph should fail
+        assert!(interface.apply_action::<Paragraph>(action).is_err());
+    }
+
+    #[test]
+    fn apply_action__non_existent_update() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        let serialized = to_vec(&page).unwrap();
+        let action = Action::Update(page.id(), serialized);
+
+        // Updating a non-existent page should still succeed (it will be added)
+        assert!(interface.apply_action::<Page>(action).is_ok());
+
+        // Verify the page was added
+        let retrieved_page = interface.find_by_id::<Page>(page.id()).unwrap();
+        assert!(retrieved_page.is_some());
+        assert_eq!(retrieved_page.unwrap().title, "Test Page");
+    }
+}
+
+#[cfg(test)]
 mod interface__comparison {
     use super::*;
 
@@ -299,7 +403,13 @@ mod interface__comparison {
             .unwrap();
 
         let result = interface.compare_trees(&foreign).unwrap();
-        assert_eq!(result, (vec![], vec![Action::Update(local.id())]));
+        assert_eq!(
+            result,
+            (
+                vec![],
+                vec![Action::Update(local.id(), to_vec(&local).unwrap())]
+            )
+        );
     }
 
     #[test]
@@ -320,7 +430,13 @@ mod interface__comparison {
         foreign.element_mut().update();
 
         let result = interface.compare_trees(&foreign).unwrap();
-        assert_eq!(result, (vec![Action::Update(local.id())], vec![]));
+        assert_eq!(
+            result,
+            (
+                vec![Action::Update(foreign.id(), to_vec(&foreign).unwrap())],
+                vec![]
+            )
+        );
     }
 
     #[test]
@@ -383,16 +499,22 @@ mod interface__comparison {
         assert_eq!(
             local_actions,
             vec![
-                Action::Update(local_page.id()), // Page needs update due to different child structure
-                Action::Compare(local_para1.id()), // Para1 needs comparison due to different hash
-                Action::Add(foreign_para3.id()), // Para3 needs to be added locally
+                // Page needs update due to different child structure
+                Action::Update(foreign_page.id(), to_vec(&foreign_page).unwrap()),
+                // Para1 needs comparison due to different hash
+                Action::Compare(local_para1.id()),
             ]
         );
+        local_para2.element_mut().is_dirty = true;
         assert_eq!(
             foreign_actions,
             vec![
-                Action::Add(local_para2.id()),     // Para2 needs to be added to foreign
-                Action::Compare(local_para1.id()), // Para1 needs comparison due to different hash
+                // Para2 needs to be added to foreign
+                Action::Add(local_para2.id(), to_vec(&local_para2).unwrap()),
+                // Para3 needs to be added locally, but we don't have the data, so we compare
+                Action::Compare(foreign_para3.id()),
+                // Para1 needs comparison due to different hash
+                Action::Compare(local_para1.id()),
             ]
         );
 
@@ -400,14 +522,26 @@ mod interface__comparison {
         let (local_para1_actions, foreign_para1_actions) =
             interface.compare_trees(&foreign_para1).unwrap();
 
-        assert_eq!(local_para1_actions, vec![Action::Update(local_para1.id())]);
+        assert_eq!(
+            local_para1_actions,
+            vec![Action::Update(
+                foreign_para1.id(),
+                to_vec(&foreign_para1).unwrap()
+            )]
+        );
         assert_eq!(foreign_para1_actions, vec![]);
 
         // Compare para3 which doesn't exist locally
         let (local_para3_actions, foreign_para3_actions) =
             interface.compare_trees(&foreign_para3).unwrap();
 
-        assert_eq!(local_para3_actions, vec![Action::Add(foreign_para3.id())]);
+        assert_eq!(
+            local_para3_actions,
+            vec![Action::Add(
+                foreign_para3.id(),
+                to_vec(&foreign_para3).unwrap()
+            )]
+        );
         assert_eq!(foreign_para3_actions, vec![]);
     }
 }
