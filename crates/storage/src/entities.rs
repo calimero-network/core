@@ -218,6 +218,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::address::{Id, Path};
+use crate::interface::{Interface, StorageError};
 
 /// Represents an atomic unit in the storage system.
 ///
@@ -298,8 +299,8 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
     /// the data in place and usable, and establish a basis to test against and
     /// enhance.
     ///
-    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
-    ///       when the index is implemented.
+    /// TODO: This method will likely move to the [`Interface`] when the index
+    ///       is implemented.
     ///
     #[must_use]
     fn child_ids(&self) -> &Vec<Id>;
@@ -310,8 +311,8 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
     /// [`Element`]s that are directly below the [`Collection`] in the
     /// hierarchy.
     ///
-    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
-    ///       when the index is implemented.
+    /// TODO: This method will likely move to the [`Interface`] when the index
+    ///       is implemented.
     ///
     #[must_use]
     fn has_children(&self) -> bool;
@@ -339,6 +340,62 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
 pub trait Data:
     BorshDeserialize + BorshSerialize + Clone + Debug + PartialEq + PartialOrd + Send + Sync
 {
+    /// Calculates the Merkle hash of the [`Element`], including descendants.
+    ///
+    /// This method calculates the Merkle hash of the [`Data`] for the
+    /// [`Element`], which should be based on any regular and collection fields,
+    /// but ignore skipped fields, private fields, and the storage field.
+    ///
+    /// Specifically, this should include the hashes of the children of the
+    /// various collection fields.
+    ///
+    /// # Parameters
+    ///
+    /// * `interface`   - The [`Interface`] to use for looking up children.
+    /// * `recalculate` - Whether to recalculate or use the cached value for
+    ///                   child hashes. Under normal circumstances, the cached
+    ///                   value should be used, as it is more efficient. The
+    ///                   option to recalculate is provided for situations when
+    ///                   the entire subtree needs revalidating.
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if there is a problem calculating the
+    /// hash, or looking up children.
+    ///
+    /// # See also
+    ///
+    /// * [`calculate_merkle_hash()`](Data::calculate_merkle_hash())
+    ///
+    fn calculate_full_merkle_hash(
+        &self,
+        interface: &Interface,
+        recalculate: bool,
+    ) -> Result<[u8; 32], StorageError>;
+
+    /// Calculates the Merkle hash of the [`Element`].
+    ///
+    /// This method calculates the Merkle hash of the [`Data`] for the
+    /// [`Element`], which should be based on any regular fields, but ignore
+    /// skipped fields, private fields, collections, and the storage field (but
+    /// include the metadata).
+    ///
+    /// **IMPORTANT NOTE**: Collection fields do need to be included in the hash
+    /// calculation, but that is a job for the caller to combine, and this
+    /// method therefore only calculates the hash of available data (as hashing
+    /// the children would involve recursive lookups).
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if there is a problem calculating the
+    /// hash.
+    ///
+    /// # See also
+    ///
+    /// * [`calculate_full_merkle_hash()`](Data::calculate_full_merkle_hash())
+    ///
+    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError>;
+
     /// The associated [`Element`].
     ///
     /// The [`Element`] contains additional metadata and storage-related
@@ -400,8 +457,8 @@ pub trait Data:
 ///
 /// Note, this is modelled as a single entity called "Element" rather than
 /// separating into separate "Node" and "Leaf" entities, to simplify the
-/// handling via the storage [`Interface`](crate::interface::Interface). The
-/// actual nature of the [`Element`] can be determined by inspection.
+/// handling via the storage [`Interface`]. The actual nature of the [`Element`]
+/// can be determined by inspection.
 ///
 /// # Updates
 ///
@@ -576,6 +633,12 @@ impl Element {
     #[must_use]
     pub const fn is_dirty(&self) -> bool {
         self.is_dirty
+    }
+
+    /// Current Merkle hash of the [`Element`].
+    #[must_use]
+    pub const fn merkle_hash(&self) -> [u8; 32] {
+        self.merkle_hash
     }
 
     /// The metadata for the [`Element`].

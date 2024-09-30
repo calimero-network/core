@@ -1,9 +1,11 @@
 use std::sync::LazyLock;
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{to_vec, BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::entities::{AtomicUnit, Collection, Data, Element};
+use crate::interface::{Interface, StorageError};
 
 /// A set of non-empty test UUIDs.
 pub const TEST_UUID: [[u8; 16]; 5] = [
@@ -32,6 +34,23 @@ pub struct EmptyData {
 }
 
 impl Data for EmptyData {
+    fn calculate_full_merkle_hash(
+        &self,
+        _interface: &Interface,
+        _recalculate: bool,
+    ) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.calculate_merkle_hash()?);
+        Ok(hasher.finalize().into())
+    }
+
+    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(self.element().id().as_bytes());
+        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
+        Ok(hasher.finalize().into())
+    }
+
     fn element(&self) -> &Element {
         &self.storage
     }
@@ -63,6 +82,37 @@ impl Page {
 impl AtomicUnit for Page {}
 
 impl Data for Page {
+    fn calculate_full_merkle_hash(
+        &self,
+        interface: &Interface,
+        recalculate: bool,
+    ) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.calculate_merkle_hash()?);
+
+        // Hash collection fields
+        for child_id in self.paragraphs.child_ids() {
+            let child = interface
+                .find_by_id::<<Paragraphs as Collection>::Child>(*child_id)?
+                .ok_or_else(|| StorageError::NotFound(*child_id))?;
+            if recalculate {
+                hasher.update(&child.calculate_full_merkle_hash(interface, recalculate)?);
+            } else {
+                hasher.update(&child.element().merkle_hash());
+            }
+        }
+
+        Ok(hasher.finalize().into())
+    }
+
+    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(self.element().id().as_bytes());
+        hasher.update(&to_vec(&self.title).map_err(StorageError::SerializationError)?);
+        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
+        Ok(hasher.finalize().into())
+    }
+
     fn element(&self) -> &Element {
         &self.storage
     }
@@ -92,6 +142,24 @@ impl Paragraph {
 impl AtomicUnit for Paragraph {}
 
 impl Data for Paragraph {
+    fn calculate_full_merkle_hash(
+        &self,
+        _interface: &Interface,
+        _recalculate: bool,
+    ) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.calculate_merkle_hash()?);
+        Ok(hasher.finalize().into())
+    }
+
+    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(self.element().id().as_bytes());
+        hasher.update(&to_vec(&self.text).map_err(StorageError::SerializationError)?);
+        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
+        Ok(hasher.finalize().into())
+    }
+
     fn element(&self) -> &Element {
         &self.storage
     }
@@ -135,6 +203,25 @@ pub struct Person {
 }
 
 impl Data for Person {
+    fn calculate_full_merkle_hash(
+        &self,
+        _interface: &Interface,
+        _recalculate: bool,
+    ) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.calculate_merkle_hash()?);
+        Ok(hasher.finalize().into())
+    }
+
+    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(self.element().id().as_bytes());
+        hasher.update(&to_vec(&self.name).map_err(StorageError::SerializationError)?);
+        hasher.update(&to_vec(&self.age).map_err(StorageError::SerializationError)?);
+        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
+        Ok(hasher.finalize().into())
+    }
+
     fn element(&self) -> &Element {
         &self.storage
     }
