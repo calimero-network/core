@@ -28,6 +28,7 @@
 use borsh::{to_vec, BorshDeserialize};
 use calimero_storage::address::Path;
 use calimero_storage::entities::{Data, Element};
+use calimero_storage::exports::{Digest, Sha256};
 use calimero_storage::interface::Interface;
 use calimero_storage_macros::AtomicUnit;
 use calimero_test_utils::storage::create_test_store;
@@ -232,6 +233,77 @@ mod visibility {
         // assert_ne!(unit.skipped(), deserialized.skipped());
         assert_ne!(unit.skipped, deserialized.skipped);
         assert_eq!(deserialized.skipped, "");
+    }
+}
+
+#[cfg(test)]
+mod hashing {
+    use super::*;
+
+    #[test]
+    fn private_field() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let mut unit = Private::new(&path);
+
+        _ = unit.set_public("Public".to_owned());
+        _ = unit.set_private("Private".to_owned());
+
+        let mut hasher = Sha256::new();
+        hasher.update(unit.id().as_bytes());
+        hasher.update(&to_vec(&unit.public).unwrap());
+        hasher.update(&to_vec(&unit.element().metadata()).unwrap());
+        let expected_hash: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+
+        _ = unit.set_private("Test 1".to_owned());
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+
+        _ = unit.set_public("Test 2".to_owned());
+        assert_ne!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+    }
+
+    #[test]
+    fn public_field() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let mut unit = Simple::new(&path);
+
+        _ = unit.set_name("Public".to_owned());
+        _ = unit.set_value(42);
+
+        let mut hasher = Sha256::new();
+        hasher.update(unit.id().as_bytes());
+        hasher.update(&to_vec(&unit.name).unwrap());
+        hasher.update(&to_vec(&unit.value).unwrap());
+        hasher.update(&to_vec(&unit.element().metadata()).unwrap());
+        let expected_hash: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+    }
+
+    #[test]
+    fn skipped_field() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let mut unit = Skipped::new(&path);
+
+        _ = unit.set_included("Public".to_owned());
+        // Skipping fields also skips the setters
+        // _ = unit.set_skipped("Skipped".to_owned());
+        unit.skipped = "Skipped".to_owned();
+
+        let mut hasher = Sha256::new();
+        hasher.update(unit.id().as_bytes());
+        hasher.update(&to_vec(&unit.included()).unwrap());
+        hasher.update(&to_vec(&unit.element().metadata()).unwrap());
+        let expected_hash: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+
+        unit.skipped = "Test 1".to_owned();
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+
+        _ = unit.set_included("Test 2".to_owned());
+        assert_ne!(unit.calculate_merkle_hash().unwrap(), expected_hash);
     }
 }
 

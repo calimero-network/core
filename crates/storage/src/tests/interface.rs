@@ -33,10 +33,10 @@ mod interface__public_methods {
             storage: element.clone(),
         };
 
-        let hash = interface.calculate_merkle_hash_for(&data).unwrap();
+        let hash = interface.calculate_merkle_hash_for(&data, false).unwrap();
         assert_eq!(
             hex::encode(hash),
-            "0cdafdf4e3769863428e5fef22a1f35578c00c1e63696c7e6d6db231653ef703"
+            "173f9a17aa3c6acdad8cdaf06cea4aa4eb7c87cb99e07507a417d6588e679607"
         );
     }
 
@@ -73,20 +73,20 @@ mod interface__public_methods {
         assert!(interface.save(page.id(), &mut page).unwrap());
 
         assert_eq!(
-            hex::encode(interface.calculate_merkle_hash_for(&para1).unwrap()),
-            "6004e665d1a8f66bc95a2611eb6b5422df0ac73a6ceeb9780cb56f19a64253b5",
+            hex::encode(interface.calculate_merkle_hash_for(&para1, false).unwrap()),
+            "9c4d6363cca5bdb5829f0aa832b573d6befd26227a0e2c3cc602edd9fda88db1",
         );
         assert_eq!(
-            hex::encode(interface.calculate_merkle_hash_for(&para2).unwrap()),
-            "386405876b770596170a2921cf9ac1193afff6898e9560db5a308d0ae32ac081",
+            hex::encode(interface.calculate_merkle_hash_for(&para2, false).unwrap()),
+            "449f30903c94a488f1767b91bc6626fafd82189130cf41e427f96df19a727d8b",
         );
         assert_eq!(
-            hex::encode(interface.calculate_merkle_hash_for(&para3).unwrap()),
-            "774224bb89212596e0eb0609973dd273ef49eca69c9e1728a28e3f6aa39f0621",
+            hex::encode(interface.calculate_merkle_hash_for(&para3, false).unwrap()),
+            "43098decf78bf10dc4c31191a5f59d277ae524859583e48689482c9ba85c5f61",
         );
         assert_eq!(
-            hex::encode(interface.calculate_merkle_hash_for(&page).unwrap()),
-            "f1ca3914e9128857a4329853a183b388c888860bd4941188f796884daf33727d",
+            hex::encode(interface.calculate_merkle_hash_for(&page, false).unwrap()),
+            "7593806c462bfadd97ed5228a3a60e492cce4b725f2c0e72e6e5b0f7996ee394",
         );
     }
 

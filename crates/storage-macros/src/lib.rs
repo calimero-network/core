@@ -176,6 +176,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             let ident = f.ident.as_ref().unwrap();
             let ty = &f.ty;
 
+            let private = f.attrs.iter().any(|attr| attr.path().is_ident("private"));
             let skip = f.attrs.iter().any(|attr| attr.path().is_ident("skip"));
 
             if skip || ident == storage_ident {
@@ -183,6 +184,17 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             } else {
                 let getter = format_ident!("{}", ident);
                 let setter = format_ident!("set_{}", ident);
+
+                let setter_action = if private {
+                    quote! {
+                        self.#ident = value;
+                    }
+                } else {
+                    quote! {
+                        self.#ident = value;
+                        self.#storage_ident.update();
+                    }
+                };
 
                 Some(quote! {
                     pub fn #getter(&self) -> &#ty {
@@ -193,8 +205,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                         if self.#ident == value {
                             false
                         } else {
-                            self.#ident = value;
-                            self.#storage_ident.update();
+                            #setter_action
                             true
                         }
                     }
@@ -212,6 +223,39 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 && f.ident.as_ref().unwrap() != storage_ident
         })
         .map(|f| f.ident.as_ref().unwrap())
+        .collect();
+
+    let regular_fields: Vec<_> = named_fields
+        .iter()
+        .filter(|f| {
+            !f.attrs.iter().any(|attr| {
+                attr.path().is_ident("skip")
+                    || attr.path().is_ident("private")
+                    || attr.path().is_ident("collection")
+                    || attr.path().is_ident("storage")
+            })
+        })
+        .map(|f| f.ident.as_ref().unwrap())
+        .collect();
+
+    let collection_fields: Vec<_> = named_fields
+        .iter()
+        .filter(|f| {
+            f.attrs
+                .iter()
+                .any(|attr| attr.path().is_ident("collection"))
+        })
+        .map(|f| f.ident.as_ref().unwrap())
+        .collect();
+
+    let collection_field_types: Vec<_> = named_fields
+        .iter()
+        .filter(|f| {
+            f.attrs
+                .iter()
+                .any(|attr| attr.path().is_ident("collection"))
+        })
+        .map(|f| f.ty.clone())
         .collect();
 
     let skipped_fields: Vec<_> = named_fields
@@ -253,6 +297,51 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         }
 
         impl calimero_storage::entities::Data for #name {
+            fn calculate_full_merkle_hash(
+                &self,
+                interface: &calimero_storage::interface::Interface,
+                recalculate: bool,
+            ) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
+                use calimero_storage::exports::Digest;
+                use calimero_storage::entities::Collection;
+                let mut hasher = calimero_storage::exports::Sha256::new();
+                hasher.update(&self.calculate_merkle_hash()?);
+
+                // Hash collection fields
+                #(
+                    for child_id in self.#collection_fields.child_ids() {
+                        let child = interface.find_by_id
+                            ::<<#collection_field_types as calimero_storage::entities::Collection>::Child>(*child_id)?
+                                .ok_or_else(|| calimero_storage::interface::StorageError::NotFound(*child_id))?;
+                        if recalculate {
+                            hasher.update(&child.calculate_full_merkle_hash(interface, recalculate)?);
+                        } else {
+                            hasher.update(&child.element().merkle_hash());
+                        }
+
+                    }
+                )*
+
+                Ok(hasher.finalize().into())
+            }
+
+            fn calculate_merkle_hash(&self) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
+                use calimero_storage::exports::Digest;
+                let mut hasher = calimero_storage::exports::Sha256::new();
+                hasher.update(self.element().id().as_bytes());
+                #(
+                    hasher.update(
+                        &borsh::to_vec(&self.#regular_fields)
+                            .map_err(calimero_storage::interface::StorageError::SerializationError)?
+                    );
+                )*
+                hasher.update(
+                    &borsh::to_vec(&self.element().metadata())
+                        .map_err(calimero_storage::interface::StorageError::SerializationError)?
+                );
+                Ok(hasher.finalize().into())
+            }
+
             fn element(&self) -> &calimero_storage::entities::Element {
                 &self.#storage_ident
             }
