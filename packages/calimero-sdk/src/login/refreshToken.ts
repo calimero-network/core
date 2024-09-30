@@ -47,7 +47,7 @@ export const handleRpcError = async (
   };
 
   if (error.code === 401) {
-    if (error.message === 'Token expired.') {
+    if (error?.error?.cause?.info?.message === 'Token expired.') {
       try {
         const refreshToken = getRefreshToken();
         const response = await getNewJwtToken({ refreshToken, getNodeUrl });
@@ -64,14 +64,18 @@ export const handleRpcError = async (
     clearJWT();
     return invalidSession;
   }
-
+  const errorType = error?.error?.name;
   if (
-    error.type === 'UnknownServerError' ||
-    error.type === 'RpcExecutionError'
+    errorType === 'UnknownServerError' ||
+    errorType === 'RpcExecutionError' ||
+    errorType === 'FunctionCallError' ||
+    errorType === 'CallError' ||
+    errorType === 'MissmatchedRequestIdError' ||
+    errorType === 'InvalidRequestError'
   ) {
     return {
-      message: `Error: ${error?.inner?.data?.data?.type}`,
-      code: 500,
+      message: `${errorType}: ${error.error.cause.info.message}`,
+      code: error.code,
     };
   } else {
     return unknownMessage;
