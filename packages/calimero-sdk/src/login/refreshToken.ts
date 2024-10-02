@@ -13,6 +13,23 @@ interface GetNewJwtTokenProps {
   getNodeUrl: () => string;
 }
 
+type JsonRpcErrorType =
+    'UnknownServerError' |
+    'RpcExecutionError' |
+    'FunctionCallError' |
+    'CallError' |
+    'MissmatchedRequestIdError' |
+    'InvalidRequestError';
+
+const errorTypes: JsonRpcErrorType[] = [
+  'UnknownServerError',
+  'RpcExecutionError',
+  'FunctionCallError',
+  'CallError',
+  'MissmatchedRequestIdError',
+  'InvalidRequestError'
+];
+
 export const getNewJwtToken = async ({
   refreshToken,
   getNodeUrl,
@@ -65,14 +82,7 @@ export const handleRpcError = async (
     return invalidSession;
   }
   const errorType = error?.error?.name;
-  if (
-    errorType === 'UnknownServerError' ||
-    errorType === 'RpcExecutionError' ||
-    errorType === 'FunctionCallError' ||
-    errorType === 'CallError' ||
-    errorType === 'MissmatchedRequestIdError' ||
-    errorType === 'InvalidRequestError'
-  ) {
+  if (errorTypes.includes(errorType as JsonRpcErrorType)) {
     return {
       message: `${errorType}: ${error.error.cause.info.message}`,
       code: error.code,
