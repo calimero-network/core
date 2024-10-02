@@ -11,13 +11,13 @@ desired feature set shapes the approaches we take to satisfy the requirements.
 
 Notably, the following features are wanted:
 
-- Intervention-free merging, with automatic conflict resolution
-- Full propagation of data across the Calimero Network of nodes
-- Ability to denote some nodes as having special attributes
-- Eventual consistency of general-purpose data
-- Ability to enforce validation channels of important data
-- Local storage of unshared personal data
-- Partial sharing, based on preference or permissions
+  - Intervention-free merging, with automatic conflict resolution
+  - Full propagation of data across the Calimero Network of nodes
+  - Ability to denote some nodes as having special attributes
+  - Eventual consistency of general-purpose data
+  - Ability to enforce validation channels of important data
+  - Local storage of unshared personal data
+  - Partial sharing, based on preference or permissions
 
 The overall concept can be described simply as being, "the ability to store any
 kind of data for any purpose" (which is a big mission statement!).
@@ -37,10 +37,10 @@ is chosen, it should support scaling without inherent constraint, while enabling
 all of the features identified as being desirable. To this end, we can start off
 by identifying a few basic principles:
 
-- Keeping primary data separate from files and larger objects
-- Treating data items as atomic and indivisible
-- Supporting metadata of various kinds (see below)
-- Allowing partial representation of the metadata as well as of the full data
+  - Keeping primary data separate from files and larger objects
+  - Treating data items as atomic and indivisible
+  - Supporting metadata of various kinds (see below)
+  - Allowing partial representation of the metadata as well as of the full data
 
 It is worth exploring some of these areas and defining the concepts involved.
 
@@ -50,18 +50,18 @@ In this paradigm, we can define "metadata" as trivial data or properties about
 the primary data, with the files and larger objects being represented as blobs
 or objects of arbitrary size. By way of example:
 
-- A photo of a kitten would consist of the image file being the stored object,
-  and at the very least a reference to the object being in the primary date, and
-  likely other details such as the filename, size, modification date, and
-  anything else that might be considered important to record but which is of a
-  relatively small size.
+  - A photo of a kitten would consist of the image file being the stored object,
+    and at the very least a reference to the object being in the primary date,
+    and likely other details such as the filename, size, modification date, and
+    anything else that might be considered important to record but which is of a
+    relatively small size.
 
-- A calendar event might be entirely primary data, or might also store the ICS
-  file alongside.
+  - A calendar event might be entirely primary data, or might also store the ICS
+    file alongside.
 
-- System metadata such as may be added for purposes of transmission is not part
-  of the payload but attached to it to give extra information such as routing
-  information.
+  - System metadata such as may be added for purposes of transmission is not
+    part of the payload but attached to it to give extra information such as
+    routing information.
 
 We can consider that the full data object and the primary data should be
 encrypted, and the message payload should be signed, and system metadata (i.e.
@@ -92,9 +92,9 @@ only a whole item can be updated at once.
 
 The following properties are of significance:
 
-- Each metadata block is of minimal, yet somewhat arbitrary, size.
-- The metadata blocks belong to a hierarchy, composed of leaves and branches.
-- The hierarchy should support partial replication.
+  - Each metadata block is of minimal, yet somewhat arbitrary, size.
+  - The metadata blocks belong to a hierarchy, composed of leaves and branches.
+  - The hierarchy should support partial replication.
 
 The model used for storage is Merkle-CRDT, which a) supports atomic replication
 and synchronisation, and b) organises into a structure whereby each level
@@ -136,15 +136,15 @@ working with our establishing networking design.
 
 A number of CRDT types are mathematically defined, including:
 
-- **GCounter**: A grow-only counter that can be incremented on any node.
-- **PNCounter**: A counter that can be incremented and decremented.
-- **GSet**: A grow-only set that can have elements added to it.
-- **TwoPSet**: A two-phase set that can have elements added and removed.
-- **LWWElementSet**: A last-write-wins set of elements using sets and unions.
-- **ORSet**: A set that can have elements added and removed, with support for
-  multiple replicas.
-- **Sequence/List/OrderedSet**: Uses an ordered set as an alternative to
-  operational transformation.
+  - **GCounter**: A grow-only counter that can be incremented on any node.
+  - **PNCounter**: A counter that can be incremented and decremented.
+  - **GSet**: A grow-only set that can have elements added to it.
+  - **TwoPSet**: A two-phase set that can have elements added and removed.
+  - **LWWElementSet**: A last-write-wins set of elements using sets and unions.
+  - **ORSet**: A set that can have elements added and removed, with support for
+    multiple replicas.
+  - **Sequence/List/OrderedSet**: Uses an ordered set as an alternative to
+    operational transformation.
 
 These fundamental types are not currently exposed to application developers.
 
@@ -165,9 +165,9 @@ There are some fundamental operations exposed, which at a basic level are to
 "get" and "set" for an identified element, or to update the element membership
 for a set. In terms of structure, then, we can say:
 
-- Elements are individually-identifiable, and have data and properties
-- Collections are sets of elements
-- Nodes in the tree can be pure collections, or also have elemental properties
+  - Elements are individually-identifiable, and have data and properties
+  - Collections are sets of elements
+  - Nodes in the tree can be pure collections, or also have elemental properties
 
 In order to access an element or collection, there are two approaches: by unique
 ID, or by path. The unique ID (essentially a "tag" in CRDT terms) allows
@@ -256,7 +256,7 @@ So annotating the structs in this manner works very nicely:
 #[derive(AtomicUnit)]
 struct Auction {
     owner_id: Id,
-
+    
     #[Collection]
     bids: Vec<Bid>,
 }
@@ -335,10 +335,10 @@ would work nicely:
 #[derive(AtomicUnit)]
 struct Auction {
     owner_id: Id,
-
+    
     #[Private]
     is_starred: bool,
-
+    
     #[Collection]
     bids: Vec<Bid>,
 }
