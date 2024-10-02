@@ -14,12 +14,12 @@ interface GetNewJwtTokenProps {
 }
 
 type JsonRpcErrorType =
-    'UnknownServerError' |
-    'RpcExecutionError' |
-    'FunctionCallError' |
-    'CallError' |
-    'MissmatchedRequestIdError' |
-    'InvalidRequestError';
+  | 'UnknownServerError'
+  | 'RpcExecutionError'
+  | 'FunctionCallError'
+  | 'CallError'
+  | 'MissmatchedRequestIdError'
+  | 'InvalidRequestError';
 
 const errorTypes: JsonRpcErrorType[] = [
   'UnknownServerError',
@@ -27,7 +27,7 @@ const errorTypes: JsonRpcErrorType[] = [
   'FunctionCallError',
   'CallError',
   'MissmatchedRequestIdError',
-  'InvalidRequestError'
+  'InvalidRequestError',
 ];
 
 export const getNewJwtToken = async ({
