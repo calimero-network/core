@@ -13,6 +13,23 @@ interface GetNewJwtTokenProps {
   getNodeUrl: () => string;
 }
 
+type JsonRpcErrorType =
+  | 'UnknownServerError'
+  | 'RpcExecutionError'
+  | 'FunctionCallError'
+  | 'CallError'
+  | 'MissmatchedRequestIdError'
+  | 'InvalidRequestError';
+
+const errorTypes: JsonRpcErrorType[] = [
+  'UnknownServerError',
+  'RpcExecutionError',
+  'FunctionCallError',
+  'CallError',
+  'MissmatchedRequestIdError',
+  'InvalidRequestError',
+];
+
 export const getNewJwtToken = async ({
   refreshToken,
   getNodeUrl,
@@ -47,7 +64,7 @@ export const handleRpcError = async (
   };
 
   if (error.code === 401) {
-    if (error.message === 'Token expired.') {
+    if (error?.error?.cause?.info?.message === 'Token expired.') {
       try {
         const refreshToken = getRefreshToken();
         const response = await getNewJwtToken({ refreshToken, getNodeUrl });
@@ -64,14 +81,11 @@ export const handleRpcError = async (
     clearJWT();
     return invalidSession;
   }
-
-  if (
-    error.type === 'UnknownServerError' ||
-    error.type === 'RpcExecutionError'
-  ) {
+  const errorType = error?.error?.name;
+  if (errorTypes.includes(errorType as JsonRpcErrorType)) {
     return {
-      message: `Error: ${error?.inner?.data?.data?.type}`,
-      code: 500,
+      message: `${errorType}: ${error.error.cause.info.message}`,
+      code: error.code,
     };
   } else {
     return unknownMessage;
