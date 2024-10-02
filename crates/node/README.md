@@ -84,7 +84,7 @@ Calimero Node. Components involved in the process are:
 Notable structs:
 
 - `MutateRequest` from the server primitives:
-  https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/server-primitives/src/jsonrpc.rs#L190
+  https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/server-primitives/src/jsonrpc.rs#L194
 - `ExecutionRequest` from the node primitives:
   https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/node-primitives/src/lib.rs#L28
 - `Transaction` from the primitives:
