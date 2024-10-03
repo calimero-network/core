@@ -94,20 +94,8 @@ impl EventHandler<Event> for EventLoop {
                     RendezvousRegistrationStatus::Expired,
                 );
 
-                let nominated_peer = self.discovery.state.get_rendezvous_peer_ids().find(|&p| {
-                    if let Some(peer_info) = self.discovery.state.get_peer_info(&p) {
-                        if let Some(rendezvous_info) = peer_info.rendezvous() {
-                            return matches!(
-                                rendezvous_info.registration_status(),
-                                RendezvousRegistrationStatus::Discovered
-                            );
-                        }
-                    }
-                    false
-                });
-
-                if let Some(peer) = nominated_peer {
-                    if let Err(err) = self.rendezvous_register(&peer) {
+                if let Some(nominated_peer) = self.find_new_rendezvous_peer().await {
+                    if let Err(err) = self.rendezvous_register(&nominated_peer) {
                         error!(%err, "Failed to update registration discovery");
                     };
                 } else {
