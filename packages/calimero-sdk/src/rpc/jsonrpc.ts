@@ -19,16 +19,22 @@ interface JsonRpcRequest<Params> {
   params: Params;
 }
 
-interface RpcError {
-  message: string;
-  code: number;
+interface ErrorData {
+  data: {
+    data: {
+      type: string;
+      [key: string]: any;
+    };
+    type: string;
+  };
+  type: string;
 }
 
 interface JsonRpcResponse<Result> {
   jsonrpc: JsonRpcVersion;
   id: RpcRequestId | null;
   result?: Result;
-  error?: RpcError;
+  error?: ErrorData;
 }
 
 export class JsonRpcClient implements RpcClient {
@@ -91,48 +97,79 @@ export class JsonRpcClient implements RpcClient {
       if (response?.status === 200) {
         if (response?.data?.id !== requestId) {
           return {
-            result: null,
             error: {
-              type: 'MissmatchedRequestIdError',
-              expected: requestId ?? null,
-              got: response?.data?.id ?? null,
+              code: 400,
+              id: response?.data?.id,
+              jsonrpc: response?.data?.jsonrpc,
+              error: {
+                name: 'MissmatchedRequestIdError',
+                cause: {
+                  name: 'MissmatchedRequestIdError',
+                  info: {
+                    message: `Missmatched RequestId expected ${requestId}, got ${response?.data?.id}`,
+                  },
+                },
+              },
             },
           };
         }
 
         if (response?.data?.error) {
           return {
-            result: null,
             error: {
-              type: 'RpcExecutionError',
-              inner: response?.data?.error ?? null,
-              code: response?.status ?? null,
-              message: response?.data?.error?.message ?? null,
+              code: 400,
+              id: response?.data?.id,
+              jsonrpc: response?.data?.jsonrpc,
+              error: {
+                name: response?.data?.error?.type,
+                cause: {
+                  name:
+                    response?.data?.error?.data?.type ??
+                    response?.data?.error?.type,
+                  info: {
+                    message: response?.data?.error?.data?.data?.type,
+                  },
+                },
+              },
             },
           };
         }
         return {
-          result: response?.data?.result ?? null,
-          error: null,
+          result: response?.data?.result,
         };
       } else {
         return {
-          result: null,
           error: {
-            type: 'InvalidRequestError',
-            data: response?.data ?? null,
+            id: response?.data?.id,
+            jsonrpc: response?.data?.jsonrpc,
             code: response?.status ?? null,
+            error: {
+              name: 'InvalidRequestError',
+              cause: {
+                name: 'InvalidRequestError',
+                info: {
+                  message: response?.data?.error?.data?.data?.type,
+                },
+              },
+            },
           },
         };
       }
     } catch (error: any) {
       return {
-        result: null,
         error: {
-          type: 'UnknownServerError',
-          inner: error,
-          code: error?.response?.status ?? null,
-          message: error?.response?.data ?? null,
+          id: requestId,
+          jsonrpc: '2.0',
+          code: error.response.code,
+          error: {
+            name: 'UnknownServerError',
+            cause: {
+              name: 'UnknownServerError',
+              info: {
+                message: error?.response?.data,
+              },
+            },
+          },
         },
       };
     }
