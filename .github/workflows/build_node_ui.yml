@@ -66,6 +66,13 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
+      # Fetch and merge latest changes from the remote
+      - name: Fetch and merge latest changes
+        if: env.CHANGES_DETECTED == 'true'
+        run: |
+          git fetch origin master
+          git merge origin/master
+
       - name: Add and commit build folder
         if: env.CHANGES_DETECTED == 'true'
         run: |
