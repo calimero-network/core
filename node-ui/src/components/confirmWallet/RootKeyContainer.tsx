@@ -166,6 +166,22 @@ export function RootKeyContainer({
           />
           <h4 className="dashboard-text">{t.logoText}</h4>
         </div>
+        <div className="logo-container">
+          <img
+            src={CalimeroLogo as unknown as string}
+            alt="Calimero Admin Dashboard Logo"
+            className="calimero-logo"
+          />
+          <h4 className="dashboard-text">{t.logoText}</h4>
+        </div>
+        <div className="logo-container">
+          <img
+            src={CalimeroLogo as unknown as string}
+            alt="Calimero Admin Dashboard Logo"
+            className="calimero-logo"
+          />
+          <h4 className="dashboard-text">{t.logoText}</h4>
+        </div>
       </div>
       <div className="content-wrapper">
         <div>testing testing</div>
