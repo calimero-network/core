@@ -16,28 +16,40 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Fetch the last two commits to allow diffing
 
-      # Check if there are changes in the node-ui folder (excluding build)
+      # Check for changes in the node-ui folder (excluding build)
       - name: Check for changes in node-ui (excluding build folder)
         id: check_changes
         run: |
           echo "CHANGES_DETECTED=false" >> $GITHUB_ENV
+          
+          # Ensure we fetch enough commit history for the diff
+          git fetch --depth=2
 
           if git rev-parse HEAD^ >/dev/null 2>&1; then
-            if git diff --quiet HEAD^ HEAD -- 'node-ui' ':!node-ui/build'; then
-              echo "No changes in node-ui (excluding build folder)."
-            else
+            changes=$(git diff --name-only HEAD^ HEAD -- 'node-ui' ':!node-ui/build')
+            if [ -n "$changes" ]; then
               echo "Changes detected in node-ui."
               echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
+            else
+              echo "No changes in node-ui (excluding build folder)."
             fi
           else
-            if git diff-tree --no-commit-id --name-only -r HEAD -- 'node-ui' ':!node-ui/build' | grep .; then
+            echo "First commit, checking changes in the initial commit."
+            changes=$(git diff-tree --no-commit-id --name-only -r HEAD -- 'node-ui' ':!node-ui/build')
+            if [ -n "$changes" ]; then
               echo "Changes detected in node-ui."
               echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
             else
               echo "No changes in node-ui (excluding build folder)."
             fi
           fi
+
+      # Temporary debugging: Output detected changes
+      - name: Debugging: List changes in node-ui folder
+        run: git diff --name-only HEAD^ HEAD -- 'node-ui' ':!node-ui/build' || true
 
       # Conditional steps, executed only if changes were detected
       - name: Set up Node.js
@@ -65,6 +77,7 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
+      # Add changes (build folder) and commit
       - name: Add and commit build folder
         if: env.CHANGES_DETECTED == 'true'
         run: |
@@ -73,6 +86,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Push changes to the source repository
       - name: Push changes
         if: env.CHANGES_DETECTED == 'true'
         run: git push
@@ -89,7 +103,7 @@ jobs:
       - name: Copy build folder to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          cp -r ../node-ui/* .
+          cp -r ../node-ui/build/* .
 
       - name: Add, commit and push changes to target repo
         if: env.CHANGES_DETECTED == 'true'
