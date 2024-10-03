@@ -46,7 +46,7 @@ export default function ContextTable({
   errorMessage,
 }: ContextTableProps) {
   const t = translations.contextPage;
-
+  console.log("testing");
   return (
     <ContentCard
       headerTitle={t.contextPageTitle}
@@ -54,6 +54,7 @@ export default function ContextTable({
       headerDescription={t.contextPageDescription}
       headerOnOptionClick={navigateToStartContext}
     >
+      <div>testing</div>
       <StatusModal
         show={showStatusModal}
         closeModal={closeModal}
