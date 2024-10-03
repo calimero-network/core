@@ -13,9 +13,6 @@ export const setStorageCallbackUrl = (callbackUrl: string) => {
 console.log("abwdawdwad");
 console.log("abwdawdwad");
 console.log("abwdawdwad");
-console.log("abwdawdwad");
-console.log("abwdawdwad");
-console.log("abwdawdwad");
 
 
 export const getStorageCallbackUrl = (): string | null => {
