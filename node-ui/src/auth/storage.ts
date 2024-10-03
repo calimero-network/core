@@ -13,13 +13,19 @@ export const setStorageCallbackUrl = (callbackUrl: string) => {
 console.log("abwdawdwad");
 console.log("abwdawdwad");
 console.log("abwdawdwad");
-
+console.log("abwdawdwad");
+console.log("abwdawdwad");
+console.log("abwdawdwad");
+console.log("abwdawdwad");
+console.log("abwdawdwad");
+console.log("abwdawdwad");
 
 export const getStorageCallbackUrl = (): string | null => {
   if (typeof window !== 'undefined' && window.localStorage) {
     const storageCallbackUrl = localStorage.getItem(CALLBACK_URL);
     if (storageCallbackUrl) {
       let callbackUrl: string = JSON.parse(storageCallbackUrl);
+      console.log("abwdawdwad");
       return callbackUrl;
     } else {
       return null;
