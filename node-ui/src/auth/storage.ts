@@ -10,7 +10,7 @@ export const setStorageCallbackUrl = (callbackUrl: string) => {
   localStorage.setItem(CALLBACK_URL, JSON.stringify(callbackUrl));
 };
 
-console.log("abc");
+console.log("abwdawdwad");
 
 export const getStorageCallbackUrl = (): string | null => {
   if (typeof window !== 'undefined' && window.localStorage) {
