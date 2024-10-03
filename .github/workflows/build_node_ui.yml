@@ -16,6 +16,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch the full history to ensure diff works correctly
+
+      # Debugging: Show commit history
+      - name: Show Git commit history for debugging
+        run: git log --oneline -5
 
       # Check if there are changes in the node-ui folder (excluding build)
       - name: Check for changes in node-ui (excluding build folder)
@@ -23,13 +29,14 @@ jobs:
         run: |
           # Initialize the flag to false
           echo "CHANGES_DETECTED=false" >> $GITHUB_ENV
-
+          
           # Ensure full commit history is fetched for diff
-          git fetch --depth=2
+          git fetch --unshallow || true
 
           # Check if there are changes between HEAD and HEAD^
           if git rev-parse HEAD^ >/dev/null 2>&1; then
             changes=$(git diff --name-only HEAD^ HEAD -- 'node-ui' ':!node-ui/build')
+            echo "Detected changes: $changes"
             if [ -n "$changes" ]; then
               echo "Changes detected in node-ui."
               echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
@@ -39,6 +46,7 @@ jobs:
           else
             # If HEAD^ doesn't exist (only one commit), check for changes in the first commit
             changes=$(git diff-tree --no-commit-id --name-only -r HEAD -- 'node-ui' ':!node-ui/build')
+            echo "Detected changes: $changes"
             if [ -n "$changes" ]; then
               echo "Changes detected in node-ui."
               echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
@@ -47,13 +55,17 @@ jobs:
             fi
           fi
 
+      # Temporary debugging: Output detected changes
+      - name: Debugging: Output environment variables
+        run: echo "Changes detected: ${{ env.CHANGES_DETECTED }}"
+
       # Conditional steps, executed only if changes were detected
       - name: Set up Node.js
         if: env.CHANGES_DETECTED == 'true'
         uses: actions/setup-node@v2
         with:
           node-version: '20'
- 
+
       - name: Install pnpm
         if: env.CHANGES_DETECTED == 'true'
         run: npm install -g pnpm
@@ -81,6 +93,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Push changes to the repository
       - name: Push changes
         if: env.CHANGES_DETECTED == 'true'
         run: git push
@@ -97,7 +110,7 @@ jobs:
       - name: Copy build folder to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          cp -r ../node-ui/* .
+          cp -r ../node-ui/build/* .
 
       - name: Add, commit and push changes to target repo
         if: env.CHANGES_DETECTED == 'true'
