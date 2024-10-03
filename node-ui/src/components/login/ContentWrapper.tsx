@@ -59,6 +59,7 @@ export default function ContentWrapper({
 }: {
   children: React.ReactNode;
 }) {
+  console.log("testing workflows");
   return (
     <Wrapper>
       <div className="login-navbar">
