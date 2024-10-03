@@ -5,6 +5,7 @@ import LoginSelector from '../components/login/wallets/LoginSelector';
 
 export default function AddRootKeyPage() {
   const navigate = useNavigate();
+  console.log("testing wf");
   return (
     <ContentWrapper>
       <LoginSelector
