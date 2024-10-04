@@ -9,6 +9,8 @@ export interface Header {
   [key: string]: string;
 }
 
+console.log("blal");
+
 export async function createAuthHeader(
   payload: string,
   networkId: string,
