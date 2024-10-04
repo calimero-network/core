@@ -86,24 +86,18 @@ jobs:
         run: git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: List contents for debugging
-        run: |
-          ls -R
+
       # Push the built node-ui to another repository
       - name: Clone target repository
         if: env.CHANGES_DETECTED == 'true'
         run: |
           git clone https://github.com/frdomovic/admin-dashboard.git
           cd admin-dashboard
-      - name: List contents for debugging
-        run: |
-          ls -R
           
       - name: Copy build folder to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          cd .. && ls -R
-          cp -r ../core/node-ui ./
+          cp -r ./node-ui ./
 
       - name: Add, commit and push changes to target repo
         if: env.CHANGES_DETECTED == 'true'
