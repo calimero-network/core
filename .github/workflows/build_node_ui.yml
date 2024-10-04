@@ -55,6 +55,10 @@ jobs:
       - name: Build node-ui
         if: env.CHANGES_DETECTED == 'true'
         run: pnpm --filter ./node-ui run build
+      
+       - name: Testing
+        if: env.CHANGES_DETECTED == 'true'
+        run: ls -R
 
       # Set up Git credentials for committing
       - name: Set up Git user
@@ -62,6 +66,7 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
+          git status
 
       - name: Add and commit build folder
         if: env.CHANGES_DETECTED == 'true'
