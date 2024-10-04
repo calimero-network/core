@@ -48,6 +48,7 @@ interface ButtonLightProps {
   onClick: () => void;
 }
 console.log("abc");
+console.log("abc");
 
 export function ButtonLight({ text, onClick }: ButtonLightProps) {
   return (
