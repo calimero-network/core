@@ -63,8 +63,8 @@ jobs:
         if: env.CHANGES_DETECTED == 'true'
         run:
           pnpm --filter ./node-ui run build
-          git status
-          ls
+          && git status
+          && ls
       
       - name: Add and commit build folder
         if: env.CHANGES_DETECTED == 'true'
