@@ -102,6 +102,7 @@ jobs:
       - name: Copy build folder to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
+          cd .. && ls -R
           cp -r ../core/node-ui ./
 
       - name: Add, commit and push changes to target repo
