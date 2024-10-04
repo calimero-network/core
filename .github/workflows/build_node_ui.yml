@@ -58,6 +58,10 @@ jobs:
       - name: Build node-ui
         if: env.CHANGES_DETECTED == 'true'
         run: pnpm --filter ./node-ui run build
+        
+      - name: Check status
+        if: env.CHANGES_DETECTED == 'true'
+        run: git status
 
       # Set up Git credentials for committing
       - name: Set up Git user
