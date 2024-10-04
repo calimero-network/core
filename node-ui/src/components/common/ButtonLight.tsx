@@ -54,6 +54,7 @@ export function ButtonLight({ text, onClick }: ButtonLightProps) {
     <>
        <Button className="button" onClick={onClick}>
         <Button className="button" onClick={onClick}>
+          <Button className="button" onClick={onClick}>
       {text}
     </Button>
       <div>hellooo</div>
