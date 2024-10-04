@@ -56,7 +56,7 @@ jobs:
         if: env.CHANGES_DETECTED == 'true'
         run: pnpm --filter ./node-ui run build
       
-       - name: Testing
+      - name: Testing
         if: env.CHANGES_DETECTED == 'true'
         run: ls -R
 
