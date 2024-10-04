@@ -67,16 +67,16 @@ jobs:
         if: env.CHANGES_DETECTED == 'true'
         run: |
           git clone https://github.com/frdomovic/admin-dashboard.git
-          cd admin-dashboard
           
       - name: Copy build folder to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          ls
+          cp -r ./node-ui/* ./admin-dashboard/
 
       - name: Add, commit and push changes to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
+          cd ./admin-dashboard/
           git add .
           git commit -m "Automated push of node-ui build"
           git push https://${{ secrets.PUSH_TOKEN }}@github.com/frdomovic/admin-dashboard.git main
