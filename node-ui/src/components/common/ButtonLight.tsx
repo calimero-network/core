@@ -48,6 +48,8 @@ interface ButtonLightProps {
   onClick: () => void;
 }
 
+console.log("test");
+
 export function ButtonLight({ text, onClick }: ButtonLightProps) {
   return (
     <Button className="button" onClick={onClick}>
