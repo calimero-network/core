@@ -79,6 +79,6 @@ jobs:
           cd ./admin-dashboard/
           git add .
           git commit -m "Automated push of node-ui build"
-          git push https://${{ secrets.PUSH_TOKEN }}@github.com/frdomovic/admin-dashboard.git main
+          git push https://${{ secrets.PUSH_TOKEN }}@github.com/frdomovic/admin-dashboard.git master
         env:
           PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
