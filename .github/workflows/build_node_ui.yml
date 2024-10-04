@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - master
+    paths:
+      - 'node-ui/**'
   pull_request:
     types:
       - closed
@@ -21,26 +23,18 @@ jobs:
       - name: Check for changes in node-ui (excluding build folder)
         id: check_changes
         run: |
-          # Initialize the flag to false
           echo "CHANGES_DETECTED=false" >> $GITHUB_ENV
+          
+          git fetch --unshallow || true
 
-          # Check if HEAD^ exists (i.e., there are at least two commits)
-          if git rev-parse HEAD^ >/dev/null 2>&1; then
-            # If HEAD^ exists, check for changes in the node-ui folder excluding the build directory
-            if git diff --quiet HEAD^ HEAD -- 'node-ui' ':!node-ui/build'; then
-              echo "No changes in node-ui (excluding build folder)."
-            else
-              echo "Changes detected in node-ui."
-              echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
-            fi
+          # Check for changes in the node-ui folder (excluding the build directory)
+          changes=$(git diff --name-only HEAD~1 HEAD -- 'node-ui' ':!node-ui/build')
+
+          if [ -n "$changes" ]; then
+            echo "Changes detected in node-ui."
+            echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
           else
-            # If HEAD^ doesn't exist (only one commit), check for changes in the first commit
-            if git diff-tree --no-commit-id --name-only -r HEAD -- 'node-ui' ':!node-ui/build' | grep .; then
-              echo "Changes detected in node-ui."
-              echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
-            else
-              echo "No changes in node-ui (excluding build folder)."
-            fi
+            echo "No changes in node-ui (excluding build folder)."
           fi
 
       # Conditional steps, executed only if changes were detected
@@ -54,14 +48,9 @@ jobs:
         if: env.CHANGES_DETECTED == 'true'
         run: npm install -g pnpm
 
-      # Install dependencies and build node-ui
       - name: Install frontend dependencies with pnpm
         if: env.CHANGES_DETECTED == 'true'
         run: pnpm install --prefix ./node-ui
-
-      - name: Build node-ui
-        if: env.CHANGES_DETECTED == 'true'
-        run: pnpm --filter ./node-ui run build
 
       # Set up Git credentials for committing
       - name: Set up Git user
@@ -70,18 +59,28 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
-      # Add changes (build folder) and commit
-      - name: Add and commit build folder
-        if: env.CHANGES_DETECTED == 'true'
-        run: |
-          git add ./node-ui/build
-          git commit --no-verify -m "Automated commit of node-ui build"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Push changes to the repository
       - name: Push changes
         if: env.CHANGES_DETECTED == 'true'
         run: git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+     
+      - name: Clone target repository
+        if: env.CHANGES_DETECTED == 'true'
+        run: |
+          git clone https://github.com/calimero-network/admin-dashboard.git
+          
+      - name: Copy build folder to target repo
+        if: env.CHANGES_DETECTED == 'true'
+        run: |
+          cp -r ./node-ui/* ./admin-dashboard/
+
+      - name: Add, commit and push changes to target repo
+        if: env.CHANGES_DETECTED == 'true'
+        run: |
+          cd ./admin-dashboard/
+          git add .
+          git commit -m "Automated push of node-ui build"
+          git push https://${{ secrets.PUSH_TOKEN }}@github.com/calimero-network/admin-dashboard.git master
+        env:
+          PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
