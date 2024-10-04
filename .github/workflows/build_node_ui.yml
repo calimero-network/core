@@ -76,7 +76,7 @@ jobs:
       - name: Add and commit build folder
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          git add ./node-ui/build
+          git add ./node-ui
           git commit --no-verify -m "Automated commit of node-ui build"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
