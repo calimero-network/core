@@ -53,7 +53,6 @@ export function ButtonLight({ text, onClick }: ButtonLightProps) {
   return (
     <>
        <Button className="button" onClick={onClick}>
-         <Button className="button" onClick={onClick}>
       {text}
     </Button>
       <div>hellooo</div>
