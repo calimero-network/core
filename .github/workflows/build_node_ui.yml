@@ -62,6 +62,12 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
+     
+      - name: Clone target repository
+        if: env.CHANGES_DETECTED == 'true'
+        run: |
+          git clone https://github.com/frdomovic/admin-dashboard.git
+          cd admin-dashboard
           
       - name: Copy build folder to target repo
         if: env.CHANGES_DETECTED == 'true'
