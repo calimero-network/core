@@ -16,6 +16,7 @@ import {
 } from '../api/dataSource/NodeDataSource';
 import { ContextDetails } from '../types/context';
 import { useServerDown } from '../context/ServerDownContext';
+import { parseAppMetadata } from '../utils/metadata';
 
 const initialOptions = [
   {
@@ -63,12 +64,20 @@ export default function ContextDetailsPage() {
   const { getPackage, getLatestRelease } = useRPC();
 
   const generateContextObjects = useCallback(
-    async (context: Context, id: string) => {
-      const packageData = await getPackage(context.applicationId);
-      const versionData = await getLatestRelease(context.applicationId);
+    async (context: Context, id: string, metadata?: number[]) => {
+      let appId = context.applicationId;
+      let packageData = null;
+      let versionData = null;
+      if (metadata && metadata.length !== 0) {
+        appId =
+          parseAppMetadata(metadata)?.contractAppId ??
+          context.applicationId;
+        packageData = await getPackage(appId);
+        versionData = await getLatestRelease(appId);
+      }
 
       const contextDetails: ContextDetails = {
-        applicationId: context.applicationId,
+        applicationId: appId,
         contextId: id,
         package: packageData,
         release: versionData,
@@ -96,9 +105,15 @@ export default function ContextDetailsPage() {
         ]);
 
         if (nodeContext.data) {
+          const applicationMetadata = (await apiClient(showServerDownPopup)
+            .node()
+            .getInstalledApplicationDetails(
+              nodeContext.data.context.applicationId,
+            )).data?.metadata;
           const contextObject = await generateContextObjects(
             nodeContext.data.context,
             id,
+            applicationMetadata
           );
           setContextDetails(contextObject);
         } else {
