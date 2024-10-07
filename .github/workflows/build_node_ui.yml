@@ -64,6 +64,7 @@ jobs:
         run: |
           cd ./node-ui
           pnpm build
+          git status
           git add -A
           git push
         env:
