@@ -7,6 +7,7 @@ export default function AddRootKeyPage() {
   const navigate = useNavigate();
   console.log("testing wf");
   console.log("testing wf");
+  console.log("testing wf");
   return (
     <ContentWrapper>
       <LoginSelector
