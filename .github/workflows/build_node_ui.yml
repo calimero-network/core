@@ -64,8 +64,8 @@ jobs:
         run: |
           cd ./node-ui
           pnpm build
-          git status
           git add -A
+          git commit -m "Automated push of node-ui build"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -85,7 +85,7 @@ jobs:
         run: |
           cd ./node-ui/
           git add -A
-          git commit -m "Automated push of node-ui build"
+          git commit -m "Automated push of node-ui changes"
           git push https://${{ secrets.PUSH_TOKEN }}@github.com/frdomovic/admin-dashboard.git master
         env:
           PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
