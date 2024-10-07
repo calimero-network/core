@@ -17,6 +17,18 @@ export const getAccessToken = (): string | null => {
   return null;
 };
 
+export const abcs = (): string | null => {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const storageContextId = localStorage.getItem(ACCESS_TOKEN);
+    if (storageContextId) {
+      return JSON.parse(storageContextId);
+    }
+  }
+  return null;
+};
+
+console.log("lol");
+
 export const setRefreshToken = (refreshToken: string) => {
   localStorage.setItem(REFRESH_TOKEN, JSON.stringify(refreshToken));
 };
