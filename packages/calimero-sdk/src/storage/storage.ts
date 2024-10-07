@@ -27,7 +27,7 @@ export const abcs = (): string | null => {
   return null;
 };
 
-console.log("lol");
+console.log('lol');
 
 export const setRefreshToken = (refreshToken: string) => {
   localStorage.setItem(REFRESH_TOKEN, JSON.stringify(refreshToken));
