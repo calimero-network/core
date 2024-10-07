@@ -58,17 +58,12 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-        
-      - name: Build project
+      
+      - name: Build node ui and push changes
         if: env.CHANGES_DETECTED == 'true'
         run: |
           cd ./node-ui
           pnpm build
-          git status
-      
-      - name: Push changes
-        if: env.CHANGES_DETECTED == 'true'
-        run: |
           git add -A
           git push
         env:
