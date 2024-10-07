@@ -54,7 +54,7 @@ export default function ExportCard({
   return (
     <CardWrapper>
       <div>trest</div>
-       <div>trest</div>
+      <div>trest</div>
       <StatusModalItem
         show={showStatusModal}
         closeModal={closeStatusModal}
