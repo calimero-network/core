@@ -2,7 +2,7 @@ import React from 'react';
 import styled from 'styled-components';
 import MenuIconDropdown from '../common/MenuIconDropdown';
 import { ContextObject } from '../../types/context';
-import translations from "../../constants/en.global.json";
+import translations from '../../constants/en.global.json';
 
 interface RowItemComponentProps {
   $hasBorders: boolean;

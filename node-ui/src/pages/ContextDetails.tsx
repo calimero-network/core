@@ -70,8 +70,7 @@ export default function ContextDetailsPage() {
       let versionData = null;
       if (metadata && metadata.length !== 0) {
         appId =
-          parseAppMetadata(metadata)?.contractAppId ??
-          context.applicationId;
+          parseAppMetadata(metadata)?.contractAppId ?? context.applicationId;
         packageData = await getPackage(appId);
         versionData = await getLatestRelease(appId);
       }
@@ -105,15 +104,17 @@ export default function ContextDetailsPage() {
         ]);
 
         if (nodeContext.data) {
-          const applicationMetadata = (await apiClient(showServerDownPopup)
-            .node()
-            .getInstalledApplicationDetails(
-              nodeContext.data.context.applicationId,
-            )).data?.metadata;
+          const applicationMetadata = (
+            await apiClient(showServerDownPopup)
+              .node()
+              .getInstalledApplicationDetails(
+                nodeContext.data.context.applicationId,
+              )
+          ).data?.metadata;
           const contextObject = await generateContextObjects(
             nodeContext.data.context,
             id,
-            applicationMetadata
+            applicationMetadata,
           );
           setContextDetails(contextObject);
         } else {
