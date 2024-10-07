@@ -32,39 +32,21 @@ export type RpcResult<Result> =
       error: RpcError;
     };
 
-export type RpcError =
-  | UnknownServerError
-  | InvalidRequestError
-  | MissmatchedRequestIdError
-  | RpcExecutionError;
-
-export interface UnknownServerError {
-  type: 'UnknownServerError';
-  inner: any;
-  code?: number;
-  message?: string;
+export interface RpcErrorInfo {
+  name: string;
+  cause: {
+    name: string;
+    info?: {
+      message: string;
+    };
+  };
 }
 
-export interface InvalidRequestError {
-  type: 'InvalidRequestError';
-  data: any;
+export interface RpcError {
+  id: RpcRequestId;
+  jsonrpc: string;
   code: number;
-  message?: string;
-}
-
-export interface MissmatchedRequestIdError {
-  type: 'MissmatchedRequestIdError';
-  expected: RpcRequestId;
-  got: RpcRequestId;
-  code?: number;
-  message?: string;
-}
-
-export interface RpcExecutionError {
-  type: 'RpcExecutionError';
-  inner: any;
-  code?: number;
-  message?: string;
+  error: RpcErrorInfo;
 }
 
 export interface RpcQueryParams<Args> {
