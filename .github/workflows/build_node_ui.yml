@@ -58,14 +58,6 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-
-      - name: Push changes
-        if: env.CHANGES_DETECTED == 'true'
-        run: |
-          git add -A
-          git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
      
       - name: Clone target repository
         if: env.CHANGES_DETECTED == 'true'
