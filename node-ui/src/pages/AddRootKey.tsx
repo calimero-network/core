@@ -16,6 +16,12 @@ export default function AddRootKeyPage() {
         navigateStarknetLogin={() => navigate('/identity/root-key/starknet')}
         navigateIcpLogin={() => navigate('/identity/root-key/icp')}
       />
+      <LoginSelector
+        navigateMetamaskLogin={() => navigate('/identity/root-key/metamask')}
+        navigateNearLogin={() => navigate('/identity/root-key/near')}
+        navigateStarknetLogin={() => navigate('/identity/root-key/starknet')}
+        navigateIcpLogin={() => navigate('/identity/root-key/icp')}
+      />
     </ContentWrapper>
   );
 }
