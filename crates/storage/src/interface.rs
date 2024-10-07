@@ -214,7 +214,6 @@
 mod tests;
 
 use core::fmt::Debug;
-use std::collections::HashMap;
 use std::io::Error as IoError;
 use std::sync::Arc;
 
@@ -224,7 +223,9 @@ use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::slice::Slice;
 use calimero_store::Store;
 use eyre::Report;
+use indexmap::IndexMap;
 use parking_lot::RwLock;
+use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
@@ -400,7 +401,24 @@ impl Interface {
         entity: &D,
         recalculate: bool,
     ) -> Result<[u8; 32], StorageError> {
-        entity.calculate_full_merkle_hash(self, recalculate)
+        let mut hasher = Sha256::new();
+        hasher.update(entity.calculate_merkle_hash()?);
+
+        for (collection_name, children) in entity.collections() {
+            for child_info in children {
+                let child_hash = if recalculate {
+                    let child_data = self
+                        .find_by_id_raw(child_info.id())?
+                        .ok_or_else(|| StorageError::NotFound(child_info.id()))?;
+                    entity.calculate_merkle_hash_for_child(&collection_name, &child_data)?
+                } else {
+                    child_info.merkle_hash()
+                };
+                hasher.update(child_hash);
+            }
+        }
+
+        Ok(hasher.finalize().into())
     }
 
     /// The children of the [`Collection`].
@@ -515,19 +533,17 @@ impl Interface {
         let local_collections = local_entity.collections();
         let foreign_collections = foreign_entity.collections();
 
-        #[expect(clippy::iter_over_hash_type, reason = "Order doesn't matter here")]
         for (local_coll_name, local_children) in &local_collections {
             if let Some(foreign_children) = foreign_collections.get(local_coll_name) {
-                let local_child_map: HashMap<_, _> = local_children
+                let local_child_map: IndexMap<_, _> = local_children
                     .iter()
                     .map(|child| (child.id(), child.merkle_hash()))
                     .collect();
-                let foreign_child_map: HashMap<_, _> = foreign_children
+                let foreign_child_map: IndexMap<_, _> = foreign_children
                     .iter()
                     .map(|child| (child.id(), child.merkle_hash()))
                     .collect();
 
-                #[expect(clippy::iter_over_hash_type, reason = "Order doesn't matter here")]
                 for (id, local_hash) in &local_child_map {
                     match foreign_child_map.get(id) {
                         Some(foreign_hash) if local_hash != foreign_hash => {
@@ -545,7 +561,6 @@ impl Interface {
                     }
                 }
 
-                #[expect(clippy::iter_over_hash_type, reason = "Order doesn't matter here")]
                 for id in foreign_child_map.keys() {
                     if !local_child_map.contains_key(id) {
                         // We can't get the full data for the foreign child, so we flag it for comparison
@@ -563,7 +578,6 @@ impl Interface {
         }
 
         // Check for collections in the foreign entity that don't exist locally
-        #[expect(clippy::iter_over_hash_type, reason = "Order doesn't matter here")]
         for (foreign_coll_name, foreign_children) in &foreign_collections {
             if !local_collections.contains_key(foreign_coll_name) {
                 for child in foreign_children {
@@ -831,4 +845,8 @@ pub enum StorageError {
     /// TODO: An error from the Store.
     #[error("Store error: {0}")]
     StoreError(#[from] Report),
+
+    /// An unknown collection type was specified.
+    #[error("Unknown collection type: {0}")]
+    UnknownCollectionType(String),
 }
