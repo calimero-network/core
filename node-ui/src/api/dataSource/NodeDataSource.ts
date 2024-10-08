@@ -291,7 +291,8 @@ export interface InstallApplicationResponse {
   application_id: string;
 }
 
-export interface UninstallApplicationResponse extends InstallApplicationResponse {}
+export interface UninstallApplicationResponse
+  extends InstallApplicationResponse {}
 
 export interface ContextIdentitiesResponse {
   identities: string[];

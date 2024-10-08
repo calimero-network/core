@@ -24,8 +24,8 @@ use crate::admin::handlers::add_client_key::{
     add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
 };
 use crate::admin::handlers::applications::{
-    get_application, get_application_details_handler, install_application_handler, uninstall_application_handler,
-    install_dev_application_handler, list_applications_handler,
+    get_application, get_application_details_handler, install_application_handler,
+    install_dev_application_handler, list_applications_handler, uninstall_application_handler,
 };
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
@@ -86,7 +86,10 @@ pub(crate) fn setup(
     let protected_router = Router::new()
         .route("/root-key", post(create_root_key_handler))
         .route("/install-application", post(install_application_handler))
-        .route("/uninstall-application", post(uninstall_application_handler))
+        .route(
+            "/uninstall-application",
+            post(uninstall_application_handler),
+        )
         .route("/applications", get(list_applications_handler))
         .route(
             "/applications/:app_id",

@@ -101,7 +101,7 @@ export default function ActionDialog({
   onConfirm,
   title,
   subtitle,
-  buttonActionText = "Delete",
+  buttonActionText = 'Delete',
 }: ActionDialogProps) {
   const t = translations.statusModal;
   return (

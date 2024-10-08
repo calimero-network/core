@@ -55,5 +55,7 @@ export interface NodeApi {
     contextId: string,
     contextIdentity: string,
   ): ApiResponse<CreateTokenResponse>;
-  uninstallApplication(applicationId: string): ApiResponse<UninstallApplicationResponse>;
+  uninstallApplication(
+    applicationId: string,
+  ): ApiResponse<UninstallApplicationResponse>;
 }

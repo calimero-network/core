@@ -97,10 +97,10 @@ export default function installedApplicationRowItem(
         />
         <span>{truncateHash(item.id)}</span>
       </div>
-      <div className="row-item read">{item.version ?? "N/A"}</div>
-      <div className="row-item read">{item.owner ?? "N/A"}</div>
+      <div className="row-item read">{item.version ?? 'N/A'}</div>
+      <div className="row-item read">{item.owner ?? 'N/A'}</div>
       <div className="menu-dropdown">
-      <MenuIconDropdown
+        <MenuIconDropdown
           options={[
             {
               title: 'Uninstall application',

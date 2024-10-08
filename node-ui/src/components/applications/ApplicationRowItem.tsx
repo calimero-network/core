@@ -91,8 +91,8 @@ export default function applicationRowItem(
         />
         <span>{truncateHash(item.id)}</span>
       </div>
-      <div className="row-item read">{item.version ?? "N/A"}</div>
-      <div className="row-item read">{item.owner ?? "N/A"}</div>
+      <div className="row-item read">{item.version ?? 'N/A'}</div>
+      <div className="row-item read">{item.owner ?? 'N/A'}</div>
     </RowItem>
   );
 }
