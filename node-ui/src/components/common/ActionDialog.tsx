@@ -92,6 +92,7 @@ interface ActionDialogProps {
   onConfirm: () => void;
   title: string;
   subtitle: string;
+  buttonActionText?: string;
 }
 
 export default function ActionDialog({
@@ -100,6 +101,7 @@ export default function ActionDialog({
   onConfirm,
   title,
   subtitle,
+  buttonActionText = "Delete",
 }: ActionDialogProps) {
   const t = translations.statusModal;
   return (
@@ -119,7 +121,7 @@ export default function ActionDialog({
               {t.buttonCancelText}
             </button>
             <button className="button" onClick={onConfirm}>
-              {t.buttonDeleteText}
+              {buttonActionText}
             </button>
           </div>
         </div>

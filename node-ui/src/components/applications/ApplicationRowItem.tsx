@@ -58,6 +58,10 @@ const RowItem = styled.div<ApplicationRowItemProps>`
   .copy-icon:hover {
     color: #fff;
   }
+
+  .menu-dropdown {
+    margin-right: 1rem;
+  }
 `;
 
 export default function applicationRowItem(
@@ -87,8 +91,8 @@ export default function applicationRowItem(
         />
         <span>{truncateHash(item.id)}</span>
       </div>
-      <div className="row-item read">{item.version}</div>
-      <div className="row-item read">-</div>
+      <div className="row-item read">{item.version ?? "N/A"}</div>
+      <div className="row-item read">{item.owner ?? "N/A"}</div>
     </RowItem>
   );
 }
