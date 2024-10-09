@@ -25,14 +25,13 @@ struct Parent {
 
 fn main() {
     fn child_type_specification() {
-        let interface = Interface::new();
         let parent: Parent = Parent {
             group: Group { child_info: vec![] },
             storage: Element::new(&Path::new("::root::node").unwrap()),
         };
-        let _: Vec<Child> = interface.children_of(&parent.group).unwrap();
+        let _: Vec<Child> = Interface::children_of(&parent.group).unwrap();
 
         // This should fail to compile if the child type is incorrect
-        let _: Vec<Parent> = interface.children_of(&parent.group).unwrap();
+        let _: Vec<Parent> = Interface::children_of(&parent.group).unwrap();
     }
 }
