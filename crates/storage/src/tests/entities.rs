@@ -1,7 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::to_vec;
-use calimero_test_utils::storage::create_test_store;
 use claims::{assert_ge, assert_le};
 use sha2::{Digest, Sha256};
 use velcro::btree_map;
@@ -304,8 +303,7 @@ mod element__public_methods {
 
     #[test]
     fn is_dirty() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         assert!(element.is_dirty());
 
@@ -323,8 +321,7 @@ mod element__public_methods {
 
     #[test]
     fn merkle_hash() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         let mut person = Person {
             name: "Steve".to_owned(),
@@ -353,8 +350,7 @@ mod element__public_methods {
 
     #[test]
     fn update() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         let updated_at = element.metadata.updated_at;
         let mut person = Person {

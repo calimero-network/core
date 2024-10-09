@@ -215,16 +215,12 @@ mod tests;
 
 use core::fmt::Debug;
 use std::io::Error as IoError;
-use std::sync::Arc;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use calimero_store::key::Storage as StorageKey;
-use calimero_store::layer::{ReadLayer, WriteLayer};
-use calimero_store::slice::Slice;
-use calimero_store::Store;
+use calimero_sdk::env;
+use env::{storage_read, storage_remove, storage_write};
 use eyre::Report;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
@@ -278,12 +274,9 @@ pub enum Action {
 }
 
 /// The primary interface for the storage system.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct Interface {
-    /// The backing store to use for the storage interface.
-    store: Arc<RwLock<Store>>,
-}
+pub struct Interface;
 
 impl Interface {
     /// Creates a new instance of the [`Interface`].
@@ -293,10 +286,8 @@ impl Interface {
     /// * `store` - The backing store to use for the storage interface.
     ///
     #[must_use]
-    pub fn new(store: Store) -> Self {
-        Self {
-            store: Arc::new(RwLock::new(store)),
-        }
+    pub const fn new() -> Self {
+        Self {}
     }
 
     /// Applies an [`Action`] to the storage system.
@@ -334,10 +325,7 @@ impl Interface {
             }
             Action::Compare(_) => return Err(StorageError::ActionNotAllowed("Compare".to_owned())),
             Action::Delete(id) => {
-                let mut store = self.store.write();
-                store
-                    .delete(&StorageKey::new(id.into()))
-                    .map_err(StorageError::StoreError)?;
+                _ = storage_remove(id.to_string().as_bytes());
             }
         }
         Ok(())
@@ -606,22 +594,8 @@ impl Interface {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    #[expect(clippy::significant_drop_tightening, reason = "False positive")]
     pub fn find_by_id<D: Data>(&self, id: Id) -> Result<Option<D>, StorageError> {
-        // TODO: It seems fairly bizarre/unexpected that the put() method is sync
-        // TODO: and not async. The reasons and intentions need checking here, in
-        // TODO: case this find() method should be async and wrap the blocking call
-        // TODO: with spawn_blocking(). However, this is not straightforward at
-        // TODO: present because Slice uses Rc internally for some reason.
-        // TODO: let value = spawn_blocking(|| {
-        // TODO:     self.store.read()
-        // TODO:         .get(&StorageKey::new((*id).into()))
-        // TODO:         .map_err(StorageError::StoreError)
-        // TODO: }).await.map_err(|err| StorageError::DispatchError(err.to_string()))??;
-        let store = self.store.read();
-        let value = store
-            .get(&StorageKey::new(id.into()))
-            .map_err(StorageError::StoreError)?;
+        let value = storage_read(id.to_string().as_bytes());
 
         match value {
             Some(slice) => {
@@ -644,8 +618,8 @@ impl Interface {
     /// if it exists, regardless of where it may be in the hierarchy, or what
     /// state it may be in.
     ///
-    /// Notably it returns the raw [`Slice`] without attempting to deserialise
-    /// it into a [`Data`] type.
+    /// Notably it returns the raw bytes without attempting to deserialise them
+    /// into a [`Data`] type.
     ///
     /// # Parameters
     ///
@@ -657,13 +631,8 @@ impl Interface {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    #[expect(clippy::significant_drop_tightening, reason = "False positive")]
     pub fn find_by_id_raw(&self, id: Id) -> Result<Option<Vec<u8>>, StorageError> {
-        let store = self.store.read();
-        let value = store
-            .get(&StorageKey::new(id.into()))
-            .map_err(StorageError::StoreError)?;
-        Ok(value.map(|slice| slice.to_vec()))
+        Ok(storage_read(id.to_string().as_bytes()))
     }
 
     /// Finds one or more [`Element`](crate::entities::Element)s by path in the
@@ -779,18 +748,10 @@ impl Interface {
         // TODO: recalculation for the ancestors.
         entity.element_mut().merkle_hash = self.calculate_merkle_hash_for(entity, false)?;
 
-        // TODO: It seems fairly bizarre/unexpected that the put() method is sync
-        // TODO: and not async. The reasons and intentions need checking here, in
-        // TODO: case this save() method should be async and wrap the blocking call
-        // TODO: with spawn_blocking(). However, this is not straightforward at
-        // TODO: present because Slice uses Rc internally for some reason.
-        self.store
-            .write()
-            .put(
-                &StorageKey::new(id.into()),
-                Slice::from(to_vec(entity).map_err(StorageError::SerializationError)?),
-            )
-            .map_err(StorageError::StoreError)?;
+        _ = storage_write(
+            id.to_string().as_bytes(),
+            &to_vec(entity).map_err(StorageError::SerializationError)?,
+        );
         entity.element_mut().is_dirty = false;
         Ok(true)
     }

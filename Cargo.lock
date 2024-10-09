@@ -1008,6 +1008,7 @@ dependencies = [
  "borsh",
  "calimero-sdk-macros",
  "cfg-if 1.0.0",
+ "hex",
  "serde",
  "serde_json",
  "trybuild",
@@ -1105,15 +1106,13 @@ name = "calimero-storage"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "calimero-sdk",
  "calimero-storage-macros",
- "calimero-store",
- "calimero-test-utils",
  "claims",
  "eyre",
  "fixedstr",
  "hex",
  "indexmap 2.6.0",
- "parking_lot",
  "sha2",
  "thiserror",
  "uuid 1.10.0",
@@ -1126,7 +1125,6 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "calimero-storage",
- "calimero-test-utils",
  "quote",
  "syn 2.0.72",
  "trybuild",

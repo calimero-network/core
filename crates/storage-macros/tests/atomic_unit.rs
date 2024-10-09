@@ -31,7 +31,6 @@ use calimero_storage::entities::{Data, Element};
 use calimero_storage::exports::{Digest, Sha256};
 use calimero_storage::interface::Interface;
 use calimero_storage_macros::AtomicUnit;
-use calimero_test_utils::storage::create_test_store;
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 struct Private {
@@ -154,8 +153,7 @@ mod basics {
 
     #[test]
     fn setters__confirm_set_dirty() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
         assert!(interface.save(unit.id(), &mut unit).unwrap());
@@ -167,8 +165,7 @@ mod basics {
 
     #[test]
     fn setters__confirm_not_set_not_dirty() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
         assert!(interface.save(unit.id(), &mut unit).unwrap());
