@@ -1,8 +1,8 @@
 error[E0308]: mismatched types
-  --> tests/compile_fail/collection.rs:36:30
+  --> tests/compile_fail/collection.rs:35:30
    |
-36 |         let _: Vec<Parent> = interface.children_of(&parent.group).unwrap();
-   |                -----------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Vec<Parent>`, found `Vec<Child>`
+35 |         let _: Vec<Parent> = Interface::children_of(&parent.group).unwrap();
+   |                -----------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Vec<Parent>`, found `Vec<Child>`
    |                |
    |                expected due to this
    |

@@ -153,10 +153,9 @@ mod basics {
 
     #[test]
     fn setters__confirm_set_dirty() {
-        let interface = Interface::new();
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
-        assert!(interface.save(unit.id(), &mut unit).unwrap());
+        assert!(Interface::save(unit.id(), &mut unit).unwrap());
         assert!(!unit.element().is_dirty());
 
         assert!(unit.set_name("Test Name".to_owned()));
@@ -165,15 +164,14 @@ mod basics {
 
     #[test]
     fn setters__confirm_not_set_not_dirty() {
-        let interface = Interface::new();
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
-        assert!(interface.save(unit.id(), &mut unit).unwrap());
+        assert!(Interface::save(unit.id(), &mut unit).unwrap());
         assert!(!unit.element().is_dirty());
 
         assert!(unit.set_name("Test Name".to_owned()));
         assert!(unit.element().is_dirty());
-        assert!(interface.save(unit.id(), &mut unit).unwrap());
+        assert!(Interface::save(unit.id(), &mut unit).unwrap());
         assert!(!unit.set_name("Test Name".to_owned()));
         assert!(!unit.element().is_dirty());
     }
