@@ -226,6 +226,7 @@ use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data};
+use crate::env::send_action;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
@@ -905,8 +906,31 @@ impl<S: StorageAdaptor> MainInterface<S> {
         collection: &mut C,
         child_id: Id,
     ) -> Result<bool, StorageError> {
+        let child_exists = <Index<S>>::get_children_of(parent_id, collection.name())?
+            .iter()
+            .any(|child| child.id() == child_id);
+        if !child_exists {
+            return Ok(false);
+        }
+
         <Index<S>>::remove_child_from(parent_id, collection.name(), child_id)?;
-        Ok(S::storage_remove(Key::Entry(child_id)))
+
+        let (parent_full_hash, _) =
+            <Index<S>>::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
+        let mut ancestors = <Index<S>>::get_ancestors_of(parent_id)?;
+        ancestors.insert(0, ChildInfo::new(parent_id, parent_full_hash));
+
+        _ = S::storage_remove(Key::Entry(child_id));
+
+        // We have to serialise here rather than send the Action itself, as the SDK
+        // has no knowledge of the Action type, and cannot use it as it would be a
+        // circular dependency.
+        send_action(&Action::Delete {
+            id: child_id,
+            ancestors,
+        });
+
+        Ok(true)
     }
 
     /// Retrieves the root entity for a given context.
@@ -996,9 +1020,12 @@ impl<S: StorageAdaptor> MainInterface<S> {
             return Err(StorageError::CannotCreateOrphan(id));
         }
 
-        if let Some(existing) = Self::find_by_id::<D>(id)? {
-            if existing.element().metadata.updated_at >= entity.element().metadata.updated_at {
-                return Ok(false);
+        let is_new = Self::find_by_id::<D>(id)?.is_none();
+        if !is_new {
+            if let Some(existing) = Self::find_by_id::<D>(id)? {
+                if existing.element().metadata.updated_at >= entity.element().metadata.updated_at {
+                    return Ok(false);
+                }
             }
         } else if D::is_root() {
             <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32]), D::type_id())?;
@@ -1013,6 +1040,28 @@ impl<S: StorageAdaptor> MainInterface<S> {
         );
 
         entity.element_mut().is_dirty = false;
+
+        let action = if is_new {
+            Action::Add {
+                id,
+                type_id: D::type_id(),
+                data: to_vec(entity).map_err(StorageError::SerializationError)?,
+                ancestors: <Index<S>>::get_ancestors_of(id)?,
+            }
+        } else {
+            Action::Update {
+                id,
+                type_id: D::type_id(),
+                data: to_vec(entity).map_err(StorageError::SerializationError)?,
+                ancestors: <Index<S>>::get_ancestors_of(id)?,
+            }
+        };
+
+        // We have to serialise here rather than send the Action itself, as the SDK
+        // has no knowledge of the Action type, and cannot use it as it would be a
+        // circular dependency.
+        send_action(&action);
+
         Ok(true)
     }
 
