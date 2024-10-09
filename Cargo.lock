@@ -927,6 +927,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",
+ "calimero-storage",
  "calimero-store",
  "camino",
  "eyre",

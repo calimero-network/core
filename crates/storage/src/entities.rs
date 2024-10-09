@@ -20,9 +20,11 @@ use crate::address::{Id, Path};
 
 /// The primary data for an [`Element`], that is, the data that the consumer
 /// application has stored in the [`Element`].
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(
+    BorshDeserialize, BorshSerialize, Clone, Debug, Default, Eq, Hash, PartialEq, PartialOrd, Ord,
+)]
 #[non_exhaustive]
-pub struct Data;
+pub struct Data(pub Vec<u8>);
 
 /// Represents an [`Element`] in the storage.
 ///
@@ -103,7 +105,7 @@ pub struct Element {
 
     /// The primary data for the [`Element`], that is, the data that the
     /// consumer application has stored in the [`Element`].
-    data: Data,
+    pub data: Data,
 
     /// Whether the [`Element`] is dirty, i.e. has been modified since it was
     /// last saved.
@@ -169,7 +171,7 @@ impl Element {
         Self {
             id: Id::new(),
             child_ids: Vec::new(),
-            data: Data {},
+            data: Data::default(),
             is_dirty: true,
             metadata: Metadata {
                 created_at: timestamp,
