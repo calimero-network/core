@@ -1,42 +1,18 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::transaction::Transaction;
+use calimero_primitives::identity::PublicKey;
+use calimero_storage::interface::Action;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
-pub enum PeerAction {
-    Transaction(Transaction),
-    TransactionConfirmation(TransactionConfirmation),
-    TransactionRejection(TransactionRejection),
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct TransactionConfirmation {
-    pub context_id: ContextId,
-    pub nonce: u64,
-    pub transaction_hash: Hash,
-    // sha256(previous_confirmation_hash, transaction_hash, nonce)
-    pub confirmation_hash: Hash,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct TransactionRejection {
-    pub context_id: ContextId,
-    pub transaction_hash: Hash,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
 pub enum CatchupStreamMessage {
+    ActionsBatch(CatchupActionsBatch),
     ApplicationBlobRequest(CatchupApplicationBlobRequest),
     ApplicationBlobChunk(CatchupApplicationBlobChunk),
-    TransactionsRequest(CatchupTransactionsRequest),
-    TransactionsBatch(CatchupTransactionsBatch),
+    SyncRequest(CatchupSyncRequest),
     Error(CatchupError),
 }
 
@@ -55,16 +31,15 @@ pub struct CatchupApplicationBlobChunk {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
-pub struct CatchupTransactionsRequest {
+pub struct CatchupSyncRequest {
     pub context_id: ContextId,
-    pub last_executed_transaction_hash: Hash,
-    pub batch_size: u8,
+    pub root_hash: Hash,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
-pub struct CatchupTransactionsBatch {
-    pub transactions: Vec<TransactionWithStatus>,
+pub struct CatchupActionsBatch {
+    pub actions: Vec<ActionMessage>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
@@ -78,17 +53,11 @@ pub enum CatchupError {
     InternalError,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
-pub struct TransactionWithStatus {
-    pub transaction_hash: Hash,
-    pub transaction: Transaction,
-    pub status: TransactionStatus,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub enum TransactionStatus {
-    Pending,
-    Executed,
+pub struct ActionMessage {
+    pub action: Action,
+    pub context_id: ContextId,
+    pub public_key: PublicKey,
+    pub root_hash: Hash,
 }

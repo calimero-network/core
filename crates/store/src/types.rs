@@ -9,7 +9,7 @@ mod generic;
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
 pub use context::{
-    ContextConfig, ContextIdentity, ContextMeta, ContextState, ContextTransaction, TransactionHash,
+    ContextConfig, ContextIdentity, ContextMeta, ContextState, ContextTransaction, Hash,
 };
 pub use generic::GenericData;
 

@@ -2,7 +2,6 @@
 
 - [Introduction](#introduction)
 - [Core components](#core-components)
-  - [NodeType](#nodetype)
   - [Store](#store)
   - [TransactionPool](#transactionpool)
 - [Core flows](#core-flows)
@@ -23,7 +22,6 @@ interactive CLI.
 ```mermaid
 classDiagram
     Node : +PeerId id
-    Node : +NodeType typ
     Node : +Store store
     Node : +TransacitonPool tx_pool
     Node : +ContextManager ctx_manager
@@ -32,11 +30,6 @@ classDiagram
     Node: +handle_event()
     Node: +handle_call()
 ```
-
-### NodeType
-
-`NodeType` is an enum that represents the type of the node. It can be either
-`Coordinator` or `Peer`.
 
 ### Store
 
