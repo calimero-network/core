@@ -197,10 +197,22 @@ export default function ApplicationsPage() {
   }, []);
 
   const uninstallApplication = async () => {
-    const contextList = (
-      await apiClient(showServerDownPopup).node().getContexts()
-    ).data?.contexts;
-    if (contextList?.length !== 0) {
+    const contextResponse = await apiClient(showServerDownPopup).node().getContexts();
+    if (contextResponse.error) {
+      setUninstallStatus({
+        title: 'Error',
+        message: contextResponse.error.message,
+        error: true,
+      });
+      setShowActionDialog(false);
+      setShowStatusModal(true);
+      return;
+    }
+
+    const contextList = contextResponse.data?.contexts;
+
+    if (contextList && contextList.length !== 0) {
+      const contextList = contextResponse.data?.contexts;
       const usedByContextsIds =
         contextList
           ?.filter((context) => context.applicationId === selectedAppId)
