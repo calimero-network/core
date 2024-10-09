@@ -79,37 +79,31 @@ jobs:
         run: |
           cd ./node-ui
           pnpm build
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
           git add .
-          git commit -m "Build node-ui" || echo "No changes to commit"
+          git commit -m "Automated build of node-ui" || echo "No changes to commit"
           git push origin HEAD:master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Switch to root directory
+        run: cd ../../
+
       - name: Clone target repository
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          echo "Current directory before cloning: $PWD"
           git clone https://github.com/alenmestrov/admin-dashboard.git
-          echo "Contents of current directory after cloning:"
-          ls -la
 
       - name: Copy entire node-ui to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          cp -r ./node-ui/* ./admin-dashboard/
-          echo "Contents of admin-dashboard after copy:"
-          ls -la ./admin-dashboard
+          cp -r ./core/node-ui/src/* ./admin-dashboard/src/
 
-      - name: Add, commit and push changes to target repo
+      - name: Push changes to admin-dashboard repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          echo "Current directory before cd: $PWD"
-          cd ./admin-dashboard
-          echo "Current directory after cd: $PWD"
+          cd admin-dashboard
           git add -A
-          git commit -m "Automated push of node-ui changes"
+          git commit -m "Automated push of node-ui changes (excluding build)" || echo "No changes to commit"
           git push https://${{ secrets.PUSH_TOKEN }}@github.com/alenmestrov/admin-dashboard.git master
         env:
           PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
