@@ -13,7 +13,6 @@ use core::fmt::{self, Debug, Display, Formatter};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_store::key::Storage as StorageKey;
 use fixedstr::Flexstr;
 use thiserror::Error as ThisError;
 use uuid::{Bytes, Uuid};
@@ -95,18 +94,6 @@ impl Default for Id {
 impl Display for Id {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-impl From<Id> for StorageKey {
-    fn from(id: Id) -> Self {
-        Self::new(*id.0.as_bytes())
-    }
-}
-
-impl From<StorageKey> for Id {
-    fn from(storage: StorageKey) -> Self {
-        Self(Uuid::from_bytes(storage.id()))
     }
 }
 

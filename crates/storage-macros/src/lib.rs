@@ -7,7 +7,7 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 
 #[cfg(test)]
 mod integration_tests_package_usage {
-    use {borsh as _, calimero_storage as _, calimero_test_utils as _, trybuild as _};
+    use {borsh as _, calimero_storage as _, trybuild as _};
 }
 
 /// Derives the [`AtomicUnit`](calimero_storage::entities::AtomicUnit) trait for

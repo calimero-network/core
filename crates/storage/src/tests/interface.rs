@@ -1,7 +1,6 @@
 use std::thread::sleep;
 use std::time::Duration;
 
-use calimero_test_utils::storage::create_test_store;
 use claims::{assert_none, assert_ok};
 
 use super::*;
@@ -14,8 +13,7 @@ mod interface__constructor {
 
     #[test]
     fn new() {
-        let (db, _dir) = create_test_store();
-        drop(Interface::new(db));
+        drop(Interface::new());
     }
 }
 
@@ -25,8 +23,7 @@ mod interface__public_methods {
 
     #[test]
     fn children_of() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node").unwrap());
         let mut page = Page::new_from_element("Node", element);
         assert!(interface.save(page.id(), &mut page).unwrap());
@@ -55,8 +52,7 @@ mod interface__public_methods {
 
     #[test]
     fn find_by_id__existent() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         let mut para = Paragraph::new_from_element("Leaf", element);
         let id = para.id();
@@ -67,8 +63,7 @@ mod interface__public_methods {
 
     #[test]
     fn find_by_id__non_existent() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
 
         assert_none!(interface.find_by_id::<Page>(Id::new()).unwrap());
     }
@@ -93,8 +88,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__basic() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         let mut para = Paragraph::new_from_element("Leaf", element);
 
@@ -103,8 +97,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__multiple() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element1 = Element::new(&Path::new("::root::node1").unwrap());
         let element2 = Element::new(&Path::new("::root::node2").unwrap());
         let mut page1 = Page::new_from_element("Node1", element1);
@@ -118,8 +111,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__not_dirty() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         let mut para = Paragraph::new_from_element("Leaf", element);
         let id = para.id();
@@ -131,8 +123,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__too_old() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element1 = Element::new(&Path::new("::root::node::leaf").unwrap());
         let mut para1 = Paragraph::new_from_element("Leaf", element1);
         let mut para2 = para1.clone();
@@ -148,8 +139,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__update_existing() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         let mut para = Paragraph::new_from_element("Leaf", element);
         let id = para.id();
@@ -195,8 +185,7 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__add() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
         let serialized = to_vec(&page).unwrap();
         let action = Action::Add(page.id(), serialized);
@@ -211,8 +200,7 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__update() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let mut page =
             Page::new_from_element("Old Title", Element::new(&Path::new("::test").unwrap()));
         assert!(interface.save(page.id(), &mut page).unwrap());
@@ -231,8 +219,7 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__delete() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let mut page =
             Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
         assert!(interface.save(page.id(), &mut page).unwrap());
@@ -248,8 +235,7 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__compare() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
         let action = Action::Compare(page.id());
 
@@ -259,8 +245,7 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__wrong_type() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
         let serialized = to_vec(&page).unwrap();
         let action = Action::Add(page.id(), serialized);
@@ -271,8 +256,7 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__non_existent_update() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
         let serialized = to_vec(&page).unwrap();
         let action = Action::Update(page.id(), serialized);
@@ -293,8 +277,7 @@ mod interface__comparison {
 
     #[test]
     fn compare_trees__identical() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node").unwrap());
         let mut local = Page::new_from_element("Test Page", element);
         let mut foreign = local.clone();
@@ -314,8 +297,7 @@ mod interface__comparison {
 
     #[test]
     fn compare_trees__local_newer() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node").unwrap());
         let mut local = Page::new_from_element("Test Page", element.clone());
         let mut foreign = Page::new_from_element("Old Test Page", element);
@@ -341,8 +323,7 @@ mod interface__comparison {
 
     #[test]
     fn compare_trees__foreign_newer() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node").unwrap());
         let mut local = Page::new_from_element("Old Test Page", element.clone());
         let mut foreign = Page::new_from_element("Test Page", element);
@@ -368,8 +349,7 @@ mod interface__comparison {
 
     #[test]
     fn compare_trees__with_collections() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
 
         let page_element = Element::new(&Path::new("::root::node").unwrap());
         let para1_element = Element::new(&Path::new("::root::node::leaf1").unwrap());
@@ -479,8 +459,7 @@ mod hashing {
     #[test]
     fn calculate_merkle_hash_for__empty_record() {
         let timestamp = 1_765_432_100_123_456_789;
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
         element.set_id(TEST_ID[0]);
         element.metadata.set_created_at(timestamp);
@@ -499,8 +478,7 @@ mod hashing {
     #[test]
     fn calculate_merkle_hash_for__with_children() {
         let timestamp = 1_765_432_100_123_456_789;
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let mut element = Element::new(&Path::new("::root::node").unwrap());
         element.set_id(TEST_ID[0]);
         element.metadata.set_created_at(1_765_432_100_123_456_789);
@@ -552,8 +530,7 @@ mod hashing {
 
     #[test]
     fn calculate_merkle_hash_for__cached_values() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
+        let interface = Interface::new();
         let element = Element::new(&Path::new("::root::node").unwrap());
         let mut page = Page::new_from_element("Node", element);
         assert!(interface.save(page.id(), &mut page).unwrap());
