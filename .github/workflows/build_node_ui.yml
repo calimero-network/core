@@ -40,7 +40,7 @@ jobs:
       # Conditional steps, executed only if changes were detected
       - name: Set up Node.js
         if: env.CHANGES_DETECTED == 'true'
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v3
         with:
           node-version: '20'
  
@@ -70,17 +70,17 @@ jobs:
       - name: Clone target repository
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          git clone https://github.com/calimero-network/admin-dashboard.git
+          git clone https://github.com/alenmestrov/admin-dashboard.git
 
       - name: Copy build folder to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          mv ./admin-dashboard/.git ./node-ui/
+          cp -r ./node-ui/build/* ./admin-dashboard/
 
       - name: Add, commit and push changes to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          cd ./node-ui/
+          cd ./admin-dashboard
           git add -A
           git commit -m "Automated push of node-ui changes"
           git push https://${{ secrets.PUSH_TOKEN }}@github.com/calimero-network/admin-dashboard.git master
