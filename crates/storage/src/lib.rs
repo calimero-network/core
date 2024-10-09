@@ -65,6 +65,7 @@ pub mod address;
 pub mod entities;
 pub mod env;
 pub mod index;
+pub mod integration;
 pub mod interface;
 pub mod store;
 

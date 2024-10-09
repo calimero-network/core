@@ -899,7 +899,6 @@ name = "calimero-network"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "calimero-node-primitives",
  "calimero-primitives",
  "eyre",
  "futures-util",
@@ -920,6 +919,7 @@ dependencies = [
 name = "calimero-node"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "calimero-blobstore",
  "calimero-context",
  "calimero-network",
@@ -927,6 +927,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",
+ "calimero-storage",
  "calimero-store",
  "camino",
  "eyre",
@@ -987,6 +988,7 @@ version = "0.1.0"
 dependencies = [
  "assert-json-diff",
  "borsh",
+ "calimero-storage",
  "eyre",
  "fragile",
  "ouroboros",
@@ -4449,7 +4451,6 @@ dependencies = [
  "calimero-context-config",
  "calimero-network",
  "calimero-node",
- "calimero-node-primitives",
  "calimero-primitives",
  "calimero-server",
  "calimero-server-primitives",

@@ -4,7 +4,8 @@
 use core::num::NonZeroU64;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borsh::from_slice as from_borsh_slice;
+use borsh::{from_slice as from_borsh_slice, BorshDeserialize};
+use calimero_storage::interface::Action;
 use ouroboros::self_referencing;
 use rand::RngCore;
 use serde::Serialize;
@@ -320,6 +321,27 @@ impl VMHostFunctions<'_> {
         let data = self.read_guest_memory(data_ptr, data_len)?;
 
         self.with_logic_mut(|logic| logic.events.push(Event { kind, data }));
+
+        Ok(())
+    }
+
+    /// Sends an action to the host.
+    ///
+    /// After a storage event, other nodes need to be updated. Consequently, the
+    /// host must be informed about the action that was taken. This function
+    /// sends that action to the host, which can then be used to update the
+    /// network.
+    ///
+    pub fn send_action(&mut self, action_ptr: u64, action_len: u64) -> VMLogicResult<()> {
+        let action_bytes = self.read_guest_memory(action_ptr, action_len)?;
+        let action: Action = BorshDeserialize::deserialize(&mut &*action_bytes)
+            .map_err(|_err| HostError::DeserializationError)?;
+
+        // TODO: Remove this when finalised
+        println!("Action received: {action:?}");
+
+        // TODO: What should this now call in order to propagate the Action to other
+        // TODO: nodes in the network? We need to get it into Node::push_action()
 
         Ok(())
     }

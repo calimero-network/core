@@ -8,7 +8,6 @@ pub trait Storage: Debug {
     fn get(&self, key: &Key) -> Option<Value>;
     fn set(&mut self, key: Key, value: Value) -> Option<Value>;
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>>;
-    // fn remove(&mut self, key: &[u8]);
     fn has(&self, key: &Key) -> bool;
 }
 

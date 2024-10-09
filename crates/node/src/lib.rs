@@ -9,6 +9,7 @@ use core::mem::replace;
 use core::pin::Pin;
 use core::str::FromStr;
 
+use borsh::to_vec;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
@@ -16,9 +17,7 @@ use calimero_context::ContextManager;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
-use calimero_node_primitives::{
-    CallError, ExecutionRequest, Finality, MutateCallError, NodeType, QueryCallError,
-};
+use calimero_node_primitives::{CallError, ExecutionRequest, MutateCallError, QueryCallError};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ApplicationEvent, ApplicationEventPayload, ExecutedTransactionPayload, NodeEvent, OutcomeEvent,
@@ -26,18 +25,18 @@ use calimero_primitives::events::{
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use calimero_primitives::transaction::Transaction;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
+use calimero_storage::address::Id;
+use calimero_storage::integration::Comparison;
+use calimero_storage::interface::Action;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::key::{
-    ApplicationMeta as ApplicationMetaKey, ContextIdentity as ContextIdentityKey,
-    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
-    ContextTransaction as ContextTransactionKey,
+    ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
+    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
 };
-use calimero_store::types::{ContextMeta, ContextTransaction};
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
@@ -54,12 +53,10 @@ use tokio::{select, spawn};
 use tracing::{debug, error, info, warn};
 
 use crate::runtime_compat::RuntimeCompatStore;
-use crate::transaction_pool::{TransactionPool, TransactionPoolEntry};
-use crate::types::{PeerAction, TransactionConfirmation, TransactionRejection};
+use crate::types::{ActionMessage, PeerAction, SyncMessage};
 
 pub mod catchup;
 pub mod runtime_compat;
-pub mod transaction_pool;
 pub mod types;
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
@@ -69,7 +66,6 @@ type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
-    pub node_type: NodeType,
     pub network: NetworkConfig,
     pub datastore: StoreConfig,
     pub blobstore: BlobStoreConfig,
@@ -78,12 +74,10 @@ pub struct NodeConfig {
 }
 
 impl NodeConfig {
-    #[expect(clippy::too_many_arguments, reason = "Okay for now")]
     #[must_use]
     pub const fn new(
         home: Utf8PathBuf,
         identity: Keypair,
-        node_type: NodeType,
         network: NetworkConfig,
         datastore: StoreConfig,
         blobstore: BlobStoreConfig,
@@ -93,7 +87,6 @@ impl NodeConfig {
         Self {
             home,
             identity,
-            node_type,
             network,
             datastore,
             blobstore,
@@ -106,9 +99,7 @@ impl NodeConfig {
 #[derive(Debug)]
 pub struct Node {
     id: PeerId,
-    typ: NodeType,
     store: Store,
-    tx_pool: TransactionPool,
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
@@ -219,7 +210,6 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
     match command {
         "call" => {
             if let Some((context_id, rest)) = args.and_then(|args| args.split_once(' ')) {
-                let (method, rest) = rest.split_once(' ').unwrap_or((rest, "{}"));
                 let (payload, executor_key) = rest.split_once(' ').unwrap_or((rest, ""));
 
                 let (payload, executor_key) = match executor_key.parse::<PublicKey>() {
@@ -240,8 +230,12 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     },
                 };
 
-                if let Err(e) = from_json_str::<Value>(payload) {
-                    println!("{ind} Failed to parse payload: {e}");
+                let actions = match from_json_str::<Vec<Action>>(payload) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        println!("{ind} Failed to parse payload: {e}");
+                        return Err(e.into());
+                    }
                 };
 
                 let (outcome_sender, outcome_receiver) = oneshot::channel();
@@ -256,27 +250,23 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     return Ok(());
                 };
 
-                let tx = Transaction::new(
-                    context.id,
-                    method.to_owned(),
-                    payload.as_bytes().to_owned(),
-                    context.last_transaction_hash,
-                    executor_key,
-                );
-
-                let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {
-                    Ok(tx_hash) => tx_hash,
-                    Err(e) => {
-                        println!("{ind} Failed to execute transaction: {e}");
-                        return Ok(());
-                    }
+                let action = ActionMessage {
+                    actions,
+                    context_id: context.id,
+                    public_key: executor_key,
+                    root_hash: context.root_hash,
                 };
 
-                println!("{ind} Scheduled Transaction! {tx_hash:?}");
+                if let Err(e) = node.call_mutate(&context, action, outcome_sender).await {
+                    println!("{ind} Failed to execute action: {e}");
+                    return Ok(());
+                }
+
+                println!("{ind} Scheduled Action!");
 
                 drop(spawn(async move {
                     if let Ok(outcome_result) = outcome_receiver.await {
-                        println!("{ind} {tx_hash:?}");
+                        println!("{ind}");
 
                         match outcome_result {
                             Ok(outcome) => {
@@ -342,47 +332,6 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 println!(
                     "{ind} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
                 );
-            }
-        }
-        "gc" => {
-            if node.tx_pool.transactions.is_empty() {
-                println!("{ind} Transaction pool is empty.");
-            } else {
-                println!(
-                    "{ind} Garbage collecting {} transactions.",
-                    node.tx_pool.transactions.len().cyan()
-                );
-                node.tx_pool = TransactionPool::default();
-            }
-        }
-        "pool" => {
-            if node.tx_pool.transactions.is_empty() {
-                println!("{ind} Transaction pool is empty.");
-            }
-            for (hash, entry) in &node.tx_pool.transactions {
-                println!("{ind} • {:?}", hash.cyan());
-                println!("{ind}     Sender: {}", entry.sender.cyan());
-                println!("{ind}     Method: {:?}", entry.transaction.method.cyan());
-                println!("{ind}     Payload:");
-                #[expect(clippy::option_if_let_else, reason = "Clearer here")]
-                let payload =
-                    if let Ok(value) = from_json_slice::<Value>(&entry.transaction.payload) {
-                        format!(
-                            "(json): {}",
-                            format!("{value:#}")
-                                .lines()
-                                .map(|line| line.cyan().to_string())
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        )
-                    } else {
-                        format!("(raw): {:?}", entry.transaction.payload.cyan())
-                    };
-
-                for line in payload.lines() {
-                    println!("{ind}       > {line}");
-                }
-                println!("{ind}     Prior: {:?}", entry.transaction.prior_hash.cyan());
             }
         }
         "peers" => {
@@ -534,11 +483,8 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
 
                         for (k, v) in handle.iter::<ContextMetaKey>()?.entries() {
                             let (k, v) = (k?, v?);
-                            let (cx, app_id, last_tx) = (
-                                k.context_id(),
-                                v.application.application_id(),
-                                v.last_transaction_hash,
-                            );
+                            let (cx, app_id, last_tx) =
+                                (k.context_id(), v.application.application_id(), v.root_hash);
                             let entry = format!(
                                 "{c1:44} | {c2:44} | {c3}",
                                 c1 = cx,
@@ -902,9 +848,7 @@ impl Node {
     ) -> Self {
         Self {
             id: config.identity.public().to_peer_id(),
-            typ: config.node_type,
             store,
-            tx_pool: TransactionPool::default(),
             ctx_manager,
             network_client,
             node_events,
@@ -985,132 +929,133 @@ impl Node {
         };
 
         match from_json_slice(&message.data)? {
-            PeerAction::Transaction(transaction) => {
-                debug!(?transaction, %source, "Received transaction");
+            PeerAction::ActionList(action_list) => {
+                debug!(?action_list, %source, "Received action list");
 
-                let handle = self.store.handle();
-
-                let ctx_meta_key = ContextMetaKey::new(transaction.context_id);
-                let prior_transaction_key = ContextTransactionKey::new(
-                    transaction.context_id,
-                    transaction.prior_hash.into(),
-                );
-
-                let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
-
-                if !handle.has(&ctx_meta_key)?
-                    || (transaction.prior_hash != Hash::default()
-                        && !handle.has(&prior_transaction_key)?
-                        && !self.typ.is_coordinator())
-                {
-                    info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
-
-                    self.perform_catchup(transaction.context_id, source).await?;
-
-                    let _ = self
-                        .ctx_manager
-                        .clear_context_pending_catchup(&transaction.context_id)
-                        .await;
-
-                    info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
-                };
-
-                let Some(context) = self.ctx_manager.get_context(&transaction.context_id)? else {
-                    bail!("Context '{}' not found", transaction.context_id);
-                };
-
-                if self.typ.is_coordinator() {
-                    let Some(pool_entry) = self.tx_pool.remove(&transaction_hash) else {
-                        return Ok(());
+                for action in action_list.actions {
+                    debug!(?action, %source, "Received action");
+                    let Some(context) = self.ctx_manager.get_context(&action_list.context_id)?
+                    else {
+                        bail!("Context '{}' not found", action_list.context_id);
                     };
-
-                    let _ = self
-                        .validate_pending_transaction(
-                            &context,
-                            pool_entry.transaction,
-                            transaction_hash,
-                        )
-                        .await?;
+                    match action {
+                        Action::Compare { id } => {
+                            self.send_comparison_message(&context, id, action_list.public_key)
+                                .await
+                        }
+                        _ => {
+                            let apply_outcome = self
+                                .apply_action(&context, action, action_list.public_key)
+                                .await?;
+                            match apply_outcome.returns {
+                                Ok(Some(compare_id)) => {
+                                    self.send_comparison_message(
+                                        &context,
+                                        from_json_slice(&compare_id)?,
+                                        action_list.public_key,
+                                    )
+                                    .await
+                                }
+                                Ok(None) => Err(eyre!("No comparison data generated")),
+                                Err(err) => Err(eyre!(err)),
+                            }
+                        }
+                    }?
                 }
+                Ok(())
             }
-            PeerAction::TransactionConfirmation(confirmation) => {
-                debug!(?confirmation, %source, "Received transaction confirmation");
-                // todo! ensure this was only sent by a coordinator
+            PeerAction::Sync(sync) => {
+                debug!(?sync, %source, "Received sync request");
 
-                let Some(TransactionPoolEntry {
-                    transaction,
-                    outcome_sender,
-                    ..
-                }) = self.tx_pool.remove(&confirmation.transaction_hash)
-                else {
-                    return Ok(());
+                let Some(context) = self.ctx_manager.get_context(&sync.context_id)? else {
+                    bail!("Context '{}' not found", sync.context_id);
                 };
+                let outcome = self
+                    .compare_trees(&context, &sync.comparison, sync.public_key)
+                    .await?;
 
-                let outcome_result = self
-                    .execute_in_context(confirmation.transaction_hash, transaction)
-                    .await;
+                match outcome.returns {
+                    Ok(Some(actions_data)) => {
+                        let (local_actions, remote_actions): (Vec<Action>, Vec<Action>) =
+                            from_json_slice(&actions_data)?;
 
-                if let Some(outcome_sender) = outcome_sender {
-                    drop(outcome_sender.send(outcome_result));
+                        // Apply local actions
+                        for action in local_actions {
+                            match action {
+                                Action::Compare { id } => {
+                                    self.send_comparison_message(&context, id, sync.public_key)
+                                        .await
+                                }
+                                _ => {
+                                    let apply_outcome = self
+                                        .apply_action(&context, action, sync.public_key)
+                                        .await?;
+                                    match apply_outcome.returns {
+                                        Ok(Some(compare_id)) => {
+                                            self.send_comparison_message(
+                                                &context,
+                                                from_json_slice(&compare_id)?,
+                                                sync.public_key,
+                                            )
+                                            .await
+                                        }
+                                        Ok(None) => Err(eyre!("No comparison data generated")),
+                                        Err(err) => Err(eyre!(err)),
+                                    }
+                                }
+                            }?
+                        }
+
+                        if !remote_actions.is_empty() {
+                            // Send remote actions back to the peer
+                            // TODO: This just sends one at present - needs to send a batch
+                            let new_message = ActionMessage {
+                                actions: remote_actions,
+                                context_id: sync.context_id,
+                                public_key: sync.public_key,
+                                root_hash: context.root_hash,
+                            };
+                            self.push_action(sync.context_id, PeerAction::ActionList(new_message))
+                                .await?;
+                        }
+                    }
+                    Ok(None) => {
+                        // No actions needed
+                    }
+                    Err(err) => {
+                        error!("Error during comparison: {err:?}");
+                        // TODO: Handle the error appropriately
+                    }
                 }
-            }
-            PeerAction::TransactionRejection(rejection) => {
-                debug!(?rejection, %source, "Received transaction rejection");
-                // todo! ensure this was only sent by a coordinator
-
-                let _ = self.reject_from_pool(rejection.transaction_hash);
-
-                info!(context_id=%rejection.context_id, %source, "Attempting to perform rejection triggered catchup");
-
-                self.perform_catchup(rejection.context_id, source).await?;
-
-                let _ = self
-                    .ctx_manager
-                    .clear_context_pending_catchup(&rejection.context_id)
-                    .await;
-
-                info!(context_id=%rejection.context_id, %source, "Rejection triggered catchup successfully finished");
+                Ok(())
             }
         }
-
-        Ok(())
     }
 
-    async fn validate_pending_transaction(
+    async fn send_comparison_message(
         &mut self,
         context: &Context,
-        transaction: Transaction,
-        transaction_hash: Hash,
-    ) -> EyreResult<bool> {
-        if context.last_transaction_hash == transaction.prior_hash {
-            self.nonce = self.nonce.saturating_add(1);
-
-            self.push_action(
-                transaction.context_id,
-                PeerAction::TransactionConfirmation(TransactionConfirmation {
-                    context_id: transaction.context_id,
-                    nonce: self.nonce,
-                    transaction_hash,
-                    // todo! proper confirmation hash
-                    confirmation_hash: transaction_hash,
-                }),
-            )
+        id: Id,
+        public_key: PublicKey,
+    ) -> EyreResult<()> {
+        let compare_outcome = self
+            .generate_comparison_data(context, id, public_key)
             .await?;
-
-            self.persist_transaction(context, transaction, transaction_hash)?;
-
-            Ok(true)
-        } else {
-            self.push_action(
-                transaction.context_id,
-                PeerAction::TransactionRejection(TransactionRejection {
-                    context_id: transaction.context_id,
-                    transaction_hash,
-                }),
-            )
-            .await?;
-
-            Ok(false)
+        match compare_outcome.returns {
+            Ok(Some(comparison_data)) => {
+                // Generate a new Comparison for this entity and send it to the peer
+                let new_sync = SyncMessage {
+                    comparison: from_json_slice(&comparison_data)?,
+                    context_id: context.id,
+                    public_key,
+                    root_hash: context.root_hash,
+                };
+                self.push_action(context.id, PeerAction::Sync(new_sync))
+                    .await?;
+                Ok(())
+            }
+            Ok(None) => Err(eyre!("No comparison data generated")),
+            Err(err) => Err(eyre!(err)),
         }
     }
 
@@ -1132,80 +1077,18 @@ impl Node {
             return;
         };
 
-        if let Some(finality) = request.finality {
-            let transaction = Transaction::new(
-                context.id,
-                request.method,
-                request.payload,
-                context.last_transaction_hash,
-                request.executor_public_key,
-            );
+        let task = self.call_query(
+            &context,
+            request.method,
+            request.payload,
+            request.executor_public_key,
+        );
 
-            match finality {
-                Finality::Local => {
-                    let task = async {
-                        let hash = Hash::hash_json(&transaction)?;
+        drop(request.outcome_sender.send(task.await.map_err(|err| {
+            error!(%err, "failed to execute local query");
 
-                        self.execute_transaction(&context, transaction, hash).await
-                    };
-
-                    drop(request.outcome_sender.send(task.await.map_err(|err| {
-                        error!(%err, "failed to execute local transaction");
-
-                        CallError::Mutate(MutateCallError::InternalError)
-                    })));
-                }
-                Finality::Global => {
-                    let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
-
-                    if let Err(err) = self
-                        .call_mutate(&context, transaction, inner_outcome_sender)
-                        .await
-                    {
-                        drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
-                        return;
-                    }
-
-                    drop(spawn(async move {
-                        match inner_outcome_receiver.await {
-                            Ok(outcome) => match outcome {
-                                Ok(outcome) => {
-                                    drop(request.outcome_sender.send(Ok(outcome)));
-                                }
-                                Err(err) => {
-                                    drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
-                                }
-                            },
-                            Err(err) => {
-                                error!("Failed to receive inner outcome of a transaction: {}", err);
-                                drop(
-                                    request.outcome_sender.send(Err(CallError::Mutate(
-                                        MutateCallError::InternalError,
-                                    ))),
-                                );
-                            }
-                        }
-                    }));
-                }
-            }
-        } else {
-            match self
-                .call_query(
-                    &context,
-                    request.method,
-                    request.payload,
-                    request.executor_public_key,
-                )
-                .await
-            {
-                Ok(outcome) => {
-                    drop(request.outcome_sender.send(Ok(outcome)));
-                }
-                Err(err) => {
-                    drop(request.outcome_sender.send(Err(CallError::Query(err))));
-                }
-            };
-        }
+            CallError::Mutate(MutateCallError::InternalError)
+        })));
     }
 
     async fn call_query(
@@ -1225,28 +1108,28 @@ impl Node {
             });
         }
 
-        self.execute(context, None, method, payload, executor_public_key)
-            .await
-            .map_err(|e| {
-                error!(%e,"Failed to execute query call.");
-                QueryCallError::InternalError
-            })
+        self.execute(
+            context,
+            Some(context.root_hash),
+            method,
+            payload,
+            executor_public_key,
+        )
+        .await
+        .map_err(|e| {
+            error!(%e,"Failed to execute query call.");
+            QueryCallError::InternalError
+        })
     }
 
     async fn call_mutate(
-        &mut self,
+        &self,
         context: &Context,
-        transaction: Transaction,
-        outcome_sender: oneshot::Sender<Result<Outcome, MutateCallError>>,
-    ) -> Result<Hash, MutateCallError> {
-        if context.id != transaction.context_id {
-            return Err(MutateCallError::TransactionRejected);
-        }
-
-        if self.typ.is_coordinator() {
-            return Err(MutateCallError::InvalidNodeType {
-                node_type: self.typ,
-            });
+        action_list: ActionMessage,
+        _outcome_sender: oneshot::Sender<Result<Outcome, MutateCallError>>,
+    ) -> Result<(), MutateCallError> {
+        if context.id != action_list.context_id {
+            return Err(MutateCallError::ActionRejected);
         }
 
         if !self
@@ -1268,120 +1151,62 @@ impl Node {
             return Err(MutateCallError::NoConnectedPeers);
         }
 
-        self.push_action(context.id, PeerAction::Transaction(transaction.clone()))
+        self.push_action(context.id, PeerAction::ActionList(action_list))
             .await
             .map_err(|err| {
                 error!(%err, "Failed to push transaction over the network.");
                 MutateCallError::InternalError
             })?;
 
-        let tx_hash = self
-            .tx_pool
-            .insert(self.id, transaction, Some(outcome_sender))
-            .map_err(|err| {
-                error!(%err, "Failed to insert transaction into the pool.");
-                MutateCallError::InternalError
-            })?;
-
-        Ok(tx_hash)
-    }
-
-    async fn execute_in_context(
-        &mut self,
-        transaction_hash: Hash,
-        transaction: Transaction,
-    ) -> Result<Outcome, MutateCallError> {
-        let Some(context) = self
-            .ctx_manager
-            .get_context(&transaction.context_id)
-            .map_err(|e| {
-                error!(%e, "Failed to get context");
-                MutateCallError::InternalError
-            })?
-        else {
-            error!(%transaction.context_id, "Context not found");
-            return Err(MutateCallError::InternalError);
-        };
-
-        if context.last_transaction_hash != transaction.prior_hash {
-            error!(
-                context_id=%transaction.context_id,
-                %transaction_hash,
-                prior_hash=%transaction.prior_hash,
-                "Transaction from the pool doesn't build on last transaction",
-            );
-            return Err(MutateCallError::TransactionRejected);
-        }
-
-        let outcome = self
-            .execute_transaction(&context, transaction, transaction_hash)
-            .await
-            .map_err(|e| {
-                error!(%e, "Failed to execute transaction");
-                MutateCallError::InternalError
-            })?;
-
-        Ok(outcome)
-    }
-
-    async fn execute_transaction(
-        &mut self,
-        context: &Context,
-        transaction: Transaction,
-        hash: Hash,
-    ) -> EyreResult<Outcome> {
-        let outcome = self
-            .execute(
-                context,
-                Some(hash),
-                transaction.method.clone(),
-                transaction.payload.clone(),
-                transaction.executor_public_key,
-            )
-            .await?;
-
-        self.persist_transaction(context, transaction, hash)?;
-
-        Ok(outcome)
-    }
-
-    fn reject_from_pool(&mut self, hash: Hash) -> Option<()> {
-        let TransactionPoolEntry { outcome_sender, .. } = self.tx_pool.remove(&hash)?;
-
-        if let Some(sender) = outcome_sender {
-            drop(sender.send(Err(MutateCallError::TransactionRejected)));
-        }
-
-        Some(())
-    }
-
-    fn persist_transaction(
-        &self,
-        context: &Context,
-        transaction: Transaction,
-        hash: Hash,
-    ) -> EyreResult<()> {
-        let mut handle = self.store.handle();
-
-        handle.put(
-            &ContextTransactionKey::new(context.id, hash.into()),
-            &ContextTransaction::new(
-                transaction.method.into(),
-                transaction.payload.into(),
-                *transaction.prior_hash,
-                *transaction.executor_public_key,
-            ),
-        )?;
-
-        handle.put(
-            &ContextMetaKey::new(context.id),
-            &ContextMeta::new(
-                ApplicationMetaKey::new(context.application_id),
-                *hash.as_bytes(),
-            ),
-        )?;
-
         Ok(())
+    }
+
+    async fn apply_action(
+        &mut self,
+        context: &Context,
+        action: Action,
+        public_key: PublicKey,
+    ) -> EyreResult<Outcome> {
+        self.execute(
+            context,
+            None,
+            "apply_action".to_owned(),
+            to_vec(&action)?,
+            public_key,
+        )
+        .await
+    }
+
+    async fn compare_trees(
+        &mut self,
+        context: &Context,
+        comparison: &Comparison,
+        public_key: PublicKey,
+    ) -> EyreResult<Outcome> {
+        self.execute(
+            context,
+            None,
+            "compare_trees".to_owned(),
+            to_vec(comparison)?,
+            public_key,
+        )
+        .await
+    }
+
+    async fn generate_comparison_data(
+        &mut self,
+        context: &Context,
+        id: Id,
+        public_key: PublicKey,
+    ) -> EyreResult<Outcome> {
+        self.execute(
+            context,
+            None,
+            "generate_comparison_data".to_owned(),
+            to_vec(&id)?,
+            public_key,
+        )
+        .await
     }
 
     async fn execute(

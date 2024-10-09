@@ -155,6 +155,10 @@ pub fn emit<T: AppEvent>(event: &T) {
     unsafe { sys::emit(Event::new(&kind, &data)) }
 }
 
+pub fn send_action(action: &[u8]) {
+    unsafe { sys::send_action(action.as_ptr() as u64, action.len() as u64) }
+}
+
 #[inline]
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
     unsafe { sys::storage_read(Buffer::from(key), DATA_REGISTER) }
