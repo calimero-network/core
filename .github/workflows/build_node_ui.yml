@@ -13,9 +13,10 @@ on:
 
 jobs:
   build_node_ui:
-    # Modified condition to include workflow_dispatch
     if: github.event.pull_request.merged == true || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    env:
+      HUSKY: 0  # Disable Husky globally for this job
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -71,14 +72,16 @@ jobs:
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
 
-      - name: Build node ui and push changes
+      - name: Build node ui and commit changes
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          echo "Current directory before build: $PWD"
           cd ./node-ui
-          echo "Directory after cd to node-ui: $PWD"
           pnpm build
-          echo "Directory after build: $PWD"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .
+          git commit -m "Build node-ui" || echo "No changes to commit"
+          git push origin master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -86,7 +89,7 @@ jobs:
         if: env.CHANGES_DETECTED == 'true'
         run: |
           echo "Current directory before cloning: $PWD"
-          git clone https://github.com/calimero-network/admin-dashboard.git
+          git clone https://github.com/alenmestrov/admin-dashboard.git
           echo "Contents of current directory after cloning:"
           ls -la
 
@@ -105,6 +108,6 @@ jobs:
           echo "Current directory after cd: $PWD"
           git add -A
           git commit -m "Automated push of node-ui changes"
-          git push https://${{ secrets.PUSH_TOKEN }}@github.com/calimero-network/admin-dashboard.git master
+          git push https://${{ secrets.PUSH_TOKEN }}@github.com/alenmestrov/admin-dashboard.git master
         env:
           PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
