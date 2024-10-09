@@ -345,6 +345,32 @@ impl VMHostFunctions<'_> {
         Ok(0)
     }
 
+    pub fn storage_remove(
+        &mut self,
+        key_ptr: u64,
+        key_len: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let logic = self.borrow_logic();
+
+        if key_len > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+
+        let key = self.read_guest_memory(key_ptr, key_len)?;
+
+        if let Some(value) = logic.storage.get(&key) {
+            self.with_logic_mut(|logic| {
+                drop(logic.storage.remove(&key));
+                logic.registers.set(logic.limits, register_id, value)
+            })?;
+
+            return Ok(1);
+        }
+
+        Ok(0)
+    }
+
     pub fn storage_write(
         &mut self,
         key_ptr: u64,
