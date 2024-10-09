@@ -1,7 +1,7 @@
 name: Build and Commit node-ui
 
 on:
-  workflow_dispatch: # Allow manual triggering of the workflow
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -13,7 +13,8 @@ on:
 
 jobs:
   build_node_ui:
-    if: github.event.pull_request.merged == true || github.event_name == 'push'
+    # Modified condition to include workflow_dispatch
+    if: github.event.pull_request.merged == true || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -32,14 +33,20 @@ jobs:
           
           git fetch --unshallow || true
 
-          # Check for changes in the node-ui folder (excluding the build directory)
-          changes=$(git diff --name-only HEAD~1 HEAD -- 'node-ui' ':!node-ui/build')
-
-          if [ -n "$changes" ]; then
-            echo "Changes detected in node-ui."
+          # For workflow_dispatch, consider all files as changed
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "Workflow manually triggered. Considering all files as changed."
             echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
           else
-            echo "No changes in node-ui (excluding build folder)."
+            # Check for changes in the node-ui folder (excluding the build directory)
+            changes=$(git diff --name-only HEAD~1 HEAD -- 'node-ui' ':!node-ui/build')
+
+            if [ -n "$changes" ]; then
+              echo "Changes detected in node-ui."
+              echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
+            else
+              echo "No changes in node-ui (excluding build folder)."
+            fi
           fi
 
       # Conditional steps, executed only if changes were detected
