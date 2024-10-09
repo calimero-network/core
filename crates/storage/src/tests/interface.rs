@@ -10,7 +10,15 @@ use crate::tests::common::{Page, Paragraph};
 
 #[cfg(test)]
 mod interface__public_methods {
+    // use crate::integration::Action;
+
     use super::*;
+
+    // #[test]
+    // fn serde() {
+    //     let action = Action::Add(Id::new(), String::new(), Vec::new());
+    //     let serialized = serde_json::to_string(&action).unwrap();
+    // }
 
     #[test]
     fn children_of() {

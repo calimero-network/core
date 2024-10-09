@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 borsh = { workspace = true, features = ["derive"] }
 fragile.workspace = true
+hex.workspace = true
 ouroboros.workspace = true
 owo-colors = { workspace = true, optional = true }
 rand.workspace = true

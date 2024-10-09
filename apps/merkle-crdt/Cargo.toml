@@ -1,0 +1,15 @@
+[package]
+name = "merkle-crdt"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk = { path = "../../crates/sdk" }
+calimero-storage = { path = "../../crates/storage" }
+calimero-storage-macros = { path = "../../crates/storage-macros" }

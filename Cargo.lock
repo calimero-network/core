@@ -991,6 +991,7 @@ dependencies = [
  "calimero-storage",
  "eyre",
  "fragile",
+ "hex",
  "ouroboros",
  "owo-colors",
  "rand 0.8.5",
@@ -4439,6 +4440,15 @@ name = "memory_units"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8452105ba047068f40ff7093dd1d9da90898e63dd61736462e9cdda6a90ad3c3"
+
+[[package]]
+name = "merkle-crdt"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-storage-macros",
+]
 
 [[package]]
 name = "meroctl"
