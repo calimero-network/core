@@ -40,12 +40,6 @@ fn expected_boolean<T>(e: u32) -> T {
     panic_str(&format!("Expected 0|1. Got {e}"));
 }
 
-#[must_use]
-pub fn get_executor_identity() -> [u8; 32] {
-    unsafe { sys::get_executor_identity(DATA_REGISTER) }
-    read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
-}
-
 pub fn setup_panic_hook() {
     set_hook(Box::new(|info| {
         #[expect(clippy::option_if_let_else, reason = "Clearer this way")]
@@ -106,9 +100,11 @@ pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
 #[inline]
 fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N]> {
     let len = register_len(register_id)?;
-    let buffer = [0; N];
+
+    let mut buffer = [0; N];
+
     let succeed: bool = unsafe {
-        sys::read_register(register_id, BufferMut::new(buffer))
+        sys::read_register(register_id, BufferMut::new(&mut buffer))
             .try_into()
             .unwrap_or_else(expected_boolean)
     };
@@ -120,6 +116,12 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
     }
 
     Some(buffer)
+}
+
+#[must_use]
+pub fn executor_id() -> [u8; 32] {
+    unsafe { sys::executor_id(DATA_REGISTER) }
+    read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
 }
 
 #[inline]

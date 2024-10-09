@@ -134,11 +134,6 @@ impl<'a> VMLogic<'a> {
         }
         .build()
     }
-
-    pub fn get_executor_identity(&mut self, register_id: u64) -> VMLogicResult<()> {
-        self.registers
-            .set(self.limits, register_id, self.context.executor_public_key)
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -249,6 +244,14 @@ impl VMHostFunctions<'_> {
         }
         self.borrow_memory().write(ptr, data)?;
         Ok(1)
+    }
+
+    pub fn executor_id(&mut self, register_id: u64) -> VMLogicResult<()> {
+        self.with_logic_mut(|logic| {
+            logic
+                .registers
+                .set(logic.limits, register_id, logic.context.executor_public_key)
+        })
     }
 
     pub fn input(&mut self, register_id: u64) -> VMLogicResult<()> {
