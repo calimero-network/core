@@ -197,7 +197,9 @@ export default function ApplicationsPage() {
   }, []);
 
   const uninstallApplication = async () => {
-    const contextResponse = await apiClient(showServerDownPopup).node().getContexts();
+    const contextResponse = await apiClient(showServerDownPopup)
+      .node()
+      .getContexts();
     if (contextResponse.error) {
       setUninstallStatus({
         title: 'Error',
