@@ -19,6 +19,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Print current directory
+        run: |
+          echo "Current directory: $PWD"
+          ls -la
+
       # Check if there are changes in the node-ui folder (excluding build)
       - name: Check for changes in node-ui (excluding build folder)
         id: check_changes
@@ -62,25 +67,35 @@ jobs:
       - name: Build node ui and push changes
         if: env.CHANGES_DETECTED == 'true'
         run: |
+          echo "Current directory before build: $PWD"
           cd ./node-ui
+          echo "Directory after cd to node-ui: $PWD"
           pnpm build
+          echo "Directory after build: $PWD"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Clone target repository
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          git clone https://github.com/alenmestrov/admin-dashboard.git
+          echo "Current directory before cloning: $PWD"
+          git clone https://github.com/calimero-network/admin-dashboard.git
+          echo "Contents of current directory after cloning:"
+          ls -la
 
-      - name: Copy build folder to target repo
+      - name: Copy entire node-ui to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
-          cp -r ./node-ui/build/* ./admin-dashboard/
+          cp -r ./node-ui/* ./admin-dashboard/
+          echo "Contents of admin-dashboard after copy:"
+          ls -la ./admin-dashboard
 
       - name: Add, commit and push changes to target repo
         if: env.CHANGES_DETECTED == 'true'
         run: |
+          echo "Current directory before cd: $PWD"
           cd ./admin-dashboard
+          echo "Current directory after cd: $PWD"
           git add -A
           git commit -m "Automated push of node-ui changes"
           git push https://${{ secrets.PUSH_TOKEN }}@github.com/calimero-network/admin-dashboard.git master
