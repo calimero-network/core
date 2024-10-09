@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - master
+      - master  # Explicitly set to master
     paths:
       - 'node-ui/**'
   pull_request:
@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for all branches and tags
 
       - name: Print current directory
         run: |
@@ -81,7 +83,7 @@ jobs:
           git config --local user.name "GitHub Action"
           git add .
           git commit -m "Build node-ui" || echo "No changes to commit"
-          git push origin master
+          git push origin HEAD:master
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
