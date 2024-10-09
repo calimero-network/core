@@ -12,7 +12,6 @@ export async function generatePrivateKey(): Promise<PrivateKey> {
 export async function getOrCreateKeypair(): Promise<ClientKey> {
   return getStorageClientKey() ?? createAndStoreClientKey();
 }
-console.log('TEST');
 
 async function createAndStoreClientKey() {
   const privateKey = await generatePrivateKey();
