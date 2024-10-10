@@ -3,8 +3,7 @@ use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::{get_response, multiaddr_to_url, RequestType};
-use crate::config_file::ConfigFile;
+use crate::common::{get_response, load_config, load_multiaddr, multiaddr_to_url, RequestType};
 
 #[derive(Parser, Debug)]
 pub struct GetCommand {
@@ -23,23 +22,12 @@ impl GetCommand {
     #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         let path = args.home.join(&args.node_name);
-
-        if !ConfigFile::exists(&path) {
-            bail!("Config file does not exist")
-        };
-
-        let Ok(config) = ConfigFile::load(&path) else {
-            bail!("Failed to load config file")
-        };
-
-        let Some(multiaddr) = config.network.server.listen.first() else {
-            bail!("No address.")
-        };
-
+        let config = load_config(&path)?;
+        let multiaddr = load_multiaddr(&config)?;
         let client = Client::new();
 
         let url = multiaddr_to_url(
-            multiaddr,
+            &multiaddr,
             &format!("admin-api/dev/applications/{}", self.app_id),
         )?;
 

@@ -1,13 +1,12 @@
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::ws::{RequestPayload, SubscribeRequest};
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 
 use super::RootArgs;
 use crate::common::multiaddr_to_url;
-use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
 pub struct WatchCommand {
@@ -19,18 +18,10 @@ pub struct WatchCommand {
 impl WatchCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
+        let config = crate::common::load_config(&path)?;
+        let multiaddr = crate::common::load_multiaddr(&config)?;
 
-        if !ConfigFile::exists(&path) {
-            bail!("Config file does not exist");
-        }
-
-        let config = ConfigFile::load(&path)?;
-
-        let Some(multiaddr) = config.network.server.listen.first() else {
-            bail!("No address found in config");
-        };
-
-        let mut url = multiaddr_to_url(multiaddr, "ws")?;
+        let mut url = multiaddr_to_url(&multiaddr, "ws")?;
         url.set_scheme("ws")
             .map_err(|_| eyre::eyre!("Failed to set URL scheme"))?;
 

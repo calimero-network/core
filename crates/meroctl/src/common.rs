@@ -1,10 +1,12 @@
+use camino::Utf8PathBuf;
 use chrono::Utc;
-use eyre::{eyre, Result as EyreResult};
+use eyre::{eyre, Result as EyreResult, bail};
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
 use reqwest::{Client, Response, Url};
 use serde::Serialize;
+use crate::config_file::ConfigFile;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
     #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
@@ -58,6 +60,27 @@ where
         .await
         .map_err(|_| eyre!("Error with client request"))
 }
+
+pub fn load_config(path: &Utf8PathBuf) -> EyreResult<ConfigFile> {
+    if !ConfigFile::exists(&path) {
+        bail!("Config file does not exist")
+    };
+
+    let Ok(config) = ConfigFile::load(&path) else {
+        bail!("Failed to load config file")
+    };
+
+    Ok(config)
+}
+
+pub fn load_multiaddr(config: &ConfigFile) -> EyreResult<Multiaddr> {
+    let Some(multiaddr) = config.network.server.listen.first() else {
+        bail!("No address.")
+    };
+
+    Ok(multiaddr.clone())
+}
+
 
 pub enum RequestType {
     Get,
