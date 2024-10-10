@@ -81,8 +81,6 @@ jobs:
         if: env.CHANGES_DETECTED == 'true'
         run: |
           cd $GITHUB_WORKSPACE
-          git fetch origin master
-          git rebase origin/master
           git add ./node-ui/build
           git commit -m "Automated build of node-ui" || echo "No changes to commit"
           
