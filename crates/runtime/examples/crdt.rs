@@ -46,6 +46,11 @@ fn main() -> EyreResult<()> {
         /*max_storage_value_size:*/ (10 << 20).try_into()?, // 10 MiB
     );
 
+    let cx = VMContext::new(Vec::new(), [0; 32]);
+
+    let get_outcome = run(&file, "init", cx, &mut storage, &limits)?;
+    dbg!(get_outcome);
+
     let action = Action::Add {
         id: Id::new(),
         type_id: 1,
