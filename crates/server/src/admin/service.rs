@@ -80,6 +80,13 @@ pub(crate) fn setup(
 
     let admin_path = "/admin-api";
 
+    for listen in &config.listen {
+        info!(
+            "Admin API server listening on {}/http{{{}}}",
+            listen, admin_path
+        );
+    }
+
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
@@ -209,6 +216,13 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
     };
 
     let path = "/admin-dashboard";
+
+    for listen in &config.listen {
+        info!(
+            "Admin Dashboard UI available on {}/http{{{}}}",
+            listen, path
+        );
+    }
 
     // Create a router to serve static files and fallback to index.html
     let router = Router::new()
