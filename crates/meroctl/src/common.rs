@@ -73,7 +73,7 @@ pub fn load_config(path: &Utf8PathBuf) -> EyreResult<ConfigFile> {
     Ok(config)
 }
 
-pub fn load_multiaddr(config: &ConfigFile) -> EyreResult<&Multiaddr> {
+pub fn fetch_multiaddr(config: &ConfigFile) -> EyreResult<&Multiaddr> {
     let Some(multiaddr) = config.network.server.listen.first() else {
         bail!("No address.")
     };

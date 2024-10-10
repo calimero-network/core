@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
 use crate::common::{get_response, multiaddr_to_url, RequestType};
-use crate::common::{load_config, load_multiaddr};
+use crate::common::{load_config, fetch_multiaddr};
 
 #[derive(Debug, Parser)]
 pub struct CreateCommand {
@@ -47,10 +47,9 @@ pub struct CreateCommand {
 }
 
 impl CreateCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-        let config = load_config(&path)?;
-        let multiaddr = load_multiaddr(&config)?;
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+        let config = load_config(&args.node_name)?;
+        let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
         match self {

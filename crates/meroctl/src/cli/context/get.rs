@@ -5,7 +5,7 @@ use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::{get_response, multiaddr_to_url, RequestType};
+use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Parser, Debug)]
 pub struct GetCommand {
@@ -26,10 +26,9 @@ pub enum GetRequest {
 }
 
 impl GetCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-        let config = crate::common::load_config(&path)?;
-        let multiaddr = crate::common::load_multiaddr(&config)?;
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+        let config = load_config(&args.node_name)?;
+        let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
         match self.method {

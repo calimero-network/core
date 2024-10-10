@@ -5,7 +5,7 @@ use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::{get_response, multiaddr_to_url, RequestType};
+use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
 pub struct DeleteCommand {
@@ -14,14 +14,14 @@ pub struct DeleteCommand {
 }
 
 impl DeleteCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-        let config = crate::common::load_config(&path)?;
-        let multiaddr = crate::common::load_multiaddr(&config)?;
-        let client = Client::new();
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+        let config = load_config(&args.node_name)?;
 
-        self.delete_context(&multiaddr, &client, &config.identity)
-            .await
+        self.delete_context(
+            fetch_multiaddr(&config)?,
+            &Client::new(),
+            &config.identity
+        ).await
     }
 
     #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
