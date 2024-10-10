@@ -291,6 +291,9 @@ export interface InstallApplicationResponse {
   application_id: string;
 }
 
+export interface UninstallApplicationResponse
+  extends InstallApplicationResponse {}
+
 export interface ContextIdentitiesResponse {
   identities: string[];
 }
@@ -555,6 +558,34 @@ export class NodeDataSource implements NodeApi {
       console.error('Error installing application:', error);
       return {
         error: { code: 500, message: 'Failed to install application.' },
+      };
+    }
+  }
+
+  async uninstallApplication(
+    applicationId: string,
+  ): ApiResponse<UninstallApplicationResponse> {
+    try {
+      const headers: Header | null = await createAuthHeader(
+        JSON.stringify({
+          applicationId,
+        }),
+        getNearEnvironment(),
+      );
+
+      const response: ResponseData<UninstallApplicationResponse> =
+        await this.client.post<UninstallApplicationResponse>(
+          `${getAppEndpointKey()}/admin-api/uninstall-application`,
+          {
+            applicationId,
+          },
+          headers ?? {},
+        );
+      return response;
+    } catch (error) {
+      console.error('Error uninstalling application:', error);
+      return {
+        error: { code: 500, message: 'Failed to uninstall application.' },
       };
     }
   }

@@ -83,7 +83,7 @@ export function useRPC() {
       return JSON.parse(Buffer.from(rawResult.result).toString());
     } catch (e) {
       //If there is no package available, there is high possibility that context contains local wasm for development
-      console.log('Error getting package', e);
+      console.error('Error getting package', e);
       return null;
     }
   };
@@ -135,7 +135,7 @@ export function useRPC() {
       }
       return releases[releases.length - 1];
     } catch (e) {
-      console.log('Error getting latest relase', e);
+      console.error('Error getting latest relase', e);
       return null;
     }
   };

@@ -17,6 +17,7 @@ import { TableOptions } from '../components/common/OptionsHeader';
 import { ResponseData } from '../api/response';
 import { ContextObject } from '../types/context';
 import { useServerDown } from '../context/ServerDownContext';
+import { parseAppMetadata } from '../utils/metadata';
 
 const initialOptions = [
   {
@@ -57,7 +58,19 @@ export default function ContextsPage() {
       try {
         const tempContextObjects: ContextObject[] = await Promise.all(
           contexts.map(async (app: Context) => {
-            const packageData = await getPackage(app.applicationId);
+            const metadata = (
+              await apiClient(showServerDownPopup)
+                .node()
+                .getInstalledApplicationDetails(app.applicationId)
+            ).data?.metadata;
+            let packageData = null;
+            if (metadata) {
+              const applicationId = parseAppMetadata(metadata)?.contractAppId;
+              if (applicationId) {
+                packageData = await getPackage(applicationId);
+              }
+            }
+
             const contextObject: ContextObject = {
               id: app.id,
               package: packageData,
