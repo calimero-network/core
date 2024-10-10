@@ -144,7 +144,12 @@
       "noAvailableReleasesText": "No available releases",
       "noInstalledAppsText": "No installed applications",
       "noOwnedAppsText": "No owned applications",
-      "installNewAppText": "install new application"
+      "installNewAppText": "install new application",
+      "actionDialog": {
+        "title": "Uninstall Application",
+        "subtitle": "Are you sure you want to uninstall this application? This action cannot be undone.",
+        "buttonActionText": "Uninstall"
+      }
     },
     "installApplication": {
       "title": "Install Application",
