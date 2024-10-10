@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
 use crate::common::{get_response, multiaddr_to_url, RequestType};
-use crate::config_file::ConfigFile;
+use crate::common::{load_config, load_multiaddr};
 
 #[derive(Debug, Parser)]
 pub struct CreateCommand {
@@ -49,19 +49,8 @@ pub struct CreateCommand {
 impl CreateCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
-
-        if !ConfigFile::exists(&path) {
-            bail!("Config file does not exist")
-        };
-
-        let Ok(config) = ConfigFile::load(&path) else {
-            bail!("Failed to load config file")
-        };
-
-        let Some(multiaddr) = config.network.server.listen.first() else {
-            bail!("No address.")
-        };
-
+        let config = load_config(&path)?;
+        let multiaddr = load_multiaddr(&config)?;
         let client = Client::new();
 
         match self {
@@ -74,7 +63,7 @@ impl CreateCommand {
             } => {
                 let _ = create_context(
                     &client,
-                    multiaddr,
+                    &multiaddr,
                     context_seed,
                     app_id,
                     params,
@@ -94,7 +83,7 @@ impl CreateCommand {
 
                 let application_id = install_app(
                     &client,
-                    multiaddr,
+                    &&multiaddr,
                     path.clone(),
                     metadata.clone(),
                     &config.identity,
@@ -103,7 +92,7 @@ impl CreateCommand {
 
                 let context_id = create_context(
                     &client,
-                    multiaddr,
+                    &&multiaddr,
                     context_seed,
                     application_id,
                     params,
@@ -113,7 +102,7 @@ impl CreateCommand {
 
                 watch_app_and_update_context(
                     &client,
-                    multiaddr,
+                    &&multiaddr,
                     context_id,
                     path,
                     metadata,
