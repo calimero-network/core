@@ -4,20 +4,24 @@ use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::{get_response, load_config, load_multiaddr, multiaddr_to_url, RequestType};
+use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
 pub struct ListCommand;
 
 impl ListCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-        let config = load_config(&path)?;
-        let multiaddr = load_multiaddr(&config)?;
-        let url = multiaddr_to_url(&multiaddr, "admin-api/dev/applications")?;
-        let client = Client::new();
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+        let config = load_config(&args.node_name)?;
+        
         let response =
-            get_response(&client, url, None::<()>, &config.identity, RequestType::Get).await?;
+            get_response(
+                &Client::new(),
+                multiaddr_to_url(
+                    fetch_multiaddr(&config)?, 
+                    "admin-api/dev/applications")?,
+                None::<()>,
+                &config.identity,
+                RequestType::Get).await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())

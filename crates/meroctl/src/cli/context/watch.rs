@@ -16,12 +16,10 @@ pub struct WatchCommand {
 }
 
 impl WatchCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-        let config = load_config(&path)?;
-        let multiaddr = fetch_multiaddr(&config)?;
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+        let config = load_config(&args.node_name)?;
 
-        let mut url = multiaddr_to_url(&multiaddr, "ws")?;
+        let mut url = multiaddr_to_url(fetch_multiaddr(&config)?, "ws")?;
         url.set_scheme("ws")
             .map_err(|_| eyre::eyre!("Failed to set URL scheme"))?;
 
