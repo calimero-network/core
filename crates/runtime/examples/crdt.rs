@@ -8,6 +8,8 @@ use std::path::Path;
 use calimero_runtime::logic::{VMContext, VMLimits};
 use calimero_runtime::store::InMemoryStorage;
 use calimero_runtime::{run, Constraint};
+use calimero_storage::address::Id;
+use calimero_storage::interface::Action;
 use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use serde_json::{json, to_vec as to_json_vec};
@@ -44,17 +46,18 @@ fn main() -> EyreResult<()> {
         /*max_storage_value_size:*/ (10 << 20).try_into()?, // 10 MiB
     );
 
-    let cx = VMContext::new(
-        to_json_vec(&json!({
-                  "Add": {
-                    "id": "::library",
-                    "type": "Library",
-                    "data": "ola"
-                  }
-                }
-        ))?,
-        [0; 32],
-    );
+    let action = Action::Add {
+        id: Id::new(),
+        type_id: 1,
+        data: Vec::new(),
+        ancestors: Vec::new(),
+    };
+    let serialized_action = serde_json::to_string(&action)?;
+    let input = std::fmt::format(format_args!("{{\"action\": {}}}", serialized_action));
+    print!("{}", input);
+
+    let cx = VMContext::new(input.as_bytes().to_owned(), [0; 32]);
+
     let get_outcome = run(&file, "apply_action", cx, &mut storage, &limits)?;
     dbg!(get_outcome);
 
