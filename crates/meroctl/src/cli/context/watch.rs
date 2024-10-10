@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 
 use super::RootArgs;
-use crate::common::multiaddr_to_url;
+use crate::common::{load_config, load_multiaddr, multiaddr_to_url};
 
 #[derive(Debug, Parser)]
 pub struct WatchCommand {
@@ -18,8 +18,8 @@ pub struct WatchCommand {
 impl WatchCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
-        let config = crate::common::load_config(&path)?;
-        let multiaddr = crate::common::load_multiaddr(&config)?;
+        let config = load_config(&path)?;
+        let multiaddr = load_multiaddr(&config)?;
 
         let mut url = multiaddr_to_url(&multiaddr, "ws")?;
         url.set_scheme("ws")
