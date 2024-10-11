@@ -7,7 +7,7 @@ use velcro::btree_map;
 
 use crate::address::Id;
 use crate::entities::{AtomicUnit, ChildInfo, Collection, Data, Element};
-use crate::interface::StorageError;
+use crate::interface::{Interface, StorageError};
 
 /// A set of non-empty test UUIDs.
 pub const TEST_UUID: [[u8; 16]; 5] = [
@@ -62,6 +62,10 @@ impl Data for EmptyData {
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
     }
+
+    fn is_root() -> bool {
+        true
+    }
 }
 
 /// A simple page with a title, and paragraphs as children.
@@ -100,7 +104,7 @@ impl Data for Page {
         slice: &[u8],
     ) -> Result<[u8; 32], StorageError> {
         match collection {
-            "paragraphs" => {
+            "Paragraphs" => {
                 let child = <Paragraphs as Collection>::Child::try_from_slice(slice)
                     .map_err(|e| StorageError::DeserializationError(e))?;
                 child.calculate_merkle_hash()
@@ -111,7 +115,7 @@ impl Data for Page {
 
     fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>> {
         btree_map! {
-            "paragraphs".to_owned(): self.paragraphs.child_info.clone()
+            "Paragraphs".to_owned(): Interface::child_info_for(self.id(), &self.paragraphs).unwrap_or_default(),
         }
     }
 
@@ -121,6 +125,10 @@ impl Data for Page {
 
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
+    }
+
+    fn is_root() -> bool {
+        true
     }
 }
 
@@ -171,30 +179,28 @@ impl Data for Paragraph {
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
     }
+
+    fn is_root() -> bool {
+        false
+    }
 }
 
 /// A collection of paragraphs for a page.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
-pub struct Paragraphs {
-    pub child_info: Vec<ChildInfo>,
-}
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq, PartialOrd)]
+pub struct Paragraphs;
 
 impl Paragraphs {
     /// Creates a new paragraph collection.
     pub fn new() -> Self {
-        Self { child_info: vec![] }
+        Self {}
     }
 }
 
 impl Collection for Paragraphs {
     type Child = Paragraph;
 
-    fn child_info(&self) -> &Vec<ChildInfo> {
-        &self.child_info
-    }
-
-    fn has_children(&self) -> bool {
-        !self.child_info.is_empty()
+    fn name(&self) -> &'static str {
+        "Paragraphs"
     }
 }
 
@@ -234,5 +240,9 @@ impl Data for Person {
 
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
+    }
+
+    fn is_root() -> bool {
+        true
     }
 }

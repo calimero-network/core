@@ -27,7 +27,7 @@
 
 use borsh::{to_vec, BorshDeserialize};
 use calimero_storage::address::Path;
-use calimero_storage::entities::{ChildInfo, Data, Element};
+use calimero_storage::entities::{Data, Element};
 use calimero_storage::exports::{Digest, Sha256};
 use calimero_storage_macros::{AtomicUnit, Collection};
 
@@ -49,20 +49,16 @@ impl Child {
 
 #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[children(Child)]
-struct Group {
-    #[child_info]
-    child_info: Vec<ChildInfo>,
-}
+struct Group;
 
 impl Group {
     fn new() -> Self {
-        Self {
-            child_info: Vec::new(),
-        }
+        Self {}
     }
 }
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[root]
 struct Parent {
     title: String,
     #[collection]
@@ -82,6 +78,7 @@ impl Parent {
 }
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[root]
 struct Simple {
     name: String,
     value: i32,

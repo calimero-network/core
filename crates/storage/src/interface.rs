@@ -214,6 +214,7 @@
 mod tests;
 
 use core::fmt::Debug;
+use std::collections::BTreeMap;
 use std::io::Error as IoError;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
@@ -221,11 +222,12 @@ use calimero_sdk::env;
 use env::{storage_read, storage_remove, storage_write};
 use eyre::Report;
 use indexmap::IndexMap;
-use sha2::{Digest, Sha256};
+use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
-use crate::entities::{Collection, Data};
+use crate::entities::{ChildInfo, Collection, Data};
+use crate::index::Index;
 
 /// Actions to be taken during synchronisation.
 ///
@@ -273,12 +275,65 @@ pub enum Action {
     Update(Id, Vec<u8>),
 }
 
+/// Data that is used for comparison between two nodes.
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+)]
+pub struct ComparisonData {
+    /// The unique identifier of the entity being compared.
+    id: Id,
+
+    /// The Merkle hash of the entity's own data, without any descendants.
+    own_hash: [u8; 32],
+
+    /// The Merkle hash of the entity's complete data, including child hashes.
+    full_hash: [u8; 32],
+
+    /// The list of children of the entity, with their IDs and hashes,
+    /// organised by collection name.
+    children: BTreeMap<String, Vec<ChildInfo>>,
+}
+
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct Interface;
 
 impl Interface {
+    /// Adds a child to a collection.
+    ///
+    /// # Parameters
+    ///
+    /// * `parent_id`  - The ID of the parent entity that owns the
+    ///                  [`Collection`].
+    /// * `collection` - The [`Collection`] to which the child should be added.
+    /// * `child`      - The child entity to add.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    ///
+    pub fn add_child_to<C: Collection, D: Data>(
+        parent_id: Id,
+        collection: &mut C,
+        child: &mut D,
+    ) -> Result<bool, StorageError> {
+        let child_info = ChildInfo::new(child.id(), child.element().merkle_hash());
+        Index::add_child_to(parent_id, collection.name(), child_info)?;
+        Self::save(child)
+    }
+
     /// Applies an [`Action`] to the storage system.
     ///
     /// This function accepts a single incoming [`Action`] and applies it to the
@@ -307,10 +362,10 @@ impl Interface {
     ///
     pub fn apply_action<D: Data>(action: Action) -> Result<(), StorageError> {
         match action {
-            Action::Add(id, serialized_data) | Action::Update(id, serialized_data) => {
+            Action::Add(_id, serialized_data) | Action::Update(_id, serialized_data) => {
                 let mut entity = D::try_from_slice(&serialized_data)
                     .map_err(StorageError::DeserializationError)?;
-                _ = Self::save(id, &mut entity)?;
+                _ = Self::save(&mut entity)?;
             }
             Action::Compare(_) => return Err(StorageError::ActionNotAllowed("Compare".to_owned())),
             Action::Delete(id) => {
@@ -318,82 +373,6 @@ impl Interface {
             }
         }
         Ok(())
-    }
-
-    /// Calculates the Merkle hash for the [`Element`](crate::entities::Element).
-    ///
-    /// This calculates the Merkle hash for the
-    /// [`Element`](crate::entities::Element), which is a cryptographic hash of
-    /// the significant data in the "scope" of the [`Element`](crate::entities::Element),
-    /// and is used to determine whether the data has changed and is valid. It
-    /// is calculated by hashing the substantive data in the [`Element`](crate::entities::Element),
-    /// along with the hashes of the children of the [`Element`](crate::entities::Element),
-    /// thereby representing the state of the entire hierarchy below the
-    /// [`Element`](crate::entities::Element).
-    ///
-    /// This method is called automatically when the [`Element`](crate::entities::Element)
-    /// is updated, but can also be called manually if required.
-    ///
-    /// # Significant data
-    ///
-    /// The data considered "significant" to the state of the [`Element`](crate::entities::Element),
-    /// and any change to which is considered to constitute a change in the
-    /// state of the [`Element`](crate::entities::Element), is:
-    ///
-    ///   - The ID of the [`Element`](crate::entities::Element). This should
-    ///     never change. Arguably, this could be omitted, but at present it
-    ///     means that empty elements are given meaningful hashes.
-    ///   - The primary [`Data`] of the [`Element`](crate::entities::Element).
-    ///     This is the data that the consumer application has stored in the
-    ///     [`Element`](crate::entities::Element), and is the focus of the
-    ///     [`Element`](crate::entities::Element).
-    ///   - The metadata of the [`Element`](crate::entities::Element). This is
-    ///     the system-managed properties that are used to process the
-    ///     [`Element`](crate::entities::Element), but are not part of the
-    ///     primary data. Arguably the Merkle hash could be considered part of
-    ///     the metadata, but it is not included in the [`Data`] struct at
-    ///     present (as it obviously should not contribute to the hash, i.e.
-    ///     itself).
-    ///
-    /// Note that private data is not considered significant, as it is not part
-    /// of the shared state, and therefore does not contribute to the hash.
-    ///
-    /// # Parameters
-    ///
-    /// * `element`     - The [`Element`](crate::entities::Element) to calculate
-    ///                   the Merkle hash for.
-    /// * `recalculate` - Whether to recalculate or use the cached value for
-    ///                   child hashes. Under normal circumstances, the cached
-    ///                   value should be used, as it is more efficient. The
-    ///                   option to recalculate is provided for situations when
-    ///                   the entire subtree needs revalidating.
-    ///
-    /// # Errors
-    ///
-    /// If there is a problem in serialising the data, an error will be
-    /// returned.
-    ///
-    pub fn calculate_merkle_hash_for<D: Data>(
-        entity: &D,
-        recalculate: bool,
-    ) -> Result<[u8; 32], StorageError> {
-        let mut hasher = Sha256::new();
-        hasher.update(entity.calculate_merkle_hash()?);
-
-        for (collection_name, children) in entity.collections() {
-            for child_info in children {
-                let child_hash = if recalculate {
-                    let child_data = Self::find_by_id_raw(child_info.id())?
-                        .ok_or_else(|| StorageError::NotFound(child_info.id()))?;
-                    entity.calculate_merkle_hash_for_child(&collection_name, &child_data)?
-                } else {
-                    child_info.merkle_hash()
-                };
-                hasher.update(child_hash);
-            }
-        }
-
-        Ok(hasher.finalize().into())
     }
 
     /// The children of the [`Collection`].
@@ -433,6 +412,8 @@ impl Interface {
     ///
     /// # Parameters
     ///
+    /// * `parent_id`  - The ID of the parent entity that owns the
+    ///                  [`Collection`].
     /// * `collection` - The [`Collection`] to get the children of.
     ///
     /// # Errors
@@ -441,12 +422,51 @@ impl Interface {
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn children_of<C: Collection>(collection: &C) -> Result<Vec<C::Child>, StorageError> {
+    pub fn children_of<C: Collection>(
+        parent_id: Id,
+        collection: &C,
+    ) -> Result<Vec<C::Child>, StorageError> {
+        let children_info = Index::get_children_of(parent_id, collection.name())?;
         let mut children = Vec::new();
-        for info in collection.child_info() {
-            children.push(Self::find_by_id(info.id())?.ok_or(StorageError::NotFound(info.id()))?);
+        for child_info in children_info {
+            if let Some(child) = Self::find_by_id(child_info.id())? {
+                children.push(child);
+            }
         }
         Ok(children)
+    }
+
+    /// The basic info for children of the [`Collection`].
+    ///
+    /// This gets basic info for children of the [`Collection`], which are the
+    /// [`Element`](crate::entities::Element)s that are directly below the
+    /// [`Collection`]'s owner in the hierarchy. This is a simple method that
+    /// returns the children as a list, and does not provide any filtering or
+    /// ordering.
+    ///
+    /// See [`children_of()`](Interface::children_of()) for more information.
+    ///
+    /// # Parameters
+    ///
+    /// * `parent_id`  - The ID of the parent entity that owns the
+    ///                  [`Collection`].
+    /// * `collection` - The [`Collection`] to get the children of.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, or a child
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
+    ///
+    /// # See also
+    ///
+    /// [`children_of()`](Interface::children_of())
+    ///
+    pub fn child_info_for<C: Collection>(
+        parent_id: Id,
+        collection: &C,
+    ) -> Result<Vec<ChildInfo>, StorageError> {
+        Index::get_children_of(parent_id, collection.name())
     }
 
     /// Compares a foreign entity with a local one.
@@ -472,7 +492,12 @@ impl Interface {
     ///
     pub fn compare_trees<D: Data>(
         foreign_entity: &D,
+        foreign_index_data: &ComparisonData,
     ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
+        if foreign_entity.id() != foreign_index_data.id {
+            return Err(StorageError::IdentifierMismatch(foreign_index_data.id));
+        }
+
         let mut actions = (vec![], vec![]);
         let Some(local_entity) = Self::find_by_id::<D>(foreign_entity.id())? else {
             // Local entity doesn't exist, so we need to add it
@@ -483,26 +508,38 @@ impl Interface {
             return Ok(actions);
         };
 
-        if local_entity.element().merkle_hash() == foreign_entity.element().merkle_hash() {
+        let (local_full_hash, local_own_hash) = Index::get_hashes_for(local_entity.id())?
+            .ok_or(StorageError::IndexNotFound(local_entity.id()))?;
+
+        // Compare full Merkle hashes
+        if local_entity.element().merkle_hash() == foreign_entity.element().merkle_hash()
+            || local_full_hash == foreign_index_data.full_hash
+        {
             return Ok(actions);
         }
-        if local_entity.element().updated_at() <= foreign_entity.element().updated_at() {
-            actions.0.push(Action::Update(
-                local_entity.id(),
-                to_vec(foreign_entity).map_err(StorageError::SerializationError)?,
-            ));
-        } else {
-            actions.1.push(Action::Update(
-                foreign_entity.id(),
-                to_vec(&local_entity).map_err(StorageError::SerializationError)?,
-            ));
+
+        // Compare own hashes and timestamps
+        if local_own_hash != foreign_index_data.own_hash {
+            if local_entity.element().updated_at() <= foreign_entity.element().updated_at() {
+                actions.0.push(Action::Update(
+                    local_entity.id(),
+                    to_vec(foreign_entity).map_err(StorageError::SerializationError)?,
+                ));
+            } else {
+                actions.1.push(Action::Update(
+                    foreign_entity.id(),
+                    to_vec(&local_entity).map_err(StorageError::SerializationError)?,
+                ));
+            }
         }
 
+        // The list of collections from the type will be the same on both sides, as
+        // the type is the same.
         let local_collections = local_entity.collections();
-        let foreign_collections = foreign_entity.collections();
 
+        // Compare children
         for (local_coll_name, local_children) in &local_collections {
-            if let Some(foreign_children) = foreign_collections.get(local_coll_name) {
+            if let Some(foreign_children) = foreign_index_data.children.get(local_coll_name) {
                 let local_child_map: IndexMap<_, _> = local_children
                     .iter()
                     .map(|child| (child.id(), child.merkle_hash()))
@@ -519,7 +556,8 @@ impl Interface {
                             actions.1.push(Action::Compare(*id));
                         }
                         None => {
-                            // We need to fetch the child entity and serialize it
+                            // Child exists locally but not in foreign, add to foreign.
+                            // We need to fetch the child entity data in serialised form.
                             if let Some(local_child) = Self::find_by_id_raw(*id)? {
                                 actions.1.push(Action::Add(*id, local_child));
                             }
@@ -531,7 +569,9 @@ impl Interface {
 
                 for id in foreign_child_map.keys() {
                     if !local_child_map.contains_key(id) {
-                        // We can't get the full data for the foreign child, so we flag it for comparison
+                        // Child exists in foreign but not locally, compare.
+                        // We can't get the full data for the foreign child, so we flag it for
+                        // comparison.
                         actions.1.push(Action::Compare(*id));
                     }
                 }
@@ -546,7 +586,7 @@ impl Interface {
         }
 
         // Check for collections in the foreign entity that don't exist locally
-        for (foreign_coll_name, foreign_children) in &foreign_collections {
+        for (foreign_coll_name, foreign_children) in &foreign_index_data.children {
             if !local_collections.contains_key(foreign_coll_name) {
                 for child in foreign_children {
                     // We can't get the full data for the foreign child, so we flag it for comparison
@@ -648,16 +688,141 @@ impl Interface {
     ///
     /// # Parameters
     ///
-    /// * `id` - The unique identifier of the [`Element`](crate::entities::Element)
-    ///          to find the children of.
+    /// * `parent_id`  - The unique identifier of the [`Element`](crate::entities::Element)
+    ///                  to find the children of.
+    /// * `collection` - The name of the [`Collection`] to find the children of.
     ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    pub fn find_children_by_id<D: Data>(_id: Id) -> Result<Option<Vec<D>>, StorageError> {
-        unimplemented!()
+    pub fn find_children_by_id<D: Data>(
+        parent_id: Id,
+        collection: &str,
+    ) -> Result<Vec<D>, StorageError> {
+        let child_infos = Index::get_children_of(parent_id, collection)?;
+        let mut children = Vec::new();
+        for child_info in child_infos {
+            if let Some(child) = Self::find_by_id(child_info.id())? {
+                children.push(child);
+            }
+        }
+        Ok(children)
+    }
+
+    /// Generates comparison data for an entity.
+    ///
+    /// This function generates comparison data for the specified entity, which
+    /// includes the entity's own hash, the full hash of the entity and its
+    /// children, and the IDs and hashes of the children themselves.
+    ///
+    /// # Parameters
+    ///
+    /// * `entity` - The entity to generate comparison data for.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    ///
+    pub fn generate_comparison_data<D: Data>(entity: &D) -> Result<ComparisonData, StorageError> {
+        let (full_hash, own_hash) =
+            Index::get_hashes_for(entity.id())?.ok_or(StorageError::IndexNotFound(entity.id()))?;
+
+        let children = entity
+            .collections()
+            .into_keys()
+            .map(|collection_name| {
+                Index::get_children_of(entity.id(), &collection_name)
+                    .map(|children| (collection_name.clone(), children))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+        Ok(ComparisonData {
+            id: entity.id(),
+            own_hash,
+            full_hash,
+            children,
+        })
+    }
+
+    /// Whether the [`Collection`] has children.
+    ///
+    /// This checks whether the [`Collection`] of the specified entity has
+    /// children, which are the entities that are directly below the entity's
+    /// [`Collection`] in the hierarchy.
+    ///
+    /// # Parameters
+    ///
+    /// * `parent_id`   - The unique identifier of the entity to check for
+    ///                  children.
+    /// * `collection` - The [`Collection`] to check for children.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    ///
+    pub fn has_children<C: Collection>(
+        parent_id: Id,
+        collection: &C,
+    ) -> Result<bool, StorageError> {
+        Index::has_children(parent_id, collection.name())
+    }
+
+    /// Retrieves the parent entity of a given entity.
+    ///
+    /// # Parameters
+    ///
+    /// * `child_id` - The [`Id`] of the entity whose parent is to be retrieved.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    ///
+    pub fn parent_of<D: Data>(child_id: Id) -> Result<Option<D>, StorageError> {
+        Index::get_parent_id(child_id)?
+            .map_or_else(|| Ok(None), |parent_id| Self::find_by_id(parent_id))
+    }
+
+    /// Removes a child from a collection.
+    ///
+    /// # Parameters
+    ///
+    /// * `parent_id`  - The ID of the parent entity that owns the
+    ///                  [`Collection`].
+    /// * `collection` - The collection from which the child should be removed.
+    /// * `child_id`   - The ID of the child entity to remove.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    ///
+    pub fn remove_child_from<C: Collection>(
+        parent_id: Id,
+        collection: &mut C,
+        child_id: Id,
+    ) -> Result<bool, StorageError> {
+        Index::remove_child_from(parent_id, collection.name(), child_id)?;
+        Ok(storage_remove(child_id.to_string().as_bytes()))
+    }
+
+    /// Retrieves the root entity for a given context.
+    ///
+    /// # Parameters
+    ///
+    /// * `context_id` - An identifier for the context whose root is to be retrieved.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    ///
+    pub fn root<D: Data>(context_id: &[u8; 16]) -> Result<Option<D>, StorageError> {
+        Self::find_by_id(context_id.into())
     }
 
     /// Saves an [`Element`](crate::entities::Element) to the storage system.
@@ -684,6 +849,21 @@ impl Interface {
     /// checked before calling [`save()](crate::entities::Element::save()) by
     /// calling [`is_dirty()](crate::entities::Element::is_dirty()).
     ///
+    /// # Hierarchy
+    ///
+    /// It's important to be aware of the hierarchy when saving an entity. If
+    /// the entity is a child, it must have a parent, and the parent must exist
+    /// in the storage system. If the parent does not exist, the child will not
+    /// be saved, and an error will be returned.
+    ///
+    /// If the entity is a root, it will be saved as a root, and the parent ID
+    /// will be set to [`None`].
+    ///
+    /// When creating a new child entity, it's important to call
+    /// [`add_child_to()`](Interface::add_child_to()) in order to create and
+    /// associate the child with the parent. Thereafter, [`save()`](Interface::save())
+    /// can be called to save updates to the child entity.
+    ///
     /// # Merkle hash
     ///
     /// The Merkle hash of the [`Element`](crate::entities::Element) is
@@ -698,8 +878,6 @@ impl Interface {
     ///
     /// # Parameters
     ///
-    /// * `id`      - The unique identifier of the [`Element`](crate::entities::Element)
-    ///               to save.
     /// * `element` - The [`Element`](crate::entities::Element) whose data
     ///               should be saved. This will be serialised and stored in the
     ///               storage system.
@@ -709,29 +887,32 @@ impl Interface {
     /// If an error occurs when serialising data or interacting with the storage
     /// system, an error will be returned.
     ///
-    pub fn save<D: Data>(id: Id, entity: &mut D) -> Result<bool, StorageError> {
+    pub fn save<D: Data>(entity: &mut D) -> Result<bool, StorageError> {
         if !entity.element().is_dirty() {
             return Ok(true);
         }
-        // It is possible that the record gets added or updated after the call to
-        // this find() method, and before the put() to save the new data... however,
-        // this is very unlikely under our current operating model, and so the risk
-        // is considered acceptable. If this becomes a problem, we should change
-        // the RwLock to a ReentrantMutex, or reimplement the get() logic here to
-        // occur within the write lock. But this seems unnecessary at present.
-        if let Some(mut existing) = Self::find_by_id::<D>(id)? {
-            if existing.element_mut().metadata.updated_at >= entity.element().metadata.updated_at {
+        let id = entity.id();
+
+        if !D::is_root() && Index::get_parent_id(id)?.is_none() {
+            return Err(StorageError::CannotCreateOrphan(id));
+        }
+
+        if let Some(existing) = Self::find_by_id::<D>(id)? {
+            if existing.element().metadata.updated_at >= entity.element().metadata.updated_at {
                 return Ok(false);
             }
+        } else if D::is_root() {
+            Index::add_root(ChildInfo::new(id, [0_u8; 32]))?;
         }
-        // TODO: Need to propagate the change up the tree, i.e. trigger a
-        // TODO: recalculation for the ancestors.
-        entity.element_mut().merkle_hash = Self::calculate_merkle_hash_for(entity, false)?;
+
+        let own_hash = entity.calculate_merkle_hash()?;
+        entity.element_mut().merkle_hash = Index::update_hash_for(id, own_hash)?;
 
         _ = storage_write(
             id.to_string().as_bytes(),
             &to_vec(entity).map_err(StorageError::SerializationError)?,
         );
+
         entity.element_mut().is_dirty = false;
         Ok(true)
     }
@@ -761,6 +942,12 @@ pub enum StorageError {
     #[error("Action not allowed: {0}")]
     ActionNotAllowed(String),
 
+    /// An attempt was made to create an orphan, i.e. an entity that has not
+    /// been registered as either a root or having a parent. This was probably
+    /// cause by calling `save()` without calling `add_child_to()` first.
+    #[error("Cannot create orphan with ID: {0}")]
+    CannotCreateOrphan(Id),
+
     /// An error occurred during serialization.
     #[error("Deserialization error: {0}")]
     DeserializationError(IoError),
@@ -769,9 +956,24 @@ pub enum StorageError {
     #[error("Dispatch error: {0}")]
     DispatchError(String),
 
+    /// The ID of the entity supplied does not match the ID in the accompanying
+    /// comparison data.
+    #[error("ID mismatch in comparison data for ID: {0}")]
+    IdentifierMismatch(Id),
+
     /// TODO: An error during tree validation.
     #[error("Invalid data was found for ID: {0}")]
     InvalidDataFound(Id),
+
+    /// An index entry already exists for the specified entity. This would
+    /// indicate a bug in the system.
+    #[error("Index already exists for ID: {0}")]
+    IndexAlreadyExists(Id),
+
+    /// An index entry was not found for the specified entity. This would
+    /// indicate a bug in the system.
+    #[error("Index not found for ID: {0}")]
+    IndexNotFound(Id),
 
     /// The requested record was not found, but in the context it was asked for,
     /// it was expected to be found and so this represents an error or some kind
@@ -790,4 +992,24 @@ pub enum StorageError {
     /// An unknown collection type was specified.
     #[error("Unknown collection type: {0}")]
     UnknownCollectionType(String),
+}
+
+impl Serialize for StorageError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match *self {
+            Self::ActionNotAllowed(ref err)
+            | Self::DispatchError(ref err)
+            | Self::UnknownCollectionType(ref err) => serializer.serialize_str(err),
+            Self::DeserializationError(ref err) | Self::SerializationError(ref err) => {
+                serializer.serialize_str(&err.to_string())
+            }
+            Self::CannotCreateOrphan(id)
+            | Self::IndexAlreadyExists(id)
+            | Self::IndexNotFound(id)
+            | Self::IdentifierMismatch(id)
+            | Self::InvalidDataFound(id)
+            | Self::NotFound(id) => serializer.serialize_str(&id.to_string()),
+            Self::StoreError(ref err) => serializer.serialize_str(&err.to_string()),
+        }
+    }
 }
