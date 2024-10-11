@@ -4,7 +4,7 @@ use calimero_server_primitives::jsonrpc::{
 };
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
-use serde_json::json;
+use serde_json::Value;
 
 use super::RootArgs;
 use crate::common::{get_response, multiaddr_to_url, RequestType};
@@ -58,11 +58,13 @@ impl JsonRpcCommand {
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
+        let json_payload: Value = serde_json::from_str(&self.args_json)?;
+
         let payload = match self.call_type {
             CallType::Query => RequestPayload::Query(QueryRequest::new(
                 self.context_id,
                 self.method,
-                json!(self.args_json),
+                json_payload,
                 config
                     .identity
                     .public()
@@ -73,7 +75,7 @@ impl JsonRpcCommand {
             CallType::Mutate => RequestPayload::Mutate(MutateRequest::new(
                 self.context_id,
                 self.method,
-                json!(self.args_json),
+                json_payload,
                 config
                     .identity
                     .public()
