@@ -70,11 +70,11 @@ pub struct BlobStoreConfig {
 }
 
 impl ConfigFile {
-    pub(crate) fn exists(dir: &Utf8Path) -> bool {
+    pub fn exists(dir: &Utf8Path) -> bool {
         dir.join(CONFIG_FILE).is_file()
     }
 
-    pub(crate) fn load(dir: &Utf8Path) -> EyreResult<Self> {
+    pub fn load(dir: &Utf8Path) -> EyreResult<Self> {
         let path = dir.join(CONFIG_FILE);
         let content = read_to_string(&path).wrap_err_with(|| {
             format!(
@@ -86,7 +86,7 @@ impl ConfigFile {
         toml::from_str(&content).map_err(Into::into)
     }
 
-    pub(crate) fn save(&self, dir: &Utf8Path) -> EyreResult<()> {
+    pub fn save(&self, dir: &Utf8Path) -> EyreResult<()> {
         let path = dir.join(CONFIG_FILE);
         let content = toml::to_string_pretty(self)?;
 

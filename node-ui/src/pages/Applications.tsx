@@ -17,6 +17,7 @@ import {
 import { ResponseData } from '../api/response';
 import { useServerDown } from '../context/ServerDownContext';
 import { AppMetadata, parseAppMetadata } from '../utils/metadata';
+import { ModalContent } from '../components/common/StatusModal';
 
 export enum Tabs {
   AVAILABLE,
@@ -77,6 +78,14 @@ export default function ApplicationsPage() {
     owned: [],
     installed: [],
   });
+  const [showStatusModal, setShowStatusModal] = useState(false);
+  const [showActionDialog, setShowActionDialog] = useState(false);
+  const [selectedAppId, setSelectedAppId] = useState('');
+  const [uninstallStatus, setUninstallStatus] = useState<ModalContent>({
+    title: '',
+    message: '',
+    error: false,
+  });
 
   useEffect(() => {
     const setApplicationsList = async () => {
@@ -114,73 +123,140 @@ export default function ApplicationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    const setApps = async () => {
-      setErrorMessage('');
-      const fetchApplicationResponse: ResponseData<GetInstalledApplicationsResponse> =
-        await apiClient(showServerDownPopup).node().getInstalledApplications();
+  const setApps = async () => {
+    setErrorMessage('');
+    const fetchApplicationResponse: ResponseData<GetInstalledApplicationsResponse> =
+      await apiClient(showServerDownPopup).node().getInstalledApplications();
 
-      if (fetchApplicationResponse.error) {
-        setErrorMessage(fetchApplicationResponse.error.message);
-        return;
-      }
-      let installedApplications = fetchApplicationResponse.data?.apps;
-      if (installedApplications.length !== 0) {
-        var tempApplications: (Application | null)[] = await Promise.all(
-          installedApplications.map(
-            async (app: InstalledApplication): Promise<Application | null> => {
-              var appMetadata: AppMetadata | null = parseAppMetadata(
-                app.metadata,
-              );
+    if (fetchApplicationResponse.error) {
+      setErrorMessage(fetchApplicationResponse.error.message);
+      return;
+    }
+    let installedApplications = fetchApplicationResponse.data?.apps;
+    if (installedApplications.length !== 0) {
+      var tempApplications: (Application | null)[] = await Promise.all(
+        installedApplications.map(
+          async (app: InstalledApplication): Promise<Application | null> => {
+            var appMetadata: AppMetadata | null = parseAppMetadata(
+              app.metadata,
+            );
 
-              let application: Application | null = null;
-              if (!appMetadata) {
+            let application: Application | null = null;
+            if (!appMetadata) {
+              application = {
+                id: app.id,
+                version: app.version,
+                source: app.source,
+                blob: app.blob,
+                contract_app_id: null,
+                name: 'local app',
+                description: null,
+                repository: null,
+                owner: null,
+              };
+            } else {
+              const [packageData, releaseData]: [
+                Package | null,
+                Release | null,
+              ] = await Promise.all([
+                getPackage(appMetadata.contractAppId),
+                getLatestRelease(appMetadata.contractAppId),
+              ]);
+
+              if (packageData) {
                 application = {
-                  id: app.id,
-                  version: app.version,
-                  source: app.source,
-                  blob: app.blob,
-                  contract_app_id: null,
-                  name: 'local app',
-                  description: null,
-                  repository: null,
-                  owner: null,
+                  ...app,
+                  contract_app_id: appMetadata.contractAppId,
+                  name: packageData?.name ?? '',
+                  description: packageData?.description,
+                  repository: packageData?.repository,
+                  owner: packageData?.owner,
+                  version: releaseData?.version ?? '',
                 };
-              } else {
-                const packageData: Package | null = await getPackage(
-                  appMetadata.contractAppId,
-                );
-
-                if (packageData) {
-                  application = {
-                    ...app,
-                    contract_app_id: appMetadata.contractAppId,
-                    name: packageData?.name ?? '',
-                    description: packageData?.description,
-                    repository: packageData?.repository,
-                    owner: packageData?.owner,
-                  };
-                }
               }
+            }
 
-              return application;
-            },
-          ),
-        );
-        var installed: Application[] = tempApplications.filter(
-          (app): app is Application => app !== null,
-        );
+            return application;
+          },
+        ),
+      );
+      var installed: Application[] = tempApplications.filter(
+        (app): app is Application => app !== null,
+      );
 
-        setApplications((prevState: Applications) => ({
-          ...prevState,
-          installed,
-        }));
-      }
-    };
+      setApplications((prevState: Applications) => ({
+        ...prevState,
+        installed,
+      }));
+    }
+  };
 
+  useEffect(() => {
     setApps();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const uninstallApplication = async () => {
+    const contextResponse = await apiClient(showServerDownPopup)
+      .node()
+      .getContexts();
+    if (contextResponse.error) {
+      setUninstallStatus({
+        title: 'Error',
+        message: contextResponse.error.message,
+        error: true,
+      });
+      setShowActionDialog(false);
+      setShowStatusModal(true);
+      return;
+    }
+
+    const contextList = contextResponse.data?.contexts;
+
+    if (contextList && contextList.length !== 0) {
+      const contextList = contextResponse.data?.contexts;
+      const usedByContextsIds =
+        contextList
+          ?.filter((context) => context.applicationId === selectedAppId)
+          .map((context) => context.id) ?? [];
+
+      if (usedByContextsIds.length !== 0) {
+        setUninstallStatus({
+          title: 'This application cannot be uninstalled',
+          message: `This application is used by the following contexts: ${usedByContextsIds.join(', ')}`,
+          error: true,
+        });
+        setShowActionDialog(false);
+        setShowStatusModal(true);
+        return;
+      }
+    }
+
+    const response = await apiClient(showServerDownPopup)
+      .node()
+      .uninstallApplication(selectedAppId);
+    if (response.error) {
+      setUninstallStatus({
+        title: 'Error',
+        message: response.error.message,
+        error: true,
+      });
+    } else {
+      await setApps();
+      setUninstallStatus({
+        title: 'Success',
+        message: 'Application uninstalled successfully',
+        error: false,
+      });
+    }
+    setShowActionDialog(false);
+    setShowStatusModal(true);
+  };
+
+  const showModal = (id: string) => {
+    setSelectedAppId(id);
+    setShowActionDialog(true);
+  };
 
   return (
     <FlexLayout>
@@ -198,6 +274,13 @@ export default function ApplicationsPage() {
           }}
           navigateToPublishApp={() => navigate('/publish-application')}
           navigateToInstallApp={() => navigate('/applications/install')}
+          uninstallApplication={uninstallApplication}
+          showStatusModal={showStatusModal}
+          closeModal={() => setShowStatusModal(false)}
+          uninstallStatus={uninstallStatus}
+          showActionDialog={showActionDialog}
+          setShowActionDialog={setShowActionDialog}
+          showModal={showModal}
           errorMessage={errorMessage}
         />
       </PageContentWrapper>

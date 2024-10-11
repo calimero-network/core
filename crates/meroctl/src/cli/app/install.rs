@@ -10,8 +10,7 @@ use tracing::info;
 use url::Url;
 
 use crate::cli::RootArgs;
-use crate::common::{get_response, multiaddr_to_url, RequestType};
-use crate::config_file::ConfigFile;
+use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
 pub struct InstallCommand {
@@ -32,24 +31,8 @@ pub struct InstallCommand {
 
 impl InstallCommand {
     pub async fn run(self, args: RootArgs) -> Result<()> {
-        let path = args.home.join(&args.node_name);
-
-        if !ConfigFile::exists(&path) {
-            bail!("Config file does not exist")
-        };
-
-        let Ok(config) = ConfigFile::load(&path) else {
-            bail!("Failed to load config file")
-        };
-
-        let Some(multiaddr) = config.network.server.listen.first() else {
-            bail!("No address.")
-        };
-
-        let client = Client::new();
-
+        let config = load_config(&args.node_name)?;
         let mut is_dev_installation = false;
-
         let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
 
         let install_request = if let Some(app_path) = self.path {
@@ -65,14 +48,17 @@ impl InstallCommand {
             bail!("Either path or url must be provided");
         };
 
-        let install_url = if is_dev_installation {
-            multiaddr_to_url(multiaddr, "admin-api/dev/install-dev-application")?
-        } else {
-            multiaddr_to_url(multiaddr, "admin-api/dev/install-application")?
-        };
+        let install_url = multiaddr_to_url(
+            fetch_multiaddr(&config)?,
+            if is_dev_installation {
+                "admin-api/dev/install-dev-application"
+            } else {
+                "admin-api/dev/install-application"
+            },
+        )?;
 
         let install_response = get_response(
-            &client,
+            &Client::new(),
             install_url,
             Some(install_request),
             &config.identity,

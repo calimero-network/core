@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::RootArgs;
 use crate::common::{get_response, multiaddr_to_url, RequestType};
-use crate::config_file::ConfigFile;
+use calimero_config::ConfigFile;
 
 #[derive(Debug, Parser)]
 pub struct JsonRpcCommand {

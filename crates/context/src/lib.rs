@@ -673,6 +673,13 @@ impl ContextManager {
         Ok(application_id)
     }
 
+    pub fn uninstall_application(&self, application_id: ApplicationId) -> EyreResult<()> {
+        let application_meta_key = ApplicationMetaKey::new(application_id);
+        let mut handle = self.store.handle();
+        handle.delete(&application_meta_key)?;
+        Ok(())
+    }
+
     pub async fn install_application_from_path(
         &self,
         path: Utf8PathBuf,

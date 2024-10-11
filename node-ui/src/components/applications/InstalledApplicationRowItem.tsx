@@ -3,6 +3,7 @@ import styled from 'styled-components';
 import { truncateHash } from '../../utils/displayFunctions';
 import { Application } from '../../api/dataSource/NodeDataSource';
 import { ClipboardDocumentIcon } from '@heroicons/react/24/solid';
+import MenuIconDropdown from '../common/MenuIconDropdown';
 
 interface ApplicationRowItemProps {
   $hasBorders: boolean;
@@ -33,7 +34,7 @@ const RowItem = styled.div<ApplicationRowItemProps>`
     height: 4.5rem;
     display: flex;
     align-items: center;
-    width: 25%;
+    width: 20%;
   }
 
   .name {
@@ -60,11 +61,16 @@ const RowItem = styled.div<ApplicationRowItemProps>`
   }
 
   .menu-dropdown {
-    margin-right: 1rem;
+    padding: 0.75rem 0rem;
+    height: 4.5rem;
+    display: flex;
+    justify-content: end;
+    align-items: center;
+    width: 20%;
   }
 `;
 
-export default function applicationRowItem(
+export default function installedApplicationRowItem(
   item: Application,
   id: number,
   count: number,
@@ -93,6 +99,16 @@ export default function applicationRowItem(
       </div>
       <div className="row-item read">{item.version ?? 'N/A'}</div>
       <div className="row-item read">{item.owner ?? 'N/A'}</div>
+      <div className="menu-dropdown">
+        <MenuIconDropdown
+          options={[
+            {
+              title: 'Uninstall application',
+              onClick: () => onRowItemClick && onRowItemClick(item.id),
+            },
+          ]}
+        />
+      </div>
     </RowItem>
   );
 }

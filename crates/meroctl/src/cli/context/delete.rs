@@ -5,8 +5,7 @@ use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::{get_response, multiaddr_to_url, RequestType};
-use crate::config_file::ConfigFile;
+use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
 pub struct DeleteCommand {
@@ -15,21 +14,10 @@ pub struct DeleteCommand {
 }
 
 impl DeleteCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-        if !ConfigFile::exists(&path) {
-            bail!("Config file does not exist")
-        }
-        let Ok(config) = ConfigFile::load(&path) else {
-            bail!("Failed to load config file");
-        };
-        let Some(multiaddr) = config.network.server.listen.first() else {
-            bail!("No address.")
-        };
+    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+        let config = load_config(&args.node_name)?;
 
-        let client = Client::new();
-
-        self.delete_context(multiaddr, &client, &config.identity)
+        self.delete_context(fetch_multiaddr(&config)?, &Client::new(), &config.identity)
             .await
     }
 

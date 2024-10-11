@@ -15,6 +15,13 @@ pub struct InstallApplicationRequest {
     pub metadata: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct UninstallApplicationRequest {
+    pub application_id: ApplicationId,
+}
+
 impl InstallApplicationRequest {
     #[must_use]
     pub const fn new(url: Url, hash: Option<Hash>, metadata: Vec<u8>) -> Self {
@@ -91,7 +98,29 @@ impl InstallApplicationResponse {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
+pub struct UninstallApplicationResponse {
+    pub data: ApplicationUninstallResult,
+}
+
+impl UninstallApplicationResponse {
+    #[must_use]
+    pub const fn new(application_id: ApplicationId) -> Self {
+        Self {
+            data: ApplicationUninstallResult { application_id },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct ApplicationInstallResult {
+    pub application_id: ApplicationId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct ApplicationUninstallResult {
     pub application_id: ApplicationId,
 }
 
