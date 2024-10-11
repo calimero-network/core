@@ -182,7 +182,7 @@ impl KeyComponent for StateKey {
     type LEN = U32;
 }
 
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Ord, Hash, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 pub struct ContextState(Key<(ContextId, StateKey)>);
 

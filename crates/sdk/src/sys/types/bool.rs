@@ -14,3 +14,10 @@ impl TryFrom<Bool> for bool {
         }
     }
 }
+
+impl From<bool> for Bool {
+    #[inline]
+    fn from(value: bool) -> Self {
+        Bool(value as u32)
+    }
+}

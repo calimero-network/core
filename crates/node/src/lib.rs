@@ -53,14 +53,14 @@ use tokio::time::{interval_at, Instant};
 use tokio::{select, spawn};
 use tracing::{debug, error, info, warn};
 
-use crate::runtime_compat::RuntimeCompatStore;
-use crate::transaction_pool::{TransactionPool, TransactionPoolEntry};
-use crate::types::{PeerAction, TransactionConfirmation, TransactionRejection};
-
 pub mod catchup;
 pub mod runtime_compat;
 pub mod transaction_pool;
 pub mod types;
+
+use crate::runtime_compat::RuntimeCompatStore;
+use crate::transaction_pool::{TransactionPool, TransactionPoolEntry};
+use crate::types::{PeerAction, TransactionConfirmation, TransactionRejection};
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -1455,20 +1455,18 @@ impl Node {
 // TODO: move this into the config
 // TODO: also this would be nice to have global default with per application customization
 fn get_runtime_limits() -> EyreResult<VMLimits> {
-    Ok(VMLimits::new(
-        /*max_stack_size:*/ 200 << 10, // 200 KiB
-        /*max_memory_pages:*/ 1 << 10, // 1 KiB
-        /*max_registers:*/ 100,
-        /*max_register_size:*/ (100 << 20).validate()?, // 100 MiB
-        /*max_registers_capacity:*/ 1 << 30, // 1 GiB
-        /*max_logs:*/ 100,
-        /*max_log_size:*/ 16 << 10, // 16 KiB
-        /*max_events:*/ 100,
-        /*max_event_kind_size:*/ 100,
-        /*max_event_data_size:*/ 16 << 10, // 16 KiB
-        /*max_storage_key_size:*/ (1 << 20).try_into()?, // 1 MiB
-        /*max_storage_value_size:*/
-        (10 << 20).try_into()?, // 10 MiB
-                                // can_write: writes, // todo!
-    ))
+    Ok(VMLimits {
+        max_stack_size: 200 << 10, // 200 KiB
+        max_memory_pages: 1 << 10, // 1 KiB
+        max_registers: 100,
+        max_register_size: (100 << 20).validate()?, // 100 MiB
+        max_registers_capacity: 1 << 30,            // 1 GiB
+        max_logs: 100,
+        max_log_size: 16 << 10, // 16 KiB
+        max_events: 100,
+        max_event_kind_size: 100,
+        max_event_data_size: 16 << 10, // 16 KiB
+        max_storage_value_size: (10 << 20).try_into()?, // 10 MiB
+                                       // can_write: writes, // todo!
+    })
 }

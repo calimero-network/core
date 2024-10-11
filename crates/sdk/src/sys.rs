@@ -19,8 +19,12 @@ wasm_imports! {
         fn log_utf8(msg: Buffer<'_>);
         fn emit(event: Event<'_>);
         // --
+        fn storage_create(is_collection: Bool, register_id: RegisterId);
         fn storage_read(key: Buffer<'_>, register_id: RegisterId) -> Bool;
         fn storage_write(key: Buffer<'_>, value: Buffer<'_>, register_id: RegisterId) -> Bool;
+        fn storage_delete(key: Buffer<'_>, register_id: RegisterId) -> Bool;
+        fn storage_adopt(key: Buffer<'_>, parent: Buffer<'_>) -> Bool;
+        fn storage_orphan(key: Buffer<'_>, parent: Buffer<'_>) -> Bool;
         // --
         fn fetch(
             url: Buffer<'_>,

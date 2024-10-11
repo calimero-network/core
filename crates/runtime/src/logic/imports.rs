@@ -41,6 +41,8 @@ impl VMLogic<'_> {
             fn log_utf8(ptr: u64, len: u64);
             fn emit(kind_ptr: u64, kind_len: u64, data_ptr: u64, data_len: u64);
 
+            fn storage_create(is_collection: u32, register_id: u64);
+            fn storage_read(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
             fn storage_write(
                 key_ptr: u64,
                 key_len: u64,
@@ -48,7 +50,19 @@ impl VMLogic<'_> {
                 value_len: u64,
                 register_id: u64,
             ) -> u32;
-            fn storage_read(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
+            fn storage_delete(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
+            fn storage_adopt(
+                key_ptr: u64,
+                key_len: u64,
+                parent_ptr: u64,
+                parent_len: u64,
+            ) -> u32;
+            fn storage_orphan(
+                key_ptr: u64,
+                key_len: u64,
+                parent_ptr: u64,
+                parent_len: u64,
+            ) -> u32;
 
             fn fetch(
                 url_ptr: u64,
@@ -120,7 +134,7 @@ macro_rules! _imports {
 
                     #[cfg(feature = "host-traces")]
                     {
-                        #[expect(unused_mut, unused_assignments)]
+                        #[allow(unused_mut, unused_assignments)]
                         let mut return_ty = "()";
                         $( return_ty = stringify!($returns); )?
                         println!(

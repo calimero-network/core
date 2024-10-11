@@ -38,7 +38,6 @@ impl VMContext {
 }
 
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -52,44 +51,9 @@ pub struct VMLimits {
     pub max_events: u64,
     pub max_event_kind_size: u64,
     pub max_event_data_size: u64,
-    pub max_storage_key_size: NonZeroU64,
     pub max_storage_value_size: NonZeroU64,
     // pub max_execution_time: u64,
     // number of functions per contract
-}
-
-impl VMLimits {
-    #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
-    #[must_use]
-    pub const fn new(
-        max_memory_pages: u32,
-        max_stack_size: usize,
-        max_registers: u64,
-        max_register_size: Constrained<u64, MaxU64<{ u64::MAX - 1 }>>,
-        max_registers_capacity: u64,
-        max_logs: u64,
-        max_log_size: u64,
-        max_events: u64,
-        max_event_kind_size: u64,
-        max_event_data_size: u64,
-        max_storage_key_size: NonZeroU64,
-        max_storage_value_size: NonZeroU64,
-    ) -> Self {
-        Self {
-            max_memory_pages,
-            max_stack_size,
-            max_registers,
-            max_register_size,
-            max_registers_capacity,
-            max_logs,
-            max_log_size,
-            max_events,
-            max_event_kind_size,
-            max_event_data_size,
-            max_storage_key_size,
-            max_storage_value_size,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -185,6 +149,24 @@ pub struct VMHostFunctions<'a> {
 impl VMHostFunctions<'_> {
     fn read_guest_memory(&self, ptr: u64, len: u64) -> VMLogicResult<Vec<u8>> {
         let mut buf = vec![0; usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?];
+
+        self.borrow_memory().read(ptr, &mut buf)?;
+
+        Ok(buf)
+    }
+
+    fn read_guest_memory_sized<const N: usize>(
+        &self,
+        ptr: u64,
+        len: u64,
+    ) -> VMLogicResult<[u8; N]> {
+        let len = usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+
+        if len != N {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let mut buf = [0; N];
 
         self.borrow_memory().read(ptr, &mut buf)?;
 
@@ -325,6 +307,20 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    pub fn storage_create(&mut self, is_collection: u32, register_id: u64) -> VMLogicResult<()> {
+        let is_collection = match is_collection {
+            0 => false,
+            1 => true,
+            _ => return Err(HostError::InvalidMemoryAccess.into()),
+        };
+
+        let key = self.with_logic_mut(|logic| logic.storage.create(is_collection))?;
+
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, key))?;
+
+        Ok(())
+    }
+
     pub fn storage_read(
         &mut self,
         key_ptr: u64,
@@ -333,13 +329,9 @@ impl VMHostFunctions<'_> {
     ) -> VMLogicResult<u32> {
         let logic = self.borrow_logic();
 
-        if key_len > logic.limits.max_storage_key_size.get() {
-            return Err(HostError::KeyLengthOverflow.into());
-        }
+        let key = self.read_guest_memory_sized::<32>(key_ptr, key_len)?;
 
-        let key = self.read_guest_memory(key_ptr, key_len)?;
-
-        if let Some(value) = logic.storage.get(&key) {
+        if let Some(value) = logic.storage.read(&key)? {
             self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, value))?;
 
             return Ok(1);
@@ -358,18 +350,14 @@ impl VMHostFunctions<'_> {
     ) -> VMLogicResult<u32> {
         let logic = self.borrow_logic();
 
-        if key_len > logic.limits.max_storage_key_size.get() {
-            return Err(HostError::KeyLengthOverflow.into());
-        }
-
         if value_len > logic.limits.max_storage_value_size.get() {
             return Err(HostError::ValueLengthOverflow.into());
         }
 
-        let key = self.read_guest_memory(key_ptr, key_len)?;
+        let key = self.read_guest_memory_sized::<32>(key_ptr, key_len)?;
         let value = self.read_guest_memory(value_ptr, value_len)?;
 
-        let evicted = self.with_logic_mut(|logic| logic.storage.set(key, value));
+        let evicted = self.with_logic_mut(|logic| logic.storage.write(key, value))?;
 
         if let Some(evicted) = evicted {
             self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, evicted))?;
@@ -378,6 +366,55 @@ impl VMHostFunctions<'_> {
         };
 
         Ok(0)
+    }
+
+    pub fn storage_delete(
+        &mut self,
+        key_ptr: u64,
+        key_len: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let key = self.read_guest_memory_sized::<32>(key_ptr, key_len)?;
+
+        let deleted = self.with_logic_mut(|logic| logic.storage.remove(&key))?;
+
+        if let Some(deleted) = deleted {
+            self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, deleted))?;
+
+            return Ok(1);
+        }
+
+        Ok(0)
+    }
+
+    pub fn storage_adopt(
+        &mut self,
+        key_ptr: u64,
+        key_len: u64,
+        parent_ptr: u64,
+        parent_len: u64,
+    ) -> VMLogicResult<u32> {
+        let key = self.read_guest_memory_sized::<32>(key_ptr, key_len)?;
+        let parent = self.read_guest_memory_sized::<32>(parent_ptr, parent_len)?;
+
+        let adopted = self.with_logic_mut(|logic| logic.storage.adopt(key, &parent))?;
+
+        Ok(adopted as u32)
+    }
+
+    pub fn storage_orphan(
+        &mut self,
+        key_ptr: u64,
+        key_len: u64,
+        parent_ptr: u64,
+        parent_len: u64,
+    ) -> VMLogicResult<u32> {
+        let key = self.read_guest_memory_sized::<32>(key_ptr, key_len)?;
+        let parent = self.read_guest_memory_sized::<32>(parent_ptr, parent_len)?;
+
+        let orphaned = self.with_logic_mut(|logic| logic.storage.orphan(key, &parent))?;
+
+        Ok(orphaned as u32)
     }
 
     #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
