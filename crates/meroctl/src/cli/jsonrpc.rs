@@ -2,7 +2,7 @@ use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
     MutateRequest, QueryRequest, Request, RequestId, RequestPayload, Version,
 };
-use clap::{value_parser, Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 use serde_json::Value;
 
@@ -25,8 +25,8 @@ pub struct JsonRpcCommand {
     pub method: String,
 
     /// Arguemnts to the method in the app
-    #[arg(long, value_parser = value_parser!(Value), default_value = "{}")]
-    pub args_json: Value,
+    #[arg(long, default_value = "{}")]
+    pub args_json: String,
 
     /// Id of the JsonRpc call
     #[arg(long, default_value = "dontcare")]
@@ -58,11 +58,13 @@ impl JsonRpcCommand {
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
+        let json_payload: Value = serde_json::from_str(&self.args_json)?;
+
         let payload = match self.call_type {
             CallType::Query => RequestPayload::Query(QueryRequest::new(
                 self.context_id,
                 self.method,
-                self.args_json,
+                json_payload,
                 config
                     .identity
                     .public()
@@ -73,7 +75,7 @@ impl JsonRpcCommand {
             CallType::Mutate => RequestPayload::Mutate(MutateRequest::new(
                 self.context_id,
                 self.method,
-                self.args_json,
+                json_payload,
                 config
                     .identity
                     .public()
