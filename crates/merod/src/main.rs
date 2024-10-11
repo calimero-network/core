@@ -1,4 +1,3 @@
-use calimero_server as _;
 use std::env::var;
 
 use clap::Parser;
@@ -10,7 +9,6 @@ use tracing_subscriber::{registry, EnvFilter};
 use crate::cli::RootCommand;
 
 mod cli;
-mod common;
 mod defaults;
 
 #[tokio::main]

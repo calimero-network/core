@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 
 use super::RootArgs;
-use crate::common::{load_config, fetch_multiaddr, multiaddr_to_url};
+use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 
 #[derive(Debug, Parser)]
 pub struct WatchCommand {

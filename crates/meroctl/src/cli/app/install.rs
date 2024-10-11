@@ -10,7 +10,7 @@ use tracing::info;
 use url::Url;
 
 use crate::cli::RootArgs;
-use crate::common::{get_response, load_config, fetch_multiaddr, multiaddr_to_url, RequestType};
+use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
 pub struct InstallCommand {
@@ -49,12 +49,12 @@ impl InstallCommand {
         };
 
         let install_url = multiaddr_to_url(
-            fetch_multiaddr(&config)?, 
-            if is_dev_installation { 
+            fetch_multiaddr(&config)?,
+            if is_dev_installation {
                 "admin-api/dev/install-dev-application"
             } else {
                 "admin-api/dev/install-application"
-            }
+            },
         )?;
 
         let install_response = get_response(

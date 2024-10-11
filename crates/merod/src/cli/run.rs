@@ -8,7 +8,7 @@ use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 
 use crate::cli::RootArgs;
-use crate::config_file::ConfigFile;
+use calimero_config::ConfigFile;
 
 /// Run a node
 #[derive(Debug, Parser)]

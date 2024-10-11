@@ -36,7 +36,10 @@ impl GetCommand {
                 self.get_context(&multiaddr, &client, &config.identity)
                     .await?;
             }
-            GetRequest::Users => self.get_users(&multiaddr, &client, &config.identity).await?,
+            GetRequest::Users => {
+                self.get_users(&multiaddr, &client, &config.identity)
+                    .await?
+            }
             GetRequest::ClientKeys => {
                 self.get_client_keys(&multiaddr, &client, &config.identity)
                     .await?;

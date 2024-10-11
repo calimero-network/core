@@ -839,6 +839,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-config"
+version = "0.1.1"
+dependencies = [
+ "calimero-context",
+ "calimero-network",
+ "calimero-primitives",
+ "calimero-server",
+ "camino",
+ "eyre",
+ "libp2p",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "calimero-context"
 version = "0.1.0"
 dependencies = [
@@ -4415,20 +4430,46 @@ checksum = "8452105ba047068f40ff7093dd1d9da90898e63dd61736462e9cdda6a90ad3c3"
 name = "meroctl"
 version = "0.1.1"
 dependencies = [
- "axum",
  "bs58 0.5.1",
+ "calimero-config",
+ "calimero-primitives",
+ "calimero-server",
+ "calimero-server-primitives",
+ "camino",
+ "chrono",
+ "clap",
+ "color-eyre",
+ "const_format",
+ "dirs",
+ "eyre",
+ "futures-util",
+ "libp2p",
+ "notify",
+ "reqwest 0.12.5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "merod"
+version = "0.1.1"
+dependencies = [
+ "axum",
  "calimero-blobstore",
+ "calimero-config",
  "calimero-context",
  "calimero-context-config",
  "calimero-network",
  "calimero-node",
  "calimero-node-primitives",
- "calimero-primitives",
  "calimero-server",
- "calimero-server-primitives",
  "calimero-store",
  "camino",
- "chrono",
  "clap",
  "color-eyre",
  "const_format",
@@ -4439,14 +4480,8 @@ dependencies = [
  "libp2p",
  "multiaddr",
  "near-crypto",
- "notify",
  "rand 0.8.5",
- "reqwest 0.12.5",
- "serde",
- "serde_json",
  "tokio",
- "tokio-tungstenite 0.24.0",
- "toml",
  "toml_edit 0.22.20",
  "tracing",
  "tracing-subscriber",

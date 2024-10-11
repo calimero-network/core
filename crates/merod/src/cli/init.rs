@@ -27,10 +27,10 @@ use rand::{thread_rng, Rng};
 use tracing::{info, warn};
 use url::Url;
 
-use crate::config_file::{
+use crate::{cli, defaults};
+use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
 };
-use crate::{cli, defaults};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
