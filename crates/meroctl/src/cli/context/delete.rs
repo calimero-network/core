@@ -17,11 +17,8 @@ impl DeleteCommand {
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         let config = load_config(&args.node_name)?;
 
-        self.delete_context(
-            fetch_multiaddr(&config)?,
-            &Client::new(),
-            &config.identity
-        ).await
+        self.delete_context(fetch_multiaddr(&config)?, &Client::new(), &config.identity)
+            .await
     }
 
     #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]

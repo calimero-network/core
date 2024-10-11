@@ -13,14 +13,14 @@ impl ListCommand {
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         let config = load_config(&args.node_name)?;
 
-        let response =
-            get_response(
-                &Client::new(),
-                multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts")?,
-                None::<()>, 
-                &config.identity,
-                RequestType::Get
-            ).await?;
+        let response = get_response(
+            &Client::new(),
+            multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts")?,
+            None::<()>,
+            &config.identity,
+            RequestType::Get,
+        )
+        .await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())

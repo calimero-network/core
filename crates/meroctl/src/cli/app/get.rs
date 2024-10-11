@@ -28,8 +28,14 @@ impl GetCommand {
             &format!("admin-api/dev/applications/{}", self.app_id),
         )?;
 
-        let response =
-            get_response(&Client::new(), url, None::<()>, &config.identity, RequestType::Get).await?;
+        let response = get_response(
+            &Client::new(),
+            url,
+            None::<()>,
+            &config.identity,
+            RequestType::Get,
+        )
+        .await?;
 
         if !response.status().is_success() {
             bail!("Request failed with status: {}", response.status())

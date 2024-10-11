@@ -5,26 +5,28 @@ use eyre::Result as EyreResult;
 
 use crate::defaults;
 
-mod app;
-mod context;
-mod jsonrpc;
+mod config;
+mod init;
+mod relay;
+mod run;
 
-use app::AppCommand;
-use context::ContextCommand;
-use jsonrpc::JsonRpcCommand;
+use config::ConfigCommand;
+use init::InitCommand;
+use relay::RelayCommand;
+use run::RunCommand;
 
 pub const EXAMPLES: &str = r"
   # Initialize a new node
-  $ meroctl --home data/ --node-name node1 init
+  $ merod --home data/ --node-name node1 init
 
   # Configure an existing node
-  $ meroctl --home data/ --node-name node1 config --server-host 143.34.182.202 --server-port 3000
+  $ merod --home data/ --node-name node1 config --server-host 143.34.182.202 --server-port 3000
 
   # Run a node as a peer
-  $ meroctl --home data/ --node-name node1 run
+  $ merod --home data/ --node-name node1 run
 
   # Run a node as a coordinator
-  $ meroctl --home data/ --node-name node1 run --node-type coordinator
+  $ merod --home data/ --node-name node1 run --node-type coordinator
 ";
 
 #[derive(Debug, Parser)]
@@ -45,10 +47,12 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
-    Context(ContextCommand),
-    App(AppCommand),
+    Init(InitCommand),
+    Config(ConfigCommand),
+    #[command(alias = "up")]
+    Run(RunCommand),
     #[command(alias = "call")]
-    JsonRpc(JsonRpcCommand),
+    Relay(RelayCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -66,9 +70,10 @@ pub struct RootArgs {
 impl RootCommand {
     pub async fn run(self) -> EyreResult<()> {
         match self.action {
-            SubCommands::Context(context) => context.run(self.args).await,
-            SubCommands::App(application) => application.run(self.args).await,
-            SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(self.args).await,
+            SubCommands::Init(init) => init.run(self.args),
+            SubCommands::Config(config) => config.run(&self.args),
+            SubCommands::Run(run) => run.run(self.args).await,
+            SubCommands::Relay(relay) => relay.run(self.args).await,
         }
     }
 }

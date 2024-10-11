@@ -1,0 +1,24 @@
+[package]
+name = "calimero-config"
+version = "0.1.1"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+camino = { workspace = true, features = ["serde1"] }
+eyre.workspace = true
+libp2p.workspace = true
+serde = { workspace = true, features = ["derive"] }
+toml.workspace = true
+
+calimero-context = { path = "../context" }
+calimero-primitives = { path = "../primitives" }
+calimero-server = { path = "../server" }
+calimero-network = { path = "../network" }
+
+[lints]
+workspace = true

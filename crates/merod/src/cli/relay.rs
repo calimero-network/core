@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use super::RootArgs;
-use crate::config_file::ConfigFile;
+use calimero_config::ConfigFile;
 
 pub const DEFAULT_PORT: u16 = 63529; // Mero-rELAY = MELAY
 pub const DEFAULT_ADDR: SocketAddr =
