@@ -60,6 +60,8 @@ impl VMLogic<'_> {
                 body_len: u64,
                 register_id: u64
             ) -> u32;
+
+            fn generate_uuid(register_id: u64);
         }
     }
 }

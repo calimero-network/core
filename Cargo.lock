@@ -996,6 +996,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "ureq",
+ "uuid 1.10.0",
  "wasmer",
  "wasmer-types",
 ]
@@ -1010,6 +1011,7 @@ dependencies = [
  "serde",
  "serde_json",
  "trybuild",
+ "uuid 1.10.0",
 ]
 
 [[package]]
@@ -6964,6 +6966,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "sha2"
 version = "0.10.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8200,6 +8208,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81dfa00651efa65069b0b6b651f4aaa31ba9e3c3ce0137aaad053604ee7e0314"
 dependencies = [
  "getrandom",
+ "serde",
+ "sha1_smol",
 ]
 
 [[package]]

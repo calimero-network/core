@@ -1,6 +1,7 @@
 use std::panic::set_hook;
 
 use borsh::{from_slice as from_borsh_slice, to_vec as to_borsh_vec};
+use uuid::Uuid;
 
 use crate::event::AppEvent;
 use crate::state::AppState;
@@ -180,4 +181,20 @@ pub fn state_write<T: AppState>(state: &T) {
         Err(err) => panic_str(&format!("Cannot serialize app state: {err:?}")),
     };
     let _ = storage_write(STATE_KEY, &data);
+}
+
+/// Generate a new random UUID v4.
+#[inline]
+#[must_use]
+pub fn generate_uuid() -> Uuid {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::generate_uuid(DATA_REGISTER) };
+        Uuid::from_slice(&read_register_sized::<16>(DATA_REGISTER).expect("Must have UUID"))
+            .expect("UUID must be valid")
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Uuid::new_v4()
+    }
 }
