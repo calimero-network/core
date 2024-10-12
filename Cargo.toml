@@ -117,7 +117,6 @@ tracing-subscriber = "0.3.17"
 trybuild = "1.0"
 ureq = "2.9.7"
 url = "2.5.2"
-uuid = { version = "1.10.0", features = ["v4"] }
 velcro = "0.5.4"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
@@ -127,6 +126,12 @@ rcgen = "0.13.1"
 x509-parser = "0.16.0"
 axum-server = { version = "0.6", features = ["tls-rustls"] }
 axum-server-dual-protocol = "0.6.0"
+
+[workspace.target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1.10.0", features = ["serde", "v5"] }
+
+[workspace.target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid = { version = "1.10.0", features = ["serde", "v4"] }
 
 [profile.release]
 strip = "symbols"

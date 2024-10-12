@@ -29,6 +29,7 @@ wasm_imports! {
             body: Buffer<'_>,
             register_id: RegisterId
         ) -> Bool;
+        fn generate_uuid(register_id: RegisterId);
     }
 }
 

@@ -6,6 +6,7 @@ use core::num::NonZeroU64;
 use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
@@ -138,6 +139,17 @@ impl<'a> VMLogic<'a> {
     pub fn get_executor_identity(&mut self, register_id: u64) -> VMLogicResult<()> {
         self.registers
             .set(self.limits, register_id, self.context.executor_public_key)
+    }
+
+    /// Generates a new UUID using v4 standard.
+    ///
+    /// This function generates a new UUID using the v4 standard. The UUID is
+    /// dependent on randomness, which is not available inside the guest
+    /// runtime. Therefore the guest needs to request this from the host.
+    ///
+    #[must_use]
+    pub fn generate_uuid(&self) -> Uuid {
+        Uuid::new_v4()
     }
 }
 
@@ -451,5 +463,21 @@ impl VMHostFunctions<'_> {
 
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, data))?;
         Ok(status)
+    }
+
+    /// Generates a new UUID using v4 standard.
+    ///
+    /// This function generates a new UUID by calling the host. The UUID is
+    /// dependent on randomness, which is not available inside the guest
+    /// runtime. Therefore the guest needs to request this from the host.
+    ///
+    pub fn generate_uuid(&mut self, register_id: u64) -> VMLogicResult<()> {
+        let uuid = self.borrow_logic().generate_uuid();
+        self.with_logic_mut(|logic| {
+            logic
+                .registers
+                .set(logic.limits, register_id, *uuid.as_bytes())
+        })?;
+        Ok(())
     }
 }
