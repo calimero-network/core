@@ -62,6 +62,7 @@ impl VMLogic<'_> {
             ) -> u32;
 
             fn generate_uuid(register_id: u64);
+            fn time_now(register_id: u64);
         }
     }
 }

@@ -2,6 +2,7 @@
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
 use core::num::NonZeroU64;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;
@@ -150,6 +151,25 @@ impl<'a> VMLogic<'a> {
     #[must_use]
     pub fn generate_uuid(&self) -> Uuid {
         Uuid::new_v4()
+    }
+
+    /// Gets the current time.
+    ///
+    /// This function obtains the current time as a nanosecond timestamp, as
+    /// [`SystemTime`] is not available inside the guest runtime. Therefore the
+    /// guest needs to request this from the host.
+    ///
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Impossible to overflow in normal circumstances"
+    )]
+    #[expect(clippy::expect_used, reason = "Effectively infallible here")]
+    #[must_use]
+    pub fn time_now(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards to before the Unix epoch!")
+            .as_nanos() as u64
     }
 }
 
@@ -477,6 +497,22 @@ impl VMHostFunctions<'_> {
             logic
                 .registers
                 .set(logic.limits, register_id, *uuid.as_bytes())
+        })?;
+        Ok(())
+    }
+
+    /// Gets the current time.
+    ///
+    /// This function obtains the current time as a nanosecond timestamp, as
+    /// [`SystemTime`] is not available inside the guest runtime. Therefore the
+    /// guest needs to request this from the host.
+    ///
+    pub fn time_now(&mut self, register_id: u64) -> VMLogicResult<()> {
+        let now = self.borrow_logic().time_now();
+        self.with_logic_mut(|logic| {
+            logic
+                .registers
+                .set(logic.limits, register_id, now.to_le_bytes())
         })?;
         Ok(())
     }
