@@ -28,6 +28,7 @@ use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
+use calimero_storage::address::Id;
 use calimero_storage::integration::Comparison;
 use calimero_storage::interface::Action;
 use calimero_store::config::StoreConfig;
@@ -53,7 +54,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::action_pool::ActionPool;
 use crate::runtime_compat::RuntimeCompatStore;
-use crate::types::ActionMessage;
+use crate::types::{ActionMessage, PeerAction, SyncMessage};
 
 pub mod action_pool;
 pub mod catchup;
@@ -232,7 +233,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     },
                 };
 
-                let action = match from_json_str::<Action>(payload) {
+                let actions = match from_json_str::<Vec<Action>>(payload) {
                     Ok(a) => a,
                     Err(e) => {
                         println!("{ind} Failed to parse payload: {e}");
@@ -253,7 +254,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 };
 
                 let action = ActionMessage {
-                    action,
+                    actions,
                     context_id: context.id,
                     public_key: executor_key,
                     root_hash: context.root_hash,
@@ -952,34 +953,138 @@ impl Node {
             return Ok(());
         };
 
-        let action: ActionMessage = from_json_slice(&message.data)?;
-        debug!(?action, %source, "Received action");
+        match from_json_slice(&message.data)? {
+            PeerAction::ActionList(action_list) => {
+                debug!(?action_list, %source, "Received action list");
 
-        let handle = self.store.handle();
+                for action in action_list.actions {
+                    debug!(?action, %source, "Received action");
+                    let Some(context) = self.ctx_manager.get_context(&action_list.context_id)?
+                    else {
+                        bail!("Context '{}' not found", action_list.context_id);
+                    };
+                    match action {
+                        Action::Compare { id } => {
+                            self.send_comparison_message(&context, id, action_list.public_key)
+                                .await
+                        }
+                        _ => {
+                            let apply_outcome = self
+                                .apply_action(&context, action, action_list.public_key)
+                                .await?;
+                            match apply_outcome.returns {
+                                Ok(Some(compare_id)) => {
+                                    self.send_comparison_message(
+                                        &context,
+                                        from_json_slice(&compare_id)?,
+                                        action_list.public_key,
+                                    )
+                                    .await
+                                }
+                                Ok(None) => Err(eyre!("No comparison data generated")),
+                                Err(err) => Err(eyre!(err)),
+                            }
+                        }
+                    }?
+                }
+                Ok(())
+            }
+            PeerAction::Sync(sync) => {
+                debug!(?sync, %source, "Received sync request");
 
-        let ctx_meta_key = ContextMetaKey::new(action.context_id);
+                let Some(context) = self.ctx_manager.get_context(&sync.context_id)? else {
+                    bail!("Context '{}' not found", sync.context_id);
+                };
+                let outcome = self
+                    .compare_trees(&context, &sync.comparison, sync.public_key)
+                    .await?;
 
-        if !handle.has(&ctx_meta_key)? {
-            info!(context_id=%action.context_id, %source, "Attempting to perform tx triggered catchup");
+                match outcome.returns {
+                    Ok(Some(actions_data)) => {
+                        let (local_actions, remote_actions): (Vec<Action>, Vec<Action>) =
+                            from_json_slice(&actions_data)?;
 
-            self.perform_catchup(action.context_id, source).await?;
+                        // Apply local actions
+                        for action in local_actions {
+                            match action {
+                                Action::Compare { id } => {
+                                    self.send_comparison_message(&context, id, sync.public_key)
+                                        .await
+                                }
+                                _ => {
+                                    let apply_outcome = self
+                                        .apply_action(&context, action, sync.public_key)
+                                        .await?;
+                                    match apply_outcome.returns {
+                                        Ok(Some(compare_id)) => {
+                                            self.send_comparison_message(
+                                                &context,
+                                                from_json_slice(&compare_id)?,
+                                                sync.public_key,
+                                            )
+                                            .await
+                                        }
+                                        Ok(None) => Err(eyre!("No comparison data generated")),
+                                        Err(err) => Err(eyre!(err)),
+                                    }
+                                }
+                            }?
+                        }
 
-            let _ = self
-                .ctx_manager
-                .clear_context_pending_catchup(&action.context_id)
-                .await;
-
-            info!(context_id=%action.context_id, %source, "Action-triggered catchup successfully finished");
-        };
-
-        let Some(_context) = self.ctx_manager.get_context(&action.context_id)? else {
-            bail!("Context '{}' not found", action.context_id);
-        };
-
-        Ok(())
+                        if !remote_actions.is_empty() {
+                            // Send remote actions back to the peer
+                            // TODO: This just sends one at present - needs to send a batch
+                            let new_message = ActionMessage {
+                                actions: remote_actions,
+                                context_id: sync.context_id,
+                                public_key: sync.public_key,
+                                root_hash: context.root_hash,
+                            };
+                            self.push_action(sync.context_id, PeerAction::ActionList(new_message))
+                                .await?;
+                        }
+                    }
+                    Ok(None) => {
+                        // No actions needed
+                    }
+                    Err(err) => {
+                        error!("Error during comparison: {err:?}");
+                        // TODO: Handle the error appropriately
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 
-    async fn push_action(&self, context_id: ContextId, action: ActionMessage) -> EyreResult<()> {
+    async fn send_comparison_message(
+        &mut self,
+        context: &Context,
+        id: Id,
+        public_key: PublicKey,
+    ) -> EyreResult<()> {
+        let compare_outcome = self
+            .generate_comparison_data(context, id, public_key)
+            .await?;
+        match compare_outcome.returns {
+            Ok(Some(comparison_data)) => {
+                // Generate a new Comparison for this entity and send it to the peer
+                let new_sync = SyncMessage {
+                    comparison: from_json_slice(&comparison_data)?,
+                    context_id: context.id,
+                    public_key,
+                    root_hash: context.root_hash,
+                };
+                self.push_action(context.id, PeerAction::Sync(new_sync))
+                    .await?;
+                Ok(())
+            }
+            Ok(None) => Err(eyre!("No comparison data generated")),
+            Err(err) => Err(eyre!(err)),
+        }
+    }
+
+    async fn push_action(&self, context_id: ContextId, action: PeerAction) -> EyreResult<()> {
         drop(
             self.network_client
                 .publish(TopicHash::from_raw(context_id), to_json_vec(&action)?)
@@ -1043,10 +1148,10 @@ impl Node {
     async fn call_mutate(
         &self,
         context: &Context,
-        action: ActionMessage,
+        action_list: ActionMessage,
         _outcome_sender: oneshot::Sender<Result<Outcome, MutateCallError>>,
     ) -> Result<(), MutateCallError> {
-        if context.id != action.context_id {
+        if context.id != action_list.context_id {
             return Err(MutateCallError::TransactionRejected);
         }
 
@@ -1069,7 +1174,7 @@ impl Node {
             return Err(MutateCallError::NoConnectedPeers);
         }
 
-        self.push_action(context.id, action.clone())
+        self.push_action(context.id, PeerAction::ActionList(action_list))
             .await
             .map_err(|err| {
                 error!(%err, "Failed to push transaction over the network.");
@@ -1082,29 +1187,33 @@ impl Node {
     // TODO: Should we be using this somewhere in the CRDT approach, or not?
     async fn execute_in_context(
         &mut self,
-        action: ActionMessage,
-    ) -> Result<Outcome, MutateCallError> {
+        action_list: ActionMessage,
+    ) -> Result<(), MutateCallError> {
         let Some(context) = self
             .ctx_manager
-            .get_context(&action.context_id)
+            .get_context(&action_list.context_id)
             .map_err(|e| {
                 error!(%e, "Failed to get context");
                 MutateCallError::InternalError
             })?
         else {
-            error!(%action.context_id, "Context not found");
+            error!(%action_list.context_id, "Context not found");
             return Err(MutateCallError::InternalError);
         };
 
-        let outcome = self
-            .apply_action(&context, action.action, action.public_key)
-            .await
-            .map_err(|e| {
-                error!(%e, "Failed to apply action");
-                MutateCallError::InternalError
-            })?;
+        for action in action_list.actions {
+            let outcome = self
+                .apply_action(&context, action, action_list.public_key)
+                .await
+                .map_err(|e| {
+                    error!(%e, "Failed to apply action");
+                    MutateCallError::InternalError
+                })?;
+        }
 
-        Ok(outcome)
+        // TODO: This used to return outcome - if it is still needed, what should it
+        // TODO: do now?
+        Ok(())
     }
 
     async fn apply_action(
@@ -1126,14 +1235,30 @@ impl Node {
     async fn compare_trees(
         &mut self,
         context: &Context,
-        comparison: Comparison,
+        comparison: &Comparison,
         public_key: PublicKey,
     ) -> EyreResult<Outcome> {
         self.execute(
             context,
             None,
             "compare_trees".to_owned(),
-            to_vec(&comparison)?,
+            to_vec(comparison)?,
+            public_key,
+        )
+        .await
+    }
+
+    async fn generate_comparison_data(
+        &mut self,
+        context: &Context,
+        id: Id,
+        public_key: PublicKey,
+    ) -> EyreResult<Outcome> {
+        self.execute(
+            context,
+            None,
+            "generate_comparison_data".to_owned(),
+            to_vec(&id)?,
             public_key,
         )
         .await

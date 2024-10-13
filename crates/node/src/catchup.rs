@@ -86,6 +86,11 @@ impl Node {
         info!(%context_id, %peer_id, "Interval triggered catchup successfully finished");
     }
 
+    // TODO: Is this even needed now? Can it be removed? In theory, a sync will
+    // TODO: take place so long as there is a comparison - i.e. it will send
+    // TODO: everything back and forth until everything matches. But, for e.g. a
+    // TODO: first-time sync, that would be slower than just sending everything
+    // TODO: all at once. So... could this be utilised for that?
     pub(crate) async fn perform_catchup(
         &mut self,
         context_id: ContextId,
@@ -151,13 +156,17 @@ impl Node {
                 );
 
                 for ActionMessage {
-                    action, public_key, ..
+                    actions,
+                    public_key,
+                    ..
                 } in batch.actions
                 {
                     // TODO: Not clear if this is needed. Emulating the old behaviour for now,
                     // TODO: but it's likely that an action pool is unnecessary.
-                    self.action_pool.insert(chosen_peer, action.clone(), None);
-                    drop(self.apply_action(context, action, public_key).await?);
+                    self.action_pool.insert(chosen_peer, actions.clone(), None);
+                    for action in actions {
+                        drop(self.apply_action(context, action, public_key).await?);
+                    }
                 }
             }
             CatchupStreamMessage::Error(err) => {

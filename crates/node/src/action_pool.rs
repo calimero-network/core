@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 #[non_exhaustive]
 pub struct ActionPoolEntry {
     pub sender: PeerId,
-    pub action: Action,
+    pub actions: Vec<Action>,
     pub outcome_sender: Option<oneshot::Sender<Result<Outcome, MutateCallError>>>,
 }
 
@@ -24,12 +24,12 @@ impl ActionPool {
     pub fn insert(
         &mut self,
         sender: PeerId,
-        action: Action,
+        actions: Vec<Action>,
         outcome_sender: Option<oneshot::Sender<Result<Outcome, MutateCallError>>>,
     ) {
         self.actions.push_back(ActionPoolEntry {
             sender,
-            action,
+            actions,
             outcome_sender,
         });
     }

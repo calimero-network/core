@@ -2,9 +2,17 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::integration::Comparison;
 use calimero_storage::interface::Action;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub enum PeerAction {
+    ActionList(ActionMessage),
+    Sync(SyncMessage),
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -56,7 +64,16 @@ pub enum CatchupError {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ActionMessage {
-    pub action: Action,
+    pub actions: Vec<Action>,
+    pub context_id: ContextId,
+    pub public_key: PublicKey,
+    pub root_hash: Hash,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct SyncMessage {
+    pub comparison: Comparison,
     pub context_id: ContextId,
     pub public_key: PublicKey,
     pub root_hash: Hash,
