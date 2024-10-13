@@ -4,15 +4,15 @@
 #[path = "tests/index.rs"]
 mod tests;
 
+use core::marker::PhantomData;
 use std::collections::BTreeMap;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use calimero_sdk::env::{storage_read, storage_remove, storage_write};
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::entities::ChildInfo;
-use crate::interface::StorageError;
+use crate::interface::{StorageAdaptor, StorageError};
 
 /// Stored index information for an entity in the storage system.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -36,9 +36,9 @@ struct EntityIndex {
 }
 
 /// Manages the indexing system for efficient tree navigation.
-pub(crate) struct Index;
+pub(crate) struct Index<S: StorageAdaptor>(PhantomData<S>);
 
-impl Index {
+impl<S: StorageAdaptor> Index<S> {
     /// Adds a child to a collection in the index.
     ///
     /// Most entities will get added in this fashion, as nearly all will have
@@ -279,7 +279,7 @@ impl Index {
     ///
     fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
         let key = format!("index:{id}");
-        match storage_read(key.as_bytes()) {
+        match S::storage_read(key.as_bytes()) {
             Some(data) => Ok(Some(
                 EntityIndex::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
             )),
@@ -416,7 +416,7 @@ impl Index {
     ///
     fn remove_index(id: Id) {
         let key = format!("index:{id}");
-        _ = storage_remove(key.as_bytes());
+        _ = S::storage_remove(key.as_bytes());
     }
 
     /// Saves the index information for an entity.
@@ -431,7 +431,7 @@ impl Index {
     ///
     fn save_index(index: &EntityIndex) -> Result<(), StorageError> {
         let key = format!("index:{}", index.id);
-        _ = storage_write(
+        _ = S::storage_write(
             key.as_bytes(),
             &to_vec(index).map_err(StorageError::SerializationError)?,
         );

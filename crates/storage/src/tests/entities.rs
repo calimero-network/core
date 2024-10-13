@@ -7,7 +7,7 @@ use velcro::btree_map;
 
 use super::*;
 use crate::index::Index;
-use crate::interface::Interface;
+use crate::interface::{Interface, MainStorage};
 use crate::tests::common::{Page, Paragraph, Paragraphs, Person};
 
 #[cfg(test)]
@@ -306,7 +306,8 @@ mod element__public_methods {
         assert_eq!(person.element().merkle_hash(), [0_u8; 32]);
 
         assert!(Interface::save(&mut person).unwrap());
-        let expected_hash = Index::calculate_full_merkle_hash_for(person.id(), false).unwrap();
+        let expected_hash =
+            <Index<MainStorage>>::calculate_full_merkle_hash_for(person.id(), false).unwrap();
         assert_eq!(person.element().merkle_hash(), expected_hash);
     }
 

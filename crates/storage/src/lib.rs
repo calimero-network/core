@@ -71,6 +71,10 @@ pub mod exports {
     pub use sha2::{Digest, Sha256};
 }
 
+#[cfg(test)]
+#[path = "tests/mocks.rs"]
+mod mocks;
+
 /// Shared test functionality.
 #[cfg(test)]
 pub mod tests {

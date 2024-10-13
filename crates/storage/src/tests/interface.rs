@@ -2,10 +2,10 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use claims::{assert_none, assert_ok};
-use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::entities::{Data, Element};
+use crate::mocks::ForeignInterface;
 use crate::tests::common::{Page, Paragraph};
 
 #[cfg(test)]
@@ -254,8 +254,7 @@ mod interface__comparison {
         let mut foreign = local.clone();
 
         assert!(Interface::save(&mut local).unwrap());
-        foreign.element_mut().merkle_hash =
-            Index::calculate_full_merkle_hash_for(foreign.id(), false).unwrap();
+        assert!(ForeignInterface::save(&mut foreign).unwrap());
         assert_eq!(
             local.element().merkle_hash(),
             foreign.element().merkle_hash()
@@ -263,7 +262,7 @@ mod interface__comparison {
 
         let result = Interface::compare_trees(
             &foreign,
-            &Interface::generate_comparison_data(&foreign).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
         )
         .unwrap();
         assert_eq!(result, (vec![], vec![]));
@@ -275,20 +274,16 @@ mod interface__comparison {
         let mut local = Page::new_from_element("Test Page", element.clone());
         let mut foreign = Page::new_from_element("Old Test Page", element);
 
-        // Save the foreign entity to calculate the hash - this will be overwritten
-        assert!(Interface::save(&mut foreign).unwrap());
-        foreign.element_mut().merkle_hash =
-            Index::calculate_full_merkle_hash_for(foreign.id(), false).unwrap();
+        assert!(ForeignInterface::save(&mut foreign).unwrap());
 
         // Make local newer
         sleep(Duration::from_millis(10));
         local.element_mut().update();
-
         assert!(Interface::save(&mut local).unwrap());
 
         let result = Interface::compare_trees(
             &foreign,
-            &Interface::generate_comparison_data(&foreign).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -306,23 +301,16 @@ mod interface__comparison {
         let mut local = Page::new_from_element("Old Test Page", element.clone());
         let mut foreign = Page::new_from_element("Test Page", element);
 
-        // Save the foreign entity to calculate the hash - this will be overwritten
-        assert!(Interface::save(&mut foreign).unwrap());
-        foreign.element_mut().merkle_hash =
-            Index::calculate_full_merkle_hash_for(foreign.id(), false).unwrap();
-
-        // Make local newer
-        sleep(Duration::from_millis(10));
-        local.element_mut().update();
         assert!(Interface::save(&mut local).unwrap());
 
         // Make foreign newer
         sleep(Duration::from_millis(10));
         foreign.element_mut().update();
+        assert!(ForeignInterface::save(&mut foreign).unwrap());
 
         let result = Interface::compare_trees(
             &foreign,
-            &Interface::generate_comparison_data(&foreign).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -336,14 +324,6 @@ mod interface__comparison {
 
     #[test]
     fn compare_trees__with_collections() {
-        fn calculate_hash(data: Vec<[u8; 32]>) -> [u8; 32] {
-            let mut hasher = Sha256::new();
-            for item in data {
-                hasher.update(item);
-            }
-            hasher.finalize().into()
-        }
-
         let page_element = Element::new(&Path::new("::root::node").unwrap());
         let para1_element = Element::new(&Path::new("::root::node::leaf1").unwrap());
         let para2_element = Element::new(&Path::new("::root::node::leaf2").unwrap());
@@ -372,19 +352,23 @@ mod interface__comparison {
         )
         .unwrap());
 
-        foreign_para1.element_mut().merkle_hash =
-            calculate_hash(vec![foreign_para1.element().merkle_hash()]);
-        foreign_para3.element_mut().merkle_hash =
-            calculate_hash(vec![foreign_para3.element().merkle_hash()]);
-        foreign_page.element_mut().merkle_hash = calculate_hash(vec![
-            foreign_page.element().merkle_hash(),
-            foreign_para1.element().merkle_hash(),
-            foreign_para3.element().merkle_hash(),
-        ]);
+        assert!(ForeignInterface::save(&mut foreign_page).unwrap());
+        assert!(ForeignInterface::add_child_to(
+            foreign_page.id(),
+            &mut foreign_page.paragraphs,
+            &mut foreign_para1
+        )
+        .unwrap());
+        assert!(ForeignInterface::add_child_to(
+            foreign_page.id(),
+            &mut foreign_page.paragraphs,
+            &mut foreign_para3
+        )
+        .unwrap());
 
         let (local_actions, foreign_actions) = Interface::compare_trees(
             &foreign_page,
-            &Interface::generate_comparison_data(&foreign_page).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign_page).unwrap(),
         )
         .unwrap();
 
@@ -413,7 +397,7 @@ mod interface__comparison {
         // Compare the updated para1
         let (local_para1_actions, foreign_para1_actions) = Interface::compare_trees(
             &foreign_para1,
-            &Interface::generate_comparison_data(&foreign_para1).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign_para1).unwrap(),
         )
         .unwrap();
 
@@ -429,7 +413,7 @@ mod interface__comparison {
         // Compare para3 which doesn't exist locally
         let (local_para3_actions, foreign_para3_actions) = Interface::compare_trees(
             &foreign_para3,
-            &Interface::generate_comparison_data(&foreign_para3).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign_para3).unwrap(),
         )
         .unwrap();
 
