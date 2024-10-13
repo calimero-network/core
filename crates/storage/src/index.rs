@@ -208,6 +208,35 @@ impl<S: StorageAdaptor> Index<S> {
         Ok(hasher.finalize().into())
     }
 
+    /// Retrieves the ancestors of a given entity.
+    ///
+    /// Retrieves information about the ancestors of the entity, with their IDs
+    /// and hashes. The order is from the immediate parent to the root, so index
+    /// zero will be the parent, and the last index will be the root.
+    ///
+    /// # Parameters
+    ///
+    /// * `id`  - The [`Id`] of the entity whose ancestors are to be retrieved.
+    ///
+    /// # Errors
+    ///
+    /// If there's an issue retrieving or deserialising the index information,
+    /// an error will be returned.
+    ///
+    pub(crate) fn get_ancestors_of(id: Id) -> Result<Vec<ChildInfo>, StorageError> {
+        let mut ancestors = Vec::new();
+        let mut current_id = id;
+
+        while let Some(parent_id) = Self::get_parent_id(current_id)? {
+            let (parent_full_hash, _) =
+                Self::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
+            ancestors.push(ChildInfo::new(parent_id, parent_full_hash));
+            current_id = parent_id;
+        }
+
+        Ok(ancestors)
+    }
+
     /// Retrieves the children of a given entity.
     ///
     /// # Parameters
@@ -310,6 +339,23 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     pub(crate) fn get_parent_id(child_id: Id) -> Result<Option<Id>, StorageError> {
         Ok(Self::get_index(child_id)?.and_then(|index| index.parent_id))
+    }
+
+    /// Retrieves the type of the given entity.
+    ///
+    /// # Parameters
+    ///
+    /// * `id` - The [`Id`] of the entity whose type is to be retrieved.
+    ///
+    /// # Errors
+    ///
+    /// If there's an issue retrieving or deserialising the index information,
+    /// an error will be returned.
+    ///
+    pub(crate) fn get_type_id(id: Id) -> Result<u8, StorageError> {
+        Ok(Self::get_index(id)?
+            .ok_or(StorageError::IndexNotFound(id))?
+            .type_id)
     }
 
     /// Whether the collection has children.

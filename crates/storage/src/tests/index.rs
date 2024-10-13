@@ -67,6 +67,80 @@ mod index__public_methods {
     }
 
     #[test]
+    fn get_ancestors_of() {
+        let root_id = Id::new();
+        let root_hash = [1_u8; 32];
+        let child_collection_name = "Books";
+        let grandchild_collection_name = "Pages";
+        let greatgrandchild_collection_name = "Paragraphs";
+
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
+
+        let child_id = Id::new();
+        let child_hash = [2_u8; 32];
+        let child_info = ChildInfo::new(child_id, child_hash);
+        assert!(
+            <Index<MainStorage>>::add_child_to(root_id, child_collection_name, child_info, 2)
+                .is_ok()
+        );
+
+        let grandchild_id = Id::new();
+        let grandchild_hash = [3_u8; 32];
+        let grandchild_info = ChildInfo::new(grandchild_id, grandchild_hash);
+        assert!(<Index<MainStorage>>::add_child_to(
+            child_id,
+            grandchild_collection_name,
+            grandchild_info,
+            3,
+        )
+        .is_ok());
+
+        let greatgrandchild_id = Id::new();
+        let greatgrandchild_hash = [4_u8; 32];
+        let greatgrandchild_info = ChildInfo::new(greatgrandchild_id, greatgrandchild_hash);
+        assert!(<Index<MainStorage>>::add_child_to(
+            grandchild_id,
+            greatgrandchild_collection_name,
+            greatgrandchild_info,
+            4,
+        )
+        .is_ok());
+
+        let ancestors = <Index<MainStorage>>::get_ancestors_of(greatgrandchild_id).unwrap();
+        assert_eq!(ancestors.len(), 3);
+        assert_eq!(
+            ancestors[0],
+            ChildInfo::new(
+                grandchild_id,
+                <Index<MainStorage>>::get_hashes_for(grandchild_id)
+                    .unwrap()
+                    .unwrap()
+                    .0
+            )
+        );
+        assert_eq!(
+            ancestors[1],
+            ChildInfo::new(
+                child_id,
+                <Index<MainStorage>>::get_hashes_for(child_id)
+                    .unwrap()
+                    .unwrap()
+                    .0
+            )
+        );
+        assert_eq!(
+            ancestors[2],
+            ChildInfo::new(
+                root_id,
+                <Index<MainStorage>>::get_hashes_for(root_id)
+                    .unwrap()
+                    .unwrap()
+                    .0
+            )
+        );
+    }
+
+    #[test]
     fn get_children_of__single_collection() {
         let root_id = Id::new();
         let root_hash = [1_u8; 32];
@@ -257,6 +331,21 @@ mod index__public_methods {
             Some(root_id)
         );
         assert_eq!(<Index<MainStorage>>::get_parent_id(root_id).unwrap(), None);
+    }
+
+    #[test]
+    fn get_type_id() {
+        let root_id = Id::new();
+        let root_hash = [1_u8; 32];
+
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 99).is_ok());
+
+        let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
+        assert_eq!(root_index.id, root_id);
+        assert_eq!(root_index.own_hash, root_hash);
+        assert_eq!(root_index.type_id, 99);
+
+        assert_eq!(<Index<MainStorage>>::get_type_id(root_id).unwrap(), 99,);
     }
 
     #[test]
