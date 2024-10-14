@@ -2,14 +2,63 @@ use claims::{assert_ge, assert_le};
 
 use super::*;
 use crate::interface::Interface;
-use crate::tests::common::create_test_store;
+use crate::tests::common::{create_test_store, Person};
 
 #[cfg(test)]
-mod data__constructor {
+mod data__public_methods {
+    use super::*;
+
     #[test]
-    #[ignore]
-    fn new() {
-        todo!()
+    fn element() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let element = Element::new(&path);
+        let person = Person {
+            name: "Alice".to_owned(),
+            age: 30,
+            storage: element.clone(),
+        };
+        assert_eq!(person.element(), &element);
+    }
+
+    #[test]
+    fn element_mut() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let element = Element::new(&path);
+        let mut person = Person {
+            name: "Bob".to_owned(),
+            age: 40,
+            storage: element.clone(),
+        };
+        assert!(element.is_dirty);
+        assert!(person.element().is_dirty);
+        person.element_mut().is_dirty = false;
+        assert!(element.is_dirty);
+        assert!(!person.element().is_dirty);
+    }
+
+    #[test]
+    fn id() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let element = Element::new(&path);
+        let id = element.id;
+        let person = Person {
+            name: "Eve".to_owned(),
+            age: 20,
+            storage: element,
+        };
+        assert_eq!(person.id(), id);
+    }
+
+    #[test]
+    fn path() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let element = Element::new(&path);
+        let person = Person {
+            name: "Steve".to_owned(),
+            age: 50,
+            storage: element,
+        };
+        assert_eq!(person.path(), path);
     }
 }
 
@@ -67,12 +116,6 @@ mod element__public_methods {
     }
 
     #[test]
-    #[ignore]
-    fn data() {
-        todo!()
-    }
-
-    #[test]
     fn has_children() {
         let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
         assert!(!element.has_children());
@@ -93,14 +136,19 @@ mod element__public_methods {
     fn is_dirty() {
         let (db, _dir) = create_test_store();
         let interface = Interface::new(db);
-        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         assert!(element.is_dirty());
 
-        assert!(interface.save(element.id(), &mut element).unwrap());
-        assert!(!element.is_dirty());
+        let mut person = Person {
+            name: "Alice".to_owned(),
+            age: 30,
+            storage: element,
+        };
+        assert!(interface.save(person.element().id(), &mut person).unwrap());
+        assert!(!person.element().is_dirty());
 
-        element.update_data(Data {});
-        assert!(element.is_dirty());
+        person.element_mut().update();
+        assert!(person.element().is_dirty());
     }
 
     #[test]
@@ -117,17 +165,22 @@ mod element__public_methods {
     }
 
     #[test]
-    fn update_data() {
+    fn update() {
         let (db, _dir) = create_test_store();
         let interface = Interface::new(db);
-        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         let updated_at = element.metadata.updated_at;
-        assert!(interface.save(element.id(), &mut element).unwrap());
-        assert!(!element.is_dirty);
+        let mut person = Person {
+            name: "Bob".to_owned(),
+            age: 40,
+            storage: element,
+        };
+        assert!(interface.save(person.element().id(), &mut person).unwrap());
+        assert!(!person.element().is_dirty);
 
-        element.update_data(Data {});
-        assert!(element.is_dirty);
-        assert_ge!(element.metadata.updated_at, updated_at);
+        person.element_mut().update();
+        assert!(person.element().is_dirty);
+        assert_ge!(person.element().metadata.updated_at, updated_at);
     }
 
     #[test]
@@ -136,21 +189,26 @@ mod element__public_methods {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let mut person = Person {
+            name: "Eve".to_owned(),
+            age: 20,
+            storage: element,
+        };
         let timestamp2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        assert_ge!(element.updated_at(), timestamp1);
-        assert_le!(element.updated_at(), timestamp2);
+        assert_ge!(person.element().updated_at(), timestamp1);
+        assert_le!(person.element().updated_at(), timestamp2);
 
-        element.update_data(Data {});
+        person.element_mut().update();
         let timestamp3 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        assert_ge!(element.updated_at(), timestamp2);
-        assert_le!(element.updated_at(), timestamp3);
+        assert_ge!(person.element().updated_at(), timestamp2);
+        assert_le!(person.element().updated_at(), timestamp3);
     }
 }
 
