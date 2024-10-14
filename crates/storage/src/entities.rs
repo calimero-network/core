@@ -198,6 +198,16 @@ use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::address::{Id, Path};
 
+/// Represents an atomic unit in the storage system.
+///
+/// An atomic unit is a self-contained piece of data that can be stored and
+/// retrieved as a single entity. It extends the [`Data`] trait with additional
+/// methods specific to how it's stored and identified in the system.
+///
+/// This is a marker trait, and does not have any special functionality.
+///
+pub trait AtomicUnit: Data {}
+
 /// The primary data for the [`Element`].
 ///
 /// This is the primary data for the [`Element`], that is, the data that the

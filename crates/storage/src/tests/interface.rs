@@ -1,8 +1,9 @@
+use calimero_test_utils::storage::create_test_store;
 use claims::{assert_none, assert_ok};
 
 use super::*;
 use crate::entities::{Data, Element};
-use crate::tests::common::{create_test_store, EmptyData, Page, Paragraph, TEST_ID};
+use crate::tests::common::{EmptyData, Page, Paragraph, TEST_ID};
 
 #[cfg(test)]
 mod interface__constructor {
