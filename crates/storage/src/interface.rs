@@ -412,6 +412,11 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// function to deal with the type being indicated in the serialised data,
     /// if appropriate, or in the ID or accompanying metadata.
     ///
+    /// After applying the [`Action`], the ancestor hashes will be recalculated,
+    /// and this function will compare them against the expected hashes. If any
+    /// of the hashes do not match, the ID of the first entity with a mismatched
+    /// hash will be returned — i.e. the nearest ancestor.
+    ///
     /// # Parameters
     ///
     /// * `action` - The [`Action`] to apply to the storage system.
@@ -421,21 +426,36 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// If there is an error when deserialising into the specified type, or when
     /// applying the [`Action`], an error will be returned.
     ///
-    pub fn apply_action<D: Data>(action: Action) -> Result<(), StorageError> {
-        match action {
-            Action::Add { data, .. } | Action::Update { data, .. } => {
+    pub fn apply_action<D: Data>(action: Action) -> Result<Option<Id>, StorageError> {
+        let ancestors = match action {
+            Action::Add {
+                data, ancestors, ..
+            }
+            | Action::Update {
+                data, ancestors, ..
+            } => {
                 let mut entity =
                     D::try_from_slice(&data).map_err(StorageError::DeserializationError)?;
                 _ = Self::save(&mut entity)?;
+                ancestors
             }
             Action::Compare { .. } => {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
-            Action::Delete { id, .. } => {
+            Action::Delete { id, ancestors, .. } => {
                 _ = S::storage_remove(id.as_bytes());
+                ancestors
+            }
+        };
+
+        for ancestor in &ancestors {
+            let (current_hash, _) = <Index<S>>::get_hashes_for(ancestor.id())?
+                .ok_or(StorageError::IndexNotFound(ancestor.id()))?;
+            if current_hash != ancestor.merkle_hash() {
+                return Ok(Some(ancestor.id()));
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     /// The children of the [`Collection`].
