@@ -16,7 +16,7 @@ mod tests;
 use std::io::Error as IoError;
 use std::sync::Arc;
 
-use borsh::{to_vec, BorshDeserialize};
+use borsh::to_vec;
 use calimero_store::key::Storage as StorageKey;
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::slice::Slice;
@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
-use crate::entities::Element;
+use crate::entities::Data;
 
 /// The primary interface for the storage system.
 #[derive(Debug, Clone)]
@@ -51,66 +51,72 @@ impl Interface {
         }
     }
 
-    /// Calculates the Merkle hash for the [`Element`].
+    /// Calculates the Merkle hash for the [`Element`](crate::entities::Element).
     ///
-    /// This calculates the Merkle hash for the [`Element`], which is a
-    /// cryptographic hash of the significant data in the "scope" of the
-    /// [`Element`], and is used to determine whether the data has changed and
-    /// is valid. It is calculated by hashing the substantive data in the
-    /// [`Element`], along with the hashes of the children of the [`Element`],
+    /// This calculates the Merkle hash for the
+    /// [`Element`](crate::entities::Element), which is a cryptographic hash of
+    /// the significant data in the "scope" of the [`Element`](crate::entities::Element),
+    /// and is used to determine whether the data has changed and is valid. It
+    /// is calculated by hashing the substantive data in the [`Element`](crate::entities::Element),
+    /// along with the hashes of the children of the [`Element`](crate::entities::Element),
     /// thereby representing the state of the entire hierarchy below the
-    /// [`Element`].
+    /// [`Element`](crate::entities::Element).
     ///
-    /// This method is called automatically when the [`Element`] is updated, but
-    /// can also be called manually if required.
+    /// This method is called automatically when the [`Element`](crate::entities::Element)
+    /// is updated, but can also be called manually if required.
     ///
     /// # Significant data
     ///
-    /// The data considered "significant" to the state of the [`Element`], and
-    /// any change to which is considered to constitute a change in the state of
-    /// the [`Element`], is:
+    /// The data considered "significant" to the state of the [`Element`](crate::entities::Element),
+    /// and any change to which is considered to constitute a change in the
+    /// state of the [`Element`](crate::entities::Element), is:
     ///
-    ///   - The ID of the [`Element`]. This should never change. Arguably, this
-    ///     could be omitted, but at present it means that empty elements are
-    ///     given meaningful hashes.
-    ///   - The primary [`Data`] of the [`Element`]. This is the data that the
-    ///     consumer application has stored in the [`Element`], and is the
-    ///     focus of the [`Element`].
-    ///   - The metadata of the [`Element`]. This is the system-managed
-    ///     properties that are used to process the [`Element`], but are not
-    ///     part of the primary data. Arguably the Merkle hash could be
-    ///     considered part of the metadata, but it is not included in the
-    ///     [`Data`] struct at present (as it obviously should not contribute
-    ///     to the hash, i.e. itself).
+    ///   - The ID of the [`Element`](crate::entities::Element). This should
+    ///     never change. Arguably, this could be omitted, but at present it
+    ///     means that empty elements are given meaningful hashes.
+    ///   - The primary [`Data`] of the [`Element`](crate::entities::Element).
+    ///     This is the data that the consumer application has stored in the
+    ///     [`Element`](crate::entities::Element), and is the focus of the
+    ///     [`Element`](crate::entities::Element).
+    ///   - The metadata of the [`Element`](crate::entities::Element). This is
+    ///     the system-managed properties that are used to process the
+    ///     [`Element`](crate::entities::Element), but are not part of the
+    ///     primary data. Arguably the Merkle hash could be considered part of
+    ///     the metadata, but it is not included in the [`Data`] struct at
+    ///     present (as it obviously should not contribute to the hash, i.e.
+    ///     itself).
     ///
     /// # Parameters
     ///
-    /// * `element` - The [`Element`] to calculate the Merkle hash for.
+    /// * `element` - The [`Element`](crate::entities::Element) to calculate the
+    ///               Merkle hash for.
     ///
     /// # Errors
     ///
     /// If there is a problem in serialising the data, an error will be
     /// returned.
     ///
-    pub fn calculate_merkle_hash_for(&self, element: &Element) -> Result<[u8; 32], StorageError> {
+    pub fn calculate_merkle_hash_for<D: Data>(&self, entity: &D) -> Result<[u8; 32], StorageError> {
         let mut hasher = Sha256::new();
-        hasher.update(element.id().as_bytes());
-        hasher.update(&to_vec(&element.data()).map_err(StorageError::SerializationError)?);
-        hasher.update(&to_vec(&element.metadata).map_err(StorageError::SerializationError)?);
+        hasher.update(entity.id().as_bytes());
+        hasher.update(&to_vec(&entity).map_err(StorageError::SerializationError)?);
+        hasher
+            .update(&to_vec(&entity.element().metadata).map_err(StorageError::SerializationError)?);
 
-        for child in self.children_of(element)? {
-            hasher.update(child.merkle_hash);
+        for child in self.children_of(entity)? {
+            hasher.update(child.element().merkle_hash);
         }
 
         Ok(hasher.finalize().into())
     }
 
-    /// The children of the [`Element`].
+    /// The children of the [`Element`](crate::entities::Element).
     ///
-    /// This gets the children of the [`Element`], which are the [`Element`]s
-    /// that are directly below this [`Element`] in the hierarchy. This is a
-    /// simple method that returns the children as a list, and does not provide
-    /// any filtering or ordering.
+    /// This gets the children of the [`Element`](crate::entities::Element),
+    /// which are the [`Element`](crate::entities::Element)s that are directly
+    /// below this [`Element`](crate::entities::Element) in the hierarchy. This
+    /// is a simple method that returns the children as a list, and does not
+    /// provide any filtering or ordering.
     ///
     /// Notably, there is no real concept of ordering in the storage system, as
     /// the records are not ordered in any way. They are simply stored in the
@@ -139,29 +145,33 @@ impl Interface {
     ///
     /// # Parameters
     ///
-    /// * `element` - The [`Element`] to get the children of.
+    /// * `element` - The [`Element`](crate::entities::Element) to get the
+    ///               children of.
     ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, or a child
-    /// [`Element`] cannot be found, an error will be returned.
+    /// [`Element`](crate::entities::Element) cannot be found, an error will be
+    /// returned.
     ///
-    pub fn children_of(&self, element: &Element) -> Result<Vec<Element>, StorageError> {
+    pub fn children_of<D: Data>(&self, entity: &D) -> Result<Vec<D::Child>, StorageError> {
         let mut children = Vec::new();
-        for id in element.child_ids() {
+        for id in entity.element().child_ids() {
             children.push(self.find_by_id(id)?.ok_or(StorageError::NotFound(id))?);
         }
         Ok(children)
     }
 
-    /// Finds an [`Element`] by its unique identifier.
+    /// Finds an [`Element`](crate::entities::Element) by its unique identifier.
     ///
-    /// This will always retrieve a single [`Element`], if it exists, regardless
-    /// of where it may be in the hierarchy, or what state it may be in.
+    /// This will always retrieve a single [`Element`](crate::entities::Element),
+    /// if it exists, regardless of where it may be in the hierarchy, or what
+    /// state it may be in.
     ///
     /// # Parameters
     ///
-    /// * `id` - The unique identifier of the [`Element`] to find.
+    /// * `id` - The unique identifier of the [`Element`](crate::entities::Element)
+    ///          to find.
     ///
     /// # Errors
     ///
@@ -169,7 +179,7 @@ impl Interface {
     /// will be returned.
     ///
     #[expect(clippy::significant_drop_tightening, reason = "False positive")]
-    pub fn find_by_id(&self, id: Id) -> Result<Option<Element>, StorageError> {
+    pub fn find_by_id<D: Data>(&self, id: Id) -> Result<Option<D>, StorageError> {
         // TODO: It seems fairly bizarre/unexpected that the put() method is sync
         // TODO: and not async. The reasons and intentions need checking here, in
         // TODO: case this find() method should be async and wrap the blocking call
@@ -187,105 +197,114 @@ impl Interface {
 
         match value {
             Some(slice) => {
-                let mut element =
-                    Element::try_from_slice(&slice).map_err(StorageError::DeserializationError)?;
+                let mut entity =
+                    D::try_from_slice(&slice).map_err(StorageError::DeserializationError)?;
                 // TODO: This is needed for now, as the field gets stored. Later we will
                 // TODO: implement a custom serialiser that will skip this field along with
                 // TODO: any others that should not be stored.
-                element.is_dirty = false;
-                Ok(Some(element))
+                entity.element_mut().is_dirty = false;
+                Ok(Some(entity))
             }
             None => Ok(None),
         }
     }
 
-    /// Finds one or more [`Element`]s by path in the hierarchy.
+    /// Finds one or more [`Element`](crate::entities::Element)s by path in the
+    /// hierarchy.
     ///
-    /// This will retrieve all [`Element`]s that exist at the specified path in
-    /// the hierarchy. This may be a single item, or multiple items if there are
-    /// multiple [`Element`]s at the same path.
+    /// This will retrieve all [`Element`](crate::entities::Element)s that exist
+    /// at the specified path in the hierarchy. This may be a single item, or
+    /// multiple items if there are multiple [`Element`](crate::entities::Element)s
+    /// at the same path.
     ///
     /// # Parameters
     ///
-    /// * `path` - The path to the [`Element`]s to find.
+    /// * `path` - The path to the [`Element`](crate::entities::Element)s to
+    ///            find.
     ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    pub fn find_by_path(&self, _path: &Path) -> Result<Vec<Element>, StorageError> {
+    pub fn find_by_path<D: Data>(&self, _path: &Path) -> Result<Vec<D>, StorageError> {
         unimplemented!()
     }
 
-    /// Finds the children of an [`Element`] by its unique identifier.
+    /// Finds the children of an [`Element`](crate::entities::Element) by its
+    /// unique identifier.
     ///
-    /// This will retrieve all [`Element`]s that are children of the specified
-    /// [`Element`]. This may be a single item, or multiple items if there are
-    /// multiple children. Notably, it will return [`None`] if the [`Element`]
+    /// This will retrieve all [`Element`](crate::entities::Element)s that are
+    /// children of the specified [`Element`](crate::entities::Element). This
+    /// may be a single item, or multiple items if there are multiple children.
+    /// Notably, it will return [`None`] if the [`Element`](crate::entities::Element)
     /// in question does not exist.
     ///
     /// # Parameters
     ///
-    /// * `id` - The unique identifier of the [`Element`] to find the children
-    ///          of.
+    /// * `id` - The unique identifier of the [`Element`](crate::entities::Element)
+    ///          to find the children of.
     ///
     /// # Errors
     ///
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    pub fn find_children_by_id(&self, _id: Id) -> Result<Option<Vec<Element>>, StorageError> {
+    pub fn find_children_by_id<D: Data>(&self, _id: Id) -> Result<Option<Vec<D>>, StorageError> {
         unimplemented!()
     }
 
-    /// Saves an [`Element`] to the storage system.
+    /// Saves an [`Element`](crate::entities::Element) to the storage system.
     ///
-    /// This will save the provided [`Element`] to the storage system. If the
-    /// record already exists, it will be updated with the new data. If the
-    /// record does not exist, it will be created.
+    /// This will save the provided [`Element`](crate::entities::Element) to the
+    /// storage system. If the record already exists, it will be updated with
+    /// the new data. If the record does not exist, it will be created.
     ///
     /// # Update guard
     ///
-    /// If the provided [`Element`] is older than the existing record, the
-    /// update will be ignored, and the existing record will be kept. The
-    /// Boolean return value indicates whether the record was saved or not; a
-    /// value of `false` indicates that the record was not saved due to this
-    /// guard check — any other reason will be due to an error, and returned as
-    /// such.
+    /// If the provided [`Element`](crate::entities::Element) is older than the
+    /// existing record, the update will be ignored, and the existing record
+    /// will be kept. The Boolean return value indicates whether the record was
+    /// saved or not; a value of `false` indicates that the record was not saved
+    /// due to this guard check — any other reason will be due to an error, and
+    /// returned as such.
     ///
     /// # Dirty flag
     ///
-    /// Note, if the [`Element`] is not marked as dirty, it will not be saved,
-    /// but `true` will be returned. In this case, the record is considered to
-    /// be up-to-date and does not need saving, and so the save operation is
-    /// effectively a no-op. If necessary, this can be checked before calling
-    /// [`save()](Element::save()) by calling [`is_dirty()](Element::is_dirty()).
+    /// Note, if the [`Element`](crate::entities::Element) is not marked as
+    /// dirty, it will not be saved, but `true` will be returned. In this case,
+    /// the record is considered to be up-to-date and does not need saving, and
+    /// so the save operation is effectively a no-op. If necessary, this can be
+    /// checked before calling [`save()](crate::entities::Element::save()) by
+    /// calling [`is_dirty()](crate::entities::Element::is_dirty()).
     ///
     /// # Merkle hash
     ///
-    /// The Merkle hash of the [`Element`] is calculated before saving, and
-    /// stored in the [`Element`] itself. This is used to determine whether the
-    /// data of the [`Element`] or its children has changed, and is used to
-    /// validate the stored data.
+    /// The Merkle hash of the [`Element`](crate::entities::Element) is
+    /// calculated before saving, and stored in the [`Element`](crate::entities::Element)
+    /// itself. This is used to determine whether the data of the [`Element`](crate::entities::Element)
+    /// or its children has changed, and is used to validate the stored data.
     ///
-    /// Note that if the [`Element`] does not need saving, or cannot be saved,
-    /// then the Merkle hash will not be updated. This way the hash only ever
-    /// represents the state of the data that is actually stored.
+    /// Note that if the [`Element`](crate::entities::Element) does not need
+    /// saving, or cannot be saved, then the Merkle hash will not be updated.
+    /// This way the hash only ever represents the state of the data that is
+    /// actually stored.
     ///
     /// # Parameters
     ///
-    /// * `id`      - The unique identifier of the [`Element`] to save.
-    /// * `element` - The [`Element`] whose data should be saved. This will be
-    ///               serialised and stored in the storage system.
+    /// * `id`      - The unique identifier of the [`Element`](crate::entities::Element)
+    ///               to save.
+    /// * `element` - The [`Element`](crate::entities::Element) whose data
+    ///               should be saved. This will be serialised and stored in the
+    ///               storage system.
     ///
     /// # Errors
     ///
     /// If an error occurs when serialising data or interacting with the storage
     /// system, an error will be returned.
     ///
-    pub fn save(&self, id: Id, element: &mut Element) -> Result<bool, StorageError> {
-        if !element.is_dirty() {
+    pub fn save<D: Data>(&self, id: Id, entity: &mut D) -> Result<bool, StorageError> {
+        if !entity.element().is_dirty() {
             return Ok(true);
         }
         // It is possible that the record gets added or updated after the call to
@@ -294,14 +313,14 @@ impl Interface {
         // is considered acceptable. If this becomes a problem, we should change
         // the RwLock to a ReentrantMutex, or reimplement the get() logic here to
         // occur within the write lock. But this seems unnecessary at present.
-        if let Some(existing) = self.find_by_id(id)? {
-            if existing.metadata.updated_at >= element.metadata.updated_at {
+        if let Some(mut existing) = self.find_by_id::<D>(id)? {
+            if existing.element_mut().metadata.updated_at >= entity.element().metadata.updated_at {
                 return Ok(false);
             }
         }
         // TODO: Need to propagate the change up the tree, i.e. trigger a
         // TODO: recalculation for the ancestors.
-        element.merkle_hash = self.calculate_merkle_hash_for(element)?;
+        entity.element_mut().merkle_hash = self.calculate_merkle_hash_for(entity)?;
 
         // TODO: It seems fairly bizarre/unexpected that the put() method is sync
         // TODO: and not async. The reasons and intentions need checking here, in
@@ -312,10 +331,10 @@ impl Interface {
             .write()
             .put(
                 &StorageKey::new(id.into()),
-                Slice::from(to_vec(element).map_err(StorageError::SerializationError)?),
+                Slice::from(to_vec(entity).map_err(StorageError::SerializationError)?),
             )
             .map_err(StorageError::StoreError)?;
-        element.is_dirty = false;
+        entity.element_mut().is_dirty = false;
         Ok(true)
     }
 
