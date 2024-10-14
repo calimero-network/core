@@ -25,7 +25,7 @@ use crate::admin::handlers::add_client_key::{
 };
 use crate::admin::handlers::applications::{
     get_application, get_application_details_handler, install_application_handler,
-    install_dev_application_handler, list_applications_handler,
+    install_dev_application_handler, list_applications_handler, uninstall_application_handler,
 };
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
@@ -80,12 +80,23 @@ pub(crate) fn setup(
 
     let admin_path = "/admin-api";
 
+    for listen in &config.listen {
+        info!(
+            "Admin API server listening on {}/http{{{}}}",
+            listen, admin_path
+        );
+    }
+
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store).with_secure(false);
 
     let protected_router = Router::new()
         .route("/root-key", post(create_root_key_handler))
         .route("/install-application", post(install_application_handler))
+        .route(
+            "/uninstall-application",
+            post(uninstall_application_handler),
+        )
         .route("/applications", get(list_applications_handler))
         .route(
             "/applications/:app_id",
@@ -205,6 +216,13 @@ pub(crate) fn site(config: &ServerConfig) -> Option<(&'static str, Router)> {
     };
 
     let path = "/admin-dashboard";
+
+    for listen in &config.listen {
+        info!(
+            "Admin Dashboard UI available on {}/http{{{}}}",
+            listen, path
+        );
+    }
 
     // Create a router to serve static files and fallback to index.html
     let router = Router::new()

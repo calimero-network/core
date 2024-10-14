@@ -1,7 +1,8 @@
 import React from 'react';
 import styled from 'styled-components';
 import MenuIconDropdown from '../common/MenuIconDropdown';
-import { ContextObject } from '../../pages/Contexts';
+import { ContextObject } from '../../types/context';
+import translations from '../../constants/en.global.json';
 
 interface RowItemComponentProps {
   $hasBorders: boolean;
@@ -63,19 +64,20 @@ export default function rowItem(
   count: number,
   onitemClicked?: (id: string) => void,
 ): JSX.Element {
+  const t = translations.contextPage;
   return (
     <RowItem key={item.id} $hasBorders={id === count}>
       <a href={`contexts/${item.id}`} className="row-item id">
         {item.id}
       </a>
       <div className="row-item name">
-        {item.name ?? 'Development application'}
+        {item.package?.name ?? t.devApplicationTitle}
       </div>
       <div className="menu-dropdown">
         <MenuIconDropdown
           options={[
             {
-              title: 'Delete Context',
+              title: t.deleteContextText,
               onClick: () => onitemClicked && onitemClicked(item.id),
             },
           ]}

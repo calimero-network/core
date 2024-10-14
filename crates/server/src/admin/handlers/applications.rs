@@ -8,6 +8,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_server_primitives::admin::{
     GetApplicationDetailsResponse, GetApplicationResponse, InstallApplicationRequest,
     InstallApplicationResponse, InstallDevApplicationRequest, ListApplicationsResponse,
+    UninstallApplicationRequest, UninstallApplicationResponse,
 };
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
@@ -54,6 +55,19 @@ pub async fn install_application_handler(
     {
         Ok(application_id) => ApiResponse {
             payload: InstallApplicationResponse::new(application_id),
+        }
+        .into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
+}
+
+pub async fn uninstall_application_handler(
+    Extension(state): Extension<Arc<AdminState>>,
+    Json(req): Json<UninstallApplicationRequest>,
+) -> impl IntoResponse {
+    match state.ctx_manager.uninstall_application(req.application_id) {
+        Ok(_) => ApiResponse {
+            payload: UninstallApplicationResponse::new(req.application_id),
         }
         .into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),

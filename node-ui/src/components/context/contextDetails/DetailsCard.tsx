@@ -72,7 +72,11 @@ export default function DetailsCard(props: DetailsCardProps) {
             {t.labelIdText}
             {props.details.contextId}
           </div>
-          <div className="highlight title inter-mid">{t.titleApps}</div>
+          {!props.details.package ? (
+            <div className="highlight title inter-mid">{t.localAppTitle}</div>
+          ) : (
+            <div className="highlight title inter-mid">{t.titleApps}</div>
+          )}
           <div className="item">
             {t.labelNameText}
             <span className="highlight">

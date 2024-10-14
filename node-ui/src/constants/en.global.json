@@ -144,7 +144,12 @@
       "noAvailableReleasesText": "No available releases",
       "noInstalledAppsText": "No installed applications",
       "noOwnedAppsText": "No owned applications",
-      "installNewAppText": "install new application"
+      "installNewAppText": "install new application",
+      "actionDialog": {
+        "title": "Uninstall Application",
+        "subtitle": "Are you sure you want to uninstall this application? This action cannot be undone.",
+        "buttonActionText": "Uninstall"
+      }
     },
     "installApplication": {
       "title": "Install Application",
@@ -264,6 +269,8 @@
     "invitedListDescription": "Contexts you have been invited to",
     "noJoinedAppsListText": "You have not joined any contexts.",
     "noInviedAppsListText": "You have not been invited to any contexts.",
+    "devApplicationTitle": "Development application",
+    "deleteContextText": "Delete Context",
     "contextDetails": {
       "title": "Context Details",
       "clientKeysListDescription": "Client keys are authorization keys used by the application frontend.",
@@ -277,6 +284,7 @@
       "lableVersionText": "Version: ",
       "labelAppId": "App ID: ",
       "titleApps": "Installed application",
+      "localAppTitle": "Metadata not available for locally installed application",
       "titleStorage": "Storage",
       "labelStorageText": "Used: "
     },

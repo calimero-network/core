@@ -1,3 +1,4 @@
+use calimero_server as _;
 use std::env::var;
 
 use clap::Parser;
@@ -10,7 +11,6 @@ use crate::cli::RootCommand;
 
 mod cli;
 mod common;
-mod config_file;
 mod defaults;
 
 #[tokio::main]
