@@ -7,7 +7,10 @@ use crate::cli::RootArgs;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
-pub struct ListCommand;
+pub struct ListCommand {
+    #[arg(long, short)]
+    pub test: bool,
+}
 
 impl ListCommand {
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
@@ -27,11 +30,14 @@ impl ListCommand {
         }
 
         let api_response: ListApplicationsResponse = response.json().await?;
-        let app_list = api_response.data.apps;
 
-        #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
-        for app in app_list {
-            println!("{}", app.id);
+        if self.test {
+            println!("{:#?}", api_response);
+        } else {
+            #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
+            for app in api_response.data.apps {
+                println!("{}", app.id);
+            }
         }
 
         Ok(())

@@ -1,3 +1,4 @@
+use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
@@ -12,6 +13,9 @@ pub struct GetCommand {
 
     #[arg(long, short)]
     pub app_id: String,
+
+    #[arg(long, short)]
+    pub test: bool,
 }
 #[derive(ValueEnum, Debug, Clone)]
 pub enum GetValues {
@@ -41,7 +45,8 @@ impl GetCommand {
             bail!("Request failed with status: {}", response.status())
         }
 
-        println!("{}", response.text().await?);
+        let response: GetApplicationResponse = response.json().await?;
+        println!("{:#?}", response);
 
         Ok(())
     }
