@@ -1016,6 +1016,30 @@ impl<S: StorageAdaptor> MainInterface<S> {
         Ok(true)
     }
 
+    /// Type identifier of the entity.
+    ///
+    /// This is noted so that the entity can be deserialised correctly in the
+    /// absence of other semantic information. It is intended that the [`Path`]
+    /// will be used to help with this at some point, but at present paths are
+    /// not fully utilised.
+    ///
+    /// The value returned is arbitrary, and is up to the implementer to decide
+    /// what it should be. It is recommended that it be unique for each type of
+    /// entity.
+    ///
+    /// # Parameters
+    ///
+    /// * `id` - The [`Id`] of the entity whose type is to be retrieved.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    ///
+    pub fn type_of(id: Id) -> Result<u8, StorageError> {
+        <Index<S>>::get_type_id(id)
+    }
+
     /// Validates the stored state.
     ///
     /// This will validate the stored state of the storage system, i.e. the data

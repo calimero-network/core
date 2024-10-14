@@ -1,4 +1,5 @@
 use calimero_sdk::app;
+use calimero_sdk::borsh::to_vec;
 use calimero_storage::address::{Id, Path};
 use calimero_storage::entities::{Data, Element};
 use calimero_storage::integration::Comparison;
@@ -134,6 +135,26 @@ impl Library {
             13 => Interface::compare_trees(&instantiate::<Page>(&data)?, &comparison_data),
             14 => Interface::compare_trees(&instantiate::<Paragraph>(&data)?, &comparison_data),
             15 => Interface::compare_trees(&instantiate::<Review>(&data)?, &comparison_data),
+            _ => Err(StorageError::UnknownType(type_id)),
+        }
+    }
+
+    pub fn generate_comparison_data(&self, id: Id) -> Result<Comparison, StorageError> {
+        fn generate_for<D: Data>(id: Id) -> Result<Comparison, StorageError> {
+            let data = Interface::find_by_id::<D>(id)?.ok_or(StorageError::NotFound(id))?;
+            Ok(Comparison {
+                type_id: D::type_id(),
+                data: to_vec(&data).map_err(StorageError::SerializationError)?,
+                comparison_data: Interface::generate_comparison_data(&data)?,
+            })
+        }
+        let type_id = Interface::type_of(id)?;
+        match type_id {
+            11 => generate_for::<Library>(id),
+            12 => generate_for::<Book>(id),
+            13 => generate_for::<Page>(id),
+            14 => generate_for::<Paragraph>(id),
+            15 => generate_for::<Review>(id),
             _ => Err(StorageError::UnknownType(type_id)),
         }
     }
