@@ -6,23 +6,278 @@
 //! the storage system. These are the building blocks that are used to construct
 //! the hierarchy of the storage, and to apply updates to the elements.
 //!
+//! # Design
+//!
+//! There are a number of requirements that need to be catered for by the
+//! solution, and it is worth exploring some of the possible structures and
+//! approaches that have been considered.
+//!
+//! ## Considerations
+//!
+//! Let's examine first principles:
+//!
+//!   1. `Element`s are saved, and `Element`s are structs, with system metadata.
+//!   2. `Element`s also contain user data, represented by `Data`.
+//!   3. User types need to have an easy interface, using an `AtomicUnit`
+//!      annotation.
+//!
+//! It is possible that `Element` should be a trait, and that the `AtomicUnit`
+//! trait should be a superset of `Element`, and that the `AtomicUnit` proc
+//! macro would then apply both `Element` and `AtomicUnit`. However, this would
+//! still need a `Data` struct to be constructed, owned by the `Element`.
+//!
+//! Therefore, if we say that `Element` remains a struct, for simplicity, then
+//! what exactly is being annotated? If the user creates a `Person`, is that
+//! `Person` an `Element` or an `AtomicUnit`?
+//!
+//! It seems that the `Person` must be an `AtomicUnit`, which means it cannot
+//! *be* `Data` with this structure, as it would need to *contain* `Data`. Now,
+//! it initially seemed that `AtomicUnit` should extend `Data`. But if
+//! `AtomicUnit` is the `Data`, then the `Person` annotation would be misleading
+//! if it was applying to the internal `Data` and not to the `Person`. This
+//! would not be idiomatic nor a good pattern to follow.
+//!
+//! So... if the `Person` is in fact the `AtomicUnit`, and it has data fields,
+//! where do we get `Data` from now? We can't really have `Data` being an
+//! `Element`, so `Data` has to be owned by `Element`, and where does the
+//! `Element` come from?
+//!
+//! The relationship between these entities is critical to get right. As much as
+//! possible of the internals should be abstracted away from the user, with the
+//! presented interface being as simple as possible.
+//!
+//! ## Option One
+//!
+//!   - `Person` is an `AtomicUnit`.
+//!   - `Person` defines fields — some marked as private.
+//!   - To satisfy `AtomicUnit`, `Person` has a `storage` field added.
+//!   - `Person.storage` is an `Element`, and contains a `PersonData` struct.
+//!   - `PersonData` is constructed by the macro, and contains a copy of the
+//!     fields from `Person` that are not private. These fields could
+//!     potentially be borrowed, referencing the fields on the `Element`.
+//!   - It's then unclear if `Person` (i.e. `AtomicUnit`) needs a `save()`
+//!     method, or whether it should be passed to `Interface`.
+//!
+//! This suffers from a number of issues, including:
+//!
+//!   - The `Person` is now a leaky abstraction, as it exposes the internals of
+//!     the `Element` and `PersonData`.
+//!   - The `Person` is now a pain to work with, as it has to be constructed in
+//!     a specific way, including the construction of `PersonData`.
+//!   - The very existence of `PersonData` is icky.
+//!
+//! ## Option Two
+//!
+//!   - `Person` is an `AtomicUnit`.
+//!   - `Person` defines fields — some marked as private.
+//!   - `Element` becomes a trait instead of a struct.
+//!   - `AtomicUnit` demands `Element`.
+//!   - `Person` is now therefore an `Element`.
+//!   - `Person.data` contains a `PersonData` struct.
+//!   - `PersonData` is constructed by the macro, and contains a copy of the
+//!     fields from `Person` that are not private. Again, these fields could
+//!     potentially be borrowed, referencing the fields on the `Element`.
+//!   - `Person` does not appear to need a `save()` now, as `Interface.save()`
+//!     accepts `Element`, and therefore `Person`.
+//!
+//! This is also problematic:
+//!
+//!   - The `Element` has a lot on it, which clutters up the `Person`.
+//!   - It exposes the internals, which is undesirable.
+//!
+//! ## Option Three
+//!
+//!   - `Person` is an `AtomicUnit`.
+//!   - `Person` defines fields — some marked as private.
+//!   - `Element` remains a struct.
+//!   - `Interface` accepts `Data` not `Element`.
+//!   - `AtomicUnit` extends `Data`.
+//!   - `Person` is therefore `Data`.
+//!   - `Person` has a `storage` field added, to hold an `Element`.
+//!   - A circular reference is carefully created between `Person` and
+//!     `Element`, with `Element` holding a weak reference to `Person`, and
+//!     `Person` having a strong reference to (or ownership of) `Element`.
+//!   - When accepting `Data`, i.e. a `Person` here, the `Interface` can call
+//!     through `Person.storage` to get to the `Element`, and the `Element` can
+//!     access the `Data` through the [`Weak`](std::sync::Weak).
+//!   - The macro does not need to create another struct, and the saving logic
+//!     can skip the fields marked as private.
+//!   - `Person` does not appear to need a `save()`, as `Interface.save()` does
+//!     not need to be changed.
+//!
+//! The disadvantages of this approach are:
+//!
+//!   - The circular reference is a bit of a pain, and could be a source of
+//!     bugs.
+//!   - In order to achieve the circular reference, the `Element` would need to
+//!     wrap the `Data` in a [`Weak`](std::sync::Weak), which means that all use
+//!     of the `Data` would need to be through the reference-counted pointer,
+//!     which implies wrapping `Data` in an [`Arc`](std::sync::Arc) upon
+//!     construction.
+//!   - In order to gain mutability, some kind of mutex or read-write lock would
+//!     be required. Imposing a predetermined mutex type would be undesirable,
+//!     as the user may have their own requirements. It's also an annoying
+//!     imposition.
+//!   - Due to the `Data` (i.e. `Person`) being wrapped in an [`Arc`](std::sync::Arc),
+//!     [`Default`] cannot be implemented.
+//!
+//! ## Option Four
+//!
+//!   - `Person` is an `AtomicUnit`.
+//!   - `Person` defines fields — some marked as private.
+//!   - `Element` remains a struct.
+//!   - `Interface` accepts `Data` not `Element`.
+//!   - `AtomicUnit` extends `Data`.
+//!   - `Person` is therefore `Data`.
+//!   - `Person` has a `storage` field added, to hold (and own) an `Element`.
+//!   - When accepting `Data`, i.e. a `Person` here, the `Interface` can call
+//!     through `Person.storage` to get to the `Element`.
+//!   - The macro does not need to create another struct, and the saving logic
+//!     can skip the fields marked as private.
+//!   - `Person` does not appear to need a `save()`, as `Interface.save()` does
+//!     not need to be changed.
+//!
+//! This is essentially the same as Option Three, but without the circular
+//! reference. The disadvantages are:
+//!
+//!   - There is no way for the `Element` to access the `Data` directly. This
+//!     forces a different approach to those operations that require `Data`.
+//!   - The `Element`'s operations can accept a `Data` instead of looking it up
+//!     directly, but this loses structural assurance of the relationship.
+//!
+//! Passing the `Data` to the `Element`'s operations does work around the first
+//! issue, albeit in a slightly unwieldy way. The second issue can be mitigated
+//! by performing a check that the `Element` owned by the passed-in `Data` is
+//! the same instance as the `Element` that the operation is being called on.
+//! Although this is a runtime logic check, it is a simple one, and can be
+//! entirely contained within the internal logic, which remains unexposed.
+//!
+//! ## Option Five
+//!
+//! For the sake of completeness, it's worth noting that technically another
+//! option would be to use generics, such as `Element<D: Data>`, but this leads
+//! to unnecessary complexity at this stage (including the potential to have to
+//! use phantom data), with no tangible benefits. Therefore this has not been
+//! discussed in detail here, although it has been carefully considered.
+//!
+//! ## Conclusion
+//!
+//! Option Four is the approach chosen, as it balances all of the following
+//! aspirations:
+//!
+//!   - Simple to use.
+//!   - Allows full ownership and mutability of the user's types.
+//!   - Abstracts all storage functionality to the storage internals.
+//!   - Achieves reliability.
+//!   - Allows implementation of [`Default`] and similar without unexpected
+//!     constraints.
+//!   - Does not clutter the user's types.
+//!   - Does not expose the internals of the storage system.
+//!   - Does not require a circular reference.
+//!   - Does not impose a mutex type.
+//!   - Does not force a predetermined mutex type.
+//!   - Does not require a separate struct to be constructed.
+//!   - Does not require references to, or clones of, saved data.
+//!
+//! Not having a reference back to the `Data` from the `Element` is a slight
+//! trade-off, but it is a small one, sacrificing a little structural assurance
+//! and direct access for a simpler design with fewer impositions. The internal
+//! validation check is simple, and it is best to promote the elegance of the
+//! user interface over that of the internals — if there are a couple of hoops
+//! to jump through then it is best for these to be in the library code.
+//!
 
 #[cfg(test)]
 #[path = "tests/entities.rs"]
 mod tests;
 
-use core::fmt::{self, Display, Formatter};
+use core::fmt::{self, Debug, Display, Formatter};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::address::{Id, Path};
 
-/// The primary data for an [`Element`], that is, the data that the consumer
-/// application has stored in the [`Element`].
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
-#[non_exhaustive]
-pub struct Data;
+/// The primary data for the [`Element`].
+///
+/// This is the primary data for the [`Element`], that is, the data that the
+/// consumer application has stored in the [`Element`]. This is the data that
+/// the [`Element`] is primarily concerned with, and for the management of which
+/// the [`Element`] exists.
+///
+/// This trait represents a common denominator for the various specific traits
+/// such as [`AtomicUnit`] that are used to denote exactly what the [`Element`]
+/// is representing.
+///
+/// # Pass-through methods
+///
+/// The [`Data`] trait contains a number of pass-through methods that are
+/// implemented for convenience, addressing the inner [`Element`]. Potentially
+/// most of the [`Element`] methods could be added, or even [`Deref`](std::ops::Deref)
+/// implemented, but for now only the most useful and least likely to be
+/// contentious methods are included, to keep the interface simple and focused.
+///
+pub trait Data:
+    BorshDeserialize + BorshSerialize + Clone + Debug + PartialEq + PartialOrd + Send + Sync
+{
+    /// The associated type of any children that the [`Element`] may have. If
+    /// the node type is not one that can have any children, the [`NoChildren`]
+    /// type can be used. *Note that this is potentially a temporary measure to
+    /// allow for a simplified initial implementation of child functionality,
+    /// and will be refined in forthcoming iterations.*
+    type Child: Data;
+
+    /// The associated [`Element`].
+    ///
+    /// The [`Element`] contains additional metadata and storage-related
+    /// identification and other information for the primary data, keeping it
+    /// abstracted and separate from the primary data itself.
+    ///
+    /// # See also
+    ///
+    /// * [`element_mut()`](Data::element_mut())
+    ///
+    fn element(&self) -> &Element;
+
+    /// The associated [`Element`], with mutability.
+    ///
+    /// This function is used to obtain a mutable reference to the [`Element`]
+    /// that contains the primary data.
+    ///
+    /// # See also
+    ///
+    /// * [`element()`](Data::element())
+    ///
+    fn element_mut(&mut self) -> &mut Element;
+
+    /// The unique identifier for the [`Element`].
+    ///
+    /// This is a convenience function that passes through to [`Element::id()`].
+    /// See that method for more information.
+    ///
+    /// # See also
+    ///
+    /// * [`Element::id()`]
+    ///
+    #[must_use]
+    fn id(&self) -> Id {
+        self.element().id()
+    }
+
+    /// The path to the [`Element`] in the hierarchy.
+    ///
+    /// This is a convenience function that passes through to
+    /// [`Element::path()`]. See that method for more information.
+    ///
+    /// # See also
+    ///
+    /// * [`Element::path()`]
+    ///
+    #[must_use]
+    fn path(&self) -> Path {
+        self.element().path()
+    }
+}
 
 /// Represents an [`Element`] in the storage.
 ///
@@ -51,7 +306,21 @@ pub struct Data;
 /// hashes that represent the sum of all data at that part in the hierarchy and
 /// below.
 ///
-/// # Structure
+/// # Internal structure
+///
+/// The primary data for the [`Element`], that is, the data that the consumer
+/// application has stored in the [`Element`], cannot be directly accessed by
+/// the [`Element`]. This is because that data is the focus of the user
+/// operations, and it is desirable to keep the [`Element`] as entirely
+/// self-contained. Therefore [`Data`] contains an [`Element`], purely to
+/// promote this focus and separation.
+///
+/// For this reason, any [`Element`] methods that require access to the primary
+/// data require the [`Data`] to be passed in, and need to check and ensure that
+/// the [`Element`] owned by the [`Data`] is the same instance as the
+/// [`Element`] that the operation is being called on.
+///
+/// # Storage structure
 ///
 /// TODO: Update when the `child_ids` field is replaced with an index.
 ///
@@ -89,7 +358,7 @@ pub struct Data;
 /// key-value stores. Therefore, this approach and other similar patterns are
 /// not suitable for our use case.
 ///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Element {
     /// The unique identifier for the [`Element`].
@@ -100,10 +369,6 @@ pub struct Element {
     /// by storing this list elsewhere — but for now, it helps to get the data
     /// in place and usable, and establish a basis to test against and enhance.
     pub(crate) child_ids: Vec<Id>,
-
-    /// The primary data for the [`Element`], that is, the data that the
-    /// consumer application has stored in the [`Element`].
-    data: Data,
 
     /// Whether the [`Element`] is dirty, i.e. has been modified since it was
     /// last saved.
@@ -169,7 +434,6 @@ impl Element {
         Self {
             id: Id::new(),
             child_ids: Vec::new(),
-            data: Data {},
             is_dirty: true,
             metadata: Metadata {
                 created_at: timestamp,
@@ -185,8 +449,8 @@ impl Element {
     /// This gets only the IDs of the children of the [`Element`], which are the
     /// [`Element`]s that are directly below this [`Element`] in the hierarchy.
     ///
-    /// TODO: This method will likely move to the [`Interface`] when the index
-    ///       is implemented.
+    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
+    ///       when the index is implemented.
     ///
     #[must_use]
     pub fn child_ids(&self) -> Vec<Id> {
@@ -199,25 +463,13 @@ impl Element {
         self.metadata.created_at
     }
 
-    /// The primary data for the [`Element`].
-    ///
-    /// This gets the primary data for the [`Element`], that is, the data that
-    /// the consumer application has stored in the [`Element`]. This is the data
-    /// that the [`Element`] is primarily concerned with, and for the management
-    /// of which the [`Element`] exists.
-    ///
-    #[must_use]
-    pub const fn data(&self) -> &Data {
-        &self.data
-    }
-
     /// Whether the [`Element`] has children.
     ///
     /// This checks whether the [`Element`] has children, which are the
     /// [`Element`]s that are directly below this [`Element`] in the hierarchy.
     ///
-    /// TODO: This method will likely move to the [`Interface`] when the index
-    ///       is implemented.
+    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
+    ///       when the index is implemented.
     ///
     #[must_use]
     pub fn has_children(&self) -> bool {
@@ -272,28 +524,33 @@ impl Element {
         self.path.clone()
     }
 
-    /// Updates the data for the [`Element`].
+    /// Updates the metadata for the [`Element`].
     ///
-    /// This updates the data for the [`Element`], and marks the [`Element`] as
-    /// dirty. This is used to indicate that the [`Element`] has been modified
-    /// since it was last saved, and that it needs to be saved again in order to
-    /// persist the changes.
+    /// This updates the metadata for the [`Element`], and marks the [`Element`]
+    /// as dirty. This is used to indicate that the [`Element`] has been
+    /// modified since it was last saved, and that it needs to be saved again in
+    /// order to persist the changes.
     ///
-    /// It also updates the [`updated_at()`](Element::updated_at()) timestamp to
-    /// reflect the time that the [`Element`] was last updated.
+    /// It updates the [`updated_at()`](Element::updated_at()) timestamp to
+    /// reflect the time that the [`Element`] was last updated (this is part of
+    /// the metadata).
+    ///
+    /// **IMPORTANT**: It does not update the actual data itself, as it has no
+    /// way of accessing this. Therefore, this method should be called after
+    /// updating the data.
+    ///
+    /// TODO: Add data parameter back in, and also accept old data as well as
+    ///       new data, to compare the values and determine if there has been an
+    ///       update.
     ///
     /// # Merkle hash
     ///
-    /// The Merkles hash will NOT be updated when the data is updated. It will
+    /// The Merkle hash will NOT be updated when the data is updated. It will
     /// also not be cleared. Rather, it will continue to represent the state of
     /// the *stored* data, until the data changes are saved, at which point the
     /// hash will be recalculated and updated. The way to tell if the hash is
     /// up-to-date is simply to check the [`is_dirty()`](Element::is_dirty())
     /// flag.
-    ///
-    /// # Parameters
-    ///
-    /// * `data` - The new data for the [`Element`].
     ///
     /// # Panics
     ///
@@ -305,8 +562,7 @@ impl Element {
         reason = "Impossible to overflow in normal circumstances"
     )]
     #[expect(clippy::expect_used, reason = "Effectively infallible here")]
-    pub fn update_data(&mut self, data: Data) {
-        self.data = data;
+    pub fn update(&mut self) {
         self.is_dirty = true;
         self.metadata.updated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -352,7 +608,7 @@ impl Display for Element {
 /// Using a [`u64`] timestamp allows for 585 years from the Unix epoch, at
 /// nanosecond precision. This is more than sufficient for our current needs.
 ///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct Metadata {
     /// When the [`Element`] was first created. Note that this is a global
@@ -373,5 +629,34 @@ impl Metadata {
     /// in tests.
     pub fn set_created_at(&mut self, created_at: u64) {
         self.created_at = created_at;
+    }
+}
+
+/// A [`Data`] type that has no children.
+///
+/// This is a special type to represent the type of the children of a [`Data`]
+/// type that has no children, in the absence of being able to use something
+/// like `None` to represent no type.
+///
+/// *Note that this is potentially a temporary measure to allow for a simplified
+/// initial implementation of child functionality, and will be refined in
+/// forthcoming iterations.*
+///
+#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "Exhaustive - this will never have fields"
+)]
+pub struct NoChildren;
+
+impl Data for NoChildren {
+    type Child = Self;
+
+    fn element(&self) -> &Element {
+        unimplemented!()
+    }
+
+    fn element_mut(&mut self) -> &mut Element {
+        unimplemented!()
     }
 }
