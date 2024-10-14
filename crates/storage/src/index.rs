@@ -33,6 +33,12 @@ struct EntityIndex {
     /// Merkle hash of the entity's immediate data only. This gets combined with
     /// the hashes of its children to form the full hash.
     own_hash: [u8; 32],
+
+    /// Type identifier of the entity. This is noted so that the entity can be
+    /// deserialised correctly in the absence of other semantic information. It
+    /// is intended that the [`Path`](crate::address::Path) will be used to help
+    /// with this at some point, but at present paths are not fully utilised.
+    type_id: u8,
 }
 
 /// Manages the indexing system for efficient tree navigation.
@@ -50,6 +56,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// * `collection` - The name of the collection to which the child is to be
     ///                  added.
     /// * `child`      - The [`ChildInfo`] of the child entity to be added.
+    /// * `type_id`    - The type identifier of the entity.
     ///
     /// # Errors
     ///
@@ -65,6 +72,7 @@ impl<S: StorageAdaptor> Index<S> {
         parent_id: Id,
         collection: &str,
         child: ChildInfo,
+        type_id: u8,
     ) -> Result<(), StorageError> {
         let mut parent_index =
             Self::get_index(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
@@ -75,6 +83,7 @@ impl<S: StorageAdaptor> Index<S> {
             children: BTreeMap::new(),
             full_hash: [0; 32],
             own_hash: [0; 32],
+            type_id,
         });
         child_index.parent_id = Some(parent_id);
         child_index.own_hash = child.merkle_hash();
@@ -113,13 +122,14 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     /// * [`add_child_to()`](Index::add_child_to())
     ///
-    pub(crate) fn add_root(root: ChildInfo) -> Result<(), StorageError> {
+    pub(crate) fn add_root(root: ChildInfo, type_id: u8) -> Result<(), StorageError> {
         let mut index = Self::get_index(root.id())?.unwrap_or_else(|| EntityIndex {
             id: root.id(),
             parent_id: None,
             children: BTreeMap::new(),
             full_hash: [0; 32],
             own_hash: [0; 32],
+            type_id,
         });
         index.own_hash = root.merkle_hash();
         Self::save_index(&index)?;

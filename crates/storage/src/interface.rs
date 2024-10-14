@@ -339,6 +339,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
             parent_id,
             collection.name(),
             ChildInfo::new(child.id(), own_hash),
+            D::type_id(),
         )?;
         child.element_mut().merkle_hash = <Index<S>>::update_hash_for(child.id(), own_hash)?;
         Self::save(child)
@@ -909,7 +910,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
                 return Ok(false);
             }
         } else if D::is_root() {
-            <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32]))?;
+            <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32]), D::type_id())?;
         }
 
         let own_hash = entity.calculate_merkle_hash()?;

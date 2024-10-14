@@ -3,7 +3,7 @@ use borsh as _;
 use calimero_storage as _;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
+use syn::{parse_macro_input, Data, DeriveInput, Fields, LitInt, Type};
 
 #[cfg(test)]
 mod integration_tests_package_usage {
@@ -42,8 +42,14 @@ mod integration_tests_package_usage {
 ///
 /// # Struct attributes
 ///
-/// * `#[root]` - Indicates that the type represents a root in the hierarchy,
-///               and doesn't have a parent.
+/// * `#[root]`       - Indicates that the type represents a root in the
+///                     hierarchy, and doesn't have a parent. This is an
+///                     optional attribute.
+/// * `#[type_id(n)]` - Indicates the type ID for the struct. This is a
+///                     mandatory attribute, and the value `n` must be a `u8`.
+///                     This is used to differentiate between different types
+///                     of structs when deserialising, and each type should have
+///                     a unique ID.
 ///
 /// # Field attributes
 ///
@@ -93,6 +99,7 @@ mod integration_tests_package_usage {
 /// use calimero_storage_macros::AtomicUnit;
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[type_id(43)]
 /// struct Page {
 ///     title: String,
 ///     #[private]
@@ -107,6 +114,7 @@ mod integration_tests_package_usage {
 /// use calimero_storage_macros::{AtomicUnit, Collection};
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[type_id(44)]
 /// struct Person {
 ///     name: String,
 ///     age: u32,
@@ -147,12 +155,20 @@ mod integration_tests_package_usage {
 )]
 #[proc_macro_derive(
     AtomicUnit,
-    attributes(children, collection, private, root, skip, storage)
+    attributes(children, collection, private, root, skip, storage, type_id)
 )]
 pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
     let is_root = input.attrs.iter().any(|attr| attr.path().is_ident("root"));
+    let type_id = input
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("type_id"))
+        .and_then(|attr| attr.parse_args::<LitInt>().ok())
+        .expect("AtomicUnit derive requires a #[type_id(n)] attribute, where n is a u8")
+        .base10_parse::<u8>()
+        .expect("type_id must be a valid u8");
 
     let fields = match &input.data {
         Data::Struct(data) => &data.fields,
@@ -372,6 +388,10 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             }
 
             #root_impl
+
+            fn type_id() -> u8 {
+                #type_id
+            }
         }
 
         impl calimero_storage::entities::AtomicUnit for #name {}
@@ -424,6 +444,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 /// use calimero_storage::entities::{Data, Element};
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[type_id(42)]
 /// struct Book {
 ///     title: String,
 ///     pages: Pages,
@@ -436,6 +457,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 /// struct Pages;
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[type_id(43)]
 /// struct Page {
 ///     content: String,
 ///     #[storage]
