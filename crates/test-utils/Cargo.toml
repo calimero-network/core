@@ -1,0 +1,16 @@
+[package]
+name = "calimero-test-utils"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+tempfile.workspace = true
+
+calimero-store = { path = "../store", features = ["datatypes"] }
+
+[lints]
+workspace = true

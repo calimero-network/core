@@ -1104,15 +1104,27 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "calimero-store",
+ "calimero-test-utils",
  "claims",
  "eyre",
  "fixedstr",
  "hex",
  "parking_lot",
  "sha2",
- "tempfile",
  "thiserror",
  "uuid 1.10.0",
+]
+
+[[package]]
+name = "calimero-storage-macros"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "calimero-storage",
+ "calimero-test-utils",
+ "quote",
+ "syn 2.0.72",
+ "trybuild",
 ]
 
 [[package]]
@@ -1131,6 +1143,14 @@ dependencies = [
  "tempdir",
  "thiserror",
  "thunderdome",
+]
+
+[[package]]
+name = "calimero-test-utils"
+version = "0.1.0"
+dependencies = [
+ "calimero-store",
+ "tempfile",
 ]
 
 [[package]]

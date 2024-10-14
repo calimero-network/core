@@ -1,8 +1,9 @@
+use calimero_test_utils::storage::create_test_store;
 use claims::{assert_ge, assert_le};
 
 use super::*;
 use crate::interface::Interface;
-use crate::tests::common::{create_test_store, Person};
+use crate::tests::common::Person;
 
 #[cfg(test)]
 mod data__public_methods {
