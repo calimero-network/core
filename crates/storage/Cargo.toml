@@ -20,7 +20,8 @@ calimero-store = { path = "../store", features = ["datatypes"] }
 [dev-dependencies]
 claims.workspace = true
 hex.workspace = true
-tempfile.workspace = true
+
+calimero-test-utils = { path = "../test-utils" }
 
 [lints]
 workspace = true

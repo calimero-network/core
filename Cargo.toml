@@ -24,8 +24,10 @@ members = [
   "./crates/server",
   "./crates/server-primitives",
   "./crates/storage",
+  "./crates/storage-macros",
   "./crates/store",
   "./crates/store/blobs",
+  "./crates/test-utils",
 
   "./apps/kv-store",
   "./apps/only-peers",
