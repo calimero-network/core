@@ -196,33 +196,12 @@ impl EventLoop {
                             return Some(peer_id);
                         }
                         RendezvousRegistrationStatus::Expired if candidate.is_none() => {
-                            match self.swarm.dial(peer_id) {
-                                Ok(_) => {
-                                    //Wait for the connection to be established
-                                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                                    if !self.swarm.is_connected(&peer_id) {
-                                        debug!(%peer_id, "Failed to establish connection with expired rendezvous peer");
-                                    } else {
-                                        debug!(%peer_id, "Successfully reconnected to expired rendezvous peer");
-                                        candidate = Some(peer_id);
-                                    }
-                                }
-                                Err(err) => {
-                                    debug!(%peer_id, %err, "Failed to initiate dial with expired rendezvous peer");
-                                }
-                            }
+                            candidate = Some(peer_id);
                         }
                         _ => {}
                     }
                 }
             }
-        }
-
-        if let Some(peer_id) = candidate {
-            self.discovery.state.update_rendezvous_registration_status(
-                &peer_id,
-                RendezvousRegistrationStatus::Discovered,
-            );
         }
 
         candidate

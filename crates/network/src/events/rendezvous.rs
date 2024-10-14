@@ -95,9 +95,16 @@ impl EventHandler<Event> for EventLoop {
                 );
 
                 if let Some(nominated_peer) = self.find_new_rendezvous_peer().await {
-                    if let Err(err) = self.rendezvous_register(&nominated_peer) {
-                        error!(%err, "Failed to update registration discovery");
-                    };
+                    if self.swarm.is_connected(&nominated_peer) {
+                        if let Err(err) = self.rendezvous_register(&nominated_peer) {
+                            error!(%err, "Failed to register with nominated rendezvous peer");
+                        }
+                    } else {
+                        debug!(%nominated_peer, "Dialing nominated rendezvous peer");
+                        if let Err(err) = self.swarm.dial(nominated_peer) {
+                            error!(%err, "Failed to dial nominated rendezvous peer");
+                        }
+                    }
                 } else {
                     info!("Couldn't find new peer to nominate for rendezvous registration.");
                 }
