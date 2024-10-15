@@ -213,6 +213,7 @@
 mod tests;
 
 use core::fmt::{self, Debug, Display, Formatter};
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -256,8 +257,7 @@ pub trait AtomicUnit: Data {}
 ///
 /// ```
 /// use calimero_storage_macros::{AtomicUnit, Collection};
-/// use calimero_storage::address::Id;
-/// use calimero_storage::entities::{Data, Element};
+/// use calimero_storage::entities::{ChildInfo, Data, Element};
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 /// struct Book {
@@ -270,8 +270,8 @@ pub trait AtomicUnit: Data {}
 /// #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
 /// #[children(Page)]
 /// struct Pages {
-///     #[child_ids]
-///     child_ids: Vec<Id>,
+///     #[child_info]
+///     child_info: Vec<ChildInfo>,
 /// }
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
@@ -286,13 +286,13 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
     /// The associated type of any children that the [`Collection`] may have.
     type Child: Data;
 
-    /// The unique identifiers of the children of the [`Collection`].
+    /// Information about the children of the [`Collection`].
     ///
-    /// This gets only the IDs of the children of the [`Collection`], which are
-    /// the [`Element`]s that are directly below the [`Collection`] in the
-    /// hierarchy.
+    /// This gets the IDs and Merkle hashes of the children of the
+    /// [`Collection`], which are the [`Element`]s that are directly below the
+    /// [`Collection`] in the hierarchy.
     ///
-    /// The order of the IDs is not guaranteed to be stable between calls.
+    /// The order of the results is guaranteed to be stable between calls.
     ///
     /// This is considered somewhat temporary, as there are efficiency gains to
     /// be made by storing this list elsewhere — but for now, it helps to get
@@ -303,7 +303,7 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
     ///       is implemented.
     ///
     #[must_use]
-    fn child_ids(&self) -> &Vec<Id>;
+    fn child_info(&self) -> &Vec<ChildInfo>;
 
     /// Whether the [`Collection`] has children.
     ///
@@ -396,6 +396,14 @@ pub trait Data:
     ///
     fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError>;
 
+    /// Information about the [`Collection`]s present in the [`Data`].
+    ///
+    /// This method allows details about the subtree structure and children to
+    /// be obtained. It does not return the actual [`Collection`] types, but
+    /// provides their names and child information.
+    ///
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>>;
+
     /// The associated [`Element`].
     ///
     /// The [`Element`] contains additional metadata and storage-related
@@ -448,6 +456,63 @@ pub trait Data:
     }
 }
 
+/// Summary information for the child of an [`Element`] in the storage.
+///
+/// This struct contains minimal information about a child of an [`Element`], to
+/// be stored with the associated [`Data`]. The primary purpose is to maintain
+/// an authoritative list of the children of the [`Element`], and the secondary
+/// purpose is to make information such as the Merkle hash trivially available
+/// and prevent the need for repeated lookups.
+///
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
+pub struct ChildInfo {
+    /// The unique identifier for the child [`Element`].
+    id: Id,
+
+    /// The Merkle hash of the child [`Element`]. This is a cryptographic hash
+    /// of the significant data in the "scope" of the child [`Element`], and is
+    /// used to determine whether the data has changed and is valid.
+    pub(crate) merkle_hash: [u8; 32],
+}
+
+impl ChildInfo {
+    /// Creates a new [`ChildInfo`].
+    #[must_use]
+    pub const fn new(id: Id, merkle_hash: [u8; 32]) -> Self {
+        Self { id, merkle_hash }
+    }
+
+    /// The unique identifier for the child [`Element`].
+    ///
+    /// This is the unique identifier for the child [`Element`], which can
+    /// always be used to locate the [`Element`] in the storage system. It is
+    /// generated when the [`Element`] is first created, and never changes. It
+    /// is reflected onto all other systems and so is universally consistent.
+    ///
+    #[must_use]
+    pub const fn id(&self) -> Id {
+        self.id
+    }
+
+    /// Current Merkle hash of the [`Element`].
+    #[must_use]
+    pub const fn merkle_hash(&self) -> [u8; 32] {
+        self.merkle_hash
+    }
+}
+
+impl Display for ChildInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ChildInfo {}: {}",
+            self.id,
+            hex::encode(self.merkle_hash)
+        )
+    }
+}
+
 /// Represents an [`Element`] in the storage.
 ///
 /// This is a simple model of an [`Element`] in the storage system, with a
@@ -491,13 +556,13 @@ pub trait Data:
 ///
 /// # Storage structure
 ///
-/// TODO: Update when the `child_ids` field is replaced with an index.
+/// TODO: Update when the `child_info` field is replaced with an index.
 ///
-/// At present the [`Element`] has a `child_ids` field, which memoises the IDs
-/// of the children. This is because it is better than traversing the whole
-/// database to find the children (!).
+/// At present the [`Data`] trait has a `child_info` field, which memoises the
+/// IDs and Merkle hashes of the children. This is because it is better than
+/// traversing the whole database to find the children (!).
 ///
-/// Having a `child_ids` field is however non-optimal — this should come from
+/// Having a `child_info` field is however non-optimal — this should come from
 /// outside the struct. We should be able to look up the children by path, and
 /// so given that the path is the primary method of determining that an
 /// [`Element`] is a child of another, this should be the mechanism relied upon.
