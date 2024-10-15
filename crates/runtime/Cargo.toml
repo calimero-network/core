@@ -14,14 +14,9 @@ owo-colors = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 ureq.workspace = true
+uuid = { workspace = true, features = ["serde", "v4"] }
 wasmer.workspace = true
 wasmer-types.workspace = true
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-uuid = { version = "1.10.0", features = ["serde", "v4"] }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-uuid = { version = "1.10.0", features = ["serde", "v4"] }
 
 [[example]]
 name = "demo"
