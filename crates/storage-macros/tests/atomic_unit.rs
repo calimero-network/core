@@ -27,43 +27,11 @@
 
 use borsh::{to_vec, BorshDeserialize};
 use calimero_storage::address::Path;
-use calimero_storage::entities::{Data, Element, NoChildren};
+use calimero_storage::entities::{Data, Element};
+use calimero_storage::exports::{Digest, Sha256};
 use calimero_storage::interface::Interface;
 use calimero_storage_macros::AtomicUnit;
 use calimero_test_utils::storage::create_test_store;
-
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-struct Child {
-    content: String,
-    #[storage]
-    storage: Element,
-}
-
-impl Child {
-    fn new(path: &Path) -> Self {
-        Self {
-            content: String::new(),
-            storage: Element::new(path),
-        }
-    }
-}
-
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
-#[children(Child)]
-struct Parent {
-    title: String,
-    #[storage]
-    storage: Element,
-}
-
-impl Parent {
-    fn new(path: &Path) -> Self {
-        Self {
-            title: String::new(),
-            storage: Element::new(path),
-        }
-    }
-}
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 struct Private {
@@ -269,33 +237,73 @@ mod visibility {
 }
 
 #[cfg(test)]
-mod hierarchy {
+mod hashing {
     use super::*;
 
     #[test]
-    fn parent_child() {
-        let parent_path = Path::new("::root::node").unwrap();
-        let mut parent = Parent::new(&parent_path);
-        _ = parent.set_title("Parent Title".to_owned());
+    fn private_field() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let mut unit = Private::new(&path);
 
-        let child_path = Path::new("::root::node::leaf").unwrap();
-        let mut child = Child::new(&child_path);
-        _ = child.set_content("Child Content".to_owned());
+        _ = unit.set_public("Public".to_owned());
+        _ = unit.set_private("Private".to_owned());
 
-        assert_eq!(parent.title(), "Parent Title");
+        let mut hasher = Sha256::new();
+        hasher.update(unit.id().as_bytes());
+        hasher.update(&to_vec(&unit.public).unwrap());
+        hasher.update(&to_vec(&unit.element().metadata()).unwrap());
+        let expected_hash: [u8; 32] = hasher.finalize().into();
 
-        // TODO: Add in tests for loading and checking children
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+
+        _ = unit.set_private("Test 1".to_owned());
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+
+        _ = unit.set_public("Test 2".to_owned());
+        assert_ne!(unit.calculate_merkle_hash().unwrap(), expected_hash);
     }
 
     #[test]
-    fn no_children() {
-        let _unit: Simple = Simple::new(&Path::new("::root::node").unwrap());
-        let _: Option<<Simple as Data>::Child> = None::<NoChildren>;
+    fn public_field() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let mut unit = Simple::new(&path);
+
+        _ = unit.set_name("Public".to_owned());
+        _ = unit.set_value(42);
+
+        let mut hasher = Sha256::new();
+        hasher.update(unit.id().as_bytes());
+        hasher.update(&to_vec(&unit.name).unwrap());
+        hasher.update(&to_vec(&unit.value).unwrap());
+        hasher.update(&to_vec(&unit.element().metadata()).unwrap());
+        let expected_hash: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
     }
 
     #[test]
-    fn compile_fail() {
-        trybuild::TestCases::new().compile_fail("tests/compile_fail/atomic_unit.rs");
+    fn skipped_field() {
+        let path = Path::new("::root::node::leaf").unwrap();
+        let mut unit = Skipped::new(&path);
+
+        _ = unit.set_included("Public".to_owned());
+        // Skipping fields also skips the setters
+        // _ = unit.set_skipped("Skipped".to_owned());
+        unit.skipped = "Skipped".to_owned();
+
+        let mut hasher = Sha256::new();
+        hasher.update(unit.id().as_bytes());
+        hasher.update(&to_vec(&unit.included()).unwrap());
+        hasher.update(&to_vec(&unit.element().metadata()).unwrap());
+        let expected_hash: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+
+        unit.skipped = "Test 1".to_owned();
+        assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
+
+        _ = unit.set_included("Test 2".to_owned());
+        assert_ne!(unit.calculate_merkle_hash().unwrap(), expected_hash);
     }
 }
 
