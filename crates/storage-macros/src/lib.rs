@@ -297,34 +297,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         }
 
         impl calimero_storage::entities::Data for #name {
-            fn calculate_full_merkle_hash(
-                &self,
-                interface: &calimero_storage::interface::Interface,
-                recalculate: bool,
-            ) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
-                use calimero_storage::exports::Digest;
-                use calimero_storage::entities::Collection;
-                let mut hasher = calimero_storage::exports::Sha256::new();
-                hasher.update(&self.calculate_merkle_hash()?);
-
-                // Hash collection fields
-                #(
-                    for info in self.#collection_fields.child_info() {
-                        if recalculate {
-                            let child = interface.find_by_id
-                                ::<<#collection_field_types as calimero_storage::entities::Collection>::Child>(info.id())?
-                                    .ok_or_else(|| calimero_storage::interface::StorageError::NotFound(info.id()))?;
-                            hasher.update(&child.calculate_full_merkle_hash(interface, recalculate)?);
-                        } else {
-                            hasher.update(&info.merkle_hash());
-                        }
-
-                    }
-                )*
-
-                Ok(hasher.finalize().into())
-            }
-
             fn calculate_merkle_hash(&self) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
                 use calimero_storage::exports::Digest;
                 let mut hasher = calimero_storage::exports::Sha256::new();
@@ -342,9 +314,26 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 Ok(hasher.finalize().into())
             }
 
-            fn collections(&self) -> std::collections::HashMap<String, Vec<calimero_storage::entities::ChildInfo>> {
+            fn calculate_merkle_hash_for_child(
+                &self,
+                collection: &str,
+                slice: &[u8],
+            ) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
+                match collection {
+                    #(
+                        stringify!(#collection_fields) => {
+                            let child = <#collection_field_types as calimero_storage::entities::Collection>::Child::try_from_slice(slice)
+                                .map_err(|e| calimero_storage::interface::StorageError::DeserializationError(e))?;
+                            child.calculate_merkle_hash()
+                        },
+                    )*
+                    _ => Err(calimero_storage::interface::StorageError::UnknownCollectionType(collection.to_owned())),
+                }
+            }
+
+            fn collections(&self) -> std::collections::BTreeMap<String, Vec<calimero_storage::entities::ChildInfo>> {
                 use calimero_storage::entities::Collection;
-                let mut collections = std::collections::HashMap::new();
+                let mut collections = std::collections::BTreeMap::new();
                 #(
                     collections.insert(
                         stringify!(#collection_fields).to_owned(),
