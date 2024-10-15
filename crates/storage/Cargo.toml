@@ -10,6 +10,7 @@ license.workspace = true
 borsh.workspace = true
 eyre.workspace = true
 fixedstr.workspace = true
+hex.workspace = true
 parking_lot.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
@@ -20,6 +21,7 @@ calimero-store = { path = "../store", features = ["datatypes"] }
 [dev-dependencies]
 claims.workspace = true
 hex.workspace = true
+velcro.workspace = true
 
 calimero-storage-macros = { path = "../storage-macros" }
 calimero-test-utils = { path = "../test-utils" }
