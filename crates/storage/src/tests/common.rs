@@ -1,9 +1,11 @@
 use std::sync::LazyLock;
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{to_vec, BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
 
 use crate::address::Id;
-use crate::entities::{Data, Element, NoChildren};
+use crate::entities::{AtomicUnit, Collection, Data, Element};
+use crate::interface::{Interface, StorageError};
 
 /// A set of non-empty test UUIDs.
 pub const TEST_UUID: [[u8; 16]; 5] = [
@@ -32,7 +34,22 @@ pub struct EmptyData {
 }
 
 impl Data for EmptyData {
-    type Child = NoChildren;
+    fn calculate_full_merkle_hash(
+        &self,
+        _interface: &Interface,
+        _recalculate: bool,
+    ) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.calculate_merkle_hash()?);
+        Ok(hasher.finalize().into())
+    }
+
+    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(self.element().id().as_bytes());
+        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
+        Ok(hasher.finalize().into())
+    }
 
     fn element(&self) -> &Element {
         &self.storage
@@ -47,6 +64,7 @@ impl Data for EmptyData {
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct Page {
     pub title: String,
+    pub paragraphs: Paragraphs,
     pub storage: Element,
 }
 
@@ -55,13 +73,45 @@ impl Page {
     pub fn new_from_element(title: &str, element: Element) -> Self {
         Self {
             title: title.to_owned(),
+            paragraphs: Paragraphs::new(),
             storage: element,
         }
     }
 }
 
+impl AtomicUnit for Page {}
+
 impl Data for Page {
-    type Child = Paragraph;
+    fn calculate_full_merkle_hash(
+        &self,
+        interface: &Interface,
+        recalculate: bool,
+    ) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.calculate_merkle_hash()?);
+
+        // Hash collection fields
+        for child_id in self.paragraphs.child_ids() {
+            let child = interface
+                .find_by_id::<<Paragraphs as Collection>::Child>(*child_id)?
+                .ok_or_else(|| StorageError::NotFound(*child_id))?;
+            if recalculate {
+                hasher.update(&child.calculate_full_merkle_hash(interface, recalculate)?);
+            } else {
+                hasher.update(&child.element().merkle_hash());
+            }
+        }
+
+        Ok(hasher.finalize().into())
+    }
+
+    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(self.element().id().as_bytes());
+        hasher.update(&to_vec(&self.title).map_err(StorageError::SerializationError)?);
+        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
+        Ok(hasher.finalize().into())
+    }
 
     fn element(&self) -> &Element {
         &self.storage
@@ -89,8 +139,26 @@ impl Paragraph {
     }
 }
 
+impl AtomicUnit for Paragraph {}
+
 impl Data for Paragraph {
-    type Child = NoChildren;
+    fn calculate_full_merkle_hash(
+        &self,
+        _interface: &Interface,
+        _recalculate: bool,
+    ) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.calculate_merkle_hash()?);
+        Ok(hasher.finalize().into())
+    }
+
+    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(self.element().id().as_bytes());
+        hasher.update(&to_vec(&self.text).map_err(StorageError::SerializationError)?);
+        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
+        Ok(hasher.finalize().into())
+    }
 
     fn element(&self) -> &Element {
         &self.storage
@@ -98,6 +166,31 @@ impl Data for Paragraph {
 
     fn element_mut(&mut self) -> &mut Element {
         &mut self.storage
+    }
+}
+
+/// A collection of paragraphs for a page.
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
+pub struct Paragraphs {
+    pub child_ids: Vec<Id>,
+}
+
+impl Paragraphs {
+    /// Creates a new paragraph collection.
+    pub fn new() -> Self {
+        Self { child_ids: vec![] }
+    }
+}
+
+impl Collection for Paragraphs {
+    type Child = Paragraph;
+
+    fn child_ids(&self) -> &Vec<Id> {
+        &self.child_ids
+    }
+
+    fn has_children(&self) -> bool {
+        !self.child_ids.is_empty()
     }
 }
 
@@ -110,7 +203,24 @@ pub struct Person {
 }
 
 impl Data for Person {
-    type Child = NoChildren;
+    fn calculate_full_merkle_hash(
+        &self,
+        _interface: &Interface,
+        _recalculate: bool,
+    ) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.calculate_merkle_hash()?);
+        Ok(hasher.finalize().into())
+    }
+
+    fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError> {
+        let mut hasher = Sha256::new();
+        hasher.update(self.element().id().as_bytes());
+        hasher.update(&to_vec(&self.name).map_err(StorageError::SerializationError)?);
+        hasher.update(&to_vec(&self.age).map_err(StorageError::SerializationError)?);
+        hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
+        Ok(hasher.finalize().into())
+    }
 
     fn element(&self) -> &Element {
         &self.storage
