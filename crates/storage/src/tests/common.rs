@@ -1,10 +1,12 @@
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
+use velcro::hash_map;
 
 use crate::address::Id;
-use crate::entities::{AtomicUnit, Collection, Data, Element};
+use crate::entities::{AtomicUnit, ChildInfo, Collection, Data, Element};
 use crate::interface::{Interface, StorageError};
 
 /// A set of non-empty test UUIDs.
@@ -51,6 +53,10 @@ impl Data for EmptyData {
         Ok(hasher.finalize().into())
     }
 
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>> {
+        HashMap::new()
+    }
+
     fn element(&self) -> &Element {
         &self.storage
     }
@@ -91,14 +97,14 @@ impl Data for Page {
         hasher.update(&self.calculate_merkle_hash()?);
 
         // Hash collection fields
-        for child_id in self.paragraphs.child_ids() {
-            let child = interface
-                .find_by_id::<<Paragraphs as Collection>::Child>(*child_id)?
-                .ok_or_else(|| StorageError::NotFound(*child_id))?;
+        for info in self.paragraphs.child_info() {
             if recalculate {
+                let child = interface
+                    .find_by_id::<<Paragraphs as Collection>::Child>(info.id())?
+                    .ok_or_else(|| StorageError::NotFound(info.id()))?;
                 hasher.update(&child.calculate_full_merkle_hash(interface, recalculate)?);
             } else {
-                hasher.update(&child.element().merkle_hash());
+                hasher.update(&info.merkle_hash());
             }
         }
 
@@ -111,6 +117,12 @@ impl Data for Page {
         hasher.update(&to_vec(&self.title).map_err(StorageError::SerializationError)?);
         hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
         Ok(hasher.finalize().into())
+    }
+
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>> {
+        hash_map! {
+            "paragraphs".to_owned(): self.paragraphs.child_info.clone()
+        }
     }
 
     fn element(&self) -> &Element {
@@ -160,6 +172,10 @@ impl Data for Paragraph {
         Ok(hasher.finalize().into())
     }
 
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>> {
+        HashMap::new()
+    }
+
     fn element(&self) -> &Element {
         &self.storage
     }
@@ -172,25 +188,25 @@ impl Data for Paragraph {
 /// A collection of paragraphs for a page.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]
 pub struct Paragraphs {
-    pub child_ids: Vec<Id>,
+    pub child_info: Vec<ChildInfo>,
 }
 
 impl Paragraphs {
     /// Creates a new paragraph collection.
     pub fn new() -> Self {
-        Self { child_ids: vec![] }
+        Self { child_info: vec![] }
     }
 }
 
 impl Collection for Paragraphs {
     type Child = Paragraph;
 
-    fn child_ids(&self) -> &Vec<Id> {
-        &self.child_ids
+    fn child_info(&self) -> &Vec<ChildInfo> {
+        &self.child_info
     }
 
     fn has_children(&self) -> bool {
-        !self.child_ids.is_empty()
+        !self.child_info.is_empty()
     }
 }
 
@@ -220,6 +236,10 @@ impl Data for Person {
         hasher.update(&to_vec(&self.age).map_err(StorageError::SerializationError)?);
         hasher.update(&to_vec(&self.element().metadata).map_err(StorageError::SerializationError)?);
         Ok(hasher.finalize().into())
+    }
+
+    fn collections(&self) -> HashMap<String, Vec<ChildInfo>> {
+        HashMap::new()
     }
 
     fn element(&self) -> &Element {

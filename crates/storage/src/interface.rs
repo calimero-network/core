@@ -8,15 +8,217 @@
 //! means of interacting with the storage system, rather than the ActiveRecord
 //! pattern where the model is the primary means of interaction.
 //!
+//! # Synchronisation
+//!
+//! There are two main mechanisms involved in synchronisation:
+//!
+//!   1. **Direct changes**: When a change is made locally, the resulting
+//!      actions need to be propagated to other nodes.
+//!   2. **Comparison**: When a comparison is made between two nodes, the
+//!      resulting actions need to be taken to bring the nodes into sync.
+//!
+//! The entry points for synchronisation are therefore either the
+//! [`apply_action()`](Interface::apply_action()) method, to carry out actions;
+//! or the [`compare_trees()`](Interface::compare_trees()) method, to compare
+//! two nodes, which will emit actions to pass to [`apply_action()`](Interface::apply_action())
+//! on either the local or remote node, or both.
+//!
+//! ## CRDT model
+//!
+//! Calimero primarily uses operation-based CRDTs, also called commutative
+//! replicated data types (CmRDTs). This means that the order of operations does
+//! not matter, and the outcome will be the same regardless of the order in
+//! which the operations are applied.
+//!
+//! It is worth noting that the orthodox CmRDT model does not feature or require
+//! a comparison activity, as there is an operating assumption that all updates
+//! have been carried out fully and reliably.
+//!
+//! The alternative CRDT approach is state-based, also called convergent
+//! replicated data types (CvRDTs). This is a comparison-based approach, but the
+//! downside is that this model requires the full state to be transmitted
+//! between nodes, which can be costly. Although this approach is easier to
+//! implement, and fits well with gossip protocols, it is not as efficient as
+//! the operation-based model.
+//!
+//! The standard choice therefore comes down to:
+//!
+//!   - Use CmRDTs and guarantee that all updates are carried out fully and
+//!     reliably, are not dropped or duplicated, and are replayed in causal
+//!     order.
+//!   - Use CvRDTs and accept the additional bandwidth cost of transmitting the
+//!     full state for every single CRDT.
+//!
+//! It does not fit the Calimero objectives to transmit the entire state for
+//! every update, but there is also no guarantee that all updates will be
+//! carried out fully and reliably. Therefore, Calimero uses a hybrid approach
+//! that represents the best of both worlds.
+//!
+//! In the first instance, operations are emitted (in the form of [`Action`]s)
+//! whenever a change is made. These operations are then propagated to other
+//! nodes, where they are executed. This is the CmRDT model.
+//!
+//! However, there are cases where a node may have missed an update, for
+//! instance, if it was offline. In this case, the node will be out of sync with
+//! the rest of the network. To bring the node back into sync, a comparison is
+//! made between the local node and a remote node, and the resulting actions are
+//! executed. This is the CvRDT model.
+//!
+//! The storage system maintains a set of Merkle hashes, which are stored
+//! against each element, and represent the state of the element and its
+//! children. The Merkle hash for an element can therefore be used to trivially
+//! determine whether an element or any of its descendants have changed,
+//! without actually needing to compare every entity in the tree.
+//!
+//! Therefore, when a comparison is carried out it is not a full state
+//! comparison, but a comparison of the immediate data and metadata of given
+//! element(s). This is sufficient to determine whether the nodes are in sync,
+//! and to generate the actions needed to bring them into sync. If there is any
+//! deviation detected, the comparison will recurse into the children of the
+//! element(s) in question, and generate further actions as necessary — but this
+//! will only ever examine those descendent entities for which the Merkle hash
+//! differs.
+//!
+//! We can therefore summarise this position as being: Calimero uses a CmRDT
+//! model for direct changes, and a CvRDT model for comparison as a fallback
+//! mechanism to bring nodes back into sync when needed.
+//!
+//! ## Direct changes
+//!
+//! When a change is made locally, the resulting actions need to be propagated
+//! to other nodes. An action list will be generated, which can be made up of
+//! [`Add`](Action::Add), [`Delete`](Action::Delete), and [`Update`](Action::Update)
+//! actions. These actions are then propagated to all the other nodes in the
+//! network, where they are executed using the [`apply_action()`](Interface::apply_action())
+//! method.
+//!
+//! This is a straightforward process, as the actions are known and are fully
+//! self-contained without any wider impact. Order does not strictly matter, as
+//! the actions are commutative, and the outcome will be the same regardless of
+//! the order in which they are applied. Any conflicts are handled using the
+//! last-write-wins strategy.
+//!
+//! There are certain cases where a mis-ordering of action, which is
+//! essentially the same as having missing actions, can result in an invalid
+//! state. For instance, if a child is added before the parent, the parent will
+//! not exist and the child will be orphaned. In this situation we can either
+//! ignore the child, or we can block its addition until the parent has been
+//! added, or we can store it as an orphaned entity to be resolved later. At
+//! present we follow the last approach, as it aligns well with the use of
+//! comparisons to bring nodes back into sync. We therefore know that the node
+//! will _eventually_ become consistent, which is all we guarantee.
+//!
+//! TODO: Examine whether this is the right approach, or whether we should for
+//! TODO: instance block and do a comparison on the parent to ensure that local
+//! TODO: state is as consistent as possible.
+//!
+//! Providing all generated actions are carried out, all nodes will eventually
+//! be in sync, without any need for comparisons, transmission of full states,
+//! or a transaction model (which requires linear history, and therefore
+//! becomes mathematically unsuitable for large distributed systems).
+//!
+//! ## Comparison
+//!
+//! There are a number of situations under which a comparison may be needed:
+//!
+//!   1. A node has missed an update, and needs to be brought back into sync
+//!      (i.e. there is a gap in the instruction set).
+//!   2. A node has been offline, and needs to be brought back into sync (i.e.
+//!      all instructions since a certain point have been missed).
+//!   3. A discrepancy has been detected between two nodes, and they need to be
+//!      brought back into sync.
+//!
+//! A comparison is primarily triggered from a catch-up as a proactive measure,
+//! i.e. without knowing if any changes exist, but can also arise at any point
+//! if a discrepancy is detected.
+//!
+//! When performing a comparison, the data we have is the result of the entity
+//! being serialised by the remote note, passed to us, and deserialised, so it
+//! should be comparable in structure to having loaded it from the local
+//! database.
+//!
+//! We therefore have access to the data and metadata, which includes the
+//! immediate fields of the entity (i.e. the [`AtomicUnit`](crate::entities::AtomicUnit))
+//! and also a list of the children.
+//!
+//! The stored list of children contains their Merkle hashes, thereby allowing
+//! us to check all children in one operation instead of needing to load each
+//! child in turn, as that would require remote data for each child, and that
+//! would not be as efficient.
+//!
+//!   - If a child exists on both sides and the hash is different, we recurse
+//!     into a comparison for that child.
+//!
+//!   - If a child is missing on one side then we can go with the side that has
+//!     the latest parent and add or remove the child.
+//!
+//! Notably, in the case of there being a missing child, the resolution
+//! mechanism does expose a small risk of erroneous outcome. For instance, if
+//! the local node has had a child added, and has been offline, and the parent
+//! has been updated remotely — in this situation, in the absence of any other
+//! activity, a comparison (e.g. a catch-up when coming back online) would
+//! result in losing the child, as the remote node would not have the child in
+//! its list of children. This edge case should usually be handled by the
+//! specific add and remove events generated at the time of the original
+//! activity, which should get propagated independently of a sync. However,
+//! there are three extended options that can be implemented:
+//!
+//!   1. Upon catch-up, any local list of actions can be held and replayed
+//!      locally after synchronisation. Alone, this would not correct the
+//!      situation, due to last-write-wins rules, but additional logic could be
+//!      considered for this particular situation.
+//!   2. During or after performing a comparison, all local children for an
+//!      entity can be loaded by path and checked against the parent's list of
+//!      children. If there are any deviations then appropriate action can be
+//!      taken. This does not fully cater for the edge case, and again would not
+//!      correct the situation on its own, but additional logic could be added.
+//!   3. A special kind of "deleted" element could be added to the system, which
+//!      would store metadata for checking. This would be beneficial as it would
+//!      allow differentiation between a missing child and a deleted child,
+//!      which is the main problem exposed by the edge case. However, although
+//!      this represents a full solution from a data mechanism perspective, it
+//!      would not be desirable to store deleted entries permanently. It would
+//!      be best combined with a cut-off constraint, that would limit the time
+//!      period in which a catch-up can be performed, and after which the
+//!      deleted entities would be purged. This does add complexity not only in
+//!      the effect on the wider system of implementing that constraint, but
+//!      also in the need for garbage collection to remove the deleted entities.
+//!      This would likely be better conducted the next time the parent entity
+//!      is updated, but there are a number of factors to consider here.
+//!   4. Another way to potentially handle situations of this nature is to
+//!      combine multiple granular updates into an atomic group operation that
+//!      ensures that all updates are applied together. However, this remains to
+//!      be explored, as it may not fit with the wider system design.
+//!
+//! Due to the potential complexity, this edge case is not currently mitigated,
+//! but will be the focus of future development.
+//!
+//! TODO: Assess the best approach for handling this edge case in a way that
+//! TODO: fits with the wider system design, and add extended tests for it.
+//!
+//! The outcome of a comparison is that the calling code receives a list of
+//! actions, which can be [`Add`](Action::Add), [`Delete`](Action::Delete),
+//! [`Update`](Action::Update), and [`Compare`](Action::Compare). The first
+//! three are the same as propagating the consequences of direct changes, but
+//! the comparison action is a special case that arises when a child entity is
+//! found to differ between the two nodes, whereupon the comparison process
+//! needs to recursively descend into the parts of the subtree found to differ.
+//!
+//! The calling code is then responsible for going away and obtaining the
+//! information necessary to carry out the next comparison action if there is
+//! one, as well as relaying the generated action list.
+//!
 
 #[cfg(test)]
 #[path = "tests/interface.rs"]
 mod tests;
 
+use core::fmt::Debug;
+use std::collections::HashMap;
 use std::io::Error as IoError;
 use std::sync::Arc;
 
-use borsh::to_vec;
+use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use calimero_store::key::Storage as StorageKey;
 use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::slice::Slice;
@@ -27,6 +229,52 @@ use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
 use crate::entities::{Collection, Data};
+
+/// Actions to be taken during synchronisation.
+///
+/// The following variants represent the possible actions arising from either a
+/// direct change or a comparison between two nodes.
+///
+///   - **Direct change**: When a direct change is made, in other words, when
+///     there is local activity that results in data modification to propagate
+///     to other nodes, the possible resulting actions are [`Add`](Action::Add),
+///     [`Delete`](Action::Delete), and [`Update`](Action::Update). A comparison
+///     is not needed in this case, as the deltas are known, and assuming all of
+///     the actions are carried out, the nodes will be in sync.
+///
+///   - **Comparison**: When a comparison is made between two nodes, the
+///     possible resulting actions are [`Add`](Action::Add), [`Delete`](Action::Delete),
+///     [`Update`](Action::Update), and [`Compare`](Action::Compare). The extra
+///     comparison action arises in the case of tree traversal, where a child
+///     entity is found to differ between the two nodes. In this case, the child
+///     entity is compared, and the resulting actions are added to the list of
+///     actions to be taken. This process is recursive.
+///
+/// Note: Some actions contain the full entity, and not just the entity ID, as
+/// the actions will often be in context of data that is not available locally
+/// and cannot be sourced otherwise. The actions are stored in serialised form
+/// because of type restrictions, and they are due to be sent around the network
+/// anyway.
+///
+#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[expect(clippy::exhaustive_enums, reason = "Exhaustive")]
+pub enum Action {
+    /// Add an entity with the given ID.
+    Add(Id, Vec<u8>),
+
+    /// Compare the given entity. Note that this results in a direct comparison
+    /// of the specific entity in question, including data that is immediately
+    /// available to it, such as the hashes of its children. This may well
+    /// result in further actions being generated if children differ, leading to
+    /// a recursive comparison.
+    Compare(Id),
+
+    /// Delete an entity with the given ID.
+    Delete(Id),
+
+    /// Update the entity with the given ID.
+    Update(Id, Vec<u8>),
+}
 
 /// The primary interface for the storage system.
 #[derive(Debug, Clone)]
@@ -48,6 +296,50 @@ impl Interface {
         Self {
             store: Arc::new(RwLock::new(store)),
         }
+    }
+
+    /// Applies an [`Action`] to the storage system.
+    ///
+    /// This function accepts a single incoming [`Action`] and applies it to the
+    /// storage system. The action is deserialised into the specified type, and
+    /// then applied as appropriate.
+    ///
+    /// Note: In order to call this function, the caller needs to know the type
+    /// of the entity that the action is for, and this type must implement the
+    /// [`Data`] trait. One of the possible ways to achieve this is to use the
+    /// path information externally to match against the entity type, using
+    /// knowledge available in the system. It is also possible to extend this
+    /// function to deal with the type being indicated in the serialised data,
+    /// if appropriate, or in the ID or accompanying metadata.
+    ///
+    /// TODO: Establish whether any additional data encoding is needed, to help
+    /// TODO: with deserialisation.
+    ///
+    /// # Parameters
+    ///
+    /// * `action` - The [`Action`] to apply to the storage system.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error when deserialising into the specified type, or when
+    /// applying the [`Action`], an error will be returned.
+    ///
+    pub fn apply_action<D: Data>(&self, action: Action) -> Result<(), StorageError> {
+        match action {
+            Action::Add(id, serialized_data) | Action::Update(id, serialized_data) => {
+                let mut entity = D::try_from_slice(&serialized_data)
+                    .map_err(StorageError::DeserializationError)?;
+                _ = self.save(id, &mut entity)?;
+            }
+            Action::Compare(_) => return Err(StorageError::ActionNotAllowed("Compare".to_owned())),
+            Action::Delete(id) => {
+                let mut store = self.store.write();
+                store
+                    .delete(&StorageKey::new(id.into()))
+                    .map_err(StorageError::StoreError)?;
+            }
+        }
+        Ok(())
     }
 
     /// Calculates the Merkle hash for the [`Element`](crate::entities::Element).
@@ -111,13 +403,12 @@ impl Interface {
         entity.calculate_full_merkle_hash(self, recalculate)
     }
 
-    /// The children of the [`Element`](crate::entities::Element).
+    /// The children of the [`Collection`].
     ///
-    /// This gets the children of the [`Element`](crate::entities::Element),
-    /// which are the [`Element`](crate::entities::Element)s that are directly
-    /// below this [`Element`](crate::entities::Element) in the hierarchy. This
-    /// is a simple method that returns the children as a list, and does not
-    /// provide any filtering or ordering.
+    /// This gets the children of the [`Collection`], which are the [`Element`](crate::entities::Element)s
+    /// that are directly below the [`Collection`]'s owner in the hierarchy.
+    /// This is a simple method that returns the children as a list, and does
+    /// not provide any filtering or ordering.
     ///
     /// Notably, there is no real concept of ordering in the storage system, as
     /// the records are not ordered in any way. They are simply stored in the
@@ -126,18 +417,21 @@ impl Interface {
     ///
     /// # Determinism
     ///
-    /// TODO: Update when the `child_ids` field is replaced with an index.
+    /// TODO: Update when the `child_info` field is replaced with an index.
     ///
     /// Depending on the source, simply looping through the children may be
     /// non-deterministic. At present we are using a [`Vec`], which is
     /// deterministic, but this is a temporary measure, and the order of
     /// children under a given path is not enforced, and therefore
-    /// non-deterministic. When the `child_ids` field is replaced with an index,
-    /// the order will be enforced using `created_at` timestamp and/or ID.
+    /// non-deterministic.
+    ///
+    /// When the `child_info` field is replaced with an index, the order may be
+    /// enforced using `created_at` timestamp, which then allows performance
+    /// optimisations with sharding and other techniques.
     ///
     /// # Performance
     ///
-    /// TODO: Update when the `child_ids` field is replaced with an index.
+    /// TODO: Update when the `child_info` field is replaced with an index.
     ///
     /// Looping through children and combining their hashes into the parent is
     /// logically correct. However, it does necessitate loading all the children
@@ -146,8 +440,7 @@ impl Interface {
     ///
     /// # Parameters
     ///
-    /// * `element` - The [`Element`](crate::entities::Element) to get the
-    ///               children of.
+    /// * `collection` - The [`Collection`] to get the children of.
     ///
     /// # Errors
     ///
@@ -160,10 +453,127 @@ impl Interface {
         collection: &C,
     ) -> Result<Vec<C::Child>, StorageError> {
         let mut children = Vec::new();
-        for id in collection.child_ids() {
-            children.push(self.find_by_id(*id)?.ok_or(StorageError::NotFound(*id))?);
+        for info in collection.child_info() {
+            children.push(
+                self.find_by_id(info.id())?
+                    .ok_or(StorageError::NotFound(info.id()))?,
+            );
         }
         Ok(children)
+    }
+
+    /// Compares a foreign entity with a local one.
+    ///
+    /// This function compares a foreign entity, usually from a remote node,
+    /// with the version available in the tree in local storage, if present, and
+    /// generates a list of [`Action`]s to perform on the local tree, the
+    /// foreign tree, or both, to bring the two trees into sync.
+    ///
+    /// The tuple returned is composed of two lists of actions: the first list
+    /// contains the actions to be performed on the local tree, and the second
+    /// list contains the actions to be performed on the foreign tree.
+    ///
+    /// # Parameters
+    ///
+    /// * `foreign_entity` - The foreign entity to compare against the local
+    ///                      version. This will usually be from a remote node.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if there are issues accessing local
+    /// data or if there are problems during the comparison process.
+    ///
+    pub fn compare_trees<D: Data>(
+        &self,
+        foreign_entity: &D,
+    ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
+        let mut actions = (vec![], vec![]);
+        let Some(local_entity) = self.find_by_id::<D>(foreign_entity.id())? else {
+            // Local entity doesn't exist, so we need to add it
+            actions.0.push(Action::Add(
+                foreign_entity.id(),
+                to_vec(foreign_entity).map_err(StorageError::SerializationError)?,
+            ));
+            return Ok(actions);
+        };
+
+        if local_entity.element().merkle_hash() == foreign_entity.element().merkle_hash() {
+            return Ok(actions);
+        }
+        if local_entity.element().updated_at() <= foreign_entity.element().updated_at() {
+            actions.0.push(Action::Update(
+                local_entity.id(),
+                to_vec(foreign_entity).map_err(StorageError::SerializationError)?,
+            ));
+        } else {
+            actions.1.push(Action::Update(
+                foreign_entity.id(),
+                to_vec(&local_entity).map_err(StorageError::SerializationError)?,
+            ));
+        }
+
+        let local_collections = local_entity.collections();
+        let foreign_collections = foreign_entity.collections();
+
+        #[expect(clippy::iter_over_hash_type, reason = "Order doesn't matter here")]
+        for (local_coll_name, local_children) in &local_collections {
+            if let Some(foreign_children) = foreign_collections.get(local_coll_name) {
+                let local_child_map: HashMap<_, _> = local_children
+                    .iter()
+                    .map(|child| (child.id(), child.merkle_hash()))
+                    .collect();
+                let foreign_child_map: HashMap<_, _> = foreign_children
+                    .iter()
+                    .map(|child| (child.id(), child.merkle_hash()))
+                    .collect();
+
+                #[expect(clippy::iter_over_hash_type, reason = "Order doesn't matter here")]
+                for (id, local_hash) in &local_child_map {
+                    match foreign_child_map.get(id) {
+                        Some(foreign_hash) if local_hash != foreign_hash => {
+                            actions.0.push(Action::Compare(*id));
+                            actions.1.push(Action::Compare(*id));
+                        }
+                        None => {
+                            // We need to fetch the child entity and serialize it
+                            if let Some(local_child) = self.find_by_id_raw(*id)? {
+                                actions.1.push(Action::Add(*id, local_child));
+                            }
+                        }
+                        // Hashes match, no action needed
+                        _ => {}
+                    }
+                }
+
+                #[expect(clippy::iter_over_hash_type, reason = "Order doesn't matter here")]
+                for id in foreign_child_map.keys() {
+                    if !local_child_map.contains_key(id) {
+                        // We can't get the full data for the foreign child, so we flag it for comparison
+                        actions.1.push(Action::Compare(*id));
+                    }
+                }
+            } else {
+                // The entire collection is missing from the foreign entity
+                for child in local_children {
+                    if let Some(local_child) = self.find_by_id_raw(child.id())? {
+                        actions.1.push(Action::Add(child.id(), local_child));
+                    }
+                }
+            }
+        }
+
+        // Check for collections in the foreign entity that don't exist locally
+        #[expect(clippy::iter_over_hash_type, reason = "Order doesn't matter here")]
+        for (foreign_coll_name, foreign_children) in &foreign_collections {
+            if !local_collections.contains_key(foreign_coll_name) {
+                for child in foreign_children {
+                    // We can't get the full data for the foreign child, so we flag it for comparison
+                    actions.1.push(Action::Compare(child.id()));
+                }
+            }
+        }
+
+        Ok(actions)
     }
 
     /// Finds an [`Element`](crate::entities::Element) by its unique identifier.
@@ -211,6 +621,35 @@ impl Interface {
             }
             None => Ok(None),
         }
+    }
+
+    /// Finds an [`Element`](crate::entities::Element) by its unique identifier
+    /// without deserialising it.
+    ///
+    /// This will always retrieve a single [`Element`](crate::entities::Element),
+    /// if it exists, regardless of where it may be in the hierarchy, or what
+    /// state it may be in.
+    ///
+    /// Notably it returns the raw [`Slice`] without attempting to deserialise
+    /// it into a [`Data`] type.
+    ///
+    /// # Parameters
+    ///
+    /// * `id` - The unique identifier of the [`Element`](crate::entities::Element)
+    ///          to find.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs when interacting with the storage system, an error
+    /// will be returned.
+    ///
+    #[expect(clippy::significant_drop_tightening, reason = "False positive")]
+    pub fn find_by_id_raw(&self, id: Id) -> Result<Option<Vec<u8>>, StorageError> {
+        let store = self.store.read();
+        let value = store
+            .get(&StorageKey::new(id.into()))
+            .map_err(StorageError::StoreError)?;
+        Ok(value.map(|slice| slice.to_vec()))
     }
 
     /// Finds one or more [`Element`](crate::entities::Element)s by path in the
@@ -363,6 +802,10 @@ impl Interface {
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum StorageError {
+    /// The requested action is not allowed.
+    #[error("Action not allowed: {0}")]
+    ActionNotAllowed(String),
+
     /// An error occurred during serialization.
     #[error("Deserialization error: {0}")]
     DeserializationError(IoError),
