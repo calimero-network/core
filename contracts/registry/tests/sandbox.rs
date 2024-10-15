@@ -33,10 +33,12 @@ async fn test_add_package_and_release(
     user: &Account,
     contract: &Contract,
 ) -> Result<(), Box<dyn Error>> {
-    let package_id: Value = user
+    let application_name = "application";
+
+    let _package_id: Value = user
         .call(contract.id(), "add_package")
         .args_json(json!({
-            "name": "application",
+            "name": application_name,
             "description": "Demo Application",
             "repository": "https://github.com/application",
         }))
@@ -45,9 +47,10 @@ async fn test_add_package_and_release(
         .json()?;
 
     let package: Value = user
-        .view(contract.id(), "get_package")
+        .view(contract.id(), "get_package_from_owner")
         .args_json(json!({
-            "id": package_id,
+            "name": application_name,
+            "owner_account": user.id(),
         }))
         .await?
         .json()?;
@@ -58,7 +61,7 @@ async fn test_add_package_and_release(
     drop(
         user.call(contract.id(), "add_release")
             .args_json(json!({
-                "name": "application",
+                "name": application_name,
                 "version": "0.1.0",
                 "notes": "",
                 "path": "https://gateway/ipfs/CID",
@@ -69,9 +72,10 @@ async fn test_add_package_and_release(
     );
 
     let release: Value = user
-        .view(contract.id(), "get_release")
+        .view(contract.id(), "get_release_from_owner")
         .args_json(json!({
-            "id": package_id,
+            "name": application_name,
+            "owner_account": user.id(),
             "version": "0.1.0",
         }))
         .await?
