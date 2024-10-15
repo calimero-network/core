@@ -1,13 +1,147 @@
+use borsh::to_vec;
 use calimero_test_utils::storage::create_test_store;
 use claims::{assert_ge, assert_le};
+use sha2::{Digest, Sha256};
 
 use super::*;
 use crate::interface::Interface;
-use crate::tests::common::Person;
+use crate::tests::common::{Page, Paragraph, Paragraphs, Person};
+
+#[cfg(test)]
+mod collection__public_methods {
+    use super::*;
+
+    #[test]
+    fn child_ids() {
+        let child_ids = vec![Id::new(), Id::new(), Id::new()];
+        let mut paras = Paragraphs::new();
+        paras.child_ids = child_ids.clone();
+        assert_eq!(paras.child_ids(), &paras.child_ids);
+        assert_eq!(paras.child_ids(), &child_ids);
+    }
+
+    #[test]
+    fn has_children() {
+        let mut paras = Paragraphs::new();
+        assert!(!paras.has_children());
+
+        let child_ids = vec![Id::new(), Id::new(), Id::new()];
+        paras.child_ids = child_ids;
+        assert!(paras.has_children());
+    }
+}
 
 #[cfg(test)]
 mod data__public_methods {
     use super::*;
+
+    #[test]
+    fn calculate_full_merkle_hash__cached_values() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let element = Element::new(&Path::new("::root::node").unwrap());
+        let mut page = Page::new_from_element("Node", element);
+        assert!(interface.save(page.id(), &mut page).unwrap());
+        assert_eq!(interface.children_of(&page.paragraphs).unwrap(), vec![]);
+
+        let child1 = Element::new(&Path::new("::root::node::leaf1").unwrap());
+        let child2 = Element::new(&Path::new("::root::node::leaf2").unwrap());
+        let child3 = Element::new(&Path::new("::root::node::leaf3").unwrap());
+        let mut para1 = Paragraph::new_from_element("Leaf1", child1);
+        let mut para2 = Paragraph::new_from_element("Leaf2", child2);
+        let mut para3 = Paragraph::new_from_element("Leaf3", child3);
+        assert!(interface.save(para1.id(), &mut para1).unwrap());
+        assert!(interface.save(para2.id(), &mut para2).unwrap());
+        assert!(interface.save(para3.id(), &mut para3).unwrap());
+        page.paragraphs.child_ids = vec![para1.id(), para2.id(), para3.id()];
+        assert!(interface.save(page.id(), &mut page).unwrap());
+
+        let mut hasher0 = Sha256::new();
+        hasher0.update(page.id().as_bytes());
+        hasher0.update(&to_vec(&page.title).unwrap());
+        hasher0.update(&to_vec(&page.element().metadata).unwrap());
+        let expected_hash0: [u8; 32] = hasher0.finalize().into();
+
+        let mut hasher1 = Sha256::new();
+        hasher1.update(para1.id().as_bytes());
+        hasher1.update(&to_vec(&para1.text).unwrap());
+        hasher1.update(&to_vec(&para1.element().metadata).unwrap());
+        let expected_hash1: [u8; 32] = hasher1.finalize().into();
+        let mut hasher1b = Sha256::new();
+        hasher1b.update(expected_hash1);
+        let expected_hash1b: [u8; 32] = hasher1b.finalize().into();
+
+        let mut hasher2 = Sha256::new();
+        hasher2.update(para2.id().as_bytes());
+        hasher2.update(&to_vec(&para2.text).unwrap());
+        hasher2.update(&to_vec(&para2.element().metadata).unwrap());
+        let expected_hash2: [u8; 32] = hasher2.finalize().into();
+        let mut hasher2b = Sha256::new();
+        hasher2b.update(expected_hash2);
+        let expected_hash2b: [u8; 32] = hasher2b.finalize().into();
+
+        let mut hasher3 = Sha256::new();
+        hasher3.update(para3.id().as_bytes());
+        hasher3.update(&to_vec(&para3.text).unwrap());
+        hasher3.update(&to_vec(&para3.element().metadata).unwrap());
+        let expected_hash3: [u8; 32] = hasher3.finalize().into();
+        let mut hasher3b = Sha256::new();
+        hasher3b.update(expected_hash3);
+        let expected_hash3b: [u8; 32] = hasher3b.finalize().into();
+
+        let mut hasher = Sha256::new();
+        hasher.update(&expected_hash0);
+        hasher.update(&expected_hash1b);
+        hasher.update(&expected_hash2b);
+        hasher.update(&expected_hash3b);
+        let expected_hash: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(page.calculate_merkle_hash().unwrap(), expected_hash0);
+        assert_eq!(
+            para1.calculate_full_merkle_hash(&interface, false).unwrap(),
+            expected_hash1b
+        );
+        assert_eq!(
+            para2.calculate_full_merkle_hash(&interface, false).unwrap(),
+            expected_hash2b
+        );
+        assert_eq!(
+            para3.calculate_full_merkle_hash(&interface, false).unwrap(),
+            expected_hash3b
+        );
+        assert_eq!(
+            page.calculate_full_merkle_hash(&interface, false).unwrap(),
+            expected_hash
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn calculate_full_merkle_hash__recalculated_values() {
+        // TODO: Later, tests should be added for recalculating the hashes, and
+        // TODO: especially checking when the data has been interfered with or
+        // TODO: otherwise arrived at an invalid state.
+        todo!()
+    }
+
+    #[test]
+    fn calculate_merkle_hash() {
+        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let person = Person {
+            name: "Alice".to_owned(),
+            age: 30,
+            storage: element.clone(),
+        };
+
+        let mut hasher = Sha256::new();
+        hasher.update(person.id().as_bytes());
+        hasher.update(&to_vec(&person.name).unwrap());
+        hasher.update(&to_vec(&person.age).unwrap());
+        hasher.update(&to_vec(&person.element().metadata).unwrap());
+        let expected_hash: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(person.calculate_merkle_hash().unwrap(), expected_hash);
+    }
 
     #[test]
     fn element() {
@@ -93,15 +227,6 @@ mod element__public_methods {
     use super::*;
 
     #[test]
-    fn child_ids() {
-        let child_ids = vec![Id::new(), Id::new(), Id::new()];
-        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
-        element.child_ids = child_ids.clone();
-        assert_eq!(element.child_ids(), element.child_ids);
-        assert_eq!(element.child_ids(), child_ids);
-    }
-
-    #[test]
     fn created_at() {
         let timestamp1 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -114,16 +239,6 @@ mod element__public_methods {
             .as_nanos() as u64;
         assert_ge!(element.created_at(), timestamp1);
         assert_le!(element.created_at(), timestamp2);
-    }
-
-    #[test]
-    fn has_children() {
-        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
-        assert!(!element.has_children());
-
-        let child_ids = vec![Id::new(), Id::new(), Id::new()];
-        element.child_ids = child_ids;
-        assert!(element.has_children());
     }
 
     #[test]
@@ -150,6 +265,25 @@ mod element__public_methods {
 
         person.element_mut().update();
         assert!(person.element().is_dirty());
+    }
+
+    #[test]
+    fn merkle_hash() {
+        let (db, _dir) = create_test_store();
+        let interface = Interface::new(db);
+        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let mut person = Person {
+            name: "Steve".to_owned(),
+            age: 50,
+            storage: element.clone(),
+        };
+        let expected_hash = person
+            .calculate_full_merkle_hash(&interface, false)
+            .unwrap();
+        assert_ne!(person.element().merkle_hash(), expected_hash);
+
+        assert!(interface.save(person.element().id(), &mut person).unwrap());
+        assert_eq!(person.element().merkle_hash(), expected_hash);
     }
 
     #[test]

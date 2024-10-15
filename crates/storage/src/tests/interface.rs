@@ -33,10 +33,10 @@ mod interface__public_methods {
             storage: element.clone(),
         };
 
-        let hash = interface.calculate_merkle_hash_for(&data).unwrap();
+        let hash = interface.calculate_merkle_hash_for(&data, false).unwrap();
         assert_eq!(
             hex::encode(hash),
-            "aefc29aae587eb4a3bc44cb29dc30624db9936566aa2f0d0df1cd07793a94e6e"
+            "173f9a17aa3c6acdad8cdaf06cea4aa4eb7c87cb99e07507a417d6588e679607"
         );
     }
 
@@ -69,24 +69,24 @@ mod interface__public_methods {
         assert!(interface.save(para1.id(), &mut para1).unwrap());
         assert!(interface.save(para2.id(), &mut para2).unwrap());
         assert!(interface.save(para3.id(), &mut para3).unwrap());
-        page.element_mut().child_ids = vec![para1.id(), para2.id(), para3.id()];
+        page.paragraphs.child_ids = vec![para1.id(), para2.id(), para3.id()];
         assert!(interface.save(page.id(), &mut page).unwrap());
 
         assert_eq!(
-            hex::encode(interface.calculate_merkle_hash_for(&para1).unwrap()),
-            "a93a438ee86aee5ae8b89207e41dff50aa4c7a2e4854bebb56399dd78cbb1b3c",
+            hex::encode(interface.calculate_merkle_hash_for(&para1, false).unwrap()),
+            "9c4d6363cca5bdb5829f0aa832b573d6befd26227a0e2c3cc602edd9fda88db1",
         );
         assert_eq!(
-            hex::encode(interface.calculate_merkle_hash_for(&para2).unwrap()),
-            "c3800c5d62756a45d03934b150526728a4e2d880274c04dda8a2c574847c8639",
+            hex::encode(interface.calculate_merkle_hash_for(&para2, false).unwrap()),
+            "449f30903c94a488f1767b91bc6626fafd82189130cf41e427f96df19a727d8b",
         );
         assert_eq!(
-            hex::encode(interface.calculate_merkle_hash_for(&para3).unwrap()),
-            "ce9ec97a0f52e9a2ecfd0e7e5c35da4330746d22c373d65f9ff28c4931ea1210",
+            hex::encode(interface.calculate_merkle_hash_for(&para3, false).unwrap()),
+            "43098decf78bf10dc4c31191a5f59d277ae524859583e48689482c9ba85c5f61",
         );
         assert_eq!(
-            hex::encode(interface.calculate_merkle_hash_for(&page).unwrap()),
-            "9b042f16801a9acfe607b01e626f5642ce15d5da893d00a19d751f48caccc5e6",
+            hex::encode(interface.calculate_merkle_hash_for(&page, false).unwrap()),
+            "7593806c462bfadd97ed5228a3a60e492cce4b725f2c0e72e6e5b0f7996ee394",
         );
     }
 
@@ -97,7 +97,7 @@ mod interface__public_methods {
         let element = Element::new(&Path::new("::root::node").unwrap());
         let mut page = Page::new_from_element("Node", element);
         assert!(interface.save(page.id(), &mut page).unwrap());
-        assert_eq!(interface.children_of(&page).unwrap(), vec![]);
+        assert_eq!(interface.children_of(&page.paragraphs).unwrap(), vec![]);
 
         let child1 = Element::new(&Path::new("::root::node::leaf1").unwrap());
         let child2 = Element::new(&Path::new("::root::node::leaf2").unwrap());
@@ -108,10 +108,10 @@ mod interface__public_methods {
         assert!(interface.save(para1.id(), &mut para1).unwrap());
         assert!(interface.save(para2.id(), &mut para2).unwrap());
         assert!(interface.save(para3.id(), &mut para3).unwrap());
-        page.element_mut().child_ids = vec![para1.id(), para2.id(), para3.id()];
+        page.paragraphs.child_ids = vec![para1.id(), para2.id(), para3.id()];
         assert!(interface.save(page.id(), &mut page).unwrap());
         assert_eq!(
-            interface.children_of(&page).unwrap(),
+            interface.children_of(&page.paragraphs).unwrap(),
             vec![para1, para2, para3]
         );
     }
