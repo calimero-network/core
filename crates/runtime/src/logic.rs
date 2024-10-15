@@ -152,25 +152,6 @@ impl<'a> VMLogic<'a> {
     pub fn generate_uuid(&self) -> Uuid {
         Uuid::new_v4()
     }
-
-    /// Gets the current time.
-    ///
-    /// This function obtains the current time as a nanosecond timestamp, as
-    /// [`SystemTime`] is not available inside the guest runtime. Therefore the
-    /// guest needs to request this from the host.
-    ///
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Impossible to overflow in normal circumstances"
-    )]
-    #[expect(clippy::expect_used, reason = "Effectively infallible here")]
-    #[must_use]
-    pub fn time_now(&self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards to before the Unix epoch!")
-            .as_nanos() as u64
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -492,11 +473,11 @@ impl VMHostFunctions<'_> {
     /// runtime. Therefore the guest needs to request this from the host.
     ///
     pub fn generate_uuid(&mut self, register_id: u64) -> VMLogicResult<()> {
-        let uuid = self.borrow_logic().generate_uuid();
         self.with_logic_mut(|logic| {
+            let uuid = logic.generate_uuid();
             logic
                 .registers
-                .set(logic.limits, register_id, *uuid.as_bytes())
+                .set(logic.limits, register_id, uuid.into_bytes())
         })?;
         Ok(())
     }
@@ -507,8 +488,20 @@ impl VMHostFunctions<'_> {
     /// [`SystemTime`] is not available inside the guest runtime. Therefore the
     /// guest needs to request this from the host.
     ///
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Impossible to overflow in normal circumstances"
+    )]
+    #[expect(
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        reason = "Effectively infallible here"
+    )]
     pub fn time_now(&mut self, register_id: u64) -> VMLogicResult<()> {
-        let now = self.borrow_logic().time_now();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards to before the Unix epoch!")
+            .as_nanos() as u64;
         self.with_logic_mut(|logic| {
             logic
                 .registers
