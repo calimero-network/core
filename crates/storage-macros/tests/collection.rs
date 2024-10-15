@@ -29,9 +29,7 @@ use borsh::{to_vec, BorshDeserialize};
 use calimero_storage::address::Path;
 use calimero_storage::entities::{ChildInfo, Data, Element};
 use calimero_storage::exports::{Digest, Sha256};
-use calimero_storage::interface::Interface;
 use calimero_storage_macros::{AtomicUnit, Collection};
-use calimero_test_utils::storage::create_test_store;
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 struct Child {
@@ -129,107 +127,6 @@ mod hierarchy {
 #[cfg(test)]
 mod hashing {
     use super::*;
-
-    #[test]
-    fn calculate_full_merkle_hash__cached_values() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
-        let mut parent = Parent::new(&Path::new("::root::node").unwrap());
-        _ = parent.set_title("Parent Title".to_owned());
-        assert!(interface.save(parent.id(), &mut parent).unwrap());
-        assert_eq!(interface.children_of(&parent.children).unwrap(), vec![]);
-
-        let mut child1 = Child::new(&Path::new("::root::node::leaf1").unwrap());
-        let mut child2 = Child::new(&Path::new("::root::node::leaf2").unwrap());
-        let mut child3 = Child::new(&Path::new("::root::node::leaf3").unwrap());
-        _ = child1.set_content("Child 1 Content".to_owned());
-        _ = child2.set_content("Child 2 Content".to_owned());
-        _ = child3.set_content("Child 3 Content".to_owned());
-        assert!(interface.save(child1.id(), &mut child1).unwrap());
-        assert!(interface.save(child2.id(), &mut child2).unwrap());
-        assert!(interface.save(child3.id(), &mut child3).unwrap());
-        parent.children.child_info = vec![
-            ChildInfo::new(child1.id(), child1.element().merkle_hash()),
-            ChildInfo::new(child2.id(), child2.element().merkle_hash()),
-            ChildInfo::new(child3.id(), child3.element().merkle_hash()),
-        ];
-        assert!(interface.save(parent.id(), &mut parent).unwrap());
-
-        let mut hasher0 = Sha256::new();
-        hasher0.update(parent.id().as_bytes());
-        hasher0.update(&to_vec(&parent.title).unwrap());
-        hasher0.update(&to_vec(&parent.element().metadata()).unwrap());
-        let expected_hash0: [u8; 32] = hasher0.finalize().into();
-
-        let mut hasher1 = Sha256::new();
-        hasher1.update(child1.id().as_bytes());
-        hasher1.update(&to_vec(&child1.content).unwrap());
-        hasher1.update(&to_vec(&child1.element().metadata()).unwrap());
-        let expected_hash1: [u8; 32] = hasher1.finalize().into();
-        let mut hasher1b = Sha256::new();
-        hasher1b.update(expected_hash1);
-        let expected_hash1b: [u8; 32] = hasher1b.finalize().into();
-
-        let mut hasher2 = Sha256::new();
-        hasher2.update(child2.id().as_bytes());
-        hasher2.update(&to_vec(&child2.content).unwrap());
-        hasher2.update(&to_vec(&child2.element().metadata()).unwrap());
-        let expected_hash2: [u8; 32] = hasher2.finalize().into();
-        let mut hasher2b = Sha256::new();
-        hasher2b.update(expected_hash2);
-        let expected_hash2b: [u8; 32] = hasher2b.finalize().into();
-
-        let mut hasher3 = Sha256::new();
-        hasher3.update(child3.id().as_bytes());
-        hasher3.update(&to_vec(&child3.content).unwrap());
-        hasher3.update(&to_vec(&child3.element().metadata()).unwrap());
-        let expected_hash3: [u8; 32] = hasher3.finalize().into();
-        let mut hasher3b = Sha256::new();
-        hasher3b.update(expected_hash3);
-        let expected_hash3b: [u8; 32] = hasher3b.finalize().into();
-
-        let mut hasher = Sha256::new();
-        hasher.update(&expected_hash0);
-        hasher.update(&expected_hash1b);
-        hasher.update(&expected_hash2b);
-        hasher.update(&expected_hash3b);
-        let expected_hash: [u8; 32] = hasher.finalize().into();
-
-        assert_eq!(parent.calculate_merkle_hash().unwrap(), expected_hash0);
-        assert_eq!(
-            child1
-                .calculate_full_merkle_hash(&interface, false)
-                .unwrap(),
-            expected_hash1b
-        );
-        assert_eq!(
-            child2
-                .calculate_full_merkle_hash(&interface, false)
-                .unwrap(),
-            expected_hash2b
-        );
-        assert_eq!(
-            child3
-                .calculate_full_merkle_hash(&interface, false)
-                .unwrap(),
-            expected_hash3b
-        );
-        assert_eq!(
-            parent
-                .calculate_full_merkle_hash(&interface, false)
-                .unwrap(),
-            expected_hash
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn calculate_full_merkle_hash__recalculated_values() {
-        // TODO: Later, tests should be added for recalculating the hashes, and
-        // TODO: especially checking when the data has been interfered with or
-        // TODO: otherwise arrived at an invalid state.
-        todo!()
-    }
 
     #[test]
     fn calculate_merkle_hash__child() {

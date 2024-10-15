@@ -213,13 +213,13 @@
 mod tests;
 
 use core::fmt::{self, Debug, Display, Formatter};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::address::{Id, Path};
-use crate::interface::{Interface, StorageError};
+use crate::interface::StorageError;
 
 /// Represents an atomic unit in the storage system.
 ///
@@ -299,8 +299,8 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
     /// the data in place and usable, and establish a basis to test against and
     /// enhance.
     ///
-    /// TODO: This method will likely move to the [`Interface`] when the index
-    ///       is implemented.
+    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
+    ///       when the index is implemented.
     ///
     #[must_use]
     fn child_info(&self) -> &Vec<ChildInfo>;
@@ -311,8 +311,8 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
     /// [`Element`]s that are directly below the [`Collection`] in the
     /// hierarchy.
     ///
-    /// TODO: This method will likely move to the [`Interface`] when the index
-    ///       is implemented.
+    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
+    ///       when the index is implemented.
     ///
     #[must_use]
     fn has_children(&self) -> bool;
@@ -340,39 +340,6 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
 pub trait Data:
     BorshDeserialize + BorshSerialize + Clone + Debug + PartialEq + PartialOrd + Send + Sync
 {
-    /// Calculates the Merkle hash of the [`Element`], including descendants.
-    ///
-    /// This method calculates the Merkle hash of the [`Data`] for the
-    /// [`Element`], which should be based on any regular and collection fields,
-    /// but ignore skipped fields, private fields, and the storage field.
-    ///
-    /// Specifically, this should include the hashes of the children of the
-    /// various collection fields.
-    ///
-    /// # Parameters
-    ///
-    /// * `interface`   - The [`Interface`] to use for looking up children.
-    /// * `recalculate` - Whether to recalculate or use the cached value for
-    ///                   child hashes. Under normal circumstances, the cached
-    ///                   value should be used, as it is more efficient. The
-    ///                   option to recalculate is provided for situations when
-    ///                   the entire subtree needs revalidating.
-    ///
-    /// # Errors
-    ///
-    /// This method will return an error if there is a problem calculating the
-    /// hash, or looking up children.
-    ///
-    /// # See also
-    ///
-    /// * [`calculate_merkle_hash()`](Data::calculate_merkle_hash())
-    ///
-    fn calculate_full_merkle_hash(
-        &self,
-        interface: &Interface,
-        recalculate: bool,
-    ) -> Result<[u8; 32], StorageError>;
-
     /// Calculates the Merkle hash of the [`Element`].
     ///
     /// This method calculates the Merkle hash of the [`Data`] for the
@@ -392,9 +359,36 @@ pub trait Data:
     ///
     /// # See also
     ///
-    /// * [`calculate_full_merkle_hash()`](Data::calculate_full_merkle_hash())
+    /// * [`calculate_merkle_hash_for_child()`](Data::calculate_merkle_hash_for_child())
     ///
     fn calculate_merkle_hash(&self) -> Result<[u8; 32], StorageError>;
+
+    /// Calculates the Merkle hash of a child of the [`Element`].
+    ///
+    /// This method calculates the Merkle hash of the specified child of the
+    /// [`Element`].
+    ///
+    /// # Parameters
+    ///
+    /// * `collection` - The name of the collection to calculate the hash for.
+    /// * `slice`      - The slice of data to calculate the hash for. This will
+    ///                  get deserialised into the appropriate type, and the
+    ///                  hash will be calculated based on the data.
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if there is a problem calculating the
+    /// hash, or looking up children.
+    ///
+    /// # See also
+    ///
+    /// * [`calculate_merkle_hash()`](Data::calculate_merkle_hash())
+    ///
+    fn calculate_merkle_hash_for_child(
+        &self,
+        collection: &str,
+        slice: &[u8],
+    ) -> Result<[u8; 32], StorageError>;
 
     /// Information about the [`Collection`]s present in the [`Data`].
     ///
@@ -402,7 +396,7 @@ pub trait Data:
     /// be obtained. It does not return the actual [`Collection`] types, but
     /// provides their names and child information.
     ///
-    fn collections(&self) -> HashMap<String, Vec<ChildInfo>>;
+    fn collections(&self) -> BTreeMap<String, Vec<ChildInfo>>;
 
     /// The associated [`Element`].
     ///
@@ -522,8 +516,8 @@ impl Display for ChildInfo {
 ///
 /// Note, this is modelled as a single entity called "Element" rather than
 /// separating into separate "Node" and "Leaf" entities, to simplify the
-/// handling via the storage [`Interface`]. The actual nature of the [`Element`]
-/// can be determined by inspection.
+/// handling via the storage [`Interface`](crate::interface::Interface). The
+/// actual nature of the [`Element`] can be determined by inspection.
 ///
 /// # Updates
 ///
