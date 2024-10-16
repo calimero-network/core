@@ -19,6 +19,9 @@ uuid.workspace = true
 
 calimero-store = { path = "../store", features = ["datatypes"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid = { workspace = true, features = ["serde", "v4"] }
+
 [dev-dependencies]
 claims.workspace = true
 hex.workspace = true
