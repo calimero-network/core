@@ -1,6 +1,9 @@
 use std::panic::set_hook;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::{from_slice as from_borsh_slice, to_vec as to_borsh_vec};
+use uuid::Uuid;
 
 use crate::event::AppEvent;
 use crate::state::AppState;
@@ -188,4 +191,48 @@ pub fn state_write<T: AppState>(state: &T) {
         Err(err) => panic_str(&format!("Cannot serialize app state: {err:?}")),
     };
     let _ = storage_write(STATE_KEY, &data);
+}
+
+/// Generate a new random UUID v4.
+#[inline]
+#[must_use]
+pub fn generate_uuid() -> Uuid {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::generate_uuid(DATA_REGISTER) };
+        Uuid::from_slice(&read_register_sized::<16>(DATA_REGISTER).expect("Must have UUID"))
+            .expect("UUID must be valid")
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Uuid::new_v4()
+    }
+}
+
+/// Gets the current time.
+#[inline]
+#[must_use]
+pub fn time_now() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        unsafe { sys::time_now(DATA_REGISTER) };
+        u64::from_le_bytes(
+            read_register(DATA_REGISTER)
+                .expect("Must have time")
+                .try_into()
+                .expect("Invalid time bytes"),
+        )
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Impossible to overflow in normal circumstances"
+    )]
+    #[expect(clippy::expect_used, reason = "Effectively infallible here")]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards to before the Unix epoch!")
+            .as_nanos() as u64
+    }
 }

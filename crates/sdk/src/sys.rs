@@ -21,6 +21,7 @@ wasm_imports! {
         fn emit(event: Event<'_>);
         // --
         fn storage_read(key: Buffer<'_>, register_id: RegisterId) -> Bool;
+        fn storage_remove(key: Buffer<'_>, register_id: RegisterId) -> Bool;
         fn storage_write(key: Buffer<'_>, value: Buffer<'_>, register_id: RegisterId) -> Bool;
         // --
         fn fetch(
@@ -30,6 +31,8 @@ wasm_imports! {
             body: Buffer<'_>,
             register_id: RegisterId
         ) -> Bool;
+        fn generate_uuid(register_id: RegisterId);
+        fn time_now(register_id: RegisterId);
     }
 }
 
