@@ -4,8 +4,9 @@ use std::time::Duration;
 use claims::{assert_none, assert_ok};
 
 use super::*;
-use crate::entities::{ChildInfo, Data, Element};
-use crate::tests::common::{EmptyData, Page, Paragraph, TEST_ID};
+use crate::entities::{Data, Element};
+use crate::mocks::ForeignInterface;
+use crate::tests::common::{Page, Paragraph};
 
 #[cfg(test)]
 mod interface__public_methods {
@@ -15,8 +16,11 @@ mod interface__public_methods {
     fn children_of() {
         let element = Element::new(&Path::new("::root::node").unwrap());
         let mut page = Page::new_from_element("Node", element);
-        assert!(Interface::save(page.id(), &mut page).unwrap());
-        assert_eq!(Interface::children_of(&page.paragraphs).unwrap(), vec![]);
+        assert!(Interface::save(&mut page).unwrap());
+        assert_eq!(
+            Interface::children_of(page.id(), &page.paragraphs).unwrap(),
+            vec![]
+        );
 
         let child1 = Element::new(&Path::new("::root::node::leaf1").unwrap());
         let child2 = Element::new(&Path::new("::root::node::leaf2").unwrap());
@@ -24,29 +28,24 @@ mod interface__public_methods {
         let mut para1 = Paragraph::new_from_element("Leaf1", child1);
         let mut para2 = Paragraph::new_from_element("Leaf2", child2);
         let mut para3 = Paragraph::new_from_element("Leaf3", child3);
-        assert!(Interface::save(para1.id(), &mut para1).unwrap());
-        assert!(Interface::save(para2.id(), &mut para2).unwrap());
-        assert!(Interface::save(para3.id(), &mut para3).unwrap());
-        page.paragraphs.child_info = vec![
-            ChildInfo::new(para1.id(), para1.calculate_merkle_hash().unwrap()),
-            ChildInfo::new(para2.id(), para2.calculate_merkle_hash().unwrap()),
-            ChildInfo::new(para3.id(), para3.calculate_merkle_hash().unwrap()),
-        ];
-        assert!(Interface::save(page.id(), &mut page).unwrap());
+        assert!(Interface::save(&mut page).unwrap());
+        assert!(Interface::add_child_to(page.id(), &mut page.paragraphs, &mut para1).unwrap());
+        assert!(Interface::add_child_to(page.id(), &mut page.paragraphs, &mut para2).unwrap());
+        assert!(Interface::add_child_to(page.id(), &mut page.paragraphs, &mut para3).unwrap());
         assert_eq!(
-            Interface::children_of(&page.paragraphs).unwrap(),
+            Interface::children_of(page.id(), &page.paragraphs).unwrap(),
             vec![para1, para2, para3]
         );
     }
 
     #[test]
     fn find_by_id__existent() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
-        let mut para = Paragraph::new_from_element("Leaf", element);
-        let id = para.id();
-        assert!(Interface::save(id, &mut para).unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap());
+        let mut page = Page::new_from_element("Leaf", element);
+        let id = page.id();
+        assert!(Interface::save(&mut page).unwrap());
 
-        assert_eq!(Interface::find_by_id(id).unwrap(), Some(para));
+        assert_eq!(Interface::find_by_id(id).unwrap(), Some(page));
     }
 
     #[test]
@@ -74,10 +73,10 @@ mod interface__public_methods {
 
     #[test]
     fn save__basic() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
-        let mut para = Paragraph::new_from_element("Leaf", element);
+        let element = Element::new(&Path::new("::root::node").unwrap());
+        let mut page = Page::new_from_element("Node", element);
 
-        assert_ok!(Interface::save(para.id(), &mut para));
+        assert_ok!(Interface::save(&mut page));
     }
 
     #[test]
@@ -87,49 +86,47 @@ mod interface__public_methods {
         let mut page1 = Page::new_from_element("Node1", element1);
         let mut page2 = Page::new_from_element("Node2", element2);
 
-        assert!(Interface::save(page1.id(), &mut page1).unwrap());
-        assert!(Interface::save(page2.id(), &mut page2).unwrap());
+        assert!(Interface::save(&mut page1).unwrap());
+        assert!(Interface::save(&mut page2).unwrap());
         assert_eq!(Interface::find_by_id(page1.id()).unwrap(), Some(page1));
         assert_eq!(Interface::find_by_id(page2.id()).unwrap(), Some(page2));
     }
 
     #[test]
     fn save__not_dirty() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
-        let mut para = Paragraph::new_from_element("Leaf", element);
-        let id = para.id();
+        let element = Element::new(&Path::new("::root::node").unwrap());
+        let mut page = Page::new_from_element("Node", element);
 
-        assert!(Interface::save(id, &mut para).unwrap());
-        para.element_mut().update();
-        assert!(Interface::save(id, &mut para).unwrap());
+        assert!(Interface::save(&mut page).unwrap());
+        page.element_mut().update();
+        assert!(Interface::save(&mut page).unwrap());
     }
 
     #[test]
     fn save__too_old() {
-        let element1 = Element::new(&Path::new("::root::node::leaf").unwrap());
-        let mut para1 = Paragraph::new_from_element("Leaf", element1);
-        let mut para2 = para1.clone();
-        let id = para1.id();
+        let element1 = Element::new(&Path::new("::root::node").unwrap());
+        let mut page1 = Page::new_from_element("Node", element1);
+        let mut page2 = page1.clone();
 
-        assert!(Interface::save(id, &mut para1).unwrap());
-        para2.element_mut().update();
+        assert!(Interface::save(&mut page1).unwrap());
+        page2.element_mut().update();
         sleep(Duration::from_millis(1));
-        para1.element_mut().update();
-        assert!(Interface::save(id, &mut para1).unwrap());
-        assert!(!Interface::save(id, &mut para2).unwrap());
+        page1.element_mut().update();
+        assert!(Interface::save(&mut page1).unwrap());
+        assert!(!Interface::save(&mut page2).unwrap());
     }
 
     #[test]
     fn save__update_existing() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
-        let mut para = Paragraph::new_from_element("Leaf", element);
-        let id = para.id();
-        assert!(Interface::save(id, &mut para).unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap());
+        let mut page = Page::new_from_element("Node", element);
+        let id = page.id();
+        assert!(Interface::save(&mut page).unwrap());
 
         // TODO: Modify the element's data and check it changed
 
-        assert!(Interface::save(id, &mut para).unwrap());
-        assert_eq!(Interface::find_by_id(id).unwrap(), Some(para));
+        assert!(Interface::save(&mut page).unwrap());
+        assert_eq!(Interface::find_by_id(id).unwrap(), Some(page));
     }
 
     #[test]
@@ -182,7 +179,7 @@ mod interface__apply_actions {
     fn apply_action__update() {
         let mut page =
             Page::new_from_element("Old Title", Element::new(&Path::new("::test").unwrap()));
-        assert!(Interface::save(page.id(), &mut page).unwrap());
+        assert!(Interface::save(&mut page).unwrap());
 
         page.title = "New Title".to_owned();
         page.element_mut().update();
@@ -200,7 +197,7 @@ mod interface__apply_actions {
     fn apply_action__delete() {
         let mut page =
             Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
-        assert!(Interface::save(page.id(), &mut page).unwrap());
+        assert!(Interface::save(&mut page).unwrap());
 
         let action = Action::Delete(page.id());
 
@@ -256,15 +253,18 @@ mod interface__comparison {
         let mut local = Page::new_from_element("Test Page", element);
         let mut foreign = local.clone();
 
-        assert!(Interface::save(local.id(), &mut local).unwrap());
-        foreign.element_mut().merkle_hash =
-            Interface::calculate_merkle_hash_for(&foreign, false).unwrap();
+        assert!(Interface::save(&mut local).unwrap());
+        assert!(ForeignInterface::save(&mut foreign).unwrap());
         assert_eq!(
             local.element().merkle_hash(),
             foreign.element().merkle_hash()
         );
 
-        let result = Interface::compare_trees(&foreign).unwrap();
+        let result = Interface::compare_trees(
+            &foreign,
+            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
+        )
+        .unwrap();
         assert_eq!(result, (vec![], vec![]));
     }
 
@@ -274,15 +274,18 @@ mod interface__comparison {
         let mut local = Page::new_from_element("Test Page", element.clone());
         let mut foreign = Page::new_from_element("Old Test Page", element);
 
+        assert!(ForeignInterface::save(&mut foreign).unwrap());
+
         // Make local newer
         sleep(Duration::from_millis(10));
         local.element_mut().update();
+        assert!(Interface::save(&mut local).unwrap());
 
-        assert!(Interface::save(local.id(), &mut local).unwrap());
-        foreign.element_mut().merkle_hash =
-            Interface::calculate_merkle_hash_for(&foreign, false).unwrap();
-
-        let result = Interface::compare_trees(&foreign).unwrap();
+        let result = Interface::compare_trees(
+            &foreign,
+            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             result,
             (
@@ -298,15 +301,18 @@ mod interface__comparison {
         let mut local = Page::new_from_element("Old Test Page", element.clone());
         let mut foreign = Page::new_from_element("Test Page", element);
 
-        assert!(Interface::save(local.id(), &mut local).unwrap());
-        foreign.element_mut().merkle_hash =
-            Interface::calculate_merkle_hash_for(&foreign, false).unwrap();
+        assert!(Interface::save(&mut local).unwrap());
 
         // Make foreign newer
         sleep(Duration::from_millis(10));
         foreign.element_mut().update();
+        assert!(ForeignInterface::save(&mut foreign).unwrap());
 
-        let result = Interface::compare_trees(&foreign).unwrap();
+        let result = Interface::compare_trees(
+            &foreign,
+            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             result,
             (
@@ -332,39 +338,39 @@ mod interface__comparison {
         let mut foreign_para1 = Paragraph::new_from_element("Updated Paragraph 1", para1_element);
         let mut foreign_para3 = Paragraph::new_from_element("Foreign Paragraph 3", para3_element);
 
-        local_page.paragraphs.child_info = vec![
-            ChildInfo::new(
-                local_para1.id(),
-                local_para1.calculate_merkle_hash().unwrap(),
-            ),
-            ChildInfo::new(
-                local_para2.id(),
-                local_para2.calculate_merkle_hash().unwrap(),
-            ),
-        ];
+        assert!(Interface::save(&mut local_page).unwrap());
+        assert!(Interface::add_child_to(
+            local_page.id(),
+            &mut local_page.paragraphs,
+            &mut local_para1
+        )
+        .unwrap());
+        assert!(Interface::add_child_to(
+            local_page.id(),
+            &mut local_page.paragraphs,
+            &mut local_para2
+        )
+        .unwrap());
 
-        foreign_page.paragraphs.child_info = vec![
-            ChildInfo::new(
-                local_para1.id(),
-                foreign_para1.calculate_merkle_hash().unwrap(),
-            ),
-            ChildInfo::new(
-                foreign_para3.id(),
-                foreign_para3.calculate_merkle_hash().unwrap(),
-            ),
-        ];
+        assert!(ForeignInterface::save(&mut foreign_page).unwrap());
+        assert!(ForeignInterface::add_child_to(
+            foreign_page.id(),
+            &mut foreign_page.paragraphs,
+            &mut foreign_para1
+        )
+        .unwrap());
+        assert!(ForeignInterface::add_child_to(
+            foreign_page.id(),
+            &mut foreign_page.paragraphs,
+            &mut foreign_para3
+        )
+        .unwrap());
 
-        assert!(Interface::save(local_page.id(), &mut local_page).unwrap());
-        assert!(Interface::save(local_para1.id(), &mut local_para1).unwrap());
-        assert!(Interface::save(local_para2.id(), &mut local_para2).unwrap());
-        foreign_page.element_mut().merkle_hash =
-            Interface::calculate_merkle_hash_for(&foreign_page, false).unwrap();
-        foreign_para1.element_mut().merkle_hash =
-            Interface::calculate_merkle_hash_for(&foreign_para1, false).unwrap();
-        foreign_para3.element_mut().merkle_hash =
-            Interface::calculate_merkle_hash_for(&foreign_para3, false).unwrap();
-
-        let (local_actions, foreign_actions) = Interface::compare_trees(&foreign_page).unwrap();
+        let (local_actions, foreign_actions) = Interface::compare_trees(
+            &foreign_page,
+            &ForeignInterface::generate_comparison_data(&foreign_page).unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(
             local_actions,
@@ -389,8 +395,11 @@ mod interface__comparison {
         );
 
         // Compare the updated para1
-        let (local_para1_actions, foreign_para1_actions) =
-            Interface::compare_trees(&foreign_para1).unwrap();
+        let (local_para1_actions, foreign_para1_actions) = Interface::compare_trees(
+            &foreign_para1,
+            &ForeignInterface::generate_comparison_data(&foreign_para1).unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(
             local_para1_actions,
@@ -402,8 +411,11 @@ mod interface__comparison {
         assert_eq!(foreign_para1_actions, vec![]);
 
         // Compare para3 which doesn't exist locally
-        let (local_para3_actions, foreign_para3_actions) =
-            Interface::compare_trees(&foreign_para3).unwrap();
+        let (local_para3_actions, foreign_para3_actions) = Interface::compare_trees(
+            &foreign_para3,
+            &ForeignInterface::generate_comparison_data(&foreign_para3).unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(
             local_para3_actions,
@@ -413,171 +425,5 @@ mod interface__comparison {
             )]
         );
         assert_eq!(foreign_para3_actions, vec![]);
-    }
-}
-
-#[cfg(test)]
-mod hashing {
-    use super::*;
-
-    #[test]
-    fn calculate_merkle_hash_for__empty_record() {
-        let timestamp = 1_765_432_100_123_456_789;
-        let mut element = Element::new(&Path::new("::root::node::leaf").unwrap());
-        element.set_id(TEST_ID[0]);
-        element.metadata.set_created_at(timestamp);
-        element.metadata.updated_at = timestamp;
-        let data = EmptyData {
-            storage: element.clone(),
-        };
-
-        let hash = Interface::calculate_merkle_hash_for(&data, false).unwrap();
-        assert_eq!(
-            hex::encode(hash),
-            "173f9a17aa3c6acdad8cdaf06cea4aa4eb7c87cb99e07507a417d6588e679607"
-        );
-    }
-
-    #[test]
-    fn calculate_merkle_hash_for__with_children() {
-        let timestamp = 1_765_432_100_123_456_789;
-        let mut element = Element::new(&Path::new("::root::node").unwrap());
-        element.set_id(TEST_ID[0]);
-        element.metadata.set_created_at(1_765_432_100_123_456_789);
-        element.metadata.updated_at = timestamp;
-        let mut page = Page::new_from_element("Node", element);
-        assert!(Interface::save(page.id(), &mut page).unwrap());
-        let child1 = Element::new(&Path::new("::root::node::leaf1").unwrap());
-        let child2 = Element::new(&Path::new("::root::node::leaf2").unwrap());
-        let child3 = Element::new(&Path::new("::root::node::leaf3").unwrap());
-        let mut para1 = Paragraph::new_from_element("Leaf1", child1);
-        let mut para2 = Paragraph::new_from_element("Leaf2", child2);
-        let mut para3 = Paragraph::new_from_element("Leaf3", child3);
-        para1.element_mut().set_id(TEST_ID[1]);
-        para2.element_mut().set_id(TEST_ID[2]);
-        para3.element_mut().set_id(TEST_ID[3]);
-        para1.element_mut().metadata.set_created_at(timestamp);
-        para2.element_mut().metadata.set_created_at(timestamp);
-        para3.element_mut().metadata.set_created_at(timestamp);
-        para1.element_mut().metadata.updated_at = timestamp;
-        para2.element_mut().metadata.updated_at = timestamp;
-        para3.element_mut().metadata.updated_at = timestamp;
-        assert!(Interface::save(para1.id(), &mut para1).unwrap());
-        assert!(Interface::save(para2.id(), &mut para2).unwrap());
-        assert!(Interface::save(para3.id(), &mut para3).unwrap());
-        page.paragraphs.child_info = vec![
-            ChildInfo::new(para1.id(), para1.element().merkle_hash()),
-            ChildInfo::new(para2.id(), para2.element().merkle_hash()),
-            ChildInfo::new(para3.id(), para3.element().merkle_hash()),
-        ];
-        assert!(Interface::save(page.id(), &mut page).unwrap());
-
-        assert_eq!(
-            hex::encode(Interface::calculate_merkle_hash_for(&para1, false).unwrap()),
-            "9c4d6363cca5bdb5829f0aa832b573d6befd26227a0e2c3cc602edd9fda88db1",
-        );
-        assert_eq!(
-            hex::encode(Interface::calculate_merkle_hash_for(&para2, false).unwrap()),
-            "449f30903c94a488f1767b91bc6626fafd82189130cf41e427f96df19a727d8b",
-        );
-        assert_eq!(
-            hex::encode(Interface::calculate_merkle_hash_for(&para3, false).unwrap()),
-            "43098decf78bf10dc4c31191a5f59d277ae524859583e48689482c9ba85c5f61",
-        );
-        assert_eq!(
-            hex::encode(Interface::calculate_merkle_hash_for(&page, false).unwrap()),
-            "7593806c462bfadd97ed5228a3a60e492cce4b725f2c0e72e6e5b0f7996ee394",
-        );
-    }
-
-    #[test]
-    fn calculate_merkle_hash_for__cached_values() {
-        let element = Element::new(&Path::new("::root::node").unwrap());
-        let mut page = Page::new_from_element("Node", element);
-        assert!(Interface::save(page.id(), &mut page).unwrap());
-        assert_eq!(Interface::children_of(&page.paragraphs).unwrap(), vec![]);
-
-        let child1 = Element::new(&Path::new("::root::node::leaf1").unwrap());
-        let child2 = Element::new(&Path::new("::root::node::leaf2").unwrap());
-        let child3 = Element::new(&Path::new("::root::node::leaf3").unwrap());
-        let mut para1 = Paragraph::new_from_element("Leaf1", child1);
-        let mut para2 = Paragraph::new_from_element("Leaf2", child2);
-        let mut para3 = Paragraph::new_from_element("Leaf3", child3);
-        assert!(Interface::save(para1.id(), &mut para1).unwrap());
-        assert!(Interface::save(para2.id(), &mut para2).unwrap());
-        assert!(Interface::save(para3.id(), &mut para3).unwrap());
-        page.paragraphs.child_info = vec![
-            ChildInfo::new(para1.id(), para1.element().merkle_hash()),
-            ChildInfo::new(para2.id(), para2.element().merkle_hash()),
-            ChildInfo::new(para3.id(), para3.element().merkle_hash()),
-        ];
-        assert!(Interface::save(page.id(), &mut page).unwrap());
-
-        let mut hasher0 = Sha256::new();
-        hasher0.update(page.id().as_bytes());
-        hasher0.update(&to_vec(&page.title).unwrap());
-        hasher0.update(&to_vec(&page.element().metadata()).unwrap());
-        let expected_hash0: [u8; 32] = hasher0.finalize().into();
-
-        let mut hasher1 = Sha256::new();
-        hasher1.update(para1.id().as_bytes());
-        hasher1.update(&to_vec(&para1.text).unwrap());
-        hasher1.update(&to_vec(&para1.element().metadata()).unwrap());
-        let expected_hash1: [u8; 32] = hasher1.finalize().into();
-        let mut hasher1b = Sha256::new();
-        hasher1b.update(expected_hash1);
-        let expected_hash1b: [u8; 32] = hasher1b.finalize().into();
-
-        let mut hasher2 = Sha256::new();
-        hasher2.update(para2.id().as_bytes());
-        hasher2.update(&to_vec(&para2.text).unwrap());
-        hasher2.update(&to_vec(&para2.element().metadata()).unwrap());
-        let expected_hash2: [u8; 32] = hasher2.finalize().into();
-        let mut hasher2b = Sha256::new();
-        hasher2b.update(expected_hash2);
-        let expected_hash2b: [u8; 32] = hasher2b.finalize().into();
-
-        let mut hasher3 = Sha256::new();
-        hasher3.update(para3.id().as_bytes());
-        hasher3.update(&to_vec(&para3.text).unwrap());
-        hasher3.update(&to_vec(&para3.element().metadata()).unwrap());
-        let expected_hash3: [u8; 32] = hasher3.finalize().into();
-        let mut hasher3b = Sha256::new();
-        hasher3b.update(expected_hash3);
-        let expected_hash3b: [u8; 32] = hasher3b.finalize().into();
-
-        let mut hasher = Sha256::new();
-        hasher.update(&expected_hash0);
-        hasher.update(&expected_hash1b);
-        hasher.update(&expected_hash2b);
-        hasher.update(&expected_hash3b);
-        let expected_hash: [u8; 32] = hasher.finalize().into();
-
-        assert_eq!(page.calculate_merkle_hash().unwrap(), expected_hash0);
-        assert_eq!(
-            Interface::calculate_merkle_hash_for(&para1, false).unwrap(),
-            expected_hash1b
-        );
-        assert_eq!(
-            Interface::calculate_merkle_hash_for(&para2, false).unwrap(),
-            expected_hash2b
-        );
-        assert_eq!(
-            Interface::calculate_merkle_hash_for(&para3, false).unwrap(),
-            expected_hash3b
-        );
-        assert_eq!(
-            Interface::calculate_merkle_hash_for(&page, false).unwrap(),
-            expected_hash
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn calculate_merkle_hash_for__recalculated_values() {
-        // TODO: Later, tests should be added for recalculating the hashes, and
-        // TODO: especially checking when the data has been interfered with or
-        // TODO: otherwise arrived at an invalid state.
-        todo!()
     }
 }

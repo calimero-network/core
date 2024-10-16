@@ -7,7 +7,7 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 
 #[cfg(test)]
 mod integration_tests_package_usage {
-    use {borsh as _, calimero_storage as _, trybuild as _};
+    use {borsh as _, calimero_sdk as _, calimero_storage as _, trybuild as _};
 }
 
 /// Derives the [`AtomicUnit`](calimero_storage::entities::AtomicUnit) trait for
@@ -42,7 +42,8 @@ mod integration_tests_package_usage {
 ///
 /// # Struct attributes
 ///
-/// None.
+/// * `#[root]` - Indicates that the type represents a root in the hierarchy,
+///               and doesn't have a parent.
 ///
 /// # Field attributes
 ///
@@ -66,9 +67,8 @@ mod integration_tests_package_usage {
 /// Note that fields marked with `#[private]` or `#[skip]` must have [`Default`]
 /// implemented so that they can be initialised when deserialising.
 ///
-/// TODO: The `#[collection]` attribute is not yet implemented, and the
-///       `#[private]` attribute is implemented with the same functionality as
-///       `#[skip]`, but in future these will be differentiated.
+/// TODO: The `#[private]` attribute is implemented with the same functionality
+///       as `#[skip]`, but in future these will be differentiated.
 ///
 /// # Getters and setters
 ///
@@ -102,12 +102,9 @@ mod integration_tests_package_usage {
 /// }
 /// ```
 ///
-/// TODO: Once multiple child types are supported, this example will represent
-///       the correct approach.
-///
-/// ```ignore
+/// ```
 /// use calimero_storage::entities::Element;
-/// use calimero_storage_macros::AtomicUnit;
+/// use calimero_storage_macros::{AtomicUnit, Collection};
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 /// struct Person {
@@ -116,10 +113,14 @@ mod integration_tests_package_usage {
 ///     #[private]
 ///     secret: String,
 ///     #[collection]
-///     friends: Vec<Person>,
+///     friends: Friends,
 ///     #[storage]
 ///     storage: Element,
 /// }
+///
+/// #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[children(Person)]
+/// struct Friends;
 /// ```
 ///
 /// # Panics
@@ -144,10 +145,14 @@ mod integration_tests_package_usage {
     clippy::too_many_lines,
     reason = "Okay for now - will be restructured later"
 )]
-#[proc_macro_derive(AtomicUnit, attributes(children, collection, private, skip, storage))]
+#[proc_macro_derive(
+    AtomicUnit,
+    attributes(children, collection, private, root, skip, storage)
+)]
 pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
+    let is_root = input.attrs.iter().any(|attr| attr.path().is_ident("root"));
 
     let fields = match &input.data {
         Data::Struct(data) => &data.fields,
@@ -269,12 +274,12 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         .collect();
 
     let deserialize_impl = quote! {
-        impl borsh::BorshDeserialize for #name {
+        impl calimero_sdk::borsh::BorshDeserialize for #name {
             fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
                 let #storage_ident = #storage_ty::deserialize_reader(reader)?;
                 Ok(Self {
                     #storage_ident,
-                    #(#serializable_fields: borsh::BorshDeserialize::deserialize_reader(reader)?,)*
+                    #(#serializable_fields: calimero_sdk::borsh::BorshDeserialize::deserialize_reader(reader)?,)*
                     #(#skipped_fields: Default::default(),)*
                 })
             }
@@ -282,11 +287,25 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
     };
 
     let serialize_impl = quote! {
-        impl borsh::BorshSerialize for #name {
+        impl calimero_sdk::borsh::BorshSerialize for #name {
             fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-                borsh::BorshSerialize::serialize(&self.#storage_ident, writer)?;
-                #(borsh::BorshSerialize::serialize(&self.#serializable_fields, writer)?;)*
+                calimero_sdk::borsh::BorshSerialize::serialize(&self.#storage_ident, writer)?;
+                #(calimero_sdk::borsh::BorshSerialize::serialize(&self.#serializable_fields, writer)?;)*
                 Ok(())
+            }
+        }
+    };
+
+    let root_impl = if is_root {
+        quote! {
+            fn is_root() -> bool {
+                true
+            }
+        }
+    } else {
+        quote! {
+            fn is_root() -> bool {
+                false
             }
         }
     };
@@ -319,6 +338,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 collection: &str,
                 slice: &[u8],
             ) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
+                use calimero_sdk::borsh::BorshDeserialize;
                 match collection {
                     #(
                         stringify!(#collection_fields) => {
@@ -337,7 +357,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 #(
                     collections.insert(
                         stringify!(#collection_fields).to_owned(),
-                        self.#collection_fields.child_info().clone()
+                        calimero_storage::interface::Interface::child_info_for(self.id(), &self.#collection_fields).unwrap_or_default()
                     );
                 )*
                 collections
@@ -350,6 +370,8 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             fn element_mut(&mut self) -> &mut calimero_storage::entities::Element {
                 &mut self.#storage_ident
             }
+
+            #root_impl
         }
 
         impl calimero_storage::entities::AtomicUnit for #name {}
@@ -374,11 +396,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 ///
 ///   - A `#[children(Type)]` attribute to specify the type of the children in
 ///     the [`Collection`](calimero_storage::entities::Collection).
-///   - A private `child_info` field of type [`ChildInfo`](calimero_storage::entities::ChildInfo).
-///     This is needed as the [`Collection`](calimero_storage::entities::Collection)
-///     needs to own its child IDs so that they can be serialised into the
-///     [`Data`](calimero_storage::entities::Data)-based [`Element`](calimero_storage::entities::Element)
-///     struct that owns the [`Collection`](calimero_storage::entities::Collection).
 ///
 /// # Generated implementations
 ///
@@ -398,17 +415,13 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 ///
 /// # Field attributes
 ///
-/// * `#[child_info]` - Indicates that the field is the storage element for the
-///                     child info, i.e. the IDs and Merkle hashes. This is a
-///                     mandatory field, and if it is missing, there will be a
-///                     panic during compilation. The name is arbitrary, but the
-///                     type has to be `HashMap<`.
+/// None.
 ///
 /// # Examples
 ///
 /// ```
 /// use calimero_storage_macros::{AtomicUnit, Collection};
-/// use calimero_storage::entities::{ChildInfo, Data, Element};
+/// use calimero_storage::entities::{Data, Element};
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 /// struct Book {
@@ -420,10 +433,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 ///
 /// #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
 /// #[children(Page)]
-/// struct Pages {
-///     #[child_info]
-///     child_info: Vec<ChildInfo>,
-/// }
+/// struct Pages;
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 /// struct Page {
@@ -440,14 +450,13 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 ///   - It is applied to anything other than a struct
 ///   - The struct has unnamed fields
 ///   - The `#[children(Type)]` attribute is missing or invalid
-///   - The struct does not have a field annotated as `#[child_info]`
 ///
 /// # See also
 ///
 /// * [`AtomicUnit`] - For defining a single atomic unit of data that either
 ///                    stands alone, or owns one or more collections, or is a
 ///                    child in a collection.
-#[proc_macro_derive(Collection, attributes(children, child_info))]
+#[proc_macro_derive(Collection, attributes(children))]
 pub fn collection_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -458,39 +467,15 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
         .and_then(|attr| attr.parse_args::<Type>().ok())
         .expect("Collection derive requires #[children(Type)] attribute");
 
-    let fields = match &input.data {
-        Data::Struct(data) => &data.fields,
+    match &input.data {
+        Data::Struct(_) => {}
         Data::Enum(_) | Data::Union(_) => panic!("Collection can only be derived for structs"),
-    };
-
-    let named_fields = match fields {
-        Fields::Named(fields) => &fields.named,
-        Fields::Unnamed(_) | Fields::Unit => {
-            panic!("Collection can only be derived for structs with named fields")
-        }
-    };
-
-    // Find the field marked with the #[child_info] attribute
-    let child_info_field = named_fields
-        .iter()
-        .find(|f| {
-            f.attrs
-                .iter()
-                .any(|attr| attr.path().is_ident("child_info"))
-        })
-        .expect("You must designate one field with #[child_info] for the Collection");
-
-    let child_info_ident = child_info_field.ident.as_ref().unwrap();
-    let child_info_ty = &child_info_field.ty;
-    let child_info_type = syn::parse2::<Type>(quote! { #child_info_ty }).unwrap();
+    }
 
     let deserialize_impl = quote! {
         impl borsh::BorshDeserialize for #name {
             fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-                let #child_info_ident = <#child_info_type as borsh::BorshDeserialize>::deserialize_reader(reader)?;
-                Ok(Self {
-                    #child_info_ident,
-                })
+                Ok(Self {})
             }
         }
     };
@@ -498,7 +483,7 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
     let serialize_impl = quote! {
         impl borsh::BorshSerialize for #name {
             fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-                borsh::BorshSerialize::serialize(&self.#child_info_ident, writer)
+                Ok(())
             }
         }
     };
@@ -507,12 +492,8 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
         impl calimero_storage::entities::Collection for #name {
             type Child = #child_type;
 
-            fn child_info(&self) -> &Vec<calimero_storage::entities::ChildInfo> {
-                &self.#child_info_ident
-            }
-
-            fn has_children(&self) -> bool {
-                !self.#child_info_ident.is_empty()
+            fn name(&self) -> &str {
+                stringify!(#name)
             }
         }
 

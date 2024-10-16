@@ -1,5 +1,5 @@
 use calimero_storage::address::Path;
-use calimero_storage::entities::{ChildInfo, Element};
+use calimero_storage::entities::{Data, Element};
 use calimero_storage::interface::Interface;
 use calimero_storage_macros::{AtomicUnit, Collection};
 
@@ -11,12 +11,10 @@ struct Child {
 
 #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[children(Child)]
-struct Group {
-    #[child_info]
-    child_info: Vec<ChildInfo>,
-}
+struct Group;
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[root]
 struct Parent {
     group: Group,
 	#[storage]
@@ -26,12 +24,12 @@ struct Parent {
 fn main() {
     fn child_type_specification() {
         let parent: Parent = Parent {
-            group: Group { child_info: vec![] },
+            group: Group {},
             storage: Element::new(&Path::new("::root::node").unwrap()),
         };
-        let _: Vec<Child> = Interface::children_of(&parent.group).unwrap();
+        let _: Vec<Child> = Interface::children_of(parent.id(), &parent.group).unwrap();
 
         // This should fail to compile if the child type is incorrect
-        let _: Vec<Parent> = Interface::children_of(&parent.group).unwrap();
+        let _: Vec<Parent> = Interface::children_of(parent.id(), &parent.group).unwrap();
     }
 }
