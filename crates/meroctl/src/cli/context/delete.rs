@@ -15,7 +15,7 @@ pub struct DeleteCommand {
 
 impl DeleteCommand {
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
-        let config = load_config(&args.node_name)?;
+        let config = load_config(&args.home, &args.node_name)?;
 
         self.delete_context(fetch_multiaddr(&config)?, &Client::new(), &config.identity)
             .await

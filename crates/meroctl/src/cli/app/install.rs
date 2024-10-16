@@ -31,7 +31,7 @@ pub struct InstallCommand {
 
 impl InstallCommand {
     pub async fn run(self, args: RootArgs) -> Result<()> {
-        let config = load_config(&args.node_name)?;
+        let config = load_config(&args.home, &args.node_name)?;
         let mut is_dev_installation = false;
         let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
 

@@ -48,7 +48,7 @@ pub struct CreateCommand {
 
 impl CreateCommand {
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
-        let config = load_config(&args.node_name)?;
+        let config = load_config(&args.home, &args.node_name)?;
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 

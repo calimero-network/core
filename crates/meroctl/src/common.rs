@@ -1,4 +1,4 @@
-use camino::Utf8PathBuf;
+use camino::Utf8Path;
 use chrono::Utc;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::identity::Keypair;
@@ -62,7 +62,9 @@ where
         .map_err(|_| eyre!("Error with client request"))
 }
 
-pub fn load_config(path: &Utf8PathBuf) -> EyreResult<ConfigFile> {
+pub fn load_config(home: &Utf8Path, node_name: &str) -> EyreResult<ConfigFile> {
+    let path = home.join(node_name);
+
     if !ConfigFile::exists(&path) {
         bail!("Config file does not exist")
     };
