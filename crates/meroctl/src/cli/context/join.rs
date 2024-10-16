@@ -19,7 +19,7 @@ pub struct JoinCommand {
 
 impl JoinCommand {
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
-        let config = load_config(&args.node_name)?;
+        let config = load_config(&args.home, &args.node_name)?;
 
         let response = get_response(
             &Client::new(),

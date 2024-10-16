@@ -21,7 +21,7 @@ pub enum GetValues {
 impl GetCommand {
     #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
-        let config = load_config(&args.node_name)?;
+        let config = load_config(&args.home, &args.node_name)?;
 
         let url = multiaddr_to_url(
             fetch_multiaddr(&config)?,

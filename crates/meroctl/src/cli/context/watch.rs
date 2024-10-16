@@ -17,7 +17,7 @@ pub struct WatchCommand {
 
 impl WatchCommand {
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
-        let config = load_config(&args.node_name)?;
+        let config = load_config(&args.home, &args.node_name)?;
 
         let mut url = multiaddr_to_url(fetch_multiaddr(&config)?, "ws")?;
         url.set_scheme("ws")
