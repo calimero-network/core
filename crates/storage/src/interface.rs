@@ -215,16 +215,11 @@ mod tests;
 
 use core::fmt::Debug;
 use std::io::Error as IoError;
-use std::sync::Arc;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use calimero_store::key::Storage as StorageKey;
-use calimero_store::layer::{ReadLayer, WriteLayer};
-use calimero_store::slice::Slice;
-use calimero_store::Store;
+use calimero_sdk::env::{storage_read, storage_remove, storage_write};
 use eyre::Report;
 use indexmap::IndexMap;
-use parking_lot::RwLock;
 use sha2::{Digest, Sha256};
 use thiserror::Error as ThisError;
 
@@ -278,27 +273,11 @@ pub enum Action {
 }
 
 /// The primary interface for the storage system.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
-pub struct Interface {
-    /// The backing store to use for the storage interface.
-    store: Arc<RwLock<Store>>,
-}
+pub struct Interface;
 
 impl Interface {
-    /// Creates a new instance of the [`Interface`].
-    ///
-    /// # Parameters
-    ///
-    /// * `store` - The backing store to use for the storage interface.
-    ///
-    #[must_use]
-    pub fn new(store: Store) -> Self {
-        Self {
-            store: Arc::new(RwLock::new(store)),
-        }
-    }
-
     /// Applies an [`Action`] to the storage system.
     ///
     /// This function accepts a single incoming [`Action`] and applies it to the
@@ -325,19 +304,16 @@ impl Interface {
     /// If there is an error when deserialising into the specified type, or when
     /// applying the [`Action`], an error will be returned.
     ///
-    pub fn apply_action<D: Data>(&self, action: Action) -> Result<(), StorageError> {
+    pub fn apply_action<D: Data>(action: Action) -> Result<(), StorageError> {
         match action {
             Action::Add(id, serialized_data) | Action::Update(id, serialized_data) => {
                 let mut entity = D::try_from_slice(&serialized_data)
                     .map_err(StorageError::DeserializationError)?;
-                _ = self.save(id, &mut entity)?;
+                _ = Self::save(id, &mut entity)?;
             }
             Action::Compare(_) => return Err(StorageError::ActionNotAllowed("Compare".to_owned())),
             Action::Delete(id) => {
-                let mut store = self.store.write();
-                store
-                    .delete(&StorageKey::new(id.into()))
-                    .map_err(StorageError::StoreError)?;
+                _ = storage_remove(id.to_string().as_bytes());
             }
         }
         Ok(())
@@ -397,7 +373,6 @@ impl Interface {
     /// returned.
     ///
     pub fn calculate_merkle_hash_for<D: Data>(
-        &self,
         entity: &D,
         recalculate: bool,
     ) -> Result<[u8; 32], StorageError> {
@@ -407,8 +382,7 @@ impl Interface {
         for (collection_name, children) in entity.collections() {
             for child_info in children {
                 let child_hash = if recalculate {
-                    let child_data = self
-                        .find_by_id_raw(child_info.id())?
+                    let child_data = Self::find_by_id_raw(child_info.id())?
                         .ok_or_else(|| StorageError::NotFound(child_info.id()))?;
                     entity.calculate_merkle_hash_for_child(&collection_name, &child_data)?
                 } else {
@@ -466,16 +440,10 @@ impl Interface {
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn children_of<C: Collection>(
-        &self,
-        collection: &C,
-    ) -> Result<Vec<C::Child>, StorageError> {
+    pub fn children_of<C: Collection>(collection: &C) -> Result<Vec<C::Child>, StorageError> {
         let mut children = Vec::new();
         for info in collection.child_info() {
-            children.push(
-                self.find_by_id(info.id())?
-                    .ok_or(StorageError::NotFound(info.id()))?,
-            );
+            children.push(Self::find_by_id(info.id())?.ok_or(StorageError::NotFound(info.id()))?);
         }
         Ok(children)
     }
@@ -502,11 +470,10 @@ impl Interface {
     /// data or if there are problems during the comparison process.
     ///
     pub fn compare_trees<D: Data>(
-        &self,
         foreign_entity: &D,
     ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
         let mut actions = (vec![], vec![]);
-        let Some(local_entity) = self.find_by_id::<D>(foreign_entity.id())? else {
+        let Some(local_entity) = Self::find_by_id::<D>(foreign_entity.id())? else {
             // Local entity doesn't exist, so we need to add it
             actions.0.push(Action::Add(
                 foreign_entity.id(),
@@ -552,7 +519,7 @@ impl Interface {
                         }
                         None => {
                             // We need to fetch the child entity and serialize it
-                            if let Some(local_child) = self.find_by_id_raw(*id)? {
+                            if let Some(local_child) = Self::find_by_id_raw(*id)? {
                                 actions.1.push(Action::Add(*id, local_child));
                             }
                         }
@@ -570,7 +537,7 @@ impl Interface {
             } else {
                 // The entire collection is missing from the foreign entity
                 for child in local_children {
-                    if let Some(local_child) = self.find_by_id_raw(child.id())? {
+                    if let Some(local_child) = Self::find_by_id_raw(child.id())? {
                         actions.1.push(Action::Add(child.id(), local_child));
                     }
                 }
@@ -606,22 +573,8 @@ impl Interface {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    #[expect(clippy::significant_drop_tightening, reason = "False positive")]
-    pub fn find_by_id<D: Data>(&self, id: Id) -> Result<Option<D>, StorageError> {
-        // TODO: It seems fairly bizarre/unexpected that the put() method is sync
-        // TODO: and not async. The reasons and intentions need checking here, in
-        // TODO: case this find() method should be async and wrap the blocking call
-        // TODO: with spawn_blocking(). However, this is not straightforward at
-        // TODO: present because Slice uses Rc internally for some reason.
-        // TODO: let value = spawn_blocking(|| {
-        // TODO:     self.store.read()
-        // TODO:         .get(&StorageKey::new((*id).into()))
-        // TODO:         .map_err(StorageError::StoreError)
-        // TODO: }).await.map_err(|err| StorageError::DispatchError(err.to_string()))??;
-        let store = self.store.read();
-        let value = store
-            .get(&StorageKey::new(id.into()))
-            .map_err(StorageError::StoreError)?;
+    pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
+        let value = storage_read(id.to_string().as_bytes());
 
         match value {
             Some(slice) => {
@@ -644,8 +597,8 @@ impl Interface {
     /// if it exists, regardless of where it may be in the hierarchy, or what
     /// state it may be in.
     ///
-    /// Notably it returns the raw [`Slice`] without attempting to deserialise
-    /// it into a [`Data`] type.
+    /// Notably it returns the raw bytes without attempting to deserialise them
+    /// into a [`Data`] type.
     ///
     /// # Parameters
     ///
@@ -657,13 +610,8 @@ impl Interface {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    #[expect(clippy::significant_drop_tightening, reason = "False positive")]
-    pub fn find_by_id_raw(&self, id: Id) -> Result<Option<Vec<u8>>, StorageError> {
-        let store = self.store.read();
-        let value = store
-            .get(&StorageKey::new(id.into()))
-            .map_err(StorageError::StoreError)?;
-        Ok(value.map(|slice| slice.to_vec()))
+    pub fn find_by_id_raw(id: Id) -> Result<Option<Vec<u8>>, StorageError> {
+        Ok(storage_read(id.to_string().as_bytes()))
     }
 
     /// Finds one or more [`Element`](crate::entities::Element)s by path in the
@@ -684,7 +632,7 @@ impl Interface {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    pub fn find_by_path<D: Data>(&self, _path: &Path) -> Result<Vec<D>, StorageError> {
+    pub fn find_by_path<D: Data>(_path: &Path) -> Result<Vec<D>, StorageError> {
         unimplemented!()
     }
 
@@ -707,7 +655,7 @@ impl Interface {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    pub fn find_children_by_id<D: Data>(&self, _id: Id) -> Result<Option<Vec<D>>, StorageError> {
+    pub fn find_children_by_id<D: Data>(_id: Id) -> Result<Option<Vec<D>>, StorageError> {
         unimplemented!()
     }
 
@@ -760,7 +708,7 @@ impl Interface {
     /// If an error occurs when serialising data or interacting with the storage
     /// system, an error will be returned.
     ///
-    pub fn save<D: Data>(&self, id: Id, entity: &mut D) -> Result<bool, StorageError> {
+    pub fn save<D: Data>(id: Id, entity: &mut D) -> Result<bool, StorageError> {
         if !entity.element().is_dirty() {
             return Ok(true);
         }
@@ -770,27 +718,19 @@ impl Interface {
         // is considered acceptable. If this becomes a problem, we should change
         // the RwLock to a ReentrantMutex, or reimplement the get() logic here to
         // occur within the write lock. But this seems unnecessary at present.
-        if let Some(mut existing) = self.find_by_id::<D>(id)? {
+        if let Some(mut existing) = Self::find_by_id::<D>(id)? {
             if existing.element_mut().metadata.updated_at >= entity.element().metadata.updated_at {
                 return Ok(false);
             }
         }
         // TODO: Need to propagate the change up the tree, i.e. trigger a
         // TODO: recalculation for the ancestors.
-        entity.element_mut().merkle_hash = self.calculate_merkle_hash_for(entity, false)?;
+        entity.element_mut().merkle_hash = Self::calculate_merkle_hash_for(entity, false)?;
 
-        // TODO: It seems fairly bizarre/unexpected that the put() method is sync
-        // TODO: and not async. The reasons and intentions need checking here, in
-        // TODO: case this save() method should be async and wrap the blocking call
-        // TODO: with spawn_blocking(). However, this is not straightforward at
-        // TODO: present because Slice uses Rc internally for some reason.
-        self.store
-            .write()
-            .put(
-                &StorageKey::new(id.into()),
-                Slice::from(to_vec(entity).map_err(StorageError::SerializationError)?),
-            )
-            .map_err(StorageError::StoreError)?;
+        _ = storage_write(
+            id.to_string().as_bytes(),
+            &to_vec(entity).map_err(StorageError::SerializationError)?,
+        );
         entity.element_mut().is_dirty = false;
         Ok(true)
     }
@@ -807,7 +747,7 @@ impl Interface {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    pub fn validate(&self) -> Result<(), StorageError> {
+    pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
     }
 }

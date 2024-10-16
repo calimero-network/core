@@ -1,7 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::to_vec;
-use calimero_test_utils::storage::create_test_store;
 use claims::{assert_ge, assert_le};
 use sha2::{Digest, Sha256};
 use velcro::btree_map;
@@ -304,8 +303,6 @@ mod element__public_methods {
 
     #[test]
     fn is_dirty() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         assert!(element.is_dirty());
 
@@ -314,7 +311,7 @@ mod element__public_methods {
             age: 30,
             storage: element,
         };
-        assert!(interface.save(person.element().id(), &mut person).unwrap());
+        assert!(Interface::save(person.element().id(), &mut person).unwrap());
         assert!(!person.element().is_dirty());
 
         person.element_mut().update();
@@ -323,18 +320,16 @@ mod element__public_methods {
 
     #[test]
     fn merkle_hash() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         let mut person = Person {
             name: "Steve".to_owned(),
             age: 50,
             storage: element.clone(),
         };
-        let expected_hash = interface.calculate_merkle_hash_for(&person, false).unwrap();
+        let expected_hash = Interface::calculate_merkle_hash_for(&person, false).unwrap();
         assert_ne!(person.element().merkle_hash(), expected_hash);
 
-        assert!(interface.save(person.element().id(), &mut person).unwrap());
+        assert!(Interface::save(person.element().id(), &mut person).unwrap());
         assert_eq!(person.element().merkle_hash(), expected_hash);
     }
 
@@ -353,8 +348,6 @@ mod element__public_methods {
 
     #[test]
     fn update() {
-        let (db, _dir) = create_test_store();
-        let interface = Interface::new(db);
         let element = Element::new(&Path::new("::root::node::leaf").unwrap());
         let updated_at = element.metadata.updated_at;
         let mut person = Person {
@@ -362,7 +355,7 @@ mod element__public_methods {
             age: 40,
             storage: element,
         };
-        assert!(interface.save(person.element().id(), &mut person).unwrap());
+        assert!(Interface::save(person.element().id(), &mut person).unwrap());
         assert!(!person.element().is_dirty);
 
         person.element_mut().update();

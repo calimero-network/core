@@ -21,7 +21,5 @@ calimero-storage = { path = "../storage" }
 [dev-dependencies]
 trybuild.workspace = true
 
-calimero-test-utils = { path = "../test-utils" }
-
 [lints]
 workspace = true
