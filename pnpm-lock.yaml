@@ -176,7 +176,7 @@ importers:
         version: 7.13.0(eslint@8.57.0)(typescript@5.5.4)
       '@vitejs/plugin-react':
         specifier: ^4.2.1
-        version: 4.3.1(vite@5.4.2(@types/node@18.19.34)(terser@5.31.0))
+        version: 4.3.1(vite@5.4.6(@types/node@18.19.34)(terser@5.31.0))
       concurrently:
         specifier: ^7.3.0
         version: 7.6.0
@@ -214,11 +214,11 @@ importers:
         specifier: ^7.13.0
         version: 7.13.0(eslint@8.57.0)(typescript@5.5.4)
       vite:
-        specifier: ^5.2.6
-        version: 5.4.2(@types/node@18.19.34)(terser@5.31.0)
+        specifier: ^5.4.6
+        version: 5.4.6(@types/node@18.19.34)(terser@5.31.0)
       vite-plugin-node-polyfills:
         specifier: ^0.21.0
-        version: 0.21.0(rollup@4.21.1)(vite@5.4.2(@types/node@18.19.34)(terser@5.31.0))
+        version: 0.21.0(rollup@4.21.1)(vite@5.4.6(@types/node@18.19.34)(terser@5.31.0))
 
   packages/calimero-sdk:
     dependencies:
@@ -333,6 +333,9 @@ packages:
 
   '@adraffy/ens-normalize@1.10.0':
     resolution: {integrity: sha512-nA9XHtlAkYfJxY7bce8DcN7eKxWWCWkU+1GR9d+U6MbNpfwQp8TI7vqOsBsMcHoT4mBu2kypKoSKnghEzOOq5Q==}
+
+  '@adraffy/ens-normalize@1.11.0':
+    resolution: {integrity: sha512-/3DDPKHqqIqxUULp8yP4zODUY1i+2xvVWsv8A79xGWdCAG+8sb0hRh0Rk2QyOJUnnbyPUAZYcpBuRe3nS2OIUg==}
 
   '@ampproject/remapping@2.3.0':
     resolution: {integrity: sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw==}
@@ -2096,6 +2099,10 @@ packages:
   '@noble/curves@1.4.0':
     resolution: {integrity: sha512-p+4cb332SFCrReJkCYe8Xzm0OWi4Jji5jVdIZRL/PmacmDkFNw6MrrV+gGpiPxLHbV+zKFRywUWbaseT+tZRXg==}
 
+  '@noble/curves@1.6.0':
+    resolution: {integrity: sha512-TlaHRXDehJuRNR9TfZDNQ45mMEd5dwUwmicsafcIX4SsNiqnCHKjE/1alYPd/lDRVhxdhUAlv8uEhMCI5zjIJQ==}
+    engines: {node: ^14.21.3 || >=16}
+
   '@noble/hashes@1.3.2':
     resolution: {integrity: sha512-MVC8EAQp7MvEcm30KWENFjgR+Mkmf+D189XJTkFIlwohU5hcBbn1ZkKq7KVTi2Hme3PMGF390DaL52beVrIihQ==}
     engines: {node: '>= 16'}
@@ -2469,8 +2476,8 @@ packages:
   '@scure/bip32@1.3.3':
     resolution: {integrity: sha512-LJaN3HwRbfQK0X1xFSi0Q9amqOgzQnnDngIt+ZlsBC3Bm7/nE7K0kwshZHyaru79yIVRv/e1mQAjZyuZG6jOFQ==}
 
-  '@scure/bip32@1.4.0':
-    resolution: {integrity: sha512-sVUpc0Vq3tXCkDGYVWGIZTRfnvu8LoTDaev7vbwh0omSvVORONr960MQWdKqJDCReIEmTj3PAr73O3aoxz7OPg==}
+  '@scure/bip32@1.5.0':
+    resolution: {integrity: sha512-8EnFYkqEQdnkuGBVpCzKxyIwDCBLDVj3oiX0EKUFre/tOjL/Hqba1D6n/8RcmaQy4f95qQFrO2A8Sr6ybh4NRw==}
 
   '@scure/bip39@1.2.1':
     resolution: {integrity: sha512-Z3/Fsz1yr904dduJD0NpiyRHhRYHdcnyh73FZWiV+/qhWi83wNJ3NWolYqCEN+ZWsUz2TWwajJggcRE9r1zUYg==}
@@ -3115,8 +3122,8 @@ packages:
       zod:
         optional: true
 
-  abitype@1.0.5:
-    resolution: {integrity: sha512-YzDhti7cjlfaBhHutMaboYB21Ha3rXR9QTkNJFzYC4kC8YclaiwPBBBJY8ejFdu2wnJeZCVZSMlQJ7fi8S6hsw==}
+  abitype@1.0.6:
+    resolution: {integrity: sha512-MMSqYh4+C/aVqI2RQaWqbvI4Kxo5cQV40WQ4QFtDnNzCkqChm8MuENhElmynZlO0qUy/ObkEUaXtKqYnx1Kp3A==}
     peerDependencies:
       typescript: '>=5.0.4'
       zod: ^3 >=3.22.0
@@ -4565,6 +4572,7 @@ packages:
   eslint@8.57.0:
     resolution: {integrity: sha512-dZ6+mexnaTIbSBZWgou51U6OmzIhYM2VcNdtiTtI7qPNZm35Akpr0f6vtw3w1Kmn5PYo+tZVfh13WrhpS6oLqQ==}
     engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
 
   espree@9.6.1:
@@ -5582,8 +5590,8 @@ packages:
     peerDependencies:
       ws: '*'
 
-  isows@1.0.4:
-    resolution: {integrity: sha512-hEzjY+x9u9hPmBom9IIAqdJCwNLax+xrPb51vEPpERoFlIxgmZcHzsT5jKG06nvInKOBGvReAVz80Umed5CczQ==}
+  isows@1.0.6:
+    resolution: {integrity: sha512-lPHCayd40oW98/I0uvgaHKWCSvkzY27LjWLbtzOm64yQ+G3Q5npjjbdppU65iZXkK1Zt+kH9pfegli0AYfwYYw==}
     peerDependencies:
       ws: '*'
 
@@ -6789,6 +6797,9 @@ packages:
   picocolors@1.0.1:
     resolution: {integrity: sha512-anP1Z8qwhkbmu7MFP5iTt+wQKXgwzf7zTyGlcdzabySa9vd0Xt392U0rVmz9poOaBj0uHJKyyo9/upk0HrEQew==}
 
+  picocolors@1.1.0:
+    resolution: {integrity: sha512-TQ92mBOW0l3LeMeyLV6mzy/kWr8lkd/hp3mTg7wYK7zJhuBStmGMBG0BdeDZS/dZx1IukaX6Bk11zcln25o1Aw==}
+
   picomatch@2.3.1:
     resolution: {integrity: sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==}
     engines: {node: '>=8.6'}
@@ -6869,8 +6880,8 @@ packages:
     resolution: {integrity: sha512-Wglpdk03BSfXkHoQa3b/oulrotAkwrlLDRSOb9D0bN86FdRyE9lppSp33aHNPgBa0JKCoB+drFLZkQoRRYae5A==}
     engines: {node: ^10 || ^12 || >=14}
 
-  postcss@8.4.41:
-    resolution: {integrity: sha512-TesUflQ0WKZqAvg52PWL6kHgLKP6xB6heTOdoYM0Wt2UHyxNa4K25EZZMgKns3BH1RLVbZCREPpLY0rhnNoHVQ==}
+  postcss@8.4.47:
+    resolution: {integrity: sha512-56rxCq7G/XfB4EkXq9Egn5GCqugWvDFjafDOThIdMBsI15iqPqR5r15TfSr1YPYeEI19YeaXMCbY6u88Y76GLQ==}
     engines: {node: ^10 || ^12 || >=14}
 
   preact@10.22.0:
@@ -7582,6 +7593,10 @@ packages:
 
   source-map-js@1.2.0:
     resolution: {integrity: sha512-itJW8lvSA0TXEphiRoawsCksnlf8SyvmFzIhltqAHluXd88pkCd+cXJVHTDwdCr0IzwptSm035IHQktUu1QUMg==}
+    engines: {node: '>=0.10.0'}
+
+  source-map-js@1.2.1:
+    resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
 
   source-map-resolve@0.5.3:
@@ -8359,8 +8374,8 @@ packages:
       typescript:
         optional: true
 
-  viem@2.21.10:
-    resolution: {integrity: sha512-n+BKNabWI0k2i7PB4UEdxgHHpQmMeDk+2X9093l/yU0NLUjIgiazybfD1BksGwbiIRk/WXr+aoRqKOExxRDxWA==}
+  viem@2.21.21:
+    resolution: {integrity: sha512-KJPqpAXy8kyZQICx1nURUXqd8aABP9RweAZhfp27MzMPsAAxP450cWPlEffEAUrvsyyj5edVbIcHESE8DYVzFA==}
     peerDependencies:
       typescript: '>=5.0.4'
     peerDependenciesMeta:
@@ -8372,8 +8387,8 @@ packages:
     peerDependencies:
       vite: ^2.0.0 || ^3.0.0 || ^4.0.0 || ^5.0.0
 
-  vite@5.4.2:
-    resolution: {integrity: sha512-dDrQTRHp5C1fTFzcSaMxjk6vdpKvT+2/mIdE07Gw2ykehT49O0z/VHS3zZ8iV/Gh8BJJKHWOe5RjaNrW5xf/GA==}
+  vite@5.4.6:
+    resolution: {integrity: sha512-IeL5f8OO5nylsgzd9tq4qD2QqI0k2CQLGrWD0rCN0EQJZpBK5vJAx0I+GDkMOXxQX/OfFHMuLIx6ddAxGX/k+Q==}
     engines: {node: ^18.0.0 || >=20.0.0}
     hasBin: true
     peerDependencies:
@@ -8447,8 +8462,8 @@ packages:
   wcwidth@1.0.1:
     resolution: {integrity: sha512-XHPEwS0q6TaxcvG85+8EYkbiCux2XtWG2mkc47Ng2A77BQu9+DqIOJldST4HgPkuea7dvKSj5VgX3P1d4rW8Tg==}
 
-  webauthn-p256@0.0.5:
-    resolution: {integrity: sha512-drMGNWKdaixZNobeORVIqq7k5DsRC9FnG201K2QjeOoQLmtSDaSsVZdkg6n5jUALJKcAG++zBPJXmv6hy0nWFg==}
+  webauthn-p256@0.0.10:
+    resolution: {integrity: sha512-EeYD+gmIT80YkSIDb2iWq0lq2zbHo1CxHlQTeJ+KkCILWpVy3zASH3ByD4bopzfk0uCwXxLqKGLqp2W4O28VFA==}
 
   webcrypto-core@1.8.0:
     resolution: {integrity: sha512-kR1UQNH8MD42CYuLzvibfakG5Ew5seG85dMMoAM/1LqvckxaF6pUiidLuraIu4V+YCIFabYecUZAW0TuxAoaqw==}
@@ -8627,6 +8642,18 @@ packages:
       utf-8-validate:
         optional: true
 
+  ws@8.18.0:
+    resolution: {integrity: sha512-8VbfWfHLbbwu3+N6OKsOMpBdT4kXPDDB9cJk2bJ6mh9ucxdlnNvH1e+roYkKmN9Nxw2yjz7VzeO9oOz2zJ04Pw==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   xml-name-validator@3.0.0:
     resolution: {integrity: sha512-A5CUptxDsvxKJEU3yO6DuWBSJz/qizqzJKOMIfUJHETbBw/sFaDxgd6fxm1ewUaM0jZ444Fc5vC5ROYurg/4Pw==}
 
@@ -8728,6 +8755,8 @@ packages:
 snapshots:
 
   '@adraffy/ens-normalize@1.10.0': {}
+
+  '@adraffy/ens-normalize@1.11.0': {}
 
   '@ampproject/remapping@2.3.0':
     dependencies:
@@ -8924,7 +8953,7 @@ snapshots:
       '@babel/helper-validator-identifier': 7.24.7
       chalk: 2.4.2
       js-tokens: 4.0.0
-      picocolors: 1.0.1
+      picocolors: 1.1.0
 
   '@babel/parser@7.24.7':
     dependencies:
@@ -10043,7 +10072,7 @@ snapshots:
     dependencies:
       '@dfinity/candid': 2.1.1(@dfinity/principal@2.1.1)
       '@dfinity/principal': 2.1.1
-      '@noble/curves': 1.4.0
+      '@noble/curves': 1.6.0
       '@noble/hashes': 1.5.0
       base64-arraybuffer: 0.2.0
       borc: 2.1.2
@@ -10914,8 +10943,8 @@ snapshots:
       react-copy-to-clipboard: 5.1.0(react@18.3.1)
       react-dom: 18.3.1(react@18.3.1)
       react-jazzicon: 1.0.4(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
-      viem: 2.21.10(bufferutil@4.0.8)(typescript@5.5.4)
-      wagmi: 1.4.12(@types/react@18.3.3)(bufferutil@4.0.8)(immer@9.0.21)(react-dom@18.3.1(react@18.3.1))(react-native@0.74.1(@babel/core@7.24.6)(@babel/preset-env@7.24.6(@babel/core@7.24.6))(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1))(react@18.3.1)(typescript@5.5.4)(viem@2.21.10(bufferutil@4.0.8)(typescript@5.5.4))
+      viem: 2.21.21(bufferutil@4.0.8)(typescript@5.5.4)
+      wagmi: 1.4.12(@types/react@18.3.3)(bufferutil@4.0.8)(immer@9.0.21)(react-dom@18.3.1(react@18.3.1))(react-native@0.74.1(@babel/core@7.24.6)(@babel/preset-env@7.24.6(@babel/core@7.24.6))(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1))(react@18.3.1)(typescript@5.5.4)(viem@2.21.21(bufferutil@4.0.8)(typescript@5.5.4))
     transitivePeerDependencies:
       - '@azure/app-configuration'
       - '@azure/cosmos'
@@ -11012,7 +11041,7 @@ snapshots:
     dependencies:
       '@ethereumjs/tx': 4.2.0
       '@noble/hashes': 1.5.0
-      '@scure/base': 1.1.6
+      '@scure/base': 1.1.8
       '@types/debug': 4.1.12
       debug: 4.3.5
       pony-cause: 2.1.11
@@ -11555,6 +11584,10 @@ snapshots:
     dependencies:
       '@noble/hashes': 1.4.0
 
+  '@noble/curves@1.6.0':
+    dependencies:
+      '@noble/hashes': 1.5.0
+
   '@noble/hashes@1.3.2': {}
 
   '@noble/hashes@1.3.3': {}
@@ -12095,10 +12128,10 @@ snapshots:
       '@noble/hashes': 1.3.3
       '@scure/base': 1.1.8
 
-  '@scure/bip32@1.4.0':
+  '@scure/bip32@1.5.0':
     dependencies:
-      '@noble/curves': 1.4.0
-      '@noble/hashes': 1.4.0
+      '@noble/curves': 1.6.0
+      '@noble/hashes': 1.5.0
       '@scure/base': 1.1.8
 
   '@scure/bip39@1.2.1':
@@ -12743,18 +12776,18 @@ snapshots:
 
   '@ungap/structured-clone@1.2.0': {}
 
-  '@vitejs/plugin-react@4.3.1(vite@5.4.2(@types/node@18.19.34)(terser@5.31.0))':
+  '@vitejs/plugin-react@4.3.1(vite@5.4.6(@types/node@18.19.34)(terser@5.31.0))':
     dependencies:
       '@babel/core': 7.24.6
       '@babel/plugin-transform-react-jsx-self': 7.24.6(@babel/core@7.24.6)
       '@babel/plugin-transform-react-jsx-source': 7.24.6(@babel/core@7.24.6)
       '@types/babel__core': 7.20.5
       react-refresh: 0.14.2
-      vite: 5.4.2(@types/node@18.19.34)(terser@5.31.0)
+      vite: 5.4.6(@types/node@18.19.34)(terser@5.31.0)
     transitivePeerDependencies:
       - supports-color
 
-  '@wagmi/connectors@3.1.10(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1)(typescript@5.5.4)(viem@2.21.10(bufferutil@4.0.8)(typescript@5.5.4))':
+  '@wagmi/connectors@3.1.10(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1)(typescript@5.5.4)(viem@2.21.21(bufferutil@4.0.8)(typescript@5.5.4))':
     dependencies:
       '@coinbase/wallet-sdk': 3.9.3
       '@safe-global/safe-apps-provider': 0.18.2(bufferutil@4.0.8)(typescript@5.5.4)
@@ -12765,7 +12798,7 @@ snapshots:
       '@walletconnect/utils': 2.10.2
       abitype: 0.8.7(typescript@5.5.4)
       eventemitter3: 4.0.7
-      viem: 2.21.10(bufferutil@4.0.8)(typescript@5.5.4)
+      viem: 2.21.21(bufferutil@4.0.8)(typescript@5.5.4)
     optionalDependencies:
       typescript: 5.5.4
     transitivePeerDependencies:
@@ -12791,12 +12824,12 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@wagmi/core@1.4.12(@types/react@18.3.3)(bufferutil@4.0.8)(immer@9.0.21)(react@18.3.1)(typescript@5.5.4)(viem@2.21.10(bufferutil@4.0.8)(typescript@5.5.4))':
+  '@wagmi/core@1.4.12(@types/react@18.3.3)(bufferutil@4.0.8)(immer@9.0.21)(react@18.3.1)(typescript@5.5.4)(viem@2.21.21(bufferutil@4.0.8)(typescript@5.5.4))':
     dependencies:
-      '@wagmi/connectors': 3.1.10(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1)(typescript@5.5.4)(viem@2.21.10(bufferutil@4.0.8)(typescript@5.5.4))
+      '@wagmi/connectors': 3.1.10(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1)(typescript@5.5.4)(viem@2.21.21(bufferutil@4.0.8)(typescript@5.5.4))
       abitype: 0.8.7(typescript@5.5.4)
       eventemitter3: 4.0.7
-      viem: 2.21.10(bufferutil@4.0.8)(typescript@5.5.4)
+      viem: 2.21.21(bufferutil@4.0.8)(typescript@5.5.4)
       zustand: 4.5.2(@types/react@18.3.3)(immer@9.0.21)(react@18.3.1)
     optionalDependencies:
       typescript: 5.5.4
@@ -13507,7 +13540,7 @@ snapshots:
     optionalDependencies:
       typescript: 5.5.4
 
-  abitype@1.0.5(typescript@5.5.4):
+  abitype@1.0.6(typescript@5.5.4):
     optionalDependencies:
       typescript: 5.5.4
 
@@ -16517,9 +16550,9 @@ snapshots:
     dependencies:
       ws: 8.13.0(bufferutil@4.0.8)
 
-  isows@1.0.4(ws@8.17.1(bufferutil@4.0.8)):
+  isows@1.0.6(ws@8.18.0(bufferutil@4.0.8)):
     dependencies:
-      ws: 8.17.1(bufferutil@4.0.8)
+      ws: 8.18.0(bufferutil@4.0.8)
 
   istanbul-lib-coverage@3.2.2: {}
 
@@ -18292,6 +18325,8 @@ snapshots:
 
   picocolors@1.0.1: {}
 
+  picocolors@1.1.0: {}
+
   picomatch@2.3.1: {}
 
   pify@2.3.0: {}
@@ -18365,11 +18400,11 @@ snapshots:
       picocolors: 1.0.1
       source-map-js: 1.2.0
 
-  postcss@8.4.41:
+  postcss@8.4.47:
     dependencies:
       nanoid: 3.3.7
-      picocolors: 1.0.1
-      source-map-js: 1.2.0
+      picocolors: 1.1.0
+      source-map-js: 1.2.1
 
   preact@10.22.0: {}
 
@@ -19229,6 +19264,8 @@ snapshots:
 
   source-map-js@1.2.0: {}
 
+  source-map-js@1.2.1: {}
+
   source-map-resolve@0.5.3:
     dependencies:
       atob: 2.1.2
@@ -19948,7 +19985,7 @@ snapshots:
     dependencies:
       browserslist: 4.23.0
       escalade: 3.1.2
-      picocolors: 1.0.1
+      picocolors: 1.1.0
 
   uqr@0.1.2: {}
 
@@ -20046,17 +20083,17 @@ snapshots:
       - utf-8-validate
       - zod
 
-  viem@2.21.10(bufferutil@4.0.8)(typescript@5.5.4):
+  viem@2.21.21(bufferutil@4.0.8)(typescript@5.5.4):
     dependencies:
-      '@adraffy/ens-normalize': 1.10.0
-      '@noble/curves': 1.4.0
-      '@noble/hashes': 1.4.0
-      '@scure/bip32': 1.4.0
+      '@adraffy/ens-normalize': 1.11.0
+      '@noble/curves': 1.6.0
+      '@noble/hashes': 1.5.0
+      '@scure/bip32': 1.5.0
       '@scure/bip39': 1.4.0
-      abitype: 1.0.5(typescript@5.5.4)
-      isows: 1.0.4(ws@8.17.1(bufferutil@4.0.8))
-      webauthn-p256: 0.0.5
-      ws: 8.17.1(bufferutil@4.0.8)
+      abitype: 1.0.6(typescript@5.5.4)
+      isows: 1.0.6(ws@8.18.0(bufferutil@4.0.8))
+      webauthn-p256: 0.0.10
+      ws: 8.18.0(bufferutil@4.0.8)
     optionalDependencies:
       typescript: 5.5.4
     transitivePeerDependencies:
@@ -20064,18 +20101,18 @@ snapshots:
       - utf-8-validate
       - zod
 
-  vite-plugin-node-polyfills@0.21.0(rollup@4.21.1)(vite@5.4.2(@types/node@18.19.34)(terser@5.31.0)):
+  vite-plugin-node-polyfills@0.21.0(rollup@4.21.1)(vite@5.4.6(@types/node@18.19.34)(terser@5.31.0)):
     dependencies:
       '@rollup/plugin-inject': 5.0.5(rollup@4.21.1)
       node-stdlib-browser: 1.2.0
-      vite: 5.4.2(@types/node@18.19.34)(terser@5.31.0)
+      vite: 5.4.6(@types/node@18.19.34)(terser@5.31.0)
     transitivePeerDependencies:
       - rollup
 
-  vite@5.4.2(@types/node@18.19.34)(terser@5.31.0):
+  vite@5.4.6(@types/node@18.19.34)(terser@5.31.0):
     dependencies:
       esbuild: 0.21.5
-      postcss: 8.4.41
+      postcss: 8.4.47
       rollup: 4.21.1
     optionalDependencies:
       '@types/node': 18.19.34
@@ -20098,16 +20135,16 @@ snapshots:
     dependencies:
       xml-name-validator: 3.0.0
 
-  wagmi@1.4.12(@types/react@18.3.3)(bufferutil@4.0.8)(immer@9.0.21)(react-dom@18.3.1(react@18.3.1))(react-native@0.74.1(@babel/core@7.24.6)(@babel/preset-env@7.24.6(@babel/core@7.24.6))(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1))(react@18.3.1)(typescript@5.5.4)(viem@2.21.10(bufferutil@4.0.8)(typescript@5.5.4)):
+  wagmi@1.4.12(@types/react@18.3.3)(bufferutil@4.0.8)(immer@9.0.21)(react-dom@18.3.1(react@18.3.1))(react-native@0.74.1(@babel/core@7.24.6)(@babel/preset-env@7.24.6(@babel/core@7.24.6))(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1))(react@18.3.1)(typescript@5.5.4)(viem@2.21.21(bufferutil@4.0.8)(typescript@5.5.4)):
     dependencies:
       '@tanstack/query-sync-storage-persister': 4.36.1
       '@tanstack/react-query': 4.36.1(react-dom@18.3.1(react@18.3.1))(react-native@0.74.1(@babel/core@7.24.6)(@babel/preset-env@7.24.6(@babel/core@7.24.6))(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1))(react@18.3.1)
       '@tanstack/react-query-persist-client': 4.36.1(@tanstack/react-query@4.36.1(react-dom@18.3.1(react@18.3.1))(react-native@0.74.1(@babel/core@7.24.6)(@babel/preset-env@7.24.6(@babel/core@7.24.6))(@types/react@18.3.3)(bufferutil@4.0.8)(react@18.3.1))(react@18.3.1))
-      '@wagmi/core': 1.4.12(@types/react@18.3.3)(bufferutil@4.0.8)(immer@9.0.21)(react@18.3.1)(typescript@5.5.4)(viem@2.21.10(bufferutil@4.0.8)(typescript@5.5.4))
+      '@wagmi/core': 1.4.12(@types/react@18.3.3)(bufferutil@4.0.8)(immer@9.0.21)(react@18.3.1)(typescript@5.5.4)(viem@2.21.21(bufferutil@4.0.8)(typescript@5.5.4))
       abitype: 0.8.7(typescript@5.5.4)
       react: 18.3.1
       use-sync-external-store: 1.2.2(react@18.3.1)
-      viem: 2.21.10(bufferutil@4.0.8)(typescript@5.5.4)
+      viem: 2.21.21(bufferutil@4.0.8)(typescript@5.5.4)
     optionalDependencies:
       typescript: 5.5.4
     transitivePeerDependencies:
@@ -20152,9 +20189,9 @@ snapshots:
     dependencies:
       defaults: 1.0.4
 
-  webauthn-p256@0.0.5:
+  webauthn-p256@0.0.10:
     dependencies:
-      '@noble/curves': 1.4.0
+      '@noble/curves': 1.6.0
       '@noble/hashes': 1.5.0
 
   webcrypto-core@1.8.0:
@@ -20340,6 +20377,10 @@ snapshots:
       bufferutil: 4.0.8
 
   ws@8.17.1(bufferutil@4.0.8):
+    optionalDependencies:
+      bufferutil: 4.0.8
+
+  ws@8.18.0(bufferutil@4.0.8):
     optionalDependencies:
       bufferutil: 4.0.8
 
