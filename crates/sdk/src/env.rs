@@ -221,7 +221,6 @@ pub fn state_write<T: AppState>(state: &T) {
 
 /// Fill the buffer with random bytes.
 #[inline]
-#[must_use]
 pub fn random_bytes(buf: &mut [u8]) {
     unsafe { sys::random_bytes(BufferMut::new(buf)) }
 }
