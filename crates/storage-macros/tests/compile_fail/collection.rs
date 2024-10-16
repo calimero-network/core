@@ -4,6 +4,7 @@ use calimero_storage::interface::Interface;
 use calimero_storage_macros::{AtomicUnit, Collection};
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[type_id(2)]
 struct Child {
     #[storage]
     storage: Element,
@@ -15,6 +16,7 @@ struct Group;
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[root]
+#[type_id(1)]
 struct Parent {
     group: Group,
 	#[storage]

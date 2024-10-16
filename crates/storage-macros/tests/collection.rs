@@ -32,6 +32,7 @@ use calimero_storage::exports::{Digest, Sha256};
 use calimero_storage_macros::{AtomicUnit, Collection};
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[type_id(22)]
 struct Child {
     content: String,
     #[storage]
@@ -58,6 +59,7 @@ impl Group {
 }
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[type_id(21)]
 #[root]
 struct Parent {
     title: String,
@@ -78,6 +80,7 @@ impl Parent {
 }
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[type_id(23)]
 #[root]
 struct Simple {
     name: String,
