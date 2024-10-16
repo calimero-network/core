@@ -31,7 +31,7 @@ wasm_imports! {
             register_id: RegisterId
         ) -> Bool;
         // --
-        fn random_bytes(len: u64, register_id: RegisterId);
+        fn random_bytes(buf: BufferMut<'_>);
         fn time_now(register_id: RegisterId);
     }
 }
