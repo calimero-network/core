@@ -1,3 +1,4 @@
+use calimero_server::admin::handlers::context::DeleteContextResponse;
 use clap::Parser;
 use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
@@ -38,8 +39,9 @@ impl DeleteCommand {
             bail!("Request failed with status: {}", response.status())
         }
 
-        let text = response.text().await?;
-        println!("Context deleted successfully: {text}");
+        let response: DeleteContextResponse = response.json().await?;
+
+        println!("{:#?}", response);
         Ok(())
     }
 }

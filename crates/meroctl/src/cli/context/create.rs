@@ -23,8 +23,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, load_config};
-use crate::common::{get_response, multiaddr_to_url, RequestType};
+use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
 pub struct CreateCommand {
@@ -44,6 +43,9 @@ pub struct CreateCommand {
 
     #[clap(short = 's', long = "seed")]
     context_seed: Option<Hash>,
+
+    #[clap(long, short)]
+    test: bool,
 }
 
 impl CreateCommand {
@@ -59,6 +61,7 @@ impl CreateCommand {
                 context_seed,
                 metadata: None,
                 params,
+                ..
             } => {
                 let _ = create_context(
                     &client,
@@ -67,6 +70,7 @@ impl CreateCommand {
                     app_id,
                     params,
                     &config.identity,
+                    self.test,
                 )
                 .await?;
             }
@@ -76,6 +80,7 @@ impl CreateCommand {
                 context_seed,
                 metadata,
                 params,
+                ..
             } => {
                 let path = path.canonicalize_utf8()?;
                 let metadata = metadata.map(String::into_bytes);
@@ -86,6 +91,7 @@ impl CreateCommand {
                     path.clone(),
                     metadata.clone(),
                     &config.identity,
+                    self.test,
                 )
                 .await?;
 
@@ -96,6 +102,7 @@ impl CreateCommand {
                     application_id,
                     params,
                     &config.identity,
+                    self.test,
                 )
                 .await?;
 
@@ -106,6 +113,7 @@ impl CreateCommand {
                     path,
                     metadata,
                     &config.identity,
+                    self.test,
                 )
                 .await?;
             }
@@ -123,6 +131,7 @@ async fn create_context(
     application_id: ApplicationId,
     params: Option<String>,
     keypair: &Keypair,
+    test: bool,
 ) -> EyreResult<ContextId> {
     if !app_installed(base_multiaddr, &application_id, client, keypair).await? {
         bail!("Application is not installed on node.")
@@ -140,14 +149,17 @@ async fn create_context(
     if response.status().is_success() {
         let context_response: CreateContextResponse = response.json().await?;
 
-        let context_id = context_response.data.context_id;
+        let context_id = context_response.data.context_id.clone();
 
-        println!("Context `\x1b[36m{context_id}\x1b[0m` created!");
+        if test {
+            println!("{:#?}", context_response);
+        } else {
+            println!("Context `\x1b[36m{context_id}\x1b[0m` created!");
 
-        println!(
+            println!(
             "Context{{\x1b[36m{context_id}\x1b[0m}} -> Application{{\x1b[36m{application_id}\x1b[0m}}",
         );
-
+        }
         return Ok(context_id);
     }
 
@@ -168,6 +180,7 @@ async fn watch_app_and_update_context(
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
     keypair: &Keypair,
+    test: bool,
 ) -> EyreResult<()> {
     let (tx, mut rx) = mpsc::channel(1);
 
@@ -210,6 +223,7 @@ async fn watch_app_and_update_context(
             path.clone(),
             metadata.clone(),
             keypair,
+            test,
         )
         .await?;
 
@@ -282,6 +296,7 @@ async fn install_app(
     path: Utf8PathBuf,
     metadata: Option<Vec<u8>>,
     keypair: &Keypair,
+    test: bool,
 ) -> EyreResult<ApplicationId> {
     let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
 
@@ -310,10 +325,14 @@ async fn install_app(
         .json::<InstallApplicationResponse>()
         .await?;
 
-    println!(
-        "Application `\x1b[36m{}\x1b[0m` installed!",
-        response.data.application_id
-    );
+    if test {
+        println!("{:#?}", response);
+    } else {
+        println!(
+            "Application `\x1b[36m{}\x1b[0m` installed!",
+            response.data.application_id
+        );
+    }
 
     Ok(response.data.application_id)
 }

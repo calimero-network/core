@@ -27,6 +27,9 @@ pub struct InstallCommand {
 
     #[clap(long, help = "Hash of the application")]
     pub hash: Option<Hash>,
+
+    #[clap(long, short)]
+    pub test: bool,
 }
 
 impl InstallCommand {
@@ -84,6 +87,10 @@ impl InstallCommand {
             "Application installed successfully. Application ID: {}",
             body.data.application_id
         );
+
+        if self.test {
+            println!("{:#?}", body);
+        }
 
         Ok(())
     }

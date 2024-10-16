@@ -1,6 +1,7 @@
+use calimero_config::ConfigFile;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
-    MutateRequest, QueryRequest, Request, RequestId, RequestPayload, Version,
+    MutateRequest, QueryRequest, Request, RequestId, RequestPayload, Response, Version,
 };
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
@@ -8,7 +9,6 @@ use serde_json::Value;
 
 use super::RootArgs;
 use crate::common::{get_response, multiaddr_to_url, RequestType};
-use calimero_config::ConfigFile;
 
 #[derive(Debug, Parser)]
 pub struct JsonRpcCommand {
@@ -31,6 +31,9 @@ pub struct JsonRpcCommand {
     /// Id of the JsonRpc call
     #[arg(long, default_value = "dontcare")]
     pub id: String,
+
+    #[arg(long, short)]
+    pub test: bool,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -106,7 +109,9 @@ impl JsonRpcCommand {
         )
         .await?;
 
-        println!("Response: {}", response.text().await?);
+        let response: Response = response.json().await?;
+
+        println!("{:#?}", response);
 
         Ok(())
     }

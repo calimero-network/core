@@ -1,3 +1,9 @@
+use std::fmt::Debug;
+
+use calimero_server::admin::handlers::context::{
+    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
+    GetContextStorageResponse, GetContextUsersResponse,
+};
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
@@ -23,6 +29,14 @@ pub enum GetRequest {
     ClientKeys,
     Storage,
     Identities,
+}
+
+enum GetResponse {
+    Context(GetContextResponse),
+    Users(GetContextUsersResponse),
+    ClientKeys(GetContextClientKeysResponse),
+    Storage(GetContextStorageResponse),
+    Identities(GetContextIdentitiesResponse),
 }
 
 impl GetCommand {
@@ -135,8 +149,27 @@ impl GetCommand {
             bail!("Request failed with status: {}", response.status())
         }
 
-        let text = response.text().await?;
-        println!("{text}");
+        let response = match self.method {
+            GetRequest::Context => GetResponse::Context(response.json().await?),
+            GetRequest::Users => GetResponse::Users(response.json().await?),
+            GetRequest::ClientKeys => GetResponse::ClientKeys(response.json().await?),
+            GetRequest::Storage => GetResponse::Storage(response.json().await?),
+            GetRequest::Identities => GetResponse::Identities(response.json().await?),
+        };
+
+        println!("{:#?}", response);
         Ok(())
+    }
+}
+
+impl Debug for GetResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GetResponse::Context(resp) => write!(f, "{:#?}", resp),
+            GetResponse::Users(resp) => write!(f, "{:#?}", resp),
+            GetResponse::ClientKeys(resp) => write!(f, "{:#?}", resp),
+            GetResponse::Storage(resp) => write!(f, "{:#?}", resp),
+            GetResponse::Identities(resp) => write!(f, "{:#?}", resp),
+        }
     }
 }

@@ -254,8 +254,8 @@ pub async fn create_context_handler(
     }
 }
 
-#[derive(Debug, Serialize)]
-struct GetContextStorageResponse {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetContextStorageResponse {
     data: ContextStorage,
 }
 
