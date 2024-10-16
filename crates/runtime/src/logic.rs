@@ -141,17 +141,6 @@ impl<'a> VMLogic<'a> {
         self.registers
             .set(self.limits, register_id, self.context.executor_public_key)
     }
-
-    /// Generates a new UUID using v4 standard.
-    ///
-    /// This function generates a new UUID using the v4 standard. The UUID is
-    /// dependent on randomness, which is not available inside the guest
-    /// runtime. Therefore the guest needs to request this from the host.
-    ///
-    #[must_use]
-    pub fn generate_uuid(&self) -> Uuid {
-        Uuid::new_v4()
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -473,12 +462,14 @@ impl VMHostFunctions<'_> {
     /// runtime. Therefore the guest needs to request this from the host.
     ///
     pub fn generate_uuid(&mut self, register_id: u64) -> VMLogicResult<()> {
+        let uuid = Uuid::new_v4();
+
         self.with_logic_mut(|logic| {
-            let uuid = logic.generate_uuid();
             logic
                 .registers
                 .set(logic.limits, register_id, uuid.into_bytes())
         })?;
+
         Ok(())
     }
 
