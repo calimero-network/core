@@ -237,6 +237,7 @@ use crate::interface::StorageError;
 /// use calimero_storage_macros::AtomicUnit;
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[type_id(43)]
 /// struct Page {
 ///     title: String,
 ///     #[private]
@@ -261,6 +262,7 @@ pub trait AtomicUnit: Data {}
 /// use calimero_storage::entities::{ChildInfo, Data, Element};
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[type_id(42)]
 /// struct Book {
 ///     title: String,
 ///     pages: Pages,
@@ -273,6 +275,7 @@ pub trait AtomicUnit: Data {}
 /// struct Pages;
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+/// #[type_id(43)]
 /// struct Page {
 ///     content: String,
 ///     #[storage]
@@ -429,6 +432,19 @@ pub trait Data:
     fn path(&self) -> Path {
         self.element().path()
     }
+
+    /// The type identifier of the entity.
+    ///
+    /// This is noted so that the entity can be deserialised correctly in the
+    /// absence of other semantic information. It is intended that the [`Path`]
+    /// will be used to help with this at some point, but at present paths are
+    /// not fully utilised.
+    ///
+    /// The value returned is arbitrary, and is up to the implementer to decide
+    /// what it should be. It is recommended that it be unique for each type of
+    /// entity.
+    ///
+    fn type_id() -> u8;
 }
 
 /// Summary information for the child of an [`Element`] in the storage.

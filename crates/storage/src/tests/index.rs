@@ -10,7 +10,7 @@ mod index__public_methods {
         let root_id = Id::new();
         let root_hash = [1_u8; 32];
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.id, root_id);
@@ -30,7 +30,8 @@ mod index__public_methods {
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection_name,
-            ChildInfo::new(child_id, child_own_hash)
+            ChildInfo::new(child_id, child_own_hash),
+            2,
         )
         .is_ok());
 
@@ -56,7 +57,7 @@ mod index__public_methods {
         let root_id = Id::new();
         let root_hash = [1_u8; 32];
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.id, root_id);
@@ -66,11 +67,85 @@ mod index__public_methods {
     }
 
     #[test]
+    fn get_ancestors_of() {
+        let root_id = Id::new();
+        let root_hash = [1_u8; 32];
+        let child_collection_name = "Books";
+        let grandchild_collection_name = "Pages";
+        let greatgrandchild_collection_name = "Paragraphs";
+
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
+
+        let child_id = Id::new();
+        let child_hash = [2_u8; 32];
+        let child_info = ChildInfo::new(child_id, child_hash);
+        assert!(
+            <Index<MainStorage>>::add_child_to(root_id, child_collection_name, child_info, 2)
+                .is_ok()
+        );
+
+        let grandchild_id = Id::new();
+        let grandchild_hash = [3_u8; 32];
+        let grandchild_info = ChildInfo::new(grandchild_id, grandchild_hash);
+        assert!(<Index<MainStorage>>::add_child_to(
+            child_id,
+            grandchild_collection_name,
+            grandchild_info,
+            3,
+        )
+        .is_ok());
+
+        let greatgrandchild_id = Id::new();
+        let greatgrandchild_hash = [4_u8; 32];
+        let greatgrandchild_info = ChildInfo::new(greatgrandchild_id, greatgrandchild_hash);
+        assert!(<Index<MainStorage>>::add_child_to(
+            grandchild_id,
+            greatgrandchild_collection_name,
+            greatgrandchild_info,
+            4,
+        )
+        .is_ok());
+
+        let ancestors = <Index<MainStorage>>::get_ancestors_of(greatgrandchild_id).unwrap();
+        assert_eq!(ancestors.len(), 3);
+        assert_eq!(
+            ancestors[0],
+            ChildInfo::new(
+                grandchild_id,
+                <Index<MainStorage>>::get_hashes_for(grandchild_id)
+                    .unwrap()
+                    .unwrap()
+                    .0
+            )
+        );
+        assert_eq!(
+            ancestors[1],
+            ChildInfo::new(
+                child_id,
+                <Index<MainStorage>>::get_hashes_for(child_id)
+                    .unwrap()
+                    .unwrap()
+                    .0
+            )
+        );
+        assert_eq!(
+            ancestors[2],
+            ChildInfo::new(
+                root_id,
+                <Index<MainStorage>>::get_hashes_for(root_id)
+                    .unwrap()
+                    .unwrap()
+                    .0
+            )
+        );
+    }
+
+    #[test]
     fn get_children_of__single_collection() {
         let root_id = Id::new();
         let root_hash = [1_u8; 32];
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let collection_name = "Books";
         let child1_id = Id::new();
@@ -92,13 +167,15 @@ mod index__public_methods {
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection_name,
-            ChildInfo::new(child1_id, child1_own_hash)
+            ChildInfo::new(child1_id, child1_own_hash),
+            2,
         )
         .is_ok());
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection_name,
-            ChildInfo::new(child2_id, child2_own_hash)
+            ChildInfo::new(child2_id, child2_own_hash),
+            2,
         )
         .is_ok());
 
@@ -113,7 +190,7 @@ mod index__public_methods {
         let root_id = Id::new();
         let root_hash = [1_u8; 32];
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let collection1_name = "Pages";
         let child1_id = Id::new();
@@ -143,19 +220,22 @@ mod index__public_methods {
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection1_name,
-            ChildInfo::new(child1_id, child1_own_hash)
+            ChildInfo::new(child1_id, child1_own_hash),
+            2,
         )
         .is_ok());
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection1_name,
-            ChildInfo::new(child2_id, child2_own_hash)
+            ChildInfo::new(child2_id, child2_own_hash),
+            2,
         )
         .is_ok());
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection2_name,
-            ChildInfo::new(child3_id, child3_own_hash)
+            ChildInfo::new(child3_id, child3_own_hash),
+            2,
         )
         .is_ok());
 
@@ -173,7 +253,7 @@ mod index__public_methods {
         let root_id = Id::new();
         let root_hash = [1_u8; 32];
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let collection1_name = "Pages";
         let collection2_name = "Chapters";
@@ -187,13 +267,15 @@ mod index__public_methods {
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection1_name,
-            ChildInfo::new(child1_id, child1_own_hash)
+            ChildInfo::new(child1_id, child1_own_hash),
+            2,
         )
         .is_ok());
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection2_name,
-            ChildInfo::new(child2_id, child2_own_hash)
+            ChildInfo::new(child2_id, child2_own_hash),
+            2,
         )
         .is_ok());
 
@@ -209,7 +291,7 @@ mod index__public_methods {
         let root_own_hash = [1_u8; 32];
         let root_full_hash = [0_u8; 32];
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_own_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_own_hash), 1).is_ok());
 
         assert_eq!(
             <Index<MainStorage>>::get_hashes_for(root_id)
@@ -224,7 +306,7 @@ mod index__public_methods {
         let root_id = Id::new();
         let root_hash = [1_u8; 32];
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.id, root_id);
@@ -239,7 +321,8 @@ mod index__public_methods {
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection_name,
-            ChildInfo::new(child_id, child_own_hash)
+            ChildInfo::new(child_id, child_own_hash),
+            2,
         )
         .is_ok());
 
@@ -251,12 +334,27 @@ mod index__public_methods {
     }
 
     #[test]
+    fn get_type_id() {
+        let root_id = Id::new();
+        let root_hash = [1_u8; 32];
+
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 99).is_ok());
+
+        let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
+        assert_eq!(root_index.id, root_id);
+        assert_eq!(root_index.own_hash, root_hash);
+        assert_eq!(root_index.type_id, 99);
+
+        assert_eq!(<Index<MainStorage>>::get_type_id(root_id).unwrap(), 99,);
+    }
+
+    #[test]
     fn has_children() {
         let root_id = Id::new();
         let root_hash = [1_u8; 32];
         let collection_name = "Books";
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
         assert!(!<Index<MainStorage>>::has_children(root_id, collection_name).unwrap());
 
         let child_id = Id::new();
@@ -265,7 +363,8 @@ mod index__public_methods {
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection_name,
-            ChildInfo::new(child_id, child_own_hash)
+            ChildInfo::new(child_id, child_own_hash),
+            2,
         )
         .is_ok());
         assert!(<Index<MainStorage>>::has_children(root_id, collection_name).unwrap());
@@ -276,7 +375,7 @@ mod index__public_methods {
         let root_id = Id::new();
         let root_hash = [1_u8; 32];
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.id, root_id);
@@ -291,7 +390,8 @@ mod index__public_methods {
         assert!(<Index<MainStorage>>::add_child_to(
             root_id,
             collection_name,
-            ChildInfo::new(child_id, child_own_hash)
+            ChildInfo::new(child_id, child_own_hash),
+            2,
         )
         .is_ok());
         assert!(
@@ -320,6 +420,7 @@ mod index__private_methods {
             children: BTreeMap::new(),
             full_hash: hash1,
             own_hash: hash2,
+            type_id: 1,
         };
         <Index<MainStorage>>::save_index(&index).unwrap();
 
@@ -339,6 +440,7 @@ mod index__private_methods {
             children: BTreeMap::new(),
             full_hash: hash1,
             own_hash: hash2,
+            type_id: 1,
         };
         <Index<MainStorage>>::save_index(&index).unwrap();
         assert_eq!(<Index<MainStorage>>::get_index(id).unwrap().unwrap(), index);
@@ -355,21 +457,27 @@ mod hashing {
     #[test]
     fn calculate_full_merkle_hash_for__with_children() {
         let root_id = TEST_ID[0];
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(TEST_ID[0], [0_u8; 32])).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(TEST_ID[0], [0_u8; 32]), 1).is_ok());
 
         let collection_name = "Children";
         let child1_id = TEST_ID[1];
         let child1_hash = [1_u8; 32];
         let child1_info = ChildInfo::new(child1_id, child1_hash);
-        assert!(<Index<MainStorage>>::add_child_to(root_id, collection_name, child1_info).is_ok());
+        assert!(
+            <Index<MainStorage>>::add_child_to(root_id, collection_name, child1_info, 2).is_ok()
+        );
         let child2_id = TEST_ID[2];
         let child2_hash = [2_u8; 32];
         let child2_info = ChildInfo::new(child2_id, child2_hash);
-        assert!(<Index<MainStorage>>::add_child_to(root_id, collection_name, child2_info).is_ok());
+        assert!(
+            <Index<MainStorage>>::add_child_to(root_id, collection_name, child2_info, 2).is_ok()
+        );
         let child3_id = TEST_ID[3];
         let child3_hash = [3_u8; 32];
         let child3_info = ChildInfo::new(child3_id, child3_hash);
-        assert!(<Index<MainStorage>>::add_child_to(root_id, collection_name, child3_info).is_ok());
+        assert!(
+            <Index<MainStorage>>::add_child_to(root_id, collection_name, child3_info, 2).is_ok()
+        );
 
         assert_eq!(
             hex::encode(
@@ -405,7 +513,7 @@ mod hashing {
         let grandchild_collection_name = "Pages";
         let greatgrandchild_collection_name = "Paragraphs";
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.full_hash, [0_u8; 32]);
@@ -414,7 +522,8 @@ mod hashing {
         let child_hash = [2_u8; 32];
         let child_info = ChildInfo::new(child_id, child_hash);
         assert!(
-            <Index<MainStorage>>::add_child_to(root_id, child_collection_name, child_info).is_ok()
+            <Index<MainStorage>>::add_child_to(root_id, child_collection_name, child_info, 2)
+                .is_ok()
         );
 
         let root_index_with_child = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
@@ -434,7 +543,8 @@ mod hashing {
         assert!(<Index<MainStorage>>::add_child_to(
             child_id,
             grandchild_collection_name,
-            grandchild_info
+            grandchild_info,
+            3,
         )
         .is_ok());
 
@@ -463,7 +573,8 @@ mod hashing {
         assert!(<Index<MainStorage>>::add_child_to(
             grandchild_id,
             greatgrandchild_collection_name,
-            greatgrandchild_info
+            greatgrandchild_info,
+            4,
         )
         .is_ok());
 
@@ -581,7 +692,7 @@ mod hashing {
                 .try_into()
                 .unwrap();
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash1)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash1), 1).is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.id, root_id);
@@ -599,7 +710,7 @@ mod hashing {
         let root_hash1 = [1_u8; 32];
         let root_hash2 = [2_u8; 32];
 
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash1)).is_ok());
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash1), 1).is_ok());
 
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.id, root_id);
