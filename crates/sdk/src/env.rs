@@ -221,14 +221,11 @@ pub fn state_write<T: AppState>(state: &T) {
     _ = storage_write(STATE_KEY, &data);
 }
 
+/// Fill the buffer with random bytes.
 #[inline]
 #[must_use]
-pub fn random_bytes<const N: usize>() -> [u8; N] {
-    unsafe {
-        sys::random_bytes(N as u64, DATA_REGISTER);
-    }
-
-    read_register_sized::<N>(DATA_REGISTER).expect("Must have random bytes.")
+pub fn random_bytes(buf: &mut [u8]) {
+    unsafe { sys::random_bytes(BufferMut::new(buf)) }
 }
 
 /// Gets the current time.
