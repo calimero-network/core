@@ -16,6 +16,8 @@ mod id__public_methods {
 
 #[cfg(test)]
 mod id__traits {
+    use crate::mocks::MockVM;
+
     use super::*;
 
     #[test]
@@ -40,7 +42,7 @@ mod id__traits {
 
     #[test]
     fn borsh_serialization__roundtrip() {
-        let id1 = Id::new();
+        let id1 = Id::new::<MockVM>();
         let id2 = Id::try_from_slice(&to_vec(&id1).unwrap()).unwrap();
         assert_eq!(id1, id2);
     }

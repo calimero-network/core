@@ -216,10 +216,10 @@ use core::fmt::{self, Debug, Display, Formatter};
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::env::time_now;
 use serde::{Deserialize, Serialize};
 
 use crate::address::{Id, Path};
+use crate::env::Environment;
 use crate::interface::StorageError;
 
 /// Represents an atomic unit in the storage system.
@@ -637,10 +637,10 @@ impl Element {
     /// before the Unix epoch, which should never ever happen!
     ///
     #[must_use]
-    pub fn new(path: &Path) -> Self {
-        let timestamp = time_now();
+    pub fn new<E: Environment>(path: &Path) -> Self {
+        let timestamp = E::time_now();
         Self {
-            id: Id::new(),
+            id: Id::new::<E>(),
             is_dirty: true,
             metadata: Metadata {
                 created_at: timestamp,
@@ -744,9 +744,9 @@ impl Element {
     /// This method can technically panic if the system time goes backwards, to
     /// before the Unix epoch, which should never ever happen!
     ///
-    pub fn update(&mut self) {
+    pub fn update<E: Environment>(&mut self) {
         self.is_dirty = true;
-        self.metadata.updated_at = time_now();
+        self.metadata.updated_at = E::time_now();
     }
 
     /// The timestamp when the [`Element`] was last updated.

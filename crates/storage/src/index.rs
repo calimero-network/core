@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::entities::ChildInfo;
-use crate::interface::{StorageAdaptor, StorageError};
+use crate::env::Environment;
+use crate::interface::StorageError;
 
 /// Stored index information for an entity in the storage system.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -36,9 +37,9 @@ struct EntityIndex {
 }
 
 /// Manages the indexing system for efficient tree navigation.
-pub(crate) struct Index<S: StorageAdaptor>(PhantomData<S>);
+pub(crate) struct Index<E: Environment>(PhantomData<E>);
 
-impl<S: StorageAdaptor> Index<S> {
+impl<E: Environment> Index<E> {
     /// Adds a child to a collection in the index.
     ///
     /// Most entities will get added in this fashion, as nearly all will have
@@ -279,7 +280,7 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
         let key = format!("index:{id}");
-        match S::storage_read(key.as_bytes()) {
+        match E::storage_read(key.as_bytes()) {
             Some(data) => Ok(Some(
                 EntityIndex::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
             )),
@@ -416,7 +417,7 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     fn remove_index(id: Id) {
         let key = format!("index:{id}");
-        _ = S::storage_remove(key.as_bytes());
+        _ = E::storage_remove(key.as_bytes());
     }
 
     /// Saves the index information for an entity.
@@ -431,7 +432,7 @@ impl<S: StorageAdaptor> Index<S> {
     ///
     fn save_index(index: &EntityIndex) -> Result<(), StorageError> {
         let key = format!("index:{}", index.id);
-        _ = S::storage_write(
+        _ = E::storage_write(
             key.as_bytes(),
             &to_vec(index).map_err(StorageError::SerializationError)?,
         );
