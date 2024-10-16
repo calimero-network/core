@@ -216,10 +216,10 @@ use core::fmt::{self, Debug, Display, Formatter};
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::env::time_now;
 use serde::{Deserialize, Serialize};
 
 use crate::address::{Id, Path};
+use crate::env::time_now;
 use crate::interface::StorageError;
 
 /// Represents an atomic unit in the storage system.

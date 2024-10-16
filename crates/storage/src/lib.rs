@@ -63,6 +63,7 @@
 
 pub mod address;
 pub mod entities;
+pub mod env;
 pub mod index;
 pub mod interface;
 
@@ -70,10 +71,6 @@ pub mod interface;
 pub mod exports {
     pub use sha2::{Digest, Sha256};
 }
-
-#[cfg(test)]
-#[path = "tests/mocks.rs"]
-mod mocks;
 
 /// Shared test functionality.
 #[cfg(test)]
@@ -83,5 +80,5 @@ pub mod tests {
 
 #[cfg(test)]
 mod doc_tests_package_usage {
-    use calimero_storage_macros as _;
+    use {calimero_sdk as _, calimero_storage_macros as _};
 }

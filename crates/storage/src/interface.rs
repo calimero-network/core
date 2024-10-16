@@ -214,12 +214,10 @@
 mod tests;
 
 use core::fmt::Debug;
-use core::marker::PhantomData;
 use std::collections::BTreeMap;
 use std::io::Error as IoError;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use calimero_sdk::env::{storage_read, storage_remove, storage_write};
 use eyre::Report;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -227,10 +225,8 @@ use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data};
+use crate::env::{storage_read, storage_remove, storage_write};
 use crate::index::Index;
-
-/// Convenient type alias for the main storage system.
-pub type Interface = MainInterface<MainStorage>;
 
 /// Actions to be taken during synchronisation.
 ///
@@ -362,12 +358,10 @@ pub struct ComparisonData {
 
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
-#[expect(private_bounds, reason = "The StorageAdaptor is for internal use only")]
 #[non_exhaustive]
-pub struct MainInterface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
+pub struct Interface;
 
-#[expect(private_bounds, reason = "The StorageAdaptor is for internal use only")]
-impl<S: StorageAdaptor> MainInterface<S> {
+impl Interface {
     /// Adds a child to a collection.
     ///
     /// # Parameters
@@ -388,13 +382,13 @@ impl<S: StorageAdaptor> MainInterface<S> {
         child: &mut D,
     ) -> Result<bool, StorageError> {
         let own_hash = child.calculate_merkle_hash()?;
-        <Index<S>>::add_child_to(
+        Index::add_child_to(
             parent_id,
             collection.name(),
             ChildInfo::new(child.id(), own_hash),
             D::type_id(),
         )?;
-        child.element_mut().merkle_hash = <Index<S>>::update_hash_for(child.id(), own_hash)?;
+        child.element_mut().merkle_hash = Index::update_hash_for(child.id(), own_hash)?;
         Self::save(child)
     }
 
@@ -443,13 +437,13 @@ impl<S: StorageAdaptor> MainInterface<S> {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
             Action::Delete { id, ancestors, .. } => {
-                _ = S::storage_remove(id.as_bytes());
+                _ = storage_remove(id.as_bytes());
                 ancestors
             }
         };
 
         for ancestor in &ancestors {
-            let (current_hash, _) = <Index<S>>::get_hashes_for(ancestor.id())?
+            let (current_hash, _) = Index::get_hashes_for(ancestor.id())?
                 .ok_or(StorageError::IndexNotFound(ancestor.id()))?;
             if current_hash != ancestor.merkle_hash() {
                 return Ok(Some(ancestor.id()));
@@ -509,7 +503,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
         parent_id: Id,
         collection: &C,
     ) -> Result<Vec<C::Child>, StorageError> {
-        let children_info = <Index<S>>::get_children_of(parent_id, collection.name())?;
+        let children_info = Index::get_children_of(parent_id, collection.name())?;
         let mut children = Vec::new();
         for child_info in children_info {
             if let Some(child) = Self::find_by_id(child_info.id())? {
@@ -549,7 +543,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
         parent_id: Id,
         collection: &C,
     ) -> Result<Vec<ChildInfo>, StorageError> {
-        <Index<S>>::get_children_of(parent_id, collection.name())
+        Index::get_children_of(parent_id, collection.name())
     }
 
     /// Compares a foreign entity with a local one.
@@ -593,7 +587,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
             return Ok(actions);
         };
 
-        let (local_full_hash, local_own_hash) = <Index<S>>::get_hashes_for(local_entity.id())?
+        let (local_full_hash, local_own_hash) = Index::get_hashes_for(local_entity.id())?
             .ok_or(StorageError::IndexNotFound(local_entity.id()))?;
 
         // Compare full Merkle hashes
@@ -617,7 +611,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
                     id: foreign_entity.id(),
                     type_id: D::type_id(),
                     data: to_vec(&local_entity).map_err(StorageError::SerializationError)?,
-                    ancestors: <Index<S>>::get_ancestors_of(local_entity.id())?,
+                    ancestors: Index::get_ancestors_of(local_entity.id())?,
                 });
             }
         }
@@ -648,9 +642,9 @@ impl<S: StorageAdaptor> MainInterface<S> {
                             if let Some(local_child) = Self::find_by_id_raw(*id)? {
                                 actions.1.push(Action::Add {
                                     id: *id,
-                                    type_id: <Index<S>>::get_type_id(*id)?,
+                                    type_id: Index::get_type_id(*id)?,
                                     data: local_child,
-                                    ancestors: <Index<S>>::get_ancestors_of(local_entity.id())?,
+                                    ancestors: Index::get_ancestors_of(local_entity.id())?,
                                 });
                             }
                         }
@@ -673,9 +667,9 @@ impl<S: StorageAdaptor> MainInterface<S> {
                     if let Some(local_child) = Self::find_by_id_raw(child.id())? {
                         actions.1.push(Action::Add {
                             id: child.id(),
-                            type_id: <Index<S>>::get_type_id(child.id())?,
+                            type_id: Index::get_type_id(child.id())?,
                             data: local_child,
-                            ancestors: <Index<S>>::get_ancestors_of(local_entity.id())?,
+                            ancestors: Index::get_ancestors_of(local_entity.id())?,
                         });
                     }
                 }
@@ -712,7 +706,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// will be returned.
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
-        let value = S::storage_read(id.as_bytes());
+        let value = storage_read(id.as_bytes());
 
         match value {
             Some(slice) => {
@@ -749,7 +743,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// will be returned.
     ///
     pub fn find_by_id_raw(id: Id) -> Result<Option<Vec<u8>>, StorageError> {
-        Ok(S::storage_read(id.as_bytes()))
+        Ok(storage_read(id.as_bytes()))
     }
 
     /// Finds one or more [`Element`](crate::entities::Element)s by path in the
@@ -798,7 +792,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
         parent_id: Id,
         collection: &str,
     ) -> Result<Vec<D>, StorageError> {
-        let child_infos = <Index<S>>::get_children_of(parent_id, collection)?;
+        let child_infos = Index::get_children_of(parent_id, collection)?;
         let mut children = Vec::new();
         for child_info in child_infos {
             if let Some(child) = Self::find_by_id(child_info.id())? {
@@ -824,15 +818,15 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// will be returned.
     ///
     pub fn generate_comparison_data<D: Data>(entity: &D) -> Result<ComparisonData, StorageError> {
-        let (full_hash, own_hash) = <Index<S>>::get_hashes_for(entity.id())?
-            .ok_or(StorageError::IndexNotFound(entity.id()))?;
+        let (full_hash, own_hash) =
+            Index::get_hashes_for(entity.id())?.ok_or(StorageError::IndexNotFound(entity.id()))?;
 
-        let ancestors = <Index<S>>::get_ancestors_of(entity.id())?;
+        let ancestors = Index::get_ancestors_of(entity.id())?;
         let children = entity
             .collections()
             .into_keys()
             .map(|collection_name| {
-                <Index<S>>::get_children_of(entity.id(), &collection_name)
+                Index::get_children_of(entity.id(), &collection_name)
                     .map(|children| (collection_name.clone(), children))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -867,7 +861,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
         parent_id: Id,
         collection: &C,
     ) -> Result<bool, StorageError> {
-        <Index<S>>::has_children(parent_id, collection.name())
+        Index::has_children(parent_id, collection.name())
     }
 
     /// Retrieves the parent entity of a given entity.
@@ -882,7 +876,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// will be returned.
     ///
     pub fn parent_of<D: Data>(child_id: Id) -> Result<Option<D>, StorageError> {
-        <Index<S>>::get_parent_id(child_id)?
+        Index::get_parent_id(child_id)?
             .map_or_else(|| Ok(None), |parent_id| Self::find_by_id(parent_id))
     }
 
@@ -905,8 +899,8 @@ impl<S: StorageAdaptor> MainInterface<S> {
         collection: &mut C,
         child_id: Id,
     ) -> Result<bool, StorageError> {
-        <Index<S>>::remove_child_from(parent_id, collection.name(), child_id)?;
-        Ok(S::storage_remove(child_id.as_bytes()))
+        Index::remove_child_from(parent_id, collection.name(), child_id)?;
+        Ok(storage_remove(child_id.as_bytes()))
     }
 
     /// Retrieves the root entity for a given context.
@@ -992,7 +986,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
         }
         let id = entity.id();
 
-        if !D::is_root() && <Index<S>>::get_parent_id(id)?.is_none() {
+        if !D::is_root() && Index::get_parent_id(id)?.is_none() {
             return Err(StorageError::CannotCreateOrphan(id));
         }
 
@@ -1001,13 +995,13 @@ impl<S: StorageAdaptor> MainInterface<S> {
                 return Ok(false);
             }
         } else if D::is_root() {
-            <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32]), D::type_id())?;
+            Index::add_root(ChildInfo::new(id, [0_u8; 32]), D::type_id())?;
         }
 
         let own_hash = entity.calculate_merkle_hash()?;
-        entity.element_mut().merkle_hash = <Index<S>>::update_hash_for(id, own_hash)?;
+        entity.element_mut().merkle_hash = Index::update_hash_for(id, own_hash)?;
 
-        _ = S::storage_write(
+        _ = storage_write(
             id.as_bytes(),
             &to_vec(entity).map_err(StorageError::SerializationError)?,
         );
@@ -1031,66 +1025,6 @@ impl<S: StorageAdaptor> MainInterface<S> {
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
     }
-}
-
-/// The main storage system.
-///
-/// This is the default storage system, and is used for the main storage
-/// operations in the system. It uses the environment's storage system to
-/// perform the actual storage operations.
-///
-/// It is the only one intended for use in production, with other options being
-/// implemented internally for testing purposes.
-///
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[non_exhaustive]
-pub struct MainStorage;
-
-impl StorageAdaptor for MainStorage {
-    fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-        storage_read(key)
-    }
-
-    fn storage_remove(key: &[u8]) -> bool {
-        storage_remove(key)
-    }
-
-    fn storage_write(key: &[u8], value: &[u8]) -> bool {
-        storage_write(key, value)
-    }
-}
-
-/// Determines where the ultimate storage system is located.
-///
-/// This trait is mainly used to allow for a different storage location to be
-/// used for key operations during testing, such as modelling a foreign node's
-/// data store.
-///
-pub(crate) trait StorageAdaptor {
-    /// Reads data from persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key` - The key to read data from.
-    ///
-    fn storage_read(key: &[u8]) -> Option<Vec<u8>>;
-
-    /// Removes data from persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key` - The key to remove.
-    ///
-    fn storage_remove(key: &[u8]) -> bool;
-
-    /// Writes data to persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key`   - The key to write data to.
-    /// * `value` - The data to write.
-    ///
-    fn storage_write(key: &[u8], value: &[u8]) -> bool;
 }
 
 /// Errors that can occur when working with the storage system.
