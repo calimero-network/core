@@ -165,7 +165,12 @@ mod interface__apply_actions {
     fn apply_action__add() {
         let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
         let serialized = to_vec(&page).unwrap();
-        let action = Action::Add(page.id(), serialized);
+        let action = Action::Add {
+            id: page.id(),
+            type_id: 102,
+            data: serialized,
+            ancestors: vec![],
+        };
 
         assert!(Interface::apply_action::<Page>(action).is_ok());
 
@@ -184,7 +189,12 @@ mod interface__apply_actions {
         page.title = "New Title".to_owned();
         page.element_mut().update();
         let serialized = to_vec(&page).unwrap();
-        let action = Action::Update(page.id(), serialized);
+        let action = Action::Update {
+            id: page.id(),
+            type_id: 102,
+            data: serialized,
+            ancestors: vec![],
+        };
 
         assert!(Interface::apply_action::<Page>(action).is_ok());
 
@@ -199,7 +209,10 @@ mod interface__apply_actions {
             Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
         assert!(Interface::save(&mut page).unwrap());
 
-        let action = Action::Delete(page.id());
+        let action = Action::Delete {
+            id: page.id(),
+            ancestors: vec![],
+        };
 
         assert!(Interface::apply_action::<Page>(action).is_ok());
 
@@ -211,7 +224,7 @@ mod interface__apply_actions {
     #[test]
     fn apply_action__compare() {
         let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
-        let action = Action::Compare(page.id());
+        let action = Action::Compare { id: page.id() };
 
         // Compare should fail
         assert!(Interface::apply_action::<Page>(action).is_err());
@@ -221,7 +234,12 @@ mod interface__apply_actions {
     fn apply_action__wrong_type() {
         let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
         let serialized = to_vec(&page).unwrap();
-        let action = Action::Add(page.id(), serialized);
+        let action = Action::Add {
+            id: page.id(),
+            type_id: 102,
+            data: serialized,
+            ancestors: vec![],
+        };
 
         // Trying to apply a Page action as if it were a Paragraph should fail
         assert!(Interface::apply_action::<Paragraph>(action).is_err());
@@ -231,7 +249,12 @@ mod interface__apply_actions {
     fn apply_action__non_existent_update() {
         let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
         let serialized = to_vec(&page).unwrap();
-        let action = Action::Update(page.id(), serialized);
+        let action = Action::Update {
+            id: page.id(),
+            type_id: 102,
+            data: serialized,
+            ancestors: vec![],
+        };
 
         // Updating a non-existent page should still succeed (it will be added)
         assert!(Interface::apply_action::<Page>(action).is_ok());
@@ -290,7 +313,12 @@ mod interface__comparison {
             result,
             (
                 vec![],
-                vec![Action::Update(local.id(), to_vec(&local).unwrap())]
+                vec![Action::Update {
+                    id: local.id(),
+                    type_id: 102,
+                    data: to_vec(&local).unwrap(),
+                    ancestors: vec![]
+                }]
             )
         );
     }
@@ -316,7 +344,12 @@ mod interface__comparison {
         assert_eq!(
             result,
             (
-                vec![Action::Update(foreign.id(), to_vec(&foreign).unwrap())],
+                vec![Action::Update {
+                    id: foreign.id(),
+                    type_id: 102,
+                    data: to_vec(&foreign).unwrap(),
+                    ancestors: vec![]
+                }],
                 vec![]
             )
         );
@@ -376,9 +409,16 @@ mod interface__comparison {
             local_actions,
             vec![
                 // Page needs update due to different child structure
-                Action::Update(foreign_page.id(), to_vec(&foreign_page).unwrap()),
+                Action::Update {
+                    id: foreign_page.id(),
+                    type_id: 102,
+                    data: to_vec(&foreign_page).unwrap(),
+                    ancestors: vec![]
+                },
                 // Para1 needs comparison due to different hash
-                Action::Compare(local_para1.id()),
+                Action::Compare {
+                    id: local_para1.id()
+                },
             ]
         );
         local_para2.element_mut().is_dirty = true;
@@ -386,11 +426,20 @@ mod interface__comparison {
             foreign_actions,
             vec![
                 // Para1 needs comparison due to different hash
-                Action::Compare(local_para1.id()),
+                Action::Compare {
+                    id: local_para1.id()
+                },
                 // Para2 needs to be added to foreign
-                Action::Add(local_para2.id(), to_vec(&local_para2).unwrap()),
+                Action::Add {
+                    id: local_para2.id(),
+                    type_id: 103,
+                    data: to_vec(&local_para2).unwrap(),
+                    ancestors: vec![]
+                },
                 // Para3 needs to be added locally, but we don't have the data, so we compare
-                Action::Compare(foreign_para3.id()),
+                Action::Compare {
+                    id: foreign_para3.id()
+                },
             ]
         );
 
@@ -401,12 +450,27 @@ mod interface__comparison {
         )
         .unwrap();
 
+        // Here, para1 has been updated, but also para2 is present locally and para3
+        // is present remotely. So the ancestor hashes will not match, and will
+        // trigger a recomparison.
+        let local_para1_ancestor_hash = {
+            let Action::Update { ancestors, .. } = local_para1_actions[0].clone() else {
+                panic!("Expected an update action");
+            };
+            ancestors[0].merkle_hash()
+        };
+        assert_ne!(
+            local_para1_ancestor_hash,
+            foreign_page.element().merkle_hash()
+        );
         assert_eq!(
             local_para1_actions,
-            vec![Action::Update(
-                foreign_para1.id(),
-                to_vec(&foreign_para1).unwrap()
-            )]
+            vec![Action::Update {
+                id: foreign_para1.id(),
+                type_id: 103,
+                data: to_vec(&foreign_para1).unwrap(),
+                ancestors: vec![ChildInfo::new(foreign_page.id(), local_para1_ancestor_hash,)],
+            }]
         );
         assert_eq!(foreign_para1_actions, vec![]);
 
@@ -417,12 +481,27 @@ mod interface__comparison {
         )
         .unwrap();
 
+        // Here, para3 is present remotely but not locally, and also para2 is
+        // present locally and not remotely, and para1 has been updated. So the
+        // ancestor hashes will not match, and will trigger a recomparison.
+        let local_para3_ancestor_hash = {
+            let Action::Add { ancestors, .. } = local_para3_actions[0].clone() else {
+                panic!("Expected an update action");
+            };
+            ancestors[0].merkle_hash()
+        };
+        assert_ne!(
+            local_para3_ancestor_hash,
+            foreign_page.element().merkle_hash()
+        );
         assert_eq!(
             local_para3_actions,
-            vec![Action::Add(
-                foreign_para3.id(),
-                to_vec(&foreign_para3).unwrap()
-            )]
+            vec![Action::Add {
+                id: foreign_para3.id(),
+                type_id: 103,
+                data: to_vec(&foreign_para3).unwrap(),
+                ancestors: vec![ChildInfo::new(foreign_page.id(), local_para3_ancestor_hash,)],
+            }]
         );
         assert_eq!(foreign_para3_actions, vec![]);
     }

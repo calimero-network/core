@@ -34,6 +34,7 @@ use calimero_storage_macros::AtomicUnit;
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[root]
+#[type_id(1)]
 struct Private {
     public: String,
     #[private]
@@ -54,6 +55,7 @@ impl Private {
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[root]
+#[type_id(2)]
 struct Simple {
     name: String,
     value: i32,
@@ -73,6 +75,7 @@ impl Simple {
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[root]
+#[type_id(3)]
 struct Skipped {
     included: String,
     #[skip]

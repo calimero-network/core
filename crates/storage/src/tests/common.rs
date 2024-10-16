@@ -66,6 +66,10 @@ impl Data for EmptyData {
     fn is_root() -> bool {
         true
     }
+
+    fn type_id() -> u8 {
+        101
+    }
 }
 
 /// A simple page with a title, and paragraphs as children.
@@ -130,6 +134,10 @@ impl Data for Page {
     fn is_root() -> bool {
         true
     }
+
+    fn type_id() -> u8 {
+        102
+    }
 }
 
 /// A simple paragraph with text. No children. Belongs to a page.
@@ -182,6 +190,10 @@ impl Data for Paragraph {
 
     fn is_root() -> bool {
         false
+    }
+
+    fn type_id() -> u8 {
+        103
     }
 }
 
@@ -244,5 +256,9 @@ impl Data for Person {
 
     fn is_root() -> bool {
         true
+    }
+
+    fn type_id() -> u8 {
+        104
     }
 }
