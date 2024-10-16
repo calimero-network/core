@@ -1129,6 +1129,7 @@ dependencies = [
  "fixedstr",
  "hex",
  "indexmap 2.6.0",
+ "rand 0.8.5",
  "serde",
  "sha2",
  "thiserror",

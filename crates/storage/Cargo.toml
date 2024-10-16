@@ -25,6 +25,7 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 [dev-dependencies]
 claims.workspace = true
 hex.workspace = true
+rand.workspace = true
 velcro.workspace = true
 
 calimero-storage-macros = { path = "../storage-macros" }
