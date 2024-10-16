@@ -64,7 +64,7 @@ impl VMLogic<'_> {
             ) -> u32;
 
             fn random_bytes(ptr: u64, len: u64);
-            fn time_now(register_id: u64);
+            fn time_now(ptr: u64, len: u64);
         }
     }
 }
