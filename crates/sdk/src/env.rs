@@ -111,6 +111,10 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
 
     let mut buffer = [0; N];
 
+    #[expect(
+        clippy::needless_borrows_for_generic_args,
+        reason = "we don't want to copy the buffer, but write to the same one that's returned"
+    )]
     let succeed: bool = unsafe {
         sys::read_register(register_id, BufferMut::new(&mut buffer))
             .try_into()
@@ -231,7 +235,13 @@ pub fn random_bytes(buf: &mut [u8]) {
 pub fn time_now() -> u64 {
     let mut bytes = [0; 8];
 
-    unsafe { sys::time_now(BufferMut::new(&mut bytes)) }
+    #[expect(
+        clippy::needless_borrows_for_generic_args,
+        reason = "we don't want to copy the buffer, but write to the same one that's returned"
+    )]
+    unsafe {
+        sys::time_now(BufferMut::new(&mut bytes));
+    }
 
     u64::from_le_bytes(bytes)
 }
