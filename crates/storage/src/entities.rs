@@ -217,6 +217,7 @@ use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::env::time_now;
+use serde::{Deserialize, Serialize};
 
 use crate::address::{Id, Path};
 use crate::interface::StorageError;
@@ -269,10 +270,7 @@ pub trait AtomicUnit: Data {}
 ///
 /// #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
 /// #[children(Page)]
-/// struct Pages {
-///     #[child_info]
-///     child_info: Vec<ChildInfo>,
-/// }
+/// struct Pages;
 ///
 /// #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 /// struct Page {
@@ -286,36 +284,11 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
     /// The associated type of any children that the [`Collection`] may have.
     type Child: Data;
 
-    /// Information about the children of the [`Collection`].
+    /// The name of this [`Collection`].
     ///
-    /// This gets the IDs and Merkle hashes of the children of the
-    /// [`Collection`], which are the [`Element`]s that are directly below the
-    /// [`Collection`] in the hierarchy.
+    /// This is used to identify the collection when updating the index.
     ///
-    /// The order of the results is guaranteed to be stable between calls.
-    ///
-    /// This is considered somewhat temporary, as there are efficiency gains to
-    /// be made by storing this list elsewhere — but for now, it helps to get
-    /// the data in place and usable, and establish a basis to test against and
-    /// enhance.
-    ///
-    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
-    ///       when the index is implemented.
-    ///
-    #[must_use]
-    fn child_info(&self) -> &Vec<ChildInfo>;
-
-    /// Whether the [`Collection`] has children.
-    ///
-    /// This checks whether the [`Collection`] has children, which are the
-    /// [`Element`]s that are directly below the [`Collection`] in the
-    /// hierarchy.
-    ///
-    /// TODO: This method will likely move to the [`Interface`](crate::interface::Interface)
-    ///       when the index is implemented.
-    ///
-    #[must_use]
-    fn has_children(&self) -> bool;
+    fn name(&self) -> &str;
 }
 
 /// The primary data for the [`Element`].
@@ -435,6 +408,14 @@ pub trait Data:
         self.element().id()
     }
 
+    /// Whether the [`Element`] is a root.
+    ///
+    /// This should return `true` for any types that should sit at the top of
+    /// the hierarchy; and `false` for all other types, i.e. ones that can have
+    /// parents.
+    ///
+    fn is_root() -> bool;
+
     /// The path to the [`Element`] in the hierarchy.
     ///
     /// This is a convenience function that passes through to
@@ -458,7 +439,20 @@ pub trait Data:
 /// purpose is to make information such as the Merkle hash trivially available
 /// and prevent the need for repeated lookups.
 ///
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+)]
 #[non_exhaustive]
 pub struct ChildInfo {
     /// The unique identifier for the child [`Element`].

@@ -15,6 +15,7 @@ use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::env::generate_uuid;
 use fixedstr::Flexstr;
+use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use uuid::{Bytes, Uuid};
 
@@ -33,7 +34,7 @@ use uuid::{Bytes, Uuid};
 /// system operation. Abstracting the true type away provides a level of
 /// insulation that is useful for any future changes.
 ///
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Id(Uuid);
 
 impl Id {
@@ -478,7 +479,7 @@ impl BorshDeserialize for Path {
 
 impl BorshSerialize for Path {
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<(), IoError> {
-        self.to_string().serialize(writer)
+        BorshSerialize::serialize(&self.to_string(), writer)
     }
 }
 
