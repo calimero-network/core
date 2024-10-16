@@ -4,17 +4,17 @@ use borsh::{from_slice as from_borsh_slice, to_vec as to_borsh_vec};
 
 use crate::event::AppEvent;
 use crate::state::AppState;
-use crate::sys;
 use crate::sys::{
     log_utf8, panic_utf8, Buffer, BufferMut, Event, Location, PtrSizedInt, RegisterId, ValueReturn,
 };
+use crate::{sys, Id};
 
 #[doc(hidden)]
 pub mod ext;
 
 const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 1);
 
-const STATE_KEY: &[u8] = b"STATE";
+const ROOT_STATE_KEY: Id = Id([0; 32]);
 
 #[track_caller]
 #[inline]
@@ -36,7 +36,7 @@ fn expected_register<T>() -> T {
 
 #[track_caller]
 #[inline]
-fn expected_boolean<T>(e: u32) -> T {
+fn expected_boolean(e: u32) -> bool {
     panic_str(&format!("Expected 0|1. Got {e}"));
 }
 
@@ -82,13 +82,13 @@ pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
 
     let mut buffer = Vec::with_capacity(len);
 
-    let succeed: bool = unsafe {
+    let succeed = unsafe {
         buffer.set_len(len);
 
         sys::read_register(register_id, BufferMut::new(&mut buffer))
-            .try_into()
-            .unwrap_or_else(expected_boolean)
     };
+
+    let succeed = succeed.try_into().unwrap_or_else(expected_boolean);
 
     if !succeed {
         panic_str("Buffer is too small.");
@@ -103,11 +103,9 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
 
     let mut buffer = [0; N];
 
-    let succeed: bool = unsafe {
-        sys::read_register(register_id, BufferMut::new(&mut buffer))
-            .try_into()
-            .unwrap_or_else(expected_boolean)
-    };
+    let succeed = unsafe { sys::read_register(register_id, BufferMut::new(&mut buffer)) };
+
+    let succeed = succeed.try_into().unwrap_or_else(expected_boolean);
 
     if !succeed {
         panic_str(&format!(
@@ -121,6 +119,7 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
 #[must_use]
 pub fn executor_id() -> [u8; 32] {
     unsafe { sys::executor_id(DATA_REGISTER) }
+
     read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
 }
 
@@ -128,6 +127,7 @@ pub fn executor_id() -> [u8; 32] {
 #[must_use]
 pub fn input() -> Option<Vec<u8>> {
     unsafe { sys::input(DATA_REGISTER) }
+
     read_register(DATA_REGISTER)
 }
 
@@ -154,16 +154,24 @@ pub fn emit<T: AppEvent>(event: &T) {
 }
 
 #[inline]
-pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    unsafe { sys::storage_read(Buffer::from(key), DATA_REGISTER) }
+pub fn storage_create(is_collection: bool) -> Id {
+    unsafe { sys::storage_create(is_collection.into(), DATA_REGISTER) };
+
+    Id(read_register_sized(DATA_REGISTER).expect("Must have storage identity."))
+}
+
+#[inline]
+pub fn storage_read(key: Id) -> Option<Vec<u8>> {
+    unsafe { sys::storage_read(Buffer::from(&*key), DATA_REGISTER) }
         .try_into()
-        .unwrap_or_else(expected_boolean::<bool>)
+        .unwrap_or_else(expected_boolean)
         .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
 }
 
 #[must_use]
 pub fn state_read<T: AppState>() -> Option<T> {
-    let data = storage_read(STATE_KEY)?;
+    let data = storage_read(ROOT_STATE_KEY)?;
+
     match from_borsh_slice(&data) {
         Ok(state) => Some(state),
         Err(err) => panic_str(&format!("Cannot deserialize app state: {err:?}")),
@@ -171,9 +179,11 @@ pub fn state_read<T: AppState>() -> Option<T> {
 }
 
 #[inline]
-pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
-    unsafe { sys::storage_write(Buffer::from(key), Buffer::from(value), DATA_REGISTER).try_into() }
-        .unwrap_or_else(expected_boolean)
+pub fn storage_write(key: Id, value: &[u8]) -> bool {
+    unsafe {
+        sys::storage_write(Buffer::from(&*key), Buffer::from(value), DATA_REGISTER).try_into()
+    }
+    .unwrap_or_else(expected_boolean)
 }
 
 pub fn state_write<T: AppState>(state: &T) {
@@ -181,5 +191,26 @@ pub fn state_write<T: AppState>(state: &T) {
         Ok(data) => data,
         Err(err) => panic_str(&format!("Cannot serialize app state: {err:?}")),
     };
-    let _ = storage_write(STATE_KEY, &data);
+
+    let _ = storage_write(ROOT_STATE_KEY, &data);
+}
+
+#[inline]
+pub fn storage_delete(key: Id) -> bool {
+    unsafe { sys::storage_delete(Buffer::from(&*key), DATA_REGISTER).try_into() }
+        .unwrap_or_else(expected_boolean)
+}
+
+#[inline]
+pub fn storage_adopt(key: Id, parent: Id) -> bool {
+    unsafe { sys::storage_adopt(Buffer::from(&*key), Buffer::from(&*parent)) }
+        .try_into()
+        .unwrap_or_else(expected_boolean)
+}
+
+#[inline]
+pub fn storage_orphan(key: Id, parent: Id) -> bool {
+    unsafe { sys::storage_orphan(Buffer::from(&*key), Buffer::from(&*parent)) }
+        .try_into()
+        .unwrap_or_else(expected_boolean)
 }

@@ -1,3 +1,4 @@
+use std::ops::Deref;
 pub use {borsh, serde, serde_json};
 
 pub mod env;
@@ -8,6 +9,17 @@ mod sys;
 
 pub mod app {
     pub use calimero_sdk_macros::{destroy, emit, event, init, logic, state};
+}
+
+#[derive(Eq, Ord, Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub struct Id([u8; 32]);
+
+impl Deref for Id {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 #[doc(hidden)]
