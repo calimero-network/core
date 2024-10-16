@@ -14,7 +14,7 @@ pub mod ext;
 
 const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 1);
 
-const STATE_KEY: &[u8] = b"STATE";
+const STATE_KEY: &[u8; 16] = &[0; 16]; // what is the root state?
 
 #[track_caller]
 #[inline]

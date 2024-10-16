@@ -53,6 +53,10 @@ fn main() -> EyreResult<()> {
     let get_outcome = run(&file, "get", cx, &mut storage, &limits)?;
     dbg!(get_outcome);
 
+    let cx = VMContext::new(vec![], [0; 32]);
+    let init_outcome = run(&file, "init", cx, &mut storage, &limits)?;
+    dbg!(init_outcome);
+
     let cx = VMContext::new(
         to_json_vec(&json!({
             "key": "foo",

@@ -30,6 +30,7 @@ use calimero_primitives::transaction::Transaction;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
+use calimero_storage::interface::Interface;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::key::{
@@ -53,12 +54,11 @@ use tokio::time::{interval_at, Instant};
 use tokio::{select, spawn};
 use tracing::{debug, error, info, warn};
 
-use crate::runtime_compat::RuntimeCompatStore;
 use crate::transaction_pool::{TransactionPool, TransactionPoolEntry};
 use crate::types::{PeerAction, TransactionConfirmation, TransactionRejection};
 
 pub mod catchup;
-pub mod runtime_compat;
+pub mod runtime_compat_v2;
 pub mod transaction_pool;
 pub mod types;
 
@@ -1392,9 +1392,8 @@ impl Node {
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> EyreResult<Outcome> {
-        let mut storage = match hash {
-            Some(_) => RuntimeCompatStore::temporal(&mut self.store, context.id),
-            None => RuntimeCompatStore::read_only(&self.store, context.id),
+        let mut storage = runtime_compat_v2::RuntimeCompatStore {
+            interface: Interface::new(self.store.clone()),
         };
 
         let Some(blob) = self
@@ -1417,7 +1416,8 @@ impl Node {
         )?;
 
         if let Some(hash) = hash {
-            assert!(storage.commit()?, "do we have a non-temporal store?");
+            // todo! CRDT impl doesn't use a temporal store
+            // assert!(storage.commit()?, "do we have a non-temporal store?");
 
             // todo! return an error to the caller if the method did not write to storage
             // todo! debate: when we switch to optimistic execution
