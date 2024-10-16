@@ -482,16 +482,18 @@ impl VMHostFunctions<'_> {
         clippy::unwrap_in_result,
         reason = "Effectively infallible here"
     )]
-    pub fn time_now(&mut self, register_id: u64) -> VMLogicResult<()> {
+    pub fn time_now(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
+        if len != 8 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards to before the Unix epoch!")
             .as_nanos() as u64;
-        self.with_logic_mut(|logic| {
-            logic
-                .registers
-                .set(logic.limits, register_id, now.to_le_bytes())
-        })?;
+
+        self.borrow_memory().write(ptr, &now.to_le_bytes())?;
+
         Ok(())
     }
 }
