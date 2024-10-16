@@ -6,8 +6,10 @@ use sha2::{Digest, Sha256};
 use velcro::btree_map;
 
 use super::*;
+use crate::env::CalimeroVM;
 use crate::index::Index;
-use crate::interface::{Interface, MainStorage};
+use crate::interface::Interface;
+use crate::mocks::MockVM;
 use crate::tests::common::{Page, Paragraph, Paragraphs, Person};
 
 #[cfg(test)]
@@ -27,7 +29,7 @@ mod data__public_methods {
 
     #[test]
     fn calculate_merkle_hash() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let element = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let person = Person {
             name: "Alice".to_owned(),
             age: 30,
@@ -46,9 +48,9 @@ mod data__public_methods {
 
     #[test]
     fn calculate_merkle_hash_for_child__valid() {
-        let parent = Element::new(&Path::new("::root::node").unwrap());
+        let parent = Element::new::<MockVM>(&Path::new("::root::node").unwrap());
         let mut page = Page::new_from_element("Node", parent);
-        let child1 = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let child1 = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let mut para1 = Paragraph::new_from_element("Leaf1", child1);
         assert!(Interface::save(&mut page).unwrap());
 
@@ -60,7 +62,7 @@ mod data__public_methods {
         let expected_hash1 = para1.calculate_merkle_hash().unwrap();
         assert_eq!(para1_hash, expected_hash1);
 
-        let child2 = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let child2 = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let para2 = Paragraph::new_from_element("Leaf2", child2);
         let para2_slice = to_vec(&para2).unwrap();
         let para2_hash = page
@@ -71,9 +73,9 @@ mod data__public_methods {
 
     #[test]
     fn calculate_merkle_hash_for_child__invalid() {
-        let parent = Element::new(&Path::new("::root::node").unwrap());
+        let parent = Element::new::<MockVM>(&Path::new("::root::node").unwrap());
         let mut page = Page::new_from_element("Node", parent);
-        let child1 = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let child1 = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let mut para1 = Paragraph::new_from_element("Leaf1", child1);
         assert!(Interface::save(&mut page).unwrap());
 
@@ -85,9 +87,9 @@ mod data__public_methods {
 
     #[test]
     fn calculate_merkle_hash_for_child__unknown_collection() {
-        let parent = Element::new(&Path::new("::root::node").unwrap());
+        let parent = Element::new::<MockVM>(&Path::new("::root::node").unwrap());
         let mut page = Page::new_from_element("Node", parent);
-        let child = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let child = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let mut para = Paragraph::new_from_element("Leaf", child);
         assert!(Interface::save(&mut page).unwrap());
 
@@ -102,7 +104,7 @@ mod data__public_methods {
 
     #[test]
     fn collections() {
-        let parent = Element::new(&Path::new("::root::node").unwrap());
+        let parent = Element::new::<MockVM>(&Path::new("::root::node").unwrap());
         let page = Page::new_from_element("Node", parent);
         assert_eq!(
             page.collections(),
@@ -111,7 +113,7 @@ mod data__public_methods {
             }
         );
 
-        let child = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let child = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let para = Paragraph::new_from_element("Leaf", child);
         assert_eq!(para.collections(), BTreeMap::new());
     }
@@ -119,7 +121,7 @@ mod data__public_methods {
     #[test]
     fn element() {
         let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path);
+        let element = Element::new::<MockVM>(&path);
         let person = Person {
             name: "Alice".to_owned(),
             age: 30,
@@ -131,7 +133,7 @@ mod data__public_methods {
     #[test]
     fn element_mut() {
         let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path);
+        let element = Element::new::<MockVM>(&path);
         let mut person = Person {
             name: "Bob".to_owned(),
             age: 40,
@@ -147,7 +149,7 @@ mod data__public_methods {
     #[test]
     fn id() {
         let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path);
+        let element = Element::new::<MockVM>(&path);
         let id = element.id;
         let person = Person {
             name: "Eve".to_owned(),
@@ -160,7 +162,7 @@ mod data__public_methods {
     #[test]
     fn path() {
         let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path);
+        let element = Element::new::<MockVM>(&path);
         let person = Person {
             name: "Steve".to_owned(),
             age: 50,
@@ -176,7 +178,7 @@ mod child_info__constructor {
 
     #[test]
     fn new() {
-        let id = Id::new();
+        let id = Id::new::<MockVM>();
         let hash = Sha256::digest(b"1").into();
         let info = ChildInfo::new(id, hash);
         assert_eq!(info.id, id);
@@ -190,13 +192,13 @@ mod child_info__public_methods {
 
     #[test]
     fn id() {
-        let info = ChildInfo::new(Id::new(), Sha256::digest(b"1").into());
+        let info = ChildInfo::new(Id::new::<MockVM>(), Sha256::digest(b"1").into());
         assert_eq!(info.id(), info.id);
     }
 
     #[test]
     fn merkle_hash() {
-        let info = ChildInfo::new(Id::new(), Sha256::digest(b"1").into());
+        let info = ChildInfo::new(Id::new::<MockVM>(), Sha256::digest(b"1").into());
         assert_eq!(info.merkle_hash(), info.merkle_hash);
     }
 }
@@ -207,7 +209,7 @@ mod child_info__traits {
 
     #[test]
     fn display() {
-        let info = ChildInfo::new(Id::new(), Sha256::digest(b"1").into());
+        let info = ChildInfo::new(Id::new::<MockVM>(), Sha256::digest(b"1").into());
         assert_eq!(
             format!("{info}"),
             format!(
@@ -238,7 +240,7 @@ mod element__constructor {
             .unwrap()
             .as_nanos() as u64;
         let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path);
+        let element = Element::new::<MockVM>(&path);
         let timestamp2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -262,7 +264,7 @@ mod element__public_methods {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let element = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let timestamp2 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -274,13 +276,13 @@ mod element__public_methods {
     #[test]
     fn id() {
         let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path);
+        let element = Element::new::<MockVM>(&path);
         assert_eq!(element.id(), element.id);
     }
 
     #[test]
     fn is_dirty() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let element = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         assert!(element.is_dirty());
 
         let mut person = Person {
@@ -291,13 +293,13 @@ mod element__public_methods {
         assert!(Interface::save(&mut person).unwrap());
         assert!(!person.element().is_dirty());
 
-        person.element_mut().update();
+        person.element_mut().update::<MockVM>();
         assert!(person.element().is_dirty());
     }
 
     #[test]
     fn merkle_hash() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let element = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let mut person = Person {
             name: "Steve".to_owned(),
             age: 50,
@@ -307,7 +309,7 @@ mod element__public_methods {
 
         assert!(Interface::save(&mut person).unwrap());
         let expected_hash =
-            <Index<MainStorage>>::calculate_full_merkle_hash_for(person.id(), false).unwrap();
+            <Index<CalimeroVM>>::calculate_full_merkle_hash_for(person.id(), false).unwrap();
         assert_eq!(person.element().merkle_hash(), expected_hash);
     }
 
@@ -320,13 +322,13 @@ mod element__public_methods {
     #[test]
     fn path() {
         let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path);
+        let element = Element::new::<MockVM>(&path);
         assert_eq!(element.path(), element.path);
     }
 
     #[test]
     fn update() {
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let element = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let updated_at = element.metadata.updated_at;
         let mut person = Person {
             name: "Bob".to_owned(),
@@ -336,7 +338,7 @@ mod element__public_methods {
         assert!(Interface::save(&mut person).unwrap());
         assert!(!person.element().is_dirty);
 
-        person.element_mut().update();
+        person.element_mut().update::<MockVM>();
         assert!(person.element().is_dirty);
         assert_ge!(person.element().metadata.updated_at, updated_at);
     }
@@ -347,7 +349,7 @@ mod element__public_methods {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let element = Element::new(&Path::new("::root::node::leaf").unwrap());
+        let element = Element::new::<MockVM>(&Path::new("::root::node::leaf").unwrap());
         let mut person = Person {
             name: "Eve".to_owned(),
             age: 20,
@@ -360,7 +362,7 @@ mod element__public_methods {
         assert_ge!(person.element().updated_at(), timestamp1);
         assert_le!(person.element().updated_at(), timestamp2);
 
-        person.element_mut().update();
+        person.element_mut().update::<MockVM>();
         let timestamp3 = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -377,7 +379,7 @@ mod element__traits {
     #[test]
     fn display() {
         let path = Path::new("::root::node::leaf").unwrap();
-        let element = Element::new(&path);
+        let element = Element::new::<MockVM>(&path);
         assert_eq!(
             format!("{element}"),
             format!("Element {}: ::root::node::leaf", element.id())
