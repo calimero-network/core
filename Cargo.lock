@@ -1131,6 +1131,7 @@ dependencies = [
  "fixedstr",
  "hex",
  "indexmap 2.6.0",
+ "serde",
  "sha2",
  "thiserror",
  "uuid 1.10.0",
@@ -1142,6 +1143,7 @@ name = "calimero-storage-macros"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "calimero-sdk",
  "calimero-storage",
  "quote",
  "syn 2.0.72",

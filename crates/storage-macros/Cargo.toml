@@ -20,6 +20,7 @@ calimero-storage = { path = "../storage" }
 
 [dev-dependencies]
 trybuild.workspace = true
+calimero-sdk = { path = "../sdk" }
 
 [lints]
 workspace = true

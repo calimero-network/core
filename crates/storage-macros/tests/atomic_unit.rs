@@ -33,6 +33,7 @@ use calimero_storage::interface::Interface;
 use calimero_storage_macros::AtomicUnit;
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[root]
 struct Private {
     public: String,
     #[private]
@@ -52,6 +53,7 @@ impl Private {
 }
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[root]
 struct Simple {
     name: String,
     value: i32,
@@ -70,6 +72,7 @@ impl Simple {
 }
 
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[root]
 struct Skipped {
     included: String,
     #[skip]
@@ -155,7 +158,7 @@ mod basics {
     fn setters__confirm_set_dirty() {
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
-        assert!(Interface::save(unit.id(), &mut unit).unwrap());
+        assert!(Interface::save(&mut unit).unwrap());
         assert!(!unit.element().is_dirty());
 
         assert!(unit.set_name("Test Name".to_owned()));
@@ -166,12 +169,12 @@ mod basics {
     fn setters__confirm_not_set_not_dirty() {
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
-        assert!(Interface::save(unit.id(), &mut unit).unwrap());
+        assert!(Interface::save(&mut unit).unwrap());
         assert!(!unit.element().is_dirty());
 
         assert!(unit.set_name("Test Name".to_owned()));
         assert!(unit.element().is_dirty());
-        assert!(Interface::save(unit.id(), &mut unit).unwrap());
+        assert!(Interface::save(&mut unit).unwrap());
         assert!(!unit.set_name("Test Name".to_owned()));
         assert!(!unit.element().is_dirty());
     }
