@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;
+use rand::RngCore;
 use serde::Serialize;
-use uuid::Uuid;
 
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
@@ -458,20 +458,14 @@ impl VMHostFunctions<'_> {
         Ok(status)
     }
 
-    /// Generates a new UUID using v4 standard.
-    ///
-    /// This function generates a new UUID by calling the host. The UUID is
-    /// dependent on randomness, which is not available inside the guest
-    /// runtime. Therefore the guest needs to request this from the host.
-    ///
-    pub fn generate_uuid(&mut self, register_id: u64) -> VMLogicResult<()> {
-        let uuid = Uuid::new_v4();
+    pub fn random_bytes(&mut self, len: u64, register_id: u64) -> VMLogicResult<()> {
+        let len = usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
 
-        self.with_logic_mut(|logic| {
-            logic
-                .registers
-                .set(logic.limits, register_id, uuid.into_bytes())
-        })?;
+        let mut buf = vec![0; len];
+
+        rand::thread_rng().fill_bytes(&mut buf);
+
+        self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, buf))?;
 
         Ok(())
     }

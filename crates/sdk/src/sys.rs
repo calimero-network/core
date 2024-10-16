@@ -30,7 +30,8 @@ wasm_imports! {
             body: Buffer<'_>,
             register_id: RegisterId
         ) -> Bool;
-        fn generate_uuid(register_id: RegisterId);
+        // --
+        fn random_bytes(len: u64, register_id: RegisterId);
         fn time_now(register_id: RegisterId);
     }
 }
