@@ -5,7 +5,7 @@ use claims::{assert_none, assert_ok};
 
 use super::*;
 use crate::entities::{Data, Element};
-use crate::mocks::ForeignInterface;
+use crate::store::MockedStorage;
 use crate::tests::common::{Page, Paragraph};
 
 #[cfg(test)]
@@ -269,6 +269,8 @@ mod interface__apply_actions {
 #[cfg(test)]
 mod interface__comparison {
     use super::*;
+
+    type ForeignInterface = MainInterface<MockedStorage<0>>;
 
     #[test]
     fn compare_trees__identical() {

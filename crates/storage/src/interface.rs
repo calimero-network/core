@@ -214,12 +214,11 @@
 mod tests;
 
 use core::fmt::Debug;
-use core::marker::PhantomData;
 use std::collections::BTreeMap;
 use std::io::Error as IoError;
+use std::marker::PhantomData;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
-use calimero_sdk::env::{storage_read, storage_remove, storage_write};
 use eyre::Report;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -228,6 +227,7 @@ use thiserror::Error as ThisError;
 use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data};
 use crate::index::Index;
+use crate::store::{Key, MainStorage, StorageAdaptor};
 
 /// Convenient type alias for the main storage system.
 pub type Interface = MainInterface<MainStorage>;
@@ -443,7 +443,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
             Action::Delete { id, ancestors, .. } => {
-                _ = S::storage_remove(id.as_bytes());
+                _ = S::storage_remove(Key::Entry(id));
                 ancestors
             }
         };
@@ -712,7 +712,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// will be returned.
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
-        let value = S::storage_read(id.as_bytes());
+        let value = S::storage_read(Key::Entry(id));
 
         match value {
             Some(slice) => {
@@ -749,7 +749,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// will be returned.
     ///
     pub fn find_by_id_raw(id: Id) -> Result<Option<Vec<u8>>, StorageError> {
-        Ok(S::storage_read(id.as_bytes()))
+        Ok(S::storage_read(Key::Entry(id)))
     }
 
     /// Finds one or more [`Element`](crate::entities::Element)s by path in the
@@ -906,7 +906,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
         child_id: Id,
     ) -> Result<bool, StorageError> {
         <Index<S>>::remove_child_from(parent_id, collection.name(), child_id)?;
-        Ok(S::storage_remove(child_id.as_bytes()))
+        Ok(S::storage_remove(Key::Entry(child_id)))
     }
 
     /// Retrieves the root entity for a given context.
@@ -1008,7 +1008,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
         entity.element_mut().merkle_hash = <Index<S>>::update_hash_for(id, own_hash)?;
 
         _ = S::storage_write(
-            id.as_bytes(),
+            Key::Entry(id),
             &to_vec(entity).map_err(StorageError::SerializationError)?,
         );
 
@@ -1031,66 +1031,6 @@ impl<S: StorageAdaptor> MainInterface<S> {
     pub fn validate() -> Result<(), StorageError> {
         unimplemented!()
     }
-}
-
-/// The main storage system.
-///
-/// This is the default storage system, and is used for the main storage
-/// operations in the system. It uses the environment's storage system to
-/// perform the actual storage operations.
-///
-/// It is the only one intended for use in production, with other options being
-/// implemented internally for testing purposes.
-///
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-#[non_exhaustive]
-pub struct MainStorage;
-
-impl StorageAdaptor for MainStorage {
-    fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-        storage_read(key)
-    }
-
-    fn storage_remove(key: &[u8]) -> bool {
-        storage_remove(key)
-    }
-
-    fn storage_write(key: &[u8], value: &[u8]) -> bool {
-        storage_write(key, value)
-    }
-}
-
-/// Determines where the ultimate storage system is located.
-///
-/// This trait is mainly used to allow for a different storage location to be
-/// used for key operations during testing, such as modelling a foreign node's
-/// data store.
-///
-pub(crate) trait StorageAdaptor {
-    /// Reads data from persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key` - The key to read data from.
-    ///
-    fn storage_read(key: &[u8]) -> Option<Vec<u8>>;
-
-    /// Removes data from persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key` - The key to remove.
-    ///
-    fn storage_remove(key: &[u8]) -> bool;
-
-    /// Writes data to persistent storage.
-    ///
-    /// # Parameters
-    ///
-    /// * `key`   - The key to write data to.
-    /// * `value` - The data to write.
-    ///
-    fn storage_write(key: &[u8], value: &[u8]) -> bool;
 }
 
 /// Errors that can occur when working with the storage system.

@@ -1,5 +1,5 @@
 use super::*;
-use crate::interface::MainStorage;
+use crate::store::MainStorage;
 use crate::tests::common::TEST_ID;
 
 mod index__public_methods {

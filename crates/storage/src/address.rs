@@ -13,11 +13,12 @@ use core::fmt::{self, Debug, Display, Formatter};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::env::generate_uuid;
 use fixedstr::Flexstr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use uuid::{Bytes, Uuid};
+
+use crate::env::random_bytes;
 
 /// Globally-unique identifier for an [`Element`](crate::entities::Element).
 ///
@@ -49,7 +50,13 @@ impl Id {
     ///
     #[must_use]
     pub fn new() -> Self {
-        Self(generate_uuid())
+        let mut bytes = [0; 16];
+
+        random_bytes(&mut bytes);
+
+        let id = uuid::Builder::from_random_bytes(bytes).into_uuid();
+
+        Self(id)
     }
 
     /// Returns a slice of 16 octets containing the value.
