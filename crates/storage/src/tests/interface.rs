@@ -270,8 +270,8 @@ mod interface__apply_actions {
 mod interface__comparison {
     use super::*;
 
-    type AliceInterface = MainInterface<MockedStorage<1>>;
-    type BobInterface = MainInterface<MockedStorage<2>>;
+    type AliceInterface = MainInterface<MockedStorage<{ usize::MAX }>>;
+    type BobInterface = MainInterface<MockedStorage<{ usize::MAX - 1 }>>;
 
     #[test]
     fn compare_trees__identical() {
