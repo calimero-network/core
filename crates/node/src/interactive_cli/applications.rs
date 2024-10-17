@@ -61,7 +61,7 @@ impl ApplicationCommand {
                             application_id
                         } else {
                             println!("{ind} Failed to install application from path");
-                            return Err(eyre::eyre!("Failed to install application from path"));
+                            eyre::bail!("Failed to install application from path");
                         }
                     }
                 };
