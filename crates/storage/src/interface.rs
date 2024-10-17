@@ -904,9 +904,28 @@ impl<S: StorageAdaptor> MainInterface<S> {
         parent_id: Id,
         collection: &mut C,
         child_id: Id,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<Action>, StorageError> {
+        let child_exists = <Index<S>>::get_children_of(parent_id, collection.name())?
+            .iter()
+            .any(|child| child.id() == child_id);
+        if !child_exists {
+            return Ok(None);
+        }
+
         <Index<S>>::remove_child_from(parent_id, collection.name(), child_id)?;
-        Ok(S::storage_remove(child_id.as_bytes()))
+
+        let (parent_full_hash, _) =
+            <Index<S>>::get_hashes_for(parent_id)?.ok_or(StorageError::IndexNotFound(parent_id))?;
+        let mut ancestors = <Index<S>>::get_ancestors_of(parent_id)?;
+        ancestors.insert(0, ChildInfo::new(parent_id, parent_full_hash));
+
+        let action = Action::Delete {
+            id: child_id,
+            ancestors,
+        };
+        _ = S::storage_remove(child_id.to_string().as_bytes());
+
+        Ok(Some(action))
     }
 
     /// Retrieves the root entity for a given context.
