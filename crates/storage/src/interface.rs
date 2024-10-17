@@ -216,6 +216,7 @@ mod tests;
 use core::fmt::Debug;
 use std::collections::BTreeMap;
 use std::io::Error as IoError;
+use std::marker::PhantomData;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use eyre::Report;
@@ -225,9 +226,11 @@ use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data};
-use crate::env::{storage_read, storage_remove, storage_write};
 use crate::index::Index;
-use crate::store::Key;
+use crate::store::{Key, MainStorage, StorageAdaptor};
+
+/// Convenient type alias for the main storage system.
+pub type Interface = MainInterface<MainStorage>;
 
 /// Actions to be taken during synchronisation.
 ///
@@ -359,10 +362,12 @@ pub struct ComparisonData {
 
 /// The primary interface for the storage system.
 #[derive(Debug, Default, Clone)]
+#[expect(private_bounds, reason = "The StorageAdaptor is for internal use only")]
 #[non_exhaustive]
-pub struct Interface;
+pub struct MainInterface<S: StorageAdaptor = MainStorage>(PhantomData<S>);
 
-impl Interface {
+#[expect(private_bounds, reason = "The StorageAdaptor is for internal use only")]
+impl<S: StorageAdaptor> MainInterface<S> {
     /// Adds a child to a collection.
     ///
     /// # Parameters
@@ -383,13 +388,13 @@ impl Interface {
         child: &mut D,
     ) -> Result<bool, StorageError> {
         let own_hash = child.calculate_merkle_hash()?;
-        Index::add_child_to(
+        <Index<S>>::add_child_to(
             parent_id,
             collection.name(),
             ChildInfo::new(child.id(), own_hash),
             D::type_id(),
         )?;
-        child.element_mut().merkle_hash = Index::update_hash_for(child.id(), own_hash)?;
+        child.element_mut().merkle_hash = <Index<S>>::update_hash_for(child.id(), own_hash)?;
         Self::save(child)
     }
 
@@ -438,13 +443,13 @@ impl Interface {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
             Action::Delete { id, ancestors, .. } => {
-                _ = storage_remove(Key::Entry(id));
+                _ = S::storage_remove(Key::Entry(id));
                 ancestors
             }
         };
 
         for ancestor in &ancestors {
-            let (current_hash, _) = Index::get_hashes_for(ancestor.id())?
+            let (current_hash, _) = <Index<S>>::get_hashes_for(ancestor.id())?
                 .ok_or(StorageError::IndexNotFound(ancestor.id()))?;
             if current_hash != ancestor.merkle_hash() {
                 return Ok(Some(ancestor.id()));
@@ -504,7 +509,7 @@ impl Interface {
         parent_id: Id,
         collection: &C,
     ) -> Result<Vec<C::Child>, StorageError> {
-        let children_info = Index::get_children_of(parent_id, collection.name())?;
+        let children_info = <Index<S>>::get_children_of(parent_id, collection.name())?;
         let mut children = Vec::new();
         for child_info in children_info {
             if let Some(child) = Self::find_by_id(child_info.id())? {
@@ -544,7 +549,7 @@ impl Interface {
         parent_id: Id,
         collection: &C,
     ) -> Result<Vec<ChildInfo>, StorageError> {
-        Index::get_children_of(parent_id, collection.name())
+        <Index<S>>::get_children_of(parent_id, collection.name())
     }
 
     /// Compares a foreign entity with a local one.
@@ -588,7 +593,7 @@ impl Interface {
             return Ok(actions);
         };
 
-        let (local_full_hash, local_own_hash) = Index::get_hashes_for(local_entity.id())?
+        let (local_full_hash, local_own_hash) = <Index<S>>::get_hashes_for(local_entity.id())?
             .ok_or(StorageError::IndexNotFound(local_entity.id()))?;
 
         // Compare full Merkle hashes
@@ -612,7 +617,7 @@ impl Interface {
                     id: foreign_entity.id(),
                     type_id: D::type_id(),
                     data: to_vec(&local_entity).map_err(StorageError::SerializationError)?,
-                    ancestors: Index::get_ancestors_of(local_entity.id())?,
+                    ancestors: <Index<S>>::get_ancestors_of(local_entity.id())?,
                 });
             }
         }
@@ -643,9 +648,9 @@ impl Interface {
                             if let Some(local_child) = Self::find_by_id_raw(*id)? {
                                 actions.1.push(Action::Add {
                                     id: *id,
-                                    type_id: Index::get_type_id(*id)?,
+                                    type_id: <Index<S>>::get_type_id(*id)?,
                                     data: local_child,
-                                    ancestors: Index::get_ancestors_of(local_entity.id())?,
+                                    ancestors: <Index<S>>::get_ancestors_of(local_entity.id())?,
                                 });
                             }
                         }
@@ -668,9 +673,9 @@ impl Interface {
                     if let Some(local_child) = Self::find_by_id_raw(child.id())? {
                         actions.1.push(Action::Add {
                             id: child.id(),
-                            type_id: Index::get_type_id(child.id())?,
+                            type_id: <Index<S>>::get_type_id(child.id())?,
                             data: local_child,
-                            ancestors: Index::get_ancestors_of(local_entity.id())?,
+                            ancestors: <Index<S>>::get_ancestors_of(local_entity.id())?,
                         });
                     }
                 }
@@ -707,7 +712,7 @@ impl Interface {
     /// will be returned.
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
-        let value = storage_read(Key::Entry(id));
+        let value = S::storage_read(Key::Entry(id));
 
         match value {
             Some(slice) => {
@@ -744,7 +749,7 @@ impl Interface {
     /// will be returned.
     ///
     pub fn find_by_id_raw(id: Id) -> Result<Option<Vec<u8>>, StorageError> {
-        Ok(storage_read(Key::Entry(id)))
+        Ok(S::storage_read(Key::Entry(id)))
     }
 
     /// Finds one or more [`Element`](crate::entities::Element)s by path in the
@@ -793,7 +798,7 @@ impl Interface {
         parent_id: Id,
         collection: &str,
     ) -> Result<Vec<D>, StorageError> {
-        let child_infos = Index::get_children_of(parent_id, collection)?;
+        let child_infos = <Index<S>>::get_children_of(parent_id, collection)?;
         let mut children = Vec::new();
         for child_info in child_infos {
             if let Some(child) = Self::find_by_id(child_info.id())? {
@@ -819,15 +824,15 @@ impl Interface {
     /// will be returned.
     ///
     pub fn generate_comparison_data<D: Data>(entity: &D) -> Result<ComparisonData, StorageError> {
-        let (full_hash, own_hash) =
-            Index::get_hashes_for(entity.id())?.ok_or(StorageError::IndexNotFound(entity.id()))?;
+        let (full_hash, own_hash) = <Index<S>>::get_hashes_for(entity.id())?
+            .ok_or(StorageError::IndexNotFound(entity.id()))?;
 
-        let ancestors = Index::get_ancestors_of(entity.id())?;
+        let ancestors = <Index<S>>::get_ancestors_of(entity.id())?;
         let children = entity
             .collections()
             .into_keys()
             .map(|collection_name| {
-                Index::get_children_of(entity.id(), &collection_name)
+                <Index<S>>::get_children_of(entity.id(), &collection_name)
                     .map(|children| (collection_name.clone(), children))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
@@ -862,7 +867,7 @@ impl Interface {
         parent_id: Id,
         collection: &C,
     ) -> Result<bool, StorageError> {
-        Index::has_children(parent_id, collection.name())
+        <Index<S>>::has_children(parent_id, collection.name())
     }
 
     /// Retrieves the parent entity of a given entity.
@@ -877,7 +882,7 @@ impl Interface {
     /// will be returned.
     ///
     pub fn parent_of<D: Data>(child_id: Id) -> Result<Option<D>, StorageError> {
-        Index::get_parent_id(child_id)?
+        <Index<S>>::get_parent_id(child_id)?
             .map_or_else(|| Ok(None), |parent_id| Self::find_by_id(parent_id))
     }
 
@@ -900,8 +905,8 @@ impl Interface {
         collection: &mut C,
         child_id: Id,
     ) -> Result<bool, StorageError> {
-        Index::remove_child_from(parent_id, collection.name(), child_id)?;
-        Ok(storage_remove(Key::Entry(child_id)))
+        <Index<S>>::remove_child_from(parent_id, collection.name(), child_id)?;
+        Ok(S::storage_remove(Key::Entry(child_id)))
     }
 
     /// Retrieves the root entity for a given context.
@@ -987,7 +992,7 @@ impl Interface {
         }
         let id = entity.id();
 
-        if !D::is_root() && Index::get_parent_id(id)?.is_none() {
+        if !D::is_root() && <Index<S>>::get_parent_id(id)?.is_none() {
             return Err(StorageError::CannotCreateOrphan(id));
         }
 
@@ -996,13 +1001,13 @@ impl Interface {
                 return Ok(false);
             }
         } else if D::is_root() {
-            Index::add_root(ChildInfo::new(id, [0_u8; 32]), D::type_id())?;
+            <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32]), D::type_id())?;
         }
 
         let own_hash = entity.calculate_merkle_hash()?;
-        entity.element_mut().merkle_hash = Index::update_hash_for(id, own_hash)?;
+        entity.element_mut().merkle_hash = <Index<S>>::update_hash_for(id, own_hash)?;
 
-        _ = storage_write(
+        _ = S::storage_write(
             Key::Entry(id),
             &to_vec(entity).map_err(StorageError::SerializationError)?,
         );
