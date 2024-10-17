@@ -16,7 +16,7 @@ use eyre::Result;
 pub struct CallCommand {
     context_id: String,
     method: String,
-    payload: String,
+    payload: Value,
     executor_key: String,
 }
 
