@@ -1024,7 +1024,6 @@ dependencies = [
  "borsh",
  "calimero-sdk-macros",
  "cfg-if 1.0.0",
- "hex",
  "serde",
  "serde_json",
  "trybuild",
