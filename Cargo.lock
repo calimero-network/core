@@ -899,7 +899,6 @@ name = "calimero-network"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "calimero-node-primitives",
  "calimero-primitives",
  "eyre",
  "futures-util",
@@ -920,6 +919,7 @@ dependencies = [
 name = "calimero-node"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "calimero-blobstore",
  "calimero-context",
  "calimero-network",
@@ -927,6 +927,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",
+ "calimero-storage",
  "calimero-store",
  "camino",
  "eyre",
@@ -987,8 +988,10 @@ version = "0.1.0"
 dependencies = [
  "assert-json-diff",
  "borsh",
+ "calimero-storage",
  "eyre",
  "fragile",
+ "hex",
  "ouroboros",
  "owo-colors",
  "rand 0.8.5",
@@ -4441,6 +4444,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8452105ba047068f40ff7093dd1d9da90898e63dd61736462e9cdda6a90ad3c3"
 
 [[package]]
+name = "merkle-crdt"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+ "calimero-storage-macros",
+]
+
+[[package]]
 name = "meroctl"
 version = "0.1.0"
 dependencies = [
@@ -4451,7 +4463,6 @@ dependencies = [
  "calimero-context-config",
  "calimero-network",
  "calimero-node",
- "calimero-node-primitives",
  "calimero-primitives",
  "calimero-server",
  "calimero-server-primitives",

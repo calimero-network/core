@@ -14,8 +14,8 @@ use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::env::generate_uuid;
+use calimero_sdk::serde::{Deserialize, Serialize};
 use fixedstr::Flexstr;
-use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use uuid::{Bytes, Uuid};
 
@@ -35,6 +35,7 @@ use uuid::{Bytes, Uuid};
 /// insulation that is useful for any future changes.
 ///
 #[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
 pub struct Id(Uuid);
 
 impl Id {

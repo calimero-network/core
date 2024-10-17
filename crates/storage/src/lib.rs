@@ -64,6 +64,7 @@
 pub mod address;
 pub mod entities;
 pub mod index;
+pub mod integration;
 pub mod interface;
 
 /// Re-exported types, mostly for use in macros (for convenience).

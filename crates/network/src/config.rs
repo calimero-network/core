@@ -1,7 +1,6 @@
 use core::fmt::{self, Formatter};
 use core::time::Duration;
 
-use calimero_node_primitives::NodeType;
 use libp2p::identity::Keypair;
 use libp2p::rendezvous::Namespace;
 use multiaddr::{Multiaddr, Protocol};
@@ -29,7 +28,6 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
 #[non_exhaustive]
 pub struct NetworkConfig {
     pub identity: Keypair,
-    pub node_type: NodeType,
 
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
@@ -41,7 +39,6 @@ impl NetworkConfig {
     #[must_use]
     pub const fn new(
         identity: Keypair,
-        node_type: NodeType,
         swarm: SwarmConfig,
         bootstrap: BootstrapConfig,
         discovery: DiscoveryConfig,
@@ -49,7 +46,6 @@ impl NetworkConfig {
     ) -> Self {
         Self {
             identity,
-            node_type,
             swarm,
             bootstrap,
             discovery,

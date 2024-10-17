@@ -9,24 +9,21 @@ use crate::key::{
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
-pub type TransactionHash = [u8; 32];
+pub type Hash = [u8; 32];
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextMeta {
     pub application: ApplicationMetaKey,
-    pub last_transaction_hash: TransactionHash,
+    pub root_hash: Hash,
 }
 
 impl ContextMeta {
     #[must_use]
-    pub const fn new(
-        application: ApplicationMetaKey,
-        last_transaction_hash: TransactionHash,
-    ) -> Self {
+    pub const fn new(application: ApplicationMetaKey, root_hash: Hash) -> Self {
         Self {
             application,
-            last_transaction_hash,
+            root_hash,
         }
     }
 }
@@ -97,7 +94,7 @@ impl PredefinedEntry for ContextIdentityKey {
 pub struct ContextTransaction {
     pub method: Box<str>,
     pub payload: Box<[u8]>,
-    pub prior_hash: TransactionHash,
+    pub prior_hash: Hash,
     pub executor_public_key: [u8; 32],
 }
 
@@ -106,7 +103,7 @@ impl ContextTransaction {
     pub const fn new(
         method: Box<str>,
         payload: Box<[u8]>,
-        prior_hash: TransactionHash,
+        prior_hash: Hash,
         executor_public_key: [u8; 32],
     ) -> Self {
         Self {
