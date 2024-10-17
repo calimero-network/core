@@ -24,14 +24,13 @@ use crate::admin::handlers::add_client_key::{
     add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
 };
 use crate::admin::handlers::applications::{
-    get_application, get_application_details_handler, install_application_handler,
-    install_dev_application_handler, list_applications_handler, uninstall_application_handler,
+    get_application, get_application_details, install_application, install_dev_application,
+    list_applications, uninstall_application,
 };
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
-    create_context_handler, delete_context_handler, get_context_client_keys_handler,
-    get_context_handler, get_context_identities_handler, get_context_storage_handler,
-    get_context_users_handler, get_contexts_handler, join_context_handler, update_application_id,
+    create_context, delete_context, get_context, get_context_client_keys, get_context_identities,
+    get_context_storage, get_context_users, get_contexts, join_context, update_application_id,
 };
 use crate::admin::handlers::did::fetch_did_handler;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
@@ -92,38 +91,38 @@ pub(crate) fn setup(
 
     let protected_router = Router::new()
         .route("/root-key", post(create_root_key_handler))
-        .route("/install-application", post(install_application_handler))
+        .route("/install-application", post(install_application::handler))
         .route(
             "/uninstall-application",
-            post(uninstall_application_handler),
+            post(uninstall_application::handler),
         )
-        .route("/applications", get(list_applications_handler))
+        .route("/applications", get(list_applications::handler))
         .route(
             "/applications/:app_id",
-            get(get_application_details_handler),
+            get(get_application_details::handler),
         )
         .route("/did", get(fetch_did_handler).delete(delete_did_handler))
-        .route("/contexts", post(create_context_handler))
-        .route("/contexts/:context_id", delete(delete_context_handler))
-        .route("/contexts/:context_id", get(get_context_handler))
+        .route("/contexts", post(create_context::handler))
+        .route("/contexts/:context_id", delete(delete_context::handler))
+        .route("/contexts/:context_id", get(get_context::handler))
         .route(
             "/contexts/:context_id/users",
-            get(get_context_users_handler),
+            get(get_context_users::handler),
         )
         .route(
             "/contexts/:context_id/client-keys",
-            get(get_context_client_keys_handler),
+            get(get_context_client_keys::handler),
         )
         .route(
             "/contexts/:context_id/storage",
-            get(get_context_storage_handler),
+            get(get_context_storage::handler),
         )
         .route(
             "/contexts/:context_id/identities",
-            get(get_context_identities_handler),
+            get(get_context_identities::handler),
         )
-        .route("/contexts/join", post(join_context_handler))
-        .route("/contexts", get(get_contexts_handler))
+        .route("/contexts/join", post(join_context::handler))
+        .route("/contexts", get(get_contexts::handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .layer(AuthSignatureLayer::new(store))
@@ -139,45 +138,48 @@ pub(crate) fn setup(
     let dev_router = Router::new()
         .route(
             "/dev/install-dev-application",
-            post(install_dev_application_handler),
+            post(install_dev_application::handler),
         )
         .route(
             "/dev/install-application",
-            post(install_application_handler),
+            post(install_application::handler),
         )
-        .route("/dev/application/:application_id", get(get_application))
+        .route(
+            "/dev/application/:application_id",
+            get(get_application::handler),
+        )
         .route(
             "/dev/applications/:app_id",
-            get(get_application_details_handler),
+            get(get_application_details::handler),
         )
         .route(
             "/dev/contexts",
-            get(get_contexts_handler).post(create_context_handler),
+            get(get_contexts::handler).post(create_context::handler),
         )
-        .route("/dev/contexts/join", post(join_context_handler))
+        .route("/dev/contexts/join", post(join_context::handler))
         .route(
             "/dev/contexts/:context_id/application",
-            post(update_application_id),
+            post(update_application_id::handler),
         )
-        .route("/dev/applications", get(list_applications_handler))
-        .route("/dev/contexts/:context_id", get(get_context_handler))
+        .route("/dev/applications", get(list_applications::handler))
+        .route("/dev/contexts/:context_id", get(get_context::handler))
         .route(
             "/dev/contexts/:context_id/users",
-            get(get_context_users_handler),
+            get(get_context_users::handler),
         )
         .route(
             "/dev/contexts/:context_id/client-keys",
-            get(get_context_client_keys_handler),
+            get(get_context_client_keys::handler),
         )
         .route(
             "/dev/contexts/:context_id/storage",
-            get(get_context_storage_handler),
+            get(get_context_storage::handler),
         )
         .route(
             "/dev/contexts/:context_id/identities",
-            get(get_context_identities_handler),
+            get(get_context_identities::handler),
         )
-        .route("/dev/contexts/:context_id", delete(delete_context_handler))
+        .route("/dev/contexts/:context_id", delete(delete_context::handler))
         .route_layer(from_fn(dev_mode_auth));
 
     let admin_router = Router::new()
