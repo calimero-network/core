@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use calimero_primitives::{
     identity::PublicKey,
     transaction::Transaction,
@@ -17,22 +15,12 @@ pub struct CallCommand {
     context_id: String,
     method: String,
     payload: Value,
-    executor_key: String,
+    executor_key: PublicKey,
 }
 
 impl CallCommand {
     pub async fn run(self, node: &mut Node) -> Result<()> {
         let ind = ">>".blue();
-        let executor_key = match PublicKey::from_str(&self.executor_key) {
-            Ok(key) => key,
-            Err(_) => {
-                println!("{} invalid executor key: {}", ind, self.executor_key);
-                return Ok(());
-            }
-        };
-        let payload = serde_json::from_str::<Value>(&self.payload)?;
-        println!("{} payload: {:#?}", ind, payload);
-
         let (outcome_sender, outcome_receiver) = oneshot::channel();
 
         let Ok(context_id) = self.context_id.parse() else {
@@ -48,9 +36,9 @@ impl CallCommand {
         let tx = Transaction::new(
             context.id,
             self.method.to_owned(),
-            serde_json::to_string(&payload)?.into_bytes(),
+            serde_json::to_string(&self.payload)?.into_bytes(),
             context.last_transaction_hash,
-            executor_key,
+            self.executor_key,
         );
 
         let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {

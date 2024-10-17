@@ -16,7 +16,6 @@ pub mod store;
 pub mod transactions;
 
 use clap::{Parser, Subcommand};
-use eyre::Report;
 
 use crate::Node;
 #[derive(Debug, Parser)]
@@ -39,17 +38,16 @@ pub enum SubCommands {
     Transactions(transactions::TransactionsCommand),
 }
 
-pub async fn handle_line(node: &mut Node, line: String) {
+pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     // IMPORTANT: Parser needs first string to be binary name
     let mut args = vec![""];
     args.extend(line.split_whitespace());
-    println!("args: {:?}", args);
 
     let command = match RootCommand::try_parse_from(args) {
         Ok(command) => command,
         Err(err) => {
             println!("Failed to parse command: {}", err);
-            return;
+            eyre::bail!("Failed to parse command");
         }
     };
     
@@ -67,6 +65,9 @@ pub async fn handle_line(node: &mut Node, line: String) {
     };
         
     if let Err(err) = result {
-        println!("Error running command: {}", e);
+        println!("Error running command: {}", err);
+        eyre::bail!("Failed to parse command");
     }
+
+    Ok(())
 }
