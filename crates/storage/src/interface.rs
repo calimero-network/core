@@ -386,7 +386,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
         parent_id: Id,
         collection: &mut C,
         child: &mut D,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<Action>, StorageError> {
         let own_hash = child.calculate_merkle_hash()?;
         <Index<S>>::add_child_to(
             parent_id,
@@ -436,7 +436,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
             } => {
                 let mut entity =
                     D::try_from_slice(&data).map_err(StorageError::DeserializationError)?;
-                _ = Self::save(&mut entity)?;
+                drop(Self::save(&mut entity)?);
                 ancestors
             }
             Action::Compare { .. } => {
@@ -934,10 +934,11 @@ impl<S: StorageAdaptor> MainInterface<S> {
     ///
     /// If the provided [`Element`](crate::entities::Element) is older than the
     /// existing record, the update will be ignored, and the existing record
-    /// will be kept. The Boolean return value indicates whether the record was
-    /// saved or not; a value of `false` indicates that the record was not saved
-    /// due to this guard check — any other reason will be due to an error, and
-    /// returned as such.
+    /// will be kept. The return value indicates whether the record was saved or
+    /// not; a value of [`None`] indicates that the record was not saved due to
+    /// this guard check — any other reason will be due to an error, and
+    /// returned as such. If the record was saved, an [`Action`] will be
+    /// returned for propagation to other nodes.
     ///
     /// # Dirty flag
     ///
@@ -986,9 +987,9 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// If an error occurs when serialising data or interacting with the storage
     /// system, an error will be returned.
     ///
-    pub fn save<D: Data>(entity: &mut D) -> Result<bool, StorageError> {
+    pub fn save<D: Data>(entity: &mut D) -> Result<Option<Action>, StorageError> {
         if !entity.element().is_dirty() {
-            return Ok(true);
+            return Ok(None);
         }
         let id = entity.id();
 
@@ -996,9 +997,12 @@ impl<S: StorageAdaptor> MainInterface<S> {
             return Err(StorageError::CannotCreateOrphan(id));
         }
 
-        if let Some(existing) = Self::find_by_id::<D>(id)? {
-            if existing.element().metadata.updated_at >= entity.element().metadata.updated_at {
-                return Ok(false);
+        let is_new = Self::find_by_id::<D>(id)?.is_none();
+        if !is_new {
+            if let Some(existing) = Self::find_by_id::<D>(id)? {
+                if existing.element().metadata.updated_at >= entity.element().metadata.updated_at {
+                    return Ok(None);
+                }
             }
         } else if D::is_root() {
             <Index<S>>::add_root(ChildInfo::new(id, [0_u8; 32]), D::type_id())?;
@@ -1013,7 +1017,24 @@ impl<S: StorageAdaptor> MainInterface<S> {
         );
 
         entity.element_mut().is_dirty = false;
-        Ok(true)
+
+        let action = if is_new {
+            Action::Add {
+                id,
+                type_id: D::type_id(),
+                data: to_vec(entity).map_err(StorageError::SerializationError)?,
+                ancestors: <Index<S>>::get_ancestors_of(id)?,
+            }
+        } else {
+            Action::Update {
+                id,
+                type_id: D::type_id(),
+                data: to_vec(entity).map_err(StorageError::SerializationError)?,
+                ancestors: <Index<S>>::get_ancestors_of(id)?,
+            }
+        };
+
+        Ok(Some(action))
     }
 
     /// Type identifier of the entity.
