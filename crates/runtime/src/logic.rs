@@ -459,12 +459,9 @@ impl VMHostFunctions<'_> {
     }
 
     pub fn random_bytes(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
-        let len = usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
-
-        let mut buf = vec![0; len];
+        let mut buf = vec![0; usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?];
 
         rand::thread_rng().fill_bytes(&mut buf);
-
         self.borrow_memory().write(ptr, &buf)?;
 
         Ok(())

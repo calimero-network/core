@@ -102,7 +102,6 @@ pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
 #[inline]
 fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N]> {
     let len = register_len(register_id)?;
-
     let mut buffer = [0; N];
 
     #[expect(
