@@ -2,8 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import StatusModal from '../common/StatusModal';
-import translations from "../../constants/en.global.json";
-
+import translations from '../../constants/en.global.json';
 
 export default function ErrorWrapper({
   children,
