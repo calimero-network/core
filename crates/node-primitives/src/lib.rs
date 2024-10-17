@@ -76,6 +76,6 @@ pub enum QueryCallError {
 pub enum MutateCallError {
     ApplicationNotInstalled { application_id: ApplicationId },
     NoConnectedPeers,
-    TransactionRejected,
+    ActionRejected,
     InternalError,
 }

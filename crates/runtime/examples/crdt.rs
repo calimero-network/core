@@ -4,6 +4,7 @@ use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+
 use borsh::BorshSerialize;
 use calimero_runtime::errors::FunctionCallError;
 use calimero_runtime::logic::{VMContext, VMLimits};
@@ -57,7 +58,7 @@ fn main() -> EyreResult<()> {
     println!("{}", "--".repeat(20).dimmed());
     println!("{:>35}", "Setting up Library".bold());
     println!("{}", "--".repeat(20).dimmed());
-    
+
     #[derive(BorshSerialize)]
     pub struct Library {
         books: Books,
@@ -65,7 +66,7 @@ fn main() -> EyreResult<()> {
     }
     #[derive(BorshSerialize)]
     pub struct Books;
-    
+
     // let library_id: [u8; 16] =
     //     hex::decode("deadbeef-1122-3344-5566-778899aabb01".replace("-", ""))?
     //         .as_slice()
@@ -88,7 +89,7 @@ fn main() -> EyreResult<()> {
         storage: Element::new(&EntityPath::new("::library")?),
     };
     let library_id = library_data.storage.id();
-    
+
     let action = Action::Add {
         id: Id::from(library_id),
         type_id: 11,
@@ -171,7 +172,7 @@ fn main() -> EyreResult<()> {
     pub struct Pages;
     #[derive(BorshSerialize)]
     pub struct Reviews;
-    
+
     let book_data = Book {
         authors: vec!["John Doe".to_owned()],
         isbn: "1234567890".to_owned(),

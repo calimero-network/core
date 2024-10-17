@@ -143,6 +143,7 @@ impl Node {
 
     async fn handle_catchup_message(
         &mut self,
+        // TODO: How should this be used?
         chosen_peer: PeerId,
         context: &Context,
         message: CatchupStreamMessage,
@@ -161,9 +162,6 @@ impl Node {
                     ..
                 } in batch.actions
                 {
-                    // TODO: Not clear if this is needed. Emulating the old behaviour for now,
-                    // TODO: but it's likely that an action pool is unnecessary.
-                    self.action_pool.insert(chosen_peer, actions.clone(), None);
                     for action in actions {
                         drop(self.apply_action(context, action, public_key).await?);
                     }

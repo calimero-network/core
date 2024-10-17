@@ -3,7 +3,6 @@
 - [Introduction](#introduction)
 - [Core components](#core-components)
   - [Store](#store)
-  - [TransactionPool](#transactionpool)
 - [Core flows](#core-flows)
   - [Transaction handling](#transaction-handling)
   - [Coordinator joining ceremony](#coordinator-joining-ceremony)
@@ -23,7 +22,6 @@ interactive CLI.
 classDiagram
     Node : +PeerId id
     Node : +Store store
-    Node : +TransacitonPool tx_pool
     Node : +ContextManager ctx_manager
     Node : +NetworkClient network_client
     Node : +Sender[NodeEvents] node_events
@@ -35,18 +33,7 @@ classDiagram
 
 TODO: Write about the store and runtime compat layer, link to the store crate
 
-### TransactionPool
-
-`TransactionPool` is a struct that holds all the transactions that are not yet
-executed. Transaction pool stores transactions in a `BTreeMap` with the key
-being the hash of the transaction. `TransactionPoolEntry` is a struct that holds
-the transaction, the sender of a transaction and the outcomen sender channel.
-
 ## Core flows
-
-### Transaction handling
-
-TODO: Write about the transaction handling process and draw sequence diagram
 
 ### Catchup
 

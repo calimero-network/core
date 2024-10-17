@@ -52,11 +52,9 @@ use tokio::time::{interval_at, Instant};
 use tokio::{select, spawn};
 use tracing::{debug, error, info, warn};
 
-use crate::action_pool::ActionPool;
 use crate::runtime_compat::RuntimeCompatStore;
 use crate::types::{ActionMessage, PeerAction, SyncMessage};
 
-pub mod action_pool;
 pub mod catchup;
 pub mod runtime_compat;
 pub mod types;
@@ -102,7 +100,6 @@ impl NodeConfig {
 pub struct Node {
     id: PeerId,
     store: Store,
-    action_pool: ActionPool,
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
@@ -335,27 +332,6 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 println!(
                     "{ind} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
                 );
-            }
-        }
-        // TODO: This is probably not necessary and should be removed
-        "gc" => {
-            if node.action_pool.actions.is_empty() {
-                println!("{ind} Action pool is empty.");
-            } else {
-                println!(
-                    "{ind} Garbage collecting {} actions.",
-                    node.action_pool.actions.len().cyan()
-                );
-                node.action_pool = ActionPool::default();
-            }
-        }
-        "pool" => {
-            if node.action_pool.actions.is_empty() {
-                println!("{ind} Action pool is empty.");
-            }
-            for entry in &node.action_pool.actions {
-                println!("{ind} • Action");
-                println!("{ind}     Sender: {}", entry.sender.cyan());
             }
         }
         "peers" => {
@@ -873,7 +849,6 @@ impl Node {
         Self {
             id: config.identity.public().to_peer_id(),
             store,
-            action_pool: ActionPool::default(),
             ctx_manager,
             network_client,
             node_events,
@@ -1152,7 +1127,7 @@ impl Node {
         _outcome_sender: oneshot::Sender<Result<Outcome, MutateCallError>>,
     ) -> Result<(), MutateCallError> {
         if context.id != action_list.context_id {
-            return Err(MutateCallError::TransactionRejected);
+            return Err(MutateCallError::ActionRejected);
         }
 
         if !self
@@ -1181,38 +1156,6 @@ impl Node {
                 MutateCallError::InternalError
             })?;
 
-        Ok(())
-    }
-
-    // TODO: Should we be using this somewhere in the CRDT approach, or not?
-    async fn execute_in_context(
-        &mut self,
-        action_list: ActionMessage,
-    ) -> Result<(), MutateCallError> {
-        let Some(context) = self
-            .ctx_manager
-            .get_context(&action_list.context_id)
-            .map_err(|e| {
-                error!(%e, "Failed to get context");
-                MutateCallError::InternalError
-            })?
-        else {
-            error!(%action_list.context_id, "Context not found");
-            return Err(MutateCallError::InternalError);
-        };
-
-        for action in action_list.actions {
-            let outcome = self
-                .apply_action(&context, action, action_list.public_key)
-                .await
-                .map_err(|e| {
-                    error!(%e, "Failed to apply action");
-                    MutateCallError::InternalError
-                })?;
-        }
-
-        // TODO: This used to return outcome - if it is still needed, what should it
-        // TODO: do now?
         Ok(())
     }
 

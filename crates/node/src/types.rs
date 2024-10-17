@@ -55,8 +55,6 @@ pub struct CatchupActionsBatch {
 pub enum CatchupError {
     #[error("context `{context_id:?}` not found")]
     ContextNotFound { context_id: ContextId },
-    #[error("transaction `{transaction_hash:?}` not found")]
-    TransactionNotFound { transaction_hash: Hash },
     #[error("internal error")]
     InternalError,
 }
