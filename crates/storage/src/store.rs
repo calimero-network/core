@@ -7,7 +7,7 @@ use crate::{
 
 /// A key for storage operations.
 ///
-#[derive(Copy, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Key {
     /// An index key.
     ///
@@ -102,14 +102,14 @@ pub(crate) use mocked::MockedStorage;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 mod mocked {
     use core::cell::RefCell;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     use super::{Key, StorageAdaptor};
 
     type Scope = usize;
 
     thread_local! {
-        static STORAGE: RefCell<HashMap<(Scope, Key), Vec<u8>>> = RefCell::new(HashMap::new());
+        static STORAGE: RefCell<BTreeMap<(Scope, Key), Vec<u8>>> = RefCell::new(BTreeMap::new());
     }
 
     pub(crate) struct MockedStorage<const SCOPE: usize>;
