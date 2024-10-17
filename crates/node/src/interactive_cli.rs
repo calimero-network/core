@@ -43,6 +43,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> Result<(), Report> {
     // IMPORTANT: Parser needs first string to be binary name
     let mut args = vec![""];
     args.extend(line.split_whitespace());
+    println!("args: {:?}", args);
 
     match RootCommand::try_parse_from(args) {
         Ok(command) => match command.action {

@@ -31,6 +31,7 @@ impl CallCommand {
             }
         };
         let payload = serde_json::from_str::<Value>(&self.payload)?;
+        println!("{} payload: {:#?}", ind, payload);
 
         let (outcome_sender, outcome_receiver) = oneshot::channel();
 
@@ -55,7 +56,7 @@ impl CallCommand {
         let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {
             Ok(tx_hash) => tx_hash,
             Err(e) => {
-                println!("{} failed to execute transaction: {}", ind, e);
+                println!("{} failed to execute transaction: {:?}", ind, e);
                 return Ok(());
             }
         };
