@@ -227,6 +227,7 @@ use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data};
 use crate::env::{storage_read, storage_remove, storage_write};
 use crate::index::Index;
+use crate::store::Key;
 
 /// Actions to be taken during synchronisation.
 ///
@@ -437,7 +438,7 @@ impl Interface {
                 return Err(StorageError::ActionNotAllowed("Compare".to_owned()))
             }
             Action::Delete { id, ancestors, .. } => {
-                _ = storage_remove(id.as_bytes());
+                _ = storage_remove(Key::Entry(id));
                 ancestors
             }
         };
@@ -706,7 +707,7 @@ impl Interface {
     /// will be returned.
     ///
     pub fn find_by_id<D: Data>(id: Id) -> Result<Option<D>, StorageError> {
-        let value = storage_read(id.as_bytes());
+        let value = storage_read(Key::Entry(id));
 
         match value {
             Some(slice) => {
@@ -743,7 +744,7 @@ impl Interface {
     /// will be returned.
     ///
     pub fn find_by_id_raw(id: Id) -> Result<Option<Vec<u8>>, StorageError> {
-        Ok(storage_read(id.as_bytes()))
+        Ok(storage_read(Key::Entry(id)))
     }
 
     /// Finds one or more [`Element`](crate::entities::Element)s by path in the
@@ -900,7 +901,7 @@ impl Interface {
         child_id: Id,
     ) -> Result<bool, StorageError> {
         Index::remove_child_from(parent_id, collection.name(), child_id)?;
-        Ok(storage_remove(child_id.as_bytes()))
+        Ok(storage_remove(Key::Entry(child_id)))
     }
 
     /// Retrieves the root entity for a given context.
@@ -1002,7 +1003,7 @@ impl Interface {
         entity.element_mut().merkle_hash = Index::update_hash_for(id, own_hash)?;
 
         _ = storage_write(
-            id.as_bytes(),
+            Key::Entry(id),
             &to_vec(entity).map_err(StorageError::SerializationError)?,
         );
 
