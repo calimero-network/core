@@ -112,7 +112,6 @@ mod mocked {
         static STORAGE: RefCell<HashMap<(Scope, Key), Vec<u8>>> = RefCell::new(HashMap::new());
     }
 
-    #[derive(Default)]
     pub(crate) struct MockedStorage<const SCOPE: usize>;
 
     impl<const SCOPE: usize> StorageAdaptor for MockedStorage<SCOPE> {

@@ -97,8 +97,8 @@ mod calimero_vm {
     }
 }
 
-#[cfg(any(test, not(target_arch = "wasm32")))]
-pub(crate) mod mocked {
+#[cfg(not(target_arch = "wasm32"))]
+mod mocked {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use rand::RngCore;
