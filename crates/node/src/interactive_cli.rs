@@ -39,70 +39,34 @@ pub enum SubCommands {
     Transactions(transactions::TransactionsCommand),
 }
 
-pub async fn handle_line(node: &mut Node, line: String) -> Result<(), Report> {
+pub async fn handle_line(node: &mut Node, line: String) {
     // IMPORTANT: Parser needs first string to be binary name
     let mut args = vec![""];
     args.extend(line.split_whitespace());
     println!("args: {:?}", args);
 
-    match RootCommand::try_parse_from(args) {
-        Ok(command) => match command.action {
-            SubCommands::Application(application) => {
-                if let Err(e) = application.run(node).await {
-                    println!("Error running application command: {}", e);
-                }
-            }
-            SubCommands::Call(call) => {
-                if let Err(e) = call.run(node).await {
-                    println!("Error running call command: {}", e);
-                }
-            }
-            SubCommands::Context(context) => {
-                if let Err(e) = context.run(node).await {
-                    println!("Error running context command: {}", e);
-                }
-            }
-            SubCommands::Gc(gc) => {
-                if let Err(e) = gc.run(node).await {
-                    println!("Error running gc command: {}", e);
-                }
-            }
-            SubCommands::Identity(identity) => {
-                if let Err(e) = identity.run(node).await {
-                    println!("Error running identity command: {}", e);
-                }
-            }
-            SubCommands::Peers(peers) => {
-                if let Err(e) = peers.run(node.network_client.clone().into()).await {
-                    println!("Error running peers command: {}", e);
-                }
-            }
-            SubCommands::Pool(pool) => {
-                if let Err(e) = pool.run(node).await {
-                    println!("Error running pool command: {}", e);
-                }
-            }
-            SubCommands::State(state) => {
-                if let Err(e) = state.run(node).await {
-                    println!("Error running state command: {}", e);
-                }
-            }
-            SubCommands::Store(store) => {
-                if let Err(e) = store.run(node).await {
-                    println!("Error running store command: {}", e);
-                }
-            }
-            SubCommands::Transactions(transactions) => {
-                if let Err(e) = transactions.run(node).await {
-                    println!("Error running transactions command: {}", e);
-                }
-            }
-        },
+    let command = match RootCommand::try_parse_from(args) {
+        Ok(command) => command,
         Err(err) => {
             println!("Failed to parse command: {}", err);
-            return Ok(());
+            return;
         }
     };
-
-    Ok(())
+    
+    let result = match command.action {
+        SubCommands::Application(application) => application.run(node).await,
+        SubCommands::Call(call) => call.run(node).await,
+        SubCommands::Context(context) => context.run(node).await,
+        SubCommands::Gc(gc) => gc.run(node).await,
+        SubCommands::Identity(identity) => identity.run(node).await,
+        SubCommands::Peers(peers) => peers.run(node.network_client.clone().into()).await,
+        SubCommands::Pool(pool) => pool.run(node).await,
+        SubCommands::State(state) => state.run(node).await,
+        SubCommands::Store(store) => store.run(node).await,
+        SubCommands::Transactions(transactions) => transactions.run(node).await,
+    };
+        
+    if let Err(err) = result {
+        println!("Error running command: {}", e);
+    }
 }
