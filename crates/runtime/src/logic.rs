@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;
+use rand::RngCore;
 use serde::Serialize;
-use uuid::Uuid;
 
 use crate::constraint::{Constrained, MaxU64};
 use crate::errors::{FunctionCallError, HostError, Location, PanicContext};
@@ -140,17 +140,6 @@ impl<'a> VMLogic<'a> {
     pub fn get_executor_identity(&mut self, register_id: u64) -> VMLogicResult<()> {
         self.registers
             .set(self.limits, register_id, self.context.executor_public_key)
-    }
-
-    /// Generates a new UUID using v4 standard.
-    ///
-    /// This function generates a new UUID using the v4 standard. The UUID is
-    /// dependent on randomness, which is not available inside the guest
-    /// runtime. Therefore the guest needs to request this from the host.
-    ///
-    #[must_use]
-    pub fn generate_uuid(&self) -> Uuid {
-        Uuid::new_v4()
     }
 }
 
@@ -466,19 +455,12 @@ impl VMHostFunctions<'_> {
         Ok(status)
     }
 
-    /// Generates a new UUID using v4 standard.
-    ///
-    /// This function generates a new UUID by calling the host. The UUID is
-    /// dependent on randomness, which is not available inside the guest
-    /// runtime. Therefore the guest needs to request this from the host.
-    ///
-    pub fn generate_uuid(&mut self, register_id: u64) -> VMLogicResult<()> {
-        self.with_logic_mut(|logic| {
-            let uuid = logic.generate_uuid();
-            logic
-                .registers
-                .set(logic.limits, register_id, uuid.into_bytes())
-        })?;
+    pub fn random_bytes(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
+        let mut buf = vec![0; usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?];
+
+        rand::thread_rng().fill_bytes(&mut buf);
+        self.borrow_memory().write(ptr, &buf)?;
+
         Ok(())
     }
 
@@ -497,16 +479,18 @@ impl VMHostFunctions<'_> {
         clippy::unwrap_in_result,
         reason = "Effectively infallible here"
     )]
-    pub fn time_now(&mut self, register_id: u64) -> VMLogicResult<()> {
+    pub fn time_now(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
+        if len != 8 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards to before the Unix epoch!")
             .as_nanos() as u64;
-        self.with_logic_mut(|logic| {
-            logic
-                .registers
-                .set(logic.limits, register_id, now.to_le_bytes())
-        })?;
+
+        self.borrow_memory().write(ptr, &now.to_le_bytes())?;
+
         Ok(())
     }
 }
