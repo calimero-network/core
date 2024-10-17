@@ -66,6 +66,7 @@ pub mod entities;
 pub mod env;
 pub mod index;
 pub mod interface;
+pub mod store;
 
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {

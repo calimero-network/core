@@ -1,5 +1,7 @@
 //! Environment bindings for the storage crate.
 
+use crate::store::Key;
+
 #[cfg(target_arch = "wasm32")]
 use calimero_vm as imp;
 
@@ -13,7 +15,7 @@ use mocked as imp;
 /// * `key` - The key to read data from.
 ///
 #[must_use]
-pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
+pub fn storage_read(key: Key) -> Option<Vec<u8>> {
     imp::storage_read(key)
 }
 
@@ -24,7 +26,7 @@ pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
 /// * `key` - The key to remove.
 ///
 #[must_use]
-pub fn storage_remove(key: &[u8]) -> bool {
+pub fn storage_remove(key: Key) -> bool {
     imp::storage_remove(key)
 }
 
@@ -36,7 +38,7 @@ pub fn storage_remove(key: &[u8]) -> bool {
 /// * `value` - The data to write.
 ///
 #[must_use]
-pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
+pub fn storage_write(key: Key, value: &[u8]) -> bool {
     imp::storage_write(key, value)
 }
 
@@ -61,22 +63,24 @@ pub fn time_now() -> u64 {
 mod calimero_vm {
     use calimero_sdk::env;
 
+    use crate::store::Key;
+
     /// Reads data from persistent storage.
     ///
-    pub(super) fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-        env::storage_read(key)
+    pub(super) fn storage_read(key: Key) -> Option<Vec<u8>> {
+        env::storage_read(&key.to_bytes())
     }
 
     /// Removes data from persistent storage.
     ///
-    pub(super) fn storage_remove(key: &[u8]) -> bool {
-        env::storage_remove(key)
+    pub(super) fn storage_remove(key: Key) -> bool {
+        env::storage_remove(&key.to_bytes())
     }
 
     /// Writes data to persistent storage.
     ///
-    pub(super) fn storage_write(key: &[u8], value: &[u8]) -> bool {
-        env::storage_write(key, value)
+    pub(super) fn storage_write(key: Key, value: &[u8]) -> bool {
+        env::storage_write(&key.to_bytes(), value)
     }
 
     /// Fills the buffer with random bytes.
@@ -93,39 +97,32 @@ mod calimero_vm {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-mod mocked {
-    use core::cell::RefCell;
-    use std::collections::HashMap;
+#[cfg(any(test, not(target_arch = "wasm32")))]
+pub(crate) mod mocked {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use rand::RngCore;
 
-    thread_local! {
-        static STORAGE: RefCell<HashMap<Vec<u8>, Vec<u8>>> = RefCell::new(HashMap::new());
-    }
+    use crate::store::{Key, MockedStorage, StorageAdaptor};
+
+    type DefaultStore = MockedStorage<{ usize::MAX }>;
 
     /// Reads data from persistent storage.
     ///
-    pub(super) fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-        STORAGE.with(|storage| storage.borrow().get(key).cloned())
+    pub(super) fn storage_read(key: Key) -> Option<Vec<u8>> {
+        DefaultStore::storage_read(key)
     }
 
     /// Removes data from persistent storage.
     ///
-    pub(super) fn storage_remove(key: &[u8]) -> bool {
-        STORAGE.with(|storage| storage.borrow_mut().remove(key).is_some())
+    pub(super) fn storage_remove(key: Key) -> bool {
+        DefaultStore::storage_remove(key)
     }
 
     /// Writes data to persistent storage.
     ///
-    pub(super) fn storage_write(key: &[u8], value: &[u8]) -> bool {
-        STORAGE.with(|storage| {
-            storage
-                .borrow_mut()
-                .insert(key.to_vec(), value.to_vec())
-                .is_some()
-        })
+    pub(super) fn storage_write(key: Key, value: &[u8]) -> bool {
+        DefaultStore::storage_write(key, value)
     }
 
     /// Fills the buffer with random bytes.
