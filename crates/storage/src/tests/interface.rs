@@ -270,8 +270,7 @@ mod interface__apply_actions {
 mod interface__comparison {
     use super::*;
 
-    type AliceInterface = MainInterface<MockedStorage<{ usize::MAX }>>;
-    type BobInterface = MainInterface<MockedStorage<{ usize::MAX - 1 }>>;
+    type ForeignInterface = MainInterface<MockedStorage<0>>;
 
     #[test]
     fn compare_trees__identical() {
@@ -279,16 +278,16 @@ mod interface__comparison {
         let mut local = Page::new_from_element("Test Page", element);
         let mut foreign = local.clone();
 
-        assert!(AliceInterface::save(&mut local).unwrap());
-        assert!(BobInterface::save(&mut foreign).unwrap());
+        assert!(Interface::save(&mut local).unwrap());
+        assert!(ForeignInterface::save(&mut foreign).unwrap());
         assert_eq!(
             local.element().merkle_hash(),
             foreign.element().merkle_hash()
         );
 
-        let result = AliceInterface::compare_trees(
+        let result = Interface::compare_trees(
             &foreign,
-            &BobInterface::generate_comparison_data(&foreign).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
         )
         .unwrap();
         assert_eq!(result, (vec![], vec![]));
@@ -300,16 +299,16 @@ mod interface__comparison {
         let mut local = Page::new_from_element("Test Page", element.clone());
         let mut foreign = Page::new_from_element("Old Test Page", element);
 
-        assert!(BobInterface::save(&mut foreign).unwrap());
+        assert!(ForeignInterface::save(&mut foreign).unwrap());
 
         // Make local newer
         sleep(Duration::from_millis(10));
         local.element_mut().update();
-        assert!(AliceInterface::save(&mut local).unwrap());
+        assert!(Interface::save(&mut local).unwrap());
 
-        let result = AliceInterface::compare_trees(
+        let result = Interface::compare_trees(
             &foreign,
-            &BobInterface::generate_comparison_data(&foreign).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -332,16 +331,16 @@ mod interface__comparison {
         let mut local = Page::new_from_element("Old Test Page", element.clone());
         let mut foreign = Page::new_from_element("Test Page", element);
 
-        assert!(AliceInterface::save(&mut local).unwrap());
+        assert!(Interface::save(&mut local).unwrap());
 
         // Make foreign newer
         sleep(Duration::from_millis(10));
         foreign.element_mut().update();
-        assert!(BobInterface::save(&mut foreign).unwrap());
+        assert!(ForeignInterface::save(&mut foreign).unwrap());
 
-        let result = AliceInterface::compare_trees(
+        let result = Interface::compare_trees(
             &foreign,
-            &BobInterface::generate_comparison_data(&foreign).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -374,37 +373,37 @@ mod interface__comparison {
         let mut foreign_para1 = Paragraph::new_from_element("Updated Paragraph 1", para1_element);
         let mut foreign_para3 = Paragraph::new_from_element("Foreign Paragraph 3", para3_element);
 
-        assert!(AliceInterface::save(&mut local_page).unwrap());
-        assert!(AliceInterface::add_child_to(
+        assert!(Interface::save(&mut local_page).unwrap());
+        assert!(Interface::add_child_to(
             local_page.id(),
             &mut local_page.paragraphs,
             &mut local_para1
         )
         .unwrap());
-        assert!(AliceInterface::add_child_to(
+        assert!(Interface::add_child_to(
             local_page.id(),
             &mut local_page.paragraphs,
             &mut local_para2
         )
         .unwrap());
 
-        assert!(BobInterface::save(&mut foreign_page).unwrap());
-        assert!(BobInterface::add_child_to(
+        assert!(ForeignInterface::save(&mut foreign_page).unwrap());
+        assert!(ForeignInterface::add_child_to(
             foreign_page.id(),
             &mut foreign_page.paragraphs,
             &mut foreign_para1
         )
         .unwrap());
-        assert!(BobInterface::add_child_to(
+        assert!(ForeignInterface::add_child_to(
             foreign_page.id(),
             &mut foreign_page.paragraphs,
             &mut foreign_para3
         )
         .unwrap());
 
-        let (local_actions, foreign_actions) = AliceInterface::compare_trees(
+        let (local_actions, foreign_actions) = Interface::compare_trees(
             &foreign_page,
-            &BobInterface::generate_comparison_data(&foreign_page).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign_page).unwrap(),
         )
         .unwrap();
 
@@ -447,9 +446,9 @@ mod interface__comparison {
         );
 
         // Compare the updated para1
-        let (local_para1_actions, foreign_para1_actions) = AliceInterface::compare_trees(
+        let (local_para1_actions, foreign_para1_actions) = Interface::compare_trees(
             &foreign_para1,
-            &BobInterface::generate_comparison_data(&foreign_para1).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign_para1).unwrap(),
         )
         .unwrap();
 
@@ -478,9 +477,9 @@ mod interface__comparison {
         assert_eq!(foreign_para1_actions, vec![]);
 
         // Compare para3 which doesn't exist locally
-        let (local_para3_actions, foreign_para3_actions) = AliceInterface::compare_trees(
+        let (local_para3_actions, foreign_para3_actions) = Interface::compare_trees(
             &foreign_para3,
-            &BobInterface::generate_comparison_data(&foreign_para3).unwrap(),
+            &ForeignInterface::generate_comparison_data(&foreign_para3).unwrap(),
         )
         .unwrap();
 
