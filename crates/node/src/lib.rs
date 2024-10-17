@@ -1077,24 +1077,20 @@ impl Node {
             return;
         };
 
-        let task = async {
-            // TODO: Temporary unwrap here
-            self.apply_action(
-                &context,
-                from_json_slice::<Action>(&request.payload).unwrap(),
-                request.executor_public_key,
-            )
-            .await
-        };
+        let task = self.call_query(
+            &context,
+            request.method,
+            request.payload,
+            request.executor_public_key,
+        );
 
         drop(request.outcome_sender.send(task.await.map_err(|err| {
-            error!(%err, "failed to execute local action");
+            error!(%err, "failed to execute local query");
 
             CallError::Mutate(MutateCallError::InternalError)
         })));
     }
 
-    // TODO: Should we be using this somewhere in the CRDT approach, or not?
     async fn call_query(
         &mut self,
         context: &Context,
@@ -1112,12 +1108,18 @@ impl Node {
             });
         }
 
-        self.execute(context, None, method, payload, executor_public_key)
-            .await
-            .map_err(|e| {
-                error!(%e,"Failed to execute query call.");
-                QueryCallError::InternalError
-            })
+        self.execute(
+            context,
+            Some(context.root_hash),
+            method,
+            payload,
+            executor_public_key,
+        )
+        .await
+        .map_err(|e| {
+            error!(%e,"Failed to execute query call.");
+            QueryCallError::InternalError
+        })
     }
 
     async fn call_mutate(
