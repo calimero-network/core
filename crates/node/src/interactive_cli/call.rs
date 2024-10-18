@@ -1,7 +1,4 @@
-use calimero_primitives::{
-    identity::PublicKey,
-    transaction::Transaction,
-};
+use calimero_primitives::{identity::PublicKey, transaction::Transaction};
 use clap::Parser;
 use owo_colors::OwoColorize;
 use serde_json::Value;

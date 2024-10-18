@@ -184,7 +184,9 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
             }
             line = stdin.next_line() => {
                 if let Some(line) = line? {
-                    interactive_cli::handle_line(&mut node, line).await?;
+                    if let Err(err) = interactive_cli::handle_line(&mut node, line).await {
+                        error!("Failed to handle line: {:?}", err);
+                    }
                 }
             }
             result = &mut server => {
@@ -720,7 +722,7 @@ impl Node {
         let outcome = calimero_runtime::run(
             &blob,
             &method,
-            VMContext::new(payload, *executor_public_key),
+            VMContext::new(payload, context.id.into(), *executor_public_key),
             &mut storage,
             &get_runtime_limits()?,
         )?;

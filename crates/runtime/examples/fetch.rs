@@ -49,6 +49,7 @@ fn main() -> EyreResult<()> {
             "account_id": "nearkat.testnet",
         }))?,
         [0; 32],
+        [0; 32],
     );
     let get_outcome = run(&file, "view_account", cx, &mut storage, &limits)?;
     let returns = String::from_utf8(get_outcome.returns.unwrap().unwrap()).unwrap();
