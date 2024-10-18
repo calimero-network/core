@@ -214,9 +214,9 @@
 mod tests;
 
 use core::fmt::Debug;
+use core::marker::PhantomData;
 use std::collections::BTreeMap;
 use std::io::Error as IoError;
-use std::marker::PhantomData;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use eyre::Report;
