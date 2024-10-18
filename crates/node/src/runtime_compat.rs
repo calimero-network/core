@@ -1,8 +1,9 @@
 use core::cell::RefCell;
-use core::mem::transmute;
+use core::mem;
+use std::collections::HashSet;
 
 use calimero_primitives::context::ContextId;
-use calimero_runtime::store::{Key, Storage, Value};
+use calimero_runtime::store::{Id, Storage, StorageError, Value};
 use calimero_store::key::ContextState as ContextStateKey;
 use calimero_store::layer::read_only::ReadOnly;
 use calimero_store::layer::temporal::Temporal;
@@ -22,7 +23,7 @@ pub struct RuntimeCompatStore<'this, 'entry> {
     context_id: ContextId,
     inner: RuntimeCompatStoreInner<'this, 'entry>,
     // todo! unideal, will revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
-    keys: RefCell<Vec<ContextStateKey>>,
+    keys: RefCell<HashSet<ContextStateKey>>,
 }
 
 impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
@@ -43,20 +44,18 @@ impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
         }
     }
 
-    fn state_key(&self, key: &[u8]) -> Option<&'entry ContextStateKey> {
-        let mut state_key = [0; 32];
-
-        (key.len() <= state_key.len()).then_some(())?;
-
-        state_key[..key.len()].copy_from_slice(key);
-
+    fn state_key(&self, key: Id) -> &'entry ContextStateKey {
         let mut keys = self.keys.borrow_mut();
 
-        keys.push(ContextStateKey::new(self.context_id, state_key));
+        let key = ContextStateKey::new(self.context_id, key);
+
+        let _ = keys.insert(key);
 
         // safety: TemporalStore lives as long as Self, so the reference will hold
         unsafe {
-            transmute::<Option<&ContextStateKey>, Option<&'entry ContextStateKey>>(keys.last())
+            mem::transmute::<&ContextStateKey, &'entry ContextStateKey>(
+                keys.get(&key).expect("we just pushed"),
+            )
         }
     }
 
@@ -70,48 +69,63 @@ impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
 }
 
 impl Storage for RuntimeCompatStore<'_, '_> {
-    fn get(&self, key: &Key) -> Option<Vec<u8>> {
-        let key = self.state_key(key)?;
+    fn create(&mut self, is_collection: bool) -> Result<Id, StorageError> {
+        todo!()
+    }
+
+    fn exists(&self, key: &Id) -> Result<bool, StorageError> {
+        let key = self.state_key(*key);
+
+        match &self.inner {
+            RuntimeCompatStoreInner::Read(store) => store.has(key),
+            RuntimeCompatStoreInner::Write(store) => store.has(key),
+        }
+        .map_err(|e| StorageError::Other(e.into()))
+    }
+
+    fn read(&self, key: &Id) -> Result<Option<Value>, StorageError> {
+        let key = self.state_key(*key);
 
         let maybe_slice = match &self.inner {
             RuntimeCompatStoreInner::Read(store) => store.get(key),
             RuntimeCompatStoreInner::Write(store) => store.get(key),
         };
 
-        let slice = maybe_slice.ok()??;
+        let Some(slice) = maybe_slice.map_err(|e| StorageError::Other(e.into()))? else {
+            return Ok(None);
+        };
 
-        Some(slice.into_boxed().into_vec())
+        Ok(Some(slice.into_boxed().into_vec()))
     }
 
-    fn set(&mut self, key: Key, value: Value) -> Option<Value> {
-        let key = self.state_key(&key)?;
+    fn write(&mut self, key: Id, value: Value) -> Result<Option<Value>, StorageError> {
+        let key = self.state_key(key);
 
         let RuntimeCompatStoreInner::Write(store) = &mut self.inner else {
             unimplemented!("Can not write to read-only store.");
         };
 
         let old = store
-            .has(key)
-            .ok()?
-            .then(|| store.get(key).ok().flatten())
-            .flatten()
+            .get(key)
+            .map_err(|e| StorageError::Other(e.into()))?
             .map(|slice| slice.into_boxed().into_vec());
 
-        store.put(key, value.into()).ok()?;
+        store
+            .put(key, value.into())
+            .map_err(|e| StorageError::Other(e.into()))?;
 
-        old
+        Ok(old)
     }
 
-    fn has(&self, key: &Key) -> bool {
-        let Some(key) = self.state_key(key) else {
-            return false;
-        };
+    fn remove(&mut self, key: &Id) -> Result<Option<Value>, StorageError> {
+        todo!()
+    }
 
-        match &self.inner {
-            RuntimeCompatStoreInner::Read(store) => store.has(key),
-            RuntimeCompatStoreInner::Write(store) => store.has(key),
-        }
-        .ok()
-        .unwrap_or(false)
+    fn adopt(&mut self, key: Id, parent: &Id) -> Result<bool, StorageError> {
+        todo!()
+    }
+
+    fn orphan(&mut self, key: Id, parent: &Id) -> Result<bool, StorageError> {
+        todo!()
     }
 }

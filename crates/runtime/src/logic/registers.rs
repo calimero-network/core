@@ -58,6 +58,8 @@ impl Registers {
 
         match entry {
             Entry::Occupied(mut entry) => {
+                // todo! if the old box is large enough, copy the data into the new box
+                // todo! this will suffer in the case of `String` which is a `Vec<u8>` which is a `Box<[u8]>`
                 drop(entry.insert(data.into()));
             }
             Entry::Vacant(entry) => {
