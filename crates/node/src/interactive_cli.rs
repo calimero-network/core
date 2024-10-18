@@ -50,7 +50,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
             eyre::bail!("Failed to parse command");
         }
     };
-    
+
     let result = match command.action {
         SubCommands::Application(application) => application.run(node).await,
         SubCommands::Call(call) => call.run(node).await,
@@ -63,7 +63,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommands::Store(store) => store.run(node).await,
         SubCommands::Transactions(transactions) => transactions.run(node).await,
     };
-        
+
     if let Err(err) = result {
         println!("Error running command: {}", err);
         eyre::bail!("Failed to parse command");

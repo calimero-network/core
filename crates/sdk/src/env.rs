@@ -119,6 +119,12 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
 }
 
 #[must_use]
+pub fn context_id() -> [u8; 32] {
+    unsafe { sys::context_id(DATA_REGISTER) }
+    read_register_sized(DATA_REGISTER).expect("Must have context identity.")
+}
+
+#[must_use]
 pub fn executor_id() -> [u8; 32] {
     unsafe { sys::executor_id(DATA_REGISTER) }
     read_register_sized(DATA_REGISTER).expect("Must have executor identity.")
