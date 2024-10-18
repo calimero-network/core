@@ -1,10 +1,12 @@
 use calimero_server_primitives::admin::GetApplicationResponse;
 use clap::{Parser, ValueEnum};
-use eyre::{bail, Result as EyreResult};
+use eyre::{eyre, Error as EyreError};
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
+use crate::common::{
+    fetch_multiaddr, get_response, load_config, multiaddr_to_url, CliError, RequestType,
+};
 
 #[derive(Parser, Debug)]
 pub struct GetCommand {
@@ -24,7 +26,7 @@ pub enum GetValues {
 
 impl GetCommand {
     #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+    pub async fn run(self, args: RootArgs) -> Result<(), CliError<EyreError>> {
         let config = load_config(&args.node_name)?;
 
         let url = multiaddr_to_url(
@@ -42,10 +44,13 @@ impl GetCommand {
         .await?;
 
         if !response.status().is_success() {
-            bail!("Request failed with status: {}", response.status())
+            return Err(CliError::MethodCallError(eyre!(
+                "Request failed with status: {}",
+                response.status()
+            )));
         }
 
-        let response: GetApplicationResponse = response.json().await?;
+        let response = response.json::<GetApplicationResponse>().await;
         println!("{:#?}", response);
 
         Ok(())

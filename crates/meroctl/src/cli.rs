@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
 
+use crate::common::ResponseBody;
 use crate::defaults;
 
 mod app;
@@ -65,10 +66,14 @@ pub struct RootArgs {
 
 impl RootCommand {
     pub async fn run(self) -> EyreResult<()> {
-        match self.action {
+        let x: ResponseBody = match self.action {
             SubCommands::Context(context) => context.run(self.args).await,
             SubCommands::App(application) => application.run(self.args).await,
             SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(self.args).await,
-        }
+        };
+
+        println!("{:#?}", x);
+
+        Ok(())
     }
 }

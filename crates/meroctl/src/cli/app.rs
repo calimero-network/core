@@ -5,6 +5,7 @@ use super::RootArgs;
 use crate::cli::app::get::GetCommand;
 use crate::cli::app::install::InstallCommand;
 use crate::cli::app::list::ListCommand;
+use crate::common::CliError;
 
 mod get;
 mod install;
@@ -25,7 +26,7 @@ pub enum AppSubCommands {
 }
 
 impl AppCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+    pub async fn run(self, args: RootArgs) -> ResponseBody {
         match self.subcommand {
             AppSubCommands::Get(get) => get.run(args).await,
             AppSubCommands::Install(install) => install.run(args).await,
