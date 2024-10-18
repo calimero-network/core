@@ -61,6 +61,12 @@ impl Id {
     pub const fn as_bytes(&self) -> &Bytes {
         self.0.as_bytes()
     }
+
+    /// Root ID which is set to all zeroes by default.
+    #[must_use]
+    pub fn root() -> Self {
+        Self(Uuid::nil())
+    }
 }
 
 impl BorshDeserialize for Id {
