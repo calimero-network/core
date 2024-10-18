@@ -1,12 +1,11 @@
 //! Environment bindings for the storage crate.
 
-use crate::store::Key;
-
 #[cfg(target_arch = "wasm32")]
 use calimero_vm as imp;
-
 #[cfg(not(target_arch = "wasm32"))]
 use mocked as imp;
+
+use crate::store::Key;
 
 /// Reads data from persistent storage.
 ///
@@ -53,7 +52,6 @@ pub fn random_bytes(buf: &mut [u8]) {
 }
 
 /// Get the current time.
-///
 #[must_use]
 pub fn time_now() -> u64 {
     imp::time_now()
@@ -66,19 +64,16 @@ mod calimero_vm {
     use crate::store::Key;
 
     /// Reads data from persistent storage.
-    ///
     pub(super) fn storage_read(key: Key) -> Option<Vec<u8>> {
         env::storage_read(&key.to_bytes())
     }
 
     /// Removes data from persistent storage.
-    ///
     pub(super) fn storage_remove(key: Key) -> bool {
         env::storage_remove(&key.to_bytes())
     }
 
     /// Writes data to persistent storage.
-    ///
     pub(super) fn storage_write(key: Key, value: &[u8]) -> bool {
         env::storage_write(&key.to_bytes(), value)
     }
@@ -105,22 +100,20 @@ mod mocked {
 
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
+    /// The default storage system.
     type DefaultStore = MockedStorage<{ usize::MAX }>;
 
     /// Reads data from persistent storage.
-    ///
     pub(super) fn storage_read(key: Key) -> Option<Vec<u8>> {
         DefaultStore::storage_read(key)
     }
 
     /// Removes data from persistent storage.
-    ///
     pub(super) fn storage_remove(key: Key) -> bool {
         DefaultStore::storage_remove(key)
     }
 
     /// Writes data to persistent storage.
-    ///
     pub(super) fn storage_write(key: Key, value: &[u8]) -> bool {
         DefaultStore::storage_write(key, value)
     }

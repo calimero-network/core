@@ -4,8 +4,8 @@
 #[path = "tests/index.rs"]
 mod tests;
 
+use core::marker::PhantomData;
 use std::collections::BTreeMap;
-use std::marker::PhantomData;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};

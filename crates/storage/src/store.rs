@@ -1,33 +1,30 @@
 //! Storage operations.
 
-use crate::{
-    address::Id,
-    env::{storage_read, storage_remove, storage_write},
-};
+use crate::address::Id;
+use crate::env::{storage_read, storage_remove, storage_write};
 
 /// A key for storage operations.
-///
-#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
 pub enum Key {
     /// An index key.
-    ///
     Index(Id),
+
     /// An entry key.
-    ///
     Entry(Id),
 }
 
 impl Key {
     /// Converts the key to a byte array.
-    ///
+    #[must_use]
     pub fn to_bytes(&self) -> [u8; 17] {
         let mut bytes = [0; 17];
-        match self {
-            Key::Index(id) => {
+        match *self {
+            Self::Index(id) => {
                 bytes[0] = 0;
                 bytes[1..17].copy_from_slice(id.as_bytes());
             }
-            Key::Entry(id) => {
+            Self::Entry(id) => {
                 bytes[0] = 1;
                 bytes[1..17].copy_from_slice(id.as_bytes());
             }
@@ -99,19 +96,24 @@ impl StorageAdaptor for MainStorage {
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) use mocked::MockedStorage;
 
+/// The mocked storage system.
 #[cfg(any(test, not(target_arch = "wasm32")))]
-mod mocked {
+pub(crate) mod mocked {
     use core::cell::RefCell;
     use std::collections::BTreeMap;
 
     use super::{Key, StorageAdaptor};
 
+    /// The scope of the storage system, which allows for multiple storage
+    /// systems to be used in parallel.
     type Scope = usize;
 
     thread_local! {
-        static STORAGE: RefCell<BTreeMap<(Scope, Key), Vec<u8>>> = RefCell::new(BTreeMap::new());
+        static STORAGE: RefCell<BTreeMap<(Scope, Key), Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
     }
 
+    /// The mocked storage system.
+    #[expect(clippy::redundant_pub_crate, reason = "Needed here")]
     pub(crate) struct MockedStorage<const SCOPE: usize>;
 
     impl<const SCOPE: usize> StorageAdaptor for MockedStorage<SCOPE> {
