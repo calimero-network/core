@@ -12,6 +12,7 @@ wasm_imports! {
         fn register_len(register_id: RegisterId) -> PtrSizedInt;
         fn read_register(register_id: RegisterId, buf: BufferMut<'_>) -> Bool;
         // --
+        fn context_id(register_id: RegisterId);
         fn executor_id(register_id: RegisterId);
         // --
         fn input(register_id: RegisterId);

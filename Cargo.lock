@@ -944,6 +944,7 @@ dependencies = [
  "calimero-server",
  "calimero-store",
  "camino",
+ "clap",
  "eyre",
  "futures-util",
  "libp2p",
