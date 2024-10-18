@@ -2,14 +2,14 @@ version: '3.8'
 
 services:
   coordinator_init:
-    image: merod-image:latest
+    image: merod:latest
     command: >
-      --node-name coordinator --home /data init --server-port 2427 --swarm-port 2527
+      --node-name coordinator --home /data init --server-host 0.0.0.0 --server-port 2427 --swarm-port 2527
     volumes:
       - ./data:/data
 
   coordinator_run:
-    image: merod-image:latest
+    image: merod:latest
     ports:
       - "2427:2427"
       - "2527:2527"
@@ -21,14 +21,14 @@ services:
       - coordinator_init
 
   app_node_init:
-    image: merod-image:latest
+    image: merod:latest
     command: >
-      --node-name node1 --home /data init --server-port 2428 --swarm-port 2528
+      --node-name node1 --home /data init --server-host 0.0.0.0 --server-port 2428 --swarm-port 2528
     volumes:
       - ./data:/data
 
   app_node_run:
-    image: merod-image:latest
+    image: merod:latest
     ports:
       - "2428:2428"
       - "2528:2528"
