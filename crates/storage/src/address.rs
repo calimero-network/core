@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use uuid::{Bytes, Uuid};
 
+use crate::env::random_bytes;
+
 /// Globally-unique identifier for an [`Element`](crate::entities::Element).
 ///
 /// This is unique across the entire context, across all devices and all time.
@@ -48,7 +50,9 @@ impl Id {
     ///
     #[must_use]
     pub fn new() -> Self {
-        unimplemented!()
+        let mut bytes = [0; 16];
+        random_bytes(&mut bytes);
+        Self(uuid::Builder::from_random_bytes(bytes).into_uuid())
     }
 
     /// Returns a slice of 16 octets containing the value.
