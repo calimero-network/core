@@ -51,12 +51,8 @@ impl Id {
     #[must_use]
     pub fn new() -> Self {
         let mut bytes = [0; 16];
-
         random_bytes(&mut bytes);
-
-        let id = uuid::Builder::from_random_bytes(bytes).into_uuid();
-
-        Self(id)
+        Self(uuid::Builder::from_random_bytes(bytes).into_uuid())
     }
 
     /// Returns a slice of 16 octets containing the value.
