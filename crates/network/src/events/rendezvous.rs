@@ -1,6 +1,6 @@
 use libp2p::rendezvous::client::Event;
 use owo_colors::OwoColorize;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::{EventHandler, EventLoop};
 use crate::discovery::state::{PeerDiscoveryMechanism, RendezvousRegistrationStatus};
@@ -79,7 +79,7 @@ impl EventHandler<Event> for EventLoop {
                 namespace,
                 error,
             } => {
-                error!(?rendezvous_node, ?namespace, error_code=?error, "Rendezvous discovery failed");
+                warn!(?rendezvous_node, ?namespace, error_code=?error, "Rendezvous discovery failed");
             }
             Event::RegisterFailed {
                 rendezvous_node,

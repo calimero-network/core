@@ -421,6 +421,44 @@ impl CreateContextRequest {
         }
     }
 }
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct InviteToContextRequest {
+    pub context_id: ContextId,
+    pub inviter_id: PublicKey,
+    pub invitee_id: PublicKey,
+}
+
+impl InviteToContextRequest {
+    #[must_use]
+    pub const fn new(context_id: ContextId, inviter_id: PublicKey, invitee_id: PublicKey) -> Self {
+        Self {
+            context_id,
+            inviter_id,
+            invitee_id,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct InviteToContextResponse {
+    pub invitation_payload: Option<ContextInvitationPayload>,
+}
+
+impl InviteToContextResponse {
+    #[must_use]
+    pub const fn new(invitation_payload: Option<ContextInvitationPayload>) -> Self {
+        Self { invitation_payload }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct InviteToContextResponseData {
+    pub context_id: ContextId,
+    pub invitee_public_key: PublicKey,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]

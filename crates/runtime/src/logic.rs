@@ -24,14 +24,16 @@ pub type VMLogicResult<T, E = VMLogicError> = Result<T, E>;
 #[non_exhaustive]
 pub struct VMContext {
     pub input: Vec<u8>,
+    pub context_id: [u8; 32],
     pub executor_public_key: [u8; 32],
 }
 
 impl VMContext {
     #[must_use]
-    pub const fn new(input: Vec<u8>, executor_public_key: [u8; 32]) -> Self {
+    pub const fn new(input: Vec<u8>, context_id: [u8; 32], executor_public_key: [u8; 32]) -> Self {
         Self {
             input,
+            context_id,
             executor_public_key,
         }
     }
@@ -244,6 +246,14 @@ impl VMHostFunctions<'_> {
         }
         self.borrow_memory().write(ptr, data)?;
         Ok(1)
+    }
+
+    pub fn context_id(&mut self, register_id: u64) -> VMLogicResult<()> {
+        self.with_logic_mut(|logic| {
+            logic
+                .registers
+                .set(logic.limits, register_id, logic.context.context_id)
+        })
     }
 
     pub fn executor_id(&mut self, register_id: u64) -> VMLogicResult<()> {

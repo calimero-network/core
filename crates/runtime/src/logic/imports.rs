@@ -34,6 +34,7 @@ impl VMLogic<'_> {
             fn register_len(register_id: u64) -> u64;
             fn read_register(register_id: u64, ptr: u64, len: u64) -> u32;
 
+            fn context_id(register_id: u64);
             fn executor_id(register_id: u64);
 
             fn input(register_id: u64);
