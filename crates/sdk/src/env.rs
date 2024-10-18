@@ -106,14 +106,13 @@ pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
 #[inline]
 fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N]> {
     let len = register_len(register_id)?;
-    let buffer = [0; N];
-
+    let mut buffer = [0; N];
     #[expect(
         clippy::needless_borrows_for_generic_args,
         reason = "we don't want to copy the buffer, but write to the same one that's returned"
     )]
     let succeed: bool = unsafe {
-        sys::read_register(register_id, BufferMut::new(buffer))
+        sys::read_register(register_id, BufferMut::new(&mut buffer))
             .try_into()
             .unwrap_or_else(expected_boolean)
     };
