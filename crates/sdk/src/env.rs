@@ -167,6 +167,12 @@ pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
         .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
 }
 
+#[inline]
+pub fn storage_remove(key: &[u8]) -> bool {
+    unsafe { sys::storage_remove(Buffer::from(key), DATA_REGISTER).try_into() }
+        .unwrap_or_else(expected_boolean)
+}
+
 #[must_use]
 pub fn state_read<T: AppState>() -> Option<T> {
     let data = storage_read(STATE_KEY)?;
@@ -187,5 +193,28 @@ pub fn state_write<T: AppState>(state: &T) {
         Ok(data) => data,
         Err(err) => panic_str(&format!("Cannot serialize app state: {err:?}")),
     };
-    let _ = storage_write(STATE_KEY, &data);
+    _ = storage_write(STATE_KEY, &data);
+}
+
+/// Fill the buffer with random bytes.
+#[inline]
+pub fn random_bytes(buf: &mut [u8]) {
+    unsafe { sys::random_bytes(BufferMut::new(buf)) }
+}
+
+/// Gets the current time.
+#[inline]
+#[must_use]
+pub fn time_now() -> u64 {
+    let mut bytes = [0; 8];
+
+    #[expect(
+        clippy::needless_borrows_for_generic_args,
+        reason = "we don't want to copy the buffer, but write to the same one that's returned"
+    )]
+    unsafe {
+        sys::time_now(BufferMut::new(&mut bytes));
+    }
+
+    u64::from_le_bytes(bytes)
 }

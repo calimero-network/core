@@ -50,6 +50,7 @@ impl VMLogic<'_> {
                 register_id: u64,
             ) -> u32;
             fn storage_read(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
+            fn storage_remove(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
 
             fn fetch(
                 url_ptr: u64,
@@ -62,6 +63,9 @@ impl VMLogic<'_> {
                 body_len: u64,
                 register_id: u64
             ) -> u32;
+
+            fn random_bytes(ptr: u64, len: u64);
+            fn time_now(ptr: u64, len: u64);
         }
     }
 }

@@ -2,9 +2,11 @@
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
 use core::num::NonZeroU64;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;
+use rand::RngCore;
 use serde::Serialize;
 
 use crate::constraint::{Constrained, MaxU64};
@@ -358,6 +360,32 @@ impl VMHostFunctions<'_> {
         Ok(0)
     }
 
+    pub fn storage_remove(
+        &mut self,
+        key_ptr: u64,
+        key_len: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let logic = self.borrow_logic();
+
+        if key_len > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+
+        let key = self.read_guest_memory(key_ptr, key_len)?;
+
+        if let Some(value) = logic.storage.get(&key) {
+            self.with_logic_mut(|logic| {
+                drop(logic.storage.remove(&key));
+                logic.registers.set(logic.limits, register_id, value)
+            })?;
+
+            return Ok(1);
+        }
+
+        Ok(0)
+    }
+
     pub fn storage_write(
         &mut self,
         key_ptr: u64,
@@ -438,5 +466,44 @@ impl VMHostFunctions<'_> {
 
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, data))?;
         Ok(status)
+    }
+
+    pub fn random_bytes(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
+        let mut buf = vec![0; usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?];
+
+        rand::thread_rng().fill_bytes(&mut buf);
+        self.borrow_memory().write(ptr, &buf)?;
+
+        Ok(())
+    }
+
+    /// Gets the current time.
+    ///
+    /// This function obtains the current time as a nanosecond timestamp, as
+    /// [`SystemTime`] is not available inside the guest runtime. Therefore the
+    /// guest needs to request this from the host.
+    ///
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Impossible to overflow in normal circumstances"
+    )]
+    #[expect(
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        reason = "Effectively infallible here"
+    )]
+    pub fn time_now(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
+        if len != 8 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards to before the Unix epoch!")
+            .as_nanos() as u64;
+
+        self.borrow_memory().write(ptr, &now.to_le_bytes())?;
+
+        Ok(())
     }
 }

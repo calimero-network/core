@@ -63,10 +63,23 @@
 
 pub mod address;
 pub mod entities;
+pub mod env;
+pub mod index;
 pub mod interface;
+pub mod store;
+
+/// Re-exported types, mostly for use in macros (for convenience).
+pub mod exports {
+    pub use sha2::{Digest, Sha256};
+}
 
 /// Shared test functionality.
 #[cfg(test)]
 pub mod tests {
     pub mod common;
+}
+
+#[cfg(test)]
+mod doc_tests_package_usage {
+    use {calimero_sdk as _, calimero_storage_macros as _};
 }

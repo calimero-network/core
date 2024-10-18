@@ -83,6 +83,24 @@ impl Storage for RuntimeCompatStore<'_, '_> {
         Some(slice.into_boxed().into_vec())
     }
 
+    fn remove(&mut self, key: &Key) -> Option<Vec<u8>> {
+        let key = self.state_key(key)?;
+
+        let RuntimeCompatStoreInner::Write(store) = &mut self.inner else {
+            unimplemented!("Can not remove from read-only store.");
+        };
+
+        let old = store
+            .get(key)
+            .ok()
+            .flatten()
+            .map(|slice| slice.into_boxed().into_vec());
+
+        store.delete(key).ok()?;
+
+        old
+    }
+
     fn set(&mut self, key: Key, value: Value) -> Option<Value> {
         let key = self.state_key(&key)?;
 
