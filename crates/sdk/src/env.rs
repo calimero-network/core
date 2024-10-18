@@ -3,8 +3,6 @@ use std::panic::set_hook;
 use borsh::{from_slice as from_borsh_slice, to_vec as to_borsh_vec};
 
 use crate::event::AppEvent;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::mocks::{mock_storage_read, mock_storage_remove, mock_storage_write};
 use crate::state::AppState;
 use crate::sys;
 use crate::sys::{
@@ -165,7 +163,6 @@ pub fn emit<T: AppEvent>(event: &T) {
     unsafe { sys::emit(Event::new(&kind, &data)) }
 }
 
-#[cfg(target_arch = "wasm32")]
 #[inline]
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
     unsafe { sys::storage_read(Buffer::from(key), DATA_REGISTER) }
@@ -174,27 +171,10 @@ pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
         .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[expect(clippy::print_stdout, reason = "Only used in testing")]
-#[must_use]
-pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
-    println!("storage_read: {:?}", hex::encode(key));
-    mock_storage_read(key)
-}
-
-#[cfg(target_arch = "wasm32")]
 #[inline]
 pub fn storage_remove(key: &[u8]) -> bool {
     unsafe { sys::storage_remove(Buffer::from(key), DATA_REGISTER).try_into() }
         .unwrap_or_else(expected_boolean)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[expect(clippy::print_stdout, reason = "Only used in testing")]
-#[must_use]
-pub fn storage_remove(key: &[u8]) -> bool {
-    println!("storage_remove: {:?}", hex::encode(key));
-    mock_storage_remove(key)
 }
 
 #[must_use]
@@ -206,19 +186,10 @@ pub fn state_read<T: AppState>() -> Option<T> {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 #[inline]
 pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
     unsafe { sys::storage_write(Buffer::from(key), Buffer::from(value), DATA_REGISTER).try_into() }
         .unwrap_or_else(expected_boolean)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[expect(clippy::print_stdout, reason = "Only used in testing")]
-#[must_use]
-pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
-    println!("storage_write: {:?}", hex::encode(key));
-    mock_storage_write(key, value)
 }
 
 pub fn state_write<T: AppState>(state: &T) {

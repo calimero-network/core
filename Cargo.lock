@@ -1024,7 +1024,6 @@ dependencies = [
  "borsh",
  "calimero-sdk-macros",
  "cfg-if 1.0.0",
- "hex",
  "serde",
  "serde_json",
  "trybuild",
@@ -1129,6 +1128,7 @@ dependencies = [
  "fixedstr",
  "hex",
  "indexmap 2.6.0",
+ "rand 0.8.5",
  "serde",
  "sha2",
  "thiserror",
@@ -8303,7 +8303,6 @@ version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81dfa00651efa65069b0b6b651f4aaa31ba9e3c3ce0137aaad053604ee7e0314"
 dependencies = [
- "getrandom",
  "serde",
 ]
 

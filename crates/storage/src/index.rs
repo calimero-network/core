@@ -4,15 +4,16 @@
 #[path = "tests/index.rs"]
 mod tests;
 
-use core::marker::PhantomData;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 
 use crate::address::Id;
 use crate::entities::ChildInfo;
-use crate::interface::{StorageAdaptor, StorageError};
+use crate::interface::StorageError;
+use crate::store::{Key, StorageAdaptor};
 
 /// Stored index information for an entity in the storage system.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -317,8 +318,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// an error will be returned.
     ///
     fn get_index(id: Id) -> Result<Option<EntityIndex>, StorageError> {
-        let key = format!("index:{id}");
-        match S::storage_read(key.as_bytes()) {
+        match S::storage_read(Key::Index(id)) {
             Some(data) => Ok(Some(
                 EntityIndex::try_from_slice(&data).map_err(StorageError::DeserializationError)?,
             )),
@@ -471,8 +471,7 @@ impl<S: StorageAdaptor> Index<S> {
     /// * `index` - The [`EntityIndex`] to be saved.
     ///
     fn remove_index(id: Id) {
-        let key = format!("index:{id}");
-        _ = S::storage_remove(key.as_bytes());
+        _ = S::storage_remove(Key::Index(id));
     }
 
     /// Saves the index information for an entity.
@@ -486,9 +485,8 @@ impl<S: StorageAdaptor> Index<S> {
     /// If there's an issue with serialisation, an error will be returned.
     ///
     fn save_index(index: &EntityIndex) -> Result<(), StorageError> {
-        let key = format!("index:{}", index.id);
         _ = S::storage_write(
-            key.as_bytes(),
+            Key::Index(index.id),
             &to_vec(index).map_err(StorageError::SerializationError)?,
         );
         Ok(())

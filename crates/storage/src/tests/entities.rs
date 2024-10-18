@@ -7,7 +7,8 @@ use velcro::btree_map;
 
 use super::*;
 use crate::index::Index;
-use crate::interface::{Interface, MainStorage};
+use crate::interface::Interface;
+use crate::store::MainStorage;
 use crate::tests::common::{Page, Paragraph, Paragraphs, Person};
 
 #[cfg(test)]
