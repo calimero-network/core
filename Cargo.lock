@@ -1013,7 +1013,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "ureq",
- "uuid 1.10.0",
  "wasmer",
  "wasmer-types",
 ]
@@ -1029,7 +1028,6 @@ dependencies = [
  "serde",
  "serde_json",
  "trybuild",
- "uuid 1.10.0",
 ]
 
 [[package]]

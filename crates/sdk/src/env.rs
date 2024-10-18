@@ -1,9 +1,6 @@
 use std::panic::set_hook;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::{from_slice as from_borsh_slice, to_vec as to_borsh_vec};
-use uuid::Uuid;
 
 use crate::event::AppEvent;
 #[cfg(not(target_arch = "wasm32"))]
@@ -105,9 +102,12 @@ pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
 #[inline]
 fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N]> {
     let len = register_len(register_id)?;
-
     let mut buffer = [0; N];
 
+    #[expect(
+        clippy::needless_borrows_for_generic_args,
+        reason = "we don't want to copy the buffer, but write to the same one that's returned"
+    )]
     let succeed: bool = unsafe {
         sys::read_register(register_id, BufferMut::new(&mut buffer))
             .try_into()
@@ -222,46 +222,25 @@ pub fn state_write<T: AppState>(state: &T) {
     _ = storage_write(STATE_KEY, &data);
 }
 
-/// Generate a new random UUID v4.
+/// Fill the buffer with random bytes.
 #[inline]
-#[must_use]
-pub fn generate_uuid() -> Uuid {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::generate_uuid(DATA_REGISTER) };
-        Uuid::from_slice(&read_register_sized::<16>(DATA_REGISTER).expect("Must have UUID"))
-            .expect("UUID must be valid")
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        Uuid::new_v4()
-    }
+pub fn random_bytes(buf: &mut [u8]) {
+    unsafe { sys::random_bytes(BufferMut::new(buf)) }
 }
 
 /// Gets the current time.
 #[inline]
 #[must_use]
 pub fn time_now() -> u64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        unsafe { sys::time_now(DATA_REGISTER) };
-        u64::from_le_bytes(
-            read_register(DATA_REGISTER)
-                .expect("Must have time")
-                .try_into()
-                .expect("Invalid time bytes"),
-        )
-    }
-    #[cfg(not(target_arch = "wasm32"))]
+    let mut bytes = [0; 8];
+
     #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Impossible to overflow in normal circumstances"
+        clippy::needless_borrows_for_generic_args,
+        reason = "we don't want to copy the buffer, but write to the same one that's returned"
     )]
-    #[expect(clippy::expect_used, reason = "Effectively infallible here")]
-    {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards to before the Unix epoch!")
-            .as_nanos() as u64
+    unsafe {
+        sys::time_now(BufferMut::new(&mut bytes));
     }
+
+    u64::from_le_bytes(bytes)
 }
