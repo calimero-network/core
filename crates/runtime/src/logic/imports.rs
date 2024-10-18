@@ -61,8 +61,8 @@ impl VMLogic<'_> {
                 register_id: u64
             ) -> u32;
 
-            fn generate_uuid(register_id: u64);
-            fn time_now(register_id: u64);
+            fn random_bytes(ptr: u64, len: u64);
+            fn time_now(ptr: u64, len: u64);
         }
     }
 }

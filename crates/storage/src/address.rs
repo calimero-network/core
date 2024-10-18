@@ -13,7 +13,6 @@ use core::fmt::{self, Debug, Display, Formatter};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_sdk::env::generate_uuid;
 use fixedstr::Flexstr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
@@ -49,7 +48,7 @@ impl Id {
     ///
     #[must_use]
     pub fn new() -> Self {
-        Self(generate_uuid())
+        unimplemented!()
     }
 
     /// Returns a slice of 16 octets containing the value.
