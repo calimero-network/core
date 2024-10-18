@@ -156,7 +156,7 @@ pub fn emit<T: AppEvent>(event: &T) {
 }
 
 pub fn send_action(action: &[u8]) {
-    unsafe { sys::send_action(action.as_ptr() as u64, action.len() as u64) }
+    unsafe { sys::send_action(Buffer::from(action)) }
 }
 
 #[inline]

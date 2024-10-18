@@ -4,8 +4,7 @@
 use core::num::NonZeroU64;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use borsh::{from_slice as from_borsh_slice, BorshDeserialize};
-use calimero_storage::interface::Action;
+use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;
 use rand::RngCore;
 use serde::Serialize;
@@ -103,6 +102,7 @@ pub struct VMLogic<'a> {
     limits: &'a VMLimits,
     registers: Registers,
     returns: Option<VMLogicResult<Vec<u8>, Vec<u8>>>,
+    actions: Vec<Vec<u8>>,
     logs: Vec<String>,
     events: Vec<Event>,
 }
@@ -116,6 +116,7 @@ impl<'a> VMLogic<'a> {
             limits,
             registers: Registers::default(),
             returns: None,
+            actions: vec![],
             logs: vec![],
             events: vec![],
         }
@@ -148,6 +149,7 @@ impl<'a> VMLogic<'a> {
 #[non_exhaustive]
 pub struct Outcome {
     pub returns: VMLogicResult<Option<Vec<u8>>, FunctionCallError>,
+    pub actions: Vec<Vec<u8>>,
     pub logs: Vec<String>,
     pub events: Vec<Event>,
     // execution runtime
@@ -174,6 +176,7 @@ impl VMLogic<'_> {
 
         Outcome {
             returns,
+            actions: self.actions,
             logs: self.logs,
             events: self.events,
         }
@@ -334,14 +337,8 @@ impl VMHostFunctions<'_> {
     ///
     pub fn send_action(&mut self, action_ptr: u64, action_len: u64) -> VMLogicResult<()> {
         let action_bytes = self.read_guest_memory(action_ptr, action_len)?;
-        let action: Action = BorshDeserialize::deserialize(&mut &*action_bytes)
-            .map_err(|_err| HostError::DeserializationError)?;
 
-        // TODO: Remove this when finalised
-        println!("Action received: {action:?}");
-
-        // TODO: What should this now call in order to propagate the Action to other
-        // TODO: nodes in the network? We need to get it into Node::push_action()
+        self.with_logic_mut(|logic| logic.actions.push(action_bytes));
 
         Ok(())
     }

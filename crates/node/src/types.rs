@@ -9,6 +9,7 @@ use thiserror::Error as ThisError;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
+#[expect(clippy::large_enum_variant, reason = "Of no consequence here")]
 pub enum PeerAction {
     ActionList(ActionMessage),
     Sync(SyncMessage),

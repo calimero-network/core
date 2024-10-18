@@ -144,7 +144,7 @@ impl Node {
     async fn handle_catchup_message(
         &mut self,
         // TODO: How should this be used?
-        chosen_peer: PeerId,
+        _chosen_peer: PeerId,
         context: &Context,
         message: CatchupStreamMessage,
     ) -> EyreResult<()> {
@@ -163,7 +163,7 @@ impl Node {
                 } in batch.actions
                 {
                     for action in actions {
-                        drop(self.apply_action(context, action, public_key).await?);
+                        self.apply_action(context, &action, public_key).await?;
                     }
                 }
             }

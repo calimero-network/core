@@ -17,7 +17,7 @@ use calimero_context::ContextManager;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
-use calimero_node_primitives::{CallError, ExecutionRequest, MutateCallError, QueryCallError};
+use calimero_node_primitives::{CallError, ExecutionRequest};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ApplicationEvent, ApplicationEventPayload, ExecutedTransactionPayload, NodeEvent, OutcomeEvent,
@@ -98,13 +98,10 @@ impl NodeConfig {
 
 #[derive(Debug)]
 pub struct Node {
-    id: PeerId,
     store: Store,
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
-    // --
-    nonce: u64,
 }
 
 pub async fn start(config: NodeConfig) -> EyreResult<()> {
@@ -210,6 +207,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
     match command {
         "call" => {
             if let Some((context_id, rest)) = args.and_then(|args| args.split_once(' ')) {
+                let (method, rest) = rest.split_once(' ').unwrap_or((rest, "{}"));
                 let (payload, executor_key) = rest.split_once(' ').unwrap_or((rest, ""));
 
                 let (payload, executor_key) = match executor_key.parse::<PublicKey>() {
@@ -230,12 +228,8 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     },
                 };
 
-                let actions = match from_json_str::<Vec<Action>>(payload) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        println!("{ind} Failed to parse payload: {e}");
-                        return Err(e.into());
-                    }
+                if let Err(e) = from_json_str::<Value>(payload) {
+                    println!("{ind} Failed to parse payload: {e}");
                 };
 
                 let (outcome_sender, outcome_receiver) = oneshot::channel();
@@ -250,19 +244,15 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     return Ok(());
                 };
 
-                let action = ActionMessage {
-                    actions,
-                    context_id: context.id,
-                    public_key: executor_key,
-                    root_hash: context.root_hash,
-                };
-
-                if let Err(e) = node.call_mutate(&context, action, outcome_sender).await {
-                    println!("{ind} Failed to execute action: {e}");
-                    return Ok(());
-                }
-
-                println!("{ind} Scheduled Action!");
+                node.handle_call(ExecutionRequest::new(
+                    context.id,
+                    method.to_owned(),
+                    payload.as_bytes().to_owned(),
+                    executor_key,
+                    outcome_sender,
+                    None,
+                ))
+                .await;
 
                 drop(spawn(async move {
                     if let Ok(outcome_result) = outcome_receiver.await {
@@ -839,21 +829,18 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
 
 impl Node {
     #[must_use]
-    pub fn new(
-        config: &NodeConfig,
+    pub const fn new(
+        _config: &NodeConfig,
         network_client: NetworkClient,
         node_events: broadcast::Sender<NodeEvent>,
         ctx_manager: ContextManager,
         store: Store,
     ) -> Self {
         Self {
-            id: config.identity.public().to_peer_id(),
             store,
             ctx_manager,
             network_client,
             node_events,
-            // --
-            nonce: 0,
         }
     }
 
@@ -943,24 +930,11 @@ impl Node {
                             self.send_comparison_message(&context, id, action_list.public_key)
                                 .await
                         }
-                        _ => {
-                            let apply_outcome = self
-                                .apply_action(&context, action, action_list.public_key)
-                                .await?;
-                            match apply_outcome.returns {
-                                Ok(Some(compare_id)) => {
-                                    self.send_comparison_message(
-                                        &context,
-                                        from_json_slice(&compare_id)?,
-                                        action_list.public_key,
-                                    )
-                                    .await
-                                }
-                                Ok(None) => Err(eyre!("No comparison data generated")),
-                                Err(err) => Err(eyre!(err)),
-                            }
+                        Action::Add { .. } | Action::Delete { .. } | Action::Update { .. } => {
+                            self.apply_action(&context, &action, action_list.public_key)
+                                .await
                         }
-                    }?
+                    }?;
                 }
                 Ok(())
             }
@@ -986,24 +960,12 @@ impl Node {
                                     self.send_comparison_message(&context, id, sync.public_key)
                                         .await
                                 }
-                                _ => {
-                                    let apply_outcome = self
-                                        .apply_action(&context, action, sync.public_key)
-                                        .await?;
-                                    match apply_outcome.returns {
-                                        Ok(Some(compare_id)) => {
-                                            self.send_comparison_message(
-                                                &context,
-                                                from_json_slice(&compare_id)?,
-                                                sync.public_key,
-                                            )
-                                            .await
-                                        }
-                                        Ok(None) => Err(eyre!("No comparison data generated")),
-                                        Err(err) => Err(eyre!(err)),
-                                    }
+                                Action::Add { .. }
+                                | Action::Delete { .. }
+                                | Action::Update { .. } => {
+                                    self.apply_action(&context, &action, sync.public_key).await
                                 }
-                            }?
+                            }?;
                         }
 
                         if !remote_actions.is_empty() {
@@ -1087,7 +1049,7 @@ impl Node {
         drop(request.outcome_sender.send(task.await.map_err(|err| {
             error!(%err, "failed to execute local query");
 
-            CallError::Mutate(MutateCallError::InternalError)
+            CallError::InternalError
         })));
     }
 
@@ -1097,84 +1059,78 @@ impl Node {
         method: String,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
-    ) -> Result<Outcome, QueryCallError> {
-        if !self
-            .ctx_manager
-            .is_application_installed(&context.application_id)
-            .unwrap_or_default()
-        {
-            return Err(QueryCallError::ApplicationNotInstalled {
+    ) -> Result<Outcome, CallError> {
+        let outcome_option = self
+            .checked_execute(
+                context,
+                Some(context.root_hash),
+                method,
+                payload,
+                executor_public_key,
+            )
+            .await
+            .map_err(|e| {
+                error!(%e, "Failed to execute query call.");
+                CallError::InternalError
+            })?;
+
+        let Some(outcome) = outcome_option else {
+            return Err(CallError::ApplicationNotInstalled {
                 application_id: context.application_id,
             });
-        }
-
-        self.execute(
-            context,
-            Some(context.root_hash),
-            method,
-            payload,
-            executor_public_key,
-        )
-        .await
-        .map_err(|e| {
-            error!(%e,"Failed to execute query call.");
-            QueryCallError::InternalError
-        })
-    }
-
-    async fn call_mutate(
-        &self,
-        context: &Context,
-        action_list: ActionMessage,
-        _outcome_sender: oneshot::Sender<Result<Outcome, MutateCallError>>,
-    ) -> Result<(), MutateCallError> {
-        if context.id != action_list.context_id {
-            return Err(MutateCallError::ActionRejected);
-        }
-
-        if !self
-            .ctx_manager
-            .is_application_installed(&context.application_id)
-            .unwrap_or_default()
-        {
-            return Err(MutateCallError::ApplicationNotInstalled {
-                application_id: context.application_id,
-            });
-        }
-
+        };
         if self
             .network_client
             .mesh_peer_count(TopicHash::from_raw(context.id))
             .await
-            == 0
+            != 0
         {
-            return Err(MutateCallError::NoConnectedPeers);
-        }
-
-        self.push_action(context.id, PeerAction::ActionList(action_list))
+            let actions = outcome
+                .actions
+                .iter()
+                .map(|a| borsh::from_slice(a))
+                .collect::<Result<Vec<Action>, _>>()
+                .map_err(|err| {
+                    error!(%err, "Failed to deserialize actions.");
+                    CallError::InternalError
+                })?;
+            self.push_action(
+                context.id,
+                PeerAction::ActionList(ActionMessage {
+                    actions,
+                    context_id: context.id,
+                    public_key: executor_public_key,
+                    root_hash: context.root_hash,
+                }),
+            )
             .await
             .map_err(|err| {
-                error!(%err, "Failed to push transaction over the network.");
-                MutateCallError::InternalError
+                error!(%err, "Failed to push action over the network.");
+                CallError::InternalError
             })?;
+        }
 
-        Ok(())
+        Ok(outcome)
     }
 
     async fn apply_action(
         &mut self,
         context: &Context,
-        action: Action,
+        action: &Action,
         public_key: PublicKey,
-    ) -> EyreResult<Outcome> {
-        self.execute(
-            context,
-            None,
-            "apply_action".to_owned(),
-            to_vec(&action)?,
-            public_key,
-        )
-        .await
+    ) -> EyreResult<()> {
+        let outcome = self
+            .checked_execute(
+                context,
+                None,
+                "apply_action".to_owned(),
+                to_vec(action)?,
+                public_key,
+            )
+            .await
+            .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))?;
+        drop(outcome.returns?);
+        Ok(())
     }
 
     async fn compare_trees(
@@ -1183,7 +1139,7 @@ impl Node {
         comparison: &Comparison,
         public_key: PublicKey,
     ) -> EyreResult<Outcome> {
-        self.execute(
+        self.checked_execute(
             context,
             None,
             "compare_trees".to_owned(),
@@ -1191,6 +1147,7 @@ impl Node {
             public_key,
         )
         .await
+        .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
     }
 
     async fn generate_comparison_data(
@@ -1199,7 +1156,7 @@ impl Node {
         id: Id,
         public_key: PublicKey,
     ) -> EyreResult<Outcome> {
-        self.execute(
+        self.checked_execute(
             context,
             None,
             "generate_comparison_data".to_owned(),
@@ -1207,6 +1164,28 @@ impl Node {
             public_key,
         )
         .await
+        .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
+    }
+
+    async fn checked_execute(
+        &mut self,
+        context: &Context,
+        hash: Option<Hash>,
+        method: String,
+        payload: Vec<u8>,
+        executor_public_key: PublicKey,
+    ) -> EyreResult<Option<Outcome>> {
+        if !self
+            .ctx_manager
+            .is_application_installed(&context.application_id)
+            .unwrap_or_default()
+        {
+            return Ok(None);
+        }
+
+        self.execute(context, hash, method, payload, executor_public_key)
+            .await
+            .map(Some)
     }
 
     async fn execute(

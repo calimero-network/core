@@ -55,27 +55,9 @@ pub type ServerSender = mpsc::Sender<ExecutionRequest>;
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum CallError {
-    Query(QueryCallError),
-    Mutate(MutateCallError),
-    ContextNotFound { context_id: ContextId },
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
-#[error("QueryCallError")]
-#[serde(tag = "type", content = "data")]
-#[non_exhaustive]
-pub enum QueryCallError {
-    ApplicationNotInstalled { application_id: ApplicationId },
-    InternalError,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
-#[error("MutateCallError")]
-#[serde(tag = "type", content = "data")]
-#[non_exhaustive]
-pub enum MutateCallError {
     ApplicationNotInstalled { application_id: ApplicationId },
     NoConnectedPeers,
     ActionRejected,
     InternalError,
+    ContextNotFound { context_id: ContextId },
 }
