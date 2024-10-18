@@ -1,6 +1,7 @@
-use calimero_primitives::context::ContextId;
-use calimero_primitives::hash::Hash;
-use calimero_store::key::ContextState as ContextStateKey;
+use std::str::FromStr;
+
+use calimero_primitives::{context::ContextId, hash::Hash};
+use calimero_store::key::ContextTransaction as ContextTransactionKey;
 use clap::Parser;
 use eyre::Result;
 use owo_colors::OwoColorize;
@@ -8,21 +9,19 @@ use owo_colors::OwoColorize;
 use crate::Node;
 
 #[derive(Debug, Parser)]
-pub struct StateCommand {
+pub struct TransactionsCommand {
     context_id: String,
 }
-impl StateCommand {
+
+impl TransactionsCommand {
     pub async fn run(self, node: &Node) -> Result<()> {
-        let ind = ">>".blue();
         let handle = node.store.handle();
-        let iter = handle.iter::<ContextStateKey>()?;
+        let mut iter = handle.iter::<ContextTransactionKey>()?;
+        let context_id = ContextId::from_str(&self.context_id)?;
 
-        println!("{ind} {:44} | {:44}", "State Key", "Value");
-
-        let context_id = ContextId::from(self.context_id);
         let first = 'first: {
             let Some(k) = iter
-                .seek(ContextStateKey::new(context_id, [0; 32].into()))
+                .seek(ContextTransactionKey::new(context_id, [0u8; 32]))
                 .transpose()
             else {
                 break 'first None;
@@ -31,17 +30,26 @@ impl StateCommand {
             Some((k, iter.read()))
         };
 
+        println!("{:44} | {:44}", "Hash", "Prior Hash");
+
         for (k, v) in first.into_iter().chain(iter.entries()) {
             let (k, v) = (k?, v?);
+
             if k.context_id() != context_id {
                 break;
             }
-            let entry = format!("{:44} | {:?}", Hash::from(k.state_key()), v.value,);
+
+            let entry = format!(
+                "{:44} | {}",
+                Hash::from(k.transaction_id()),
+                Hash::from(v.prior_hash),
+            );
             for line in entry.lines() {
-                println!("{ind} {}", line.cyan());
+                println!("{}", line.cyan());
             }
         }
 
         Ok(())
     }
 }
+

@@ -28,7 +28,7 @@ impl IdentityCommand {
                     Ok(context_id) => {
                         // Handle the "ls" subcommand
                         let handle = node.store.handle();
-                        let mut iter = handle.iter::<ContextIdentityKey>().unwrap();
+                        let mut iter = handle.iter::<ContextIdentityKey>()?;
 
                         let context_id = ContextId::from(context_id);
                         let first = 'first: {
@@ -46,6 +46,11 @@ impl IdentityCommand {
 
                         for (k, v) in first.into_iter().chain(iter.entries()) {
                             let (k, v) = (k.unwrap(), v.unwrap());
+
+                            if k.context_id() != context_id {
+                                break;
+                            }
+
                             let entry = format!(
                                 "{:44} | {}",
                                 if v.private_key.is_some() { "*" } else { " " },
