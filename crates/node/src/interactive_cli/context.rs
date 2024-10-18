@@ -1,9 +1,9 @@
+use core::str::FromStr;
 use std::mem::replace;
 
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use clap::{Parser, Subcommand};
-use core::str::FromStr;
 use eyre::Result;
 use owo_colors::OwoColorize;
 

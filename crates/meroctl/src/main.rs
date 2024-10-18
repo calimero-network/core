@@ -1,6 +1,6 @@
-use calimero_server as _;
 use std::env::var;
 
+use calimero_server as _;
 use clap::Parser;
 use eyre::Result as EyreResult;
 use tracing_subscriber::fmt::layer;
