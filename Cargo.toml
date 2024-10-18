@@ -8,31 +8,31 @@ license-file = "LICENSE.md"
 [workspace]
 resolver = "2"
 members = [
-  "./crates/context",
-  "./crates/context/config",
-  "./crates/meroctl",
-  "./crates/network",
-  "./crates/node",
-  "./crates/node-primitives",
-  "./crates/primitives",
-  "./crates/runtime",
-  "./crates/sdk",
-  "./crates/sdk/libs/near",
-  "./crates/sdk/macros",
-  "./crates/server",
-  "./crates/server-primitives",
-  "./crates/storage",
-  "./crates/storage-macros",
-  "./crates/store",
-  "./crates/store/blobs",
-  "./crates/test-utils",
+    "./crates/context",
+    "./crates/context/config",
+    "./crates/meroctl",
+    "./crates/network",
+    "./crates/node",
+    "./crates/node-primitives",
+    "./crates/primitives",
+    "./crates/runtime",
+    "./crates/sdk",
+    "./crates/sdk/libs/near",
+    "./crates/sdk/macros",
+    "./crates/server",
+    "./crates/server-primitives",
+    "./crates/storage",
+    "./crates/storage-macros",
+    "./crates/store",
+    "./crates/store/blobs",
+    "./crates/test-utils",
 
-  "./apps/kv-store",
-  "./apps/only-peers",
-  "./apps/gen-ext",
+    "./apps/kv-store",
+    "./apps/only-peers",
+    "./apps/gen-ext",
 
-  "./contracts/context-config",
-  "./contracts/registry",
+    "./contracts/context-config",
+    "./contracts/registry",
 ]
 
 [workspace.dependencies]
@@ -293,8 +293,8 @@ unconditional_recursion = "deny"
 unnecessary_clippy_cfg = "deny"
 
 # Lint customisations
-doc_markdown = "allow" # Annoying number of false positives
+doc_markdown = "allow"            # Annoying number of false positives
 multiple_crate_versions = "allow" # Cannot resolve all these
-missing_errors_doc = "allow" # TODO: Remove later once documentation has been added
-missing_panics_doc = "allow" # TODO: Remove later once documentation has been added
-future_not_send = "allow" # TODO: Remove later once Send is implemented
+missing_errors_doc = "allow"      # TODO: Remove later once documentation has been added
+missing_panics_doc = "allow"      # TODO: Remove later once documentation has been added
+future_not_send = "allow"         # TODO: Remove later once Send is implemented

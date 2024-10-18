@@ -1,11 +1,28 @@
 //! Environment bindings for the storage crate.
 
+use borsh::to_vec;
 #[cfg(target_arch = "wasm32")]
 use calimero_vm as imp;
 #[cfg(not(target_arch = "wasm32"))]
 use mocked as imp;
 
+use crate::interface::Action;
 use crate::store::Key;
+
+/// Sends an action to the runtime.
+///
+/// # Parameters
+///
+/// * `action` - The action to send.
+///
+/// # Panics
+///
+/// This function will panic if the action cannot be serialised.
+///
+#[expect(clippy::expect_used, reason = "Effectively infallible here")]
+pub fn send_action(action: &Action) {
+    imp::send_action(&to_vec(&action).expect("Failed to serialize action"));
+}
 
 /// Reads data from persistent storage.
 ///
@@ -63,6 +80,11 @@ mod calimero_vm {
 
     use crate::store::Key;
 
+    /// Sends an action to the runtime.
+    pub(super) fn send_action(action: &[u8]) {
+        env::send_action(action);
+    }
+
     /// Reads data from persistent storage.
     pub(super) fn storage_read(key: Key) -> Option<Vec<u8>> {
         env::storage_read(&key.to_bytes())
@@ -102,6 +124,11 @@ mod mocked {
 
     /// The default storage system.
     type DefaultStore = MockedStorage<{ usize::MAX }>;
+
+    /// Sends an action to the runtime.
+    pub(super) const fn send_action(_action: &[u8]) {
+        // Do nothing.
+    }
 
     /// Reads data from persistent storage.
     pub(super) fn storage_read(key: Key) -> Option<Vec<u8>> {

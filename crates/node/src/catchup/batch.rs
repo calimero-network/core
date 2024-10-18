@@ -5,13 +5,12 @@ use eyre::Result as EyreResult;
 use futures_util::SinkExt;
 use serde_json::to_vec as to_json_vec;
 
-use crate::types::{
-    CatchupError, CatchupStreamMessage, CatchupTransactionsBatch, TransactionWithStatus,
-};
+use crate::types::{ActionMessage, CatchupActionsBatch, CatchupError, CatchupStreamMessage};
 
+// TODO: Should we be using this somewhere in the CRDT approach, or not?
 pub struct CatchupBatchSender {
     batch_size: u8,
-    batch: Vec<TransactionWithStatus>,
+    batch: Vec<ActionMessage>,
     stream: Box<Stream>,
 }
 
@@ -24,12 +23,12 @@ impl CatchupBatchSender {
         }
     }
 
-    pub(crate) async fn send(&mut self, tx_with_status: TransactionWithStatus) -> EyreResult<()> {
-        self.batch.push(tx_with_status);
+    pub(crate) async fn send(&mut self, action_message: ActionMessage) -> EyreResult<()> {
+        self.batch.push(action_message);
 
         if self.batch.len() == self.batch_size as usize {
-            let message = CatchupStreamMessage::TransactionsBatch(CatchupTransactionsBatch {
-                transactions: take(&mut self.batch),
+            let message = CatchupStreamMessage::ActionsBatch(CatchupActionsBatch {
+                actions: take(&mut self.batch),
             });
 
             let message = to_json_vec(&message)?;
@@ -44,8 +43,8 @@ impl CatchupBatchSender {
 
     pub(crate) async fn flush(&mut self) -> EyreResult<()> {
         if !self.batch.is_empty() {
-            let message = CatchupStreamMessage::TransactionsBatch(CatchupTransactionsBatch {
-                transactions: take(&mut self.batch),
+            let message = CatchupStreamMessage::ActionsBatch(CatchupActionsBatch {
+                actions: take(&mut self.batch),
             });
 
             let message = to_json_vec(&message)?;

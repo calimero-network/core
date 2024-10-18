@@ -1,13 +1,29 @@
 use std::collections::hash_map::{Entry as HashMapEntry, HashMap};
 
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::{app, env};
+use calimero_storage::entities::{Data, Element};
+use calimero_storage_macros::{AtomicUnit, Collection};
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(BorshDeserialize, BorshSerialize, Default)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(AtomicUnit, Clone, Debug, PartialEq, PartialOrd)]
+#[root]
+#[type_id(1)]
 pub struct KvStore {
-    items: HashMap<String, String>,
+    items: Vec<String>,
+    #[storage]
+    storage: Element,
+}
+
+#[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[children(Value)]
+pub struct Values;
+
+#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[type_id(2)]
+pub struct Value {
+    value: String,
+    #[storage]
+    storage: Element,
 }
 
 #[app::event]
@@ -22,7 +38,10 @@ pub enum Event<'a> {
 impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
-        KvStore::default()
+        KvStore {
+            items: Vec::new(),
+            storage: Element::root(),
+        }
     }
 
     pub fn set(&mut self, key: String, value: String) {
