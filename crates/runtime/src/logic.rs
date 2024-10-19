@@ -104,9 +104,10 @@ pub struct VMLogic<'a> {
     limits: &'a VMLimits,
     registers: Registers,
     returns: Option<VMLogicResult<Vec<u8>, Vec<u8>>>,
-    actions: Vec<Vec<u8>>,
     logs: Vec<String>,
     events: Vec<Event>,
+    actions: Vec<Vec<u8>>,
+    root_hash: Option<[u8; 32]>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -118,9 +119,10 @@ impl<'a> VMLogic<'a> {
             limits,
             registers: Registers::default(),
             returns: None,
-            actions: vec![],
             logs: vec![],
             events: vec![],
+            actions: vec![],
+            root_hash: None,
         }
     }
 
@@ -146,9 +148,10 @@ impl<'a> VMLogic<'a> {
 #[non_exhaustive]
 pub struct Outcome {
     pub returns: VMLogicResult<Option<Vec<u8>>, FunctionCallError>,
-    pub actions: Vec<Vec<u8>>,
     pub logs: Vec<String>,
     pub events: Vec<Event>,
+    pub actions: Vec<Vec<u8>>,
+    pub root_hash: Option<[u8; 32]>,
     // execution runtime
     // current storage usage of the app
 }
@@ -173,9 +176,11 @@ impl VMLogic<'_> {
 
         Outcome {
             returns,
-            actions: self.actions,
+
             logs: self.logs,
             events: self.events,
+            actions: self.actions,
+            root_hash: self.root_hash,
         }
     }
 }
@@ -193,6 +198,24 @@ pub struct VMHostFunctions<'a> {
 impl VMHostFunctions<'_> {
     fn read_guest_memory(&self, ptr: u64, len: u64) -> VMLogicResult<Vec<u8>> {
         let mut buf = vec![0; usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?];
+
+        self.borrow_memory().read(ptr, &mut buf)?;
+
+        Ok(buf)
+    }
+
+    fn read_guest_memory_sized<const N: usize>(
+        &self,
+        ptr: u64,
+        len: u64,
+    ) -> VMLogicResult<[u8; N]> {
+        let len = usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+
+        if len != N {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let mut buf = [0; N];
 
         self.borrow_memory().read(ptr, &mut buf)?;
 
@@ -352,6 +375,14 @@ impl VMHostFunctions<'_> {
         let action_bytes = self.read_guest_memory(action_ptr, action_len)?;
 
         self.with_logic_mut(|logic| logic.actions.push(action_bytes));
+
+        Ok(())
+    }
+
+    pub fn commit_root(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
+        let bytes = self.read_guest_memory_sized::<32>(ptr, len)?;
+
+        let _ = self.with_logic_mut(|logic| logic.root_hash.replace(bytes));
 
         Ok(())
     }
