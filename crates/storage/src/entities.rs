@@ -679,7 +679,7 @@ impl Element {
             },
             merkle_hash: [0; 32],
             #[expect(clippy::unwrap_used, reason = "This is expected to be valid")]
-            path: Path::new("::").unwrap(),
+            path: Path::new("::root").unwrap(),
         }
     }
 
