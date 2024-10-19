@@ -32,7 +32,6 @@ impl CallCommand {
             serde_json::to_vec(&self.payload)?,
             self.executor_key,
             outcome_sender,
-            None,
         ))
         .await;
 
