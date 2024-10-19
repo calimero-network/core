@@ -201,7 +201,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             if skip || ident == storage_ident {
                 None
             } else {
-                let getter = format_ident!("{}", ident);
                 let setter = format_ident!("set_{}", ident);
 
                 let setter_action = if private {
@@ -216,10 +215,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 };
 
                 Some(quote! {
-                    pub fn #getter(&self) -> &#ty {
-                        &self.#ident
-                    }
-
                     pub fn #setter(&mut self, value: #ty) -> bool {
                         if self.#ident == value {
                             false

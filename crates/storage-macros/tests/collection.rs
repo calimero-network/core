@@ -113,7 +113,7 @@ mod hierarchy {
         let mut child = Child::new(&child_path);
         _ = child.set_content("Child Content".to_owned());
 
-        assert_eq!(parent.title(), "Parent Title");
+        assert_eq!(parent.title, "Parent Title");
 
         // TODO: Add in tests for loading and checking children
     }
@@ -174,9 +174,9 @@ mod traits {
 
         assert_eq!(unit, deserialized);
         assert_eq!(unit.id(), deserialized.id());
-        assert_eq!(unit.name(), deserialized.name());
+        assert_eq!(unit.name, deserialized.name);
         assert_eq!(unit.path(), deserialized.path());
-        assert_eq!(unit.value(), deserialized.value());
+        assert_eq!(unit.value, deserialized.value);
         assert_eq!(unit.element().id(), deserialized.element().id());
         assert_eq!(unit.element().path(), deserialized.element().path());
         assert_eq!(unit.element().metadata(), deserialized.element().metadata());
