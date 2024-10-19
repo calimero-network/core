@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use calimero_sdk::types::Error;
 use calimero_sdk::{app, env};
+use calimero_storage::AtomicUnit;
 use calimero_storage::{address::Path, entities::Element};
-use calimero_storage_macros::AtomicUnit;
 
 mod collections;
 
