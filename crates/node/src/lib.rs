@@ -548,43 +548,45 @@ impl Node {
             &get_runtime_limits()?,
         )?;
 
-        if let Some(root_hash) = outcome.root_hash {
-            if outcome.actions.is_empty() {
-                eyre::bail!("State changed, but no actions were generated");
+        if outcome.returns.is_ok() {
+            if let Some(root_hash) = outcome.root_hash {
+                if outcome.actions.is_empty() {
+                    eyre::bail!("Context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+                }
+
+                context.root_hash = root_hash.into();
+
+                drop(
+                    self.node_events
+                        .send(NodeEvent::Application(ApplicationEvent::new(
+                            context.id,
+                            ApplicationEventPayload::StateMutation(StateMutationPayload::new(
+                                context.root_hash,
+                            )),
+                        ))),
+                );
+
+                self.ctx_manager.save_context(context)?;
             }
 
-            context.root_hash = root_hash.into();
+            if !storage.is_empty() {
+                storage.commit()?;
+            }
 
             drop(
                 self.node_events
                     .send(NodeEvent::Application(ApplicationEvent::new(
                         context.id,
-                        ApplicationEventPayload::StateMutation(StateMutationPayload::new(
-                            context.root_hash,
+                        ApplicationEventPayload::OutcomeEvent(OutcomeEventPayload::new(
+                            outcome
+                                .events
+                                .iter()
+                                .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
+                                .collect(),
                         )),
                     ))),
             );
-
-            self.ctx_manager.save_context(context);
         }
-
-        if !storage.is_empty() {
-            storage.commit()?;
-        }
-
-        drop(
-            self.node_events
-                .send(NodeEvent::Application(ApplicationEvent::new(
-                    context.id,
-                    ApplicationEventPayload::OutcomeEvent(OutcomeEventPayload::new(
-                        outcome
-                            .events
-                            .iter()
-                            .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
-                            .collect(),
-                    )),
-                ))),
-        );
 
         Ok(Some(outcome))
     }
