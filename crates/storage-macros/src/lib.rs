@@ -217,6 +217,9 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 };
 
                 Some(quote! {
+                    #[doc = "Setter for the "]
+                    #[doc = stringify!(#ident)]
+                    #[doc = " field."]
                     pub fn #setter(&mut self, value: #ty) -> bool {
                         if self.#ident == value {
                             false
