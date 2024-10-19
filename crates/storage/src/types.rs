@@ -37,7 +37,7 @@ pub struct Map<K, V> {
 /// A collection of entries in a map.
 #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[children(Entry<K, V>)]
-pub struct Entries<K, V> {
+struct Entries<K, V> {
     _priv: PhantomData<(K, V)>,
 }
 
