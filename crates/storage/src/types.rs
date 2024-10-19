@@ -1,56 +1,71 @@
-use calimero_storage::{
+//! High-level data structures for storage.
+
+use std::{borrow::Borrow, marker::PhantomData};
+
+use crate::{
     address::{Path, PathError},
     entities::{Data, Element},
     interface::{Interface, StorageError},
+    AtomicUnit, Collection,
 };
-use calimero_storage_macros::{AtomicUnit, Collection};
+use borsh::{BorshDeserialize, BorshSerialize};
 use thiserror::Error;
 
+use crate as calimero_storage; // macro expects `calimero_storage` to be in deps
+
+/// General error type for storage operations while interacting with complex collections.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Error while interacting with storage.
     #[error(transparent)]
     StorageError(#[from] StorageError),
+    /// Error while interacting with a path.
     #[error(transparent)]
     PathError(#[from] PathError),
 }
 
+/// A map collection that stores key-value pairs.
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[type_id(255)]
 #[root]
-pub struct Map {
-    entries: Entries,
+pub struct Map<K, V> {
+    entries: Entries<K, V>,
     #[storage]
     storage: Element,
 }
 
+/// A collection of entries in a map.
 #[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
-#[children(Entry)]
-pub struct Entries;
+#[children(Entry<K, V>)]
+pub struct Entries<K, V> {
+    _priv: PhantomData<(K, V)>,
+}
 
+/// An entry in a map.
 #[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
 #[type_id(254)]
-pub struct Entry {
-    key: String,
-    value: String,
+pub struct Entry<K, V> {
+    key: K,
+    value: V,
     #[storage]
     storage: Element,
 }
 
-impl Map {
+impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize> Map<K, V> {
+    /// Create a new map collection.
     pub fn new(path: &Path) -> Result<Self, Error> {
         let mut this = Self {
-            entries: Entries,
+            entries: Entries::default(),
             storage: Element::new(path),
         };
 
-        Interface::save(&mut this)?;
+        let _ = Interface::save(&mut this)?;
 
         Ok(this)
     }
 
-    pub fn set(&mut self, key: String, value: String) -> Result<Option<String>, Error> {
-        let previous = self.get(&key)?;
-
+    /// Insert a key-value pair into the map.
+    pub fn insert(&mut self, key: K, value: V) -> Result<(), Error> {
         let path = self.path();
         // fixme! Reusing the Map's path for now. We "could" concatenate, but it's
         // fixme! non-trivial and currently non-functional, so it's been left out
@@ -62,7 +77,7 @@ impl Map {
         // fixme! ideally, the Id should be defined as hash(concat(map_id, key))
         // fixme! which will save on map-wide lookups, getting the item directly
 
-        Interface::add_child_to(
+        let _ = Interface::add_child_to(
             self.storage.id(),
             &mut self.entries,
             &mut Entry {
@@ -72,22 +87,29 @@ impl Map {
             },
         )?;
 
-        Ok(previous)
+        Ok(())
     }
 
-    pub fn entries(&self) -> Result<impl Iterator<Item = (String, String)>, Error> {
+    /// Get an iterator over the entries in the map.
+    pub fn entries(&self) -> Result<impl Iterator<Item = (K, V)>, Error> {
         let entries = Interface::children_of(self.id(), &self.entries)?;
 
         Ok(entries.into_iter().map(|entry| (entry.key, entry.value)))
     }
 
+    /// Get the number of entries in the map.
     pub fn len(&self) -> Result<usize, Error> {
         Ok(Interface::child_info_for(self.id(), &self.entries)?.len())
     }
 
-    pub fn get(&self, key: &str) -> Result<Option<String>, Error> {
+    /// Get the value for a key in the map.
+    pub fn get<Q>(&self, key: &Q) -> Result<Option<V>, Error>
+    where
+        K: Borrow<Q>,
+        Q: PartialEq + ?Sized,
+    {
         for (key_, value) in self.entries()? {
-            if key_ == key {
+            if key_.borrow() == key {
                 return Ok(Some(value));
             }
         }
@@ -95,23 +117,29 @@ impl Map {
         Ok(None)
     }
 
-    pub fn remove(&mut self, key: &str) -> Result<Option<String>, Error> {
+    /// Remove a key from the map, returning the value at the key if it previously existed.
+    pub fn remove<Q>(&mut self, key: &Q) -> Result<Option<V>, Error>
+    where
+        K: Borrow<Q>,
+        Q: PartialEq + ?Sized,
+    {
         let entries = Interface::children_of(self.id(), &self.entries)?;
 
-        let entry = entries.into_iter().find(|entry| entry.key == key);
+        let entry = entries.into_iter().find(|entry| entry.key.borrow() == key);
 
         if let Some(entry) = &entry {
-            Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
+            let _ = Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
         }
 
         Ok(entry.map(|entry| entry.value))
     }
 
+    /// Clear the map, removing all entries.
     pub fn clear(&mut self) -> Result<(), Error> {
         let entries = Interface::children_of(self.id(), &self.entries)?;
 
         for entry in entries {
-            Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
+            let _ = Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
         }
 
         Ok(())

@@ -2,19 +2,17 @@ use std::collections::BTreeMap;
 
 use calimero_sdk::types::Error;
 use calimero_sdk::{app, env};
+use calimero_storage::address::Path;
+use calimero_storage::entities::Element;
+use calimero_storage::types::Map;
 use calimero_storage::AtomicUnit;
-use calimero_storage::{address::Path, entities::Element};
-
-mod collections;
-
-use collections::Map;
 
 #[app::state(emits = for<'a> Event<'a>)]
 #[derive(AtomicUnit, Clone, Debug, PartialEq, PartialOrd)]
 #[root]
 #[type_id(1)]
 pub struct KvStore {
-    items: Map,
+    items: Map<String, String>,
     #[storage]
     storage: Element,
 }
@@ -40,7 +38,7 @@ impl KvStore {
     pub fn set(&mut self, key: String, value: String) -> Result<(), Error> {
         env::log(&format!("Setting key: {:?} to value: {:?}", key, value));
 
-        if self.items.set(key.clone(), value.clone())?.is_some() {
+        if self.items.get(&key)?.is_some() {
             app::emit!(Event::Updated {
                 key: &key,
                 value: &value,
@@ -51,6 +49,8 @@ impl KvStore {
                 value: &value,
             });
         }
+
+        self.items.insert(key, value)?;
 
         Ok(())
     }
