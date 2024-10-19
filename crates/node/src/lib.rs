@@ -548,9 +548,11 @@ impl Node {
             &get_runtime_limits()?,
         )?;
 
-        storage.commit()?;
-
         if let Some(root_hash) = outcome.root_hash {
+            if outcome.actions.is_empty() {
+                eyre::bail!("State changed, but no actions were generated");
+            }
+
             context.root_hash = root_hash.into();
 
             drop(
@@ -564,6 +566,10 @@ impl Node {
             );
 
             self.ctx_manager.save_context(context);
+        }
+
+        if !storage.is_empty() {
+            storage.commit()?;
         }
 
         drop(

@@ -18,6 +18,10 @@ pub enum Operation<'a> {
 }
 
 impl<'a> Transaction<'a> {
+    pub fn is_empty(&self) -> bool {
+        self.cols.is_empty()
+    }
+
     pub(crate) fn raw_get(&self, column: Column, key: &[u8]) -> Option<&Operation<'_>> {
         self.cols.get(&column).and_then(|ops| ops.get(key))
     }
