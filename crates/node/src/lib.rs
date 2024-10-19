@@ -47,9 +47,9 @@ use serde_json::{
     from_slice as from_json_slice, from_str as from_json_str, to_vec as to_json_vec, Value,
 };
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::select;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval_at, Instant};
-use tokio::{select, spawn};
 use tracing::{debug, error, info, warn};
 
 use crate::runtime_compat::RuntimeCompatStore;
@@ -184,7 +184,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
                 server = Box::pin(pending());
                 continue;
             }
-            Some(request) = server_receiver.recv() => node.handle_call(request).await,
+            Some(request) = server_receiver.recv() => node.handle_server_request(request).await,
             _ = catchup_interval_tick.tick() => node.handle_interval_catchup().await,
         }
     }
@@ -232,8 +232,6 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     println!("{ind} Failed to parse payload: {e}");
                 };
 
-                let (outcome_sender, outcome_receiver) = oneshot::channel();
-
                 let Ok(context_id) = context_id.parse() else {
                     println!("{ind} Invalid context ID: {context_id}");
                     return Ok(());
@@ -244,68 +242,44 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     return Ok(());
                 };
 
-                node.handle_call(ExecutionRequest::new(
-                    context.id,
-                    method.to_owned(),
-                    payload.as_bytes().to_owned(),
-                    executor_key,
-                    outcome_sender,
-                ))
-                .await;
+                let outcome_result = node
+                    .handle_call(
+                        context.id,
+                        method.to_owned(),
+                        payload.as_bytes().to_owned(),
+                        executor_key,
+                    )
+                    .await;
 
-                drop(spawn(async move {
-                    if let Ok(outcome_result) = outcome_receiver.await {
-                        println!("{ind}");
+                println!("{ind}");
 
-                        match outcome_result {
-                            Ok(outcome) => {
-                                match outcome.returns {
-                                    Ok(result) => match result {
-                                        Some(result) => {
-                                            println!("{ind}   Return Value:");
-                                            #[expect(
-                                                clippy::option_if_let_else,
-                                                reason = "Clearer here"
-                                            )]
-                                            let result = if let Ok(value) =
-                                                from_json_slice::<Value>(&result)
-                                            {
-                                                format!(
-                                                    "(json): {}",
-                                                    format!("{value:#}")
-                                                        .lines()
-                                                        .map(|line| line.cyan().to_string())
-                                                        .collect::<Vec<_>>()
-                                                        .join("\n")
-                                                )
-                                            } else {
-                                                format!("(raw): {:?}", result.cyan())
-                                            };
+                match outcome_result {
+                    Ok(outcome) => {
+                        match outcome.returns {
+                            Ok(result) => match result {
+                                Some(result) => {
+                                    println!("{ind}   Return Value:");
+                                    #[expect(clippy::option_if_let_else, reason = "Clearer here")]
+                                    let result =
+                                        if let Ok(value) = from_json_slice::<Value>(&result) {
+                                            format!(
+                                                "(json): {}",
+                                                format!("{value:#}")
+                                                    .lines()
+                                                    .map(|line| line.cyan().to_string())
+                                                    .collect::<Vec<_>>()
+                                                    .join("\n")
+                                            )
+                                        } else {
+                                            format!("(raw): {:?}", result.cyan())
+                                        };
 
-                                            for line in result.lines() {
-                                                println!("{ind}     > {line}");
-                                            }
-                                        }
-                                        None => println!("{ind}   (No return value)"),
-                                    },
-                                    Err(err) => {
-                                        let err = format!("{err:#?}");
-
-                                        println!("{ind}   Error:");
-                                        for line in err.lines() {
-                                            println!("{ind}     > {}", line.yellow());
-                                        }
+                                    for line in result.lines() {
+                                        println!("{ind}     > {line}");
                                     }
                                 }
-
-                                if !outcome.logs.is_empty() {
-                                    println!("{ind}   Logs:");
-
-                                    for log in outcome.logs {
-                                        println!("{ind}     > {}", log.cyan());
-                                    }
-                                }
-                            }
+                                None => println!("{ind}   (No return value)"),
+                            },
                             Err(err) => {
                                 let err = format!("{err:#?}");
 
@@ -315,8 +289,24 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 }
                             }
                         }
+
+                        if !outcome.logs.is_empty() {
+                            println!("{ind}   Logs:");
+
+                            for log in outcome.logs {
+                                println!("{ind}     > {}", log.cyan());
+                            }
+                        }
                     }
-                }));
+                    Err(err) => {
+                        let err = format!("{err:#?}");
+
+                        println!("{ind}   Error:");
+                        for line in err.lines() {
+                            println!("{ind}     > {}", line.yellow());
+                        }
+                    }
+                }
             } else {
                 println!(
                     "{ind} Usage: call <Context ID> <Method> <JSON Payload> <Executor Public Key<"
@@ -1032,16 +1022,9 @@ impl Node {
         Ok(())
     }
 
-    pub async fn handle_call(&mut self, request: ExecutionRequest) {
-        let Ok(Some(mut context)) = self.ctx_manager.get_context(&request.context_id) else {
-            drop(request.outcome_sender.send(Err(CallError::ContextNotFound {
-                context_id: request.context_id,
-            })));
-            return;
-        };
-
-        let task = self.call_query(
-            &mut context,
+    pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
+        let task = self.handle_call(
+            request.context_id,
             request.method,
             request.payload,
             request.executor_public_key,
@@ -1054,15 +1037,19 @@ impl Node {
         })));
     }
 
-    async fn call_query(
+    async fn handle_call(
         &mut self,
-        context: &mut Context,
+        context_id: ContextId,
         method: String,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> Result<Outcome, CallError> {
+        let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
+            return Err(CallError::ContextNotFound { context_id });
+        };
+
         let outcome_option = self
-            .execute(context, method, payload, executor_public_key)
+            .execute(&mut context, method, payload, executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute query call.");
