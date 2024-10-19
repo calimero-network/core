@@ -46,6 +46,10 @@ impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
     pub fn commit(self) -> EyreResult<()> {
         self.inner.commit()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
 }
 
 impl Storage for RuntimeCompatStore<'_, '_> {

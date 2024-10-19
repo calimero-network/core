@@ -24,6 +24,10 @@ where
             shadow: Transaction::default(),
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.shadow.is_empty()
+    }
 }
 
 impl<L> Layer for Temporal<'_, '_, L>
