@@ -677,7 +677,7 @@ impl Element {
                 updated_at: timestamp,
             },
             merkle_hash: [0; 32],
-            path: Path::new("::").unwrap(),
+            path: Path::new("::root").unwrap(),
         }
     }
 
