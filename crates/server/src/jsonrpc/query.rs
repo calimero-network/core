@@ -23,7 +23,6 @@ async fn handle(request: QueryRequest, state: Arc<ServiceState>) -> EyreResult<Q
         request.context_id,
         request.method,
         args,
-        false,
         request.executor_public_key,
     )
     .await

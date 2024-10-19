@@ -14,7 +14,6 @@ pub struct ExecutionRequest {
     pub payload: Vec<u8>,
     pub executor_public_key: PublicKey,
     pub outcome_sender: oneshot::Sender<Result<Outcome, CallError>>,
-    pub finality: Option<Finality>,
 }
 
 impl ExecutionRequest {
@@ -25,7 +24,6 @@ impl ExecutionRequest {
         payload: Vec<u8>,
         executor_public_key: PublicKey,
         outcome_sender: oneshot::Sender<Result<Outcome, CallError>>,
-        finality: Option<Finality>,
     ) -> Self {
         Self {
             context_id,
@@ -33,19 +31,8 @@ impl ExecutionRequest {
             payload,
             executor_public_key,
             outcome_sender,
-            finality,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "There will never be any other variants"
-)]
-pub enum Finality {
-    Local,
-    Global,
 }
 
 pub type ServerSender = mpsc::Sender<ExecutionRequest>;

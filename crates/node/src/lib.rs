@@ -250,7 +250,6 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                     payload.as_bytes().to_owned(),
                     executor_key,
                     outcome_sender,
-                    None,
                 ))
                 .await;
 

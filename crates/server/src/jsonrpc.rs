@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use axum::routing::{post, MethodRouter};
 use axum::{Extension, Json};
-use calimero_node_primitives::{
-    CallError as PrimitiveCallError, ExecutionRequest, Finality, ServerSender,
-};
+use calimero_node_primitives::{CallError as PrimitiveCallError, ExecutionRequest, ServerSender};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
@@ -17,6 +15,8 @@ use serde_json::{from_value as from_json_value, to_value as to_json_value, Value
 use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info};
+
+use crate::config::ServerConfig;
 
 mod mutate;
 mod query;
@@ -153,7 +153,6 @@ pub(crate) async fn call(
     context_id: ContextId,
     method: String,
     args: Vec<u8>,
-    writes: bool,
     executor_public_key: PublicKey,
 ) -> Result<Option<String>, CallError> {
     let (outcome_sender, outcome_receiver) = oneshot::channel();
@@ -165,7 +164,6 @@ pub(crate) async fn call(
             args,
             executor_public_key,
             outcome_sender,
-            writes.then_some(Finality::Global),
         ))
         .await
         .map_err(|e| CallError::InternalError(eyre!("Failed to send call message: {}", e)))?;
@@ -216,5 +214,3 @@ macro_rules! mount_method {
 }
 
 pub(crate) use mount_method;
-
-use crate::config::ServerConfig;
