@@ -4,41 +4,24 @@ use core::mem::transmute;
 use calimero_primitives::context::ContextId;
 use calimero_runtime::store::{Key, Storage, Value};
 use calimero_store::key::ContextState as ContextStateKey;
-use calimero_store::layer::read_only::ReadOnly;
 use calimero_store::layer::temporal::Temporal;
 use calimero_store::layer::{LayerExt, ReadLayer, WriteLayer};
 use calimero_store::Store;
 use eyre::Result as EyreResult;
 
 #[derive(Debug)]
-#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
-pub enum RuntimeCompatStoreInner<'this, 'entry> {
-    Read(ReadOnly<'this, Store>),
-    Write(Temporal<'this, 'entry, Store>),
-}
-
-#[derive(Debug)]
 pub struct RuntimeCompatStore<'this, 'entry> {
     context_id: ContextId,
-    inner: RuntimeCompatStoreInner<'this, 'entry>,
+    inner: Temporal<'this, 'entry, Store>,
     // todo! unideal, will revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
     keys: RefCell<Vec<ContextStateKey>>,
 }
 
 impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
-    pub fn temporal(store: &'this mut Store, context_id: ContextId) -> Self {
+    pub fn new(store: &'this mut Store, context_id: ContextId) -> Self {
         Self {
             context_id,
-            inner: RuntimeCompatStoreInner::Write(store.temporal()),
-            keys: RefCell::default(),
-        }
-    }
-
-    #[must_use]
-    pub fn read_only(store: &'this Store, context_id: ContextId) -> Self {
-        Self {
-            context_id,
-            inner: RuntimeCompatStoreInner::Read(store.read_only()),
+            inner: store.temporal(),
             keys: RefCell::default(),
         }
     }
@@ -60,12 +43,8 @@ impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
         }
     }
 
-    pub fn commit(self) -> EyreResult<bool> {
-        if let RuntimeCompatStoreInner::Write(store) = self.inner {
-            return store.commit().and(Ok(true));
-        }
-
-        Ok(false)
+    pub fn commit(self) -> EyreResult<()> {
+        self.inner.commit()
     }
 }
 
@@ -73,12 +52,7 @@ impl Storage for RuntimeCompatStore<'_, '_> {
     fn get(&self, key: &Key) -> Option<Vec<u8>> {
         let key = self.state_key(key)?;
 
-        let maybe_slice = match &self.inner {
-            RuntimeCompatStoreInner::Read(store) => store.get(key),
-            RuntimeCompatStoreInner::Write(store) => store.get(key),
-        };
-
-        let slice = maybe_slice.ok()??;
+        let slice = self.inner.get(key).ok()??;
 
         Some(slice.into_boxed().into_vec())
     }
@@ -86,17 +60,14 @@ impl Storage for RuntimeCompatStore<'_, '_> {
     fn remove(&mut self, key: &Key) -> Option<Vec<u8>> {
         let key = self.state_key(key)?;
 
-        let RuntimeCompatStoreInner::Write(store) = &mut self.inner else {
-            unimplemented!("Can not remove from read-only store.");
-        };
-
-        let old = store
+        let old = self
+            .inner
             .get(key)
             .ok()
             .flatten()
             .map(|slice| slice.into_boxed().into_vec());
 
-        store.delete(key).ok()?;
+        self.inner.delete(key).ok()?;
 
         old
     }
@@ -104,18 +75,15 @@ impl Storage for RuntimeCompatStore<'_, '_> {
     fn set(&mut self, key: Key, value: Value) -> Option<Value> {
         let key = self.state_key(&key)?;
 
-        let RuntimeCompatStoreInner::Write(store) = &mut self.inner else {
-            unimplemented!("Can not write to read-only store.");
-        };
-
-        let old = store
+        let old = self
+            .inner
             .has(key)
             .ok()?
-            .then(|| store.get(key).ok().flatten())
+            .then(|| self.inner.get(key).ok().flatten())
             .flatten()
             .map(|slice| slice.into_boxed().into_vec());
 
-        store.put(key, value.into()).ok()?;
+        self.inner.put(key, value.into()).ok()?;
 
         old
     }
@@ -125,11 +93,6 @@ impl Storage for RuntimeCompatStore<'_, '_> {
             return false;
         };
 
-        match &self.inner {
-            RuntimeCompatStoreInner::Read(store) => store.has(key),
-            RuntimeCompatStoreInner::Write(store) => store.has(key),
-        }
-        .ok()
-        .unwrap_or(false)
+        self.inner.has(key).unwrap_or(false)
     }
 }
