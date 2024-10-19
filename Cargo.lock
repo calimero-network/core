@@ -3641,7 +3641,6 @@ version = "0.1.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "calimero-storage-macros",
 ]
 
 [[package]]

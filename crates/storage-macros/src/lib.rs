@@ -1,6 +1,4 @@
 use borsh as _;
-/// For documentation links
-use calimero_storage as _;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, LitInt, Type};
