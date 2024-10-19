@@ -96,7 +96,7 @@ impl Node {
         context_id: ContextId,
         chosen_peer: PeerId,
     ) -> EyreResult<()> {
-        let Some(context) = self.ctx_manager.get_context(&context_id)? else {
+        let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
             bail!("catching up for non-existent context?");
         };
 
@@ -125,7 +125,7 @@ impl Node {
                     Some(message) => {
                         self.handle_catchup_message(
                             chosen_peer,
-                            &context,
+                            &mut context,
                             from_json_slice(&message?.data)?,
                         )
                         .await?;
@@ -145,7 +145,7 @@ impl Node {
         &mut self,
         // TODO: How should this be used?
         _chosen_peer: PeerId,
-        context: &Context,
+        context: &mut Context,
         message: CatchupStreamMessage,
     ) -> EyreResult<()> {
         match message {
