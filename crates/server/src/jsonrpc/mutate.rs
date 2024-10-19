@@ -23,7 +23,6 @@ async fn handle(request: MutateRequest, state: Arc<ServiceState>) -> EyreResult<
         request.context_id,
         request.method,
         args,
-        true,
         request.executor_public_key,
     )
     .await
