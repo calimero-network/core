@@ -9,7 +9,7 @@ pub enum VMLogicError {
     #[error(transparent)]
     HostError(#[from] HostError),
     #[error(transparent)]
-    StorageError(StorageError),
+    StorageError(#[from] StorageError),
 }
 
 impl From<MemoryAccessError> for VMLogicError {
