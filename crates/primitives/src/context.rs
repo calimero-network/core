@@ -20,12 +20,6 @@ impl From<[u8; 32]> for ContextId {
     }
 }
 
-impl From<String> for ContextId {
-    fn from(s: String) -> Self {
-        s.parse().expect("Invalid ContextId string")
-    }
-}
-
 impl From<ContextId> for [u8; 32] {
     fn from(id: ContextId) -> Self {
         *id
