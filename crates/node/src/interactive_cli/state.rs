@@ -14,7 +14,7 @@ impl StateCommand {
     pub async fn run(self, node: &Node) -> Result<()> {
         let ind = ">>".blue();
         let handle = node.store.handle();
-        let iter = handle.iter::<ContextStateKey>()?;
+        let mut iter = handle.iter::<ContextStateKey>()?;
 
         println!("{ind} {:44} | {:44}", "State Key", "Value");
 
@@ -27,15 +27,19 @@ impl StateCommand {
                 break 'first None;
             };
 
-            Some((k, iter.read()))
+            Some((k, iter.read().map(|s| s.value.into_boxed())))
         };
 
-        for (k, v) in first.into_iter().chain(iter.entries()) {
+        let rest = iter
+            .entries()
+            .map(|(k, v)| (k, v.map(|s| s.value.into_boxed())));
+
+        for (k, v) in first.into_iter().chain(rest) {
             let (k, v) = (k?, v?);
             if k.context_id() != context_id {
                 break;
             }
-            let entry = format!("{:44} | {:?}", Hash::from(k.state_key()), v.value,);
+            let entry = format!("{:44} | {:?}", Hash::from(k.state_key()), v);
             for line in entry.lines() {
                 println!("{ind} {}", line.cyan());
             }
