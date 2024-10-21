@@ -16,11 +16,10 @@ borsh.workspace = true
 quote.workspace = true
 syn.workspace = true
 
-calimero-storage = { path = "../storage" }
-
 [dev-dependencies]
 trybuild.workspace = true
 calimero-sdk = { path = "../sdk" }
+calimero-storage = { path = "../storage" }
 
 [lints]
 workspace = true

@@ -1,6 +1,4 @@
 use borsh as _;
-/// For documentation links
-use calimero_storage as _;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, LitInt, Type};
@@ -158,8 +156,10 @@ mod integration_tests_package_usage {
     attributes(children, collection, private, root, skip, storage, type_id)
 )]
 pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+    let mut input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
+    let where_clause = input.generics.make_where_clause().clone();
+    let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
     let is_root = input.attrs.iter().any(|attr| attr.path().is_ident("root"));
     let type_id = input
         .attrs
@@ -203,7 +203,6 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             if skip || ident == storage_ident {
                 None
             } else {
-                let getter = format_ident!("{}", ident);
                 let setter = format_ident!("set_{}", ident);
 
                 let setter_action = if private {
@@ -218,10 +217,9 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 };
 
                 Some(quote! {
-                    pub fn #getter(&self) -> &#ty {
-                        &self.#ident
-                    }
-
+                    #[doc = "Setter for the "]
+                    #[doc = stringify!(#ident)]
+                    #[doc = " field."]
                     pub fn #setter(&mut self, value: #ty) -> bool {
                         if self.#ident == value {
                             false
@@ -289,8 +287,18 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         .map(|f| f.ident.as_ref().unwrap())
         .collect();
 
+    let mut data_where_clause = where_clause.clone();
+
+    for ty in input.generics.type_params() {
+        let ident = &ty.ident;
+        data_where_clause.predicates.push(syn::parse_quote!(
+            #ident: calimero_sdk::borsh::BorshSerialize
+                + calimero_sdk::borsh::BorshDeserialize
+        ));
+    }
+
     let deserialize_impl = quote! {
-        impl calimero_sdk::borsh::BorshDeserialize for #name {
+        impl #impl_generics calimero_sdk::borsh::BorshDeserialize for #name #ty_generics #data_where_clause {
             fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
                 let #storage_ident = #storage_ty::deserialize_reader(reader)?;
                 Ok(Self {
@@ -303,7 +311,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
     };
 
     let serialize_impl = quote! {
-        impl calimero_sdk::borsh::BorshSerialize for #name {
+        impl #impl_generics calimero_sdk::borsh::BorshSerialize for #name #ty_generics #data_where_clause {
             fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
                 calimero_sdk::borsh::BorshSerialize::serialize(&self.#storage_ident, writer)?;
                 #(calimero_sdk::borsh::BorshSerialize::serialize(&self.#serializable_fields, writer)?;)*
@@ -326,12 +334,21 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         }
     };
 
+    let mut local_where_clause = where_clause.clone();
+
+    for ty in input.generics.type_params() {
+        let ident = &ty.ident;
+        local_where_clause.predicates.push(syn::parse_quote!(
+            #ident: PartialEq
+        ));
+    }
+
     let expanded = quote! {
-        impl #name {
+        impl #impl_generics #name #ty_generics #local_where_clause {
             #(#field_implementations)*
         }
 
-        impl calimero_storage::entities::Data for #name {
+        impl #impl_generics calimero_storage::entities::Data for #name #ty_generics #data_where_clause {
             fn calculate_merkle_hash(&self) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
                 use calimero_storage::exports::Digest;
                 let mut hasher = calimero_storage::exports::Sha256::new();
@@ -358,7 +375,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 match collection {
                     #(
                         stringify!(#collection_fields) => {
-                            let child = <#collection_field_types as calimero_storage::entities::Collection>::Child::try_from_slice(slice)
+                            let child = <#collection_field_types #ty_generics as calimero_storage::entities::Collection>::Child::try_from_slice(slice)
                                 .map_err(|e| calimero_storage::interface::StorageError::DeserializationError(e))?;
                             child.calculate_merkle_hash()
                         },
@@ -394,7 +411,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             }
         }
 
-        impl calimero_storage::entities::AtomicUnit for #name {}
+        impl #impl_generics calimero_storage::entities::AtomicUnit for #name #ty_generics #data_where_clause {}
 
         #deserialize_impl
 
@@ -480,8 +497,10 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
 ///                    child in a collection.
 #[proc_macro_derive(Collection, attributes(children))]
 pub fn collection_derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+    let mut input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
+    let where_clause = input.generics.make_where_clause().clone();
+    let (impl_generics, ty_generics, _) = input.generics.split_for_impl();
     let child_type = input
         .attrs
         .iter()
@@ -489,35 +508,65 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
         .and_then(|attr| attr.parse_args::<Type>().ok())
         .expect("Collection derive requires #[children(Type)] attribute");
 
-    match &input.data {
-        Data::Struct(_) => {}
+    let fields = match input.data {
+        Data::Struct(data) => data.fields,
         Data::Enum(_) | Data::Union(_) => panic!("Collection can only be derived for structs"),
-    }
+    };
 
     let deserialize_impl = quote! {
-        impl calimero_sdk::borsh::BorshDeserialize for #name {
+        impl #impl_generics calimero_sdk::borsh::BorshDeserialize for #name #ty_generics #where_clause {
             fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-                Ok(Self {})
+                Ok(Self::default())
             }
         }
     };
 
     let serialize_impl = quote! {
-        impl calimero_sdk::borsh::BorshSerialize for #name {
+        impl #impl_generics calimero_sdk::borsh::BorshSerialize for #name #ty_generics #where_clause {
             fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
                 Ok(())
             }
         }
     };
 
+    let data = fields
+        .iter()
+        .map(|field| {
+            let ident = field.ident.as_ref().unwrap();
+            quote! { #ident: Default::default(), }
+        })
+        .collect::<Vec<_>>();
+
+    let data = (!data.is_empty()).then(|| quote! { { #(#data)* } });
+
+    let default_impl = quote! {
+        impl #impl_generics ::core::default::Default for #name #ty_generics #where_clause {
+            fn default() -> Self {
+                Self #data
+            }
+        }
+    };
+
+    let mut collection_where_clause = where_clause.clone();
+
+    for ty in input.generics.type_params() {
+        let ident = &ty.ident;
+        collection_where_clause.predicates.push(syn::parse_quote!(
+            #ident: calimero_sdk::borsh::BorshSerialize
+                + calimero_sdk::borsh::BorshDeserialize
+        ));
+    }
+
     let expanded = quote! {
-        impl calimero_storage::entities::Collection for #name {
+        impl #impl_generics calimero_storage::entities::Collection for #name #ty_generics #collection_where_clause {
             type Child = #child_type;
 
             fn name(&self) -> &str {
                 stringify!(#name)
             }
         }
+
+        #default_impl
 
         #deserialize_impl
 
