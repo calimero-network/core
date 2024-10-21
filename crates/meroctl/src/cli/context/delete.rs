@@ -1,12 +1,11 @@
 use calimero_server::admin::handlers::context::DeleteContextResponse;
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
-use libp2p::identity::Keypair;
-use libp2p::Multiaddr;
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
+use crate::common::{
+    fetch_multiaddr, get_response, load_config, multiaddr_to_url, CliError, RequestType,
+};
 
 #[derive(Debug, Parser)]
 pub struct DeleteCommand {
@@ -15,33 +14,34 @@ pub struct DeleteCommand {
 }
 
 impl DeleteCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+    pub async fn run(self, args: RootArgs) -> Result<DeleteContextResponse, CliError> {
         let config = load_config(&args.node_name)?;
 
-        self.delete_context(fetch_multiaddr(&config)?, &Client::new(), &config.identity)
-            .await
-    }
-
-    #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
-    async fn delete_context(
-        &self,
-        multiaddr: &Multiaddr,
-        client: &Client,
-        keypair: &Keypair,
-    ) -> EyreResult<()> {
         let url = multiaddr_to_url(
-            multiaddr,
+            fetch_multiaddr(&config)?,
             &format!("admin-api/dev/contexts/{}", self.context_id),
         )?;
-        let response = get_response(client, url, None::<()>, keypair, RequestType::Delete).await?;
+        let response = get_response(
+            &Client::new(),
+            url,
+            None::<()>,
+            &config.identity,
+            RequestType::Delete,
+        )
+        .await?;
 
         if !response.status().is_success() {
-            bail!("Request failed with status: {}", response.status())
+            return Err(CliError::MethodCallError(format!(
+                "Delete context request failed with status: {}",
+                response.status()
+            )));
         }
 
-        let response: DeleteContextResponse = response.json().await?;
+        let response: DeleteContextResponse = response
+            .json()
+            .await
+            .map_err(|e| CliError::MethodCallError(e.to_string()))?;
 
-        println!("{:#?}", response);
-        Ok(())
+        Ok(response)
     }
 }

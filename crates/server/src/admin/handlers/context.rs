@@ -254,7 +254,7 @@ pub async fn create_context_handler(
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Copy, Clone)]
 pub struct GetContextStorageResponse {
     data: ContextStorage,
 }
@@ -303,8 +303,8 @@ pub async fn join_context_handler(
     }
 }
 
-#[derive(Debug, Serialize)]
-struct UpdateApplicationIdResponse {
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+pub struct UpdateApplicationIdResponse {
     data: Empty,
 }
 

@@ -2,12 +2,12 @@ use calimero_primitives::context::ContextInvitationPayload;
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
-use tracing::info;
 
 use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
+use crate::common::{
+    fetch_multiaddr, get_response, load_config, multiaddr_to_url, CliError, RequestType,
+};
 
 #[derive(Debug, Parser)]
 pub struct JoinCommand {
@@ -18,7 +18,7 @@ pub struct JoinCommand {
 }
 
 impl JoinCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+    pub async fn run(self, args: RootArgs) -> Result<JoinContextResponse, CliError> {
         let config = load_config(&args.node_name)?;
 
         let response = get_response(
@@ -34,18 +34,17 @@ impl JoinCommand {
         .await?;
 
         if !response.status().is_success() {
-            bail!("Request failed with status: {}", response.status())
+            return Err(CliError::MethodCallError(format!(
+                "Join context request failed with status: {}",
+                response.status()
+            )));
         }
 
-        let Some(body) = response.json::<JoinContextResponse>().await?.data else {
-            bail!("Unable to join context");
-        };
+        let body = response
+            .json::<JoinContextResponse>()
+            .await
+            .map_err(|e| CliError::MethodCallError(e.to_string()))?;
 
-        info!(
-            "Context {} sucesfully joined as {}",
-            body.context_id, body.member_public_key
-        );
-
-        Ok(())
+        Ok(body)
     }
 }

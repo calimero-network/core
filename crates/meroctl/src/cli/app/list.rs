@@ -1,19 +1,17 @@
 use calimero_server_primitives::admin::ListApplicationsResponse;
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 
 use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
+use crate::common::{
+    fetch_multiaddr, get_response, load_config, multiaddr_to_url, CliError, RequestType,
+};
 
 #[derive(Debug, Parser)]
-pub struct ListCommand {
-    #[arg(long, short)]
-    pub test: bool,
-}
+pub struct ListCommand {}
 
 impl ListCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+    pub async fn run(self, args: &RootArgs) -> Result<ListApplicationsResponse, CliError> {
         let config = load_config(&args.node_name)?;
 
         let response = get_response(
@@ -26,20 +24,17 @@ impl ListCommand {
         .await?;
 
         if !response.status().is_success() {
-            bail!("Request failed with status: {}", response.status())
+            return Err(CliError::MethodCallError(format!(
+                "List request failed with status: {}",
+                response.status()
+            )));
         }
 
-        let api_response: ListApplicationsResponse = response.json().await?;
+        let body: ListApplicationsResponse = response
+            .json()
+            .await
+            .map_err(|e| CliError::MethodCallError(e.to_string()))?;
 
-        if self.test {
-            println!("{:#?}", api_response);
-        } else {
-            #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
-            for app in api_response.data.apps {
-                println!("{}", app.id);
-            }
-        }
-
-        Ok(())
+        Ok(body)
     }
 }

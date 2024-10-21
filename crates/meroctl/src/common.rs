@@ -1,7 +1,6 @@
 use calimero_config::ConfigFile;
 use camino::Utf8PathBuf;
 use chrono::Utc;
-use eyre::{eyre, Error as EyreError};
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
@@ -9,7 +8,7 @@ use reqwest::{Client, Response, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{to_value, Value};
 
-pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> Result<Url, CliError<EyreError>> {
+pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> Result<Url, CliError> {
     #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
     let (ip, port, scheme) = multiaddr.iter().fold(
         (None, None, None),
@@ -23,13 +22,13 @@ pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> Result<Url, Cl
     );
 
     let ip =
-        ip.ok_or_else(|| CliError::InternalError(eyre!("No IP address found in Multiaddr")))?;
+        ip.ok_or_else(|| CliError::InternalError(format!("No IP address found in Multiaddr")))?;
     let port =
-        port.ok_or_else(|| CliError::InternalError(eyre!("No TCP port found in Multiaddr")))?;
+        port.ok_or_else(|| CliError::InternalError(format!("No TCP port found in Multiaddr")))?;
     let scheme = scheme.unwrap_or("http");
 
     let mut url = Url::parse(&format!("{scheme}://{ip}:{port}"))
-        .map_err(|_| CliError::InternalError(eyre!("Couldn't parse url")))?;
+        .map_err(|_| CliError::InternalError(format!("Couldn't parse url")))?;
 
     url.set_path(api_path);
 
@@ -42,14 +41,14 @@ pub async fn get_response<S>(
     body: Option<S>,
     keypair: &Keypair,
     req_type: RequestType,
-) -> Result<Response, CliError<EyreError>>
+) -> Result<Response, CliError>
 where
     S: Serialize,
 {
     let timestamp = Utc::now().timestamp().to_string();
     let signature = keypair
         .sign(timestamp.as_bytes())
-        .map_err(|_| CliError::InternalError(eyre!("Couldn't sign keypair")))?;
+        .map_err(|_| CliError::InternalError(format!("Couldn't sign keypair")))?;
 
     let mut builder = match req_type {
         RequestType::Get => client.get(url),
@@ -64,29 +63,35 @@ where
     builder
         .send()
         .await
-        .map_err(|_| CliError::InternalError(eyre!("Error with client request")))
+        .map_err(|_| CliError::InternalError(format!("Error with client request")))
 }
 
-pub fn load_config(path: &Utf8PathBuf) -> Result<ConfigFile, CliError<EyreError>> {
+pub fn load_config(path: &Utf8PathBuf) -> Result<ConfigFile, CliError> {
     if !ConfigFile::exists(&path) {
-        return Err(CliError::InternalError(eyre!("Config file does not exist")));
+        println!("{}", path);
+        return Err(CliError::InternalError(format!(
+            "Config file does not exist"
+        )));
     };
 
     let Ok(config) = ConfigFile::load(&path) else {
-        return Err(CliError::InternalError(eyre!("Failed to load config file")));
+        return Err(CliError::InternalError(format!(
+            "Failed to load config file"
+        )));
     };
 
     Ok(config)
 }
 
-pub fn fetch_multiaddr(config: &ConfigFile) -> Result<&Multiaddr, CliError<EyreError>> {
+pub fn fetch_multiaddr(config: &ConfigFile) -> Result<&Multiaddr, CliError> {
     let Some(multiaddr) = config.network.server.listen.first() else {
-        return Err(CliError::InternalError(eyre!("No address found")));
+        return Err(CliError::InternalError(format!("No address found")));
     };
 
     Ok(multiaddr)
 }
 
+#[allow(dead_code)]
 pub enum RequestType {
     Get,
     Post,
@@ -94,29 +99,33 @@ pub enum RequestType {
 }
 
 #[derive(Debug)]
-pub enum CliError<E> {
-    MethodCallError(E),
-    InternalError(EyreError),
+pub enum CliError {
+    MethodCallError(String),
+    InternalError(String),
 }
 
 pub trait ToResponseBody {
     fn to_res_body(self) -> ResponseBody;
 }
 
-impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, CliError<E>> {
+impl<T: Serialize> ToResponseBody for Result<T, CliError> {
     fn to_res_body(self) -> ResponseBody {
         match self {
             Ok(r) => match to_value(r) {
                 Ok(v) => ResponseBody::Result(v),
-                Err(e) => ResponseBody::Error(ResponseBodyError::ServerError(e.into())),
+                Err(e) => ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError(e.to_string()),
+                )),
             },
             Err(CliError::MethodCallError(err)) => match to_value(err) {
                 Ok(v) => ResponseBody::Error(ResponseBodyError::HandlerError(v)),
-                Err(e) => ResponseBody::Error(ResponseBodyError::ServerError(e.into())),
+                Err(e) => ResponseBody::Error(ResponseBodyError::ServerError(
+                    ServerResponseError::InternalError(e.to_string()),
+                )),
             },
-            Err(CliError::InternalError(err)) => {
-                ResponseBody::Error(ResponseBodyError::ServerError(err))
-            }
+            Err(CliError::InternalError(err)) => ResponseBody::Error(
+                ResponseBodyError::ServerError(ServerResponseError::InternalError(err.to_string())),
+            ),
         }
     }
 }
@@ -129,7 +138,6 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, CliError<E>> {
 )]
 pub enum ResponseBody {
     Result(Value),
-    #[serde(skip)]
     Error(ResponseBodyError),
 }
 
@@ -138,6 +146,12 @@ pub enum ResponseBody {
 #[non_exhaustive]
 pub enum ResponseBodyError {
     HandlerError(Value),
-    #[serde(skip)]
-    ServerError(EyreError),
+    ServerError(ServerResponseError),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub enum ServerResponseError {
+    ParseError(String),
+    InternalError(String),
 }

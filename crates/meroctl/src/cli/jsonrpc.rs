@@ -4,11 +4,10 @@ use calimero_server_primitives::jsonrpc::{
     MutateRequest, QueryRequest, Request, RequestId, RequestPayload, Response, Version,
 };
 use clap::{Parser, ValueEnum};
-use eyre::{bail, Result as EyreResult};
 use serde_json::Value;
 
 use super::RootArgs;
-use crate::common::{get_response, multiaddr_to_url, RequestType};
+use crate::common::{get_response, multiaddr_to_url, CliError, RequestType};
 
 #[derive(Debug, Parser)]
 pub struct JsonRpcCommand {
@@ -44,24 +43,29 @@ pub enum CallType {
 
 #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
 impl JsonRpcCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
+    pub async fn run(self, root_args: RootArgs) -> Result<Response, CliError> {
         let path = root_args.home.join(&root_args.node_name);
 
         if !ConfigFile::exists(&path) {
-            bail!("Config file does not exist")
+            return Err(CliError::InternalError(format!(
+                "ConfigfFile does not exist"
+            )));
         };
 
         let Ok(config) = ConfigFile::load(&path) else {
-            bail!("Failed to load config file")
+            return Err(CliError::InternalError(format!(
+                "Could not load ConfigFile"
+            )));
         };
 
         let Some(multiaddr) = config.network.server.listen.first() else {
-            bail!("No address.")
+            return Err(CliError::InternalError(format!("No address")));
         };
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
-        let json_payload: Value = serde_json::from_str(&self.args_json)?;
+        let json_payload: Value = serde_json::from_str(&self.args_json)
+            .map_err(|e| CliError::InternalError(e.to_string()))?;
 
         let payload = match self.call_type {
             CallType::Query => RequestPayload::Query(QueryRequest::new(
@@ -71,7 +75,8 @@ impl JsonRpcCommand {
                 config
                     .identity
                     .public()
-                    .try_into_ed25519()?
+                    .try_into_ed25519()
+                    .map_err(|e| CliError::InternalError(e.to_string()))?
                     .to_bytes()
                     .into(),
             )),
@@ -82,7 +87,8 @@ impl JsonRpcCommand {
                 config
                     .identity
                     .public()
-                    .try_into_ed25519()?
+                    .try_into_ed25519()
+                    .map_err(|e| CliError::InternalError(e.to_string()))?
                     .to_bytes()
                     .into(),
             )),
@@ -94,27 +100,30 @@ impl JsonRpcCommand {
             payload,
         );
 
-        if !self.test {
-            match serde_json::to_string_pretty(&request) {
-                Ok(json) => println!("Request JSON:\n{json}"),
-                Err(e) => println!("Error serializing request to JSON: {e}"),
+        let json_request = match serde_json::to_string(&request) {
+            Ok(json) => json,
+            Err(e) => {
+                return Err(CliError::InternalError(format!(
+                    "Error serializing request to JSON: {e}"
+                )))
             }
-        }
+        };
 
         let client = reqwest::Client::new();
         let response = get_response(
             &client,
             url,
-            Some(request),
+            Some(json_request),
             &config.identity,
             RequestType::Post,
         )
         .await?;
 
-        let response: Response = response.json().await?;
+        let response: Response = response
+            .json()
+            .await
+            .map_err(|e| CliError::MethodCallError(e.to_string()))?;
 
-        println!("{:#?}", response);
-
-        Ok(())
+        Ok(response)
     }
 }

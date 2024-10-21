@@ -1,20 +1,22 @@
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
-use eyre::Result as EyreResult;
 
 use crate::cli::context::create::CreateCommand;
 use crate::cli::context::delete::DeleteCommand;
 use crate::cli::context::get::GetCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
+use crate::cli::context::update::UpdateCommand;
 use crate::cli::context::watch::WatchCommand;
 use crate::cli::RootArgs;
+use crate::common::{ResponseBody, ToResponseBody};
 
 mod create;
 mod delete;
 mod get;
 mod join;
 mod list;
+mod update;
 mod watch;
 
 pub const EXAMPLES: &str = r"
@@ -50,17 +52,19 @@ pub enum ContextSubCommands {
     Delete(DeleteCommand),
     #[command(alias = "ws")]
     Watch(WatchCommand),
+    Update(UpdateCommand),
 }
 
 impl ContextCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+    pub async fn run(self, args: RootArgs) -> ResponseBody {
         match self.subcommand {
-            ContextSubCommands::Create(create) => create.run(args).await,
-            ContextSubCommands::Delete(delete) => delete.run(args).await,
-            ContextSubCommands::Get(get) => get.run(args).await,
-            ContextSubCommands::Join(join) => join.run(args).await,
-            ContextSubCommands::List(list) => list.run(args).await,
-            ContextSubCommands::Watch(watch) => watch.run(args).await,
+            ContextSubCommands::Create(create) => create.run(args).await.to_res_body(),
+            ContextSubCommands::Delete(delete) => delete.run(args).await.to_res_body(),
+            ContextSubCommands::Get(get) => get.run(args).await.to_res_body(),
+            ContextSubCommands::Join(join) => join.run(args).await.to_res_body(),
+            ContextSubCommands::List(list) => list.run(args).await.to_res_body(),
+            ContextSubCommands::Watch(watch) => watch.run(args).await.to_res_body(),
+            ContextSubCommands::Update(update) => update.run(&args).await.to_res_body(),
         }
     }
 }
