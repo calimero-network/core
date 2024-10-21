@@ -7,13 +7,13 @@ use axum::{Extension, Json};
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::UpdateContextApplicationRequest;
 use reqwest::StatusCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse, Empty};
 use crate::AdminState;
 
-#[derive(Debug, Serialize)]
-struct UpdateApplicationIdResponse {
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+pub struct UpdateApplicationIdResponse {
     data: Empty,
 }
 

@@ -1,9 +1,10 @@
 use std::fmt::Debug;
 
-use calimero_server::admin::handlers::context::{
-    GetContextClientKeysResponse, GetContextIdentitiesResponse, GetContextResponse,
-    GetContextStorageResponse, GetContextUsersResponse,
+use calimero_server::admin::handlers::context::get_context::{
+    GetContextIdentitiesResponse, GetContextResponse,
 };
+use calimero_server::admin::handlers::context::get_context_client_keys::GetContextClientKeysResponse;
+use calimero_server::admin::handlers::context::get_context_users::GetContextUsersResponse;
 use clap::{Parser, ValueEnum};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
@@ -37,7 +38,7 @@ pub enum GetResponse {
     Context(GetContextResponse),
     Users(GetContextUsersResponse),
     ClientKeys(GetContextClientKeysResponse),
-    Storage(GetContextStorageResponse),
+    Storage(GetContextUsersResponse),
     Identities(GetContextIdentitiesResponse),
 }
 

@@ -21,7 +21,6 @@ pub enum GetValues {
 }
 
 impl GetCommand {
-    #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
     pub async fn run(self, args: &RootArgs) -> Result<GetApplicationResponse, CliError> {
         let config = load_config(&args.home, &args.node_name)?;
 

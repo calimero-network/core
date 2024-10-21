@@ -7,7 +7,7 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_server::admin::handlers::context::UpdateApplicationIdResponse;
+use calimero_server::admin::handlers::context::update_application_id::UpdateApplicationIdResponse;
 use calimero_server_primitives::admin::{
     CreateContextRequest, CreateContextResponse, GetApplicationResponse,
 };

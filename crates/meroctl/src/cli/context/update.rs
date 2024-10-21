@@ -1,6 +1,6 @@
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
-use calimero_server::admin::handlers::context::UpdateApplicationIdResponse;
+use calimero_server::admin::handlers::context::update_application_id::UpdateApplicationIdResponse;
 use calimero_server_primitives::admin::UpdateContextApplicationRequest;
 use clap::Parser;
 use reqwest::Client;
@@ -19,7 +19,7 @@ pub struct UpdateCommand {
 
 impl UpdateCommand {
     pub async fn run(self, args: &RootArgs) -> Result<UpdateApplicationIdResponse, CliError> {
-        let config = load_config(&args.node_name)?;
+        let config = load_config(&args.home, &args.node_name)?;
 
         let url = multiaddr_to_url(
             fetch_multiaddr(&config)?,

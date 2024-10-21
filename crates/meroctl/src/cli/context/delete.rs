@@ -1,4 +1,4 @@
-use calimero_server::admin::handlers::context::DeleteContextResponse;
+use calimero_server::admin::handlers::context::delete_context::DeleteContextResponse;
 use clap::Parser;
 use reqwest::Client;
 
