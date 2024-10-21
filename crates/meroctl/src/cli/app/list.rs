@@ -12,7 +12,7 @@ pub struct ListCommand {}
 
 impl ListCommand {
     pub async fn run(self, args: &RootArgs) -> Result<ListApplicationsResponse, CliError> {
-        let config = load_config(&args.node_name)?;
+        let config = load_config(&args.home, &args.node_name)?;
 
         let response = get_response(
             &Client::new(),

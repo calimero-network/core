@@ -93,6 +93,7 @@ fn main() -> EyreResult<()> {
             "seed": joe_seed,
         }))?,
         [0; 32],
+        [0; 32],
     );
     let create_keypair_outcome = run(&file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
@@ -116,6 +117,7 @@ fn main() -> EyreResult<()> {
             "seed": melissa_seed,
         }))?,
         [0; 32],
+        [0; 32],
     );
     let create_keypair_outcome = run(&file, "create_keypair", cx, &mut storage, &limits)?;
     dbg!(&create_keypair_outcome);
@@ -138,6 +140,7 @@ fn main() -> EyreResult<()> {
             "public_key": joe_keypair.pk,
         }))?,
         [0; 32],
+        [0; 32],
     );
     let join_outcome = run(&file, "join", cx, &mut storage, &limits)?;
     dbg!(&join_outcome);
@@ -157,6 +160,7 @@ fn main() -> EyreResult<()> {
             "public_key": melissa_keypair.pk,
         }))?,
         [0; 32],
+        [0; 32],
     );
     let join_outcome = run(&file, "join", cx, &mut storage, &limits)?;
     dbg!(&join_outcome);
@@ -173,7 +177,7 @@ fn main() -> EyreResult<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext::new(vec![], [0; 32]);
+    let cx = VMContext::new(vec![], [0; 32], [0; 32]);
     let state_outcome = run(&file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
@@ -196,6 +200,7 @@ fn main() -> EyreResult<()> {
             "choice": joe_choice,
             "nonce": joe_nonce,
         }))?,
+        [0; 32],
         [0; 32],
     );
     let prepare_outcome = run(&file, "prepare", cx, &mut storage, &limits)?;
@@ -221,6 +226,7 @@ fn main() -> EyreResult<()> {
             "nonce": melissa_nonce,
         }))?,
         [0; 32],
+        [0; 32],
     );
     let prepare_outcome = run(&file, "prepare", cx, &mut storage, &limits)?;
     dbg!(&prepare_outcome);
@@ -242,6 +248,7 @@ fn main() -> EyreResult<()> {
             "signature": joe_signature,
         }))?,
         [0; 32],
+        [0; 32],
     );
     let commit_outcome = run(&file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
@@ -259,6 +266,7 @@ fn main() -> EyreResult<()> {
             "signature": melissa_signature,
         }))?,
         [0; 32],
+        [0; 32],
     );
     let commit_outcome = run(&file, "commit", cx, &mut storage, &limits)?;
     dbg!(&commit_outcome);
@@ -274,6 +282,7 @@ fn main() -> EyreResult<()> {
             "player_idx": joe_idx,
             "nonce": joe_nonce,
         }))?,
+        [0; 32],
         [0; 32],
     );
     let reveal_outcome = run(&file, "reveal", cx, &mut storage, &limits)?;
@@ -291,6 +300,7 @@ fn main() -> EyreResult<()> {
             "nonce": melissa_nonce,
         }))?,
         [0; 32],
+        [0; 32],
     );
     let reveal_outcome = run(&file, "reveal", cx, &mut storage, &limits)?;
     dbg!(&reveal_outcome);
@@ -304,7 +314,7 @@ fn main() -> EyreResult<()> {
     );
     println!("{}", "--".repeat(20).dimmed());
 
-    let cx = VMContext::new(vec![], [0; 32]);
+    let cx = VMContext::new(vec![], [0; 32], [0; 32]);
     let state_outcome = run(&file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 
@@ -331,13 +341,14 @@ fn main() -> EyreResult<()> {
             "signature": melissa_signature,
         }))?,
         [0; 32],
+        [0; 32],
     );
     let reset_outcome = run(&file, "reset", cx, &mut storage, &limits)?;
     dbg!(&reset_outcome);
 
     from_json_slice::<()>(&reset_outcome.returns?.expect("Expected a return value"))?;
 
-    let cx = VMContext::new(vec![], [0; 32]);
+    let cx = VMContext::new(vec![], [0; 32], [0; 32]);
     let state_outcome = run(&file, "state", cx, &mut storage, &limits)?;
     dbg!(&state_outcome);
 

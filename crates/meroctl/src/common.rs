@@ -1,5 +1,5 @@
 use calimero_config::ConfigFile;
-use camino::Utf8PathBuf;
+use camino::Utf8Path;
 use chrono::Utc;
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
@@ -66,7 +66,9 @@ where
         .map_err(|_| CliError::InternalError(format!("Error with client request")))
 }
 
-pub fn load_config(path: &Utf8PathBuf) -> Result<ConfigFile, CliError> {
+pub fn load_config(home: &Utf8Path, node_name: &str) -> Result<ConfigFile, CliError> {
+    let path = home.join(node_name);
+
     if !ConfigFile::exists(&path) {
         println!("{}", path);
         return Err(CliError::InternalError(format!(

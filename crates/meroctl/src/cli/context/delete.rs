@@ -15,7 +15,7 @@ pub struct DeleteCommand {
 
 impl DeleteCommand {
     pub async fn run(self, args: RootArgs) -> Result<DeleteContextResponse, CliError> {
-        let config = load_config(&args.node_name)?;
+        let config = load_config(&args.home, &args.node_name)?;
 
         let url = multiaddr_to_url(
             fetch_multiaddr(&config)?,

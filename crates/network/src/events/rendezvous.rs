@@ -1,6 +1,6 @@
 use libp2p::rendezvous::client::Event;
 use owo_colors::OwoColorize;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::{EventHandler, EventLoop};
 use crate::discovery::state::{PeerDiscoveryMechanism, RendezvousRegistrationStatus};
@@ -79,7 +79,7 @@ impl EventHandler<Event> for EventLoop {
                 namespace,
                 error,
             } => {
-                error!(?rendezvous_node, ?namespace, error_code=?error, "Rendezvous discovery failed");
+                warn!(?rendezvous_node, ?namespace, error_code=?error, "Rendezvous discovery failed");
             }
             Event::RegisterFailed {
                 rendezvous_node,
@@ -94,22 +94,17 @@ impl EventHandler<Event> for EventLoop {
                     RendezvousRegistrationStatus::Expired,
                 );
 
-                let nominated_peer = self.discovery.state.get_rendezvous_peer_ids().find(|&p| {
-                    if let Some(peer_info) = self.discovery.state.get_peer_info(&p) {
-                        if let Some(rendezvous_info) = peer_info.rendezvous() {
-                            return matches!(
-                                rendezvous_info.registration_status(),
-                                RendezvousRegistrationStatus::Discovered
-                            );
+                if let Some(nominated_peer) = self.find_new_rendezvous_peer().await {
+                    if self.swarm.is_connected(&nominated_peer) {
+                        if let Err(err) = self.rendezvous_register(&nominated_peer) {
+                            error!(%err, "Failed to register with nominated rendezvous peer");
+                        }
+                    } else {
+                        debug!(%nominated_peer, "Dialing nominated rendezvous peer");
+                        if let Err(err) = self.swarm.dial(nominated_peer) {
+                            error!(%err, "Failed to dial nominated rendezvous peer");
                         }
                     }
-                    false
-                });
-
-                if let Some(peer) = nominated_peer {
-                    if let Err(err) = self.rendezvous_register(&peer) {
-                        error!(%err, "Failed to update registration discovery");
-                    };
                 } else {
                     info!("Couldn't find new peer to nominate for rendezvous registration.");
                 }

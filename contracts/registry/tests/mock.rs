@@ -98,6 +98,25 @@ fn test_get_packages_with_multiple_offsets_and_limits() {
 }
 
 #[test]
+fn test_get_package_from_owner() {
+    let mut contract = PackageManager::default();
+    drop(contract.add_package(
+        "application".to_owned(),
+        "Demo Application".to_owned(),
+        "https://github.com/application".to_owned(),
+    ));
+
+    let package =
+        contract.get_package_from_owner("application".to_owned(), "bob.near".parse().unwrap());
+
+    assert_eq!(package.description, "Demo Application".to_owned());
+    assert_eq!(
+        package.repository,
+        "https://github.com/application".to_owned()
+    );
+}
+
+#[test]
 fn test_get_releases() {
     let mut contract = PackageManager::default();
     drop(contract.add_package(
@@ -154,4 +173,30 @@ fn test_get_releases() {
 
     assert_eq!(app_releases_versions[2].version, "0.1.0".to_owned());
     assert_eq!(pkg_releases_versions[0].version, "0.1.1".to_owned());
+}
+
+#[test]
+fn test_get_release_from_owner() {
+    let mut contract = PackageManager::default();
+    drop(contract.add_package(
+        "application".to_owned(),
+        "Demo Application".to_owned(),
+        "https://github.com/application".to_owned(),
+    ));
+
+    contract.add_release(
+        "application".to_owned(),
+        "0.0.1".to_owned(),
+        String::new(),
+        "https://gateway/ipfs/CID".to_owned(),
+        "123456789".to_owned(),
+    );
+
+    let release = contract.get_release_from_owner(
+        "application".to_owned(),
+        "bob.near".parse().unwrap(),
+        "0.0.1".to_owned(),
+    );
+
+    assert_eq!(release.path, "https://gateway/ipfs/CID".to_owned());
 }

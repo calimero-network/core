@@ -181,6 +181,32 @@ impl EventLoop {
         Ok(())
     }
 
+    // Finds a new rendezvous peer for registration.
+    // Prioritizes Discovered peers, falls back to dialing Expired peers if necessary.
+    // Returns Some(PeerId) if a suitable peer is found, None otherwise.
+    pub(crate) async fn find_new_rendezvous_peer(&mut self) -> Option<PeerId> {
+        let mut candidate = None;
+
+        for peer_id in self.discovery.state.get_rendezvous_peer_ids() {
+            if let Some(peer_info) = self.discovery.state.get_peer_info(&peer_id) {
+                if let Some(rendezvous_info) = peer_info.rendezvous() {
+                    match rendezvous_info.registration_status() {
+                        RendezvousRegistrationStatus::Discovered => {
+                            // If we find a Discovered peer, return it right away
+                            return Some(peer_id);
+                        }
+                        RendezvousRegistrationStatus::Expired if candidate.is_none() => {
+                            candidate = Some(peer_id);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        candidate
+    }
+
     // Requests relay reservation on relay peer if one is required.
     // This function expectes that the relay peer is already connected.
     pub(crate) fn create_relay_reservation(&mut self, relay_peer: &PeerId) -> EyreResult<()> {

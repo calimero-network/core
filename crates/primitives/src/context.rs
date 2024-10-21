@@ -20,6 +20,12 @@ impl From<[u8; 32]> for ContextId {
     }
 }
 
+impl From<ContextId> for [u8; 32] {
+    fn from(id: ContextId) -> Self {
+        *id
+    }
+}
+
 impl Deref for ContextId {
     type Target = [u8; 32];
 

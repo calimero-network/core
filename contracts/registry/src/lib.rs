@@ -63,7 +63,8 @@ impl Default for PackageManager {
 #[near_bindgen]
 impl PackageManager {
     pub fn add_package(&mut self, name: String, description: String, repository: String) -> String {
-        let id_hash = Self::calculate_id_hash(&name);
+        let id_hash = Self::calculate_id_hash(&name, env::signer_account_id());
+
         if self.packages.contains_key(&id_hash) {
             env::panic_str("Package already exists.")
         }
@@ -81,9 +82,27 @@ impl PackageManager {
         id_hash
     }
 
-    fn calculate_id_hash(name: &str) -> String {
+    pub fn get_packages(&self, offset: usize, limit: usize) -> Vec<Package> {
+        self.packages
+            .keys()
+            .skip(offset)
+            .take(limit)
+            .filter_map(|key| self.packages.get(key).cloned())
+            .collect()
+    }
+
+    pub fn get_package_from_owner(&self, name: String, owner_account: AccountId) -> &Package {
+        let id_hash = Self::calculate_id_hash(&name, owner_account);
+        self.packages.get(&id_hash).expect("Package doesn't exist")
+    }
+
+    pub fn get_package(&self, id: String) -> &Package {
+        self.packages.get(&id).expect("Package doesn't exist")
+    }
+
+    fn calculate_id_hash(name: &str, owner_account: AccountId) -> String {
         hex::encode(env::sha256(
-            format!("{}:{}", name, env::signer_account_id()).as_bytes(),
+            format!("{}:{}", name, owner_account).as_bytes(),
         ))
     }
 
@@ -95,7 +114,7 @@ impl PackageManager {
         path: String,
         hash: String,
     ) {
-        let id_hash = Self::calculate_id_hash(&name);
+        let id_hash = Self::calculate_id_hash(&name, env::signer_account_id());
         // Get the last release version for the package
         let last_release_version = self.releases.get(&id_hash).map(|version_map| {
             version_map
@@ -144,12 +163,21 @@ impl PackageManager {
         );
     }
 
-    pub fn get_packages(&self, offset: usize, limit: usize) -> Vec<Package> {
-        self.packages
-            .keys()
+    pub fn get_releases_from_owner(
+        &self,
+        name: String,
+        owner_account: AccountId,
+        offset: usize,
+        limit: usize,
+    ) -> Vec<&Release> {
+        let id_hash = Self::calculate_id_hash(&name, owner_account);
+        self.releases
+            .get(&id_hash)
+            .expect("Package doesn't exist.")
+            .iter()
             .skip(offset)
             .take(limit)
-            .filter_map(|key| self.packages.get(key).cloned())
+            .map(|(_, release)| release)
             .collect()
     }
 
@@ -164,8 +192,18 @@ impl PackageManager {
             .collect()
     }
 
-    pub fn get_package(&self, id: String) -> &Package {
-        self.packages.get(&id).expect("Package doesn't exist")
+    pub fn get_release_from_owner(
+        &self,
+        name: String,
+        owner_account: AccountId,
+        version: String,
+    ) -> &Release {
+        let id_hash = Self::calculate_id_hash(&name, owner_account);
+        self.releases
+            .get(&id_hash)
+            .expect("Package doesn't exist")
+            .get(&version)
+            .expect("Version doesn't exist")
     }
 
     pub fn get_release(&self, id: String, version: String) -> &Release {

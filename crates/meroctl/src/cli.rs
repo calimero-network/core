@@ -61,7 +61,7 @@ pub struct RootArgs {
 
     /// Name of node
     #[arg(short, long, value_name = "NAME")]
-    pub node_name: Utf8PathBuf,
+    pub node_name: String,
 }
 
 impl RootCommand {
