@@ -13,20 +13,25 @@ use eyre::Result as EyreResult;
 use owo_colors::OwoColorize;
 use serde_json::{json, to_vec as to_json_vec, Value};
 
-fn parse_payload(payload: &[u8], pretty: bool) -> EyreResult<String> {
-    if let Ok(json) = serde_json::from_slice::<Value>(payload) {
-        let func = if pretty {
-            serde_json::to_string_pretty
-        } else {
-            serde_json::to_string
+fn parse_payload<const PRETTY: bool>(
+    payload: impl AsRef<[u8]> + ToOwned<Owned = Vec<u8>>,
+) -> EyreResult<String> {
+    if let Ok(json) = serde_json::from_slice::<Value>(payload.as_ref()) {
+        let func = const {
+            if PRETTY {
+                serde_json::to_string_pretty
+            } else {
+                serde_json::to_string
+            }
         };
 
         return func(&json).map_err(Into::into);
     }
 
-    if let Ok(string) = str::from_utf8(payload) {
-        return Ok(string.to_owned());
-    }
+    let payload = match String::from_utf8(payload.to_owned()) {
+        Ok(string) => return Ok(string),
+        Err(err) => err.into_bytes(),
+    };
 
     Ok(format!("{:?}", payload))
 }
@@ -105,7 +110,7 @@ fn main() -> EyreResult<()> {
 
         for event in outcome.events {
             println!("  kind: {}", event.kind);
-            println!("  data: {}", parse_payload(&event.data, false)?);
+            println!("  data: {}", parse_payload::<false>(event.data)?);
         }
 
         match outcome.returns {
@@ -113,8 +118,7 @@ fn main() -> EyreResult<()> {
                 println!("Returns:");
 
                 let payload = returns
-                    .as_ref()
-                    .map(|p| parse_payload(p, true))
+                    .map(|p| parse_payload::<true>(p))
                     .transpose()?
                     .unwrap_or_else(|| "  <no reponse>".to_owned());
 
@@ -126,7 +130,7 @@ fn main() -> EyreResult<()> {
                     "{}",
                     match err {
                         calimero_runtime::errors::FunctionCallError::ExecutionError(payload) => {
-                            parse_payload(&payload, true)?
+                            parse_payload::<true>(payload)?
                         }
                         _ => format!("{:?}", err),
                     }
