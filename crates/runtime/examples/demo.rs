@@ -14,22 +14,19 @@ use owo_colors::OwoColorize;
 use serde_json::{json, to_vec as to_json_vec, Value};
 
 fn parse_payload(payload: &[u8], pretty: bool) -> EyreResult<String> {
-    match serde_json::from_slice::<Value>(payload) {
-        Ok(json) => {
-            return (if pretty {
-                serde_json::to_string_pretty
-            } else {
-                serde_json::to_string
-            })(&json)
-            .map_err(Into::into)
-        }
-        Err(_) => {}
-    };
+    if let Ok(json) = serde_json::from_slice::<Value>(payload) {
+        let func = if pretty {
+            serde_json::to_string_pretty
+        } else {
+            serde_json::to_string
+        };
 
-    match str::from_utf8(&payload) {
-        Ok(string) => return Ok(string.to_owned()),
-        Err(_) => {}
-    };
+        return func(&json).map_err(Into::into);
+    }
+
+    if let Ok(string) = str::from_utf8(payload) {
+        return Ok(string.to_owned());
+    }
 
     Ok(format!("{:?}", payload))
 }
