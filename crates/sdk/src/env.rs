@@ -102,6 +102,7 @@ pub fn read_register(register_id: RegisterId) -> Option<Vec<u8>> {
 fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N]> {
     let len = register_len(register_id)?;
     let mut buffer = [0; N];
+
     #[expect(
         clippy::needless_borrows_for_generic_args,
         reason = "we don't want to copy the buffer, but write to the same one that's returned"
@@ -152,6 +153,10 @@ pub fn emit<T: AppEvent>(event: &T) {
 
 pub fn send_action(action: &[u8]) {
     unsafe { sys::send_action(Buffer::from(action)) }
+}
+
+pub fn commit_root(action: &[u8; 32]) {
+    unsafe { sys::commit_root(Buffer::from(&action[..])) }
 }
 
 #[inline]

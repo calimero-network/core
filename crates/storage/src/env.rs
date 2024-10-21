@@ -24,6 +24,13 @@ pub fn send_action(action: &Action) {
     imp::send_action(&to_vec(&action).expect("Failed to serialize action"));
 }
 
+/// Commits the root hash to the runtime.
+/// This function should be called after the root hash has been updated.
+///
+pub fn commit_root(root_hash: &[u8; 32]) {
+    imp::commit_root(root_hash);
+}
+
 /// Reads data from persistent storage.
 ///
 /// # Parameters
@@ -85,6 +92,12 @@ mod calimero_vm {
         env::send_action(action);
     }
 
+    /// Commits the root hash to the runtime.
+    /// This function should be called after the root hash has been updated.
+    pub(super) fn commit_root(root_hash: &[u8; 32]) {
+        env::commit_root(root_hash);
+    }
+
     /// Reads data from persistent storage.
     pub(super) fn storage_read(key: Key) -> Option<Vec<u8>> {
         env::storage_read(&key.to_bytes())
@@ -127,6 +140,12 @@ mod mocked {
 
     /// Sends an action to the runtime.
     pub(super) const fn send_action(_action: &[u8]) {
+        // Do nothing.
+    }
+
+    /// Commits the root hash to the runtime.
+    /// This function should be called after the root hash has been updated.
+    pub(super) fn commit_root(_root_hash: &[u8; 32]) {
         // Do nothing.
     }
 

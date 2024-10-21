@@ -34,7 +34,7 @@ impl ApplicationEvent {
 #[serde(tag = "type", content = "data", rename_all = "PascalCase")]
 #[non_exhaustive]
 pub enum ApplicationEventPayload {
-    TransactionExecuted(ExecutedTransactionPayload),
+    StateMutation(StateMutationPayload),
     PeerJoined(PeerJoinedPayload),
     OutcomeEvent(OutcomeEventPayload),
 }
@@ -42,14 +42,14 @@ pub enum ApplicationEventPayload {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct ExecutedTransactionPayload {
-    pub hash: Hash,
+pub struct StateMutationPayload {
+    pub new_root: Hash,
 }
 
-impl ExecutedTransactionPayload {
+impl StateMutationPayload {
     #[must_use]
-    pub const fn new(hash: Hash) -> Self {
-        Self { hash }
+    pub const fn new(new_root: Hash) -> Self {
+        Self { new_root }
     }
 }
 

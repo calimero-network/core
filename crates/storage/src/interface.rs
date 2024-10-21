@@ -226,7 +226,7 @@ use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data};
-use crate::env::send_action;
+use crate::env;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
 
@@ -925,7 +925,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
         // We have to serialise here rather than send the Action itself, as the SDK
         // has no knowledge of the Action type, and cannot use it as it would be a
         // circular dependency.
-        send_action(&Action::Delete {
+        env::send_action(&Action::Delete {
             id: child_id,
             ancestors,
         });
@@ -1039,6 +1039,10 @@ impl<S: StorageAdaptor> MainInterface<S> {
             &to_vec(entity).map_err(StorageError::SerializationError)?,
         );
 
+        if Id::root() == id {
+            env::commit_root(&own_hash);
+        }
+
         entity.element_mut().is_dirty = false;
 
         let action = if is_new {
@@ -1057,10 +1061,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
             }
         };
 
-        // We have to serialise here rather than send the Action itself, as the SDK
-        // has no knowledge of the Action type, and cannot use it as it would be a
-        // circular dependency.
-        send_action(&action);
+        env::send_action(&action);
 
         Ok(true)
     }
