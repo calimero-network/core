@@ -45,7 +45,7 @@ pub struct ContextConfigClientRelayerSigner {
 pub struct ContextConfigClientLocalSigner {
     pub rpc_url: Url,
     #[serde(flatten)]
-    pub credentials: Credentials,
+    pub credentials: CryptoCredentials,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -54,6 +54,22 @@ pub struct Credentials {
     pub account_id: AccountId,
     pub public_key: PublicKey,
     pub secret_key: SecretKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(try_from = "sn_serde_creds::Credentials")]
+pub struct SnCredentials {
+    pub account_id: String,
+    pub public_key: String,
+    pub secret_key: String,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum CryptoCredentials {
+    Near(Credentials),
+    Starknet(SnCredentials),
 }
 
 mod serde_creds {
@@ -102,6 +118,49 @@ mod serde_creds {
                     return Err("implicit account ID and public key do not match");
                 }
             }
+
+            Ok(Self {
+                account_id: creds.account_id,
+                public_key: creds.public_key,
+                secret_key: creds.secret_key,
+            })
+        }
+    }
+}
+
+mod sn_serde_creds {
+    use std::str::FromStr;
+
+    use serde::{Deserialize, Serialize};
+    use starknet_crypto::Felt;
+
+    #[derive(Debug, Deserialize, Serialize)]
+    pub struct Credentials {
+        secret_key: String,
+        public_key: String,
+        account_id: String,
+    }
+
+    impl TryFrom<Credentials> for super::SnCredentials {
+        type Error = &'static str;
+
+        fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
+            'pass: {
+                let public_key_felt = Felt::from_str(&creds.public_key)
+                    .map_err(|_| "Failed to convert public_key to Felt")?;
+                let secret_key_felt = Felt::from_str(&creds.secret_key)
+                    .map_err(|_| "Failed to convert secret_key to Felt")?;
+                let extracted_public_key = starknet_crypto::get_public_key(&secret_key_felt);
+
+                if public_key_felt != extracted_public_key {
+                    return Err(
+                        "public key extracted from private key does not match provided public key"
+                            .into(),
+                    );
+                }
+
+                break 'pass;
+            };
 
             Ok(Self {
                 account_id: creds.account_id,

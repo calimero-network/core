@@ -6,7 +6,6 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use ed25519_dalek::Signature;
-use either::Either;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Error as JsonError};
 use thiserror::Error;
@@ -18,8 +17,48 @@ use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 pub mod config;
 pub mod near;
 pub mod relayer;
+pub mod starknet;
 
-use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner};
+use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner, CryptoCredentials};
+
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub enum TransportChoice<L, R, T> {
+    Left(L),
+    Right(R),
+    Third(T),
+}
+
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum TransportError<L, R, T> {
+    Left(L),
+    Right(R),
+    Third(T),
+}
+
+impl<L, R, T> std::fmt::Display for TransportError<L, R, T>
+where
+    L: std::fmt::Display,
+    R: std::fmt::Display,
+    T: std::fmt::Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransportError::Left(err) => write!(f, "{}", err),
+            TransportError::Right(err) => write!(f, "{}", err),
+            TransportError::Third(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+impl<L, R, T> std::error::Error for TransportError<L, R, T>
+where
+    L: std::error::Error,
+    R: std::error::Error,
+    T: std::error::Error,
+{
+}
 
 pub trait Transport {
     type Error: CoreError;
@@ -32,8 +71,8 @@ pub trait Transport {
     ) -> Result<Vec<u8>, Self::Error>;
 }
 
-impl<L: Transport, R: Transport> Transport for Either<L, R> {
-    type Error = Either<L::Error, R::Error>;
+impl<L: Transport, R: Transport, T: Transport> Transport for TransportChoice<L, R, T> {
+    type Error = TransportError<L::Error, R::Error, T::Error>;
 
     async fn send(
         &self,
@@ -41,8 +80,18 @@ impl<L: Transport, R: Transport> Transport for Either<L, R> {
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
         match self {
-            Self::Left(left) => left.send(request, payload).await.map_err(Either::Left),
-            Self::Right(right) => right.send(request, payload).await.map_err(Either::Right),
+            TransportChoice::Left(left) => left
+                .send(request, payload)
+                .await
+                .map_err(TransportError::Left),
+            TransportChoice::Right(right) => right
+                .send(request, payload)
+                .await
+                .map_err(TransportError::Right),
+            TransportChoice::Third(third) => third
+                .send(request, payload)
+                .await
+                .map_err(TransportError::Third),
         }
     }
 }
@@ -88,36 +137,79 @@ impl<T: Transport> ContextConfigClient<T> {
     }
 }
 
-pub type RelayOrNearTransport = Either<relayer::RelayerTransport, near::NearTransport<'static>>;
+pub type RelayOrNearOrStarknetTransport = TransportChoice<
+    relayer::RelayerTransport,
+    near::NearTransport<'static>,
+    starknet::StarknetTransport<'static>,
+>;
 
-impl ContextConfigClient<RelayOrNearTransport> {
+impl ContextConfigClient<RelayOrNearOrStarknetTransport> {
     #[must_use]
     pub fn from_config(config: &ContextConfigClientConfig) -> Self {
         let transport = match config.signer.selected {
             ContextConfigClientSelectedSigner::Relayer => {
-                Either::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
+                // If the selected signer is Relayer, use the Left variant.
+                TransportChoice::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
                     url: config.signer.relayer.url.clone(),
                 }))
             }
-            ContextConfigClientSelectedSigner::Local => {
-                Either::Right(near::NearTransport::new(&near::NearConfig {
+            ContextConfigClientSelectedSigner::Local => match config.new.network.as_str() {
+                "near" => TransportChoice::Right(near::NearTransport::new(&near::NearConfig {
                     networks: config
                         .signer
                         .local
                         .iter()
                         .map(|(network, config)| {
+                            let (account_id, secret_key) = match &config.credentials {
+                                CryptoCredentials::Near(credentials) => (
+                                    credentials.account_id.clone(),
+                                    credentials.secret_key.clone(),
+                                ),
+                                CryptoCredentials::Starknet(_) | _ => {
+                                    panic!("Expected Near credentials but got something else.")
+                                }
+                            };
                             (
                                 network.clone().into(),
                                 near::NetworkConfig {
                                     rpc_url: config.rpc_url.clone(),
-                                    account_id: config.credentials.account_id.clone(),
-                                    access_key: config.credentials.secret_key.clone(),
+                                    account_id,
+                                    access_key: secret_key,
                                 },
                             )
                         })
                         .collect(),
-                }))
-            }
+                })),
+                "starknet" => TransportChoice::Third(starknet::StarknetTransport::new(
+                    &starknet::StarknetConfig {
+                        networks: config
+                            .signer
+                            .local
+                            .iter()
+                            .map(|(network, config)| {
+                                let (account_id, secret_key) = match &config.credentials {
+                                    CryptoCredentials::Starknet(credentials) => (
+                                        credentials.account_id.clone(),
+                                        credentials.secret_key.clone(),
+                                    ),
+                                    CryptoCredentials::Starknet(_) | _ => panic!(
+                                        "Expected Starknet credentials but got something else."
+                                    ),
+                                };
+                                (
+                                    network.clone().into(),
+                                    starknet::NetworkConfig {
+                                        rpc_url: config.rpc_url.clone(),
+                                        account_id,
+                                        access_key: secret_key,
+                                    },
+                                )
+                            })
+                            .collect(),
+                    },
+                )),
+                _ => panic!("Unsupported network."),
+            },
         };
 
         Self::new(transport)

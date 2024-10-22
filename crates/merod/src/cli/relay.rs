@@ -58,12 +58,22 @@ impl RelayCommand {
                 .local
                 .iter()
                 .map(|(network, config)| {
+                    // Match on CryptoCredentials to handle both Near and Starknet cases
+                    let (account_id, access_key) = match &config.credentials {
+                        CryptoCredentials::Near(credentials) => (
+                            credentials.account_id.clone(),
+                            credentials.secret_key.clone(),
+                        ),
+                        CryptoCredentials::Starknet(_) => {
+                            panic!("Expected NEAR credentials, but got Starknet credentials.")
+                        }
+                    };
                     (
-                        network.into(),
+                        network.clone().into(),
                         near::NetworkConfig {
                             rpc_url: config.rpc_url.clone(),
-                            account_id: config.credentials.account_id.clone(),
-                            access_key: config.credentials.secret_key.clone(),
+                            account_id,
+                            access_key,
                         },
                     )
                 })
