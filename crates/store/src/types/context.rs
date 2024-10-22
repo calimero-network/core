@@ -4,7 +4,7 @@ use crate::entry::{Borsh, Identity};
 use crate::key::{
     ApplicationMeta as ApplicationMetaKey, ContextConfig as ContextConfigKey,
     ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
-    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
+    ContextState as ContextStateKey,
 };
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
@@ -87,35 +87,4 @@ pub struct ContextIdentity {
 impl PredefinedEntry for ContextIdentityKey {
     type Codec = Borsh;
     type DataType<'a> = ContextIdentity;
-}
-
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub struct ContextTransaction {
-    pub method: Box<str>,
-    pub payload: Box<[u8]>,
-    pub prior_hash: Hash,
-    pub executor_public_key: [u8; 32],
-}
-
-impl ContextTransaction {
-    #[must_use]
-    pub const fn new(
-        method: Box<str>,
-        payload: Box<[u8]>,
-        prior_hash: Hash,
-        executor_public_key: [u8; 32],
-    ) -> Self {
-        Self {
-            method,
-            payload,
-            prior_hash,
-            executor_public_key,
-        }
-    }
-}
-
-impl PredefinedEntry for ContextTransactionKey {
-    type Codec = Borsh;
-    type DataType<'a> = ContextTransaction;
 }

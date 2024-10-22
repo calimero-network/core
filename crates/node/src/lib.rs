@@ -35,7 +35,7 @@ use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::key::{
     ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
-    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
+    ContextState as ContextStateKey,
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
@@ -453,7 +453,7 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                 match subcommand {
                     "ls" => {
                         println!(
-                            "{ind} {c1:44} | {c2:44} | Last Transaction",
+                            "{ind} {c1:44} | {c2:44} | Root Hash",
                             c1 = "Context ID",
                             c2 = "Application ID",
                         );
@@ -706,46 +706,6 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                                 println!("{ind} Unknown command: `{unknown}`");
                                 println!("{ind} Usage: context identity [ls <context_id>|new]");
                                 break 'done;
-                            }
-                        }
-                    }
-                    "transactions" => {
-                        let Some(context_id) = args else {
-                            println!("{ind} Usage: context transactions <context_id>");
-                            break 'done;
-                        };
-
-                        let Ok(context_id) = context_id.parse() else {
-                            println!("{ind} Invalid context ID: {context_id}");
-                            break 'done;
-                        };
-
-                        let handle = node.store.handle();
-
-                        let mut iter = handle.iter::<ContextTransactionKey>()?;
-
-                        let first = 'first: {
-                            let Some(k) = iter
-                                .seek(ContextTransactionKey::new(context_id, [0; 32]))
-                                .transpose()
-                            else {
-                                break 'first None;
-                            };
-
-                            Some((k, iter.read()))
-                        };
-
-                        println!("{ind} {c1:44} | {c2:44}", c1 = "Hash", c2 = "Prior Hash");
-
-                        for (k, v) in first.into_iter().chain(iter.entries()) {
-                            let (k, v) = (k?, v?);
-                            let entry = format!(
-                                "{c1:44} | {c2}",
-                                c1 = Hash::from(k.transaction_id()),
-                                c2 = Hash::from(v.prior_hash),
-                            );
-                            for line in entry.lines() {
-                                println!("{ind} {}", line.cyan());
                             }
                         }
                     }
