@@ -236,6 +236,10 @@ impl ContextManager {
                 }
             }
 
+            if let Err(err) = this.subscribe(&context.id).await {
+                error!(%context_id, %err, "Failed to subscribe to context after creation");
+            }
+
             let _ignored = result_sender.send(result);
         });
 
@@ -260,8 +264,6 @@ impl ContextManager {
             )?;
 
             self.save_context(context)?;
-
-            self.subscribe(&context.id).await?;
         }
 
         handle.put(
@@ -376,6 +378,8 @@ impl ContextManager {
 
         self.add_context(&context, identity_secret, !context_exists)
             .await?;
+
+        self.subscribe(&context.id).await?;
 
         let _ = self.state.write().await.pending_catchup.insert(context_id);
 
