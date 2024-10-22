@@ -41,7 +41,7 @@ use reqwest::{Client, Url};
 use tokio::fs::File;
 use tokio::sync::{oneshot, RwLock};
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tracing::info;
+use tracing::{error, info};
 
 pub mod config;
 
@@ -145,7 +145,8 @@ impl ContextManager {
         application_id: ApplicationId,
         identity_secret: Option<PrivateKey>,
         initialization_params: Vec<u8>,
-    ) -> EyreResult<(ContextId, PublicKey)> {
+        result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
+    ) -> EyreResult<()> {
         let (context_secret, identity_secret) = {
             let mut rng = rand::thread_rng();
 
@@ -176,44 +177,70 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
-        self.config_client
-            .mutate(
-                self.client_config.new.network.as_str().into(),
-                self.client_config.new.contract_id.as_str().into(),
-                context.id.rt().expect("infallible conversion"),
-            )
-            .add_context(
-                context.id.rt().expect("infallible conversion"),
-                identity_secret
-                    .public_key()
-                    .rt()
-                    .expect("infallible conversion"),
-                ApplicationConfig::new(
-                    application.id.rt().expect("infallible conversion"),
-                    application.blob.rt().expect("infallible conversion"),
-                    application.size,
-                    ApplicationSourceConfig(application.source.to_string().into()),
-                    ApplicationMetadataConfig(Repr::new(application.metadata.into())),
-                ),
-            )
-            .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
-            .await?;
-
         self.add_context(&context, identity_secret, true).await?;
 
-        let (tx, _) = oneshot::channel();
+        let (tx, rx) = oneshot::channel();
 
-        self.server_sender
-            .send(ExecutionRequest::new(
-                context.id,
-                "init".to_owned(),
-                initialization_params,
-                identity_secret.public_key(),
-                tx,
-            ))
-            .await?;
+        let this = self.clone();
+        let finalizer = async move {
+            this.server_sender
+                .send(ExecutionRequest::new(
+                    context.id,
+                    "init".to_owned(),
+                    initialization_params,
+                    identity_secret.public_key(),
+                    tx,
+                ))
+                .await?;
 
-        Ok((context.id, identity_secret.public_key()))
+            if let Some(return_value) = rx.await??.returns? {
+                bail!(
+                    "Unexpected return value from init method: {:?}",
+                    return_value
+                )
+            }
+
+            this.config_client
+                .mutate(
+                    this.client_config.new.network.as_str().into(),
+                    this.client_config.new.contract_id.as_str().into(),
+                    context.id.rt().expect("infallible conversion"),
+                )
+                .add_context(
+                    context.id.rt().expect("infallible conversion"),
+                    identity_secret
+                        .public_key()
+                        .rt()
+                        .expect("infallible conversion"),
+                    ApplicationConfig::new(
+                        application.id.rt().expect("infallible conversion"),
+                        application.blob.rt().expect("infallible conversion"),
+                        application.size,
+                        ApplicationSourceConfig(application.source.to_string().into()),
+                        ApplicationMetadataConfig(Repr::new(application.metadata.into())),
+                    ),
+                )
+                .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
+                .await?;
+
+            Ok((context.id, identity_secret.public_key()))
+        };
+
+        let this = self.clone();
+        let context_id = context.id;
+        let _ignored = tokio::spawn(async move {
+            let result = finalizer.await;
+
+            if result.is_err() {
+                if let Err(err) = this.delete_context(&context_id).await {
+                    error!(%context_id, %err, "Failed to clean up context after failed creation");
+                }
+            }
+
+            let _ignored = result_sender.send(result);
+        });
+
+        Ok(())
     }
 
     async fn add_context(

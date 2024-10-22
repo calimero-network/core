@@ -6,6 +6,7 @@ use calimero_store::key::ContextMeta as ContextMetaKey;
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use owo_colors::OwoColorize;
+use tokio::sync::oneshot;
 
 use crate::Node;
 
@@ -128,17 +129,30 @@ impl ContextCommand {
                     return Err(eyre::eyre!("Invalid context seed"));
                 };
 
-                let (context_id, identity) = node
-                    .ctx_manager
+                let (tx, rx) = oneshot::channel();
+
+                node.ctx_manager
                     .create_context(
                         context_seed.map(Into::into),
                         application_id,
                         None,
-                        params.unwrap_or_default().into_bytes(),
+                        params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                        tx,
                     )
                     .await?;
 
-                println!("{ind} Created context {context_id} with identity {identity}");
+                let _ignored = tokio::spawn(async move {
+                    let err: eyre::Report = match rx.await {
+                        Ok(Ok((context_id, identity))) => {
+                            println!("{ind} Created context {context_id} with identity {identity}");
+                            return;
+                        }
+                        Ok(Err(err)) => err.into(),
+                        Err(err) => err.into(),
+                    };
+
+                    println!("{ind} Unable to create context: {err:?}");
+                });
             }
             Commands::Invite {
                 context_id,
