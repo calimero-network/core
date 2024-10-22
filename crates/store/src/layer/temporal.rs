@@ -135,6 +135,7 @@ impl<'a, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, '_, K> {
 
         loop {
             if let Some((key, op)) = shadow_iter.next() {
+                // todo! if key is in inner, we've already seen it, continue
                 match op {
                     Operation::Delete => continue,
                     Operation::Put { value } => self.value = Some(value.into()),
