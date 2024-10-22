@@ -29,6 +29,7 @@ pub enum HandleError<E> {
     CodecError(E),
 }
 
+// todo! detach 'a from EntryError
 type EntryError<'a, E> =
     HandleError<<<E as Entry>::Codec as Codec<'a, <E as Entry>::DataType<'a>>>::Error>;
 
