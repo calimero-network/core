@@ -73,12 +73,9 @@ impl Request<RequestPayload> {
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum RequestPayload {
-    Query(QueryRequest),
-    Mutate(MutateRequest),
+    Execute(ExecuteRequest),
 }
-// *************************************************************************
 
-// **************************** response *******************************
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -132,20 +129,18 @@ pub enum ServerResponseError {
         err: Option<EyreError>,
     },
 }
-// *************************************************************************
 
-// **************************** call method *******************************
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct QueryRequest {
+pub struct ExecuteRequest {
     pub context_id: ContextId,
     pub method: String,
     pub args_json: Value,
     pub executor_public_key: PublicKey,
 }
 
-impl QueryRequest {
+impl ExecuteRequest {
     #[must_use]
     pub const fn new(
         context_id: ContextId,
@@ -165,64 +160,11 @@ impl QueryRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct QueryResponse {
+pub struct ExecuteResponse {
     pub output: Option<Value>,
 }
 
-impl QueryResponse {
-    #[must_use]
-    pub const fn new(output: Option<Value>) -> Self {
-        Self { output }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, ThisError)]
-#[error("QueryError")]
-#[serde(tag = "type", content = "data")]
-#[non_exhaustive]
-pub enum QueryError {
-    SerdeError { message: String },
-    CallError(CallError),
-    FunctionCallError(String),
-}
-// *************************************************************************
-
-// **************************** call_mut method ****************************
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct MutateRequest {
-    pub context_id: ContextId,
-    pub method: String,
-    pub args_json: Value,
-    pub executor_public_key: PublicKey,
-}
-
-impl MutateRequest {
-    #[must_use]
-    pub const fn new(
-        context_id: ContextId,
-        method: String,
-        args_json: Value,
-        executor_public_key: PublicKey,
-    ) -> Self {
-        Self {
-            context_id,
-            method,
-            args_json,
-            executor_public_key,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct MutateResponse {
-    pub output: Option<Value>,
-}
-
-impl MutateResponse {
+impl ExecuteResponse {
     #[must_use]
     pub const fn new(output: Option<Value>) -> Self {
         Self { output }
@@ -233,9 +175,8 @@ impl MutateResponse {
 #[error("MutateError")]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
-pub enum MutateError {
+pub enum ExecuteError {
     SerdeError { message: String },
     CallError(CallError),
     FunctionCallError(String),
 }
-// *************************************************************************
