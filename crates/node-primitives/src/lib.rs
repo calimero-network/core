@@ -38,13 +38,17 @@ impl ExecutionRequest {
 pub type ServerSender = mpsc::Sender<ExecutionRequest>;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
-#[error("CallError")]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum CallError {
-    ApplicationNotInstalled { application_id: ApplicationId },
+    #[error("no connected peers")]
     NoConnectedPeers,
-    ActionRejected,
-    InternalError,
+    #[error("context not found: {context_id}")]
     ContextNotFound { context_id: ContextId },
+    #[error("application not installed: {application_id}")]
+    ApplicationNotInstalled { application_id: ApplicationId },
+    #[error("action rejected")]
+    ActionRejected,
+    #[error("internal error")]
+    InternalError,
 }

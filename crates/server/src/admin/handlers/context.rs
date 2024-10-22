@@ -13,6 +13,7 @@ use calimero_server_primitives::admin::{
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 use tower_sessions::Session;
 use tracing::error;
 
@@ -234,6 +235,8 @@ pub async fn create_context_handler(
     Extension(state): Extension<Arc<AdminState>>,
     Json(req): Json<CreateContextRequest>,
 ) -> impl IntoResponse {
+    let (tx, rx) = oneshot::channel();
+
     let result = state
         .ctx_manager
         .create_context(
@@ -241,16 +244,25 @@ pub async fn create_context_handler(
             req.application_id,
             None,
             req.initialization_params,
+            tx,
         )
         .await
         .map_err(parse_api_error);
+
+    if let Err(err) = result {
+        return err.into_response();
+    }
+
+    let Ok(result) = rx.await else {
+        return "internal error".into_response();
+    };
 
     match result {
         Ok((context_id, member_public_key)) => ApiResponse {
             payload: CreateContextResponse::new(context_id, member_public_key),
         }
         .into_response(),
-        Err(err) => err.into_response(),
+        Err(err) => parse_api_error(err).into_response(),
     }
 }
 

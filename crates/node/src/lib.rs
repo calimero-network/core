@@ -48,7 +48,7 @@ use serde_json::{
 };
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::{interval_at, Instant};
 use tracing::{debug, error, info, warn};
 
@@ -575,17 +575,30 @@ async fn handle_line(node: &mut Node, line: String) -> EyreResult<()> {
                             break 'done;
                         };
 
-                        let (context_id, identity) = node
-                            .ctx_manager
+                        let (tx, rx) = oneshot::channel();
+
+                        node.ctx_manager
                             .create_context(
                                 context_seed.map(Into::into),
                                 application_id,
                                 None,
                                 params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                                tx,
                             )
                             .await?;
 
-                        println!("{ind} Created context {context_id} with identity {identity}");
+                        let _ignored = tokio::spawn(async move {
+                            let err: eyre::Report = match rx.await {
+                                Ok(Ok((context_id, identity))) => {
+                                    println!("{ind} Created context {context_id} with identity {identity}");
+                                    return;
+                                }
+                                Ok(Err(err)) => err.into(),
+                                Err(err) => err.into(),
+                            };
+
+                            println!("{ind} Unable to create context: {err:?}");
+                        });
                     }
                     "invite" => {
                         let Some((context_id, inviter_id, invitee_id)) = args.and_then(|args| {
@@ -983,18 +996,15 @@ impl Node {
     }
 
     pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
-        let task = self.handle_call(
-            request.context_id,
-            request.method,
-            request.payload,
-            request.executor_public_key,
+        let _ignored = request.outcome_sender.send(
+            self.handle_call(
+                request.context_id,
+                request.method,
+                request.payload,
+                request.executor_public_key,
+            )
+            .await,
         );
-
-        drop(request.outcome_sender.send(task.await.map_err(|err| {
-            error!(%err, "failed to execute local query");
-
-            CallError::InternalError
-        })));
     }
 
     async fn handle_call(
@@ -1115,8 +1125,6 @@ impl Node {
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> EyreResult<Option<Outcome>> {
-        let mut storage = RuntimeCompatStore::new(&mut self.store, context.id);
-
         let Some(blob) = self
             .ctx_manager
             .load_application_blob(&context.application_id)
@@ -1124,6 +1132,8 @@ impl Node {
         else {
             return Ok(None);
         };
+
+        let mut storage = RuntimeCompatStore::new(&mut self.store, context.id);
 
         let outcome = calimero_runtime::run(
             &blob,
