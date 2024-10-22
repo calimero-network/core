@@ -49,7 +49,6 @@ pub struct CreateCommand {
     context_seed: Option<Hash>,
 }
 
-#[allow(unused_results)]
 impl CreateCommand {
     pub async fn run(self, args: RootArgs) -> Result<CreateContextResponse, CliError> {
         let config = load_config(&args.home, &args.node_name)?;
@@ -163,6 +162,7 @@ async fn create_context(
     Ok(body)
 }
 
+#[allow(unused_results)]
 async fn watch_app_and_update_context(
     context_id: ContextId,
     path: Utf8PathBuf,
