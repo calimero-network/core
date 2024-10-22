@@ -1,11 +1,20 @@
+use std::fmt::Debug;
+
+use calimero_server::admin::handlers::context::get_context::{
+    GetContextIdentitiesResponse, GetContextResponse,
+};
+use calimero_server::admin::handlers::context::get_context_client_keys::GetContextClientKeysResponse;
+use calimero_server::admin::handlers::context::get_context_users::GetContextUsersResponse;
 use clap::{Parser, ValueEnum};
-use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
+use crate::common::{
+    fetch_multiaddr, get_response, load_config, multiaddr_to_url, CliError, RequestType,
+};
 
 #[derive(Parser, Debug)]
 pub struct GetCommand {
@@ -25,16 +34,26 @@ pub enum GetRequest {
     Identities,
 }
 
+#[allow(variant_size_differences)]
+#[derive(Serialize, Deserialize)]
+pub enum GetResponse {
+    Context(GetContextResponse),
+    Users(GetContextUsersResponse),
+    ClientKeys(GetContextClientKeysResponse),
+    Storage(GetContextUsersResponse),
+    Identities(GetContextIdentitiesResponse),
+}
+
 impl GetCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+    pub async fn run(self, args: RootArgs) -> Result<GetResponse, CliError> {
         let config = load_config(&args.home, &args.node_name)?;
         let multiaddr = fetch_multiaddr(&config)?;
         let client = Client::new();
 
-        match self.method {
+        let response: GetResponse = match self.method {
             GetRequest::Context => {
                 self.get_context(&multiaddr, &client, &config.identity)
-                    .await?;
+                    .await?
             }
             GetRequest::Users => {
                 self.get_users(&multiaddr, &client, &config.identity)
@@ -42,19 +61,19 @@ impl GetCommand {
             }
             GetRequest::ClientKeys => {
                 self.get_client_keys(&multiaddr, &client, &config.identity)
-                    .await?;
+                    .await?
             }
             GetRequest::Storage => {
                 self.get_storage(&multiaddr, &client, &config.identity)
-                    .await?;
+                    .await?
             }
             GetRequest::Identities => {
                 self.get_identities(&multiaddr, &client, &config.identity)
-                    .await?;
+                    .await?
             }
-        }
+        };
 
-        Ok(())
+        Ok(response)
     }
 
     async fn get_context(
@@ -62,7 +81,7 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
-    ) -> EyreResult<()> {
+    ) -> Result<GetResponse, CliError> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!("admin-api/dev/contexts/{}", self.context_id),
@@ -75,7 +94,7 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
-    ) -> EyreResult<()> {
+    ) -> Result<GetResponse, CliError> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!("admin-api/dev/contexts/{}/users", self.context_id),
@@ -88,7 +107,7 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
-    ) -> EyreResult<()> {
+    ) -> Result<GetResponse, CliError> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!("admin-api/dev/contexts/{}/client-keys", self.context_id),
@@ -101,7 +120,7 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
-    ) -> EyreResult<()> {
+    ) -> Result<GetResponse, CliError> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!("admin-api/dev/contexts/{}/storage", self.context_id),
@@ -114,7 +133,7 @@ impl GetCommand {
         multiaddr: &Multiaddr,
         client: &Client,
         keypair: &Keypair,
-    ) -> EyreResult<()> {
+    ) -> Result<GetResponse, CliError> {
         let url = multiaddr_to_url(
             multiaddr,
             &format!("admin-api/dev/contexts/{}/identities", self.context_id),
@@ -122,21 +141,54 @@ impl GetCommand {
         self.make_request(client, url, keypair).await
     }
 
-    #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
     async fn make_request(
         &self,
         client: &Client,
         url: reqwest::Url,
         keypair: &Keypair,
-    ) -> EyreResult<()> {
+    ) -> Result<GetResponse, CliError> {
         let response = get_response(client, url, None::<()>, keypair, RequestType::Get).await?;
 
         if !response.status().is_success() {
-            bail!("Request failed with status: {}", response.status())
+            return Err(CliError::MethodCallError(format!(
+                "Get contexts request failed with status: {}",
+                response.status()
+            )));
         }
 
-        let text = response.text().await?;
-        println!("{text}");
-        Ok(())
+        let response = match self.method {
+            GetRequest::Context => GetResponse::Context(
+                response
+                    .json()
+                    .await
+                    .map_err(|e| CliError::MethodCallError(e.to_string()))?,
+            ),
+            GetRequest::Users => GetResponse::Users(
+                response
+                    .json()
+                    .await
+                    .map_err(|e| CliError::MethodCallError(e.to_string()))?,
+            ),
+            GetRequest::ClientKeys => GetResponse::ClientKeys(
+                response
+                    .json()
+                    .await
+                    .map_err(|e| CliError::MethodCallError(e.to_string()))?,
+            ),
+            GetRequest::Storage => GetResponse::Storage(
+                response
+                    .json()
+                    .await
+                    .map_err(|e| CliError::MethodCallError(e.to_string()))?,
+            ),
+            GetRequest::Identities => GetResponse::Identities(
+                response
+                    .json()
+                    .await
+                    .map_err(|e| CliError::MethodCallError(e.to_string()))?,
+            ),
+        };
+
+        Ok(response)
     }
 }

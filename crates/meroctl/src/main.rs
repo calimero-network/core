@@ -1,4 +1,3 @@
-use calimero_server as _;
 use std::env::var;
 
 use clap::Parser;
