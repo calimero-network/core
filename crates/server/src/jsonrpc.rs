@@ -18,8 +18,7 @@ use tracing::{debug, error, info};
 
 use crate::config::ServerConfig;
 
-mod mutate;
-mod query;
+mod execute;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -69,8 +68,7 @@ async fn handle_request(
     debug!(?request, "Received request");
     let body = match from_json_value::<RequestPayload>(request.payload) {
         Ok(payload) => match payload {
-            RequestPayload::Query(request) => request.handle(state).await.to_res_body(),
-            RequestPayload::Mutate(request) => request.handle(state).await.to_res_body(),
+            RequestPayload::Execute(request) => request.handle(state).await.to_res_body(),
             _ => unreachable!("Unsupported JSON RPC method"),
         },
         Err(err) => {
