@@ -27,9 +27,7 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn get<K: AsKeyParts>(&self, key: &K) -> Option<&Operation<'_>> {
-        self.cols
-            .get(&K::column())
-            .and_then(|ops| ops.get(key.as_key().as_bytes()))
+        self.cols.get(&K::column())?.get(key.as_key().as_bytes())
     }
 
     pub fn put<K: AsKeyParts>(&mut self, key: &'a K, value: Slice<'a>) {

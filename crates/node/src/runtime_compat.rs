@@ -1,5 +1,6 @@
 use core::cell::RefCell;
 use core::mem::transmute;
+use std::sync::Arc;
 
 use calimero_primitives::context::ContextId;
 use calimero_runtime::store::{Key, Storage, Value};
@@ -14,7 +15,7 @@ pub struct RuntimeCompatStore<'this, 'entry> {
     context_id: ContextId,
     inner: Temporal<'this, 'entry, Store>,
     // todo! unideal, will revisit the shape of WriteLayer to own keys (since they are now fixed-sized)
-    keys: RefCell<Vec<ContextStateKey>>,
+    keys: RefCell<Vec<Arc<ContextStateKey>>>,
 }
 
 impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
@@ -35,11 +36,13 @@ impl<'this, 'entry> RuntimeCompatStore<'this, 'entry> {
 
         let mut keys = self.keys.borrow_mut();
 
-        keys.push(ContextStateKey::new(self.context_id, state_key));
+        keys.push(Arc::new(ContextStateKey::new(self.context_id, state_key)));
 
         // safety: TemporalStore lives as long as Self, so the reference will hold
         unsafe {
-            transmute::<Option<&ContextStateKey>, Option<&'entry ContextStateKey>>(keys.last())
+            transmute::<Option<&ContextStateKey>, Option<&'entry ContextStateKey>>(
+                keys.last().map(|x| &**x),
+            )
         }
     }
 
