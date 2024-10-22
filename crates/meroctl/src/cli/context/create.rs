@@ -49,6 +49,7 @@ pub struct CreateCommand {
     context_seed: Option<Hash>,
 }
 
+#[allow(unused_results)]
 impl CreateCommand {
     pub async fn run(self, args: RootArgs) -> Result<CreateContextResponse, CliError> {
         let config = load_config(&args.home, &args.node_name)?;

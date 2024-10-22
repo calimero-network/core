@@ -33,6 +33,8 @@ pub enum GetRequest {
     Storage,
     Identities,
 }
+
+#[allow(variant_size_differences)]
 #[derive(Serialize, Deserialize)]
 pub enum GetResponse {
     Context(GetContextResponse),
