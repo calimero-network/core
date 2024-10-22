@@ -96,46 +96,60 @@ fn main() -> EyreResult<()> {
         println!("Logs:");
 
         if outcome.logs.is_empty() {
-            println!("  <no logs>");
+            println!("  <empty>");
         }
 
         for log in outcome.logs {
-            println!("  | {}", log);
+            let payload = parse_payload::<true>(log.into_bytes())?;
+
+            for line in payload.lines() {
+                println!("  | {}", line.bold());
+            }
         }
 
         println!("Events:");
 
         if outcome.events.is_empty() {
-            println!("  <no events>");
+            println!("  <empty>");
         }
 
         for event in outcome.events {
-            println!("  kind: {}", event.kind);
-            println!("  data: {}", parse_payload::<false>(event.data)?);
+            println!("  kind: {}", event.kind.bold());
+            println!("  data: {}", parse_payload::<false>(event.data)?.bold());
         }
 
         match outcome.returns {
             Ok(returns) => {
-                println!("Returns:");
+                println!("{}:", "Returns".green());
 
                 let payload = returns
                     .map(|p| parse_payload::<true>(p))
                     .transpose()?
-                    .unwrap_or_else(|| "  <no reponse>".to_owned());
+                    .unwrap_or_default();
 
-                println!("{}", payload);
+                let mut lines = payload.lines().peekable();
+
+                if lines.peek().is_none() {
+                    println!("  <empty>");
+                }
+
+                for line in lines {
+                    println!("  {}", line.bold());
+                }
             }
             Err(err) => {
-                println!("Error:");
-                println!(
-                    "{}",
-                    match err {
-                        calimero_runtime::errors::FunctionCallError::ExecutionError(payload) => {
-                            parse_payload::<true>(payload)?
-                        }
-                        _ => format!("{:?}", err),
+                println!("{}:", "Error".red());
+
+                let error = match err {
+                    calimero_runtime::errors::FunctionCallError::ExecutionError(payload) => {
+                        parse_payload::<true>(payload)?
                     }
-                );
+                    _ => format!("{:#?}", err),
+                };
+
+                for line in error.lines() {
+                    println!("  {}", line.bold());
+                }
             }
         }
 
