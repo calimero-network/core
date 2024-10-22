@@ -1,9 +1,10 @@
+use std::sync::Arc;
+
 use calimero_network::client::NetworkClient;
 use clap::Parser;
 use eyre::Result;
 use libp2p::gossipsub::TopicHash;
 use owo_colors::OwoColorize;
-use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 pub struct PeersCommand {

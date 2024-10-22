@@ -1,4 +1,5 @@
 use calimero_blobstore::config::BlobStoreConfig;
+use calimero_config::ConfigFile;
 use calimero_network::config::NetworkConfig;
 use calimero_node::{start, NodeConfig};
 use calimero_node_primitives::NodeType as PrimitiveNodeType;
@@ -8,7 +9,6 @@ use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 
 use crate::cli::RootArgs;
-use calimero_config::ConfigFile;
 
 /// Run a node
 #[derive(Debug, Parser)]

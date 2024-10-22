@@ -6,6 +6,8 @@ use axum::http::status::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
+use calimero_config::ConfigFile;
+use calimero_context_config::client::config::CryptoCredentials;
 use calimero_context_config::client::relayer::RelayRequest;
 use calimero_context_config::client::{near, Transport, TransportRequest};
 use clap::{Parser, ValueEnum};
@@ -16,7 +18,6 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use super::RootArgs;
-use calimero_config::ConfigFile;
 
 pub const DEFAULT_PORT: u16 = 63529; // Mero-rELAY = MELAY
 pub const DEFAULT_ADDR: SocketAddr =
@@ -58,12 +59,22 @@ impl RelayCommand {
                 .local
                 .iter()
                 .map(|(network, config)| {
+                    // Match on CryptoCredentials to handle both Near and Starknet cases
+                    let (account_id, access_key) = match &config.credentials {
+                        CryptoCredentials::Near(credentials) => (
+                            credentials.account_id.clone(),
+                            credentials.secret_key.clone(),
+                        ),
+                        CryptoCredentials::Starknet(_) => {
+                            panic!("Expected NEAR credentials, but got Starknet credentials.")
+                        }
+                    };
                     (
-                        network.into(),
+                        network.clone().into(),
                         near::NetworkConfig {
                             rpc_url: config.rpc_url.clone(),
-                            account_id: config.credentials.account_id.clone(),
-                            access_key: config.credentials.secret_key.clone(),
+                            account_id,
+                            access_key,
                         },
                     )
                 })
