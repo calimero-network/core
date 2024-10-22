@@ -165,7 +165,7 @@ impl ContextConfigClient<RelayOrNearOrStarknetTransport> {
                                     credentials.account_id.clone(),
                                     credentials.secret_key.clone(),
                                 ),
-                                CryptoCredentials::Starknet(_) | _ => {
+                                CryptoCredentials::Starknet(_) => {
                                     panic!("Expected Near credentials but got something else.")
                                 }
                             };
@@ -192,9 +192,9 @@ impl ContextConfigClient<RelayOrNearOrStarknetTransport> {
                                         credentials.account_id.clone(),
                                         credentials.secret_key.clone(),
                                     ),
-                                    CryptoCredentials::Starknet(_) | _ => panic!(
-                                        "Expected Starknet credentials but got something else."
-                                    ),
+                                    CryptoCredentials::Near(_) => {
+                                        panic!("Expected Starknet credentials but got something else.")
+                                    }
                                 };
                                 (
                                     network.clone().into(),

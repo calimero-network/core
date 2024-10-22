@@ -888,7 +888,6 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "ed25519-dalek",
- "either",
  "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
@@ -898,9 +897,7 @@ dependencies = [
  "serde_json",
  "starknet-core 0.11.1",
  "starknet-crypto",
- "starknet-macros",
  "starknet-providers",
- "starknet-signers",
  "thiserror",
  "url",
 ]
