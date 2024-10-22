@@ -1,6 +1,6 @@
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
-    MutateRequest, QueryRequest, Request, RequestId, RequestPayload, Version,
+    ExecuteRequest, Request, RequestId, RequestPayload, Version,
 };
 use clap::{value_parser, Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
@@ -12,7 +12,7 @@ use crate::config_file::ConfigFile;
 
 #[derive(Debug, Parser)]
 pub struct JsonRpcCommand {
-    /// Type of method call, either QUERY or MUTATE
+    /// Type of method execute call
     #[arg(long)]
     pub call_type: CallType,
 
@@ -28,15 +28,14 @@ pub struct JsonRpcCommand {
     #[arg(long, value_parser = value_parser!(Value), default_value = "{}")]
     pub args_json: Value,
 
-    /// Id of the JsonRpc call
+    /// Id of the JsonRpc execute call
     #[arg(long, default_value = "dontcare")]
     pub id: String,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum CallType {
-    Query,
-    Mutate,
+    Execute,
 }
 
 #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
@@ -59,18 +58,7 @@ impl JsonRpcCommand {
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
         let payload = match self.call_type {
-            CallType::Query => RequestPayload::Query(QueryRequest::new(
-                self.context_id,
-                self.method,
-                self.args_json,
-                config
-                    .identity
-                    .public()
-                    .try_into_ed25519()?
-                    .to_bytes()
-                    .into(),
-            )),
-            CallType::Mutate => RequestPayload::Mutate(MutateRequest::new(
+            CallType::Execute => RequestPayload::Execute(ExecuteRequest::new(
                 self.context_id,
                 self.method,
                 self.args_json,
