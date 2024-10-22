@@ -67,7 +67,8 @@ impl RelayCommand {
                         ),
                         CryptoCredentials::Starknet(_) => {
                             panic!("Expected NEAR credentials, but got Starknet credentials.")
-                        }
+                        },
+                        _ => panic!("Expected NEAR credentials.")
                     };
                     (
                         network.clone().into(),
