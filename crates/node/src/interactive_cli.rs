@@ -11,7 +11,6 @@ pub mod identity;
 pub mod peers;
 pub mod state;
 pub mod store;
-pub mod transactions;
 
 use clap::{Parser, Subcommand};
 
@@ -33,7 +32,6 @@ pub enum SubCommands {
     Peers(peers::PeersCommand),
     Store(store::StoreCommand),
     State(state::StateCommand),
-    Transactions(transactions::TransactionsCommand),
 }
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
@@ -57,7 +55,6 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommands::Peers(peers) => peers.run(node.network_client.clone().into()).await,
         SubCommands::State(state) => state.run(node).await,
         SubCommands::Store(store) => store.run(node).await,
-        SubCommands::Transactions(transactions) => transactions.run(node).await,
     };
 
     if let Err(err) = result {
