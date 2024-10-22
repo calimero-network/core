@@ -13,3 +13,4 @@ coverage/
 dist/
 lib/
 node_modules/
+certs/
