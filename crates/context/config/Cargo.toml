@@ -10,7 +10,6 @@ license.workspace = true
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 ed25519-dalek.workspace = true
-either = { workspace = true, optional = true }
 near-crypto = { workspace = true, optional = true }
 near-jsonrpc-client = { workspace = true, optional = true }
 near-jsonrpc-primitives = { workspace = true, optional = true }
@@ -20,9 +19,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 starknet-core.workspace = true
 starknet-crypto.workspace = true
-starknet-macros.workspace = true
 starknet-providers.workspace = true
-starknet-signers.workspace = true
 thiserror.workspace = true
 url = { workspace = true, optional = true }
 
@@ -31,7 +28,6 @@ workspace = true
 
 [features]
 client = [
-  "dep:either",
   "dep:near-crypto",
   "dep:near-jsonrpc-client",
   "dep:near-jsonrpc-primitives",
