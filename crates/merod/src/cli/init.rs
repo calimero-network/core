@@ -164,15 +164,11 @@ impl InitCommand {
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
 
-        let config = ConfigFile {
+        let config = ConfigFile::new(
             identity,
-            datastore: StoreConfigFile {
-                path: "data".into(),
-            },
-            blobstore: BlobStoreConfig {
-                path: "blobs".into(),
-            },
-            context: ContextConfig {
+            StoreConfigFile::new("data".into()),
+            BlobStoreConfig::new("blobs".into()),
+            ContextConfig {
                 client: ContextConfigClientConfig {
                     signer: ContextConfigClientSigner {
                         selected: ContextConfigClientSelectedSigner::Relayer,
@@ -196,32 +192,31 @@ impl InitCommand {
                     },
                 },
             },
-            network: NetworkConfig {
-                swarm: SwarmConfig::new(listen),
-                bootstrap: BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
-                discovery: DiscoveryConfig::new(
+            NetworkConfig::new(
+                SwarmConfig::new(listen),
+                BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
+                DiscoveryConfig::new(
                     mdns,
                     RendezvousConfig::new(self.rendezvous_registrations_limit),
                     RelayConfig::new(self.relay_registrations_limit),
                 ),
-                server: ServerConfig {
-                    listen: self
-                        .server_host
+                ServerConfig::new(
+                    self.server_host
                         .into_iter()
                         .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
                         .collect(),
-                    admin: Some(AdminConfig::new(true)),
-                    jsonrpc: Some(JsonRpcConfig::new(true)),
-                    websocket: Some(WsConfig::new(true)),
-                },
-                catchup: CatchupConfig::new(
+                    Some(AdminConfig::new(true)),
+                    Some(JsonRpcConfig::new(true)),
+                    Some(WsConfig::new(true)),
+                ),
+                CatchupConfig::new(
                     50,
                     Duration::from_secs(2),
                     Duration::from_secs(2),
                     Duration::from_millis(thread_rng().gen_range(0..1001)),
                 ),
-            },
-        };
+            ),
+        );
 
         config.save(&path)?;
 

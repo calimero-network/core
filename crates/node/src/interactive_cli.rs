@@ -19,12 +19,14 @@ use clap::{Parser, Subcommand};
 
 use crate::Node;
 #[derive(Debug, Parser)]
+#[non_exhaustive]
 pub struct RootCommand {
     #[command(subcommand)]
     pub action: SubCommands,
 }
 
 #[derive(Debug, Subcommand)]
+#[non_exhaustive]
 pub enum SubCommands {
     Application(applications::ApplicationCommand),
     Call(call::CallCommand),
