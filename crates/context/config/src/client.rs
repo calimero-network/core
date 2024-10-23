@@ -1,12 +1,12 @@
 use core::convert::Infallible;
 use core::error::Error as CoreError;
-use core::fmt::{Display, Formatter, Result as FmtResult};
 use core::marker::PhantomData;
 use core::ptr;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use ed25519_dalek::Signature;
+use either::Either;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Error as JsonError};
 use thiserror::Error;
@@ -21,38 +21,6 @@ pub mod relayer;
 pub mod starknet;
 
 use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner, Credentials, Protocol};
-
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
-
-pub type TransportErr<L, R, T> = Either<L, Either<R, T>>;
-
-impl<L, R, T> CoreError for TransportErr<L, R, T>
-where
-    L: CoreError,
-    R: CoreError,
-    T: CoreError,
-{
-}
-
-impl<L, R, T> Display for Either<L, Either<R, T>>
-where
-    L: Display,
-    R: Display,
-    T: Display,
-{
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            Either::Left(left) => write!(f, "{}", left),
-            Either::Right(Either::Left(right)) => write!(f, "{}", right),
-            Either::Right(Either::Right(third)) => write!(f, "{}", third),
-        }
-    }
-}
 
 pub trait Transport {
     type Error: CoreError;
