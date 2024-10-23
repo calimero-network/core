@@ -14,7 +14,6 @@ use thiserror::Error;
 
 use super::{Operation, Transport, TransportRequest};
 
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {

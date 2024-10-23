@@ -56,4 +56,3 @@ pub enum CryptoCredentials {
     Near(near::Credentials),
     Starknet(starknet::Credentials),
 }
-
