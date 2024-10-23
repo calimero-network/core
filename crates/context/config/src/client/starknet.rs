@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use starknet_core::crypto::ecdsa_sign;
 use starknet_core::types::{
     BlockId, BlockTag, BroadcastedInvokeTransaction, BroadcastedInvokeTransactionV1, Felt,
     FunctionCall,
@@ -192,14 +193,14 @@ fn compute_transaction_hash(
     poseidon_hash_many(elements)
 }
 
-async fn sign_transaction(hash: &Felt, secret_key: &Felt) -> Result<Signature, StarknetError> {
-    let signature = starknet_core::crypto::ecdsa_sign(secret_key, hash);
-    match signature {
-        Ok(result) => Ok(result.into()),
-        Err(_) => Err(StarknetError::InvalidResponse {
+fn sign_transaction(hash: &Felt, secret_key: &Felt) -> Result<Signature, StarknetError> {
+    let signature = ecdsa_sign(secret_key, hash);
+    signature.map_or(
+        Err(StarknetError::InvalidResponse {
             operation: ErrorOperation::Query,
         }),
-    }
+        |result| Ok(result.into()),
+    )
 }
 
 impl Network {
@@ -210,17 +211,17 @@ impl Network {
         args: Vec<u8>,
     ) -> Result<Vec<u8>, StarknetError> {
         let contract_id = Felt::from_str(contract_id)
-            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_string()))?;
+            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_owned()))?;
 
         let entry_point_selector = get_selector_from_name(method)
-            .map_err(|_| StarknetError::InvalidMethodName(method.to_string()))?;
+            .map_err(|_| StarknetError::InvalidMethodName(method.to_owned()))?;
 
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
         } else {
             args.chunks(32)
                 .map(|chunk| {
-                    let mut padded_chunk = [0u8; 32];
+                    let mut padded_chunk = [0_u8; 32];
                     for (i, byte) in chunk.iter().enumerate() {
                         padded_chunk[i] = *byte;
                     }
@@ -269,17 +270,17 @@ impl Network {
                 })?;
 
         let contract_id = Felt::from_str(contract_id)
-            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_string()))?;
+            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_owned()))?;
 
         let entry_point_selector = get_selector_from_name(method)
-            .map_err(|_| StarknetError::InvalidMethodName(method.to_string()))?;
+            .map_err(|_| StarknetError::InvalidMethodName(method.to_owned()))?;
 
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
         } else {
             args.chunks(32)
                 .map(|chunk| {
-                    let mut padded_chunk = [0u8; 32];
+                    let mut padded_chunk = [0_u8; 32];
                     for (i, byte) in chunk.iter().enumerate() {
                         padded_chunk[i] = *byte;
                     }
@@ -291,16 +292,14 @@ impl Network {
         let transaction_hash =
             compute_transaction_hash(sender_address, contract_id, entry_point_selector, &calldata);
 
-        let signature = sign_transaction(&transaction_hash, &secret_key)
-            .await
-            .unwrap();
+        let signature = sign_transaction(&transaction_hash, &secret_key).unwrap();
 
         let signature_vec: Vec<Felt> = vec![signature.r, signature.s];
 
         let invoke_transaction_v1 = BroadcastedInvokeTransactionV1 {
             sender_address,
             calldata,
-            max_fee: Felt::from(304139049569u64),
+            max_fee: Felt::from(304_139_049_569_u64),
             signature: signature_vec,
             nonce,
             is_query: false,
@@ -324,11 +323,11 @@ impl Network {
             .get_nonce(BlockId::Tag(BlockTag::Latest), contract_id)
             .await;
 
-        match response {
-            Ok(nonce) => Ok(nonce),
-            Err(_) => Err(StarknetError::InvalidResponse {
-                operation: ErrorOperation::FetchAccount,
+        response.map_or(
+            Err(StarknetError::InvalidResponse {
+                operation: ErrorOperation::FetchNonce,
             }),
-        }
+            Ok,
+        )
     }
 }
