@@ -19,13 +19,12 @@ pub struct ContextConfigClientConfig {
 pub enum Protocol {
     Near,
     Starknet,
-    UnknownNetwork,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ContextConfigClientNew {
-    pub network: String,
     pub protocol: Protocol,
+    pub network: String,
     pub contract_id: AccountId,
 }
 
@@ -56,13 +55,13 @@ pub struct ContextConfigClientRelayerSigner {
 pub struct ContextConfigClientLocalSigner {
     pub rpc_url: Url,
     #[serde(flatten)]
-    pub credentials: CryptoCredentials,
+    pub credentials: Credentials,
 }
 
 #[non_exhaustive]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
-pub enum CryptoCredentials {
+pub enum Credentials {
     Near(near::Credentials),
     Starknet(starknet::Credentials),
 }

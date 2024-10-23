@@ -7,6 +7,7 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use calimero_config::ConfigFile;
+use calimero_context_config::client::config::Credentials;
 use calimero_context_config::client::relayer::RelayRequest;
 use calimero_context_config::client::{near, Transport, TransportRequest};
 use clap::{Parser, ValueEnum};
@@ -58,15 +59,15 @@ impl RelayCommand {
                 .local
                 .iter()
                 .map(|(network, config)| {
-                    // Match on CryptoCredentials to handle both Near and Starknet cases
+                    // Match on Credentials to handle both Near and Starknet cases
                     let (account_id, access_key) = match &config.credentials {
-                        CryptoCredentials::Near(credentials) => (
+                        Credentials::Near(credentials) => (
                             credentials.account_id.clone(),
                             credentials.secret_key.clone(),
                         ),
-                        CryptoCredentials::Starknet(_) => {
+                        Credentials::Starknet(_) => {
                             panic!("Expected NEAR credentials, but got Starknet credentials.")
-                        }
+                        },
                         _ => panic!("Expected NEAR credentials."),
                     };
                     (

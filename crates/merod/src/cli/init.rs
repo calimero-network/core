@@ -9,7 +9,7 @@ use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     self, ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    CryptoCredentials,
+    Credentials,
 };
 use calimero_context_config::client::near;
 use calimero_network::config::{
@@ -241,7 +241,7 @@ fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSig
 
     Ok(ContextConfigClientLocalSigner {
         rpc_url,
-        credentials: CryptoCredentials::Near(near::Credentials {
+        credentials: Credentials::Near(near::Credentials {
             account_id: hex::encode(account_id).parse()?,
             public_key,
             secret_key,
