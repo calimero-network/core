@@ -1,3 +1,4 @@
+use calimero_config::ConfigFile;
 use camino::Utf8Path;
 use chrono::Utc;
 use eyre::{bail, eyre, Result as EyreResult};
@@ -6,8 +7,6 @@ use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
 use reqwest::{Client, Response, Url};
 use serde::Serialize;
-
-use calimero_config::ConfigFile;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
     #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]

@@ -1,4 +1,5 @@
-use calimero_primitives::{context::ContextId, hash::Hash};
+use calimero_primitives::context::ContextId;
+use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextState as ContextStateKey;
 use clap::Parser;
 use eyre::Result;
