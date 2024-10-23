@@ -149,12 +149,10 @@ impl Transport for StarknetTransport<'_> {
         let contract_id = request.contract_id.as_ref();
 
         match request.operation {
-            Operation::Read { method } => Ok(network
-                .query(contract_id, &method, payload)
-                .await?
-                .into_iter()
-                .flat_map(|felt| felt.to_bytes_be().to_vec())
-                .collect::<Vec<u8>>()),
+            Operation::Read { method } => {
+                let response = network.query(contract_id, &method, payload).await?;
+                Ok(response)
+            }
             Operation::Write { .. } => Ok(vec![]),
         }
     }
@@ -166,7 +164,7 @@ impl Network {
         contract_id: &str,
         method: &str,
         args: Vec<u8>,
-    ) -> Result<Vec<Felt>, StarknetError> {
+    ) -> Result<Vec<u8>, StarknetError> {
         let contract_id = Felt::from_str(contract_id)
             .unwrap_or_else(|_| panic!("Failed to convert contract id to felt type"));
 
@@ -202,7 +200,12 @@ impl Network {
             Err(StarknetError::InvalidResponse {
                 operation: ErrorOperation::Query,
             }),
-            |result| Ok(result),
+            |result| {
+                Ok(result
+                    .into_iter()
+                    .flat_map(|felt| felt.to_bytes_be().to_vec())
+                    .collect::<Vec<u8>>())
+            },
         )
     }
 }
