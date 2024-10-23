@@ -1,12 +1,13 @@
-use crate::Node;
-
 use clap::Parser;
 use eyre::Result;
 use owo_colors::OwoColorize;
 use serde_json::{from_slice as from_json_slice, Value};
 
+use crate::Node;
+
 #[derive(Debug, Parser)]
-#[allow(missing_copy_implementations)]
+#[allow(missing_copy_implementations, reason = "TODO")]
+#[non_exhaustive]
 pub struct PoolCommand;
 
 impl PoolCommand {

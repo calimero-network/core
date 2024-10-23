@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 const CONFIG_FILE: &str = "config.toml";
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct ConfigFile {
     #[serde(
         with = "calimero_primitives::identity::serde_identity",
@@ -31,6 +32,7 @@ pub struct ConfigFile {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct NetworkConfig {
     pub swarm: SwarmConfig,
 
@@ -45,7 +47,26 @@ pub struct NetworkConfig {
     pub catchup: CatchupConfig,
 }
 
+impl NetworkConfig {
+    pub fn new(
+        swarm: SwarmConfig,
+        bootstrap: BootstrapConfig,
+        discovery: DiscoveryConfig,
+        server: ServerConfig,
+        catchup: CatchupConfig,
+    ) -> Self {
+        Self {
+            swarm,
+            server,
+            bootstrap,
+            discovery,
+            catchup,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct ServerConfig {
     pub listen: Vec<Multiaddr>,
 
@@ -59,17 +80,63 @@ pub struct ServerConfig {
     pub websocket: Option<WsConfig>,
 }
 
+impl ServerConfig {
+    pub fn new(
+        listen: Vec<Multiaddr>,
+        admin: Option<AdminConfig>,
+        jsonrpc: Option<JsonRpcConfig>,
+        websocket: Option<WsConfig>,
+    ) -> Self {
+        Self {
+            listen,
+            admin,
+            jsonrpc,
+            websocket,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct DataStoreConfig {
     pub path: Utf8PathBuf,
 }
 
+impl DataStoreConfig {
+    pub fn new(path: Utf8PathBuf) -> Self {
+        Self { path }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct BlobStoreConfig {
     pub path: Utf8PathBuf,
 }
 
+impl BlobStoreConfig {
+    pub fn new(path: Utf8PathBuf) -> Self {
+        Self { path }
+    }
+}
+
 impl ConfigFile {
+    pub fn new(
+        identity: identity::Keypair,
+        datastore: DataStoreConfig,
+        blobstore: BlobStoreConfig,
+        context: ContextConfig,
+        network: NetworkConfig,
+    ) -> Self {
+        Self {
+            identity,
+            datastore,
+            blobstore,
+            context,
+            network,
+        }
+    }
+
     pub fn exists(dir: &Utf8Path) -> bool {
         dir.join(CONFIG_FILE).is_file()
     }

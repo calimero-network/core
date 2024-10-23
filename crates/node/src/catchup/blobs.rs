@@ -16,6 +16,7 @@ pub struct ApplicationBlobChunkSender {
 }
 
 impl ApplicationBlobChunkSender {
+    #[allow(clippy::integer_division, reason = "TODO")]
     pub(crate) fn new(stream: Box<Stream>) -> Self {
         // Stream messages are encoded with length delimited codec.
         // Calculate batch size based on the maximum message size and blob chunk size.

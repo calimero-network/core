@@ -198,7 +198,9 @@ impl EventLoop {
                         RendezvousRegistrationStatus::Expired if candidate.is_none() => {
                             candidate = Some(peer_id);
                         }
-                        _ => {}
+                        RendezvousRegistrationStatus::Requested
+                        | RendezvousRegistrationStatus::Registered
+                        | RendezvousRegistrationStatus::Expired => {}
                     }
                 }
             }
