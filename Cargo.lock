@@ -889,6 +889,7 @@ dependencies = [
  "borsh",
  "bs58 0.5.1",
  "ed25519-dalek",
+ "either",
  "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
