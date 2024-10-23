@@ -1185,6 +1185,7 @@ dependencies = [
  "near-crypto 0.26.0",
  "near-sdk",
  "near-workspaces",
+ "near-workspaces",
  "rand 0.8.5",
  "serde_json",
  "tokio",
@@ -2883,7 +2884,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1b589b4dc103969ad3cf85c950899926ec64300a1a46d76c03a6072957036f0"
 dependencies = [
  "crc32fast",
- "miniz_oxide 0.8.0",
+ "miniz_oxide",
 ]
 
 [[package]]

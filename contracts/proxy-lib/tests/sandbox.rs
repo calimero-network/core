@@ -3,6 +3,7 @@ use calimero_context_config::{
     types::{Application, ContextId, ContextIdentity, Signed},
     ContextRequest, ContextRequestKind, Request, RequestKind
 };
+use proxy_lib::{MultiSigRequest, MultiSigRequestAction, MultiSigRequestWithSigner, RequestId};
 use ed25519_dalek::{Signer, SigningKey};
 use near_workspaces::{network::Sandbox, types::NearToken, Account, Contract, Worker};
 use rand::Rng;
@@ -47,6 +48,57 @@ async fn test_fetch_members() -> Result<()> {
     initialize_proxy_contract(&proxy_contract, context_id, &context_config_contract).await?;
     test_fetch_members_call(&alice, &proxy_contract, alice_cx_id).await?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_add_request_and_confirm() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+
+    // Deploy contracts
+    let proxy_contract = deploy_contract(&worker, PROXY_CONTRACT_WASM).await?;
+    let context_config_contract = deploy_contract(&worker, CONTEXT_CONFIG_WASM).await?;
+
+    // Create alice account and node1 subaccount
+    let alice = create_account_with_balance(&worker, "alice", 30).await?;
+    let node1 = create_subaccount(&worker, "node1").await?;
+
+    // Generate cryptographic identities
+    let (alice_cx_id, context_id, signing_key) = generate_ids()?;
+
+    // Add context via context-config contract
+    add_context_to_config(
+        &node1,
+        &context_config_contract,
+        context_id,
+        alice_cx_id,
+        signing_key.clone()
+    ).await?;
+
+    // Initialize ProxyContract and test fetch_members
+    initialize_proxy_contract(&proxy_contract, context_id, &context_config_contract).await?;
+    let result = alice
+    .call(proxy_contract.id(), "add_request_and_confirm")
+    .args_json(json!({
+        "request": Signed::new(
+            &{
+                let multi_sig_request = MultiSigRequest {
+                    actions: vec![],
+                    receiver_id: context_config_contract.id().clone(),
+                };
+                MultiSigRequestWithSigner {
+                    signer_id: signing_key.verifying_key().to_bytes().rt()?,
+                    request: multi_sig_request,
+                }
+            },
+            |p| signing_key.sign(p),
+        )?
+    }))
+    .max_gas()
+    .transact()
+    .await;
+    assert!(result.is_ok());
+    assert!(result?.json::<u32>()? == 0);
     Ok(())
 }
 
