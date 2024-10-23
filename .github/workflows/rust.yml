@@ -16,8 +16,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
 
         # Install Node.js (version 20) and pnpm
       - name: Set up Node.js
@@ -35,8 +33,14 @@ jobs:
       - name: Build node-ui
         run: pnpm --filter ./node-ui run build
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: rustup toolchain install stable --profile minimal
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+         toolchain: nightly  # Install the nightly toolchain
+
+      # Install rustfmt for the nightly toolchain
+      - name: Install rustfmt
+        run: rustup component add rustfmt --toolchain nightly
 
       - name: Run code style checks
         uses: ./.github/actions/style
