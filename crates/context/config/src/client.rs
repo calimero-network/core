@@ -1,5 +1,6 @@
 use core::convert::Infallible;
 use core::error::Error as CoreError;
+use core::fmt::{Display, Formatter, Result as FmtResult};
 use core::marker::PhantomData;
 use core::ptr;
 use std::borrow::Cow;
@@ -23,42 +24,35 @@ use config::{
     ContextConfigClientConfig, ContextConfigClientSelectedSigner, CryptoCredentials, Protocol,
 };
 
-#[non_exhaustive]
 #[derive(Clone, Debug)]
-pub enum TransportChoice<L, R, T> {
-    Left(L),
-    Right(R),
-    Third(T),
-}
-
 #[non_exhaustive]
-#[derive(Debug)]
-pub enum TransportError<L, R, T> {
+pub enum Either<L, R> {
     Left(L),
     Right(R),
-    Third(T),
 }
 
-impl<L, R, T> std::fmt::Display for TransportError<L, R, T>
+pub type TransportErr<L, R, T> = Either<L, Either<R, T>>;
+
+impl<L, R, T> Display for TransportErr<L, R, T>
 where
-    L: std::fmt::Display,
-    R: std::fmt::Display,
-    T: std::fmt::Display,
+    L: Display,
+    R: Display,
+    T: Display,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            TransportError::Left(err) => write!(f, "{}", err),
-            TransportError::Right(err) => write!(f, "{}", err),
-            TransportError::Third(err) => write!(f, "{}", err),
+            Self::Left(err) => write!(f, "{err}"),
+            Self::Right(Either::Left(err)) => write!(f, "{err}"),
+            Self::Right(Either::Right(err)) => write!(f, "{err}"),
         }
     }
 }
 
-impl<L, R, T> std::error::Error for TransportError<L, R, T>
+impl<L, R, T> CoreError for TransportErr<L, R, T>
 where
-    L: std::error::Error,
-    R: std::error::Error,
-    T: std::error::Error,
+    L: CoreError,
+    R: CoreError,
+    T: CoreError,
 {
 }
 
@@ -73,8 +67,8 @@ pub trait Transport {
     ) -> Result<Vec<u8>, Self::Error>;
 }
 
-impl<L: Transport, R: Transport, T: Transport> Transport for TransportChoice<L, R, T> {
-    type Error = TransportError<L::Error, R::Error, T::Error>;
+impl<L: Transport, R: Transport, T: Transport> Transport for Either<L, Either<R, T>> {
+    type Error = Either<L::Error, Either<R::Error, T::Error>>;
 
     async fn send(
         &self,
@@ -82,18 +76,15 @@ impl<L: Transport, R: Transport, T: Transport> Transport for TransportChoice<L, 
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
         match self {
-            TransportChoice::Left(left) => left
+            Self::Left(left) => left.send(request, payload).await.map_err(Either::Left),
+            Self::Right(Either::Left(right)) => right
                 .send(request, payload)
                 .await
-                .map_err(TransportError::Left),
-            TransportChoice::Right(right) => right
+                .map_err(|err| Either::Right(Either::Left(err))),
+            Self::Right(Either::Right(third)) => third
                 .send(request, payload)
                 .await
-                .map_err(TransportError::Right),
-            TransportChoice::Third(third) => third
-                .send(request, payload)
-                .await
-                .map_err(TransportError::Third),
+                .map_err(|err| Either::Right(Either::Right(err))),
         }
     }
 }
@@ -139,25 +130,24 @@ impl<T: Transport> ContextConfigClient<T> {
     }
 }
 
-pub type RelayOrNearOrStarknetTransport = TransportChoice<
+pub type AnyTransport = Either<
     relayer::RelayerTransport,
-    near::NearTransport<'static>,
-    starknet::StarknetTransport<'static>,
+    Either<near::NearTransport<'static>, starknet::StarknetTransport<'static>>,
 >;
 
-impl ContextConfigClient<RelayOrNearOrStarknetTransport> {
+impl ContextConfigClient<AnyTransport> {
     #[must_use]
     pub fn from_config(config: &ContextConfigClientConfig) -> Self {
         let transport = match config.signer.selected {
             ContextConfigClientSelectedSigner::Relayer => {
                 // If the selected signer is Relayer, use the Left variant.
-                TransportChoice::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
+                Either::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
                     url: config.signer.relayer.url.clone(),
                 }))
             }
             ContextConfigClientSelectedSigner::Local => match config.new.protocol {
                 Protocol::Near => {
-                    TransportChoice::Right(near::NearTransport::new(&near::NearConfig {
+                    Either::Right(Either::Left(near::NearTransport::new(&near::NearConfig {
                         networks: config
                             .signer
                             .local
@@ -182,20 +172,19 @@ impl ContextConfigClient<RelayOrNearOrStarknetTransport> {
                                 )
                             })
                             .collect(),
-                    }))
+                    })))
                 }
-                Protocol::Starknet => TransportChoice::Third(starknet::StarknetTransport::new(
-                    &starknet::StarknetConfig {
+                Protocol::Starknet => Either::Right(Either::Right(
+                    starknet::StarknetTransport::new(&starknet::StarknetConfig {
                         networks: config
                             .signer
                             .local
                             .iter()
                             .map(|(network, config)| {
                                 let (account_id, secret_key) = match &config.credentials {
-                                    CryptoCredentials::Starknet(credentials) => (
-                                        credentials.account_id.clone(),
-                                        credentials.secret_key.clone(),
-                                    ),
+                                    CryptoCredentials::Starknet(credentials) => {
+                                        (credentials.account_id, credentials.secret_key)
+                                    }
                                     CryptoCredentials::Near(_) => {
                                         panic!(
                                             "Expected Starknet credentials but got something else."
@@ -212,9 +201,9 @@ impl ContextConfigClient<RelayOrNearOrStarknetTransport> {
                                 )
                             })
                             .collect(),
-                    },
+                    }),
                 )),
-                _ => panic!("Unsupported network."),
+                Protocol::UnknownNetwork => panic!("Unsupported network."),
             },
         };
 
