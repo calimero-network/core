@@ -149,9 +149,7 @@ impl Transport for StarknetTransport<'_> {
         let contract_id = request.contract_id.as_ref();
 
         match request.operation {
-            Operation::Read { method } => {
-                network.query(contract_id, &method, payload).await
-            }
+            Operation::Read { method } => network.query(contract_id, &method, payload).await,
             Operation::Write { .. } => Ok(vec![]),
         }
     }

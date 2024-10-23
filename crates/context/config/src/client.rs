@@ -20,9 +20,7 @@ pub mod near;
 pub mod relayer;
 pub mod starknet;
 
-use config::{
-    ContextConfigClientConfig, ContextConfigClientSelectedSigner, Credentials, Protocol,
-};
+use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner, Credentials, Protocol};
 
 #[derive(Clone, Debug)]
 #[non_exhaustive]
