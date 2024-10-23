@@ -6,11 +6,11 @@ use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
 };
 use calimero_context::config::ContextConfig;
-use calimero_context_config::client::config::{
+use calimero_context_config::client::{config::{
     ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    Credentials, CryptoCredentials,
-};
+    CryptoCredentials,
+}, near};
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -244,7 +244,7 @@ fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSig
 
     Ok(ContextConfigClientLocalSigner {
         rpc_url,
-        credentials: CryptoCredentials::Near(Credentials {
+        credentials: CryptoCredentials::Near(near::Credentials {
             account_id: hex::encode(account_id).parse()?,
             public_key,
             secret_key,
