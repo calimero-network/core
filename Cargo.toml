@@ -32,8 +32,9 @@ members = [
     "./apps/only-peers",
     "./apps/gen-ext",
 
-    "./contracts/context-config",
-    "./contracts/registry",
+  "./contracts/context-config",
+  "./contracts/registry",
+  "./contracts/proxy-lib",
 ]
 
 [workspace.dependencies]
