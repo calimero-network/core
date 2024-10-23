@@ -189,9 +189,7 @@ fn compute_transaction_hash(
     //     .iter()
     //     .chain(calldata.iter());
     let binding = [sender_address, contract_address, entry_point_selector];
-    let elements = binding
-    .iter()
-    .chain(calldata.iter());
+    let elements = binding.iter().chain(calldata.iter());
 
     poseidon_hash_many(elements)
 }
