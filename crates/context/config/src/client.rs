@@ -33,8 +33,8 @@ pub trait Transport {
     ) -> Result<Vec<u8>, Self::Error>;
 }
 
-impl<L: Transport, R: Transport, T: Transport> Transport for Either<L, Either<R, T>> {
-    type Error = Either<L::Error, Either<R::Error, T::Error>>;
+impl<L: Transport, R: Transport> Transport for Either<L, R> {
+    type Error = Either<L::Error, R::Error>;
 
     async fn send(
         &self,
@@ -43,14 +43,7 @@ impl<L: Transport, R: Transport, T: Transport> Transport for Either<L, Either<R,
     ) -> Result<Vec<u8>, Self::Error> {
         match self {
             Self::Left(left) => left.send(request, payload).await.map_err(Either::Left),
-            Self::Right(Either::Left(right)) => right
-                .send(request, payload)
-                .await
-                .map_err(|err| Either::Right(Either::Left(err))),
-            Self::Right(Either::Right(third)) => third
-                .send(request, payload)
-                .await
-                .map_err(|err| Either::Right(Either::Right(err))),
+            Self::Right(right) => right.send(request, payload).await.map_err(Either::Right),
         }
     }
 }
