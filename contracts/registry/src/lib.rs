@@ -101,9 +101,7 @@ impl PackageManager {
     }
 
     fn calculate_id_hash(name: &str, owner_account: AccountId) -> String {
-        hex::encode(env::sha256(
-            format!("{}:{}", name, owner_account).as_bytes(),
-        ))
+        hex::encode(env::sha256(format!("{name}:{owner_account}").as_bytes()))
     }
 
     pub fn add_release(

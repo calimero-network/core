@@ -744,15 +744,18 @@ impl ContextManager {
     }
 
     #[expect(clippy::similar_names, reason = "Different enough")]
-    pub async fn install_application_from_stream(
+    pub async fn install_application_from_stream<AR>(
         &self,
         expected_size: u64,
-        stream: impl AsyncRead,
+        stream: AR,
         source: &ApplicationSource,
         metadata: Vec<u8>,
         // hash: Hash,
         // todo! BlobMgr should return hash of content
-    ) -> EyreResult<ApplicationId> {
+    ) -> EyreResult<ApplicationId>
+    where
+        AR: AsyncRead,
+    {
         let (blob_id, size) = self
             .blob_manager
             .put_sized(Some(Size::Exact(expected_size)), stream)

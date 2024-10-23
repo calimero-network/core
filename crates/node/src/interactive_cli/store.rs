@@ -7,7 +7,8 @@ use owo_colors::OwoColorize;
 use crate::Node;
 
 #[derive(Debug, Parser)]
-#[allow(missing_copy_implementations)]
+#[allow(missing_copy_implementations, reason = "TODO")]
+#[non_exhaustive]
 pub struct StoreCommand;
 
 impl StoreCommand {

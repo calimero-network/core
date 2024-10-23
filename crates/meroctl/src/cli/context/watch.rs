@@ -16,6 +16,8 @@ pub struct WatchCommand {
 }
 
 impl WatchCommand {
+    #[allow(clippy::print_stderr, reason = "TODO")]
+    #[allow(clippy::print_stdout, reason = "TODO")]
     pub async fn run(self, args: RootArgs) -> EyreResult<()> {
         let config = load_config(&args.home, &args.node_name)?;
 
