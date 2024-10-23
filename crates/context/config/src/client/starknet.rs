@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use starknet_core::types::{BlockId, BlockTag, Felt, FunctionCall};
 use starknet_core::utils::get_selector_from_name;
 use starknet_providers::jsonrpc::HttpTransport;
@@ -12,6 +13,58 @@ use starknet_providers::{JsonRpcClient, Provider, Url};
 use thiserror::Error;
 
 use super::{Operation, Transport, TransportRequest};
+
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(try_from = "serde_creds::Credentials")]
+pub struct Credentials {
+    pub account_id: String,
+    pub public_key: String,
+    pub secret_key: String,
+}
+
+mod serde_creds {
+    use std::str::FromStr;
+
+    use serde::{Deserialize, Serialize};
+    use starknet_crypto::Felt;
+
+    #[derive(Debug, Deserialize, Serialize)]
+    pub struct Credentials {
+        secret_key: String,
+        public_key: String,
+        account_id: String,
+    }
+
+    impl TryFrom<Credentials> for super::Credentials {
+        type Error = &'static str;
+
+        fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
+            'pass: {
+                let public_key_felt = Felt::from_str(&creds.public_key)
+                    .map_err(|_| "Failed to convert public_key to Felt")?;
+                let secret_key_felt = Felt::from_str(&creds.secret_key)
+                    .map_err(|_| "Failed to convert secret_key to Felt")?;
+                let extracted_public_key = starknet_crypto::get_public_key(&secret_key_felt);
+
+                if public_key_felt != extracted_public_key {
+                    return Err(
+                        "public key extracted from private key does not match provided public key"
+                            .into(),
+                    );
+                }
+
+                break 'pass;
+            };
+
+            Ok(Self {
+                account_id: creds.account_id,
+                public_key: creds.public_key,
+                secret_key: creds.secret_key,
+            })
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct NetworkConfig {
