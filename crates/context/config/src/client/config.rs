@@ -1,7 +1,8 @@
 #![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
-use std::{collections::BTreeMap, str::FromStr};
-use clap::ValueEnum;
+use std::collections::BTreeMap;
+use std::str::FromStr;
 
+use clap::ValueEnum;
 use near_primitives::types::AccountId;
 use serde::{Deserialize, Serialize};
 use url::Url;
