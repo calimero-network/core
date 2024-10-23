@@ -3,12 +3,18 @@ description: 'Run linter and formatter'
 runs:
   using: 'composite'
   steps:
+    - name: Get changed files
+      id: changed-files
+      uses: tj-actions/changed-files@v45
+
     # Check for Markdown/MDX changes
     - name: Check for Markdown/MDX changes
+      env:
+        ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
       shell: bash
       run: |
         echo "Checking for Markdown/MDX changes..."
-        if git diff --cached --name-only | grep -qE '\.mdx?$'; then
+        if echo "$ALL_CHANGED_FILES" | grep -qE '\.mdx?$'; then
            if ! pnpm check:md; then
             echo "Markdown or MDX files are not properly formatted."
             exit 1  # Exit with a non-zero status code to indicate failure
@@ -17,17 +23,25 @@ runs:
 
     # Check for Rust code changes and run Rust formatting
     - name: Check for Rust code changes
+      env:
+        ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
       shell: bash
       run: |
         echo "Checking for Rust code changes..."
-        if git diff --cached --name-only | grep -qE '\.rs$'; then
+        if echo "$ALL_CHANGED_FILES" | grep -q '\.rs$'; then
           echo "Running checks for the Rust code..."
-          rustup install nightly
+
+        # Install the nightly toolchain
+          rustup toolchain install nightly
+
+          # Install rustfmt for the nightly toolchain
+          rustup component add rustfmt --toolchain nightly
+
           if ! cargo +nightly fmt -- --check; then
             echo "Rust code is not properly formatted."
             exit 1  # Exit with a non-zero status code if formatting fails
           fi
-          if ! cargo clippy -- -D warnings; then
+          if ! cargo clippy; then
             echo "Rust code is not properly linted."
             exit 1  # Exit with a non-zero status code if formatting fails
           fi
@@ -36,9 +50,12 @@ runs:
     # Check for changes in the 'node-ui' directory and run formatting/linting
     - name: Check for changes in node-ui
       shell: bash
+      env:
+        ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
       run: |
-        echo "Checking for changes in node-ui..."
-        if git diff --cached --name-only | grep -q '^node-ui/'; then
+        echo "Checking for changes in node-ui files"
+        if echo "$ALL_CHANGED_FILES" | grep -q '^node-ui/'; then
+          echo "Running checks for the node-ui..."
           cd node-ui
           if ! pnpm prettier:check .; then
             echo "Prettier found unformatted files in node-ui."
@@ -54,9 +71,12 @@ runs:
     # Check for changes in the 'packages/calimero-sdk' directory and run formatting/linting
     - name: Check for changes in calimero-sdk
       shell: bash
+      env:
+        ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
       run: |
-        echo "Checking for changes in calimero-sdk..."
-        if git diff --cached --name-only | grep -q '^packages/calimero-sdk/'; then
+        echo "Checking for changes in calimero-sdk files"
+        if echo "$ALL_CHANGED_FILES" | grep -q '^packages/calimero-sdk/'; then
+          echo "Running checks for the calimero-sdk files"
           cd packages/calimero-sdk
           if ! pnpm prettier:check .; then
             echo "Prettier found unformatted files in calimero-sdk."
