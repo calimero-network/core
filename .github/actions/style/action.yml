@@ -20,7 +20,7 @@ runs:
       shell: bash
       run: |
         echo "Checking for Rust code changes..."
-        if git diff HEAD^ HEAD --name-only | grep -qE '\.rs$'; then
+        if git diff --cached --name-only | grep -qE '\.rs$'; then
           echo "Running checks for the Rust code..."
           rustup install nightly
           if ! cargo +nightly fmt -- --check; then

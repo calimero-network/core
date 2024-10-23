@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
         # Install Node.js (version 20) and pnpm
       - name: Set up Node.js
