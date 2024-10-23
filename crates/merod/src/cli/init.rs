@@ -7,9 +7,7 @@ use calimero_config::{
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
-    ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    CryptoCredentials,
+    self, ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew, ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner, CryptoCredentials
 };
 use calimero_context_config::client::near;
 use calimero_network::config::{
@@ -189,6 +187,7 @@ impl InitCommand {
                     },
                     new: ContextConfigClientNew {
                         network: "testnet".into(),
+                        protocol: config::Protocol::Near,
                         contract_id: "calimero-context-config.testnet".parse()?,
                     },
                 },

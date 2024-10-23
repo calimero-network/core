@@ -19,7 +19,7 @@ pub mod near;
 pub mod relayer;
 pub mod starknet;
 
-use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner, CryptoCredentials};
+use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner, CryptoCredentials, Protocol};
 
 #[non_exhaustive]
 #[derive(Clone, Debug)]
@@ -153,8 +153,8 @@ impl ContextConfigClient<RelayOrNearOrStarknetTransport> {
                     url: config.signer.relayer.url.clone(),
                 }))
             }
-            ContextConfigClientSelectedSigner::Local => match config.new.network.as_str() {
-                "near" => TransportChoice::Right(near::NearTransport::new(&near::NearConfig {
+            ContextConfigClientSelectedSigner::Local => match config.new.protocol {
+                Protocol::Near => TransportChoice::Right(near::NearTransport::new(&near::NearConfig {
                     networks: config
                         .signer
                         .local
@@ -180,7 +180,7 @@ impl ContextConfigClient<RelayOrNearOrStarknetTransport> {
                         })
                         .collect(),
                 })),
-                "starknet" => TransportChoice::Third(starknet::StarknetTransport::new(
+                Protocol::Starknet => TransportChoice::Third(starknet::StarknetTransport::new(
                     &starknet::StarknetConfig {
                         networks: config
                             .signer

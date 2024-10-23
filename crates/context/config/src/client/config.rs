@@ -13,9 +13,17 @@ pub struct ContextConfigClientConfig {
     pub signer: ContextConfigClientSigner,
 }
 
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    Near,
+    Starknet,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ContextConfigClientNew {
     pub network: String,
+    pub protocol: Protocol,
     pub contract_id: AccountId,
 }
 
