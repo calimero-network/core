@@ -19,7 +19,9 @@ pub mod near;
 pub mod relayer;
 pub mod starknet;
 
-use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner, CryptoCredentials, Protocol};
+use config::{
+    ContextConfigClientConfig, ContextConfigClientSelectedSigner, CryptoCredentials, Protocol,
+};
 
 #[non_exhaustive]
 #[derive(Clone, Debug)]
@@ -154,32 +156,34 @@ impl ContextConfigClient<RelayOrNearOrStarknetTransport> {
                 }))
             }
             ContextConfigClientSelectedSigner::Local => match config.new.protocol {
-                Protocol::Near => TransportChoice::Right(near::NearTransport::new(&near::NearConfig {
-                    networks: config
-                        .signer
-                        .local
-                        .iter()
-                        .map(|(network, config)| {
-                            let (account_id, secret_key) = match &config.credentials {
-                                CryptoCredentials::Near(credentials) => (
-                                    credentials.account_id.clone(),
-                                    credentials.secret_key.clone(),
-                                ),
-                                CryptoCredentials::Starknet(_) => {
-                                    panic!("Expected Near credentials but got something else.")
-                                }
-                            };
-                            (
-                                network.clone().into(),
-                                near::NetworkConfig {
-                                    rpc_url: config.rpc_url.clone(),
-                                    account_id,
-                                    access_key: secret_key,
-                                },
-                            )
-                        })
-                        .collect(),
-                })),
+                Protocol::Near => {
+                    TransportChoice::Right(near::NearTransport::new(&near::NearConfig {
+                        networks: config
+                            .signer
+                            .local
+                            .iter()
+                            .map(|(network, config)| {
+                                let (account_id, secret_key) = match &config.credentials {
+                                    CryptoCredentials::Near(credentials) => (
+                                        credentials.account_id.clone(),
+                                        credentials.secret_key.clone(),
+                                    ),
+                                    CryptoCredentials::Starknet(_) => {
+                                        panic!("Expected Near credentials but got something else.")
+                                    }
+                                };
+                                (
+                                    network.clone().into(),
+                                    near::NetworkConfig {
+                                        rpc_url: config.rpc_url.clone(),
+                                        account_id,
+                                        access_key: secret_key,
+                                    },
+                                )
+                            })
+                            .collect(),
+                    }))
+                }
                 Protocol::Starknet => TransportChoice::Third(starknet::StarknetTransport::new(
                     &starknet::StarknetConfig {
                         networks: config
