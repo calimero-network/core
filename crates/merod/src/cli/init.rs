@@ -1,5 +1,6 @@
 use core::net::IpAddr;
 use core::time::Duration;
+use std::collections::BTreeMap;
 use std::fs::{create_dir, create_dir_all};
 
 use calimero_config::{
@@ -69,6 +70,10 @@ pub struct InitCommand {
     /// URL of the relayer for submitting NEAR transactions
     #[clap(long, value_name = "URL")]
     pub relayer_url: Option<Url>,
+
+    /// Name of protocol
+    #[clap(long, value_name = "PROTOCOL", default_value = "near")]
+    pub protocol: String,
 
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
@@ -165,6 +170,12 @@ impl InitCommand {
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
 
+        let protocol_value = match self.protocol.as_str() {
+            "near" => config::Protocol::Near,
+            "starknet" => config::Protocol::Starknet,
+            _ => config::Protocol::UnknownNetwork,
+        };
+
         let config = ConfigFile {
             identity,
             datastore: StoreConfigFile {
@@ -178,26 +189,56 @@ impl InitCommand {
                     signer: ContextConfigClientSigner {
                         selected: ContextConfigClientSelectedSigner::Relayer,
                         relayer: ContextConfigClientRelayerSigner { url: relayer },
-                        local: [
-                            (
-                                "mainnet".to_owned(),
-                                generate_local_signer("https://rpc.mainnet.near.org".parse()?)?,
-                            ),
-                            (
-                                "testnet".to_owned(),
-                                generate_local_signer("https://rpc.testnet.near.org".parse()?)?,
-                            ),
-                        ]
-                        .into_iter()
-                        .collect(),
+                        local: match protocol_value {
+                            config::Protocol::Near => [
+                                (
+                                    "mainnet".to_owned(),
+                                    generate_local_signer("https://rpc.mainnet.near.org".parse()?)?,
+                                ),
+                                (
+                                    "testnet".to_owned(),
+                                    generate_local_signer("https://rpc.testnet.near.org".parse()?)?,
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                            config::Protocol::Starknet => [
+                                (
+                                    "mainnet".to_owned(),
+                                    generate_local_signer(
+                                        "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7"
+                                            .parse()?,
+                                    )?,
+                                ),
+                                (
+                                    "sepolia".to_owned(),
+                                    generate_local_signer(
+                                        "https://free-rpc.nethermind.io/sepolia-juno/".parse()?,
+                                    )?,
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                            config::Protocol::UnknownNetwork => BTreeMap::new(),
+                            _ => BTreeMap::new(),
+                        },
                     },
                     new: ContextConfigClientNew {
-                        network: "testnet".into(),
-                        protocol: config::Protocol::Near,
-                        contract_id: "calimero-context-config.testnet".parse()?,
+                        network: match protocol_value {
+                            config::Protocol::Near => "testnet".into(),
+                            config::Protocol::Starknet => "sepolia".into(),
+                            _ => "unknown".into(),
+                        },
+                        protocol: protocol_value,
+                        contract_id: match protocol_value {
+                            config::Protocol::Near => "calimero-context-config.testnet".parse()?,
+                            config::Protocol::Starknet => "random.contract.id".parse()?,
+                            _ => "unknown.contract.id".parse()?,
+                        },
                     },
                 },
             },
+
             network: NetworkConfig {
                 swarm: SwarmConfig::new(listen),
                 bootstrap: BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
