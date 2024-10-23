@@ -33,11 +33,11 @@ jobs:
       - name: Build node-ui
         run: pnpm --filter ./node-ui run build
 
-      - name: Run code style checks
-        uses: ./.github/actions/style
-
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: rustup toolchain install stable --profile minimal
+
+      - name: Run code style checks
+        uses: ./.github/actions/style
 
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2
