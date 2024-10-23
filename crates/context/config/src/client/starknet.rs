@@ -14,12 +14,12 @@ use thiserror::Error;
 
 use super::{Operation, Transport, TransportRequest};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]
 pub struct Credentials {
-    pub account_id: String,
-    pub public_key: String,
-    pub secret_key: String,
+    pub account_id: Felt,
+    pub public_key: Felt,
+    pub secret_key: Felt,
 }
 
 mod serde_creds {
@@ -36,30 +36,17 @@ mod serde_creds {
     }
 
     impl TryFrom<Credentials> for super::Credentials {
-        type Error = &'static str;
+        type Error = starknet_types_core::felt::FromStrError;
 
         fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            'pass: {
-                let public_key_felt = Felt::from_str(&creds.public_key)
-                    .map_err(|_| "Failed to convert public_key to Felt")?;
-                let secret_key_felt = Felt::from_str(&creds.secret_key)
-                    .map_err(|_| "Failed to convert secret_key to Felt")?;
-                let extracted_public_key = starknet_crypto::get_public_key(&secret_key_felt);
-
-                if public_key_felt != extracted_public_key {
-                    return Err(
-                        "public key extracted from private key does not match provided public key"
-                            .into(),
-                    );
-                }
-
-                break 'pass;
-            };
+            let public_key_felt = Felt::from_str(&creds.public_key)?;
+            let secret_key_felt = Felt::from_str(&creds.secret_key)?;
+            let account_id_felt = Felt::from_str(&creds.account_id)?;
 
             Ok(Self {
-                account_id: creds.account_id,
-                public_key: creds.public_key,
-                secret_key: creds.secret_key,
+                account_id: account_id_felt,
+                public_key: public_key_felt,
+                secret_key: secret_key_felt,
             })
         }
     }
@@ -68,8 +55,8 @@ mod serde_creds {
 #[derive(Debug)]
 pub struct NetworkConfig {
     pub rpc_url: Url,
-    pub account_id: String,
-    pub access_key: String,
+    pub account_id: Felt,
+    pub access_key: Felt,
 }
 
 #[derive(Debug)]
@@ -80,8 +67,8 @@ pub struct StarknetConfig<'a> {
 #[derive(Clone, Debug)]
 struct Network {
     client: Arc<JsonRpcClient<HttpTransport>>,
-    account_id: String,
-    secret_key: String,
+    account_id: Felt,
+    secret_key: Felt,
 }
 
 #[derive(Clone, Debug)]
