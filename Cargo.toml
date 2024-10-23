@@ -33,6 +33,7 @@ members = [
 
   "./contracts/context-config",
   "./contracts/registry",
+  "./contracts/proxy-lib",
 ]
 
 [workspace.dependencies]
