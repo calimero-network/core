@@ -753,8 +753,11 @@ impl ContextManager {
         // hash: Hash,
         // todo! BlobMgr should return hash of content
     ) -> EyreResult<ApplicationId> {
+
+
         let (blob_id, size) = self
             .blob_manager
+            
             .put_sized(Some(Size::Exact(expected_size)), stream)
             .await?;
 
