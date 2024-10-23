@@ -6,7 +6,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use starknet_core::types::{BlockId, BlockTag, BroadcastedInvokeTransaction, BroadcastedInvokeTransactionV1, Felt, FunctionCall};
+use starknet_core::types::{
+    BlockId, BlockTag, BroadcastedInvokeTransaction, BroadcastedInvokeTransactionV1, Felt,
+    FunctionCall,
+};
 use starknet_core::utils::get_selector_from_name;
 use starknet_crypto::{poseidon_hash_many, Signature};
 use starknet_providers::jsonrpc::HttpTransport;
@@ -122,6 +125,8 @@ pub enum StarknetError {
     InvalidResponse { operation: ErrorOperation },
     #[error("invalid contract ID `{0}`")]
     InvalidContractId(String),
+    #[error("invalid method name `{0}`")]
+    InvalidMethodName(String),
     #[error("access key does not have permission to call contract `{0}`")]
     NotPermittedToCallContract(String),
     #[error(
@@ -146,6 +151,8 @@ pub enum ErrorOperation {
     Mutate,
     #[error("fetching account")]
     FetchAccount,
+    #[error("fetching nonce")]
+    FetchNonce,
 }
 
 impl Transport for StarknetTransport<'_> {
@@ -175,14 +182,14 @@ fn compute_transaction_hash(
     sender_address: Felt,
     contract_address: Felt,
     entry_point_selector: Felt,
-    calldata: Vec<Felt>,
+    calldata: &[Felt],
 ) -> Felt {
-    let elements: Vec<Felt> = vec![sender_address, contract_address, entry_point_selector]
+    let elements: Vec<&Felt> = vec![&sender_address, &contract_address, &entry_point_selector]
         .into_iter()
-        .chain(calldata.into_iter())
+        .chain(calldata.iter())
         .collect();
 
-    poseidon_hash_many(&elements)
+    poseidon_hash_many(elements)
 }
 
 async fn sign_transaction(hash: &Felt, secret_key: &Felt) -> Result<Signature, StarknetError> {
@@ -203,10 +210,10 @@ impl Network {
         args: Vec<u8>,
     ) -> Result<Vec<u8>, StarknetError> {
         let contract_id = Felt::from_str(contract_id)
-            .unwrap_or_else(|_| panic!("Failed to convert contract id to felt type"));
+            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_string()))?;
 
         let entry_point_selector = get_selector_from_name(method)
-            .unwrap_or_else(|_| panic!("Failed to convert method name to entry point selector"));
+            .map_err(|_| StarknetError::InvalidMethodName(method.to_string()))?;
 
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
@@ -246,22 +253,26 @@ impl Network {
         )
     }
 
-    async fn mutate(&self, contract_id: &str, method: &str, args: Vec<u8>) {
-        let sender_address: Felt = Felt::from_str(&self.account_id)
-            .unwrap_or_else(|_| panic!("Failed to convert sender address to felt type"));
-        let secret_key: Felt = Felt::from_str(self.secret_key.as_str())
-            .unwrap_or_else(|_| panic!("Failed to convert sender address to felt type"));
-
-        let nonce = self
-            .get_nonce(self.account_id.as_str())
-            .await
-            .unwrap_or_else(|_| panic!("Failed to get nonce"));
+    async fn mutate(
+        &self,
+        contract_id: &str,
+        method: &str,
+        args: Vec<u8>,
+    ) -> Result<u8, StarknetError> {
+        let sender_address: Felt = self.account_id;
+        let secret_key: Felt = self.secret_key;
+        let nonce =
+            self.get_nonce(&self.account_id)
+                .await
+                .map_err(|_| StarknetError::InvalidResponse {
+                    operation: ErrorOperation::FetchNonce,
+                })?;
 
         let contract_id = Felt::from_str(contract_id)
-            .unwrap_or_else(|_| panic!("Failed to convert contract id to felt type"));
+            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_string()))?;
 
         let entry_point_selector = get_selector_from_name(method)
-            .unwrap_or_else(|_| panic!("Failed to convert method name to entry point selector"));
+            .map_err(|_| StarknetError::InvalidMethodName(method.to_string()))?;
 
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
@@ -277,12 +288,8 @@ impl Network {
                 .collect()
         };
 
-        let transaction_hash = compute_transaction_hash(
-            sender_address,
-            contract_id,
-            entry_point_selector,
-            calldata.clone(),
-        );
+        let transaction_hash =
+            compute_transaction_hash(sender_address, contract_id, entry_point_selector, &calldata);
 
         let signature = sign_transaction(&transaction_hash, &secret_key)
             .await
@@ -302,21 +309,16 @@ impl Network {
         let response = self
             .client
             .add_invoke_transaction(&broadcasted_transaction)
-            .await;
-        match response {
-            Ok(result) => {
-                println!("Transaction successful: {:?}", result);
-            }
-            Err(err) => {
-                eprintln!("Error adding invoke transaction: {:?}", err);
-            }
-        }
+            .await
+            .map_err(|_| StarknetError::InvalidResponse {
+                operation: ErrorOperation::Mutate,
+            })?;
+
+        let transaction_hash: u8 = response.transaction_hash.to_bytes_be()[0];
+        Ok(transaction_hash)
     }
 
-    async fn get_nonce(&self, contract_id: &str) -> Result<Felt, StarknetError> {
-        let contract_id = Felt::from_str(contract_id)
-            .unwrap_or_else(|_| panic!("Failed to convert contract id to felt type"));
-
+    async fn get_nonce(&self, contract_id: &Felt) -> Result<Felt, StarknetError> {
         let response = self
             .client
             .get_nonce(BlockId::Tag(BlockTag::Latest), contract_id)
