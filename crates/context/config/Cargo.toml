@@ -20,6 +20,7 @@ serde_json.workspace = true
 starknet-core.workspace = true
 starknet-crypto.workspace = true
 starknet-providers.workspace = true
+starknet-types-core.workspace = true
 thiserror.workspace = true
 url = { workspace = true, optional = true }
 
