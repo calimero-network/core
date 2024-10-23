@@ -6,6 +6,7 @@ use axum::http::status::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
+use calimero_config::ConfigFile;
 use calimero_context_config::client::relayer::RelayRequest;
 use calimero_context_config::client::{near, Transport, TransportRequest};
 use clap::{Parser, ValueEnum};
@@ -16,7 +17,6 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use super::RootArgs;
-use calimero_config::ConfigFile;
 
 pub const DEFAULT_PORT: u16 = 63529; // Mero-rELAY = MELAY
 pub const DEFAULT_ADDR: SocketAddr =

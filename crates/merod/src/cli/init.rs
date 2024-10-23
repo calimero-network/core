@@ -2,6 +2,9 @@ use core::net::IpAddr;
 use core::time::Duration;
 use std::fs::{create_dir, create_dir_all};
 
+use calimero_config::{
+    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
+};
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
@@ -28,9 +31,6 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::{cli, defaults};
-use calimero_config::{
-    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
-};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]

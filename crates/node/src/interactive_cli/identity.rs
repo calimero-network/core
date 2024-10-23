@@ -1,9 +1,10 @@
+use std::str::FromStr;
+
 use calimero_primitives::context::ContextId;
 use calimero_store::key::ContextIdentity as ContextIdentityKey;
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use owo_colors::OwoColorize;
-use std::str::FromStr;
 
 use crate::Node;
 

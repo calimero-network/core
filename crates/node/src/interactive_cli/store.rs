@@ -1,7 +1,6 @@
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextState as ContextStateKey;
 use clap::Parser;
-
 use eyre::Result;
 use owo_colors::OwoColorize;
 
