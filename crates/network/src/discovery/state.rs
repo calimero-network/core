@@ -176,7 +176,8 @@ impl DiscoveryState {
                     match rendezvous_info.registration_status() {
                         RendezvousRegistrationStatus::Requested
                         | RendezvousRegistrationStatus::Registered => acc + 1,
-                        _ => acc,
+                        RendezvousRegistrationStatus::Discovered
+                        | RendezvousRegistrationStatus::Expired => acc,
                     }
                 } else {
                     acc
@@ -186,20 +187,21 @@ impl DiscoveryState {
     }
 
     pub(crate) fn is_relay_reservation_required(&self, max: usize) -> bool {
-        let sum =
-            self.get_relay_peer_ids()
-                .filter_map(|peer_id| self.get_peer_info(&peer_id))
-                .fold(0, |acc, peer_info| {
-                    if let Some(rendezvous_info) = peer_info.relay() {
-                        match rendezvous_info.reservation_status() {
-                            RelayReservationStatus::Accepted
-                            | RelayReservationStatus::Requested => acc + 1,
-                            _ => acc,
+        let sum = self
+            .get_relay_peer_ids()
+            .filter_map(|peer_id| self.get_peer_info(&peer_id))
+            .fold(0, |acc, peer_info| {
+                if let Some(rendezvous_info) = peer_info.relay() {
+                    match rendezvous_info.reservation_status() {
+                        RelayReservationStatus::Accepted | RelayReservationStatus::Requested => {
+                            acc + 1
                         }
-                    } else {
-                        acc
+                        RelayReservationStatus::Discovered | RelayReservationStatus::Expired => acc,
                     }
-                });
+                } else {
+                    acc
+                }
+            });
         sum < max
     }
 }

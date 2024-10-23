@@ -23,8 +23,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, load_config};
-use crate::common::{get_response, multiaddr_to_url, RequestType};
+use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
 pub struct CreateCommand {

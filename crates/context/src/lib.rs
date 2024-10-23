@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ContextConfigClientConfig;
-use calimero_context_config::client::{ContextConfigClient, RelayOrNearTransport};
+use calimero_context_config::client::{ContextConfigClient, RelayOrNearOrStarknetTransport};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
@@ -51,7 +51,7 @@ use config::ContextConfig;
 pub struct ContextManager {
     store: Store,
     client_config: ContextConfigClientConfig,
-    config_client: ContextConfigClient<RelayOrNearTransport>,
+    config_client: ContextConfigClient<RelayOrNearOrStarknetTransport>,
     blob_manager: BlobManager,
     network_client: NetworkClient,
     server_sender: ServerSender,

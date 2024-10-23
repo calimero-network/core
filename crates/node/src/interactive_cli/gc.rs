@@ -1,8 +1,9 @@
 use clap::Parser;
+use eyre::Result;
 use owo_colors::OwoColorize;
 
-use crate::{transaction_pool::TransactionPool, Node};
-use eyre::Result;
+use crate::transaction_pool::TransactionPool;
+use crate::Node;
 
 #[derive(Debug, Parser)]
 #[allow(missing_copy_implementations)]

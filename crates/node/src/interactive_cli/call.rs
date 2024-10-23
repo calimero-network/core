@@ -1,11 +1,12 @@
-use calimero_primitives::{identity::PublicKey, transaction::Transaction};
+use calimero_primitives::identity::PublicKey;
+use calimero_primitives::transaction::Transaction;
 use clap::Parser;
+use eyre::Result;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
 use crate::Node;
-use eyre::Result;
 
 #[derive(Debug, Parser)]
 pub struct CallCommand {

@@ -2,12 +2,16 @@ use core::net::IpAddr;
 use core::time::Duration;
 use std::fs::{create_dir, create_dir_all};
 
+use calimero_config::{
+    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
+};
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
+    self, ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    Credentials,
+    CryptoCredentials,
 };
+use calimero_context_config::client::near;
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -28,9 +32,6 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::{cli, defaults};
-use calimero_config::{
-    BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
-};
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
@@ -192,6 +193,7 @@ impl InitCommand {
                     },
                     new: ContextConfigClientNew {
                         network: "testnet".into(),
+                        protocol: config::Protocol::Near,
                         contract_id: "calimero-context-config.testnet".parse()?,
                     },
                 },
@@ -244,10 +246,10 @@ fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSig
 
     Ok(ContextConfigClientLocalSigner {
         rpc_url,
-        credentials: Credentials {
+        credentials: CryptoCredentials::Near(near::Credentials {
             account_id: hex::encode(account_id).parse()?,
             public_key,
             secret_key,
-        },
+        }),
     })
 }
