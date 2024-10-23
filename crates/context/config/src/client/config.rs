@@ -13,11 +13,13 @@ pub struct ContextConfigClientConfig {
     pub signer: ContextConfigClientSigner,
 }
 
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
     Near,
     Starknet,
+    UnknownNetwork,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -1,8 +1,8 @@
 #![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
 
+use core::str::FromStr;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -23,10 +23,11 @@ pub struct Credentials {
 }
 
 mod serde_creds {
-    use std::str::FromStr;
+    use core::str::FromStr;
 
     use serde::{Deserialize, Serialize};
     use starknet_crypto::Felt;
+    use starknet_types_core::felt::FromStrError;
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Credentials {
@@ -36,7 +37,7 @@ mod serde_creds {
     }
 
     impl TryFrom<Credentials> for super::Credentials {
-        type Error = starknet_types_core::felt::FromStrError;
+        type Error = FromStrError;
 
         fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
             let public_key_felt = Felt::from_str(&creds.public_key)?;
@@ -87,8 +88,8 @@ impl<'a> StarknetTransport<'a> {
                 network_id.clone(),
                 Network {
                     client: client.into(),
-                    account_id: network_config.account_id.clone(),
-                    secret_key: network_config.access_key.clone(),
+                    account_id: network_config.account_id,
+                    secret_key: network_config.access_key,
                 },
             );
         }
@@ -197,11 +198,11 @@ impl Network {
             .call(&function_call, BlockId::Tag(BlockTag::Latest))
             .await;
 
-        match response {
-            Ok(result) => Ok(result),
-            Err(_) => Err(StarknetError::InvalidResponse {
+        response.map_or(
+            Err(StarknetError::InvalidResponse {
                 operation: ErrorOperation::Query,
             }),
-        }
+            |result| Ok(result),
+        )
     }
 }
