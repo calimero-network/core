@@ -58,11 +58,8 @@ impl ContextCommand {
 
                 for (k, v) in handle.iter::<ContextMetaKey>()?.entries() {
                     let (k, v) = (k?, v?);
-                    let (cx, app_id, last_tx) = (
-                        k.context_id(),
-                        v.application.application_id(),
-                        v.last_transaction_hash,
-                    );
+                    let (cx, app_id, last_tx) =
+                        (k.context_id(), v.application.application_id(), v.root_hash);
                     let entry = format!(
                         "{c1:44} | {c2:44} | {c3}",
                         c1 = cx,

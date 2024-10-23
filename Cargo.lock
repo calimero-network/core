@@ -914,7 +914,6 @@ name = "calimero-network"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "calimero-node-primitives",
  "calimero-primitives",
  "eyre",
  "futures-util",
@@ -935,6 +934,7 @@ dependencies = [
 name = "calimero-node"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "calimero-blobstore",
  "calimero-context",
  "calimero-network",
@@ -942,6 +942,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",
+ "calimero-storage",
  "calimero-store",
  "camino",
  "clap",
@@ -3657,6 +3658,8 @@ name = "kv-store"
 version = "0.1.0"
 dependencies = [
  "calimero-sdk",
+ "calimero-storage",
+ "calimero-storage-macros",
 ]
 
 [[package]]
@@ -4496,7 +4499,6 @@ dependencies = [
  "calimero-context-config",
  "calimero-network",
  "calimero-node",
- "calimero-node-primitives",
  "calimero-server",
  "calimero-store",
  "camino",

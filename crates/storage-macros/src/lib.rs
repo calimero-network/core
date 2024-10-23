@@ -338,12 +338,12 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
                 hasher.update(self.element().id().as_bytes());
                 #(
                     hasher.update(
-                        &borsh::to_vec(&self.#regular_fields)
+                        &calimero_sdk::borsh::to_vec(&self.#regular_fields)
                             .map_err(calimero_storage::interface::StorageError::SerializationError)?
                     );
                 )*
                 hasher.update(
-                    &borsh::to_vec(&self.element().metadata())
+                    &calimero_sdk::borsh::to_vec(&self.element().metadata())
                         .map_err(calimero_storage::interface::StorageError::SerializationError)?
                 );
                 Ok(hasher.finalize().into())
@@ -495,7 +495,7 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
     }
 
     let deserialize_impl = quote! {
-        impl borsh::BorshDeserialize for #name {
+        impl calimero_sdk::borsh::BorshDeserialize for #name {
             fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
                 Ok(Self {})
             }
@@ -503,7 +503,7 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
     };
 
     let serialize_impl = quote! {
-        impl borsh::BorshSerialize for #name {
+        impl calimero_sdk::borsh::BorshSerialize for #name {
             fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
                 Ok(())
             }

@@ -104,6 +104,7 @@ pub struct VMLogic<'a> {
     limits: &'a VMLimits,
     registers: Registers,
     returns: Option<VMLogicResult<Vec<u8>, Vec<u8>>>,
+    actions: Vec<Vec<u8>>,
     logs: Vec<String>,
     events: Vec<Event>,
 }
@@ -117,6 +118,7 @@ impl<'a> VMLogic<'a> {
             limits,
             registers: Registers::default(),
             returns: None,
+            actions: vec![],
             logs: vec![],
             events: vec![],
         }
@@ -144,6 +146,7 @@ impl<'a> VMLogic<'a> {
 #[non_exhaustive]
 pub struct Outcome {
     pub returns: VMLogicResult<Option<Vec<u8>>, FunctionCallError>,
+    pub actions: Vec<Vec<u8>>,
     pub logs: Vec<String>,
     pub events: Vec<Event>,
     // execution runtime
@@ -170,6 +173,7 @@ impl VMLogic<'_> {
 
         Outcome {
             returns,
+            actions: self.actions,
             logs: self.logs,
             events: self.events,
         }
@@ -333,6 +337,21 @@ impl VMHostFunctions<'_> {
         let data = self.read_guest_memory(data_ptr, data_len)?;
 
         self.with_logic_mut(|logic| logic.events.push(Event { kind, data }));
+
+        Ok(())
+    }
+
+    /// Sends an action to the host.
+    ///
+    /// After a storage event, other nodes need to be updated. Consequently, the
+    /// host must be informed about the action that was taken. This function
+    /// sends that action to the host, which can then be used to update the
+    /// network.
+    ///
+    pub fn send_action(&mut self, action_ptr: u64, action_len: u64) -> VMLogicResult<()> {
+        let action_bytes = self.read_guest_memory(action_ptr, action_len)?;
+
+        self.with_logic_mut(|logic| logic.actions.push(action_bytes));
 
         Ok(())
     }

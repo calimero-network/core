@@ -238,7 +238,7 @@ impl ContextManager {
                 &ContextMetaKey::new(context.id),
                 &ContextMetaValue::new(
                     ApplicationMetaKey::new(context.application_id),
-                    context.last_transaction_hash.into(),
+                    context.root_hash.into(),
                 ),
             )?;
 
@@ -424,7 +424,7 @@ impl ContextManager {
         Ok(Some(Context::new(
             *context_id,
             ctx_meta.application.application_id(),
-            ctx_meta.last_transaction_hash.into(),
+            ctx_meta.root_hash.into(),
         )))
     }
 
@@ -611,7 +611,7 @@ impl ContextManager {
                 contexts.push(Context::new(
                     key.context_id(),
                     value.application.application_id(),
-                    value.last_transaction_hash.into(),
+                    value.root_hash.into(),
                 ));
             }
         }
@@ -621,7 +621,7 @@ impl ContextManager {
             contexts.push(Context::new(
                 k.context_id(),
                 v.application.application_id(),
-                v.last_transaction_hash.into(),
+                v.root_hash.into(),
             ));
         }
 

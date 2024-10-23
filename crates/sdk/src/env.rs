@@ -1,9 +1,6 @@
 use std::panic::set_hook;
 
-use borsh::{from_slice as from_borsh_slice, to_vec as to_borsh_vec};
-
 use crate::event::AppEvent;
-use crate::state::AppState;
 use crate::sys;
 use crate::sys::{
     log_utf8, panic_utf8, Buffer, BufferMut, Event, Location, PtrSizedInt, RegisterId, ValueReturn,
@@ -13,8 +10,6 @@ use crate::sys::{
 pub mod ext;
 
 const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 1);
-
-const STATE_KEY: &[u8] = b"STATE";
 
 #[track_caller]
 #[inline]
@@ -163,6 +158,10 @@ pub fn emit<T: AppEvent>(event: &T) {
     unsafe { sys::emit(Event::new(&kind, &data)) }
 }
 
+pub fn send_action(action: &[u8]) {
+    unsafe { sys::send_action(Buffer::from(action)) }
+}
+
 #[inline]
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
     unsafe { sys::storage_read(Buffer::from(key), DATA_REGISTER) }
@@ -177,27 +176,10 @@ pub fn storage_remove(key: &[u8]) -> bool {
         .unwrap_or_else(expected_boolean)
 }
 
-#[must_use]
-pub fn state_read<T: AppState>() -> Option<T> {
-    let data = storage_read(STATE_KEY)?;
-    match from_borsh_slice(&data) {
-        Ok(state) => Some(state),
-        Err(err) => panic_str(&format!("Cannot deserialize app state: {err:?}")),
-    }
-}
-
 #[inline]
 pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
     unsafe { sys::storage_write(Buffer::from(key), Buffer::from(value), DATA_REGISTER).try_into() }
         .unwrap_or_else(expected_boolean)
-}
-
-pub fn state_write<T: AppState>(state: &T) {
-    let data = match to_borsh_vec(state) {
-        Ok(data) => data,
-        Err(err) => panic_str(&format!("Cannot serialize app state: {err:?}")),
-    };
-    _ = storage_write(STATE_KEY, &data);
 }
 
 /// Fill the buffer with random bytes.

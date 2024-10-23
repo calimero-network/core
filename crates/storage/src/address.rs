@@ -13,8 +13,8 @@ use core::fmt::{self, Debug, Display, Formatter};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::serde::{Deserialize, Serialize};
 use fixedstr::Flexstr;
-use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use uuid::{Bytes, Uuid};
 
@@ -36,6 +36,7 @@ use crate::env::random_bytes;
 /// insulation that is useful for any future changes.
 ///
 #[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
 pub struct Id(Uuid);
 
 impl Id {
@@ -59,6 +60,12 @@ impl Id {
     #[must_use]
     pub const fn as_bytes(&self) -> &Bytes {
         self.0.as_bytes()
+    }
+
+    /// Root ID which is set to all zeroes by default.
+    #[must_use]
+    pub fn root() -> Self {
+        Self(Uuid::nil())
     }
 }
 

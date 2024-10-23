@@ -6,23 +6,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use tokio::sync::{mpsc, oneshot};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub enum NodeType {
-    Peer,
-    Coordinator,
-}
-
-impl NodeType {
-    #[must_use]
-    pub const fn is_coordinator(&self) -> bool {
-        match *self {
-            Self::Coordinator => true,
-            Self::Peer => false,
-        }
-    }
-}
-
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ExecutionRequest {
@@ -72,29 +55,9 @@ pub type ServerSender = mpsc::Sender<ExecutionRequest>;
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum CallError {
-    Query(QueryCallError),
-    Mutate(MutateCallError),
-    ContextNotFound { context_id: ContextId },
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
-#[error("QueryCallError")]
-#[serde(tag = "type", content = "data")]
-#[non_exhaustive]
-pub enum QueryCallError {
-    ApplicationNotInstalled { application_id: ApplicationId },
-    InternalError,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
-#[error("MutateCallError")]
-#[serde(tag = "type", content = "data")]
-#[expect(variant_size_differences, reason = "This doesn't matter here")]
-#[non_exhaustive]
-pub enum MutateCallError {
-    InvalidNodeType { node_type: NodeType },
     ApplicationNotInstalled { application_id: ApplicationId },
     NoConnectedPeers,
-    TransactionRejected,
+    ActionRejected,
     InternalError,
+    ContextNotFound { context_id: ContextId },
 }

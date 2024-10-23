@@ -1,7 +1,7 @@
+use calimero_node_primitives::ExecutionRequest;
+use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
-use calimero_primitives::transaction::Transaction;
 use clap::Parser;
-use eyre::Result;
 use owo_colors::OwoColorize;
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -10,48 +10,35 @@ use crate::Node;
 
 #[derive(Debug, Parser)]
 pub struct CallCommand {
-    context_id: String,
+    context_id: ContextId,
     method: String,
     payload: Value,
     executor_key: PublicKey,
 }
 
 impl CallCommand {
-    pub async fn run(self, node: &mut Node) -> Result<()> {
+    pub async fn run(self, node: &mut Node) -> eyre::Result<()> {
         let ind = ">>".blue();
         let (outcome_sender, outcome_receiver) = oneshot::channel();
 
-        let Ok(context_id) = self.context_id.parse() else {
-            println!("{} invalid context id: {}", ind, self.context_id);
+        let Ok(Some(context)) = node.ctx_manager.get_context(&self.context_id) else {
+            println!("{} context not found: {}", ind, self.context_id);
             return Ok(());
         };
 
-        let Ok(Some(context)) = node.ctx_manager.get_context(&context_id) else {
-            println!("{} context not found: {}", ind, context_id);
-            return Ok(());
-        };
-
-        let tx = Transaction::new(
+        node.handle_call(ExecutionRequest::new(
             context.id,
             self.method.to_owned(),
-            serde_json::to_string(&self.payload)?.into_bytes(),
-            context.last_transaction_hash,
+            serde_json::to_vec(&self.payload)?,
             self.executor_key,
-        );
-
-        let tx_hash = match node.call_mutate(&context, tx, outcome_sender).await {
-            Ok(tx_hash) => tx_hash,
-            Err(e) => {
-                println!("{} failed to execute transaction: {:?}", ind, e);
-                return Ok(());
-            }
-        };
-
-        println!("{} scheduled transaction! {:?}", ind, tx_hash);
+            outcome_sender,
+            None,
+        ))
+        .await;
 
         drop(tokio::spawn(async move {
             if let Ok(outcome_result) = outcome_receiver.await {
-                println!("{} {:?}", ind, tx_hash);
+                println!("{}", ind);
 
                 match outcome_result {
                     Ok(outcome) => {
