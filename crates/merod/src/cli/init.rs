@@ -6,11 +6,12 @@ use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
 };
 use calimero_context::config::ContextConfig;
-use calimero_context_config::client::{config::{
+use calimero_context_config::client::config::{
     ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
     CryptoCredentials,
-}, near};
+};
+use calimero_context_config::client::near;
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
