@@ -7,7 +7,9 @@ use calimero_config::{
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    self, ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew, ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner, CryptoCredentials
+    self, ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
+    ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
+    CryptoCredentials,
 };
 use calimero_context_config::client::near;
 use calimero_network::config::{
