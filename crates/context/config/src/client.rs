@@ -21,7 +21,7 @@ pub mod relayer;
 pub mod starknet;
 
 use config::{
-    ContextConfigClientConfig, ContextConfigClientSelectedSigner, CryptoCredentials, Protocol,
+    ContextConfigClientConfig, ContextConfigClientSelectedSigner, Credentials, Protocol,
 };
 
 #[derive(Clone, Debug)]
@@ -33,7 +33,15 @@ pub enum Either<L, R> {
 
 pub type TransportErr<L, R, T> = Either<L, Either<R, T>>;
 
-impl<L, R, T> Display for TransportErr<L, R, T>
+impl<L, R, T> CoreError for TransportErr<L, R, T>
+where
+    L: CoreError,
+    R: CoreError,
+    T: CoreError,
+{
+}
+
+impl<L, R, T> Display for Either<L, Either<R, T>>
 where
     L: Display,
     R: Display,
@@ -41,19 +49,11 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
-            Self::Left(err) => write!(f, "{err}"),
-            Self::Right(Either::Left(err)) => write!(f, "{err}"),
-            Self::Right(Either::Right(err)) => write!(f, "{err}"),
+            Either::Left(left) => write!(f, "{}", left),
+            Either::Right(Either::Left(right)) => write!(f, "{}", right),
+            Either::Right(Either::Right(third)) => write!(f, "{}", third),
         }
     }
-}
-
-impl<L, R, T> CoreError for TransportErr<L, R, T>
-where
-    L: CoreError,
-    R: CoreError,
-    T: CoreError,
-{
 }
 
 pub trait Transport {
@@ -154,11 +154,11 @@ impl ContextConfigClient<AnyTransport> {
                             .iter()
                             .map(|(network, config)| {
                                 let (account_id, secret_key) = match &config.credentials {
-                                    CryptoCredentials::Near(credentials) => (
+                                    Credentials::Near(credentials) => (
                                         credentials.account_id.clone(),
                                         credentials.secret_key.clone(),
                                     ),
-                                    CryptoCredentials::Starknet(_) => {
+                                    Credentials::Starknet(_) => {
                                         panic!("Expected Near credentials but got something else.")
                                     }
                                 };
@@ -182,10 +182,10 @@ impl ContextConfigClient<AnyTransport> {
                             .iter()
                             .map(|(network, config)| {
                                 let (account_id, secret_key) = match &config.credentials {
-                                    CryptoCredentials::Starknet(credentials) => {
+                                    Credentials::Starknet(credentials) => {
                                         (credentials.account_id, credentials.secret_key)
                                     }
-                                    CryptoCredentials::Near(_) => {
+                                    Credentials::Near(_) => {
                                         panic!(
                                             "Expected Starknet credentials but got something else."
                                         )
@@ -203,7 +203,6 @@ impl ContextConfigClient<AnyTransport> {
                             .collect(),
                     }),
                 )),
-                Protocol::UnknownNetwork => panic!("Unsupported network."),
             },
         };
 
