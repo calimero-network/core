@@ -1,3 +1,4 @@
+use calimero_config::ConfigFile;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
     MutateRequest, QueryRequest, Request, RequestId, RequestPayload, Version,
@@ -8,7 +9,6 @@ use serde_json::Value;
 
 use super::RootArgs;
 use crate::common::{get_response, multiaddr_to_url, RequestType};
-use calimero_config::ConfigFile;
 
 #[derive(Debug, Parser)]
 pub struct JsonRpcCommand {
