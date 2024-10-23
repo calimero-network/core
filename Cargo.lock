@@ -864,6 +864,7 @@ dependencies = [
  "calimero-primitives",
  "calimero-store",
  "camino",
+ "clap",
  "ed25519-dalek",
  "eyre",
  "futures-util",
@@ -887,6 +888,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "bs58 0.5.1",
+ "clap",
  "ed25519-dalek",
  "either",
  "near-crypto",

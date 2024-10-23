@@ -10,7 +10,7 @@ use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     self, ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    Credentials,
+    CryptoCredentials, Protocol as ConfigProtocol,
 };
 use calimero_context_config::client::near;
 use calimero_network::config::{
@@ -73,7 +73,8 @@ pub struct InitCommand {
 
     /// Name of protocol
     #[clap(long, value_name = "PROTOCOL", default_value = "near")]
-    pub protocol: String,
+    #[clap(value_enum)]
+    pub protocol: ConfigProtocol,
 
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
@@ -170,12 +171,6 @@ impl InitCommand {
             .relayer_url
             .unwrap_or_else(defaults::default_relayer_url);
 
-        let protocol_value = match self.protocol.as_str() {
-            "near" => config::Protocol::Near,
-            "starknet" => config::Protocol::Starknet,
-            _ => config::Protocol::UnknownNetwork,
-        };
-
         let config = ConfigFile {
             identity,
             datastore: StoreConfigFile {
@@ -189,8 +184,8 @@ impl InitCommand {
                     signer: ContextConfigClientSigner {
                         selected: ContextConfigClientSelectedSigner::Relayer,
                         relayer: ContextConfigClientRelayerSigner { url: relayer },
-                        local: match protocol_value {
-                            config::Protocol::Near => [
+                        local: match self.protocol {
+                            ConfigProtocol::Near => [
                                 (
                                     "mainnet".to_owned(),
                                     generate_local_signer("https://rpc.mainnet.near.org".parse()?)?,
@@ -202,7 +197,7 @@ impl InitCommand {
                             ]
                             .into_iter()
                             .collect(),
-                            config::Protocol::Starknet => [
+                            ConfigProtocol::Starknet => [
                                 (
                                     "mainnet".to_owned(),
                                     generate_local_signer(
@@ -219,20 +214,20 @@ impl InitCommand {
                             ]
                             .into_iter()
                             .collect(),
-                            config::Protocol::UnknownNetwork => BTreeMap::new(),
+                            ConfigProtocol::UnknownNetwork => BTreeMap::new(),
                             _ => BTreeMap::new(),
                         },
                     },
                     new: ContextConfigClientNew {
-                        network: match protocol_value {
-                            config::Protocol::Near => "testnet".into(),
-                            config::Protocol::Starknet => "sepolia".into(),
+                        network: match self.protocol {
+                            ConfigProtocol::Near => "testnet".into(),
+                            ConfigProtocol::Starknet => "sepolia".into(),
                             _ => "unknown".into(),
                         },
-                        protocol: protocol_value,
-                        contract_id: match protocol_value {
-                            config::Protocol::Near => "calimero-context-config.testnet".parse()?,
-                            config::Protocol::Starknet => "random.contract.id".parse()?,
+                        protocol: self.protocol,
+                        contract_id: match self.protocol {
+                            ConfigProtocol::Near => "calimero-context-config.testnet".parse()?,
+                            ConfigProtocol::Starknet => "random.contract.id".parse()?,
                             _ => "unknown.contract.id".parse()?,
                         },
                     },
