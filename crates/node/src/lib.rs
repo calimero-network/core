@@ -18,10 +18,9 @@ use calimero_network::types::{NetworkEvent, PeerId};
 use calimero_node_primitives::{CallError, ExecutionRequest};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ApplicationEvent, ApplicationEventPayload, ExecutedTransactionPayload, NodeEvent, OutcomeEvent,
-    OutcomeEventPayload, PeerJoinedPayload,
+    ApplicationEvent, ApplicationEventPayload, NodeEvent, OutcomeEvent, OutcomeEventPayload,
+    PeerJoinedPayload, StateMutationPayload,
 };
-use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
@@ -282,17 +281,18 @@ impl Node {
 
                 for action in action_list.actions {
                     debug!(?action, %source, "Received action");
-                    let Some(context) = self.ctx_manager.get_context(&action_list.context_id)?
+                    let Some(mut context) =
+                        self.ctx_manager.get_context(&action_list.context_id)?
                     else {
                         bail!("Context '{}' not found", action_list.context_id);
                     };
                     match action {
                         Action::Compare { id } => {
-                            self.send_comparison_message(&context, id, action_list.public_key)
+                            self.send_comparison_message(&mut context, id, action_list.public_key)
                                 .await
                         }
                         Action::Add { .. } | Action::Delete { .. } | Action::Update { .. } => {
-                            self.apply_action(&context, &action, action_list.public_key)
+                            self.apply_action(&mut context, &action, action_list.public_key)
                                 .await
                         }
                     }?;
@@ -302,11 +302,11 @@ impl Node {
             PeerAction::Sync(sync) => {
                 debug!(?sync, %source, "Received sync request");
 
-                let Some(context) = self.ctx_manager.get_context(&sync.context_id)? else {
+                let Some(mut context) = self.ctx_manager.get_context(&sync.context_id)? else {
                     bail!("Context '{}' not found", sync.context_id);
                 };
                 let outcome = self
-                    .compare_trees(&context, &sync.comparison, sync.public_key)
+                    .compare_trees(&mut context, &sync.comparison, sync.public_key)
                     .await?;
 
                 match outcome.returns {
@@ -318,13 +318,14 @@ impl Node {
                         for action in local_actions {
                             match action {
                                 Action::Compare { id } => {
-                                    self.send_comparison_message(&context, id, sync.public_key)
+                                    self.send_comparison_message(&mut context, id, sync.public_key)
                                         .await
                                 }
                                 Action::Add { .. }
                                 | Action::Delete { .. }
                                 | Action::Update { .. } => {
-                                    self.apply_action(&context, &action, sync.public_key).await
+                                    self.apply_action(&mut context, &action, sync.public_key)
+                                        .await
                                 }
                             }?;
                         }
@@ -357,7 +358,7 @@ impl Node {
 
     async fn send_comparison_message(
         &mut self,
-        context: &Context,
+        context: &mut Context,
         id: Id,
         public_key: PublicKey,
     ) -> EyreResult<()> {
@@ -393,7 +394,7 @@ impl Node {
     }
 
     pub async fn handle_call(&mut self, request: ExecutionRequest) {
-        let Ok(Some(context)) = self.ctx_manager.get_context(&request.context_id) else {
+        let Ok(Some(mut context)) = self.ctx_manager.get_context(&request.context_id) else {
             drop(request.outcome_sender.send(Err(CallError::ContextNotFound {
                 context_id: request.context_id,
             })));
@@ -401,7 +402,7 @@ impl Node {
         };
 
         let task = self.call_query(
-            &context,
+            &mut context,
             request.method,
             request.payload,
             request.executor_public_key,
@@ -416,19 +417,13 @@ impl Node {
 
     async fn call_query(
         &mut self,
-        context: &Context,
+        context: &mut Context,
         method: String,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> Result<Outcome, CallError> {
         let outcome_option = self
-            .checked_execute(
-                context,
-                Some(context.root_hash),
-                method,
-                payload,
-                executor_public_key,
-            )
+            .execute(context, method, payload, executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute query call.");
@@ -440,6 +435,7 @@ impl Node {
                 application_id: context.application_id,
             });
         };
+
         if self
             .network_client
             .mesh_peer_count(TopicHash::from_raw(context.id))
@@ -455,6 +451,7 @@ impl Node {
                     error!(%err, "Failed to deserialize actions.");
                     CallError::InternalError
                 })?;
+
             self.push_action(
                 context.id,
                 PeerAction::ActionList(ActionMessage {
@@ -476,14 +473,13 @@ impl Node {
 
     async fn apply_action(
         &mut self,
-        context: &Context,
+        context: &mut Context,
         action: &Action,
         public_key: PublicKey,
     ) -> EyreResult<()> {
         let outcome = self
-            .checked_execute(
+            .execute(
                 context,
-                None,
                 "apply_action".to_owned(),
                 to_vec(action)?,
                 public_key,
@@ -496,13 +492,12 @@ impl Node {
 
     async fn compare_trees(
         &mut self,
-        context: &Context,
+        context: &mut Context,
         comparison: &Comparison,
         public_key: PublicKey,
     ) -> EyreResult<Outcome> {
-        self.checked_execute(
+        self.execute(
             context,
-            None,
             "compare_trees".to_owned(),
             to_vec(comparison)?,
             public_key,
@@ -513,13 +508,12 @@ impl Node {
 
     async fn generate_comparison_data(
         &mut self,
-        context: &Context,
+        context: &mut Context,
         id: Id,
         public_key: PublicKey,
     ) -> EyreResult<Outcome> {
-        self.checked_execute(
+        self.execute(
             context,
-            None,
             "generate_comparison_data".to_owned(),
             to_vec(&id)?,
             public_key,
@@ -528,49 +522,21 @@ impl Node {
         .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
     }
 
-    async fn checked_execute(
+    async fn execute(
         &mut self,
-        context: &Context,
-        hash: Option<Hash>,
+        context: &mut Context,
         method: String,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> EyreResult<Option<Outcome>> {
-        if !self
-            .ctx_manager
-            .is_application_installed(&context.application_id)
-            .unwrap_or_default()
-        {
-            return Ok(None);
-        }
-
-        self.execute(context, hash, method, payload, executor_public_key)
-            .await
-            .map(Some)
-    }
-
-    async fn execute(
-        &mut self,
-        context: &Context,
-        hash: Option<Hash>,
-        method: String,
-        payload: Vec<u8>,
-        executor_public_key: PublicKey,
-    ) -> EyreResult<Outcome> {
-        let mut storage = match hash {
-            Some(_) => RuntimeCompatStore::temporal(&mut self.store, context.id),
-            None => RuntimeCompatStore::read_only(&self.store, context.id),
-        };
+        let mut storage = RuntimeCompatStore::new(&mut self.store, context.id);
 
         let Some(blob) = self
             .ctx_manager
             .load_application_blob(&context.application_id)
             .await?
         else {
-            bail!(
-                "fatal error: missing blob for application `{}`",
-                context.application_id
-            );
+            return Ok(None);
         };
 
         let outcome = calimero_runtime::run(
@@ -581,39 +547,47 @@ impl Node {
             &get_runtime_limits()?,
         )?;
 
-        if let Some(hash) = hash {
-            assert!(storage.commit()?, "do we have a non-temporal store?");
+        if outcome.returns.is_ok() {
+            if let Some(root_hash) = outcome.root_hash {
+                if outcome.actions.is_empty() {
+                    eyre::bail!("Context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+                }
 
-            // todo! return an error to the caller if the method did not write to storage
-            // todo! debate: when we switch to optimistic execution
-            // todo! we won't have query vs. mutate methods anymore, so this shouldn't matter
+                context.root_hash = root_hash.into();
+
+                drop(
+                    self.node_events
+                        .send(NodeEvent::Application(ApplicationEvent::new(
+                            context.id,
+                            ApplicationEventPayload::StateMutation(StateMutationPayload::new(
+                                context.root_hash,
+                            )),
+                        ))),
+                );
+
+                self.ctx_manager.save_context(context)?;
+            }
+
+            if !storage.is_empty() {
+                storage.commit()?;
+            }
 
             drop(
                 self.node_events
                     .send(NodeEvent::Application(ApplicationEvent::new(
                         context.id,
-                        ApplicationEventPayload::TransactionExecuted(
-                            ExecutedTransactionPayload::new(hash),
-                        ),
+                        ApplicationEventPayload::OutcomeEvent(OutcomeEventPayload::new(
+                            outcome
+                                .events
+                                .iter()
+                                .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
+                                .collect(),
+                        )),
                     ))),
             );
         }
 
-        drop(
-            self.node_events
-                .send(NodeEvent::Application(ApplicationEvent::new(
-                    context.id,
-                    ApplicationEventPayload::OutcomeEvent(OutcomeEventPayload::new(
-                        outcome
-                            .events
-                            .iter()
-                            .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
-                            .collect(),
-                    )),
-                ))),
-        );
-
-        Ok(outcome)
+        Ok(Some(outcome))
     }
 }
 
