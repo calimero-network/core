@@ -24,10 +24,10 @@ pub struct Credentials {
 
 mod serde_creds {
     use core::str::FromStr;
-
     use serde::{Deserialize, Serialize};
     use starknet_crypto::Felt;
     use starknet_types_core::felt::FromStrError;
+    use thiserror::Error;
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Credentials {
@@ -36,12 +36,26 @@ mod serde_creds {
         account_id: String,
     }
 
+    #[derive(Debug, Error)]
+    pub enum CredentialsError {
+        #[error("failed to parse Felt from string")]
+        ParseError(#[from] FromStrError),
+        #[error("public key extracted from secret key does not match the provided public key")]
+        PublicKeyMismatch,
+    }
+
     impl TryFrom<Credentials> for super::Credentials {
-        type Error = FromStrError;
+        type Error = CredentialsError;
 
         fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            let public_key_felt = Felt::from_str(&creds.public_key)?;
             let secret_key_felt = Felt::from_str(&creds.secret_key)?;
+            let public_key_felt = Felt::from_str(&creds.public_key)?;
+            let extracted_public_key = starknet_crypto::get_public_key(&secret_key_felt);
+
+            if public_key_felt != extracted_public_key {
+                return Err(CredentialsError::PublicKeyMismatch);
+            }
+
             let account_id_felt = Felt::from_str(&creds.account_id)?;
 
             Ok(Self {
