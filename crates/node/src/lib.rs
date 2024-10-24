@@ -21,7 +21,6 @@ use calimero_primitives::events::{
     ApplicationEvent, ApplicationEventPayload, NodeEvent, OutcomeEvent, OutcomeEventPayload,
     PeerJoinedPayload, StateMutationPayload,
 };
-use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
