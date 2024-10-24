@@ -179,7 +179,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
                 server = Box::pin(pending());
                 continue;
             }
-            Some(request) = server_receiver.recv() => node.handle_call(request).await,
+            Some(request) = server_receiver.recv() => node.handle_server_request(request).await,
             _ = catchup_interval_tick.tick() => node.perform_interval_catchup().await,
         }
     }
@@ -393,16 +393,9 @@ impl Node {
         Ok(())
     }
 
-    pub async fn handle_call(&mut self, request: ExecutionRequest) {
-        let Ok(Some(mut context)) = self.ctx_manager.get_context(&request.context_id) else {
-            drop(request.outcome_sender.send(Err(CallError::ContextNotFound {
-                context_id: request.context_id,
-            })));
-            return;
-        };
-
-        let task = self.call_query(
-            &mut context,
+    pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
+        let task = self.handle_call(
+            request.context_id,
             request.method,
             request.payload,
             request.executor_public_key,
@@ -415,15 +408,19 @@ impl Node {
         })));
     }
 
-    async fn call_query(
+    async fn handle_call(
         &mut self,
-        context: &mut Context,
+        context_id: ContextId,
         method: String,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> Result<Outcome, CallError> {
+        let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
+            return Err(CallError::ContextNotFound { context_id });
+        };
+
         let outcome_option = self
-            .execute(context, method, payload, executor_public_key)
+            .execute(&mut context, method, payload, executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute query call.");
