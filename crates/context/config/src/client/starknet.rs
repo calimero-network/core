@@ -6,8 +6,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use starknet_core::types::{BlockId, BlockTag, Felt, FunctionCall};
+use starknet_core::crypto::ecdsa_sign;
+use starknet_core::types::{
+    BlockId, BlockTag, BroadcastedInvokeTransaction, BroadcastedInvokeTransactionV1, Felt,
+    FunctionCall,
+};
 use starknet_core::utils::get_selector_from_name;
+use starknet_crypto::{poseidon_hash_many, Signature};
 use starknet_providers::jsonrpc::HttpTransport;
 use starknet_providers::{JsonRpcClient, Provider, Url};
 use thiserror::Error;
@@ -121,6 +126,8 @@ pub enum StarknetError {
     InvalidResponse { operation: ErrorOperation },
     #[error("invalid contract ID `{0}`")]
     InvalidContractId(String),
+    #[error("invalid method name `{0}`")]
+    InvalidMethodName(String),
     #[error("access key does not have permission to call contract `{0}`")]
     NotPermittedToCallContract(String),
     #[error(
@@ -145,6 +152,8 @@ pub enum ErrorOperation {
     Mutate,
     #[error("fetching account")]
     FetchAccount,
+    #[error("fetching nonce")]
+    FetchNonce,
 }
 
 impl Transport for StarknetTransport<'_> {
@@ -164,10 +173,38 @@ impl Transport for StarknetTransport<'_> {
         let contract_id = request.contract_id.as_ref();
 
         match request.operation {
-            Operation::Read { method } => network.query(contract_id, &method, payload).await,
-            Operation::Write { .. } => Ok(vec![]),
+            Operation::Read { method } => {
+                let response = network.query(contract_id, &method, payload).await?;
+                Ok(response)
+            }
+            Operation::Write { method } => {
+                let response = network.mutate(contract_id, &method, payload).await?;
+                Ok(response)
+            }
         }
     }
+}
+
+fn compute_transaction_hash(
+    sender_address: Felt,
+    contract_address: Felt,
+    entry_point_selector: Felt,
+    calldata: &[Felt],
+) -> Felt {
+    let binding = [sender_address, contract_address, entry_point_selector];
+    let elements = binding.iter().chain(calldata.iter());
+
+    poseidon_hash_many(elements)
+}
+
+fn sign_transaction(hash: &Felt, secret_key: &Felt) -> Result<Signature, StarknetError> {
+    let signature = ecdsa_sign(secret_key, hash);
+    signature.map_or(
+        Err(StarknetError::InvalidResponse {
+            operation: ErrorOperation::Query,
+        }),
+        |result| Ok(result.into()),
+    )
 }
 
 impl Network {
@@ -178,17 +215,17 @@ impl Network {
         args: Vec<u8>,
     ) -> Result<Vec<u8>, StarknetError> {
         let contract_id = Felt::from_str(contract_id)
-            .unwrap_or_else(|_| panic!("Failed to convert contract id to felt type"));
+            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_owned()))?;
 
         let entry_point_selector = get_selector_from_name(method)
-            .unwrap_or_else(|_| panic!("Failed to convert method name to entry point selector"));
+            .map_err(|_| StarknetError::InvalidMethodName(method.to_owned()))?;
 
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
         } else {
             args.chunks(32)
                 .map(|chunk| {
-                    let mut padded_chunk = [0u8; 32];
+                    let mut padded_chunk = [0_u8; 32];
                     for (i, byte) in chunk.iter().enumerate() {
                         padded_chunk[i] = *byte;
                     }
@@ -218,6 +255,83 @@ impl Network {
                     .flat_map(|felt| felt.to_bytes_be().to_vec())
                     .collect::<Vec<u8>>())
             },
+        )
+    }
+
+    async fn mutate(
+        &self,
+        contract_id: &str,
+        method: &str,
+        args: Vec<u8>,
+    ) -> Result<Vec<u8>, StarknetError> {
+        let sender_address: Felt = self.account_id;
+        let secret_key: Felt = self.secret_key;
+        let nonce =
+            self.get_nonce(&self.account_id)
+                .await
+                .map_err(|_| StarknetError::InvalidResponse {
+                    operation: ErrorOperation::FetchNonce,
+                })?;
+
+        let contract_id = Felt::from_str(contract_id)
+            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_owned()))?;
+
+        let entry_point_selector = get_selector_from_name(method)
+            .map_err(|_| StarknetError::InvalidMethodName(method.to_owned()))?;
+
+        let calldata: Vec<Felt> = if args.is_empty() {
+            vec![]
+        } else {
+            args.chunks(32)
+                .map(|chunk| {
+                    let mut padded_chunk = [0_u8; 32];
+                    for (i, byte) in chunk.iter().enumerate() {
+                        padded_chunk[i] = *byte;
+                    }
+                    Felt::from_bytes_be(&padded_chunk)
+                })
+                .collect()
+        };
+
+        let transaction_hash =
+            compute_transaction_hash(sender_address, contract_id, entry_point_selector, &calldata);
+
+        let signature = sign_transaction(&transaction_hash, &secret_key).unwrap();
+
+        let signature_vec: Vec<Felt> = vec![signature.r, signature.s];
+
+        let invoke_transaction_v1 = BroadcastedInvokeTransactionV1 {
+            sender_address,
+            calldata,
+            max_fee: Felt::from(304_139_049_569_u64),
+            signature: signature_vec,
+            nonce,
+            is_query: false,
+        };
+        let broadcasted_transaction = BroadcastedInvokeTransaction::V1(invoke_transaction_v1);
+        let response = self
+            .client
+            .add_invoke_transaction(&broadcasted_transaction)
+            .await
+            .map_err(|_| StarknetError::InvalidResponse {
+                operation: ErrorOperation::Mutate,
+            })?;
+
+        let transaction_hash: Vec<u8> = vec![response.transaction_hash.to_bytes_be()[0]];
+        Ok(transaction_hash)
+    }
+
+    async fn get_nonce(&self, contract_id: &Felt) -> Result<Felt, StarknetError> {
+        let response = self
+            .client
+            .get_nonce(BlockId::Tag(BlockTag::Latest), contract_id)
+            .await;
+
+        response.map_or(
+            Err(StarknetError::InvalidResponse {
+                operation: ErrorOperation::FetchNonce,
+            }),
+            Ok,
         )
     }
 }
