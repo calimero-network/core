@@ -1,6 +1,8 @@
 #![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
+use clap::ValueEnum;
 use near_primitives::types::AccountId;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -14,11 +16,23 @@ pub struct ContextConfigClientConfig {
 }
 
 #[non_exhaustive]
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
     Near,
     Starknet,
+}
+
+impl FromStr for Protocol {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input.to_lowercase().as_str() {
+            "near" => Ok(Protocol::Near),
+            "starknet" => Ok(Protocol::Starknet),
+            _ => Ok(Protocol::Near),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

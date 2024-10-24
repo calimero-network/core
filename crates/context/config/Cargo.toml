@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
+clap.workspace = true
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }
 near-crypto = { workspace = true, optional = true }
