@@ -46,10 +46,8 @@ impl ContextCommand {
 
         match self.command {
             Commands::Ls => {
-                let ind = ""; // Define the variable `ind` as an empty string or any desired value
-
                 println!(
-                    "{ind} {c1:44} | {c2:44} | Last Transaction",
+                    "{c1:44} | {c2:44} | Root Hash",
                     c1 = "Context ID",
                     c2 = "Application ID",
                 );

@@ -23,7 +23,6 @@ use calimero_store::key::{
     ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
     ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
-    ContextTransaction as ContextTransactionKey,
 };
 use calimero_store::types::{
     ApplicationMeta as ApplicationMetaValue, ContextConfig as ContextConfigValue,
@@ -481,32 +480,6 @@ impl ContextManager {
 
             let first = iter
                 .seek(ContextStateKey::new(*context_id, [0; 32]))
-                .transpose();
-
-            for k in first.into_iter().chain(iter.keys()) {
-                let k = k?;
-
-                if k.context_id() != *context_id {
-                    break;
-                }
-
-                keys.push(k);
-            }
-
-            drop(iter);
-
-            for k in keys {
-                handle.delete(&k)?;
-            }
-        }
-
-        {
-            let mut keys = vec![];
-
-            let mut iter = handle.iter::<ContextTransactionKey>()?;
-
-            let first = iter
-                .seek(ContextTransactionKey::new(*context_id, [0; 32]))
                 .transpose();
 
             for k in first.into_iter().chain(iter.keys()) {
