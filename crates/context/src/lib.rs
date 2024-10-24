@@ -234,13 +234,7 @@ impl ContextManager {
                 ),
             )?;
 
-            handle.put(
-                &ContextMetaKey::new(context.id),
-                &ContextMetaValue::new(
-                    ApplicationMetaKey::new(context.application_id),
-                    context.root_hash.into(),
-                ),
-            )?;
+            self.save_context(context)?;
 
             self.subscribe(&context.id).await?;
         }
@@ -250,6 +244,20 @@ impl ContextManager {
             &ContextIdentityValue {
                 private_key: Some(*identity_secret),
             },
+        )?;
+
+        Ok(())
+    }
+
+    pub fn save_context(&self, context: &Context) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+
+        handle.put(
+            &ContextMetaKey::new(context.id),
+            &ContextMetaValue::new(
+                ApplicationMetaKey::new(context.application_id),
+                context.root_hash.into(),
+            ),
         )?;
 
         Ok(())
