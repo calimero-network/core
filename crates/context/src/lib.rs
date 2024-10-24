@@ -456,6 +456,7 @@ impl ContextManager {
         Ok(true)
     }
 
+    #[expect(clippy::unwrap_in_result, reason = "pre-validated")]
     fn delete_context_scoped<K, const N: usize>(
         &self,
         context_id: &ContextId,
