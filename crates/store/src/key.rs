@@ -21,7 +21,7 @@ mod generic;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
-pub use context::{ContextConfig, ContextIdentity, ContextMeta, ContextState, ContextTransaction};
+pub use context::{ContextConfig, ContextIdentity, ContextMeta, ContextState};
 pub use generic::Generic;
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
