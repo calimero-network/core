@@ -30,7 +30,7 @@ impl FromStr for Protocol {
         match input.to_lowercase().as_str() {
             "near" => Ok(Protocol::Near),
             "starknet" => Ok(Protocol::Starknet),
-            _ => Ok(Protocol::UnknownNetwork),
+            _ => Ok(Protocol::Near),
         }
     }
 }

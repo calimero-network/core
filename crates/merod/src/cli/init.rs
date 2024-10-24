@@ -8,9 +8,9 @@ use calimero_config::{
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    self, ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
+    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    CryptoCredentials, Protocol as ConfigProtocol,
+    Credentials, Protocol as ConfigProtocol,
 };
 use calimero_context_config::client::near;
 use calimero_network::config::{
@@ -214,7 +214,6 @@ impl InitCommand {
                             ]
                             .into_iter()
                             .collect(),
-                            ConfigProtocol::UnknownNetwork => BTreeMap::new(),
                             _ => BTreeMap::new(),
                         },
                     },
