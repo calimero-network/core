@@ -13,7 +13,7 @@ use calimero_context_config::types::{
 };
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
-use calimero_node_primitives::{ExecutionRequest, Finality, ServerSender};
+use calimero_node_primitives::{ExecutionRequest, ServerSender};
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
@@ -210,7 +210,6 @@ impl ContextManager {
                 initialization_params,
                 identity_secret.public_key(),
                 tx,
-                Some(Finality::Local),
             ))
             .await?;
 
