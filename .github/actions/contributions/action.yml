@@ -1,0 +1,33 @@
+name: "Needs Attention Labeler"
+description: "Applies 'needs attention' and other labels to PRs or issues"
+inputs:
+  repo-token:
+    description: "GitHub token with repository permissions"
+    required: true
+  response-required-label:
+    description: "Label to apply when response is required"
+    required: true
+  needs-attention-label:
+    description: "Label to apply when attention is needed"
+    required: true
+outputs:
+  result:
+    description: "Result of the labeling action"
+    value: ${{ steps.needs-attention.outputs.result }}
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Apply Needs Attention Label
+      uses: hramos/needs-attention@v2.0.0
+      with:
+        repo-token: ${{ inputs.repo-token }}
+        response-required-label: ${{ inputs.response-required-label }}
+        needs-attention-label: ${{ inputs.needs-attention-label }}
+      id: needs-attention
+
+    - name: Set output result
+      shell: bash
+      run: echo "result=${{ steps.needs-attention.outputs.result }}" >> $GITHUB_OUTPUT
