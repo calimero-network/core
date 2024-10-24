@@ -6,9 +6,10 @@ set -ex
 cd "$(dirname $0)"
 
 BUILD_SCRIPTS=(
-    "../apps/gen-ext/build.sh"
     "../apps/kv-store/build.sh"
-    "../apps/only-peers/build.sh"
+    # todo! update to use CRDTs
+    # "../apps/gen-ext/build.sh"
+    # "../apps/only-peers/build.sh"
 )
 
 run_script() {

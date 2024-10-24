@@ -283,7 +283,7 @@ pub trait AtomicUnit: Data {}
 /// }
 /// ```
 ///
-pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
+pub trait Collection {
     /// The associated type of any children that the [`Collection`] may have.
     type Child: Data;
 
@@ -313,9 +313,7 @@ pub trait Collection: Clone + Debug + PartialEq + PartialOrd + Send + Sync {
 /// implemented, but for now only the most useful and least likely to be
 /// contentious methods are included, to keep the interface simple and focused.
 ///
-pub trait Data:
-    BorshDeserialize + BorshSerialize + Clone + Debug + PartialEq + PartialOrd + Send + Sync
-{
+pub trait Data: BorshDeserialize + BorshSerialize {
     /// Calculates the Merkle hash of the [`Element`].
     ///
     /// This method calculates the Merkle hash of the [`Data`] for the
@@ -681,7 +679,7 @@ impl Element {
             },
             merkle_hash: [0; 32],
             #[expect(clippy::unwrap_used, reason = "This is expected to be valid")]
-            path: Path::new("::").unwrap(),
+            path: Path::new("::root").unwrap(),
         }
     }
 

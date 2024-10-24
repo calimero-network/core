@@ -113,8 +113,8 @@ mod basics {
         let path = Path::new("::root::node").unwrap();
         let unit = Simple::new(&path);
 
-        assert_eq!(unit.name(), "");
-        assert_eq!(unit.value(), &0);
+        assert_eq!(unit.name, "");
+        assert_eq!(unit.value, 0);
     }
 
     #[test]
@@ -125,34 +125,34 @@ mod basics {
         _ = unit.set_name("Test Name".to_owned());
         _ = unit.set_value(42);
 
-        assert_eq!(unit.name(), "Test Name");
-        assert_eq!(unit.value(), &42);
+        assert_eq!(unit.name, "Test Name");
+        assert_eq!(unit.value, 42);
     }
 
     #[test]
     fn setters__confirm_set() {
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
-        assert_ne!(unit.name(), "Test Name");
-        assert_ne!(unit.value(), &42);
+        assert_ne!(unit.name, "Test Name");
+        assert_ne!(unit.value, 42);
 
         assert!(unit.set_name("Test Name".to_owned()));
         assert!(unit.set_value(42));
-        assert_eq!(unit.name(), "Test Name");
-        assert_eq!(unit.value(), &42);
+        assert_eq!(unit.name, "Test Name");
+        assert_eq!(unit.value, 42);
     }
 
     #[test]
     fn setters__confirm_not_set() {
         let path = Path::new("::root::node").unwrap();
         let mut unit = Simple::new(&path);
-        assert_ne!(unit.name(), "Test Name");
-        assert_ne!(unit.value(), &42);
+        assert_ne!(unit.name, "Test Name");
+        assert_ne!(unit.value, 42);
 
         assert!(unit.set_name("Test Name".to_owned()));
         assert!(unit.set_value(42));
-        assert_eq!(unit.name(), "Test Name");
-        assert_eq!(unit.value(), &42);
+        assert_eq!(unit.name, "Test Name");
+        assert_eq!(unit.value, 42);
         assert!(!unit.set_name("Test Name".to_owned()));
         assert!(!unit.set_value(42));
     }
@@ -198,9 +198,9 @@ mod visibility {
         let serialized = to_vec(&unit).unwrap();
         let deserialized = Private::try_from_slice(&serialized).unwrap();
 
-        assert_eq!(unit.public(), deserialized.public());
-        assert_ne!(unit.private(), deserialized.private());
-        assert_eq!(deserialized.private(), "");
+        assert_eq!(unit.public, deserialized.public);
+        assert_ne!(unit.private, deserialized.private);
+        assert_eq!(deserialized.private, "");
     }
 
     #[test]
@@ -213,7 +213,7 @@ mod visibility {
         let serialized = to_vec(&unit).unwrap();
         let deserialized = Simple::try_from_slice(&serialized).unwrap();
 
-        assert_eq!(unit.name(), deserialized.name());
+        assert_eq!(unit.name, deserialized.name);
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod visibility {
         let serialized = to_vec(&unit).unwrap();
         let deserialized = Skipped::try_from_slice(&serialized).unwrap();
 
-        assert_eq!(unit.included(), deserialized.included());
+        assert_eq!(unit.included, deserialized.included);
         // Skipping fields also skips the getters
         // assert_ne!(unit.skipped(), deserialized.skipped());
         assert_ne!(unit.skipped, deserialized.skipped);
@@ -294,7 +294,7 @@ mod hashing {
 
         let mut hasher = Sha256::new();
         hasher.update(unit.id().as_bytes());
-        hasher.update(&to_vec(&unit.included()).unwrap());
+        hasher.update(&to_vec(&unit.included).unwrap());
         hasher.update(&to_vec(&unit.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();
 
@@ -325,9 +325,9 @@ mod traits {
 
         assert_eq!(unit, deserialized);
         assert_eq!(unit.id(), deserialized.id());
-        assert_eq!(unit.name(), deserialized.name());
+        assert_eq!(unit.name, deserialized.name);
         assert_eq!(unit.path(), deserialized.path());
-        assert_eq!(unit.value(), deserialized.value());
+        assert_eq!(unit.value, deserialized.value);
         assert_eq!(unit.element().id(), deserialized.element().id());
         assert_eq!(unit.element().path(), deserialized.element().path());
         assert_eq!(unit.element().metadata(), deserialized.element().metadata());
