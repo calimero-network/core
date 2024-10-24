@@ -1,13 +1,20 @@
-use std::collections::hash_map::{Entry as HashMapEntry, HashMap};
+use std::collections::BTreeMap;
 
-use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
+use calimero_sdk::types::Error;
 use calimero_sdk::{app, env};
+use calimero_storage::address::Path;
+use calimero_storage::entities::Element;
+use calimero_storage::types::Map;
+use calimero_storage::AtomicUnit;
 
 #[app::state(emits = for<'a> Event<'a>)]
-#[derive(BorshDeserialize, BorshSerialize, Default)]
-#[borsh(crate = "calimero_sdk::borsh")]
+#[derive(AtomicUnit, Clone, Debug, PartialEq, PartialOrd)]
+#[root]
+#[type_id(1)]
 pub struct KvStore {
-    items: HashMap<String, String>,
+    items: Map<String, String>,
+    #[storage]
+    storage: Element,
 }
 
 #[app::event]
@@ -22,70 +29,75 @@ pub enum Event<'a> {
 impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
-        KvStore::default()
+        KvStore {
+            items: Map::new(&Path::new("::items").unwrap()).unwrap(),
+            storage: Element::root(),
+        }
     }
 
-    pub fn set(&mut self, key: String, value: String) {
+    pub fn set(&mut self, key: String, value: String) -> Result<(), Error> {
         env::log(&format!("Setting key: {:?} to value: {:?}", key, value));
 
-        match self.items.entry(key) {
-            HashMapEntry::Occupied(mut entry) => {
-                app::emit!(Event::Updated {
-                    key: entry.key(),
-                    value: &value,
-                });
-                entry.insert(value);
-            }
-            HashMapEntry::Vacant(entry) => {
-                app::emit!(Event::Inserted {
-                    key: entry.key(),
-                    value: &value,
-                });
-                entry.insert(value);
-            }
+        if self.items.get(&key)?.is_some() {
+            app::emit!(Event::Updated {
+                key: &key,
+                value: &value,
+            });
+        } else {
+            app::emit!(Event::Inserted {
+                key: &key,
+                value: &value,
+            });
         }
+
+        self.items.insert(key, value)?;
+
+        Ok(())
     }
 
-    pub fn entries(&self) -> &HashMap<String, String> {
+    pub fn entries(&self) -> Result<BTreeMap<String, String>, Error> {
         env::log("Getting all entries");
 
-        &self.items
+        Ok(self.items.entries()?.collect())
     }
 
-    pub fn get(&self, key: &str) -> Option<&str> {
+    pub fn len(&self) -> Result<usize, Error> {
+        env::log("Getting the number of entries");
+
+        Ok(self.items.len()?)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<String>, Error> {
         env::log(&format!("Getting key: {:?}", key));
 
-        self.items.get(key).map(|v| v.as_str())
+        self.items.get(key).map_err(Into::into)
     }
 
-    pub fn get_unchecked(&self, key: &str) -> &str {
+    pub fn get_unchecked(&self, key: &str) -> Result<String, Error> {
         env::log(&format!("Getting key without checking: {:?}", key));
 
-        match self.items.get(key) {
-            Some(value) => value.as_str(),
-            None => env::panic_str("Key not found."),
-        }
+        Ok(self.items.get(key)?.expect("Key not found."))
     }
 
-    pub fn get_result(&self, key: &str) -> Result<&str, &str> {
+    pub fn get_result(&self, key: &str) -> Result<String, Error> {
         env::log(&format!("Getting key, possibly failing: {:?}", key));
 
-        self.get(key).ok_or("Key not found.")
+        self.get(key)?.ok_or_else(|| Error::msg("Key not found."))
     }
 
-    pub fn remove(&mut self, key: &str) {
+    pub fn remove(&mut self, key: &str) -> Result<Option<String>, Error> {
         env::log(&format!("Removing key: {:?}", key));
 
         app::emit!(Event::Removed { key });
 
-        self.items.remove(key);
+        self.items.remove(key).map_err(Into::into)
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&mut self) -> Result<(), Error> {
         env::log("Clearing all entries");
 
         app::emit!(Event::Cleared);
 
-        self.items.clear();
+        self.items.clear().map_err(Into::into)
     }
 }

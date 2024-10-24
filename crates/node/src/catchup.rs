@@ -1,13 +1,8 @@
-use std::collections::VecDeque;
 use std::io::{Error as StdIoError, ErrorKind as StdIoErrorKind};
 
 use calimero_network::stream::{Message, Stream};
-use calimero_node_primitives::NodeType;
 use calimero_primitives::application::Application;
 use calimero_primitives::context::{Context, ContextId};
-use calimero_primitives::hash::Hash;
-use calimero_primitives::transaction::Transaction;
-use calimero_store::key::ContextTransaction as ContextTransactionKey;
 use eyre::{bail, Result as EyreResult};
 use futures_util::io::BufReader;
 use futures_util::stream::poll_fn;
@@ -24,16 +19,14 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use crate::catchup::blobs::ApplicationBlobChunkSender;
-use crate::catchup::transactions::TransactionsBatchSender;
-use crate::transaction_pool::TransactionPoolEntry;
 use crate::types::{
-    CatchupApplicationBlobChunk, CatchupApplicationBlobRequest, CatchupError, CatchupStreamMessage,
-    CatchupTransactionsBatch, CatchupTransactionsRequest, TransactionStatus, TransactionWithStatus,
+    ActionMessage, CatchupActionsBatch, CatchupApplicationBlobChunk, CatchupApplicationBlobRequest,
+    CatchupError, CatchupStreamMessage, CatchupSyncRequest,
 };
 use crate::Node;
 
+mod actions;
 mod blobs;
-mod transactions;
 
 impl Node {
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) -> EyreResult<()> {
@@ -42,13 +35,11 @@ impl Node {
         };
 
         match from_json_slice(&message?.data)? {
-            CatchupStreamMessage::TransactionsRequest(req) => {
-                self.handle_transaction_catchup(req, stream).await
-            }
+            CatchupStreamMessage::SyncRequest(req) => self.handle_action_catchup(req, stream).await,
             CatchupStreamMessage::ApplicationBlobRequest(req) => {
                 self.handle_blob_catchup(req, stream).await
             }
-            message @ (CatchupStreamMessage::TransactionsBatch(_)
+            message @ (CatchupStreamMessage::ActionsBatch(_)
             | CatchupStreamMessage::ApplicationBlobChunk(_)
             | CatchupStreamMessage::Error(_)) => {
                 bail!("Unexpected message: {:?}", message)
@@ -90,9 +81,9 @@ impl Node {
     }
 
     #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
-    async fn handle_transaction_catchup(
+    async fn handle_action_catchup(
         &self,
-        request: CatchupTransactionsRequest,
+        request: CatchupSyncRequest,
         mut stream: Box<Stream>,
     ) -> EyreResult<()> {
         let Some(context) = self.ctx_manager.get_context(&request.context_id)? else {
@@ -108,110 +99,16 @@ impl Node {
 
         info!(
             request=?request,
-            last_transaction_hash=%context.last_transaction_hash,
-            "Processing transaction catchup request",
+            root_hash=%context.root_hash,
+            "Processing context catchup request",
         );
 
-        let handle = self.store.handle();
+        let _handle = self.store.handle();
 
-        if request.last_executed_transaction_hash != Hash::default()
-            && !handle.has(&ContextTransactionKey::new(
-                request.context_id,
-                request.last_executed_transaction_hash.into(),
-            ))?
-        {
-            let message = to_json_vec(&CatchupStreamMessage::Error(
-                CatchupError::TransactionNotFound {
-                    transaction_hash: request.last_executed_transaction_hash,
-                },
-            ))?;
-            stream.send(Message::new(message)).await?;
-
-            return Ok(());
-        };
-
-        if context.last_transaction_hash == request.last_executed_transaction_hash
-            && self.tx_pool.is_empty()
-        {
-            return Ok(());
+        // TODO: If the root hashes don't match, we need to start a comparison
+        if context.root_hash != request.root_hash {
+            bail!("Root hash mismatch: TODO");
         }
-
-        let mut hashes = VecDeque::new();
-
-        let mut last_transaction_hash = context.last_transaction_hash;
-
-        while last_transaction_hash != Hash::default()
-            && last_transaction_hash != request.last_executed_transaction_hash
-        {
-            let key = ContextTransactionKey::new(request.context_id, last_transaction_hash.into());
-
-            let Some(transaction) = handle.get(&key)? else {
-                error!(
-                    context_id=%request.context_id,
-                    %last_transaction_hash,
-                    "Context transaction not found, our transaction chain might be corrupted"
-                );
-
-                let message =
-                    to_json_vec(&CatchupStreamMessage::Error(CatchupError::InternalError))?;
-                stream.send(Message::new(message)).await?;
-
-                return Ok(());
-            };
-
-            hashes.push_front(last_transaction_hash);
-
-            last_transaction_hash = transaction.prior_hash.into();
-        }
-
-        let mut batch_writer = TransactionsBatchSender::new(request.batch_size, stream);
-
-        for hash in hashes {
-            let key = ContextTransactionKey::new(request.context_id, hash.into());
-            let Some(transaction) = handle.get(&key)? else {
-                error!(
-                    context_id=%request.context_id,
-                    ?hash,
-                    "Context transaction not found after the initial check. This is most likely a BUG!"
-                );
-                batch_writer
-                    .flush_with_error(CatchupError::InternalError)
-                    .await?;
-                return Ok(());
-            };
-
-            batch_writer
-                .send(TransactionWithStatus {
-                    transaction_hash: hash,
-                    transaction: Transaction::new(
-                        request.context_id,
-                        transaction.method.into(),
-                        transaction.payload.into(),
-                        Hash::from(transaction.prior_hash),
-                        transaction.executor_public_key.into(),
-                    ),
-                    status: TransactionStatus::Executed,
-                })
-                .await?;
-        }
-
-        for (hash, TransactionPoolEntry { transaction, .. }) in self.tx_pool.iter() {
-            batch_writer
-                .send(TransactionWithStatus {
-                    transaction_hash: *hash,
-                    transaction: Transaction::new(
-                        request.context_id,
-                        transaction.method.clone(),
-                        transaction.payload.clone(),
-                        transaction.prior_hash,
-                        transaction.executor_public_key,
-                    ),
-                    status: TransactionStatus::Pending,
-                })
-                .await?;
-        }
-
-        batch_writer.flush().await?;
 
         Ok(())
     }
@@ -244,6 +141,11 @@ impl Node {
         info!(%context_id, %peer_id, "Interval triggered catchup successfully finished");
     }
 
+    // TODO: Is this even needed now? Can it be removed? In theory, a sync will
+    // TODO: take place so long as there is a comparison - i.e. it will send
+    // TODO: everything back and forth until everything matches. But, for e.g. a
+    // TODO: first-time sync, that would be slower than just sending everything
+    // TODO: all at once. So... could this be utilised for that?
     pub(crate) async fn perform_catchup(
         &mut self,
         context_id: ContextId,
@@ -265,8 +167,7 @@ impl Node {
                 .await?;
         }
 
-        self.perform_transaction_catchup(chosen_peer, &mut context)
-            .await
+        self.perform_action_catchup(chosen_peer, &mut context).await
     }
 
     async fn perform_blob_catchup(
@@ -354,8 +255,8 @@ impl Node {
                         CatchupStreamMessage::ApplicationBlobChunk(chunk) => {
                             tx.send(chunk).await?;
                         }
-                        message @ (CatchupStreamMessage::TransactionsBatch(_)
-                        | CatchupStreamMessage::TransactionsRequest(_)
+                        message @ (CatchupStreamMessage::ActionsBatch(_)
+                        | CatchupStreamMessage::SyncRequest(_)
                         | CatchupStreamMessage::ApplicationBlobRequest(_)) => {
                             warn!("Ignoring unexpected message: {:?}", message);
                         }
@@ -377,20 +278,19 @@ impl Node {
         handle.await?
     }
 
-    async fn perform_transaction_catchup(
+    async fn perform_action_catchup(
         &mut self,
         chosen_peer: PeerId,
         context: &mut Context,
     ) -> EyreResult<()> {
-        let request = CatchupTransactionsRequest {
+        let request = CatchupSyncRequest {
             context_id: context.id,
-            last_executed_transaction_hash: context.last_transaction_hash,
-            batch_size: self.network_client.catchup_config.batch_size,
+            root_hash: context.root_hash,
         };
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
-        let data = to_json_vec(&CatchupStreamMessage::TransactionsRequest(request))?;
+        let data = to_json_vec(&CatchupStreamMessage::SyncRequest(request))?;
 
         stream.send(Message::new(data)).await?;
 
@@ -403,96 +303,51 @@ impl Node {
             {
                 Ok(message) => match message {
                     Some(message) => match from_json_slice(&message?.data)? {
-                        CatchupStreamMessage::TransactionsBatch(batch) => {
-                            self.apply_transactions_batch(chosen_peer, context, batch)
+                        CatchupStreamMessage::ActionsBatch(batch) => {
+                            self.apply_actions_batch(chosen_peer, context, batch)
                                 .await?;
                         }
                         message @ (CatchupStreamMessage::ApplicationBlobChunk(_)
-                        | CatchupStreamMessage::TransactionsRequest(_)
+                        | CatchupStreamMessage::SyncRequest(_)
                         | CatchupStreamMessage::ApplicationBlobRequest(_)) => {
                             warn!("Ignoring unexpected message: {:?}", message);
                         }
                         CatchupStreamMessage::Error(err) => {
-                            error!(?err, "Received error during transaction catchup");
+                            error!(?err, "Received error during action catchup");
                             bail!(err);
                         }
                     },
                     None => break,
                 },
-                Err(err) => bail!("Failed to await transactions catchup message: {}", err),
+                Err(err) => bail!("Failed to await actions catchup message: {}", err),
             }
         }
 
         Ok(())
     }
 
-    async fn apply_transactions_batch(
+    async fn apply_actions_batch(
         &mut self,
-        chosen_peer: PeerId,
+        // TODO: How should this be used?
+        _chosen_peer: PeerId,
         context: &mut Context,
-        batch: CatchupTransactionsBatch,
+        batch: CatchupActionsBatch,
     ) -> EyreResult<()> {
         info!(
             context_id=%context.id,
-            transactions=%batch.transactions.len(),
-            "Processing catchup transactions batch"
+            actions=%batch.actions.len(),
+            "Processing catchup actions batch"
         );
 
-        for TransactionWithStatus {
-            transaction_hash,
-            transaction,
-            status,
-        } in batch.transactions
+        for ActionMessage {
+            actions,
+            public_key,
+            ..
+        } in batch.actions
         {
-            if context.last_transaction_hash != transaction.prior_hash {
-                bail!(
-                        "Transaction '{}' from the catchup batch doesn't build on last transaction '{}'",
-                        transaction_hash,
-                        context.last_transaction_hash,
-                    );
-            };
-
-            match status {
-                TransactionStatus::Pending => match self.typ {
-                    NodeType::Peer => {
-                        let _ = self.tx_pool.insert(
-                            chosen_peer,
-                            Transaction::new(
-                                context.id,
-                                transaction.method,
-                                transaction.payload,
-                                transaction.prior_hash,
-                                transaction.executor_public_key,
-                            ),
-                            None,
-                        )?;
-                    }
-                    NodeType::Coordinator => {
-                        let _ = self
-                            .validate_pending_transaction(context, transaction, transaction_hash)
-                            .await?;
-
-                        drop(self.tx_pool.remove(&transaction_hash));
-                    }
-                    _ => bail!("Unexpected node type"),
-                },
-                TransactionStatus::Executed => match self.typ {
-                    NodeType::Peer => {
-                        drop(
-                            self.execute_transaction(context, transaction, transaction_hash)
-                                .await?,
-                        );
-
-                        drop(self.tx_pool.remove(&transaction_hash));
-                    }
-                    NodeType::Coordinator => {
-                        self.persist_transaction(context, transaction, transaction_hash)?;
-                    }
-                    _ => bail!("Unexpected node type"),
-                },
+            for action in actions {
+                self.apply_action(context, &action, public_key).await?;
             }
-
-            context.last_transaction_hash = transaction_hash;
         }
 
         Ok(())

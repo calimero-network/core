@@ -8,9 +8,7 @@ mod generic;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
-pub use context::{
-    ContextConfig, ContextIdentity, ContextMeta, ContextState, ContextTransaction, TransactionHash,
-};
+pub use context::{ContextConfig, ContextIdentity, ContextMeta, ContextState};
 pub use generic::GenericData;
 
 pub trait PredefinedEntry: AsKeyParts {

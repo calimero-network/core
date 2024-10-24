@@ -6,6 +6,7 @@ use calimero_store::key::ContextMeta as ContextMetaKey;
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use owo_colors::OwoColorize;
+use tokio::sync::oneshot;
 
 use crate::Node;
 
@@ -46,10 +47,8 @@ impl ContextCommand {
 
         match self.command {
             Commands::Ls => {
-                let ind = ""; // Define the variable `ind` as an empty string or any desired value
-
                 println!(
-                    "{ind} {c1:44} | {c2:44} | Last Transaction",
+                    "{c1:44} | {c2:44} | Root Hash",
                     c1 = "Context ID",
                     c2 = "Application ID",
                 );
@@ -58,11 +57,8 @@ impl ContextCommand {
 
                 for (k, v) in handle.iter::<ContextMetaKey>()?.entries() {
                     let (k, v) = (k?, v?);
-                    let (cx, app_id, last_tx) = (
-                        k.context_id(),
-                        v.application.application_id(),
-                        v.last_transaction_hash,
-                    );
+                    let (cx, app_id, last_tx) =
+                        (k.context_id(), v.application.application_id(), v.root_hash);
                     let entry = format!(
                         "{c1:44} | {c2:44} | {c3}",
                         c1 = cx,
@@ -133,17 +129,30 @@ impl ContextCommand {
                     return Err(eyre::eyre!("Invalid context seed"));
                 };
 
-                let (context_id, identity) = node
-                    .ctx_manager
+                let (tx, rx) = oneshot::channel();
+
+                node.ctx_manager
                     .create_context(
                         context_seed.map(Into::into),
                         application_id,
                         None,
-                        params.unwrap_or_default().into_bytes(),
+                        params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                        tx,
                     )
                     .await?;
 
-                println!("{ind} Created context {context_id} with identity {identity}");
+                let _ignored = tokio::spawn(async move {
+                    let err: eyre::Report = match rx.await {
+                        Ok(Ok((context_id, identity))) => {
+                            println!("{ind} Created context {context_id} with identity {identity}");
+                            return;
+                        }
+                        Ok(Err(err)) => err.into(),
+                        Err(err) => err.into(),
+                    };
+
+                    println!("{ind} Unable to create context: {err:?}");
+                });
             }
             Commands::Invite {
                 context_id,

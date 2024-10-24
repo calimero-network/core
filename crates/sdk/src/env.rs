@@ -1,9 +1,6 @@
 use std::panic::set_hook;
 
-use borsh::{from_slice as from_borsh_slice, to_vec as to_borsh_vec};
-
 use crate::event::AppEvent;
-use crate::state::AppState;
 use crate::sys;
 use crate::sys::{
     log_utf8, panic_utf8, Buffer, BufferMut, Event, Location, PtrSizedInt, RegisterId, ValueReturn,
@@ -13,8 +10,6 @@ use crate::sys::{
 pub mod ext;
 
 const DATA_REGISTER: RegisterId = RegisterId::new(PtrSizedInt::MAX.as_usize() - 1);
-
-const STATE_KEY: &[u8] = b"STATE";
 
 #[track_caller]
 #[inline]
@@ -103,6 +98,10 @@ fn read_register_sized<const N: usize>(register_id: RegisterId) -> Option<[u8; N
 
     let mut buffer = [0; N];
 
+    #[expect(
+        clippy::needless_borrows_for_generic_args,
+        reason = "we don't want to copy the buffer, but write to the same one that's returned"
+    )]
     let succeed: bool = unsafe {
         sys::read_register(register_id, BufferMut::new(&mut buffer))
             .try_into()
@@ -159,6 +158,14 @@ pub fn emit<T: AppEvent>(event: &T) {
     unsafe { sys::emit(Event::new(&kind, &data)) }
 }
 
+pub fn send_action(action: &[u8]) {
+    unsafe { sys::send_action(Buffer::from(action)) }
+}
+
+pub fn commit_root(action: &[u8; 32]) {
+    unsafe { sys::commit_root(Buffer::from(&action[..])) }
+}
+
 #[inline]
 pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
     unsafe { sys::storage_read(Buffer::from(key), DATA_REGISTER) }
@@ -167,13 +174,10 @@ pub fn storage_read(key: &[u8]) -> Option<Vec<u8>> {
         .then(|| read_register(DATA_REGISTER).unwrap_or_else(expected_register))
 }
 
-#[must_use]
-pub fn state_read<T: AppState>() -> Option<T> {
-    let data = storage_read(STATE_KEY)?;
-    match from_borsh_slice(&data) {
-        Ok(state) => Some(state),
-        Err(err) => panic_str(&format!("Cannot deserialize app state: {err:?}")),
-    }
+#[inline]
+pub fn storage_remove(key: &[u8]) -> bool {
+    unsafe { sys::storage_remove(Buffer::from(key), DATA_REGISTER).try_into() }
+        .unwrap_or_else(expected_boolean)
 }
 
 #[inline]
@@ -182,10 +186,25 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> bool {
         .unwrap_or_else(expected_boolean)
 }
 
-pub fn state_write<T: AppState>(state: &T) {
-    let data = match to_borsh_vec(state) {
-        Ok(data) => data,
-        Err(err) => panic_str(&format!("Cannot serialize app state: {err:?}")),
-    };
-    let _ = storage_write(STATE_KEY, &data);
+/// Fill the buffer with random bytes.
+#[inline]
+pub fn random_bytes(buf: &mut [u8]) {
+    unsafe { sys::random_bytes(BufferMut::new(buf)) }
+}
+
+/// Gets the current time.
+#[inline]
+#[must_use]
+pub fn time_now() -> u64 {
+    let mut bytes = [0; 8];
+
+    #[expect(
+        clippy::needless_borrows_for_generic_args,
+        reason = "we don't want to copy the buffer, but write to the same one that's returned"
+    )]
+    unsafe {
+        sys::time_now(BufferMut::new(&mut bytes));
+    }
+
+    u64::from_le_bytes(bytes)
 }
