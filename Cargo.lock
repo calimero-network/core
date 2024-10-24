@@ -1168,14 +1168,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-test-utils"
-version = "0.1.0"
-dependencies = [
- "calimero-store",
- "tempfile",
-]
-
-[[package]]
 name = "camino"
 version = "1.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
