@@ -1,0 +1,28 @@
+name: Configure Issue and PR labels
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  applyNeedsAttentionLabel:
+    name: Apply Needs Attention
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # for actions/checkout to fetch code
+      issues: write # for hramos/needs-attention to label issues
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Apply Needs Attention Label
+        id: needs-attention
+        uses: ./.github/actions/contributions
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          response-required-label: "waiting-for-author-feedback"
+          needs-attention-label: "needs-team-review"
+      - name: Result
+        run: echo '${{ steps.needs-attention.outputs.result }}'
