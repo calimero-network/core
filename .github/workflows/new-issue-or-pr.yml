@@ -1,0 +1,151 @@
+name: Label Issues and PRs on Open/Reopen
+
+on:
+  issues:
+    types: [opened, reopened] # Trigger when an issue is opened or reopened
+  pull_request_target:
+    types: [opened, reopened]
+    branches:
+      - master # Trigger when PRs are opened or reopened targeting the master branch
+
+jobs:
+  labelIssuePR:
+    name: Apply Label to Issues and PRs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Add Label to Issue or PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Check if it's an issue or a PR
+            if (context.eventName === 'issues') {
+              // Add label to issue
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: ['needs-team-review']
+              });
+            } else if (context.eventName === 'pull_request') {
+              // Add label to PR
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: ['needs-team-review']
+              });
+            }
+          result-encoding: string
+        id: result
+      - name: Get result
+        run: echo "${{steps.result.outputs.result}}"
+
+  determine-contribution-type:
+    name: Apply Label to Issues and PRs
+    runs-on: ubuntu-latest
+    outputs:
+      is_external: ${{ steps.determine_if_external.outputs.is_external }}
+      contribution_author: ${{ steps.get_author.outputs.result }}
+
+    steps:
+      - name: Get Author Information
+        id: get_author
+        uses: actions/github-script@v7
+
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const authorLogin = context.payload.pull_request ? context.payload.pull_request.user.login : context.payload.issue.user.login;
+            return authorLogin;
+
+      - name: Get Organization Members
+        id: get_org_members
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const org = context.repo.owner; // Organization name
+
+            let allMembers = [];
+            let page = 1;
+
+            while (true) {
+              const membersPage = await github.rest.orgs.listMembers({
+                org: org,
+                page: page,
+                per_page: 100
+              });
+
+              allMembers = allMembers.concat(membersPage.data);
+
+              if (membersPage.data.length < 100) {
+                break; // No more pages to fetch
+              }
+
+              page++;
+            }
+
+            return allMembers.map(member => member.login);
+
+      - name: Determine if Author is External
+        id: determine_if_external
+        run: |
+          echo "Author: ${{ steps.get_author.outputs.result }}"
+          echo "Organization Members: ${{ steps.get_org_members.outputs.result }}"
+
+          AUTHOR="${{ steps.get_author.outputs.result }}"
+          ORG_MEMBERS="${{ steps.get_org_members.outputs.result }}"
+
+          if echo "$ORG_MEMBERS" | grep -q "$AUTHOR"; then
+            echo "The author $AUTHOR is a member of the organization.";
+            echo "is_external=false" >> $GITHUB_OUTPUT
+          else
+            echo "The author $AUTHOR is an external contributor.";
+            echo "is_external=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Add External Label if Necessary
+        if: steps.determine_if_external.outputs.is_external == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issueOrPr = context.payload.issue || context.payload.pull_request;
+            const issueNumber = issueOrPr.number; // PR number for PRs and issue number for issues
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            await github.rest.issues.addLabels({
+              owner: owner,
+              repo: repo,
+              issue_number: issueNumber,
+              labels: ['external']
+            });
+
+  notify-slack-on-external-contribution:
+    runs-on: ubuntu-latest
+    needs: [determine-contribution-type]
+    if: needs.determine-contribution-type.outputs.is_external == 'true'
+    steps:
+      - name: Determine Contribution Type
+        id: contribution_type
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request_target" ]]; then
+            echo "contribution_type=Pull Request" >> $GITHUB_OUTPUT
+          else
+            echo "contribution_type=Issue" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify external contribution
+        uses: "ravsamhq/notify-slack-action@2.5.0"
+        with:
+          status: failure
+          notification_title: "New external contribution in <${{ github.server_url }}/${{ github.repository }}/${{ github.ref_name }}|${{ github.repository }}>"
+          message_format: "*${{ steps.contribution_type.outputs.contribution_type }}* contribution by *${{ needs.determine-contribution-type.outputs.contribution_author }}*: <${{ github.event.pull_request.html_url || github.event.issue.html_url }}|Open contribution>"
+          footer: "Linked Repo <${{ github.server_url }}/${{ github.repository }}|${{ github.repository }}> | <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View trigger>"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.EXTERNAL_CONTRIBUTION_SLACK }}
