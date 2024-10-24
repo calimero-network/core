@@ -113,7 +113,10 @@ where
 }
 
 impl<T: ReprBytes> ReprBytes for Repr<T> {
-    type EncodeBytes<'a> = T::EncodeBytes<'a> where T: 'a;
+    type EncodeBytes<'a>
+        = T::EncodeBytes<'a>
+    where
+        T: 'a;
     type DecodeBytes = T::DecodeBytes;
 
     type Error = T::Error;
@@ -186,7 +189,10 @@ impl<T> ReprBytes for T
 where
     T: DynSizedByteSlice,
 {
-    type EncodeBytes<'b> = &'b [u8] where T: 'b;
+    type EncodeBytes<'b>
+        = &'b [u8]
+    where
+        T: 'b;
     type DecodeBytes = Vec<u8>;
 
     type Error = Infallible;

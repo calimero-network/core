@@ -669,6 +669,7 @@ impl Element {
 
     /// Constructor for the root [`Element`].
     #[must_use]
+    #[expect(clippy::missing_panics_doc, reason = "This is expected to be valid")]
     pub fn root() -> Self {
         let timestamp = time_now();
         Self {
@@ -679,6 +680,7 @@ impl Element {
                 updated_at: timestamp,
             },
             merkle_hash: [0; 32],
+            #[expect(clippy::unwrap_used, reason = "This is expected to be valid")]
             path: Path::new("::").unwrap(),
         }
     }
