@@ -64,7 +64,7 @@ impl Id {
 
     /// Root ID which is set to all zeroes by default.
     #[must_use]
-    pub fn root() -> Self {
+    pub const fn root() -> Self {
         Self(Uuid::nil())
     }
 }
