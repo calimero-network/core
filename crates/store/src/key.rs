@@ -76,14 +76,16 @@ impl<T: KeyComponents> Key<T> {
         self.as_bytes().into()
     }
 
-    pub(crate) fn try_from_slice(slice: &Slice<'_>) -> Option<Self> {
-        let bytes = slice.as_ref();
+    pub const fn len() -> usize {
+        GenericArray::<u8, T::LEN>::len()
+    }
 
-        (bytes.len() == GenericArray::<u8, T::LEN>::len()).then_some(())?;
+    pub fn try_from_slice(slice: &[u8]) -> Option<Self> {
+        (slice.len() == Key::<T>::len()).then_some(())?;
 
         let mut key = GenericArray::default();
 
-        key.copy_from_slice(bytes);
+        key.copy_from_slice(slice);
 
         Some(Self(key))
     }

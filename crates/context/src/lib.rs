@@ -22,8 +22,9 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
-    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
+    ContextMeta as ContextMetaKey, ContextState as ContextStateKey, FromKeyParts, Key,
 };
+use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::types::{
     ApplicationMeta as ApplicationMetaValue, ContextConfig as ContextConfigValue,
     ContextIdentity as ContextIdentityValue, ContextMeta as ContextMetaValue,
@@ -439,69 +440,103 @@ impl ContextManager {
 
         let key = ContextMetaKey::new(*context_id);
 
+        // todo! perhaps we shouldn't bother checking?
         if !handle.has(&key)? {
             return Ok(false);
         }
 
         handle.delete(&key)?;
-
         handle.delete(&ContextConfigKey::new(*context_id))?;
 
-        {
-            let mut keys = vec![];
-
-            let mut iter = handle.iter::<ContextIdentityKey>()?;
-
-            let first = iter
-                .seek(ContextIdentityKey::new(*context_id, [0; 32].into()))
-                .transpose();
-
-            for k in first.into_iter().chain(iter.keys()) {
-                let k = k?;
-
-                if k.context_id() != *context_id {
-                    break;
-                }
-
-                keys.push(k);
-            }
-
-            drop(iter);
-
-            for k in keys {
-                handle.delete(&k)?;
-            }
-        }
-
-        {
-            let mut keys = vec![];
-
-            let mut iter = handle.iter::<ContextStateKey>()?;
-
-            let first = iter
-                .seek(ContextStateKey::new(*context_id, [0; 32]))
-                .transpose();
-
-            for k in first.into_iter().chain(iter.keys()) {
-                let k = k?;
-
-                if k.context_id() != *context_id {
-                    break;
-                }
-
-                keys.push(k);
-            }
-
-            drop(iter);
-
-            for k in keys {
-                handle.delete(&k)?;
-            }
-        }
+        self.delete_context_scoped::<ContextIdentityKey, 32>(context_id, [0; 32], None)?;
+        self.delete_context_scoped::<ContextStateKey, 32>(context_id, [0; 32], None)?;
 
         self.unsubscribe(context_id).await?;
 
         Ok(true)
+    }
+
+    #[expect(clippy::unwrap_in_result, reason = "pre-validated")]
+    fn delete_context_scoped<K, const N: usize>(
+        &self,
+        context_id: &ContextId,
+        offset: [u8; N],
+        end: Option<[u8; N]>,
+    ) -> EyreResult<()>
+    where
+        K: FromKeyParts<Error: std::error::Error + Send + Sync>,
+    {
+        let expected_length = Key::<K::Components>::len();
+
+        if context_id.len() + N != expected_length {
+            bail!(
+                "key length mismatch, expected: {}, got: {}",
+                Key::<K::Components>::len(),
+                N
+            )
+        }
+
+        let mut keys = vec![];
+
+        let mut key = context_id.to_vec();
+
+        let end = end
+            .map(|end| {
+                key.extend_from_slice(&end);
+
+                let end = Key::<K::Components>::try_from_slice(&key).expect("length pre-matched");
+
+                K::try_from_parts(end)
+            })
+            .transpose()?;
+
+        // fixme! store.handle() is prolematic here for lifetime reasons
+        let mut store = self.store.clone();
+
+        'outer: loop {
+            key.truncate(context_id.len());
+            key.extend_from_slice(&offset);
+
+            let offset = Key::<K::Components>::try_from_slice(&key).expect("length pre-matched");
+
+            let mut iter = store.iter()?;
+
+            let first = iter.seek(K::try_from_parts(offset)?).transpose();
+
+            if first.is_none() {
+                break;
+            }
+
+            for k in first.into_iter().chain(iter.keys()) {
+                let k = k?;
+
+                let key = k.as_key();
+
+                if let Some(end) = end {
+                    if key == end.as_key() {
+                        break 'outer;
+                    }
+                }
+
+                if !key.as_bytes().starts_with(&**context_id) {
+                    break 'outer;
+                }
+
+                keys.push(k);
+
+                if keys.len() == 100 {
+                    break;
+                }
+            }
+
+            drop(iter);
+
+            for k in keys.drain(..) {
+                store.delete(&k)?;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn get_contexts_ids(&self, start: Option<ContextId>) -> EyreResult<Vec<ContextId>> {
