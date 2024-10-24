@@ -6,8 +6,8 @@ set -ex
 cd "$(dirname $0)"
 
 BUILD_SCRIPTS=(
+    "../apps/kv-store/build.sh"
     # todo! update to use CRDTs
-    # "../apps/kv-store/build.sh"
     # "../apps/gen-ext/build.sh"
     # "../apps/only-peers/build.sh"
 )
