@@ -24,6 +24,7 @@ pub struct Credentials {
 
 mod serde_creds {
     use core::str::FromStr;
+
     use serde::{Deserialize, Serialize};
     use starknet_crypto::Felt;
     use starknet_types_core::felt::FromStrError;
