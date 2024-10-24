@@ -18,9 +18,9 @@ impl TransactionsCommand {
     pub async fn run(self, node: &Node) -> Result<()> {
         let handle = node.store.handle();
         let mut iter = handle.iter::<ContextTransactionKey>()?;
+        let context_id = ContextId::from_str(&self.context_id)?;
 
         let first = 'first: {
-            let context_id = ContextId::from_str(&self.context_id)?;
             let Some(k) = iter
                 .seek(ContextTransactionKey::new(context_id, [0u8; 32]))
                 .transpose()
@@ -35,6 +35,11 @@ impl TransactionsCommand {
 
         for (k, v) in first.into_iter().chain(iter.entries()) {
             let (k, v) = (k?, v?);
+
+            if k.context_id() != context_id {
+                break;
+            }
+
             let entry = format!(
                 "{:44} | {}",
                 Hash::from(k.transaction_id()),
