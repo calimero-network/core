@@ -68,6 +68,9 @@ pub mod index;
 pub mod integration;
 pub mod interface;
 pub mod store;
+pub mod types;
+
+pub use calimero_storage_macros::{AtomicUnit, Collection};
 
 /// Re-exported types, mostly for use in macros (for convenience).
 pub mod exports {
@@ -82,5 +85,5 @@ pub mod tests {
 
 #[cfg(test)]
 mod doc_tests_package_usage {
-    use {calimero_sdk as _, calimero_storage_macros as _};
+    use calimero_sdk as _;
 }

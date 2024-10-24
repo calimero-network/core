@@ -10,4 +10,6 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+thiserror.workspace = true
 calimero-sdk = { path = "../../crates/sdk" }
+calimero-storage = { path = "../../crates/storage" }

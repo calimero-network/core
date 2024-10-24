@@ -3658,6 +3658,8 @@ name = "kv-store"
 version = "0.1.0"
 dependencies = [
  "calimero-sdk",
+ "calimero-storage",
+ "thiserror",
 ]
 
 [[package]]
