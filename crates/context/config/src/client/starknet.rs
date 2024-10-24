@@ -173,8 +173,14 @@ impl Transport for StarknetTransport<'_> {
         let contract_id = request.contract_id.as_ref();
 
         match request.operation {
-            Operation::Read { method } => network.query(contract_id, &method, payload).await,
-            Operation::Write { .. } => Ok(vec![]),
+            Operation::Read { method } => {
+                let response = network.query(contract_id, &method, payload).await?;
+                Ok(response)
+            }
+            Operation::Write { method } => {
+                let response = network.mutate(contract_id, &method, payload).await?;
+                Ok(response)
+            }
         }
     }
 }
@@ -257,7 +263,7 @@ impl Network {
         contract_id: &str,
         method: &str,
         args: Vec<u8>,
-    ) -> Result<u8, StarknetError> {
+    ) -> Result<Vec<u8>, StarknetError> {
         let sender_address: Felt = self.account_id;
         let secret_key: Felt = self.secret_key;
         let nonce =
@@ -311,7 +317,7 @@ impl Network {
                 operation: ErrorOperation::Mutate,
             })?;
 
-        let transaction_hash: u8 = response.transaction_hash.to_bytes_be()[0];
+        let transaction_hash: Vec<u8> = vec![response.transaction_hash.to_bytes_be()[0]];
         Ok(transaction_hash)
     }
 
