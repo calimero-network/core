@@ -9,6 +9,8 @@ use thiserror::Error as ThisError;
 use wasmer::{ExportError, InstantiationError, LinkError, RuntimeError};
 use wasmer_types::{CompileError, TrapCode};
 
+pub use crate::store::StorageError;
+
 #[derive(Debug, ThisError)]
 #[non_exhaustive]
 pub enum VMRuntimeError {
@@ -18,10 +20,6 @@ pub enum VMRuntimeError {
     #[error(transparent)]
     HostError(HostError),
 }
-
-#[derive(Copy, Clone, Debug, ThisError)]
-#[non_exhaustive]
-pub enum StorageError {}
 
 #[derive(Debug, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
@@ -90,8 +88,6 @@ pub enum HostError {
     DeserializationError,
     #[error("integer overflow")]
     IntegerOverflow,
-    #[error("key length overflow")]
-    KeyLengthOverflow,
     #[error("value length overflow")]
     ValueLengthOverflow,
     #[error("logs overflow")]

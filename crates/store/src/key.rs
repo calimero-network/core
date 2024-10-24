@@ -1,6 +1,7 @@
 use core::cmp::Ordering;
 use core::fmt::{Debug, Formatter};
 use core::{fmt, ptr};
+use std::hash::{Hash, Hasher};
 #[cfg(feature = "borsh")]
 use std::io::{Read, Result as IoResult, Write};
 
@@ -66,6 +67,15 @@ where
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl<T: KeyComponents> Hash for Key<T>
+where
+    GenericArray<u8, T::LEN>: Hash,
+{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
     }
 }
 
