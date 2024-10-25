@@ -188,7 +188,7 @@ async fn handle_node_events(
         );
 
         let event = match event {
-            NodeEvent::Application(event)
+            NodeEvent::Context(event)
                 if {
                     connection_state
                         .inner
@@ -198,9 +198,9 @@ async fn handle_node_events(
                         .contains(&event.context_id)
                 } =>
             {
-                NodeEvent::Application(event)
+                NodeEvent::Context(event)
             }
-            NodeEvent::Application(_) => continue,
+            NodeEvent::Context(_) => continue,
             _ => unreachable!("Unexpected event type"),
         };
 

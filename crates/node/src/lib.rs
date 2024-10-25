@@ -18,7 +18,7 @@ use calimero_network::types::{NetworkEvent, PeerId};
 use calimero_node_primitives::{CallError, ExecutionRequest};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ApplicationEvent, ApplicationEventPayload, NodeEvent, OutcomeEvent, OutcomeEventPayload,
+    ContextEvent, ContextEventPayload, NodeEvent, OutcomeEvent, OutcomeEventPayload,
     StateMutationPayload,
 };
 use calimero_primitives::identity::PublicKey;
@@ -573,15 +573,12 @@ impl Node {
 
                 context.root_hash = root_hash.into();
 
-                drop(
-                    self.node_events
-                        .send(NodeEvent::Application(ApplicationEvent::new(
-                            context.id,
-                            ApplicationEventPayload::StateMutation(StateMutationPayload::new(
-                                context.root_hash,
-                            )),
-                        ))),
-                );
+                drop(self.node_events.send(NodeEvent::Context(ContextEvent::new(
+                    context.id,
+                    ContextEventPayload::StateMutation(StateMutationPayload::new(
+                        context.root_hash,
+                    )),
+                ))));
 
                 self.ctx_manager.save_context(context)?;
             }
@@ -591,17 +588,16 @@ impl Node {
             }
 
             drop(
-                self.node_events
-                    .send(NodeEvent::Application(ApplicationEvent::new(
-                        context.id,
-                        ApplicationEventPayload::OutcomeEvent(OutcomeEventPayload::new(
-                            outcome
-                                .events
-                                .iter()
-                                .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
-                                .collect(),
-                        )),
-                    ))),
+                self.node_events.send(NodeEvent::Context(ContextEvent::new(
+                    context.id,
+                    ContextEventPayload::OutcomeEvent(OutcomeEventPayload::new(
+                        outcome
+                            .events
+                            .iter()
+                            .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
+                            .collect(),
+                    )),
+                ))),
             );
         }
 

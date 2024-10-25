@@ -7,21 +7,21 @@ use crate::hash::Hash;
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum NodeEvent {
-    Application(ApplicationEvent),
+    Context(ContextEvent),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct ApplicationEvent {
+pub struct ContextEvent {
     pub context_id: ContextId,
     #[serde(flatten)]
-    pub payload: ApplicationEventPayload,
+    pub payload: ContextEventPayload,
 }
 
-impl ApplicationEvent {
+impl ContextEvent {
     #[must_use]
-    pub const fn new(context_id: ContextId, payload: ApplicationEventPayload) -> Self {
+    pub const fn new(context_id: ContextId, payload: ContextEventPayload) -> Self {
         Self {
             context_id,
             payload,
@@ -33,7 +33,7 @@ impl ApplicationEvent {
 #[serde(tag = "type", content = "data", rename_all = "PascalCase")]
 #[non_exhaustive]
 #[expect(variant_size_differences, reason = "fine for now")]
-pub enum ApplicationEventPayload {
+pub enum ContextEventPayload {
     StateMutation(StateMutationPayload),
     OutcomeEvent(OutcomeEventPayload),
 }

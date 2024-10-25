@@ -16,7 +16,7 @@ export type NodeEvent = ApplicationEvent;
 
 export interface ApplicationEvent {
   context_id: ContextId;
-  type: 'TransactionExecuted' | 'PeerJoined';
+  type: 'TransactionExecuted';
   data: OutcomeEvents;
 }
 
