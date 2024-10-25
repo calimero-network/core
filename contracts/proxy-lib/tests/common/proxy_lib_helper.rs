@@ -4,7 +4,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use eyre::Result;
 use near_workspaces::result::ViewResultDetails;
 use near_workspaces::{network::Sandbox, result::ExecutionFinalResult, Account, Contract, Worker};
-use proxy_lib::{ConfirmationRequestWithSigner, Proposal, ProposalId, ProposalWithSigner};
+use proxy_lib::{ConfirmationRequestWithSigner, Proposal, ProposalAction, ProposalId};
 use serde_json::json;
 
 use super::deploy_contract;
@@ -40,35 +40,35 @@ impl ProxyContractHelper {
             .await
     }
 
+    pub fn create_proposal(
+        &self,
+        author: &SigningKey,
+        receiver: &Account,
+        actions: Vec<ProposalAction>,
+    ) -> Result<Signed<Proposal>> {
+        let proposal = Proposal {
+            receiver_id: receiver.id().clone(),
+            author_id: author.verifying_key().to_bytes().rt().expect("Invalid signer"),
+            actions
+        };
+        let signed = Signed::new(&{proposal}, |p| author.sign(p))?;
+        Ok(signed)
+    }
+
     pub async fn create_and_approve_proposal(
         &self,
         caller: &Account,
-        signer: &SigningKey,
-        proposal: &Proposal,
-    ) -> Result<ExecutionFinalResult, near_workspaces::error::Error> {
-        let signer_id = signer
-            .verifying_key()
-            .to_bytes()
-            .rt()
-            .expect("Invalid signer");
-        let args = Signed::new(
-            &{
-                ProposalWithSigner {
-                    signer_id,
-                    proposal: proposal.clone(),
-                }
-            },
-            |p| signer.sign(p),
-        )
-        .expect("Failed to sign proposal");
-        caller
+        proposal: &Signed<Proposal>,
+    ) -> Result<ExecutionFinalResult> {
+        let call = caller
             .call(self.proxy_contract.id(), "create_and_approve_proposal")
             .args_json(json!({
-                "proposal": args
+                "proposal": proposal
             }))
             .max_gas()
             .transact()
-            .await
+            .await;
+        Ok(call?)
     }
 
     pub async fn approve_proposal(

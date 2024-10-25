@@ -1,7 +1,7 @@
 use core::str;
 use std::collections::HashSet;
 
-use calimero_context_config::repr::Repr;
+use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
 use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::store::IterableMap;
@@ -26,9 +26,9 @@ pub struct ProxyContract {
     pub context_config_account_id: AccountId,
     pub num_approvals: u32,
     pub proposal_nonce: ProposalId,
-    pub proposals: IterableMap<ProposalId, ProposalWithSigner>,
+    pub proposals: IterableMap<ProposalId, Proposal>,
     pub approvals: IterableMap<ProposalId, HashSet<Repr<SignerId>>>,
-    pub num_proposals_pk: IterableMap<Repr<SignerId>, u32>,
+    pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
 }
 
@@ -41,12 +41,6 @@ pub struct FunctionCallPermission {
 }
 
 // An internal request wrapped with the signer_pk and added timestamp to determine num_requests_pk and prevent against malicious key holder gas attacks
-#[derive(Clone, PartialEq, Debug)]
-#[near(serializers = [json, borsh])]
-pub struct ProposalWithSigner {
-    pub proposal: Proposal,
-    pub signer_id: Repr<SignerId>,
-}
 
 // An internal request wrapped with the signer_pk and added timestamp to determine num_requests_pk and prevent against malicious key holder gas attacks
 #[derive(Clone, PartialEq)]
@@ -74,6 +68,7 @@ pub enum ProposalAction {
 #[near(serializers = [json, borsh])]
 pub struct Proposal {
     pub receiver_id: AccountId,
+    pub author_id: Repr<SignerId>,
     pub actions: Vec<ProposalAction>,
 }
 
@@ -94,21 +89,19 @@ impl ProxyContract {
         }
     }
 
-    pub fn create_proposal(&mut self, proposal: Signed<ProposalWithSigner>) -> ProposalId {
+    pub fn create_proposal(&mut self, proposal: Signed<Proposal>) -> ProposalId {
         // Verify the signature corresponds to the signer_id
-        let proposal = proposal
-            .parse(|i| *i.signer_id)
-            .expect("failed to parse input");
+        let proposal = proposal.parse(|i| *i.author_id).expect("failed to parse input");
 
-        let singer_id = &proposal.signer_id;
+        let author_id = proposal.author_id.rt().expect("Invalid signer");
 
-        let num_proposals = self.num_proposals_pk.get(singer_id).unwrap_or(&0) + 1;
+        let num_proposals = self.num_proposals_pk.get(&author_id).unwrap_or(&0) + 1;
         assert!(
             num_proposals <= self.active_proposals_limit,
             "Account has too many active proposals. Confirm or delete some."
         );
         self.num_proposals_pk
-            .insert(singer_id.clone(), num_proposals);
+            .insert(*proposal.author_id, num_proposals);
 
         self.proposals.insert(self.proposal_nonce, proposal.clone());
         self.approvals.insert(self.proposal_nonce, HashSet::new());
@@ -116,13 +109,12 @@ impl ProxyContract {
         self.proposal_nonce - 1
     }
 
-    pub fn create_and_approve_proposal(&mut self, proposal: Signed<ProposalWithSigner>) -> Promise {
+    pub fn create_and_approve_proposal(&mut self, proposal: Signed<Proposal>) -> Promise {
         let proposal_id = self.create_proposal(proposal.clone());
-        let proposal = proposal
-            .parse(|i| *i.signer_id)
-            .expect("failed to parse input");
+        let proposal = proposal.parse(|i| *i.author_id).expect("failed to parse input");
+
         log!("Starting approval...");
-        return self.approve_by_member(proposal.signer_id, proposal_id);
+        return self.approve_by_member(proposal.author_id, proposal_id);
     }
 
     pub fn approve(&mut self, request: Signed<ConfirmationRequestWithSigner>) -> Promise {
@@ -155,7 +147,7 @@ impl ProxyContract {
             )
     }
 
-    pub fn requests(&self, offset: usize, length: usize) -> Vec<(&u32, &ProposalWithSigner)> {
+    pub fn requests(&self, offset: usize, length: usize) -> Vec<(&u32, &Proposal)> {
         let mut requests = Vec::with_capacity(length);
         for request in self.proposals.iter().skip(offset).take(length) {
             requests.push(request);

@@ -54,20 +54,43 @@ async fn test_create_proposal() -> Result<()> {
     let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal = Proposal {
-        actions: vec![],
-        receiver_id: config_helper.config_contract.id().clone(),
-    };
+    let proposal = proxy_helper.create_proposal(&alice_sk, &config_helper.config_contract.as_account(), vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
+        .create_and_approve_proposal(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
-
+    
     assert_eq!(res.proposal_id, 0);
     assert_eq!(res.num_approvals, 1);
 
+    Ok(())
+}
+
+
+#[tokio::test]
+async fn test_create_proposal_by_non_member() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    // Bob is not a member of the context
+    let bob_sk: SigningKey = common::generate_keypair()?;
+
+    let proposal: calimero_context_config::types::Signed<Proposal> = proxy_helper.create_proposal(&bob_sk, &config_helper.config_contract.as_account(), vec![])?;
+
+    let res = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &proposal)
+        .await?
+        .into_result();
+
+    let error = res.expect_err("Expected an error from the contract");
+    assert!(error.to_string().contains("Error: Is not a member"));
+    
+    let view_proposal: ProposalWithApprovals = 
+        proxy_helper.view_proposal_confirmations(&relayer_account, &0).await?.json()?;
+    assert_eq!(view_proposal.num_approvals, 0);
     Ok(())
 }
 
@@ -78,21 +101,21 @@ async fn test_create_multiple_proposals() -> Result<()> {
     let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal = Proposal {
-        actions: vec![],
-        receiver_id: config_helper.config_contract.id().clone(),
-    };
+    let proposal: calimero_context_config::types::Signed<Proposal> =
+        proxy_helper.create_proposal(&alice_sk, &config_helper.config_contract.as_account(), vec![])?;
+
 
     let _res = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
+        .create_and_approve_proposal(&relayer_account, &proposal)
         .await?
         .into_result();
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
+        .create_and_approve_proposal(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
+
     assert_eq!(res.proposal_id, 1);
     assert_eq!(res.num_approvals, 1);
 
@@ -113,13 +136,10 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
         .await?
         .into_result()?;
 
-    let proposal = Proposal {
-        actions: vec![],
-        receiver_id: config_helper.config_contract.id().clone(),
-    };
+    let proposal: calimero_context_config::types::Signed<Proposal> = proxy_helper.create_proposal(&alice_sk, &config_helper.config_contract.as_account(), vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
+        .create_and_approve_proposal(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
@@ -136,7 +156,6 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
     Ok(())
 }
 
-
 #[tokio::test]
 async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
@@ -147,13 +166,11 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
 
-    let proposal = Proposal {
-        actions: vec![],
-        receiver_id: config_helper.config_contract.id().clone(),
-    };
+    let proposal: calimero_context_config::types::Signed<Proposal> =
+        proxy_helper.create_proposal(&alice_sk, &config_helper.config_contract.as_account(), vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
+        .create_and_approve_proposal(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
