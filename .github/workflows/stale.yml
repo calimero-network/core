@@ -2,7 +2,7 @@ name: Close Stale Issues & Pull Requests
 
 on:
   schedule:
-    - cron: "* 14 * * *" # Run every day at 2PM
+    - cron: "0 14 * * *" # Run every day at 2PM
   workflow_dispatch:
 
 permissions:
