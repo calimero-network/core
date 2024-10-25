@@ -1,236 +1,178 @@
-use calimero_context_config::{
-    repr::{Repr, ReprTransmute},
-    types::{Application, ContextId, ContextIdentity, Signed},
-    ContextRequest, ContextRequestKind, Request, RequestKind
-};
-use proxy_lib::{MultiSigRequest, MultiSigRequestAction, MultiSigRequestWithSigner, RequestId};
-use ed25519_dalek::{Signer, SigningKey};
-use near_workspaces::{network::Sandbox, types::NearToken, Account, Contract, Worker};
-use rand::Rng;
-use serde_json::json;
+use calimero_context_config::repr::ReprTransmute;
+use config_helper::ConfigContractHelper;
+use ed25519_dalek::SigningKey;
 use eyre::Result;
+use near_workspaces::{network::Sandbox, Account, Worker};
+use proxy_lib::{Proposal, ProposalWithApprovals};
+use proxy_lib_helper::ProxyContractHelper;
 
-const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";
-const CONTEXT_CONFIG_WASM: &str = "../context-config/res/calimero_context_config_near.wasm";
+mod config_helper;
+mod proxy_lib_helper;
+mod test_utils;
 
-#[tokio::test]
-async fn test_fetch_members() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
+async fn setup_test(
+    worker: &Worker<Sandbox>,
+) -> Result<(
+    ConfigContractHelper,
+    ProxyContractHelper,
+    Account,
+    SigningKey,
+    SigningKey,
+)> {
+    let config_helper = ConfigContractHelper::new(&worker).await?;
+    let proxy_helper =
+        ProxyContractHelper::new(&worker, config_helper.clone().config_contract).await?;
 
-    // Deploy contracts
-    let proxy_contract = deploy_contract(&worker, PROXY_CONTRACT_WASM).await?;
-    let context_config_contract = deploy_contract(&worker, CONTEXT_CONFIG_WASM).await?;
+    let relayer_account = test_utils::create_account_with_balance(&worker, "account", 10).await?;
+    // This account is only used to deploy the proxy contract
+    let developer_account = test_utils::create_account_with_balance(&worker, "alice", 10).await?;
 
-    // Create alice account and node1 subaccount
-    let alice = create_account_with_balance(&worker, "alice", 30).await?;
-    let node1 = create_subaccount(&worker, "node1").await?;
+    let context_sk = test_utils::generate_keypair()?;
+    let alice_sk: SigningKey = test_utils::generate_keypair()?;
 
-    // Generate cryptographic identities
-    let (alice_cx_id, context_id, signing_key) = generate_ids()?;
+    let _res = config_helper
+        .add_context_to_config(&relayer_account, &context_sk, &alice_sk)
+        .await?
+        .into_result()?;
 
-    // Add context via context-config contract
-    add_context_to_config(
-        &node1,
-        &context_config_contract,
-        context_id,
-        alice_cx_id,
-        signing_key
-    ).await?;
-
-    // Verify members in the context-config contract
-    verify_members(
-        &context_config_contract,
-        context_id,
-        alice_cx_id
-    ).await?;
-
-    // Initialize ProxyContract and test fetch_members
-    initialize_proxy_contract(&proxy_contract, context_id, &context_config_contract).await?;
-    test_fetch_members_call(&alice, &proxy_contract, alice_cx_id).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_add_request_and_confirm() -> Result<()> {
-    let worker = near_workspaces::sandbox().await?;
-
-    // Deploy contracts
-    let proxy_contract = deploy_contract(&worker, PROXY_CONTRACT_WASM).await?;
-    let context_config_contract = deploy_contract(&worker, CONTEXT_CONFIG_WASM).await?;
-
-    // Create alice account and node1 subaccount
-    let alice = create_account_with_balance(&worker, "alice", 30).await?;
-    let node1 = create_subaccount(&worker, "node1").await?;
-
-    // Generate cryptographic identities
-    let (alice_cx_id, context_id, signing_key) = generate_ids()?;
-
-    // Add context via context-config contract
-    add_context_to_config(
-        &node1,
-        &context_config_contract,
-        context_id,
-        alice_cx_id,
-        signing_key.clone()
-    ).await?;
-
-    // Initialize ProxyContract and test fetch_members
-    initialize_proxy_contract(&proxy_contract, context_id, &context_config_contract).await?;
-    let result = alice
-    .call(proxy_contract.id(), "add_request_and_confirm")
-    .args_json(json!({
-        "request": Signed::new(
-            &{
-                let multi_sig_request = MultiSigRequest {
-                    actions: vec![],
-                    receiver_id: context_config_contract.id().clone(),
-                };
-                MultiSigRequestWithSigner {
-                    signer_id: signing_key.verifying_key().to_bytes().rt()?,
-                    request: multi_sig_request,
-                }
-            },
-            |p| signing_key.sign(p),
-        )?
-    }))
-    .max_gas()
-    .transact()
+    let _res = proxy_helper
+    .initialize(
+        &developer_account,
+        &context_sk.verifying_key().to_bytes().rt()?,
+    )
     .await;
-    assert!(result.is_ok());
-    assert!(result?.json::<u32>()? == 0);
-    Ok(())
+
+    Ok((
+        config_helper,
+        proxy_helper,
+        relayer_account,
+        context_sk,
+        alice_sk,
+    ))
 }
 
-async fn deploy_contract(worker: &Worker<Sandbox>, wasm_path: &str) -> Result<Contract> {
-    let wasm = std::fs::read(wasm_path)?;
-    let contract = worker.dev_deploy(&wasm).await?;
-    Ok(contract)
-}
+#[tokio::test]
+async fn test_create_proposal() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+        setup_test(&worker).await?;
 
-async fn create_account_with_balance(worker: &Worker<Sandbox>, account_id: &str, balance: u128) -> Result<Account> {
-    let root_account = worker.dev_create_account().await?;
-    let account = root_account
-        .create_subaccount(account_id)
-        .initial_balance(NearToken::from_near(balance))
-        .transact()
+    let proposal = Proposal {
+        actions: vec![],
+        receiver_id: config_helper.config_contract.id().clone(),
+    };
+
+    let res: ProposalWithApprovals = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
         .await?
-        .into_result()?;
-    Ok(account)
-}
-
-async fn create_subaccount(worker: &Worker<Sandbox>, subaccount_id: &str) -> Result<Account> {
-    let root_account = worker.root_account()?;
-    let subaccount = root_account
-        .create_subaccount(subaccount_id)
-        .transact()
-        .await?
-        .into_result()?;
-    Ok(subaccount)
-}
-
-fn generate_ids() -> Result<(Repr<ContextIdentity>, Repr<ContextId>, SigningKey)> {
-    let mut rng = rand::thread_rng();
-
-    let alice_cx_sk = SigningKey::from_bytes(&rng.gen());
-    let alice_cx_pk = alice_cx_sk.verifying_key();
-    let alice_cx_id = alice_cx_pk.to_bytes().rt()?;
-
-    let context_secret = SigningKey::from_bytes(&rng.gen());
-    let context_public = context_secret.verifying_key();
-    let context_id = context_public.to_bytes().rt()?;
-
-    Ok((alice_cx_id, context_id, context_secret))
-}
-
-async fn add_context_to_config(
-    node1: &Account,
-    context_config_contract: &Contract,
-    context_id: Repr<ContextId>,
-    alice_cx_id: Repr<ContextIdentity>,
-    signing_key: SigningKey
-) -> Result<()> {
-    let mut rng = rand::thread_rng();
-    let application_id = rng.gen::<[_; 32]>().rt()?;
-    let blob_id = rng.gen::<[_; 32]>().rt()?;
-
-    let res = node1
-        .call(context_config_contract.id(), "mutate")
-        .args_json(Signed::new(
-            &{
-                let kind = RequestKind::Context(ContextRequest::new(
-                    context_id,
-                    ContextRequestKind::Add {
-                        author_id: alice_cx_id,
-                        application: Application::new(
-                            application_id,
-                            blob_id,
-                            0,
-                            Default::default(),
-                            Default::default(),
-                        ),
-                    },
-                ));
-                Request::new(context_id.rt()?, kind)
-            },
-            |p| signing_key.sign(p),
-        )?)
-        .transact()
-        .await?
-        .into_result()?;
-    
-    assert_eq!(res.logs(), [format!("Context `{}` added", context_id)]);
-    Ok(())
-}
-
-async fn verify_members(
-    context_config_contract: &Contract,
-    context_id: Repr<ContextId>,
-    alice_cx_id: Repr<ContextIdentity>
-) -> Result<()> {
-    let res: Vec<Repr<ContextIdentity>> = context_config_contract
-        .view("members")
-        .args_json(json!({
-            "context_id": context_id,
-            "offset": 0,
-            "length": 10,
-        }))
-        .await?
+        .into_result()?
         .json()?;
 
-    assert_eq!(res, [alice_cx_id]);
+    assert_eq!(res.proposal_id, 0);
+    assert_eq!(res.num_approvals, 1);
+
     Ok(())
 }
 
-async fn initialize_proxy_contract(
-    proxy_contract: &Contract,
-    context_id: Repr<ContextId>,
-    context_config_contract: &Contract
-) -> Result<()> {
-    let _ = proxy_contract
-        .call("init")
-        .args_json(json!({
-            "context_id": context_id,
-            "context_config_account_id": context_config_contract.id(),
-        }))
-        .transact()
+#[tokio::test]
+async fn test_create_multiple_proposals() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+
+    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    let proposal = Proposal {
+        actions: vec![],
+        receiver_id: config_helper.config_contract.id().clone(),
+    };
+
+    let _res = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
+        .await?
+        .into_result();
+
+    let res: ProposalWithApprovals = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
+        .await?
+        .into_result()?
+        .json()?;
+    assert_eq!(res.proposal_id, 1);
+    assert_eq!(res.num_approvals, 1);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_create_proposal_and_approve_by_member() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+
+    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    // Add Bob as a context member
+    let bob_sk: SigningKey = test_utils::generate_keypair()?;
+    let _res = config_helper
+        .add_members(&relayer_account, &alice_sk, &[bob_sk.clone()], &context_sk)
         .await?
         .into_result()?;
+
+    let proposal = Proposal {
+        actions: vec![],
+        receiver_id: config_helper.config_contract.id().clone(),
+    };
+
+    let res: ProposalWithApprovals = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
+        .await?
+        .into_result()?
+        .json()?;
+
+    let res2: ProposalWithApprovals = proxy_helper
+        .approve_proposal(&relayer_account, &bob_sk, &res.proposal_id)
+        .await?
+        .into_result()?
+        .json()?;
+
+    assert_eq!(res2.proposal_id, 0);
+    assert_eq!(res2.num_approvals, 2);
+
     Ok(())
 }
 
-async fn test_fetch_members_call(
-    alice: &Account,
-    proxy_contract: &Contract,
-    alice_cx_id: Repr<ContextIdentity>
-) -> Result<()> {
-    let result: Vec<Repr<ContextIdentity>> = alice
-        .call(proxy_contract.id(), "fetch_members")
-        .max_gas()
-        .transact()
+
+#[tokio::test]
+async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+
+    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    // Bob is not a member of the context
+    let bob_sk: SigningKey = test_utils::generate_keypair()?;
+
+    let proposal = Proposal {
+        actions: vec![],
+        receiver_id: config_helper.config_contract.id().clone(),
+    };
+
+    let res: ProposalWithApprovals = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &alice_sk, &proposal)
         .await?
+        .into_result()?
         .json()?;
 
-    assert_eq!(result, [alice_cx_id]);
+    let res2 = proxy_helper
+        .approve_proposal(&relayer_account, &bob_sk, &res.proposal_id)
+        .await?
+        .into_result();
+
+    let error = res2.expect_err("Expected an error from the contract");
+    assert!(error.to_string().contains("Error: Is not a member"));
+
+    let view_proposal: ProposalWithApprovals = 
+        proxy_helper.view_proposal_confirmations(&relayer_account, &res.proposal_id).await?.json()?;
+    assert_eq!(view_proposal.num_approvals, 1);
+
+
     Ok(())
 }
