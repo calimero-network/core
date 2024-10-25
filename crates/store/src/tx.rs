@@ -18,14 +18,16 @@ pub enum Operation<'a> {
 }
 
 impl<'a> Transaction<'a> {
+    pub fn is_empty(&self) -> bool {
+        self.cols.is_empty()
+    }
+
     pub(crate) fn raw_get(&self, column: Column, key: &[u8]) -> Option<&Operation<'_>> {
         self.cols.get(&column).and_then(|ops| ops.get(key))
     }
 
     pub fn get<K: AsKeyParts>(&self, key: &K) -> Option<&Operation<'_>> {
-        self.cols
-            .get(&K::column())
-            .and_then(|ops| ops.get(key.as_key().as_bytes()))
+        self.cols.get(&K::column())?.get(key.as_key().as_bytes())
     }
 
     pub fn put<K: AsKeyParts>(&mut self, key: &'a K, value: Slice<'a>) {

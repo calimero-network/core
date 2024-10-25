@@ -2,37 +2,16 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network::config::NetworkConfig;
 use calimero_node::{start, NodeConfig};
-use calimero_node_primitives::NodeType as PrimitiveNodeType;
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use eyre::{bail, Result as EyreResult};
 
 use crate::cli::RootArgs;
 
 /// Run a node
 #[derive(Debug, Parser)]
-pub struct RunCommand {
-    #[clap(long, value_name = "TYPE")]
-    #[clap(value_enum, default_value_t)]
-    pub node_type: NodeType,
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-pub enum NodeType {
-    #[default]
-    Peer,
-    Coordinator,
-}
-
-impl From<NodeType> for PrimitiveNodeType {
-    fn from(value: NodeType) -> Self {
-        match value {
-            NodeType::Peer => Self::Peer,
-            NodeType::Coordinator => Self::Coordinator,
-        }
-    }
-}
+pub struct RunCommand;
 
 impl RunCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
@@ -47,10 +26,8 @@ impl RunCommand {
         start(NodeConfig::new(
             path.clone(),
             config.identity.clone(),
-            self.node_type.into(),
             NetworkConfig::new(
                 config.identity.clone(),
-                self.node_type.into(),
                 config.network.swarm,
                 config.network.bootstrap,
                 config.network.discovery,

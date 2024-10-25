@@ -7,7 +7,7 @@ pub type Value = Vec<u8>;
 pub trait Storage: Debug {
     fn get(&self, key: &Key) -> Option<Value>;
     fn set(&mut self, key: Key, value: Value) -> Option<Value>;
-    // fn remove(&mut self, key: &[u8]);
+    fn remove(&mut self, key: &Key) -> Option<Vec<u8>>;
     fn has(&self, key: &Key) -> bool;
 }
 
@@ -26,9 +26,9 @@ impl Storage for InMemoryStorage {
     }
 
     // todo! revisit this, should we return the value by default?
-    // fn remove(&mut self, key: &[u8]) {
-    //     self.inner.remove(key);
-    // }
+    fn remove(&mut self, key: &Key) -> Option<Vec<u8>> {
+        self.inner.remove(key)
+    }
 
     fn has(&self, key: &Key) -> bool {
         self.inner.contains_key(key)

@@ -20,7 +20,11 @@ wasm_imports! {
         fn log_utf8(msg: Buffer<'_>);
         fn emit(event: Event<'_>);
         // --
+        fn send_action(action: Buffer<'_>);
+        fn commit_root(root: Buffer<'_>);
+        // --
         fn storage_read(key: Buffer<'_>, register_id: RegisterId) -> Bool;
+        fn storage_remove(key: Buffer<'_>, register_id: RegisterId) -> Bool;
         fn storage_write(key: Buffer<'_>, value: Buffer<'_>, register_id: RegisterId) -> Bool;
         // --
         fn fetch(
@@ -30,6 +34,9 @@ wasm_imports! {
             body: Buffer<'_>,
             register_id: RegisterId
         ) -> Bool;
+        // --
+        fn random_bytes(buf: BufferMut<'_>);
+        fn time_now(buf: BufferMut<'_>);
     }
 }
 

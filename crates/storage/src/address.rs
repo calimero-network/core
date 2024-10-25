@@ -13,10 +13,12 @@ use core::fmt::{self, Debug, Display, Formatter};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_store::key::Storage as StorageKey;
+use calimero_sdk::serde::{Deserialize, Serialize};
 use fixedstr::Flexstr;
 use thiserror::Error as ThisError;
 use uuid::{Bytes, Uuid};
+
+use crate::env::random_bytes;
 
 /// Globally-unique identifier for an [`Element`](crate::entities::Element).
 ///
@@ -33,7 +35,8 @@ use uuid::{Bytes, Uuid};
 /// system operation. Abstracting the true type away provides a level of
 /// insulation that is useful for any future changes.
 ///
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(crate = "calimero_sdk::serde")]
 pub struct Id(Uuid);
 
 impl Id {
@@ -48,13 +51,21 @@ impl Id {
     ///
     #[must_use]
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        let mut bytes = [0; 16];
+        random_bytes(&mut bytes);
+        Self(uuid::Builder::from_random_bytes(bytes).into_uuid())
     }
 
     /// Returns a slice of 16 octets containing the value.
     #[must_use]
     pub const fn as_bytes(&self) -> &Bytes {
         self.0.as_bytes()
+    }
+
+    /// Root ID which is set to all zeroes by default.
+    #[must_use]
+    pub const fn root() -> Self {
+        Self(Uuid::nil())
     }
 }
 
@@ -98,18 +109,6 @@ impl Display for Id {
     }
 }
 
-impl From<Id> for StorageKey {
-    fn from(id: Id) -> Self {
-        Self::new(*id.0.as_bytes())
-    }
-}
-
-impl From<StorageKey> for Id {
-    fn from(storage: StorageKey) -> Self {
-        Self(Uuid::from_bytes(storage.id()))
-    }
-}
-
 impl From<[u8; 16]> for Id {
     fn from(bytes: [u8; 16]) -> Self {
         Self(Uuid::from_bytes(bytes))
@@ -150,7 +149,7 @@ impl From<Id> for Uuid {
 /// There is no formal limit to the levels of hierarchy allowed, but in practice
 /// this is limited to 255 levels (assuming a single byte per segment name).
 ///
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Path {
     /// A list of path segment offsets, where offset `0` is assumed, and not
     /// stored.
@@ -490,7 +489,7 @@ impl BorshDeserialize for Path {
 
 impl BorshSerialize for Path {
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<(), IoError> {
-        self.to_string().serialize(writer)
+        BorshSerialize::serialize(&self.to_string(), writer)
     }
 }
 
@@ -528,7 +527,7 @@ impl TryFrom<String> for Path {
 }
 
 /// Errors that can occur when working with [`Path`]s.
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, ThisError)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, ThisError)]
 #[non_exhaustive]
 pub enum PathError {
     /// The path is empty.

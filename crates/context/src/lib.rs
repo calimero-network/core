@@ -13,7 +13,7 @@ use calimero_context_config::types::{
 };
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
-use calimero_node_primitives::{ExecutionRequest, Finality, ServerSender};
+use calimero_node_primitives::{ExecutionRequest, ServerSender};
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
@@ -22,9 +22,9 @@ use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
     ApplicationMeta as ApplicationMetaKey, BlobMeta as BlobMetaKey,
     ContextConfig as ContextConfigKey, ContextIdentity as ContextIdentityKey,
-    ContextMeta as ContextMetaKey, ContextState as ContextStateKey,
-    ContextTransaction as ContextTransactionKey,
+    ContextMeta as ContextMetaKey, ContextState as ContextStateKey, FromKeyParts, Key,
 };
+use calimero_store::layer::{ReadLayer, WriteLayer};
 use calimero_store::types::{
     ApplicationMeta as ApplicationMetaValue, ContextConfig as ContextConfigValue,
     ContextIdentity as ContextIdentityValue, ContextMeta as ContextMetaValue,
@@ -41,7 +41,7 @@ use reqwest::{Client, Url};
 use tokio::fs::File;
 use tokio::sync::{oneshot, RwLock};
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tracing::info;
+use tracing::{error, info};
 
 pub mod config;
 
@@ -145,7 +145,8 @@ impl ContextManager {
         application_id: ApplicationId,
         identity_secret: Option<PrivateKey>,
         initialization_params: Vec<u8>,
-    ) -> EyreResult<(ContextId, PublicKey)> {
+        result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
+    ) -> EyreResult<()> {
         let (context_secret, identity_secret) = {
             let mut rng = rand::thread_rng();
 
@@ -176,45 +177,74 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
-        self.config_client
-            .mutate(
-                self.client_config.new.network.as_str().into(),
-                self.client_config.new.contract_id.as_str().into(),
-                context.id.rt().expect("infallible conversion"),
-            )
-            .add_context(
-                context.id.rt().expect("infallible conversion"),
-                identity_secret
-                    .public_key()
-                    .rt()
-                    .expect("infallible conversion"),
-                ApplicationConfig::new(
-                    application.id.rt().expect("infallible conversion"),
-                    application.blob.rt().expect("infallible conversion"),
-                    application.size,
-                    ApplicationSourceConfig(application.source.to_string().into()),
-                    ApplicationMetadataConfig(Repr::new(application.metadata.into())),
-                ),
-            )
-            .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
-            .await?;
-
         self.add_context(&context, identity_secret, true).await?;
 
-        let (tx, _) = oneshot::channel();
+        let (tx, rx) = oneshot::channel();
 
-        self.server_sender
-            .send(ExecutionRequest::new(
-                context.id,
-                "init".to_owned(),
-                initialization_params,
-                identity_secret.public_key(),
-                tx,
-                Some(Finality::Local),
-            ))
-            .await?;
+        let this = self.clone();
+        let finalizer = async move {
+            this.server_sender
+                .send(ExecutionRequest::new(
+                    context.id,
+                    "init".to_owned(),
+                    initialization_params,
+                    identity_secret.public_key(),
+                    tx,
+                ))
+                .await?;
 
-        Ok((context.id, identity_secret.public_key()))
+            if let Some(return_value) = rx.await??.returns? {
+                bail!(
+                    "Unexpected return value from init method: {:?}",
+                    return_value
+                )
+            }
+
+            this.config_client
+                .mutate(
+                    this.client_config.new.network.as_str().into(),
+                    this.client_config.new.contract_id.as_str().into(),
+                    context.id.rt().expect("infallible conversion"),
+                )
+                .add_context(
+                    context.id.rt().expect("infallible conversion"),
+                    identity_secret
+                        .public_key()
+                        .rt()
+                        .expect("infallible conversion"),
+                    ApplicationConfig::new(
+                        application.id.rt().expect("infallible conversion"),
+                        application.blob.rt().expect("infallible conversion"),
+                        application.size,
+                        ApplicationSourceConfig(application.source.to_string().into()),
+                        ApplicationMetadataConfig(Repr::new(application.metadata.into())),
+                    ),
+                )
+                .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
+                .await?;
+
+            Ok((context.id, identity_secret.public_key()))
+        };
+
+        let this = self.clone();
+        let context_id = context.id;
+        let _ignored = tokio::spawn(async move {
+            let result = finalizer.await;
+
+            if result.is_err() {
+                if let Err(err) = this.delete_context(&context_id).await {
+                    error!(%context_id, %err, "Failed to clean up context after failed creation");
+                }
+            }
+
+            if let Err(err) = this.subscribe(&context.id).await {
+                error!(%context_id, %err, "Failed to subscribe to context after creation");
+            }
+
+            let _ignored = result_sender.send(result);
+        });
+
+        Ok(())
     }
 
     async fn add_context(
@@ -234,15 +264,7 @@ impl ContextManager {
                 ),
             )?;
 
-            handle.put(
-                &ContextMetaKey::new(context.id),
-                &ContextMetaValue::new(
-                    ApplicationMetaKey::new(context.application_id),
-                    context.last_transaction_hash.into(),
-                ),
-            )?;
-
-            self.subscribe(&context.id).await?;
+            self.save_context(context)?;
         }
 
         handle.put(
@@ -250,6 +272,20 @@ impl ContextManager {
             &ContextIdentityValue {
                 private_key: Some(*identity_secret),
             },
+        )?;
+
+        Ok(())
+    }
+
+    pub fn save_context(&self, context: &Context) -> EyreResult<()> {
+        let mut handle = self.store.handle();
+
+        handle.put(
+            &ContextMetaKey::new(context.id),
+            &ContextMetaValue::new(
+                ApplicationMetaKey::new(context.application_id),
+                context.root_hash.into(),
+            ),
         )?;
 
         Ok(())
@@ -344,6 +380,8 @@ impl ContextManager {
         self.add_context(&context, identity_secret, !context_exists)
             .await?;
 
+        self.subscribe(&context.id).await?;
+
         let _ = self.state.write().await.pending_catchup.insert(context_id);
 
         info!(%context_id, "Joined context with pending catchup");
@@ -424,7 +462,7 @@ impl ContextManager {
         Ok(Some(Context::new(
             *context_id,
             ctx_meta.application.application_id(),
-            ctx_meta.last_transaction_hash.into(),
+            ctx_meta.root_hash.into(),
         )))
     }
 
@@ -433,95 +471,103 @@ impl ContextManager {
 
         let key = ContextMetaKey::new(*context_id);
 
+        // todo! perhaps we shouldn't bother checking?
         if !handle.has(&key)? {
             return Ok(false);
         }
 
         handle.delete(&key)?;
-
         handle.delete(&ContextConfigKey::new(*context_id))?;
 
-        {
-            let mut keys = vec![];
-
-            let mut iter = handle.iter::<ContextIdentityKey>()?;
-
-            let first = iter
-                .seek(ContextIdentityKey::new(*context_id, [0; 32].into()))
-                .transpose();
-
-            for k in first.into_iter().chain(iter.keys()) {
-                let k = k?;
-
-                if k.context_id() != *context_id {
-                    break;
-                }
-
-                keys.push(k);
-            }
-
-            drop(iter);
-
-            for k in keys {
-                handle.delete(&k)?;
-            }
-        }
-
-        {
-            let mut keys = vec![];
-
-            let mut iter = handle.iter::<ContextStateKey>()?;
-
-            let first = iter
-                .seek(ContextStateKey::new(*context_id, [0; 32]))
-                .transpose();
-
-            for k in first.into_iter().chain(iter.keys()) {
-                let k = k?;
-
-                if k.context_id() != *context_id {
-                    break;
-                }
-
-                keys.push(k);
-            }
-
-            drop(iter);
-
-            for k in keys {
-                handle.delete(&k)?;
-            }
-        }
-
-        {
-            let mut keys = vec![];
-
-            let mut iter = handle.iter::<ContextTransactionKey>()?;
-
-            let first = iter
-                .seek(ContextTransactionKey::new(*context_id, [0; 32]))
-                .transpose();
-
-            for k in first.into_iter().chain(iter.keys()) {
-                let k = k?;
-
-                if k.context_id() != *context_id {
-                    break;
-                }
-
-                keys.push(k);
-            }
-
-            drop(iter);
-
-            for k in keys {
-                handle.delete(&k)?;
-            }
-        }
+        self.delete_context_scoped::<ContextIdentityKey, 32>(context_id, [0; 32], None)?;
+        self.delete_context_scoped::<ContextStateKey, 32>(context_id, [0; 32], None)?;
 
         self.unsubscribe(context_id).await?;
 
         Ok(true)
+    }
+
+    #[expect(clippy::unwrap_in_result, reason = "pre-validated")]
+    fn delete_context_scoped<K, const N: usize>(
+        &self,
+        context_id: &ContextId,
+        offset: [u8; N],
+        end: Option<[u8; N]>,
+    ) -> EyreResult<()>
+    where
+        K: FromKeyParts<Error: std::error::Error + Send + Sync>,
+    {
+        let expected_length = Key::<K::Components>::len();
+
+        if context_id.len() + N != expected_length {
+            bail!(
+                "key length mismatch, expected: {}, got: {}",
+                Key::<K::Components>::len(),
+                N
+            )
+        }
+
+        let mut keys = vec![];
+
+        let mut key = context_id.to_vec();
+
+        let end = end
+            .map(|end| {
+                key.extend_from_slice(&end);
+
+                let end = Key::<K::Components>::try_from_slice(&key).expect("length pre-matched");
+
+                K::try_from_parts(end)
+            })
+            .transpose()?;
+
+        // fixme! store.handle() is prolematic here for lifetime reasons
+        let mut store = self.store.clone();
+
+        'outer: loop {
+            key.truncate(context_id.len());
+            key.extend_from_slice(&offset);
+
+            let offset = Key::<K::Components>::try_from_slice(&key).expect("length pre-matched");
+
+            let mut iter = store.iter()?;
+
+            let first = iter.seek(K::try_from_parts(offset)?).transpose();
+
+            if first.is_none() {
+                break;
+            }
+
+            for k in first.into_iter().chain(iter.keys()) {
+                let k = k?;
+
+                let key = k.as_key();
+
+                if let Some(end) = end {
+                    if key == end.as_key() {
+                        break 'outer;
+                    }
+                }
+
+                if !key.as_bytes().starts_with(&**context_id) {
+                    break 'outer;
+                }
+
+                keys.push(k);
+
+                if keys.len() == 100 {
+                    break;
+                }
+            }
+
+            drop(iter);
+
+            for k in keys.drain(..) {
+                store.delete(&k)?;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn get_contexts_ids(&self, start: Option<ContextId>) -> EyreResult<Vec<ContextId>> {
@@ -611,7 +657,7 @@ impl ContextManager {
                 contexts.push(Context::new(
                     key.context_id(),
                     value.application.application_id(),
-                    value.last_transaction_hash.into(),
+                    value.root_hash.into(),
                 ));
             }
         }
@@ -621,7 +667,7 @@ impl ContextManager {
             contexts.push(Context::new(
                 k.context_id(),
                 v.application.application_id(),
-                v.last_transaction_hash.into(),
+                v.root_hash.into(),
             ));
         }
 
