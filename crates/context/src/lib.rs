@@ -135,7 +135,7 @@ impl ContextManager {
     }
 
     #[must_use]
-    pub fn new_identity(&self) -> PrivateKey {
+    pub fn new_pk(&self) -> PrivateKey {
         PrivateKey::random(&mut rand::thread_rng())
     }
 
@@ -144,10 +144,11 @@ impl ContextManager {
         seed: Option<[u8; 32]>,
         application_id: ApplicationId,
         identity_secret: Option<PrivateKey>,
+        sender_secret: Option<PrivateKey>,
         initialization_params: Vec<u8>,
         result_sender: oneshot::Sender<EyreResult<(ContextId, PublicKey)>>,
     ) -> EyreResult<()> {
-        let (context_secret, identity_secret) = {
+        let (context_secret, identity_secret, sender_secret) = {
             let mut rng = rand::thread_rng();
 
             #[expect(clippy::option_if_let_else, reason = "Clearer this way")]
@@ -156,9 +157,10 @@ impl ContextManager {
                 None => PrivateKey::random(&mut rng),
             };
 
-            let identity_secret = identity_secret.unwrap_or_else(|| self.new_identity());
+            let identity_secret = identity_secret.unwrap_or_else(|| self.new_pk());
+            let sender_secret = sender_secret.unwrap_or_else(|| self.new_pk());
 
-            (context_secret, identity_secret)
+            (context_secret, identity_secret, sender_secret)
         };
 
         let handle = self.store.handle();
@@ -177,7 +179,7 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
-        self.add_context(&context, identity_secret, true).await?;
+        self.add_context(&context, identity_secret, sender_secret, true).await?;
 
         let (tx, rx) = oneshot::channel();
 
@@ -251,6 +253,7 @@ impl ContextManager {
         &self,
         context: &Context,
         identity_secret: PrivateKey,
+        sender_secret: PrivateKey,
         is_new: bool,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
@@ -271,6 +274,7 @@ impl ContextManager {
             &ContextIdentityKey::new(context.id, identity_secret.public_key()),
             &ContextIdentityValue {
                 private_key: Some(*identity_secret),
+                sender_key: Some(*sender_secret),
             },
         )?;
 
@@ -294,6 +298,7 @@ impl ContextManager {
     pub async fn join_context(
         &self,
         identity_secret: PrivateKey,
+        sender_secret: PrivateKey,
         invitation_payload: ContextInvitationPayload,
     ) -> EyreResult<Option<(ContextId, PublicKey)>> {
         let (context_id, invitee_id, network_id, contract_id) = invitation_payload.parts()?;
@@ -334,7 +339,7 @@ impl ContextManager {
                 let key = ContextIdentityKey::new(context_id, member);
 
                 if !handle.has(&key)? {
-                    handle.put(&key, &ContextIdentityValue { private_key: None })?;
+                    handle.put(&key, &ContextIdentityValue { private_key: None, sender_key: None })?;
                 }
             }
         }
@@ -377,7 +382,7 @@ impl ContextManager {
             }
         }
 
-        self.add_context(&context, identity_secret, !context_exists)
+        self.add_context(&context, identity_secret, sender_secret, !context_exists)
             .await?;
 
         self.subscribe(&context.id).await?;
@@ -404,6 +409,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(requester_secret),
+            sender_key: None,
         }) = handle.get(&ContextIdentityKey::new(context_id, inviter_id))?
         else {
             return Ok(None);
