@@ -842,13 +842,14 @@ dependencies = [
 name = "calimero-config"
 version = "0.1.1"
 dependencies = [
+ "bs58 0.5.1",
  "calimero-context",
  "calimero-network",
- "calimero-primitives",
  "calimero-server",
  "camino",
  "eyre",
- "libp2p",
+ "libp2p-identity",
+ "multiaddr",
  "serde",
  "toml",
 ]
@@ -978,7 +979,6 @@ dependencies = [
  "bs58 0.5.1",
  "ed25519-dalek",
  "hex",
- "libp2p-identity",
  "rand 0.8.5",
  "serde",
  "serde_json",

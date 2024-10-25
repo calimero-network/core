@@ -9,15 +9,16 @@ license.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bs58.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
-libp2p.workspace = true
+libp2p-identity = { workspace = true, features = ["peerid", "serde"] }
+multiaddr.workspace = true
 serde = { workspace = true, features = ["derive"] }
 toml.workspace = true
 
 calimero-context = { path = "../context" }
-calimero-primitives = { path = "../primitives" }
-calimero-server = { path = "../server" }
+calimero-server = { path = "../server", features = ["admin"] }
 calimero-network = { path = "../network" }
 
 [lints]

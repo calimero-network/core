@@ -7,7 +7,7 @@ use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::{Result as EyreResult, WrapErr};
-use libp2p::{identity, Multiaddr};
+use multiaddr::Multiaddr;
 use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "config.toml";
@@ -16,10 +16,10 @@ const CONFIG_FILE: &str = "config.toml";
 #[non_exhaustive]
 pub struct ConfigFile {
     #[serde(
-        with = "calimero_primitives::identity::serde_identity",
-        default = "identity::Keypair::generate_ed25519"
+        with = "serde_identity",
+        default = "libp2p_identity::Keypair::generate_ed25519"
     )]
-    pub identity: identity::Keypair,
+    pub identity: libp2p_identity::Keypair,
 
     #[serde(flatten)]
     pub network: NetworkConfig,
@@ -122,7 +122,7 @@ impl BlobStoreConfig {
 
 impl ConfigFile {
     pub fn new(
-        identity: identity::Keypair,
+        identity: libp2p_identity::Keypair,
         datastore: DataStoreConfig,
         blobstore: BlobStoreConfig,
         context: ContextConfig,
@@ -165,5 +165,78 @@ impl ConfigFile {
         })?;
 
         Ok(())
+    }
+}
+
+pub mod serde_identity {
+    use core::fmt::{self, Formatter};
+
+    use libp2p_identity::Keypair;
+    use serde::de::{self, MapAccess};
+    use serde::ser::{self, SerializeMap};
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(key: &Keypair, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut keypair = serializer.serialize_map(Some(2))?;
+        keypair.serialize_entry("peer_id", &key.public().to_peer_id().to_base58())?;
+        keypair.serialize_entry(
+            "keypair",
+            &bs58::encode(&key.to_protobuf_encoding().map_err(ser::Error::custom)?).into_string(),
+        )?;
+        keypair.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Keypair, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct IdentityVisitor;
+
+        impl<'de> de::Visitor<'de> for IdentityVisitor {
+            type Value = Keypair;
+
+            fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an identity")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut peer_id = None::<String>;
+                let mut priv_key = None::<String>;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "peer_id" => peer_id = Some(map.next_value()?),
+                        "keypair" => priv_key = Some(map.next_value()?),
+                        _ => {
+                            drop(map.next_value::<de::IgnoredAny>());
+                        }
+                    }
+                }
+
+                let peer_id = peer_id.ok_or_else(|| de::Error::missing_field("peer_id"))?;
+                let priv_key = priv_key.ok_or_else(|| de::Error::missing_field("keypair"))?;
+
+                let priv_key = bs58::decode(priv_key)
+                    .into_vec()
+                    .map_err(|_| de::Error::custom("invalid base58"))?;
+
+                let keypair = Keypair::from_protobuf_encoding(&priv_key)
+                    .map_err(|_| de::Error::custom("invalid protobuf"))?;
+
+                if peer_id != keypair.public().to_peer_id().to_base58() {
+                    return Err(de::Error::custom("Peer ID does not match public key"));
+                }
+
+                Ok(keypair)
+            }
+        }
+
+        deserializer.deserialize_struct("Keypair", &["peer_id", "keypair"], IdentityVisitor)
     }
 }
