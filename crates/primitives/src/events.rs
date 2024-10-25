@@ -1,4 +1,3 @@
-use libp2p_identity::PeerId;
 use serde::{Deserialize, Serialize};
 
 use crate::context::ContextId;
@@ -33,9 +32,9 @@ impl ApplicationEvent {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "PascalCase")]
 #[non_exhaustive]
+#[expect(variant_size_differences, reason = "fine for now")]
 pub enum ApplicationEventPayload {
     StateMutation(StateMutationPayload),
-    PeerJoined(PeerJoinedPayload),
     OutcomeEvent(OutcomeEventPayload),
 }
 
@@ -50,20 +49,6 @@ impl StateMutationPayload {
     #[must_use]
     pub const fn new(new_root: Hash) -> Self {
         Self { new_root }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct PeerJoinedPayload {
-    pub peer_id: PeerId,
-}
-
-impl PeerJoinedPayload {
-    #[must_use]
-    pub const fn new(peer_id: PeerId) -> Self {
-        Self { peer_id }
     }
 }
 

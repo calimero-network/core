@@ -16,6 +16,10 @@ pub enum NetworkEvent {
         peer_id: PeerId,
         topic: TopicHash,
     },
+    Unsubscribed {
+        peer_id: PeerId,
+        topic: TopicHash,
+    },
     Message {
         id: MessageId,
         message: Message,

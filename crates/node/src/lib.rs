@@ -19,7 +19,7 @@ use calimero_node_primitives::{CallError, ExecutionRequest};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
     ApplicationEvent, ApplicationEventPayload, NodeEvent, OutcomeEvent, OutcomeEventPayload,
-    PeerJoinedPayload, StateMutationPayload,
+    StateMutationPayload,
 };
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
@@ -36,7 +36,6 @@ use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
-use owo_colors::OwoColorize;
 use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
@@ -165,7 +164,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
                 let Some(event) = event else {
                     break;
                 };
-                node.handle_event(event).await?;
+                node.handle_event(event).await;
             }
             line = stdin.next_line() => {
                 if let Some(line) = line? {
@@ -204,8 +203,11 @@ impl Node {
         }
     }
 
-    pub async fn handle_event(&mut self, event: NetworkEvent) -> EyreResult<()> {
+    pub async fn handle_event(&mut self, event: NetworkEvent) {
         match event {
+            NetworkEvent::ListeningOn { address, .. } => {
+                info!("Listening on: {}", address);
+            }
             NetworkEvent::Subscribed {
                 peer_id: their_peer_id,
                 topic: topic_hash,
@@ -214,13 +216,18 @@ impl Node {
                     error!(?err, "Failed to handle subscribed event");
                 }
             }
+            NetworkEvent::Unsubscribed {
+                peer_id: their_peer_id,
+                topic: topic_hash,
+            } => {
+                if let Err(err) = self.handle_unsubscribed(their_peer_id, &topic_hash) {
+                    error!(?err, "Failed to handle unsubscribed event");
+                }
+            }
             NetworkEvent::Message { message, .. } => {
                 if let Err(err) = self.handle_message(message).await {
                     error!(?err, "Failed to handle message event");
                 }
-            }
-            NetworkEvent::ListeningOn { address, .. } => {
-                info!("Listening on: {}", address);
             }
             NetworkEvent::StreamOpened { peer_id, stream } => {
                 info!("Stream opened from peer: {}", peer_id);
@@ -233,16 +240,10 @@ impl Node {
             }
             _ => error!("Unhandled event: {:?}", event),
         }
-
-        Ok(())
     }
 
     fn handle_subscribed(&self, their_peer_id: PeerId, topic_hash: &TopicHash) -> EyreResult<()> {
         let Ok(context_id) = topic_hash.as_str().parse() else {
-            // bail!(
-            //     "Failed to parse topic hash '{}' into context ID",
-            //     topic_hash
-            // );
             return Ok(());
         };
 
@@ -255,15 +256,35 @@ impl Node {
                 "Observed subscription to unknown context, ignoring.."
             );
             return Ok(());
+        }
+
+        info!(
+            "Peer {:?} subscribed to context '{}'",
+            their_peer_id, context_id
+        );
+
+        Ok(())
+    }
+
+    fn handle_unsubscribed(&self, their_peer_id: PeerId, topic_hash: &TopicHash) -> EyreResult<()> {
+        let Ok(context_id) = topic_hash.as_str().parse() else {
+            return Ok(());
         };
 
-        info!("{} joined the session.", their_peer_id.cyan());
-        drop(
-            self.node_events
-                .send(NodeEvent::Application(ApplicationEvent::new(
-                    context_id,
-                    ApplicationEventPayload::PeerJoined(PeerJoinedPayload::new(their_peer_id)),
-                ))),
+        let handle = self.store.handle();
+
+        if !handle.has(&ContextMetaKey::new(context_id))? {
+            debug!(
+                %context_id,
+                %their_peer_id,
+                "Observed unsubscription from unknown context, ignoring.."
+            );
+            return Ok(());
+        }
+
+        info!(
+            "Peer {:?} unsubscribed from context '{}'",
+            their_peer_id, context_id
         );
 
         Ok(())
