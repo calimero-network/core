@@ -34,7 +34,6 @@ calimero-context = { path = "../context" }
 calimero-context-config = { path = "../context/config", features = ["client"] }
 calimero-node = { path = "../node" }
 calimero-network = { path = "../network" }
-calimero-node-primitives = { path = "../node-primitives" }
 calimero-server = { path = "../server", features = ["jsonrpc", "websocket", "admin"] }
 calimero-store = { path = "../store" }
 

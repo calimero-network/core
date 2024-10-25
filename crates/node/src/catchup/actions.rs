@@ -5,17 +5,15 @@ use eyre::Result as EyreResult;
 use futures_util::SinkExt;
 use serde_json::to_vec as to_json_vec;
 
-use crate::types::{
-    CatchupError, CatchupStreamMessage, CatchupTransactionsBatch, TransactionWithStatus,
-};
+use crate::types::{ActionMessage, CatchupActionsBatch, CatchupError, CatchupStreamMessage};
 
-pub struct TransactionsBatchSender {
+pub struct ActionsBatchSender {
     batch_size: u8,
-    batch: Vec<TransactionWithStatus>,
+    batch: Vec<ActionMessage>,
     stream: Box<Stream>,
 }
 
-impl TransactionsBatchSender {
+impl ActionsBatchSender {
     pub(crate) fn new(batch_size: u8, stream: Box<Stream>) -> Self {
         Self {
             batch_size,
@@ -24,12 +22,12 @@ impl TransactionsBatchSender {
         }
     }
 
-    pub(crate) async fn send(&mut self, tx_with_status: TransactionWithStatus) -> EyreResult<()> {
-        self.batch.push(tx_with_status);
+    pub(crate) async fn send(&mut self, action_message: ActionMessage) -> EyreResult<()> {
+        self.batch.push(action_message);
 
         if self.batch.len() == self.batch_size as usize {
-            let message = CatchupStreamMessage::TransactionsBatch(CatchupTransactionsBatch {
-                transactions: take(&mut self.batch),
+            let message = CatchupStreamMessage::ActionsBatch(CatchupActionsBatch {
+                actions: take(&mut self.batch),
             });
 
             let message = to_json_vec(&message)?;
@@ -44,8 +42,8 @@ impl TransactionsBatchSender {
 
     pub(crate) async fn flush(&mut self) -> EyreResult<()> {
         if !self.batch.is_empty() {
-            let message = CatchupStreamMessage::TransactionsBatch(CatchupTransactionsBatch {
-                transactions: take(&mut self.batch),
+            let message = CatchupStreamMessage::ActionsBatch(CatchupActionsBatch {
+                actions: take(&mut self.batch),
             });
 
             let message = to_json_vec(&message)?;

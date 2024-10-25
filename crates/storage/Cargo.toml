@@ -7,20 +7,28 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-borsh.workspace = true
+borsh = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 fixedstr.workspace = true
-parking_lot.workspace = true
+hex.workspace = true
+indexmap.workspace = true
+serde = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
-calimero-store = { path = "../store", features = ["datatypes"] }
+calimero-sdk = { path = "../sdk" }
+calimero-storage-macros = { path = "../storage-macros" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rand.workspace = true
 
 [dev-dependencies]
 claims.workspace = true
 hex.workspace = true
-tempfile.workspace = true
+velcro.workspace = true
+
+calimero-sdk = { path = "../sdk" }
 
 [lints]
 workspace = true

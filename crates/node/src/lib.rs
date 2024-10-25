@@ -7,6 +7,7 @@
 use core::future::{pending, Future};
 use core::pin::Pin;
 
+use borsh::to_vec;
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
@@ -14,27 +15,22 @@ use calimero_context::ContextManager;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
-use calimero_node_primitives::{
-    CallError, ExecutionRequest, Finality, MutateCallError, NodeType, QueryCallError,
-};
+use calimero_node_primitives::{CallError, ExecutionRequest};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ApplicationEvent, ApplicationEventPayload, ExecutedTransactionPayload, NodeEvent, OutcomeEvent,
-    OutcomeEventPayload, PeerJoinedPayload,
+    ApplicationEvent, ApplicationEventPayload, NodeEvent, OutcomeEvent, OutcomeEventPayload,
+    PeerJoinedPayload, StateMutationPayload,
 };
-use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use calimero_primitives::transaction::Transaction;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
+use calimero_storage::address::Id;
+use calimero_storage::integration::Comparison;
+use calimero_storage::interface::Action;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
-use calimero_store::key::{
-    ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
-    ContextTransaction as ContextTransactionKey,
-};
-use calimero_store::types::{ContextMeta, ContextTransaction};
+use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
@@ -43,19 +39,17 @@ use libp2p::identity::Keypair;
 use owo_colors::OwoColorize;
 use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::select;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval_at, Instant};
-use tokio::{select, spawn};
 use tracing::{debug, error, info, warn};
 
 use crate::runtime_compat::RuntimeCompatStore;
-use crate::transaction_pool::{TransactionPool, TransactionPoolEntry};
-use crate::types::{PeerAction, TransactionConfirmation, TransactionRejection};
+use crate::types::{ActionMessage, PeerAction, SyncMessage};
 
 pub mod catchup;
 pub mod interactive_cli;
 pub mod runtime_compat;
-pub mod transaction_pool;
 pub mod types;
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
@@ -65,7 +59,6 @@ type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
-    pub node_type: NodeType,
     pub network: NetworkConfig,
     pub datastore: StoreConfig,
     pub blobstore: BlobStoreConfig,
@@ -74,12 +67,10 @@ pub struct NodeConfig {
 }
 
 impl NodeConfig {
-    #[expect(clippy::too_many_arguments, reason = "Okay for now")]
     #[must_use]
     pub const fn new(
         home: Utf8PathBuf,
         identity: Keypair,
-        node_type: NodeType,
         network: NetworkConfig,
         datastore: StoreConfig,
         blobstore: BlobStoreConfig,
@@ -89,7 +80,6 @@ impl NodeConfig {
         Self {
             home,
             identity,
-            node_type,
             network,
             datastore,
             blobstore,
@@ -101,15 +91,10 @@ impl NodeConfig {
 
 #[derive(Debug)]
 pub struct Node {
-    id: PeerId,
-    typ: NodeType,
     store: Store,
-    tx_pool: TransactionPool,
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
-    // --
-    nonce: u64,
 }
 
 pub async fn start(config: NodeConfig) -> EyreResult<()> {
@@ -194,7 +179,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
                 server = Box::pin(pending());
                 continue;
             }
-            Some(request) = server_receiver.recv() => node.handle_call(request).await,
+            Some(request) = server_receiver.recv() => node.handle_server_request(request).await,
             _ = catchup_interval_tick.tick() => node.perform_interval_catchup().await,
         }
     }
@@ -204,23 +189,18 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
 impl Node {
     #[must_use]
-    pub fn new(
-        config: &NodeConfig,
+    pub const fn new(
+        _config: &NodeConfig,
         network_client: NetworkClient,
         node_events: broadcast::Sender<NodeEvent>,
         ctx_manager: ContextManager,
         store: Store,
     ) -> Self {
         Self {
-            id: config.identity.public().to_peer_id(),
-            typ: config.node_type,
             store,
-            tx_pool: TransactionPool::default(),
             ctx_manager,
             network_client,
             node_events,
-            // --
-            nonce: 0,
         }
     }
 
@@ -296,132 +276,110 @@ impl Node {
         };
 
         match from_json_slice(&message.data)? {
-            PeerAction::Transaction(transaction) => {
-                debug!(?transaction, %source, "Received transaction");
+            PeerAction::ActionList(action_list) => {
+                debug!(?action_list, %source, "Received action list");
 
-                let handle = self.store.handle();
-
-                let ctx_meta_key = ContextMetaKey::new(transaction.context_id);
-                let prior_transaction_key = ContextTransactionKey::new(
-                    transaction.context_id,
-                    transaction.prior_hash.into(),
-                );
-
-                let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
-
-                if !handle.has(&ctx_meta_key)?
-                    || (transaction.prior_hash != Hash::default()
-                        && !handle.has(&prior_transaction_key)?
-                        && !self.typ.is_coordinator())
-                {
-                    info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
-
-                    self.perform_catchup(transaction.context_id, source).await?;
-
-                    let _ = self
-                        .ctx_manager
-                        .clear_context_pending_catchup(&transaction.context_id)
-                        .await;
-
-                    info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
-                };
-
-                let Some(context) = self.ctx_manager.get_context(&transaction.context_id)? else {
-                    bail!("Context '{}' not found", transaction.context_id);
-                };
-
-                if self.typ.is_coordinator() {
-                    let Some(pool_entry) = self.tx_pool.remove(&transaction_hash) else {
-                        return Ok(());
+                for action in action_list.actions {
+                    debug!(?action, %source, "Received action");
+                    let Some(mut context) =
+                        self.ctx_manager.get_context(&action_list.context_id)?
+                    else {
+                        bail!("Context '{}' not found", action_list.context_id);
                     };
-
-                    let _ = self
-                        .validate_pending_transaction(
-                            &context,
-                            pool_entry.transaction,
-                            transaction_hash,
-                        )
-                        .await?;
+                    match action {
+                        Action::Compare { id } => {
+                            self.send_comparison_message(&mut context, id, action_list.public_key)
+                                .await
+                        }
+                        Action::Add { .. } | Action::Delete { .. } | Action::Update { .. } => {
+                            self.apply_action(&mut context, &action, action_list.public_key)
+                                .await
+                        }
+                    }?;
                 }
+                Ok(())
             }
-            PeerAction::TransactionConfirmation(confirmation) => {
-                debug!(?confirmation, %source, "Received transaction confirmation");
-                // todo! ensure this was only sent by a coordinator
+            PeerAction::Sync(sync) => {
+                debug!(?sync, %source, "Received sync request");
 
-                let Some(TransactionPoolEntry {
-                    transaction,
-                    outcome_sender,
-                    ..
-                }) = self.tx_pool.remove(&confirmation.transaction_hash)
-                else {
-                    return Ok(());
+                let Some(mut context) = self.ctx_manager.get_context(&sync.context_id)? else {
+                    bail!("Context '{}' not found", sync.context_id);
                 };
+                let outcome = self
+                    .compare_trees(&mut context, &sync.comparison, sync.public_key)
+                    .await?;
 
-                let outcome_result = self
-                    .execute_in_context(confirmation.transaction_hash, transaction)
-                    .await;
+                match outcome.returns {
+                    Ok(Some(actions_data)) => {
+                        let (local_actions, remote_actions): (Vec<Action>, Vec<Action>) =
+                            from_json_slice(&actions_data)?;
 
-                if let Some(outcome_sender) = outcome_sender {
-                    drop(outcome_sender.send(outcome_result));
+                        // Apply local actions
+                        for action in local_actions {
+                            match action {
+                                Action::Compare { id } => {
+                                    self.send_comparison_message(&mut context, id, sync.public_key)
+                                        .await
+                                }
+                                Action::Add { .. }
+                                | Action::Delete { .. }
+                                | Action::Update { .. } => {
+                                    self.apply_action(&mut context, &action, sync.public_key)
+                                        .await
+                                }
+                            }?;
+                        }
+
+                        if !remote_actions.is_empty() {
+                            // Send remote actions back to the peer
+                            // TODO: This just sends one at present - needs to send a batch
+                            let new_message = ActionMessage {
+                                actions: remote_actions,
+                                context_id: sync.context_id,
+                                public_key: sync.public_key,
+                                root_hash: context.root_hash,
+                            };
+                            self.push_action(sync.context_id, PeerAction::ActionList(new_message))
+                                .await?;
+                        }
+                    }
+                    Ok(None) => {
+                        // No actions needed
+                    }
+                    Err(err) => {
+                        error!("Error during comparison: {err:?}");
+                        // TODO: Handle the error appropriately
+                    }
                 }
-            }
-            PeerAction::TransactionRejection(rejection) => {
-                debug!(?rejection, %source, "Received transaction rejection");
-                // todo! ensure this was only sent by a coordinator
-
-                let _ = self.reject_from_pool(rejection.transaction_hash);
-
-                info!(context_id=%rejection.context_id, %source, "Attempting to perform rejection triggered catchup");
-
-                self.perform_catchup(rejection.context_id, source).await?;
-
-                let _ = self
-                    .ctx_manager
-                    .clear_context_pending_catchup(&rejection.context_id)
-                    .await;
-
-                info!(context_id=%rejection.context_id, %source, "Rejection triggered catchup successfully finished");
+                Ok(())
             }
         }
-
-        Ok(())
     }
 
-    async fn validate_pending_transaction(
+    async fn send_comparison_message(
         &mut self,
-        context: &Context,
-        transaction: Transaction,
-        transaction_hash: Hash,
-    ) -> EyreResult<bool> {
-        if context.last_transaction_hash == transaction.prior_hash {
-            self.nonce = self.nonce.saturating_add(1);
-
-            self.push_action(
-                transaction.context_id,
-                PeerAction::TransactionConfirmation(TransactionConfirmation {
-                    context_id: transaction.context_id,
-                    nonce: self.nonce,
-                    transaction_hash,
-                    // todo! proper confirmation hash
-                    confirmation_hash: transaction_hash,
-                }),
-            )
+        context: &mut Context,
+        id: Id,
+        public_key: PublicKey,
+    ) -> EyreResult<()> {
+        let compare_outcome = self
+            .generate_comparison_data(context, id, public_key)
             .await?;
-
-            self.persist_transaction(context, transaction, transaction_hash)?;
-
-            Ok(true)
-        } else {
-            self.push_action(
-                transaction.context_id,
-                PeerAction::TransactionRejection(TransactionRejection {
-                    context_id: transaction.context_id,
-                    transaction_hash,
-                }),
-            )
-            .await?;
-
-            Ok(false)
+        match compare_outcome.returns {
+            Ok(Some(comparison_data)) => {
+                // Generate a new Comparison for this entity and send it to the peer
+                let new_sync = SyncMessage {
+                    comparison: from_json_slice(&comparison_data)?,
+                    context_id: context.id,
+                    public_key,
+                    root_hash: context.root_hash,
+                };
+                self.push_action(context.id, PeerAction::Sync(new_sync))
+                    .await?;
+                Ok(())
+            }
+            Ok(None) => Err(eyre!("No comparison data generated")),
+            Err(err) => Err(eyre!(err)),
         }
     }
 
@@ -435,288 +393,147 @@ impl Node {
         Ok(())
     }
 
-    pub async fn handle_call(&mut self, request: ExecutionRequest) {
-        let Ok(Some(context)) = self.ctx_manager.get_context(&request.context_id) else {
-            drop(request.outcome_sender.send(Err(CallError::ContextNotFound {
-                context_id: request.context_id,
-            })));
-            return;
-        };
+    pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
+        let task = self.handle_call(
+            request.context_id,
+            request.method,
+            request.payload,
+            request.executor_public_key,
+        );
 
-        if let Some(finality) = request.finality {
-            let transaction = Transaction::new(
-                context.id,
-                request.method,
-                request.payload,
-                context.last_transaction_hash,
-                request.executor_public_key,
-            );
+        drop(request.outcome_sender.send(task.await.map_err(|err| {
+            error!(%err, "failed to execute local query");
 
-            match finality {
-                Finality::Local => {
-                    let task = async {
-                        let hash = Hash::hash_json(&transaction)?;
-
-                        self.execute_transaction(&context, transaction, hash).await
-                    };
-
-                    drop(request.outcome_sender.send(task.await.map_err(|err| {
-                        error!(%err, "failed to execute local transaction");
-
-                        CallError::Mutate(MutateCallError::InternalError)
-                    })));
-                }
-                Finality::Global => {
-                    let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
-
-                    if let Err(err) = self
-                        .call_mutate(&context, transaction, inner_outcome_sender)
-                        .await
-                    {
-                        drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
-                        return;
-                    }
-
-                    drop(spawn(async move {
-                        match inner_outcome_receiver.await {
-                            Ok(outcome) => match outcome {
-                                Ok(outcome) => {
-                                    drop(request.outcome_sender.send(Ok(outcome)));
-                                }
-                                Err(err) => {
-                                    drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
-                                }
-                            },
-                            Err(err) => {
-                                error!("Failed to receive inner outcome of a transaction: {}", err);
-                                drop(
-                                    request.outcome_sender.send(Err(CallError::Mutate(
-                                        MutateCallError::InternalError,
-                                    ))),
-                                );
-                            }
-                        }
-                    }));
-                }
-            }
-        } else {
-            match self
-                .call_query(
-                    &context,
-                    request.method,
-                    request.payload,
-                    request.executor_public_key,
-                )
-                .await
-            {
-                Ok(outcome) => {
-                    drop(request.outcome_sender.send(Ok(outcome)));
-                }
-                Err(err) => {
-                    drop(request.outcome_sender.send(Err(CallError::Query(err))));
-                }
-            };
-        }
+            CallError::InternalError
+        })));
     }
 
-    async fn call_query(
+    async fn handle_call(
         &mut self,
-        context: &Context,
+        context_id: ContextId,
         method: String,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
-    ) -> Result<Outcome, QueryCallError> {
-        if !self
-            .ctx_manager
-            .is_application_installed(&context.application_id)
-            .unwrap_or_default()
-        {
-            return Err(QueryCallError::ApplicationNotInstalled {
-                application_id: context.application_id,
-            });
-        }
+    ) -> Result<Outcome, CallError> {
+        let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
+            return Err(CallError::ContextNotFound { context_id });
+        };
 
-        self.execute(context, None, method, payload, executor_public_key)
+        let outcome_option = self
+            .execute(&mut context, method, payload, executor_public_key)
             .await
             .map_err(|e| {
-                error!(%e,"Failed to execute query call.");
-                QueryCallError::InternalError
-            })
-    }
+                error!(%e, "Failed to execute query call.");
+                CallError::InternalError
+            })?;
 
-    async fn call_mutate(
-        &mut self,
-        context: &Context,
-        transaction: Transaction,
-        outcome_sender: oneshot::Sender<Result<Outcome, MutateCallError>>,
-    ) -> Result<Hash, MutateCallError> {
-        if context.id != transaction.context_id {
-            return Err(MutateCallError::TransactionRejected);
-        }
-
-        if self.typ.is_coordinator() {
-            return Err(MutateCallError::InvalidNodeType {
-                node_type: self.typ,
-            });
-        }
-
-        if !self
-            .ctx_manager
-            .is_application_installed(&context.application_id)
-            .unwrap_or_default()
-        {
-            return Err(MutateCallError::ApplicationNotInstalled {
+        let Some(outcome) = outcome_option else {
+            return Err(CallError::ApplicationNotInstalled {
                 application_id: context.application_id,
             });
-        }
+        };
 
         if self
             .network_client
             .mesh_peer_count(TopicHash::from_raw(context.id))
             .await
-            == 0
+            != 0
         {
-            return Err(MutateCallError::NoConnectedPeers);
-        }
+            let actions = outcome
+                .actions
+                .iter()
+                .map(|a| borsh::from_slice(a))
+                .collect::<Result<Vec<Action>, _>>()
+                .map_err(|err| {
+                    error!(%err, "Failed to deserialize actions.");
+                    CallError::InternalError
+                })?;
 
-        self.push_action(context.id, PeerAction::Transaction(transaction.clone()))
+            self.push_action(
+                context.id,
+                PeerAction::ActionList(ActionMessage {
+                    actions,
+                    context_id: context.id,
+                    public_key: executor_public_key,
+                    root_hash: context.root_hash,
+                }),
+            )
             .await
             .map_err(|err| {
-                error!(%err, "Failed to push transaction over the network.");
-                MutateCallError::InternalError
+                error!(%err, "Failed to push action over the network.");
+                CallError::InternalError
             })?;
-
-        let tx_hash = self
-            .tx_pool
-            .insert(self.id, transaction, Some(outcome_sender))
-            .map_err(|err| {
-                error!(%err, "Failed to insert transaction into the pool.");
-                MutateCallError::InternalError
-            })?;
-
-        Ok(tx_hash)
-    }
-
-    async fn execute_in_context(
-        &mut self,
-        transaction_hash: Hash,
-        transaction: Transaction,
-    ) -> Result<Outcome, MutateCallError> {
-        let Some(context) = self
-            .ctx_manager
-            .get_context(&transaction.context_id)
-            .map_err(|e| {
-                error!(%e, "Failed to get context");
-                MutateCallError::InternalError
-            })?
-        else {
-            error!(%transaction.context_id, "Context not found");
-            return Err(MutateCallError::InternalError);
-        };
-
-        if context.last_transaction_hash != transaction.prior_hash {
-            error!(
-                context_id=%transaction.context_id,
-                %transaction_hash,
-                prior_hash=%transaction.prior_hash,
-                "Transaction from the pool doesn't build on last transaction",
-            );
-            return Err(MutateCallError::TransactionRejected);
         }
-
-        let outcome = self
-            .execute_transaction(&context, transaction, transaction_hash)
-            .await
-            .map_err(|e| {
-                error!(%e, "Failed to execute transaction");
-                MutateCallError::InternalError
-            })?;
 
         Ok(outcome)
     }
 
-    async fn execute_transaction(
+    async fn apply_action(
         &mut self,
-        context: &Context,
-        transaction: Transaction,
-        hash: Hash,
-    ) -> EyreResult<Outcome> {
+        context: &mut Context,
+        action: &Action,
+        public_key: PublicKey,
+    ) -> EyreResult<()> {
         let outcome = self
             .execute(
                 context,
-                Some(hash),
-                transaction.method.clone(),
-                transaction.payload.clone(),
-                transaction.executor_public_key,
+                "apply_action".to_owned(),
+                to_vec(action)?,
+                public_key,
             )
-            .await?;
-
-        self.persist_transaction(context, transaction, hash)?;
-
-        Ok(outcome)
-    }
-
-    fn reject_from_pool(&mut self, hash: Hash) -> Option<()> {
-        let TransactionPoolEntry { outcome_sender, .. } = self.tx_pool.remove(&hash)?;
-
-        if let Some(sender) = outcome_sender {
-            drop(sender.send(Err(MutateCallError::TransactionRejected)));
-        }
-
-        Some(())
-    }
-
-    fn persist_transaction(
-        &self,
-        context: &Context,
-        transaction: Transaction,
-        hash: Hash,
-    ) -> EyreResult<()> {
-        let mut handle = self.store.handle();
-
-        handle.put(
-            &ContextTransactionKey::new(context.id, hash.into()),
-            &ContextTransaction::new(
-                transaction.method.into(),
-                transaction.payload.into(),
-                *transaction.prior_hash,
-                *transaction.executor_public_key,
-            ),
-        )?;
-
-        handle.put(
-            &ContextMetaKey::new(context.id),
-            &ContextMeta::new(
-                ApplicationMetaKey::new(context.application_id),
-                *hash.as_bytes(),
-            ),
-        )?;
-
+            .await
+            .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))?;
+        drop(outcome.returns?);
         Ok(())
+    }
+
+    async fn compare_trees(
+        &mut self,
+        context: &mut Context,
+        comparison: &Comparison,
+        public_key: PublicKey,
+    ) -> EyreResult<Outcome> {
+        self.execute(
+            context,
+            "compare_trees".to_owned(),
+            to_vec(comparison)?,
+            public_key,
+        )
+        .await
+        .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
+    }
+
+    async fn generate_comparison_data(
+        &mut self,
+        context: &mut Context,
+        id: Id,
+        public_key: PublicKey,
+    ) -> EyreResult<Outcome> {
+        self.execute(
+            context,
+            "generate_comparison_data".to_owned(),
+            to_vec(&id)?,
+            public_key,
+        )
+        .await
+        .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
     }
 
     async fn execute(
         &mut self,
-        context: &Context,
-        hash: Option<Hash>,
+        context: &mut Context,
         method: String,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
-    ) -> EyreResult<Outcome> {
-        let mut storage = match hash {
-            Some(_) => RuntimeCompatStore::temporal(&mut self.store, context.id),
-            None => RuntimeCompatStore::read_only(&self.store, context.id),
-        };
+    ) -> EyreResult<Option<Outcome>> {
+        let mut storage = RuntimeCompatStore::new(&mut self.store, context.id);
 
         let Some(blob) = self
             .ctx_manager
             .load_application_blob(&context.application_id)
             .await?
         else {
-            bail!(
-                "fatal error: missing blob for application `{}`",
-                context.application_id
-            );
+            return Ok(None);
         };
 
         let outcome = calimero_runtime::run(
@@ -727,39 +544,47 @@ impl Node {
             &get_runtime_limits()?,
         )?;
 
-        if let Some(hash) = hash {
-            assert!(storage.commit()?, "do we have a non-temporal store?");
+        if outcome.returns.is_ok() {
+            if let Some(root_hash) = outcome.root_hash {
+                if outcome.actions.is_empty() {
+                    eyre::bail!("Context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+                }
 
-            // todo! return an error to the caller if the method did not write to storage
-            // todo! debate: when we switch to optimistic execution
-            // todo! we won't have query vs. mutate methods anymore, so this shouldn't matter
+                context.root_hash = root_hash.into();
+
+                drop(
+                    self.node_events
+                        .send(NodeEvent::Application(ApplicationEvent::new(
+                            context.id,
+                            ApplicationEventPayload::StateMutation(StateMutationPayload::new(
+                                context.root_hash,
+                            )),
+                        ))),
+                );
+
+                self.ctx_manager.save_context(context)?;
+            }
+
+            if !storage.is_empty() {
+                storage.commit()?;
+            }
 
             drop(
                 self.node_events
                     .send(NodeEvent::Application(ApplicationEvent::new(
                         context.id,
-                        ApplicationEventPayload::TransactionExecuted(
-                            ExecutedTransactionPayload::new(hash),
-                        ),
+                        ApplicationEventPayload::OutcomeEvent(OutcomeEventPayload::new(
+                            outcome
+                                .events
+                                .iter()
+                                .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
+                                .collect(),
+                        )),
                     ))),
             );
         }
 
-        drop(
-            self.node_events
-                .send(NodeEvent::Application(ApplicationEvent::new(
-                    context.id,
-                    ApplicationEventPayload::OutcomeEvent(OutcomeEventPayload::new(
-                        outcome
-                            .events
-                            .iter()
-                            .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
-                            .collect(),
-                    )),
-                ))),
-        );
-
-        Ok(outcome)
+        Ok(Some(outcome))
     }
 }
 

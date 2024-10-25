@@ -2,9 +2,7 @@
 
 - [Introduction](#introduction)
 - [Core components](#core-components)
-  - [NodeType](#nodetype)
   - [Store](#store)
-  - [TransactionPool](#transactionpool)
 - [Core flows](#core-flows)
   - [Transaction handling](#transaction-handling)
   - [Coordinator joining ceremony](#coordinator-joining-ceremony)
@@ -23,20 +21,13 @@ interactive CLI.
 ```mermaid
 classDiagram
     Node : +PeerId id
-    Node : +NodeType typ
     Node : +Store store
-    Node : +TransacitonPool tx_pool
     Node : +ContextManager ctx_manager
     Node : +NetworkClient network_client
     Node : +Sender[NodeEvents] node_events
     Node: +handle_event()
     Node: +handle_call()
 ```
-
-### NodeType
-
-`NodeType` is an enum that represents the type of the node. It can be either
-`Coordinator` or `Peer`.
 
 ### Store
 
@@ -58,68 +49,7 @@ Important structs in the store are:
 - `ContextMeta`:
   https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/store/src/types/context.rs#L16
 
-### TransactionPool
-
-`TransactionPool` is a struct that holds all the transactions that are not yet
-executed. Transaction pool stores transactions in a `BTreeMap` with the key
-being the hash of the transaction. `TransactionPoolEntry` is a struct that holds
-the transaction, the sender of a transaction and the outcomen sender channel.
-
 ## Core flows
-
-### Transaction handling
-
-The following diagram illustrates the process of mutate request handling in the
-Calimero Node. Components involved in the process are:
-
-- Client: The client that sends the request to the server. The only component
-  outside the node binary.
-- Server: Represent `server` crate.
-- Node: Represents `node` crate.
-- Network: Represents `network` crate. NetworkClient is used to push commands to
-  the network, while NetworkEvent(s) are used to notify the node.
-- Runtime: Represents `runtime` crate. The runtime is responsible for running a
-  method on a loaded WASM.
-
-Notable structs:
-
-- `MutateRequest` from the server primitives:
-  https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/server-primitives/src/jsonrpc.rs#L194
-- `ExecutionRequest` from the node primitives:
-  https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/node-primitives/src/lib.rs#L28
-- `Transaction` from the primitives:
-  https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/primitives/src/transaction.rs#L9
-- `TransactionConfirmation` from the node:
-  https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/node/src/types.rs#L18
-- `NetworkEvent` from the network:
-  https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/network/src/types.rs#L10
-- `Context` from the the primitives:
-  https://github.com/calimero-network/core/blob/37bd68d67ca9024c008bb4746809a10edd8d9750/crates/primitives/src/context.rs#L180
-
-```mermaid
-sequenceDiagram
-    Client->>+Server: Send via HTTP - MutateRequest
-    Server->>+Node: Send via mpsc channel - ExecutionRequest
-    Node->>Network: Publish via pubsub - Transaction
-
-    Node->>Node: Store Transaction in TransactionPool
-
-    Network->>Node: NetworkEvent(Message(TransactionConfirmation))
-    Node->>Node: Remove Transaction from TransactionPool
-    Node->>+ContextManager: GetContext
-    ContextManager->>-Node: Context
-    Node->>+ContextManager: LoadApplicationBlob
-    ContextManager->>-Node: Vec<u8>
-
-    Node->>+Runtime: Run(Blob, Method, VMContext, Storage)
-    Runtime->>-Node: Outcome
-    Node->>+Storage: CommitChanges
-    Storage->>-Node: Result
-    Node->>Node: Persist Transaction
-
-    Node->>-Server: Result
-    Server->>-Client: Response(Result)
-```
 
 ### Catchup
 

@@ -11,6 +11,7 @@ borsh = { workspace = true, features = ["derive"] }
 fragile.workspace = true
 ouroboros.workspace = true
 owo-colors = { workspace = true, optional = true }
+rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 ureq.workspace = true

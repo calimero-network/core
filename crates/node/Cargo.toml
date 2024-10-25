@@ -7,6 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+borsh.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap.workspace = true
 eyre.workspace = true
@@ -28,6 +29,7 @@ calimero-node-primitives = { path = "../node-primitives" }
 calimero-primitives = { path = "../primitives" }
 calimero-runtime = { path = "../runtime" }
 calimero-server = { path = "../server", features = ["jsonrpc", "websocket", "admin"] }
+calimero-storage = { path = "../storage" }
 calimero-store = { path = "../store", features = ["datatypes"] }
 
 [lints]

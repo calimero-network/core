@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use axum::routing::{post, MethodRouter};
 use axum::{Extension, Json};
-use calimero_node_primitives::{
-    CallError as PrimitiveCallError, ExecutionRequest, Finality, ServerSender,
-};
+use calimero_node_primitives::{CallError as PrimitiveCallError, ExecutionRequest, ServerSender};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
@@ -18,8 +16,9 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info};
 
-mod mutate;
-mod query;
+use crate::config::ServerConfig;
+
+mod execute;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -69,8 +68,7 @@ async fn handle_request(
     debug!(?request, "Received request");
     let body = match from_json_value::<RequestPayload>(request.payload) {
         Ok(payload) => match payload {
-            RequestPayload::Query(request) => request.handle(state).await.to_res_body(),
-            RequestPayload::Mutate(request) => request.handle(state).await.to_res_body(),
+            RequestPayload::Execute(request) => request.handle(state).await.to_res_body(),
             _ => unreachable!("Unsupported JSON RPC method"),
         },
         Err(err) => {
@@ -153,7 +151,6 @@ pub(crate) async fn call(
     context_id: ContextId,
     method: String,
     args: Vec<u8>,
-    writes: bool,
     executor_public_key: PublicKey,
 ) -> Result<Option<String>, CallError> {
     let (outcome_sender, outcome_receiver) = oneshot::channel();
@@ -165,7 +162,6 @@ pub(crate) async fn call(
             args,
             executor_public_key,
             outcome_sender,
-            writes.then_some(Finality::Global),
         ))
         .await
         .map_err(|e| CallError::InternalError(eyre!("Failed to send call message: {}", e)))?;
@@ -216,5 +212,3 @@ macro_rules! mount_method {
 }
 
 pub(crate) use mount_method;
-
-use crate::config::ServerConfig;
