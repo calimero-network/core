@@ -12,6 +12,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
+use calimero_crypto::SharedKey;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
@@ -37,6 +38,7 @@ use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use owo_colors::OwoColorize;
+use ring::aead;
 use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
@@ -53,6 +55,23 @@ pub mod runtime_compat;
 pub mod types;
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
+
+// TODO: delete once miraclx lands catchup logic
+pub fn get_shared_key() -> Result<SharedKey, ed25519_dalek::SignatureError> {
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[
+        0x1b, 0x2e, 0x3d, 0x4c, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0,
+        0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x0f, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1,
+        0xf0, 0x00,
+    ]);
+
+    let verifying_key = ed25519_dalek::SigningKey::from_bytes(&[
+        0x1b, 0x5e, 0x3d, 0x4c, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0,
+        0x3f, 0x1e, 0x0d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0x01,
+        0xf0, 0x00,
+    ]);
+
+    Ok(SharedKey::new(&signing_key, &verifying_key.verifying_key()))
+}
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -275,7 +294,15 @@ impl Node {
             return Ok(());
         };
 
-        match from_json_slice(&message.data)? {
+        // TODO: remove once miraclx lands catchup logic
+        let decryption_key = get_shared_key().map_err(|err| eyre!(err))?;
+        let action = from_json_slice::<PeerAction>(
+            &decryption_key
+                .decrypt(message.data, [0u8; aead::NONCE_LEN])
+                .ok_or_else(|| eyre!("Failed to decrypt message"))?,
+        )?;
+
+        match action {
             PeerAction::ActionList(action_list) => {
                 debug!(?action_list, %source, "Received action list");
 
@@ -388,9 +415,14 @@ impl Node {
     }
 
     async fn push_action(&self, context_id: ContextId, action: PeerAction) -> EyreResult<()> {
+        // TODO:: remove once miraclx lands catchup logic
+        let encryption_key = get_shared_key().map_err(|err| eyre!(err))?;
+        let data = encryption_key
+            .encrypt(to_json_vec(&action)?, [0; aead::NONCE_LEN])
+            .unwrap();
         drop(
             self.network_client
-                .publish(TopicHash::from_raw(context_id), to_json_vec(&action)?)
+                .publish(TopicHash::from_raw(context_id), data)
                 .await?,
         );
 

@@ -9,10 +9,12 @@ license.workspace = true
 [dependencies]
 curve25519-dalek.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
-eyre.workspace = true
-serde = { workspace = true, features = ["derive"] }
-rand.workspace = true
 ring.workspace = true
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+eyre.workspace = true
+rand.workspace = true
 
 [lints]
 workspace = true

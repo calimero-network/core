@@ -11,10 +11,12 @@ borsh.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 clap.workspace = true
 eyre.workspace = true
+ed25519-dalek.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 libp2p.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
+ring.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
