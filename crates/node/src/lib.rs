@@ -18,7 +18,7 @@ use calimero_network::types::{NetworkEvent, PeerId};
 use calimero_node_primitives::{CallError, ExecutionRequest};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ContextEvent, ContextEventPayload, NodeEvent, OutcomeEvent, OutcomeEventPayload,
+    ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
     StateMutationPayload,
 };
 use calimero_primitives::identity::PublicKey;
@@ -590,11 +590,11 @@ impl Node {
             drop(
                 self.node_events.send(NodeEvent::Context(ContextEvent::new(
                     context.id,
-                    ContextEventPayload::OutcomeEvent(OutcomeEventPayload::new(
+                    ContextEventPayload::ExecutionEvent(ExecutionEventPayload::new(
                         outcome
                             .events
                             .iter()
-                            .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
+                            .map(|e| ExecutionEvent::new(e.kind.clone(), e.data.clone()))
                             .collect(),
                     )),
                 ))),

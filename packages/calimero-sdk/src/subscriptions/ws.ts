@@ -27,7 +27,7 @@ interface UnsubscribeRequest {
 export class WsSubscriptionsClient implements SubscriptionsClient {
   private readonly url: string;
   private connections: Map<string, WebSocket>;
-  private callbacks: Map<string, Array<(data: NodeEvent) => void>>;
+  private callbacks: Map<string, Array<(event: NodeEvent) => void>>;
 
   public constructor(baseUrl: string, path: string) {
     this.url = `${baseUrl}${path}`;
@@ -98,7 +98,7 @@ export class WsSubscriptionsClient implements SubscriptionsClient {
   }
 
   public addCallback(
-    callback: (data: NodeEvent) => void,
+    callback: (event: NodeEvent) => void,
     connectionId: string = DEFAULT_CONNECTION_ID,
   ): void {
     if (!this.callbacks.has(connectionId)) {
@@ -109,7 +109,7 @@ export class WsSubscriptionsClient implements SubscriptionsClient {
   }
 
   public removeCallback(
-    callback: (data: NodeEvent) => void,
+    callback: (event: NodeEvent) => void,
     connectionId: string = DEFAULT_CONNECTION_ID,
   ): void {
     const callbacks = this.callbacks.get(connectionId);

@@ -35,7 +35,7 @@ impl ContextEvent {
 #[expect(variant_size_differences, reason = "fine for now")]
 pub enum ContextEventPayload {
     StateMutation(StateMutationPayload),
-    OutcomeEvent(OutcomeEventPayload),
+    ExecutionEvent(ExecutionEventPayload),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -54,12 +54,12 @@ impl StateMutationPayload {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
-pub struct OutcomeEvent {
+pub struct ExecutionEvent {
     pub kind: String,
     pub data: Vec<u8>,
 }
 
-impl OutcomeEvent {
+impl ExecutionEvent {
     #[must_use]
     pub const fn new(kind: String, data: Vec<u8>) -> Self {
         Self { kind, data }
@@ -69,13 +69,13 @@ impl OutcomeEvent {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct OutcomeEventPayload {
-    pub events: Vec<OutcomeEvent>,
+pub struct ExecutionEventPayload {
+    pub events: Vec<ExecutionEvent>,
 }
 
-impl OutcomeEventPayload {
+impl ExecutionEventPayload {
     #[must_use]
-    pub const fn new(events: Vec<OutcomeEvent>) -> Self {
+    pub const fn new(events: Vec<ExecutionEvent>) -> Self {
         Self { events }
     }
 }

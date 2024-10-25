@@ -5,26 +5,32 @@ export interface SubscriptionsClient {
   disconnect(connectionId?: string): void;
   subscribe(contextIds: string[], connectionId?: string): void;
   unsubscribe(contextIds: string[], connectionId?: string): void;
-  addCallback(callback: (data: NodeEvent) => void, connectionId?: string): void;
+  addCallback(callback: (event: NodeEvent) => void, connectionId?: string): void;
   removeCallback(
-    callback: (data: NodeEvent) => void,
+    callback: (event: NodeEvent) => void,
     connectionId?: string,
   ): void;
 }
 
-export type NodeEvent = ApplicationEvent;
+export type NodeEvent = ContextEvent;
 
-export interface ApplicationEvent {
-  context_id: ContextId;
-  type: 'TransactionExecuted';
-  data: OutcomeEvents;
+export type ContextEvent = ContextEventPayload & {
+  contextId: ContextId;
 }
 
-export interface OutcomeEvent {
-  kind: String;
-  data: number[];
+type ContextEventPayload = {
+  type: 'StateMutation',
+  data: StateMutation,
+} | {
+  type: 'ExecutionEvent',
+  data: ExecutionEvent,
+};
+
+export interface StateMutation {
+  newRoot: string;
 }
 
-export interface OutcomeEvents {
-  events: OutcomeEvent[];
+export interface ExecutionEvent {
+  kind: string,
+  data: any,
 }
