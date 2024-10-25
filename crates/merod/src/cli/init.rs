@@ -1,6 +1,5 @@
 use core::net::IpAddr;
 use core::time::Duration;
-use std::collections::BTreeMap;
 use std::fs::{create_dir, create_dir_all};
 
 use calimero_config::{
@@ -12,7 +11,7 @@ use calimero_context_config::client::config::{
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
     Credentials, Protocol as ConfigProtocol,
 };
-use calimero_context_config::client::near;
+use calimero_context_config::client::{near, starknet as starknetCredentials};
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -29,6 +28,7 @@ use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
 use rand::{thread_rng, Rng};
+use starknet_signers::SigningKey;
 use tracing::{info, warn};
 use url::Url;
 
@@ -184,38 +184,39 @@ impl InitCommand {
                     signer: ContextConfigClientSigner {
                         selected: ContextConfigClientSelectedSigner::Relayer,
                         relayer: ContextConfigClientRelayerSigner { url: relayer },
-                        local: match self.protocol {
-                            ConfigProtocol::Near => [
-                                (
-                                    "mainnet".to_owned(),
-                                    generate_local_signer("https://rpc.mainnet.near.org".parse()?)?,
-                                ),
-                                (
-                                    "testnet".to_owned(),
-                                    generate_local_signer("https://rpc.testnet.near.org".parse()?)?,
-                                ),
-                            ]
-                            .into_iter()
-                            .collect(),
-                            ConfigProtocol::Starknet => [
-                                (
-                                    "mainnet".to_owned(),
-                                    generate_local_signer(
-                                        "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7"
-                                            .parse()?,
-                                    )?,
-                                ),
-                                (
-                                    "sepolia".to_owned(),
-                                    generate_local_signer(
-                                        "https://free-rpc.nethermind.io/sepolia-juno/".parse()?,
-                                    )?,
-                                ),
-                            ]
-                            .into_iter()
-                            .collect(),
-                            _ => BTreeMap::new(),
-                        },
+                        local: [
+                            (
+                                "mainnet".to_owned(),
+                                generate_local_signer(
+                                    "https://rpc.mainnet.near.org".parse()?,
+                                    ConfigProtocol::Near,
+                                )?,
+                            ),
+                            (
+                                "testnet".to_owned(),
+                                generate_local_signer(
+                                    "https://rpc.testnet.near.org".parse()?,
+                                    ConfigProtocol::Near,
+                                )?,
+                            ),
+                            (
+                                "mainnet-starknet".to_owned(),
+                                generate_local_signer(
+                                    "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7"
+                                        .parse()?,
+                                    ConfigProtocol::Starknet,
+                                )?,
+                            ),
+                            (
+                                "sepolia-starknet".to_owned(),
+                                generate_local_signer(
+                                    "https://free-rpc.nethermind.io/sepolia-juno/".parse()?,
+                                    ConfigProtocol::Starknet,
+                                )?,
+                            ),
+                        ]
+                        .into_iter()
+                        .collect(),
                     },
                     new: ContextConfigClientNew {
                         network: match self.protocol {
@@ -272,19 +273,39 @@ impl InitCommand {
     }
 }
 
-fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSigner> {
-    let secret_key = SecretKey::from_random(KeyType::ED25519);
+fn generate_local_signer(
+    rpc_url: Url,
+    config_protocol: ConfigProtocol,
+) -> EyreResult<ContextConfigClientLocalSigner> {
+    match config_protocol {
+        ConfigProtocol::Near => {
+            let secret_key = SecretKey::from_random(KeyType::ED25519);
+            let public_key = secret_key.public_key();
+            let account_id = public_key.unwrap_as_ed25519().0;
 
-    let public_key = secret_key.public_key();
+            Ok(ContextConfigClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::Near(near::Credentials {
+                    account_id: hex::encode(account_id).parse()?,
+                    public_key,
+                    secret_key,
+                }),
+            })
+        }
+        ConfigProtocol::Starknet => {
+            let keypair = SigningKey::from_random();
+            let secret_key = SigningKey::secret_scalar(&keypair);
+            let public_key = keypair.verifying_key().scalar();
 
-    let account_id = public_key.unwrap_as_ed25519().0;
-
-    Ok(ContextConfigClientLocalSigner {
-        rpc_url,
-        credentials: Credentials::Near(near::Credentials {
-            account_id: hex::encode(account_id).parse()?,
-            public_key,
-            secret_key,
-        }),
-    })
+            Ok(ContextConfigClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::Starknet(starknetCredentials::Credentials {
+                    account_id: public_key,
+                    public_key,
+                    secret_key,
+                }),
+            })
+        }
+        _ => todo!(),
+    }
 }
