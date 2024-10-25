@@ -13,6 +13,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
+use calimero_crypto::SharedKey;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
@@ -35,7 +36,10 @@ use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
+use owo_colors::OwoColorize;
 use rand::{thread_rng, Rng};
+use ring::aead;
+use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -52,6 +56,23 @@ use sync::SyncConfig;
 use types::BroadcastMessage;
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
+
+// TODO: delete once miraclx lands catchup logic
+pub fn get_shared_key() -> Result<SharedKey, ed25519_dalek::SignatureError> {
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[
+        0x1b, 0x2e, 0x3d, 0x4c, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0,
+        0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x0f, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1,
+        0xf0, 0x00,
+    ]);
+
+    let verifying_key = ed25519_dalek::SigningKey::from_bytes(&[
+        0x1b, 0x5e, 0x3d, 0x4c, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0,
+        0x3f, 0x1e, 0x0d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0x01,
+        0xf0, 0x00,
+    ]);
+
+    Ok(SharedKey::new(&signing_key, &verifying_key.verifying_key()))
+}
 
 #[derive(Debug)]
 #[non_exhaustive]

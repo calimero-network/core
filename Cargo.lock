@@ -1231,17 +1231,23 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",
+ "calimero-storage",
  "calimero-store",
  "camino",
  "clap",
+ "ed25519-dalek 2.1.1",
  "eyre",
  "futures-util",
  "libp2p",
  "owo-colors",
  "rand 0.8.5",
+ "ring 0.17.8",
+ "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
