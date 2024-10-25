@@ -1,4 +1,4 @@
-use core::str;
+use core::{num, str};
 use std::collections::HashSet;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
@@ -89,7 +89,7 @@ impl ProxyContract {
         }
     }
 
-    pub fn create_proposal(&mut self, proposal: Signed<Proposal>) -> ProposalId {
+    pub fn create_and_approve_proposal(&self, proposal: Signed<Proposal>) -> Promise {
         // Verify the signature corresponds to the signer_id
         let proposal = proposal.parse(|i| *i.author_id).expect("failed to parse input");
 
@@ -100,21 +100,7 @@ impl ProxyContract {
             num_proposals <= self.active_proposals_limit,
             "Account has too many active proposals. Confirm or delete some."
         );
-        self.num_proposals_pk
-            .insert(*proposal.author_id, num_proposals);
-
-        self.proposals.insert(self.proposal_nonce, proposal.clone());
-        self.approvals.insert(self.proposal_nonce, HashSet::new());
-        self.proposal_nonce += 1;
-        self.proposal_nonce - 1
-    }
-
-    pub fn create_and_approve_proposal(&mut self, proposal: Signed<Proposal>) -> Promise {
-        let proposal_id = self.create_proposal(proposal.clone());
-        let proposal = proposal.parse(|i| *i.author_id).expect("failed to parse input");
-
-        log!("Starting approval...");
-        return self.approve_by_member(proposal.author_id, proposal_id);
+        return self.create_by_member(proposal, num_proposals)
     }
 
     pub fn approve(&mut self, request: Signed<ConfirmationRequestWithSigner>) -> Promise {
@@ -144,6 +130,16 @@ impl ProxyContract {
             .has_member(self.context_id, identity)
             .then(
                 Self::ext(env::current_account_id()).internal_process_members(identity, request_id),
+            )
+    }
+
+    fn create_by_member(&self, proposal: Proposal, num_proposals: u32) -> Promise {
+        log!("Starting fetch_members...");
+        config_contract::ext(self.context_config_account_id.clone())
+            .with_static_gas(Gas::from_tgas(5))
+            .has_member(self.context_id, proposal.author_id)
+            .then(
+                Self::ext(env::current_account_id()).internal_create_proposal(proposal, num_proposals),
             )
     }
 
@@ -183,4 +179,34 @@ impl ProxyContract {
             num_approvals: self.get_confirmations_count(request_id).num_approvals,
         };
     }
+
+    #[private]
+    pub fn internal_create_proposal(
+        &mut self,
+        proposal: Proposal,
+        num_proposals: u32,
+        #[callback_result] call_result: Result<bool, PromiseError>, // Match the return type
+    ) -> ProposalWithApprovals {
+        assert!(call_result.is_ok(), "Error: Membership check failed");
+        assert!(call_result.unwrap(), "Error: Is not a member");
+        log!("Success: Membership confirmed");
+
+        self.num_proposals_pk
+            .insert(*proposal.author_id, num_proposals);
+        
+        let proposal_id = self.proposal_nonce;
+        self.proposal_nonce += 1;
+
+        self.proposals.insert(proposal_id, proposal.clone());
+        self.approvals.insert(proposal_id, HashSet::new());
+
+        self.internal_confirm(proposal_id, proposal.author_id);
+
+        return ProposalWithApprovals {
+            proposal_id,
+            num_approvals: self.get_confirmations_count(proposal_id).num_approvals,
+        };
+    }
 }
+
+
