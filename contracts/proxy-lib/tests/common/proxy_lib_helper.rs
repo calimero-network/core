@@ -6,10 +6,8 @@ use near_workspaces::result::ViewResultDetails;
 use near_workspaces::{network::Sandbox, result::ExecutionFinalResult, Account, Contract, Worker};
 use proxy_lib::{ConfirmationRequestWithSigner, Proposal, ProposalId, ProposalWithSigner};
 use serde_json::json;
-use test_utils::deploy_contract;
 
-#[path = "test_utils.rs"]
-mod test_utils;
+use super::deploy_contract;
 
 const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";
 

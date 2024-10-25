@@ -1,14 +1,11 @@
 use calimero_context_config::repr::ReprTransmute;
-use config_helper::ConfigContractHelper;
+use common::{config_helper::ConfigContractHelper, proxy_lib_helper::ProxyContractHelper};
 use ed25519_dalek::SigningKey;
 use eyre::Result;
 use near_workspaces::{network::Sandbox, Account, Worker};
 use proxy_lib::{Proposal, ProposalWithApprovals};
-use proxy_lib_helper::ProxyContractHelper;
 
-mod config_helper;
-mod proxy_lib_helper;
-mod test_utils;
+mod common;
 
 async fn setup_test(
     worker: &Worker<Sandbox>,
@@ -23,12 +20,12 @@ async fn setup_test(
     let proxy_helper =
         ProxyContractHelper::new(&worker, config_helper.clone().config_contract).await?;
 
-    let relayer_account = test_utils::create_account_with_balance(&worker, "account", 10).await?;
+    let relayer_account = common::create_account_with_balance(&worker, "account", 10).await?;
     // This account is only used to deploy the proxy contract
-    let developer_account = test_utils::create_account_with_balance(&worker, "alice", 10).await?;
+    let developer_account = common::create_account_with_balance(&worker, "alice", 10).await?;
 
-    let context_sk = test_utils::generate_keypair()?;
-    let alice_sk: SigningKey = test_utils::generate_keypair()?;
+    let context_sk = common::generate_keypair()?;
+    let alice_sk: SigningKey = common::generate_keypair()?;
 
     let _res = config_helper
         .add_context_to_config(&relayer_account, &context_sk, &alice_sk)
@@ -54,7 +51,7 @@ async fn setup_test(
 #[tokio::test]
 async fn test_create_proposal() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
-    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+    let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
     let proposal = Proposal {
@@ -78,7 +75,7 @@ async fn test_create_proposal() -> Result<()> {
 async fn test_create_multiple_proposals() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
 
-    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+    let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
     let proposal = Proposal {
@@ -110,7 +107,7 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
         setup_test(&worker).await?;
 
     // Add Bob as a context member
-    let bob_sk: SigningKey = test_utils::generate_keypair()?;
+    let bob_sk: SigningKey = common::generate_keypair()?;
     let _res = config_helper
         .add_members(&relayer_account, &alice_sk, &[bob_sk.clone()], &context_sk)
         .await?
@@ -144,11 +141,11 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
 async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
 
-    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+    let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
     // Bob is not a member of the context
-    let bob_sk: SigningKey = test_utils::generate_keypair()?;
+    let bob_sk: SigningKey = common::generate_keypair()?;
 
     let proposal = Proposal {
         actions: vec![],

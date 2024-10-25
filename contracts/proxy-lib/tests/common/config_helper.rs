@@ -1,6 +1,3 @@
-#[path = "test_utils.rs"]
-mod test_utils;
-
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{Application, ContextId, ContextIdentity, Signed, SignerId};
 use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
@@ -8,7 +5,8 @@ use ed25519_dalek::{Signer, SigningKey};
 use eyre::Result;
 use near_workspaces::{network::Sandbox, result::ExecutionFinalResult, Account, Contract, Worker};
 use rand::Rng;
-use test_utils::deploy_contract;
+
+use super::deploy_contract;
 
 const CONTEXT_CONFIG_WASM: &str = "../context-config/res/calimero_context_config_near.wasm";
 

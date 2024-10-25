@@ -1,8 +1,10 @@
-use calimero_context_config::{{repr::Repr, repr::ReprTransmute}, types::ContextIdentity};
 use ed25519_dalek::SigningKey;
 use eyre::Result;
 use near_workspaces::{network::Sandbox, types::NearToken, Account, Contract, Worker};
 use rand::Rng;
+
+pub mod config_helper;
+pub mod proxy_lib_helper;
 
 pub async fn deploy_contract(worker: &Worker<Sandbox>, wasm_path: &str) -> Result<Contract> {
     let wasm = std::fs::read(wasm_path)?;
@@ -25,14 +27,4 @@ pub async fn create_account_with_balance(worker: &Worker<Sandbox>, account_id: &
         .await?
         .into_result()?;
     Ok(account)
-}
-
-pub async fn create_subaccount(worker: &Worker<Sandbox>, subaccount_id: &str) -> Result<Account> {
-    let root_account = worker.root_account()?;
-    let subaccount = root_account
-        .create_subaccount(subaccount_id)
-        .transact()
-        .await?
-        .into_result()?;
-    Ok(subaccount)
 }
