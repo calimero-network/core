@@ -75,6 +75,13 @@ impl AsRef<[u8]> for ContextState<'_> {
     }
 }
 
+/*
+    if private_key is Some(_), we own this identity
+    if we own the identity and sender_key is Some(_) we can encrypt all network messages using this key
+    if we don't own the identity, and sender_key is Some(_),  we can decrypt any message received from this user
+    if sender_key is None, ask the user for their sender_key
+    // TODO: implement methods to make this easier to understand and use
+*/
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 #[expect(
     clippy::exhaustive_structs,
@@ -82,6 +89,7 @@ impl AsRef<[u8]> for ContextState<'_> {
 )]
 pub struct ContextIdentity {
     pub private_key: Option<[u8; 32]>,
+    pub sender_key: Option<[u8; 32]>,
 }
 
 impl PredefinedEntry for ContextIdentityKey {

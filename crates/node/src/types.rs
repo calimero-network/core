@@ -1,3 +1,4 @@
+use calimero_crypto::SharedKey;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -13,6 +14,7 @@ use thiserror::Error as ThisError;
 pub enum PeerAction {
     ActionList(ActionMessage),
     Sync(SyncMessage),
+    RequestSenderKey(RequestSenderKeyMessage),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -78,4 +80,12 @@ pub struct SyncMessage {
     pub context_id: ContextId,
     pub public_key: PublicKey,
     pub root_hash: Hash,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct RequestSenderKeyMessage {
+    pub context_id: ContextId,
+    pub public_key: PublicKey,
+    pub shared_key: SharedKey,
 }

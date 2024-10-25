@@ -353,6 +353,10 @@ impl Node {
                 }
                 Ok(())
             }
+            PeerAction::RequestSenderKey(request_sender_key_message) => {
+                debug!(?request_sender_key_message, %source, "Received request sender key message");
+                Ok(())
+            }
         }
     }
 

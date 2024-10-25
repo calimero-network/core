@@ -910,6 +910,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-crypto"
+version = "0.1.0"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "eyre",
+ "rand 0.8.5",
+ "ring 0.17.8",
+ "serde",
+]
+
+[[package]]
 name = "calimero-network"
 version = "0.1.0"
 dependencies = [
@@ -937,6 +949,7 @@ dependencies = [
  "borsh",
  "calimero-blobstore",
  "calimero-context",
+ "calimero-crypto",
  "calimero-network",
  "calimero-node-primitives",
  "calimero-primitives",

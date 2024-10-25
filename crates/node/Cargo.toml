@@ -23,6 +23,7 @@ tracing.workspace = true
 url.workspace = true
 
 calimero-context = { path = "../context" }
+calimero-crypto = { path = "../crypto" }
 calimero-blobstore = { path = "../store/blobs" }
 calimero-network = { path = "../network" }
 calimero-node-primitives = { path = "../node-primitives" }
