@@ -20,6 +20,7 @@ tokio = { workspace = true, features = ["io-std", "macros"] }
 tracing.workspace = true
 
 calimero-context = { path = "../context" }
+calimero-crypto = { path = "../crypto" }
 calimero-blobstore = { path = "../store/blobs" }
 calimero-network = { path = "../network" }
 calimero-node-primitives = { path = "../node-primitives" }

@@ -139,7 +139,7 @@ impl ContextManager {
     }
 
     #[must_use]
-    pub fn new_identity(&self) -> PrivateKey {
+    pub fn new_private_key(&self) -> PrivateKey {
         PrivateKey::random(&mut rand::thread_rng())
     }
 
@@ -160,7 +160,7 @@ impl ContextManager {
                 None => PrivateKey::random(&mut rng),
             };
 
-            let identity_secret = identity_secret.unwrap_or_else(|| self.new_identity());
+            let identity_secret = identity_secret.unwrap_or_else(|| self.new_private_key());
 
             (context_secret, identity_secret)
         };
@@ -288,6 +288,7 @@ impl ContextManager {
             &ContextIdentityKey::new(context.id, identity_secret.public_key()),
             &ContextIdentityValue {
                 private_key: Some(*identity_secret),
+                sender_key: Some(*self.new_private_key()),
             },
         )?;
 
@@ -372,6 +373,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(requester_secret),
+            sender_key: None,
         }) = handle.get(&ContextIdentityKey::new(context_id, inviter_id))?
         else {
             return Ok(None);

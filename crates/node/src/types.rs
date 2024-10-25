@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use calimero_crypto::SharedKey;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
@@ -19,6 +20,21 @@ pub enum BroadcastMessage<'a> {
         root_hash: Hash,
         artifact: Cow<'a, [u8]>,
     },
+}
+pub enum PeerAction {
+    ActionList(ActionMessage),
+    Sync(SyncMessage),
+    RequestSenderKey(RequestSenderKeyMessage),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub enum CatchupStreamMessage {
+    ActionsBatch(CatchupActionsBatch),
+    ApplicationBlobRequest(CatchupApplicationBlobRequest),
+    ApplicationBlobChunk(CatchupApplicationBlobChunk),
+    SyncRequest(CatchupSyncRequest),
+    Error(CatchupError),
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -52,4 +68,30 @@ pub enum InitPayload {
 pub enum MessagePayload<'a> {
     StateSync { artifact: Cow<'a, [u8]> },
     BlobShare { chunk: Cow<'a, [u8]> },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct ActionMessage {
+    pub actions: Vec<Action>,
+    pub context_id: ContextId,
+    pub public_key: PublicKey,
+    pub root_hash: Hash,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct SyncMessage {
+    pub comparison: Comparison,
+    pub context_id: ContextId,
+    pub public_key: PublicKey,
+    pub root_hash: Hash,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct RequestSenderKeyMessage {
+    pub context_id: ContextId,
+    pub public_key: PublicKey,
+    pub shared_key: SharedKey,
 }

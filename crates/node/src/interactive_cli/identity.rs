@@ -67,7 +67,7 @@ impl IdentityCommand {
             }
             IdentitySubcommands::New => {
                 // Handle the "new" subcommand
-                let identity = node.ctx_manager.new_identity();
+                let identity = node.ctx_manager.new_private_key();
                 println!("Private Key: {}", identity.cyan());
                 println!("Public Key: {}", identity.public_key().cyan());
             }
