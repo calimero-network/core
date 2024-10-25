@@ -208,3 +208,28 @@ pub fn time_now() -> u64 {
 
     u64::from_le_bytes(bytes)
 }
+
+/// Register a proposal function.
+///
+/// This function accepts a function as input, and the provided function will be
+/// called when proposals need to be handled.
+///
+/// # Parameters
+///
+/// * `func` - A closure that will be executed when processing proposals. The
+///            closure should return a `Vec<u8>` containing the proposal data.
+///
+pub fn register_proposal_function<F>(func: F) where F: FnMut() -> Vec<u8> + 'static {
+    unsafe { sys::register_proposal_function(Box::new(func) as Box<dyn FnMut() -> Vec<u8>>) }
+}
+
+/// Call the contract's `modify_value()` function through the bridge.
+///
+/// # Parameters
+///
+/// * `value` - The value to be modified. This is of indeterminate type, and
+///             used as raw data.
+///
+pub fn modify_value(value: &[u8]) {
+    unsafe { sys::modify_value(Buffer::from(value)) }
+}
