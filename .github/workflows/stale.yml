@@ -1,0 +1,54 @@
+name: Close Stale Issues & Pull Requests
+
+on:
+  schedule:
+    - cron: "* 14 * * *" # Run every day at 2PM
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  close_stale_prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close stale pull requests
+        uses: actions/stale@v9.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          # Number of days of inactivity before an issue becomes stale
+          days-before-issue-stale: 180
+          # Number of days of inactivity before an PR becomes stale
+          days-before-pr-stale: 7
+          # Number of days of inactivity before a stale issue or PR is closed
+          days-before-close: 7
+
+          # --- Issues ---
+          # Comment to post when marking an issue as stale
+          stale-issue-message: >
+            This issue has been automatically marked as stale.
+            **If this issue is still affecting you, please leave any comment** (for example, "bump"), and we'll keep it open.
+            We are sorry that we haven't been able to prioritize it yet. If you have any new additional information, please include it with your comment!
+          # Comment to post when closing a stale issue
+          close-issue-message: >
+            "This issue has been automatically closed because it has been
+            inactive for more than 180 days. Please reopen and prioritize this for development if it is
+            essential."
+          # Issues with these labels will never be considered stale
+          exempt-issue-labels: "internal,bug, discussion,💎 bounty 💎, good first issue, epic, enhancement, improvement, question"
+
+          # --- PRs ---
+          stale-pr-label: "Stale"
+          # Comment to post when marking a pull request as stale
+          stale-pr-message: >
+            This pull request has been automatically marked as stale.
+            **If this pull request is still relevant, please leave any comment** (for example, "bump"), and we'll keep it open.
+            We are sorry that we haven't been able to prioritize reviewing it yet. Your contribution is very much appreciated.
+          # Comment to post when closing a stale pull request
+          close-pr-message: >
+            "This pull request has been automatically closed because it has been
+            inactive for more than 7 days. Please reopen and see this PR through its review if it is
+            essential."
+          # PRs with these labels will never be considered stale
+          exempt-pr-labels: "bug,discussion,💎 bounty 💎, epic, enhancement, improvement, needs investigation"
