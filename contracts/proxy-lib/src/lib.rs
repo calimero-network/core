@@ -263,7 +263,7 @@ impl ProxyContract {
 }
 
 fn assert_membership(call_result: Result<bool, PromiseError>) {
-    assert!(call_result.is_ok(), "Error: Membership check failed");
-    assert!(call_result.unwrap(), "Error: Is not a member");
-    log!("Success: Membership confirmed");
+    assert!(call_result.is_ok(), "Membership check failed");
+    assert!(call_result.unwrap(), "Not a context member");
+    log!("Membership confirmed");
 }
