@@ -14,7 +14,7 @@ pub struct GetCommand {
     #[arg(
         value_name = "METHOD",
         help = "Method to fetch details",
-        value_parser = clap::builder::EnumValueParser::<GetRequest>::new()
+        value_enum,
     )]
     pub method: GetRequest,
 
