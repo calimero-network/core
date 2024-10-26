@@ -263,7 +263,7 @@ async fn test_execute_proposal() -> Result<()> {
 
     assert_eq!(res2.num_approvals, 2, "Proposal should have 2 approvals");
 
-    let counter_value: u32 = counter_helper.get_valuer().await?;
+    let counter_value: u32 = counter_helper.get_value().await?;
     assert_eq!(
         counter_value, 0,
         "Counter should be zero before proposal execution"
@@ -275,7 +275,7 @@ async fn test_execute_proposal() -> Result<()> {
         .into_result()?
         .json()?;
 
-    let counter_value: u32 = counter_helper.get_valuer().await?;
+    let counter_value: u32 = counter_helper.get_value().await?;
     assert_eq!(
         counter_value, 1,
         "Counter should be incremented by the proposal execution"

@@ -1,10 +1,5 @@
-use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{Application, ContextId, ContextIdentity, Signed, SignerId};
-use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
-use ed25519_dalek::{Signer, SigningKey};
 use eyre::Result;
-use near_workspaces::{network::Sandbox, result::ExecutionFinalResult, Account, Contract, Worker};
-use rand::Rng;
+use near_workspaces::{network::Sandbox, Contract, Worker};
 
 use super::deploy_contract;
 
@@ -29,7 +24,7 @@ impl CounterContracttHelper {
         })
     }
 
-    pub async fn get_valuer(&self) -> Result<u32> {
+    pub async fn get_value(&self) -> Result<u32> {
         let counter_value: u32 = self.counter_contract
             .view("get_count")
             .await?
