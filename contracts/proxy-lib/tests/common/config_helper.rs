@@ -18,9 +18,7 @@ pub struct ConfigContractHelper {
 impl ConfigContractHelper {
     pub async fn new(worker: &Worker<Sandbox>) -> Result<Self> {
         let config_contract = deploy_contract(worker, CONTEXT_CONFIG_WASM).await?;
-        Ok(Self {
-            config_contract,
-        })
+        Ok(Self { config_contract })
     }
 
     pub async fn add_context_to_config(
@@ -68,7 +66,8 @@ impl ConfigContractHelper {
         guests: &[SigningKey],
         context: &SigningKey,
     ) -> Result<ExecutionFinalResult> {
-        let guest_ids: Vec<Repr<ContextIdentity>> = guests.iter()
+        let guest_ids: Vec<Repr<ContextIdentity>> = guests
+            .iter()
             .map(|x| Repr::new(x.verifying_key().rt().unwrap()))
             .collect();
         let host_id: Repr<ContextIdentity> = Repr::new(host.verifying_key().rt()?);
@@ -91,7 +90,11 @@ impl ConfigContractHelper {
         Ok(res)
     }
 
-    async fn mutate_call<'a>(&'a self, caller: &'a Account, request: &'a Signed<Request<'a>>) -> Result<ExecutionFinalResult> {
+    async fn mutate_call<'a>(
+        &'a self,
+        caller: &'a Account,
+        request: &'a Signed<Request<'a>>,
+    ) -> Result<ExecutionFinalResult> {
         let res = caller
             .call(self.config_contract.id(), "mutate")
             .args_json(request)

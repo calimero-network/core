@@ -49,7 +49,7 @@ impl ProxyContractHelper {
         let proposal = Proposal {
             receiver_id: receiver.id().clone(),
             author_id: author.verifying_key().rt().expect("Invalid signer"),
-            actions
+            actions,
         };
         let signed = Signed::new(&proposal, |p| author.sign(p))?;
         Ok(signed)

@@ -4,8 +4,8 @@ use near_workspaces::{network::Sandbox, types::NearToken, Account, Contract, Wor
 use rand::Rng;
 
 pub mod config_helper;
-pub mod proxy_lib_helper;
 pub mod counter_helper;
+pub mod proxy_lib_helper;
 
 pub async fn deploy_contract(worker: &Worker<Sandbox>, wasm_path: &str) -> Result<Contract> {
     let wasm = std::fs::read(wasm_path)?;
@@ -19,7 +19,11 @@ pub fn generate_keypair() -> Result<SigningKey> {
     Ok(sk)
 }
 
-pub async fn create_account_with_balance(worker: &Worker<Sandbox>, account_id: &str, balance: u128) -> Result<Account> {
+pub async fn create_account_with_balance(
+    worker: &Worker<Sandbox>,
+    account_id: &str,
+    balance: u128,
+) -> Result<Account> {
     let root_account = worker.dev_create_account().await?;
     let account = root_account
         .create_subaccount(account_id)
