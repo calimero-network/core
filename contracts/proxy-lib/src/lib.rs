@@ -1,9 +1,9 @@
-use core::{num, str};
+use core::str;
 use std::collections::HashSet;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
-use near_sdk::json_types::{Base64VecU8, U128, U64};
+use near_sdk::json_types::{Base64VecU8, U128};
 use near_sdk::store::IterableMap;
 use near_sdk::{
     env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
