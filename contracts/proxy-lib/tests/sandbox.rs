@@ -35,7 +35,7 @@ async fn setup_test(
     let _res = proxy_helper
     .initialize(
         &developer_account,
-        &context_sk.verifying_key().to_bytes().rt()?,
+        &context_sk.verifying_key().rt()?,
     )
     .await;
 

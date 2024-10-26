@@ -48,10 +48,10 @@ impl ProxyContractHelper {
     ) -> Result<Signed<Proposal>> {
         let proposal = Proposal {
             receiver_id: receiver.id().clone(),
-            author_id: author.verifying_key().to_bytes().rt().expect("Invalid signer"),
+            author_id: author.verifying_key().rt().expect("Invalid signer"),
             actions
         };
-        let signed = Signed::new(&{proposal}, |p| author.sign(p))?;
+        let signed = Signed::new(&proposal, |p| author.sign(p))?;
         Ok(signed)
     }
 
@@ -67,8 +67,8 @@ impl ProxyContractHelper {
             }))
             .max_gas()
             .transact()
-            .await;
-        Ok(call?)
+            .await?;
+        Ok(call)
     }
 
     pub async fn approve_proposal(

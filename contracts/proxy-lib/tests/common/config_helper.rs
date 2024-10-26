@@ -34,9 +34,9 @@ impl ConfigContractHelper {
         let application_id = rng.gen::<[_; 32]>().rt()?;
         let blob_id = rng.gen::<[_; 32]>().rt()?;
 
-        let author_id: Repr<ContextIdentity> = Repr::new(author.verifying_key().to_bytes().rt()?);
-        let context_id: Repr<ContextId> = Repr::new(context.verifying_key().to_bytes().rt()?);
-        let context_signer: Repr<SignerId> = Repr::new(context.verifying_key().to_bytes().rt()?);
+        let author_id: Repr<ContextIdentity> = Repr::new(author.verifying_key().rt()?);
+        let context_id: Repr<ContextId> = Repr::new(context.verifying_key().rt()?);
+        let context_signer: Repr<SignerId> = Repr::new(context.verifying_key().rt()?);
 
         let signed_request = Signed::new(
             &{
@@ -69,10 +69,10 @@ impl ConfigContractHelper {
         context: &SigningKey,
     ) -> Result<ExecutionFinalResult> {
         let guest_ids: Vec<Repr<ContextIdentity>> = guests.iter()
-            .map(|x| Repr::new(x.verifying_key().to_bytes().rt().unwrap()))
+            .map(|x| Repr::new(x.verifying_key().rt().unwrap()))
             .collect();
-        let host_id: Repr<ContextIdentity> = Repr::new(host.verifying_key().to_bytes().rt()?);
-        let context_id: Repr<ContextId> = Repr::new(context.verifying_key().to_bytes().rt()?);
+        let host_id: Repr<ContextIdentity> = Repr::new(host.verifying_key().rt()?);
+        let context_id: Repr<ContextId> = Repr::new(context.verifying_key().rt()?);
 
         let signed_request = Signed::new(
             &{
