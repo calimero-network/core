@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 
@@ -6,16 +6,10 @@ use crate::cli::RootArgs;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Parser, Debug)]
+#[command(about = "Fetch application details")]
 pub struct GetCommand {
-    #[arg(long, short)]
-    pub method: GetValues,
-
-    #[arg(long, short)]
+    #[arg(value_name = "APP_ID", help = "application_id of the application")]
     pub app_id: String,
-}
-#[derive(ValueEnum, Debug, Clone)]
-pub enum GetValues {
-    Details,
 }
 
 impl GetCommand {

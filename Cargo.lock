@@ -4472,6 +4472,7 @@ dependencies = [
  "reqwest 0.12.5",
  "serde",
  "serde_json",
+ "strum 0.26.3",
  "tokio",
  "tokio-tungstenite 0.24.0",
  "tracing",

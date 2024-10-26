@@ -7,6 +7,7 @@ use crate::cli::RootArgs;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
+#[command(about = "List installed applications")]
 pub struct ListCommand;
 
 impl ListCommand {

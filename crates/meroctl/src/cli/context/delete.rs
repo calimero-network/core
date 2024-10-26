@@ -8,8 +8,9 @@ use crate::cli::RootArgs;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
+#[command(about = "Delete an context")]
 pub struct DeleteCommand {
-    #[clap(long, short)]
+    #[clap(name = "CONTEXT_ID", help = "The context ID to delete")]
     pub context_id: String,
 }
 

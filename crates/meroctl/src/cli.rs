@@ -14,17 +14,11 @@ use context::ContextCommand;
 use jsonrpc::JsonRpcCommand;
 
 pub const EXAMPLES: &str = r"
-  # Initialize a new node
-  $ meroctl --home data/ --node-name node1 init
+  # List all applications
+  $ meroctl -- --home data --node-name node1 app ls
 
-  # Configure an existing node
-  $ meroctl --home data/ --node-name node1 config --server-host 143.34.182.202 --server-port 3000
-
-  # Run a node as a peer
-  $ meroctl --home data/ --node-name node1 run
-
-  # Run a node as a coordinator
-  $ meroctl --home data/ --node-name node1 run --node-type coordinator
+  # List all contexts
+  $ meroctl -- --home data --node-name node1 context ls
 ";
 
 #[derive(Debug, Parser)]
@@ -47,7 +41,7 @@ pub struct RootCommand {
 pub enum SubCommands {
     Context(ContextCommand),
     App(AppCommand),
-    #[command(alias = "call")]
+    #[command(name = "call")]
     JsonRpc(JsonRpcCommand),
 }
 

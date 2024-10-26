@@ -13,13 +13,12 @@ use crate::cli::RootArgs;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
+#[command(about = "Install an application")]
 pub struct InstallCommand {
-    /// Path to the application
-    #[arg(long, short, conflicts_with = "url")]
+    #[arg(long, short, conflicts_with = "url", help = "Path to the application")]
     pub path: Option<Utf8PathBuf>,
 
-    /// Url of the application
-    #[clap(long, short, conflicts_with = "path")]
+    #[clap(long, short, conflicts_with = "path", help = "Url of the application")]
     pub url: Option<String>,
 
     #[clap(short, long, help = "Metadata for the application")]

@@ -29,7 +29,7 @@ pub const EXAMPLES: &str = r"
 ";
 
 #[derive(Debug, Parser)]
-#[command(about = "Manage contexts")]
+#[command(about = "Command for managing contexts")]
 #[command(after_help = concatcp!(
     "Examples:",
     EXAMPLES
