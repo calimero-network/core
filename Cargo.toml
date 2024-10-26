@@ -35,6 +35,7 @@ members = [
   "./contracts/context-config",
   "./contracts/registry",
   "./contracts/proxy-lib",
+  "./contracts/test-counter",
 ]
 
 [workspace.dependencies]

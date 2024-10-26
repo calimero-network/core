@@ -9262,6 +9262,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-counter-near"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "near-sdk",
+ "near-workspaces",
+ "tokio",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
