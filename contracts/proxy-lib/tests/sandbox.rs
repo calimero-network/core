@@ -1,9 +1,10 @@
 use calimero_context_config::repr::ReprTransmute;
-use common::{config_helper::ConfigContractHelper, proxy_lib_helper::ProxyContractHelper};
+use common::{config_helper::ConfigContractHelper, counter_helper::{self, CounterContracttHelper}, proxy_lib_helper::ProxyContractHelper};
 use ed25519_dalek::SigningKey;
 use eyre::Result;
+use near_sdk::{json_types::Base64VecU8, Gas, NearToken};
 use near_workspaces::{network::Sandbox, Account, Worker};
-use proxy_lib::{Proposal, ProposalWithApprovals};
+use proxy_lib::{Proposal, ProposalAction, ProposalWithApprovals};
 
 mod common;
 
@@ -189,3 +190,66 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_execute_proposal() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) = setup_test(&worker).await?;
+
+    let counter_helper = CounterContracttHelper::deploy_and_initialize(&worker).await?;
+
+    let proposal = proxy_helper.create_proposal(
+        &alice_sk,
+        &counter_helper.counter_contract.as_account(),
+        vec![
+            ProposalAction::FunctionCall {
+                method_name: "increment".to_string(),
+                args: Base64VecU8::from(vec![]),
+                deposit: NearToken::from_near(0),
+                gas: Gas::from_gas(1_000_000_000_000),
+            },
+        ],
+    )?;
+
+    // 4. Create and approve the proposal by Alice (or other required accounts)
+    let res: ProposalWithApprovals = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &proposal)
+        .await?
+        .into_result()?
+        .json()?;
+
+    // Check initial approvals
+    assert_eq!(res.num_approvals, 1);
+
+    // 5. Add more approvals if necessary to trigger the execution threshold
+    // Assuming the threshold is 2 approvals, we add another approver
+    let bob_sk = common::generate_keypair()?;
+    let charlie_sk = common::generate_keypair()?;
+    let _res = config_helper.add_members(&relayer_account, &alice_sk, &[bob_sk.clone(), charlie_sk.clone()], &context_sk)
+        .await?
+        .into_result()?;
+
+    // Approve the proposal with Bob's signature
+    let res2: ProposalWithApprovals = proxy_helper
+        .approve_proposal(&relayer_account, &bob_sk, &res.proposal_id)
+        .await?
+        .into_result()?
+        .json()?;
+
+    assert_eq!(res2.num_approvals, 2, "Proposal should have 2 approvals");
+
+    let counter_value: u32 = counter_helper.get_valuer().await?;
+    assert_eq!(counter_value, 0, "Counter should be zero before proposal execution");
+
+    let _res3: ProposalWithApprovals = proxy_helper
+        .approve_proposal(&relayer_account, &charlie_sk, &res.proposal_id)
+        .await?
+        .into_result()?
+        .json()?;
+
+    let counter_value: u32 = counter_helper.get_valuer().await?;
+    assert_eq!(counter_value, 1, "Counter should be incremented by the proposal execution");
+
+    Ok(())
+}
+

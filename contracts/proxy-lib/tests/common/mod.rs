@@ -5,6 +5,7 @@ use rand::Rng;
 
 pub mod config_helper;
 pub mod proxy_lib_helper;
+pub mod counter_helper;
 
 pub async fn deploy_contract(worker: &Worker<Sandbox>, wasm_path: &str) -> Result<Contract> {
     let wasm = std::fs::read(wasm_path)?;
