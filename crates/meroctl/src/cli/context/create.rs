@@ -26,22 +26,41 @@ use crate::cli::RootArgs;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
+#[command(about = "Create a new context")]
 pub struct CreateCommand {
-    /// The application ID to attach to the context
-    #[clap(long, short = 'a')]
+    #[clap(
+        long,
+        short = 'a',
+        help = "The application ID to attach to the context"
+    )]
     application_id: Option<ApplicationId>,
 
-    #[clap(long, short = 'p')]
+    #[clap(
+        long,
+        short = 'p',
+        help = "The parameters to pass to the application initialization function"
+    )]
     params: Option<String>,
 
-    /// Path to the application file to watch and install locally
-    #[clap(long, short = 'w', conflicts_with = "application_id")]
+    #[clap(
+        long,
+        short = 'w',
+        conflicts_with = "application_id",
+        help = "Path to the application file to watch and install locally"
+    )]
     watch: Option<Utf8PathBuf>,
 
-    #[clap(requires = "watch")]
+    #[clap(
+        requires = "watch",
+        help = "Metadata needed for the application installation"
+    )]
     metadata: Option<String>,
 
-    #[clap(short = 's', long = "seed")]
+    #[clap(
+        short = 's',
+        long = "seed",
+        help = "The seed for the random generation of the context id"
+    )]
     context_seed: Option<Hash>,
 }
 

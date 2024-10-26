@@ -8,14 +8,14 @@ use crate::cli::RootArgs;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Parser, Debug)]
+#[command(about = "Fetch details about the context")]
 pub struct GetCommand {
-    #[clap(long, short)]
+    #[arg(value_name = "METHOD", help = "Method to fetch details", value_enum)]
     pub method: GetRequest,
 
-    #[clap(long, short)]
+    #[arg(value_name = "CONTEXT_ID", help = "context_id of the context")]
     pub context_id: String,
 }
-
 #[derive(Clone, Debug, ValueEnum)]
 pub enum GetRequest {
     Context,

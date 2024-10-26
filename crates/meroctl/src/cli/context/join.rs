@@ -10,10 +10,17 @@ use crate::cli::RootArgs;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
+#[command(about = "Join an application context")]
 pub struct JoinCommand {
-    #[clap(value_name = "PRIVATE_KEY")]
+    #[clap(
+        value_name = "PRIVATE_KEY",
+        help = "The private key for signing the join context request"
+    )]
     private_key: PrivateKey,
-    #[clap(value_name = "INVITE")]
+    #[clap(
+        value_name = "INVITE",
+        help = "The invitation payload for joining the context"
+    )]
     invitation_payload: ContextInvitationPayload,
 }
 

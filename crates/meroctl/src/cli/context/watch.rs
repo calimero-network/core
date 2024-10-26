@@ -9,9 +9,10 @@ use super::RootArgs;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 
 #[derive(Debug, Parser)]
+#[command(about = "Watch events from a context")]
 pub struct WatchCommand {
     /// ContextId to stream events from
-    #[arg(long)]
+    #[arg(value_name = "CONTEXT_ID", help = "ContextId to stream events from")]
     pub context_id: ContextId,
 }
 
