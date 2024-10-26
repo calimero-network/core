@@ -5,7 +5,10 @@ use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
 use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::store::IterableMap;
-use near_sdk::{env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue};
+use near_sdk::{
+    env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
+    PromiseOrValue,
+};
 
 pub mod ext_config;
 pub use crate::ext_config::config_contract;
@@ -18,7 +21,16 @@ pub struct ProposalWithApprovals {
     pub proposal_id: ProposalId,
     pub num_approvals: usize,
 }
-
+enum MemberAction {
+    Approve {
+        identity: Repr<SignerId>,
+        request_id: ProposalId,
+    },
+    Create {
+        proposal: Proposal,
+        num_proposals: u32,
+    },
+}
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct ProxyContract {
@@ -90,23 +102,31 @@ impl ProxyContract {
 
     pub fn create_and_approve_proposal(&self, proposal: Signed<Proposal>) -> Promise {
         // Verify the signature corresponds to the signer_id
-        let proposal = proposal.parse(|i| *i.author_id).expect("failed to parse input");
+        let proposal = proposal
+            .parse(|i| *i.author_id)
+            .expect("failed to parse input");
 
-        let author_id = proposal.author_id.rt().expect("Invalid signer");
+        let author_id = proposal.author_id;
 
         let num_proposals = self.num_proposals_pk.get(&author_id).unwrap_or(&0) + 1;
         assert!(
             num_proposals <= self.active_proposals_limit,
             "Account has too many active proposals. Confirm or delete some."
         );
-        return self.create_by_member(proposal, num_proposals)
+        return self.perform_action_by_member(MemberAction::Create {
+            proposal,
+            num_proposals,
+        });
     }
 
     pub fn approve(&mut self, request: Signed<ConfirmationRequestWithSigner>) -> Promise {
         let request = request
             .parse(|i| *i.signer_id)
             .expect("failed to parse input");
-        return self.approve_by_member(request.signer_id, request.proposal_id);
+        return self.perform_action_by_member(MemberAction::Approve {
+            identity: request.signer_id,
+            request_id: request.proposal_id,
+        });
     }
 
     fn internal_confirm(&mut self, request_id: ProposalId, signer_id: Repr<SignerId>) -> () {
@@ -126,24 +146,25 @@ impl ProxyContract {
         }
     }
 
-    fn approve_by_member(&self, identity: Repr<SignerId>, request_id: ProposalId) -> Promise {
-        log!("Starting fetch_members...");
+    fn perform_action_by_member(&self, action: MemberAction) -> Promise {
+        let identity = match &action {
+            MemberAction::Approve { identity, .. } => *identity,
+            MemberAction::Create { proposal, .. } => proposal.author_id,
+        };
         config_contract::ext(self.context_config_account_id.clone())
-            .with_static_gas(Gas::from_tgas(5))
             .has_member(self.context_id, identity)
-            .then(
-                Self::ext(env::current_account_id()).internal_process_members(identity, request_id),
-            )
-    }
-
-    fn create_by_member(&self, proposal: Proposal, num_proposals: u32) -> Promise {
-        log!("Starting fetch_members...");
-        config_contract::ext(self.context_config_account_id.clone())
-            .with_static_gas(Gas::from_tgas(5))
-            .has_member(self.context_id, proposal.author_id)
-            .then(
-                Self::ext(env::current_account_id()).internal_create_proposal(proposal, num_proposals),
-            )
+            .then(match action {
+                MemberAction::Approve {
+                    identity,
+                    request_id,
+                } => Self::ext(env::current_account_id())
+                    .internal_approve_proposal(identity, request_id),
+                MemberAction::Create {
+                    proposal,
+                    num_proposals,
+                } => Self::ext(env::current_account_id())
+                    .internal_create_proposal(proposal, num_proposals),
+            })
     }
 
     pub fn requests(&self, offset: usize, length: usize) -> Vec<(&u32, &Proposal)> {
@@ -167,15 +188,14 @@ impl ProxyContract {
     }
 
     #[private]
-    pub fn internal_process_members(
+    pub fn internal_approve_proposal(
         &mut self,
         signer_id: Repr<SignerId>,
         request_id: ProposalId,
         #[callback_result] call_result: Result<bool, PromiseError>, // Match the return type
     ) -> ProposalWithApprovals {
-        assert!(call_result.is_ok(), "Error: Membership check failed");
-        assert!(call_result.unwrap(), "Error: Is not a member");
-        log!("Success: Membership confirmed");
+        assert_membership(call_result);
+
         self.internal_confirm(request_id, signer_id);
         return ProposalWithApprovals {
             proposal_id: request_id,
@@ -190,13 +210,11 @@ impl ProxyContract {
         num_proposals: u32,
         #[callback_result] call_result: Result<bool, PromiseError>, // Match the return type
     ) -> ProposalWithApprovals {
-        assert!(call_result.is_ok(), "Error: Membership check failed");
-        assert!(call_result.unwrap(), "Error: Is not a member");
-        log!("Success: Membership confirmed");
+        assert_membership(call_result);
 
         self.num_proposals_pk
             .insert(*proposal.author_id, num_proposals);
-        
+
         let proposal_id = self.proposal_nonce;
 
         self.proposals.insert(proposal_id, proposal.clone());
@@ -220,34 +238,32 @@ impl ProxyContract {
                     args,
                     deposit,
                     gas,
-                } => promise.function_call(
-                    method_name,
-                    args.into(),
-                    deposit,
-                    gas,
-                )
+                } => promise.function_call(method_name, args.into(), deposit, gas),
             };
         }
         promise.into()
     }
 
-    fn remove_request(&mut self, proposal_id:ProposalId) -> Proposal {
+    fn remove_request(&mut self, proposal_id: ProposalId) -> Proposal {
         self.approvals.remove(&proposal_id);
         let proposal = self
             .proposals
             .remove(&proposal_id)
             .expect("Failed to remove existing element");
 
-            let author_id: SignerId = proposal.author_id.rt().expect("Invalid signer");
+        let author_id: SignerId = proposal.author_id.rt().expect("Invalid signer");
         let mut num_requests = *self.num_proposals_pk.get(&author_id).unwrap_or(&0);
 
         if num_requests > 0 {
             num_requests = num_requests - 1;
         }
-        self.num_proposals_pk
-            .insert(author_id, num_requests);
+        self.num_proposals_pk.insert(author_id, num_requests);
         proposal
     }
 }
 
-
+fn assert_membership(call_result: Result<bool, PromiseError>) {
+    assert!(call_result.is_ok(), "Error: Membership check failed");
+    assert!(call_result.unwrap(), "Error: Is not a member");
+    log!("Success: Membership confirmed");
+}

@@ -187,6 +187,5 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
         proxy_helper.view_proposal_confirmations(&relayer_account, &res.proposal_id).await?.json()?;
     assert_eq!(view_proposal.num_approvals, 1);
 
-
     Ok(())
 }
