@@ -72,7 +72,7 @@ async fn test_create_proposal() -> Result<()> {
 #[tokio::test]
 async fn test_create_proposal_by_non_member() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
-    let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
+    let (config_helper, proxy_helper, relayer_account, _context_sk, _alice_sk) =
         setup_test(&worker).await?;
 
     // Bob is not a member of the context

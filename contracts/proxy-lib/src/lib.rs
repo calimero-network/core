@@ -5,7 +5,7 @@ use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
 use near_sdk::json_types::{Base64VecU8, U128, U64};
 use near_sdk::store::IterableMap;
-use near_sdk::{env, log, near, AccountId, Gas, PanicOnDefault, Promise, PromiseError};
+use near_sdk::{env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue};
 
 pub mod ext_config;
 pub use crate::ext_config::config_contract;
@@ -58,8 +58,8 @@ pub enum ProposalAction {
     FunctionCall {
         method_name: String,
         args: Base64VecU8,
-        deposit: U128,
-        gas: U64,
+        deposit: NearToken,
+        gas: Gas,
     },
 }
 
@@ -76,7 +76,6 @@ pub struct Proposal {
 impl ProxyContract {
     #[init]
     pub fn init(context_id: Repr<ContextId>, context_config_account_id: AccountId) -> Self {
-        assert!(!env::state_exists(), "Already initialized");
         Self {
             context_id,
             context_config_account_id,
@@ -84,7 +83,7 @@ impl ProxyContract {
             proposals: IterableMap::new(b"r".to_vec()),
             approvals: IterableMap::new(b"c".to_vec()),
             num_proposals_pk: IterableMap::new(b"k".to_vec()),
-            num_approvals: 2,
+            num_approvals: 3,
             active_proposals_limit: 10,
         }
     }
@@ -111,16 +110,20 @@ impl ProxyContract {
     }
 
     fn internal_confirm(&mut self, request_id: ProposalId, signer_id: Repr<SignerId>) -> () {
-        let confirmations = self.approvals.get_mut(&request_id).unwrap();
+        let approvals = self.approvals.get_mut(&request_id).unwrap();
         assert!(
-            !confirmations.contains(&signer_id),
+            !approvals.contains(&signer_id),
             "Already confirmed this request with this key"
         );
-        confirmations.insert(signer_id);
-
-        // Check if the number of confirmations is enough to execute the request
-        // If so, execute the request
-        // If not, do nothing
+        if approvals.len() as u32 + 1 >= self.num_approvals {
+            let request = self.remove_request(request_id);
+            /********************************
+            NOTE: If the tx execution fails for any reason, the request and confirmations are removed already, so the client has to start all over
+            ********************************/
+            self.execute_request(request);
+        } else {
+            approvals.insert(signer_id);
+        }
     }
 
     fn approve_by_member(&self, identity: Repr<SignerId>, request_id: ProposalId) -> Promise {
@@ -195,17 +198,55 @@ impl ProxyContract {
             .insert(*proposal.author_id, num_proposals);
         
         let proposal_id = self.proposal_nonce;
-        self.proposal_nonce += 1;
 
         self.proposals.insert(proposal_id, proposal.clone());
         self.approvals.insert(proposal_id, HashSet::new());
-
         self.internal_confirm(proposal_id, proposal.author_id);
+
+        self.proposal_nonce += 1;
 
         return ProposalWithApprovals {
             proposal_id,
             num_approvals: self.get_confirmations_count(proposal_id).num_approvals,
         };
+    }
+
+    fn execute_request(&mut self, request: Proposal) -> PromiseOrValue<bool> {
+        let mut promise = Promise::new(request.receiver_id);
+        for action in request.actions {
+            promise = match action {
+                ProposalAction::FunctionCall {
+                    method_name,
+                    args,
+                    deposit,
+                    gas,
+                } => promise.function_call(
+                    method_name,
+                    args.into(),
+                    deposit,
+                    gas,
+                )
+            };
+        }
+        promise.into()
+    }
+
+    fn remove_request(&mut self, proposal_id:ProposalId) -> Proposal {
+        self.approvals.remove(&proposal_id);
+        let proposal = self
+            .proposals
+            .remove(&proposal_id)
+            .expect("Failed to remove existing element");
+
+            let author_id: SignerId = proposal.author_id.rt().expect("Invalid signer");
+        let mut num_requests = *self.num_proposals_pk.get(&author_id).unwrap_or(&0);
+
+        if num_requests > 0 {
+            num_requests = num_requests - 1;
+        }
+        self.num_proposals_pk
+            .insert(author_id, num_requests);
+        proposal
     }
 }
 
