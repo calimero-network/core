@@ -19,13 +19,13 @@ mod watch;
 
 pub const EXAMPLES: &str = r"
   # List all contexts
-  $ meroctl -- --home data --node-name node1 context ls
+  $ meroctl -- --node-name node1 context ls
 
   # Create a new context
-  $ meroctl -- --home data --node-name node1 context create --application-id <appId>
+  $ meroctl --  --node-name node1 context create --application-id <appId>
 
   # Create a new context in dev mode
-  $ meroctl -- --home data --node-name node1 context create --watch <path> -c <contextId>
+  $ meroctl --  --node-name node1 context create --watch <path> -c <contextId>
 ";
 
 #[derive(Debug, Parser)]

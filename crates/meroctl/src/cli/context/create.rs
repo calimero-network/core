@@ -35,7 +35,11 @@ pub struct CreateCommand {
     )]
     application_id: Option<ApplicationId>,
 
-    #[clap(long, short = 'p', help = "The parameters to pass to the application")]
+    #[clap(
+        long,
+        short = 'p',
+        help = "The parameters to pass to the application initialization function"
+    )]
     params: Option<String>,
 
     #[clap(

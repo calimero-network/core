@@ -11,11 +11,11 @@ mod jsonrpc;
 
 use app::AppCommand;
 use context::ContextCommand;
-use jsonrpc::JsonRpcCommand;
+use jsonrpc::CallCommand;
 
 pub const EXAMPLES: &str = r"
   # List all applications
-  $ meroctl -- --home data --node-name node1 app ls
+  $ meroctl -- --node-name node1 app ls
 
   # List all contexts
   $ meroctl -- --home data --node-name node1 context ls
@@ -41,8 +41,7 @@ pub struct RootCommand {
 pub enum SubCommands {
     Context(ContextCommand),
     App(AppCommand),
-    #[command(name = "call")]
-    JsonRpc(JsonRpcCommand),
+    JsonRpc(CallCommand),
 }
 
 #[derive(Debug, Parser)]

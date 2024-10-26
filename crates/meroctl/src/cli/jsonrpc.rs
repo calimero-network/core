@@ -13,7 +13,7 @@ use crate::common::{get_response, multiaddr_to_url, RequestType};
 
 pub const EXAMPLES: &str = r"
   # Execute a RPC method call
-  $ meroctl -- --home data --node-name node1 call <CONTEXT_ID> <METHOD>
+  $ meroctl -- --node-name node1 call <CONTEXT_ID> <METHOD>
 ";
 
 #[derive(Debug, Parser)]
@@ -22,7 +22,7 @@ pub const EXAMPLES: &str = r"
     "Examples:",
     EXAMPLES
 ))]
-pub struct JsonRpcCommand {
+pub struct CallCommand {
     #[arg(value_name = "CONTEXT_ID", help = "ContextId of the context")]
     pub context_id: ContextId,
 
@@ -41,7 +41,7 @@ pub struct JsonRpcCommand {
         default_value = "dontcare",
         help = "Id of the JsonRpc execute call"
     )]
-    pub id: String,
+    pub id: Option<String>,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -50,7 +50,7 @@ pub enum CallType {
 }
 
 #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
-impl JsonRpcCommand {
+impl CallCommand {
     pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
         let path = root_args.home.join(&root_args.node_name);
 
@@ -84,7 +84,7 @@ impl JsonRpcCommand {
 
         let request = Request::new(
             Version::TwoPointZero,
-            Some(RequestId::String(self.id)),
+            self.id.map(RequestId::String),
             payload,
         );
 

@@ -3,7 +3,6 @@ use eyre::{bail, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::Multiaddr;
 use reqwest::Client;
-use strum::VariantNames;
 
 use crate::cli::RootArgs;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
@@ -11,17 +10,13 @@ use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url
 #[derive(Parser, Debug)]
 #[command(about = "Fetch details about the context")]
 pub struct GetCommand {
-    #[arg(
-        value_name = "METHOD",
-        help = "Method to fetch details",
-        value_enum,
-    )]
+    #[arg(value_name = "METHOD", help = "Method to fetch details", value_enum)]
     pub method: GetRequest,
 
     #[arg(value_name = "CONTEXT_ID", help = "context_id of the context")]
     pub context_id: String,
 }
-#[derive(Clone, Debug, ValueEnum, VariantNames)]
+#[derive(Clone, Debug, ValueEnum)]
 pub enum GetRequest {
     Context,
     Users,

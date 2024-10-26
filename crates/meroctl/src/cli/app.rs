@@ -13,10 +13,10 @@ mod list;
 
 pub const EXAMPLES: &str = r"
   # List all applications
-  $ meroctl -- --home data --node-name node1 application ls
+  $ meroctl -- --node-name node1 application ls
 
   # Get details of an application
-  $ meroctl app get <APP_ID>
+  $ meroctl -- --node-name node1 application get <APP_ID>
 ";
 
 #[derive(Debug, Parser)]
