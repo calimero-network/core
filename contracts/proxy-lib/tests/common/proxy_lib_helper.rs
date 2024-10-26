@@ -12,7 +12,7 @@ use super::deploy_contract;
 const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";
 
 pub struct ProxyContractHelper {
-    proxy_contract: Contract,
+    pub proxy_contract: Contract,
     config_contract: Contract,
 }
 
@@ -43,11 +43,9 @@ impl ProxyContractHelper {
     pub fn create_proposal(
         &self,
         author: &SigningKey,
-        receiver: &Account,
         actions: Vec<ProposalAction>,
     ) -> Result<Signed<Proposal>> {
         let proposal = Proposal {
-            receiver_id: receiver.id().clone(),
             author_id: author.verifying_key().rt().expect("Invalid signer"),
             actions,
         };

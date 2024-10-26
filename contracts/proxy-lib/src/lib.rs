@@ -1,14 +1,11 @@
-use core::str;
+use core::{panic, str};
 use std::collections::HashSet;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
 use near_sdk::json_types::{Base64VecU8, U128};
 use near_sdk::store::IterableMap;
-use near_sdk::{
-    env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
-    PromiseOrValue,
-};
+use near_sdk::{env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError};
 
 pub mod ext_config;
 pub use crate::ext_config::config_contract;
@@ -42,6 +39,7 @@ pub struct ProxyContract {
     pub approvals: IterableMap<ProposalId, HashSet<Repr<SignerId>>>,
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
+    pub counter: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -68,9 +66,15 @@ pub struct ConfirmationRequestWithSigner {
 #[near(serializers = [json, borsh])]
 pub enum ProposalAction {
     FunctionCall {
+        receiver_id: AccountId,
         method_name: String,
         args: Base64VecU8,
         deposit: NearToken,
+        gas: Gas,
+    },
+    IntenalCall {
+        method_name: String,
+        args: Base64VecU8,
         gas: Gas,
     },
 }
@@ -79,7 +83,6 @@ pub enum ProposalAction {
 #[derive(Clone, PartialEq, Debug)]
 #[near(serializers = [json, borsh])]
 pub struct Proposal {
-    pub receiver_id: AccountId,
     pub author_id: Repr<SignerId>,
     pub actions: Vec<ProposalAction>,
 }
@@ -97,6 +100,7 @@ impl ProxyContract {
             num_proposals_pk: IterableMap::new(b"k".to_vec()),
             num_approvals: 3,
             active_proposals_limit: 10,
+            counter: 0,
         }
     }
 
@@ -229,19 +233,37 @@ impl ProxyContract {
         };
     }
 
-    fn execute_request(&mut self, request: Proposal) -> PromiseOrValue<bool> {
-        let mut promise = Promise::new(request.receiver_id);
+    fn execute_request(&mut self, request: Proposal) -> Promise {
+        let mut result_promise = None;
         for action in request.actions {
-            promise = match action {
+            let promise = match action {
                 ProposalAction::FunctionCall {
+                    receiver_id,
                     method_name,
                     args,
                     deposit,
                     gas,
-                } => promise.function_call(method_name, args.into(), deposit, gas),
+                } => {
+                    Promise::new(receiver_id).function_call(method_name, args.into(), deposit, gas)
+                }
+                ProposalAction::IntenalCall {
+                    method_name,
+                    args,
+                    gas,
+                } => Promise::new(env::current_account_id()).function_call(
+                    method_name,
+                    args.into(),
+                    NearToken::from_near(0),
+                    gas,
+                ),
             };
+            if result_promise.is_none() {
+                result_promise = Some(promise);
+            } else {
+                result_promise = Some(result_promise.unwrap().then(promise));
+            }
         }
-        promise.into()
+        result_promise.expect("request must have at least one action")
     }
 
     fn remove_request(&mut self, proposal_id: ProposalId) -> Proposal {
@@ -260,7 +282,19 @@ impl ProxyContract {
         self.num_proposals_pk.insert(author_id, num_requests);
         proposal
     }
+
+    pub fn example_internal_function(&mut self) {
+        if env::current_account_id() != env::predecessor_account_id() {
+            env::panic_str("Only callable by this contract");
+        }
+        self.counter = self.counter + 1;
+    }
+
+    pub fn get_counter(&self) -> u32 {
+        self.counter
+    }
 }
+
 
 fn assert_membership(call_result: Result<bool, PromiseError>) {
     assert!(call_result.is_ok(), "Membership check failed");
