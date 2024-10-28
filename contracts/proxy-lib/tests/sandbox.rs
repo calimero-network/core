@@ -205,7 +205,7 @@ async fn test_execute_proposal() -> Result<()> {
 
     let proposal = proxy_helper.create_proposal(
         &alice_sk,
-        vec![ProposalAction::FunctionCall {
+        vec![ProposalAction::ExternalFunctionCall {
             receiver_id: counter_helper.counter_contract.id().clone(),
             method_name: "increment".to_string(),
             args: Base64VecU8::from(vec![]),
@@ -264,17 +264,15 @@ async fn test_execute_proposal() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_execute_internal_proposal() -> Result<()> {
+async fn test_action_change_active_proposals_limit() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
         setup_test(&worker).await?;
 
     let proposal = proxy_helper.create_proposal(
         &alice_sk,
-        vec![ProposalAction::IntenalCall {
-            method_name: "example_internal_function".to_string(),
-            args: Base64VecU8::from(vec![]),
-            gas: Gas::from_gas(1_000_000_000_000),
+        vec![ProposalAction::SetActiveRequestsLimit {
+            active_proposals_limit: 6,
         }],
     )?;
 
@@ -305,25 +303,74 @@ async fn test_execute_internal_proposal() -> Result<()> {
         .json()?;
 
     assert_eq!(res2.num_approvals, 2, "Proposal should have 2 approvals");
-    
-    let res_o: u32 = worker
-        .view(proxy_helper.proxy_contract.id(), "get_counter")
-        .await?
-        .json()?;
-    assert_eq!(res_o, 0);
 
-    let res3 = proxy_helper
+    let default_active_proposals_limit: u32 = proxy_helper
+        .view_active_proposals_limit(&relayer_account)
+        .await?;
+    assert_eq!(default_active_proposals_limit, 10);
+
+    let _res = proxy_helper
         .approve_proposal(&relayer_account, &charlie_sk, &res.proposal_id)
         .await?
         .into_result()?;
 
-    println!("{:?}", res3.logs());
-    // assert!(res3.logs().contains(&"Example internal function"));
+    let new_active_proposals_limit: u32 = proxy_helper
+        .view_active_proposals_limit(&relayer_account)
+        .await?;
+    assert_eq!(new_active_proposals_limit, 6);
 
-    let res: u32 = worker
-        .view(proxy_helper.proxy_contract.id(), "get_counter")
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_action_change_number_of_approvals() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    let proposal = proxy_helper.create_proposal(
+        &alice_sk,
+        vec![ProposalAction::SetNumApprovals { num_approvals: 2 }],
+    )?;
+
+    let res: ProposalWithApprovals = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &proposal)
         .await?
+        .into_result()?
         .json()?;
-    assert_eq!(res, 1);
+
+    assert_eq!(res.num_approvals, 1);
+
+    let bob_sk = common::generate_keypair()?;
+    let charlie_sk = common::generate_keypair()?;
+    let _res = config_helper
+        .add_members(
+            &relayer_account,
+            &alice_sk,
+            &[bob_sk.clone(), charlie_sk.clone()],
+            &context_sk,
+        )
+        .await?
+        .into_result()?;
+
+    let res2: ProposalWithApprovals = proxy_helper
+        .approve_proposal(&relayer_account, &bob_sk, &res.proposal_id)
+        .await?
+        .into_result()?
+        .json()?;
+
+    assert_eq!(res2.num_approvals, 2, "Proposal should have 2 approvals");
+
+    let default_new_num_approvals: u32 = proxy_helper.view_num_approvals(&relayer_account).await?;
+    assert_eq!(default_new_num_approvals, 3);
+
+    let _res = proxy_helper
+        .approve_proposal(&relayer_account, &charlie_sk, &res.proposal_id)
+        .await?
+        .into_result()?;
+
+    let new_num_approvals: u32 = proxy_helper.view_num_approvals(&relayer_account).await?;
+    assert_eq!(new_num_approvals, 2);
+
     Ok(())
 }

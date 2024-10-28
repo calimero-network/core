@@ -17,7 +17,7 @@ pub struct ProxyContractHelper {
 }
 
 impl ProxyContractHelper {
-    pub async fn new(worker: &Worker<Sandbox>, config_contract: Contract) -> Result<Self> {
+    pub async fn new(worker: &Worker<Sandbox>, config_contract: Contract) -> eyre::Result<Self> {
         let proxy_contract = deploy_contract(worker, PROXY_CONTRACT_WASM).await?;
         Ok(Self {
             proxy_contract,
@@ -29,7 +29,7 @@ impl ProxyContractHelper {
         &self,
         caller: &Account,
         context_id: &Repr<ContextId>,
-    ) -> Result<ExecutionFinalResult, near_workspaces::error::Error> {
+    ) -> eyre::Result<ExecutionFinalResult, near_workspaces::error::Error> {
         caller
             .call(self.proxy_contract.id(), "init")
             .args_json(json!({
@@ -44,7 +44,7 @@ impl ProxyContractHelper {
         &self,
         author: &SigningKey,
         actions: Vec<ProposalAction>,
-    ) -> Result<Signed<Proposal>> {
+    ) -> eyre::Result<Signed<Proposal>> {
         let proposal = Proposal {
             author_id: author.verifying_key().rt().expect("Invalid signer"),
             actions,
@@ -57,7 +57,7 @@ impl ProxyContractHelper {
         &self,
         caller: &Account,
         proposal: &Signed<Proposal>,
-    ) -> Result<ExecutionFinalResult> {
+    ) -> eyre::Result<ExecutionFinalResult> {
         let call = caller
             .call(self.proxy_contract.id(), "create_and_approve_proposal")
             .args_json(json!({
@@ -74,7 +74,7 @@ impl ProxyContractHelper {
         caller: &Account,
         signer: &SigningKey,
         proposal_id: &ProposalId,
-    ) -> Result<ExecutionFinalResult> {
+    ) -> eyre::Result<ExecutionFinalResult> {
         let signer_id = signer
             .verifying_key()
             .to_bytes()
@@ -104,11 +104,33 @@ impl ProxyContractHelper {
         &self,
         caller: &Account,
         proposal_id: &ProposalId,
-    ) -> Result<ViewResultDetails> {
+    ) -> eyre::Result<ViewResultDetails> {
         let res = caller
             .view(self.proxy_contract.id(), "get_confirmations_count")
             .args_json(json!({ "proposal_id": proposal_id }))
             .await?;
+        Ok(res)
+    }
+
+    pub async fn view_active_proposals_limit(
+        &self,
+        caller: &Account,
+    ) -> eyre::Result<u32> {
+        let res: u32 = caller
+            .view(self.proxy_contract.id(), "get_active_proposals_limit")
+            .await?
+            .json()?;
+        Ok(res)
+    }
+
+    pub async fn view_num_approvals(
+        &self,
+        caller: &Account,
+    ) -> eyre::Result<u32> {
+        let res: u32 = caller
+            .view(self.proxy_contract.id(), "get_num_approvals")
+            .await?
+            .json()?;
         Ok(res)
     }
 }

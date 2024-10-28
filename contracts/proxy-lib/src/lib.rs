@@ -5,7 +5,7 @@ use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
 use near_sdk::json_types::{Base64VecU8, U128};
 use near_sdk::store::IterableMap;
-use near_sdk::{env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError};
+use near_sdk::{env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue};
 
 pub mod ext_config;
 pub use crate::ext_config::config_contract;
@@ -65,18 +65,15 @@ pub struct ConfirmationRequestWithSigner {
 #[derive(Clone, PartialEq, Debug)]
 #[near(serializers = [json, borsh])]
 pub enum ProposalAction {
-    FunctionCall {
+    ExternalFunctionCall {
         receiver_id: AccountId,
         method_name: String,
         args: Base64VecU8,
         deposit: NearToken,
         gas: Gas,
     },
-    IntenalCall {
-        method_name: String,
-        args: Base64VecU8,
-        gas: Gas,
-    },
+    SetNumApprovals { num_approvals: u32 },
+    SetActiveRequestsLimit { active_proposals_limit: u32 },
 }
 
 // The request the user makes specifying the receiving account and actions they want to execute (1 tx)
@@ -233,11 +230,11 @@ impl ProxyContract {
         };
     }
 
-    fn execute_request(&mut self, request: Proposal) -> Promise {
-        let mut result_promise = None;
+    fn execute_request(&mut self, request: Proposal) -> PromiseOrValue<bool> {
+        let mut result_promise: Option<Promise> = None;
         for action in request.actions {
             let promise = match action {
-                ProposalAction::FunctionCall {
+                ProposalAction::ExternalFunctionCall {
                     receiver_id,
                     method_name,
                     args,
@@ -245,17 +242,19 @@ impl ProxyContract {
                     gas,
                 } => {
                     Promise::new(receiver_id).function_call(method_name, args.into(), deposit, gas)
-                }
-                ProposalAction::IntenalCall {
-                    method_name,
-                    args,
-                    gas,
-                } => Promise::new(env::current_account_id()).function_call(
-                    method_name,
-                    args.into(),
-                    NearToken::from_near(0),
-                    gas,
-                ),
+                },
+                ProposalAction::SetActiveRequestsLimit {
+                    active_proposals_limit,
+                } => {
+                    self.active_proposals_limit = active_proposals_limit;
+                    return PromiseOrValue::Value(true);
+                },
+                ProposalAction::SetNumApprovals {
+                    num_approvals,
+                } => {
+                    self.num_approvals = num_approvals;
+                    return PromiseOrValue::Value(true);
+                },
             };
             if result_promise.is_none() {
                 result_promise = Some(promise);
@@ -263,7 +262,10 @@ impl ProxyContract {
                 result_promise = Some(result_promise.unwrap().then(promise));
             }
         }
-        result_promise.expect("request must have at least one action")
+        if result_promise.is_none() {
+            return PromiseOrValue::Value(false);
+        }
+        PromiseOrValue::Promise(result_promise.unwrap())
     }
 
     fn remove_request(&mut self, proposal_id: ProposalId) -> Proposal {
@@ -291,6 +293,14 @@ impl ProxyContract {
 
     pub fn get_counter(&self) -> u32 {
         self.counter
+    }
+
+    pub fn get_num_approvals(&self) -> u32 {
+        self.num_approvals
+    }
+
+    pub fn get_active_proposals_limit(&self) -> u32 {
+        self.active_proposals_limit
     }
 }
 
