@@ -108,7 +108,6 @@ pub struct VMLogic<'a> {
     events: Vec<Event>,
     actions: Vec<Vec<u8>>,
     root_hash: Option<[u8; 32]>,
-    proposal_function: Option<Box<dyn FnMut() -> Vec<u8>>>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -124,7 +123,6 @@ impl<'a> VMLogic<'a> {
             events: vec![],
             actions: vec![],
             root_hash: None,
-            proposal_function: None,
         }
     }
 
@@ -143,21 +141,6 @@ impl<'a> VMLogic<'a> {
             memory_builder: |store| memory.view(store),
         }
         .build()
-    }
-    
-    pub fn execute_proposal(&mut self) -> Option<Vec<u8>> {
-        self.proposal_function.as_mut().map(|f| f())
-    }
-    
-    /// Modifies a value through the blockchain bridge
-    ///
-    /// # Parameters
-    ///
-    /// * `value` - The value to be modified on the blockchain.
-    ///
-    pub fn modify_value(&mut self, value: Vec<u8>) -> VMLogicResult<()> {
-        // TODO: Implement actual blockchain call
-        Ok(())
     }
 }
 
@@ -572,44 +555,5 @@ impl VMHostFunctions<'_> {
         self.borrow_memory().write(ptr, &now.to_le_bytes())?;
 
         Ok(())
-    }
-    
-    /// Register a proposal function.
-    ///
-    /// This function accepts a function as input, and the provided function will be
-    /// called when proposals need to be handled.
-    ///
-    /// # Parameters
-    ///
-    /// * `func` - A closure that will be executed when processing proposals. The
-    ///            closure should return a `Vec<u8>` containing the proposal data.
-    ///
-    pub fn register_proposal_function(
-        &mut self,
-        func: Box<dyn FnMut() -> Vec<u8>>,
-    ) -> VMLogicResult<()> {
-        // Store the function for later use
-        self.with_logic_mut(|logic| {
-            logic.proposal_function = Some(func);
-            Ok(())
-        })
-    }
-    
-    /// Call the contract's `modify_value()` function through the bridge.
-    ///
-    /// The value to be modified is of indeterminate type, and used as raw data.
-    /// 
-    /// # Parameters
-    ///
-    /// * `ptr` - Pointer to the start of the value data in WASM memory.
-    /// * `len` - Length of the value data.
-    ///
-    pub fn modify_value(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
-        let value = self.read_guest_memory(ptr, len)?;
-        
-        // Call the bridge function to modify value on chain
-        self.with_logic_mut(|logic| {
-            logic.modify_value(value)
-        })
     }
 }

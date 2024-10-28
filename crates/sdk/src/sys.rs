@@ -37,9 +37,6 @@ wasm_imports! {
         // --
         fn random_bytes(buf: BufferMut<'_>);
         fn time_now(buf: BufferMut<'_>);
-        // --
-        fn register_proposal_function(func: Box<dyn FnMut() -> Vec<u8>>);
-        fn modify_value(value: Buffer<'_>);
     }
 }
 
