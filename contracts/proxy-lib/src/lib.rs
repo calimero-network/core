@@ -4,8 +4,11 @@ use std::collections::HashSet;
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
 use near_sdk::json_types::{Base64VecU8, U128};
-use near_sdk::store::IterableMap;
-use near_sdk::{env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue};
+use near_sdk::store::{IterableMap, LookupMap};
+use near_sdk::{
+    env, log, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
+    PromiseOrValue,
+};
 
 pub mod ext_config;
 pub use crate::ext_config::config_contract;
@@ -18,6 +21,7 @@ pub struct ProposalWithApprovals {
     pub proposal_id: ProposalId,
     pub num_approvals: usize,
 }
+
 enum MemberAction {
     Approve {
         identity: Repr<SignerId>,
@@ -39,7 +43,8 @@ pub struct ProxyContract {
     pub approvals: IterableMap<ProposalId, HashSet<Repr<SignerId>>>,
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
-    pub counter: u32,
+    pub context_storage: LookupMap<Box<[u8]>, Box<[u8]>>,
+    pub context_storage_keys: HashSet<Box<[u8]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -50,9 +55,6 @@ pub struct FunctionCallPermission {
     method_names: Vec<String>,
 }
 
-// An internal request wrapped with the signer_pk and added timestamp to determine num_requests_pk and prevent against malicious key holder gas attacks
-
-// An internal request wrapped with the signer_pk and added timestamp to determine num_requests_pk and prevent against malicious key holder gas attacks
 #[derive(Clone, PartialEq)]
 #[near(serializers = [json, borsh])]
 pub struct ConfirmationRequestWithSigner {
@@ -61,7 +63,6 @@ pub struct ConfirmationRequestWithSigner {
     pub added_timestamp: u64,
 }
 
-/// Lowest level action that can be performed by the multisig contract.
 #[derive(Clone, PartialEq, Debug)]
 #[near(serializers = [json, borsh])]
 pub enum ProposalAction {
@@ -72,8 +73,16 @@ pub enum ProposalAction {
         deposit: NearToken,
         gas: Gas,
     },
-    SetNumApprovals { num_approvals: u32 },
-    SetActiveRequestsLimit { active_proposals_limit: u32 },
+    SetNumApprovals {
+        num_approvals: u32,
+    },
+    SetActiveRequestsLimit {
+        active_proposals_limit: u32,
+    },
+    SetContextValue {
+        key: Box<[u8]>,
+        value: Box<[u8]>,
+    },
 }
 
 // The request the user makes specifying the receiving account and actions they want to execute (1 tx)
@@ -97,7 +106,8 @@ impl ProxyContract {
             num_proposals_pk: IterableMap::new(b"k".to_vec()),
             num_approvals: 3,
             active_proposals_limit: 10,
-            counter: 0,
+            context_storage: LookupMap::new(b"l"),
+            context_storage_keys: HashSet::new(),
         }
     }
 
@@ -242,19 +252,22 @@ impl ProxyContract {
                     gas,
                 } => {
                     Promise::new(receiver_id).function_call(method_name, args.into(), deposit, gas)
-                },
+                }
                 ProposalAction::SetActiveRequestsLimit {
                     active_proposals_limit,
                 } => {
                     self.active_proposals_limit = active_proposals_limit;
                     return PromiseOrValue::Value(true);
-                },
-                ProposalAction::SetNumApprovals {
-                    num_approvals,
-                } => {
+                }
+                ProposalAction::SetNumApprovals { num_approvals } => {
                     self.num_approvals = num_approvals;
                     return PromiseOrValue::Value(true);
-                },
+                }
+                ProposalAction::SetContextValue { key, value } => {
+                    let value = self.internal_mutate_storage(key, value);
+                    return PromiseOrValue::Value(value.is_some());
+                }
+
             };
             if result_promise.is_none() {
                 result_promise = Some(promise);
@@ -286,13 +299,26 @@ impl ProxyContract {
     }
 
     #[private]
-    pub fn example_internal_function(&mut self) -> u32 {
-        self.counter = self.counter + 1;
-        self.counter
+    pub fn internal_mutate_storage(
+        &mut self,
+        key: Box<[u8]>,
+        value: Box<[u8]>,
+    ) -> Option<Box<[u8]>> {
+        let val = self.context_storage.insert(key.clone(), value);
+        if val.is_some() {
+            if !self.context_storage_keys.contains(&key) {
+                self.context_storage_keys.insert(key);
+            }
+        }
+        val
     }
 
-    pub fn get_counter(&self) -> u32 {
-        self.counter
+    pub fn get_context_storage_keys(&self) -> HashSet<Box<[u8]>> {
+        self.context_storage_keys.clone()
+    }
+
+    pub fn get_context_value(&self, key: Box<[u8]>) -> Option<Box<[u8]>> {
+        self.context_storage.get(&key).cloned()
     }
 
     pub fn get_num_approvals(&self) -> u32 {
@@ -303,7 +329,6 @@ impl ProxyContract {
         self.active_proposals_limit
     }
 }
-
 
 fn assert_membership(call_result: Result<bool, PromiseError>) {
     assert!(call_result.is_ok(), "Membership check failed");

@@ -1,7 +1,6 @@
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed};
 use ed25519_dalek::{Signer, SigningKey};
-use eyre::Result;
 use near_workspaces::result::ViewResultDetails;
 use near_workspaces::{network::Sandbox, result::ExecutionFinalResult, Account, Contract, Worker};
 use proxy_lib::{ConfirmationRequestWithSigner, Proposal, ProposalAction, ProposalId};
@@ -129,6 +128,19 @@ impl ProxyContractHelper {
     ) -> eyre::Result<u32> {
         let res: u32 = caller
             .view(self.proxy_contract.id(), "get_num_approvals")
+            .await?
+            .json()?;
+        Ok(res)
+    }
+
+    pub async fn view_context_value(
+        &self,
+        caller: &Account,
+        key: Box<[u8]>
+    ) -> eyre::Result<Option<Box<[u8]>>> {
+        let res: Option<Box<[u8]>> = caller
+            .view(self.proxy_contract.id(), "get_context_value")
+            .args_json(json!({ "key": key }))
             .await?
             .json()?;
         Ok(res)

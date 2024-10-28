@@ -374,3 +374,64 @@ async fn test_action_change_number_of_approvals() -> Result<()> {
 
     Ok(())
 }
+
+
+#[tokio::test]
+async fn test_mutate_storage_value() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    let key_data = b"example_key".to_vec().into_boxed_slice();
+    let value_data  = b"example_value".to_vec().into_boxed_slice();
+
+    let proposal = proxy_helper.create_proposal(
+        &alice_sk,
+        vec![ProposalAction::SetContextValue { key: key_data.clone(), value: value_data.clone() }],
+    )?;
+
+    let res: ProposalWithApprovals = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &proposal)
+        .await?
+        .into_result()?
+        .json()?;
+
+    assert_eq!(res.num_approvals, 1);
+
+    let bob_sk = common::generate_keypair()?;
+    let charlie_sk = common::generate_keypair()?;
+    let _res = config_helper
+        .add_members(
+            &relayer_account,
+            &alice_sk,
+            &[bob_sk.clone(), charlie_sk.clone()],
+            &context_sk,
+        )
+        .await?
+        .into_result()?;
+
+    let res2: ProposalWithApprovals = proxy_helper
+        .approve_proposal(&relayer_account, &bob_sk, &res.proposal_id)
+        .await?
+        .into_result()?
+        .json()?;
+
+    assert_eq!(res2.num_approvals, 2, "Proposal should have 2 approvals");
+
+    let default_storage_value: Option<Box<[u8]>> = proxy_helper.view_context_value(&relayer_account, key_data.clone()).await?;
+    assert!(default_storage_value.is_none());
+
+    let _res = proxy_helper
+        .approve_proposal(&relayer_account, &charlie_sk, &res.proposal_id)
+        .await?
+        .into_result()?;
+    
+    let default_storage_value: Option<Box<[u8]>> = proxy_helper.view_context_value(&relayer_account, key_data.clone()).await?;
+
+    if let Some(ref x) = default_storage_value {
+        assert_eq!(x.clone(), value_data, "The value did not match the expected data");
+    } else {
+        panic!("Expected some value, but got None");
+    }
+    Ok(())
+}
