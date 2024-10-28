@@ -2,24 +2,24 @@
 #[path = "../tests/stream/codec.rs"]
 mod tests;
 
-use std::io::Error as IoError;
+use core::slice;
+use std::{borrow::Cow, io::Error as IoError};
 
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
-use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec, Error as JsonError};
 use thiserror::Error as ThisError;
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
-pub struct Message {
-    pub data: Vec<u8>,
+pub struct Message<'a> {
+    pub data: Cow<'a, [u8]>,
 }
 
-impl Message {
+impl<'a> Message<'a> {
     #[must_use]
-    pub const fn new(data: Vec<u8>) -> Self {
-        Self { data }
+    pub fn new<T: Into<Cow<'a, [u8]>>>(data: T) -> Self {
+        Self { data: data.into() }
     }
 }
 
@@ -28,27 +28,23 @@ impl Message {
 #[non_exhaustive]
 pub enum CodecError {
     StdIo(#[from] IoError),
-    SerDe(JsonError),
 }
 
 #[derive(Debug)]
-pub struct MessageJsonCodec {
+pub struct MessageCodec {
     length_codec: LengthDelimitedCodec,
 }
 
-impl MessageJsonCodec {
+impl MessageCodec {
     pub fn new(max_message_size: usize) -> Self {
-        let mut codec = LengthDelimitedCodec::new();
-        codec.set_max_frame_length(max_message_size);
-
-        Self {
-            length_codec: codec,
-        }
+        let mut length_codec = LengthDelimitedCodec::new();
+        length_codec.set_max_frame_length(max_message_size);
+        Self { length_codec }
     }
 }
 
-impl Decoder for MessageJsonCodec {
-    type Item = Message;
+impl Decoder for MessageCodec {
+    type Item = Message<'static>;
     type Error = CodecError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -56,18 +52,23 @@ impl Decoder for MessageJsonCodec {
             return Ok(None);
         };
 
-        from_json_slice(&frame).map(Some).map_err(CodecError::SerDe)
+        Ok(Some(Message {
+            data: Cow::Owned(frame.into()),
+        }))
     }
 }
 
-impl Encoder<Message> for MessageJsonCodec {
+impl<'a> Encoder<Message<'a>> for MessageCodec {
     type Error = CodecError;
 
-    fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let json = to_json_vec(&item).map_err(CodecError::SerDe)?;
-
+    fn encode(&mut self, item: Message<'a>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let data = item.data.as_ref();
+        let data = Bytes::from_static(
+            // safety: `LengthDelimitedCodec: Encoder` must prepend the length, so it copies `data`
+            unsafe { slice::from_raw_parts(data.as_ptr(), data.len()) },
+        );
         self.length_codec
-            .encode(Bytes::from(json), dst)
+            .encode(data, dst)
             .map_err(CodecError::StdIo)
     }
 }

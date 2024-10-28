@@ -10,6 +10,10 @@ use crate::application::ApplicationId;
 use crate::hash::{Hash, HashError};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
 // todo! define macros that construct newtypes
 // todo! wrapping Hash<N> with this interface
 pub struct ContextId(Hash);
@@ -17,12 +21,6 @@ pub struct ContextId(Hash);
 impl From<[u8; 32]> for ContextId {
     fn from(id: [u8; 32]) -> Self {
         Self(id.into())
-    }
-}
-
-impl From<ContextId> for [u8; 32] {
-    fn from(id: ContextId) -> Self {
-        *id
     }
 }
 
@@ -187,15 +185,22 @@ pub struct Context {
     pub id: ContextId,
     pub application_id: ApplicationId,
     pub root_hash: Hash,
+    // pub wire_version: usize,
 }
 
 impl Context {
     #[must_use]
-    pub const fn new(id: ContextId, application_id: ApplicationId, root_hash: Hash) -> Self {
+    pub const fn new(
+        id: ContextId,
+        application_id: ApplicationId,
+        root_hash: Hash,
+        // wire_version: usize,
+    ) -> Self {
         Self {
             id,
             application_id,
             root_hash,
+            // wire_version,
         }
     }
 }

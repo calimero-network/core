@@ -16,14 +16,20 @@ pub type Hash = [u8; 32];
 pub struct ContextMeta {
     pub application: ApplicationMetaKey,
     pub root_hash: Hash,
+    // pub wire_version: usize,
 }
 
 impl ContextMeta {
     #[must_use]
-    pub const fn new(application: ApplicationMetaKey, root_hash: Hash) -> Self {
+    pub const fn new(
+        application: ApplicationMetaKey,
+        root_hash: Hash,
+        // wire_version: usize,
+    ) -> Self {
         Self {
             application,
             root_hash,
+            // wire_version,
         }
     }
 }

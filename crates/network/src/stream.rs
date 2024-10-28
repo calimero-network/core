@@ -14,7 +14,7 @@ use tokio_util::codec::Framed;
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt};
 
 use super::EventLoop;
-use crate::stream::codec::MessageJsonCodec;
+use crate::stream::codec::MessageCodec;
 use crate::types::NetworkEvent;
 
 mod codec;
@@ -28,20 +28,20 @@ pub(crate) const CALIMERO_STREAM_PROTOCOL: StreamProtocol =
 
 #[derive(Debug)]
 pub struct Stream {
-    inner: Framed<BufStream<Compat<P2pStream>>, MessageJsonCodec>,
+    inner: Framed<BufStream<Compat<P2pStream>>, MessageCodec>,
 }
 
 impl Stream {
     #[must_use]
     pub fn new(stream: P2pStream) -> Self {
         let stream = BufStream::new(stream.compat());
-        let stream = Framed::new(stream, MessageJsonCodec::new(MAX_MESSAGE_SIZE));
+        let stream = Framed::new(stream, MessageCodec::new(MAX_MESSAGE_SIZE));
         Self { inner: stream }
     }
 }
 
 impl FuturesStream for Stream {
-    type Item = Result<Message, CodecError>;
+    type Item = Result<Message<'static>, CodecError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let inner = Pin::new(&mut self.get_mut().inner);
@@ -49,14 +49,14 @@ impl FuturesStream for Stream {
     }
 }
 
-impl FuturesSink<Message> for Stream {
+impl<'a> FuturesSink<Message<'a>> for Stream {
     type Error = CodecError;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready_unpin(cx)
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, item: Message<'a>) -> Result<(), Self::Error> {
         self.inner.start_send_unpin(item)
     }
 

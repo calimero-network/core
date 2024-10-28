@@ -4,6 +4,7 @@ use std::fs::{create_dir, create_dir_all};
 
 use calimero_config::{
     BlobStoreConfig, ConfigFile, DataStoreConfig as StoreConfigFile, NetworkConfig, ServerConfig,
+    SyncConfig,
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
@@ -12,8 +13,7 @@ use calimero_context_config::client::config::{
     Credentials,
 };
 use calimero_network::config::{
-    BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
-    SwarmConfig,
+    BootstrapConfig, BootstrapNodes, DiscoveryConfig, RelayConfig, RendezvousConfig, SwarmConfig,
 };
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
@@ -166,6 +166,28 @@ impl InitCommand {
 
         let config = ConfigFile::new(
             identity,
+            NetworkConfig::new(
+                SwarmConfig::new(listen),
+                BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
+                DiscoveryConfig::new(
+                    mdns,
+                    RendezvousConfig::new(self.rendezvous_registrations_limit),
+                    RelayConfig::new(self.relay_registrations_limit),
+                ),
+                ServerConfig::new(
+                    self.server_host
+                        .into_iter()
+                        .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
+                        .collect(),
+                    Some(AdminConfig::new(true)),
+                    Some(JsonRpcConfig::new(true)),
+                    Some(WsConfig::new(true)),
+                ),
+            ),
+            SyncConfig {
+                timeout_ms: Duration::from_secs(10),
+                interval_ms: Duration::from_secs(10),
+            },
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
             ContextConfig {
@@ -192,30 +214,6 @@ impl InitCommand {
                     },
                 },
             },
-            NetworkConfig::new(
-                SwarmConfig::new(listen),
-                BootstrapConfig::new(BootstrapNodes::new(boot_nodes)),
-                DiscoveryConfig::new(
-                    mdns,
-                    RendezvousConfig::new(self.rendezvous_registrations_limit),
-                    RelayConfig::new(self.relay_registrations_limit),
-                ),
-                ServerConfig::new(
-                    self.server_host
-                        .into_iter()
-                        .map(|host| Multiaddr::from(host).with(Protocol::Tcp(self.server_port)))
-                        .collect(),
-                    Some(AdminConfig::new(true)),
-                    Some(JsonRpcConfig::new(true)),
-                    Some(WsConfig::new(true)),
-                ),
-                CatchupConfig::new(
-                    50,
-                    Duration::from_secs(2),
-                    Duration::from_secs(2),
-                    Duration::from_millis(thread_rng().gen_range(0..1001)),
-                ),
-            ),
         );
 
         config.save(&path)?;

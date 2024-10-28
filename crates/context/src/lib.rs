@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::io::Error as IoError;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
@@ -436,7 +435,7 @@ impl ContextManager {
         self.state.read().await.pending_catchup.contains(context_id)
     }
 
-    pub async fn get_any_pending_catchup_context(&self) -> Option<ContextId> {
+    pub async fn get_any_pending_sync_context(&self) -> Option<ContextId> {
         self.state
             .read()
             .await
@@ -446,7 +445,7 @@ impl ContextManager {
             .copied()
     }
 
-    pub async fn clear_context_pending_catchup(&self, context_id: &ContextId) -> bool {
+    pub async fn clear_context_pending_sync(&self, context_id: &ContextId) -> bool {
         self.state.write().await.pending_catchup.remove(context_id)
     }
 
@@ -575,19 +574,25 @@ impl ContextManager {
 
         let mut iter = handle.iter::<ContextMetaKey>()?;
 
+        let start = start.and_then(|s| iter.seek(ContextMetaKey::new(s)).transpose());
+
         let mut ids = vec![];
 
-        if let Some(start) = start {
-            if let Some(key) = iter.seek(ContextMetaKey::new(start))? {
-                ids.push(key.context_id());
-            }
-        }
-
-        for key in iter.keys() {
+        for key in start.into_iter().chain(iter.keys()) {
             ids.push(key?.context_id());
         }
 
         Ok(ids)
+    }
+
+    pub fn has_context_identity(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<bool> {
+        let handle = self.store.handle();
+
+        Ok(handle.has(&ContextIdentityKey::new(context_id, public_key))?)
     }
 
     fn get_context_identities(
@@ -598,18 +603,13 @@ impl ContextManager {
         let handle = self.store.handle();
 
         let mut iter = handle.iter::<ContextIdentityKey>()?;
-        let mut ids = Vec::<PublicKey>::new();
 
-        let first = 'first: {
-            let Some(k) = iter
-                .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
-                .transpose()
-            else {
-                break 'first None;
-            };
+        let first = iter
+            .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
+            .transpose()
+            .map(|k| (k, iter.read()));
 
-            Some((k, iter.read()))
-        };
+        let mut ids = Vec::new();
 
         for (k, v) in first.into_iter().chain(iter.entries()) {
             let (k, v) = (k?, v?);
@@ -649,20 +649,11 @@ impl ContextManager {
 
         let mut contexts = vec![];
 
-        if let Some(start) = start {
-            // todo! Iter shouldn't behave like DBIter, first next should return sought element
-            if let Some(key) = iter.seek(ContextMetaKey::new(start))? {
-                let value = iter.read()?;
+        // todo! Iter shouldn't behave like DBIter, first next should return sought element
+        let start =
+            start.and_then(|s| Some((iter.seek(ContextMetaKey::new(s)).transpose()?, iter.read())));
 
-                contexts.push(Context::new(
-                    key.context_id(),
-                    value.application.application_id(),
-                    value.root_hash.into(),
-                ));
-            }
-        }
-
-        for (k, v) in iter.entries() {
+        for (k, v) in start.into_iter().chain(iter.entries()) {
             let (k, v) = (k?, v?);
             contexts.push(Context::new(
                 k.context_id(),
@@ -841,34 +832,39 @@ impl ContextManager {
         let handle = self.store.handle();
 
         if let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? {
-            if handle.has(&application.blob)? {
+            if self.has_blob_available(application.blob.blob_id())? {
                 return Ok(true);
             }
-        };
+        }
 
         Ok(false)
     }
 
-    pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
-        let client = self.config_client.query(
-            self.client_config.new.network.as_str().into(),
-            self.client_config.new.contract_id.as_str().into(),
-        );
-
-        let response = client
-            .application(context_id.rt().expect("infallible conversion"))
-            .await?;
-
-        let application = response.parse()?;
-
-        Ok(Application::new(
-            application.id.as_bytes().into(),
-            application.blob.as_bytes().into(),
-            application.size,
-            ApplicationSource::from_str(&application.source.0)?,
-            application.metadata.0.into_inner().into_owned(),
-        ))
+    pub fn has_blob_available(&self, blob_id: BlobId) -> EyreResult<bool> {
+        Ok(self.blob_manager.has(blob_id)?)
     }
+
+    // todo! add process that polls updates
+    // pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
+    //     let client = self.config_client.query(
+    //         self.client_config.new.network.as_str().into(),
+    //         self.client_config.new.contract_id.as_str().into(),
+    //     );
+
+    //     let response = client
+    //         .application(context_id.rt().expect("infallible conversion"))
+    //         .await?;
+
+    //     let application = response.parse()?;
+
+    //     Ok(Application::new(
+    //         application.id.as_bytes().into(),
+    //         application.blob.as_bytes().into(),
+    //         application.size,
+    //         ApplicationSource::from_str(&application.source.0)?,
+    //         application.metadata.0.into_inner().into_owned(),
+    //     ))
+    // }
 
     pub fn get_application(
         &self,
