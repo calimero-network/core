@@ -1,11 +1,10 @@
 use calimero_context_config::repr::ReprTransmute;
 use common::{
-    config_helper::ConfigContractHelper, counter_helper::CounterContracttHelper,
-    proxy_lib_helper::ProxyContractHelper,
+    config_helper::ConfigContractHelper, counter_helper::CounterContracttHelper, create_account_with_balance, proxy_lib_helper::ProxyContractHelper
 };
 use ed25519_dalek::SigningKey;
 use eyre::Result;
-use near_sdk::{json_types::Base64VecU8, Gas, NearToken};
+use near_sdk::{json_types::Base64VecU8, Gas, NearToken as NativeToken};
 use near_workspaces::{network::Sandbox, Account, Worker};
 use proxy_lib::{Proposal, ProposalAction, ProposalWithApprovals};
 
@@ -209,7 +208,7 @@ async fn test_execute_proposal() -> Result<()> {
             receiver_id: counter_helper.counter_contract.id().clone(),
             method_name: "increment".to_string(),
             args: Base64VecU8::from(vec![]),
-            deposit: NearToken::from_near(0),
+            deposit: NativeToken::from_near(0),
             gas: Gas::from_gas(1_000_000_000_000),
         }],
     )?;
@@ -433,5 +432,66 @@ async fn test_mutate_storage_value() -> Result<()> {
     } else {
         panic!("Expected some value, but got None");
     }
+    Ok(())
+}
+
+
+#[tokio::test]
+async fn test_transfer() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    let _res = worker.root_account()?
+        .transfer_near(
+            proxy_helper.proxy_contract.id(),
+            near_workspaces::types::NearToken::from_near(5))
+        .await?;
+
+    let recipient = create_account_with_balance(&worker, "new_account", 0).await?;
+    let proposal = proxy_helper.create_proposal(
+        &alice_sk,
+        vec![ProposalAction::Transfer { receiver_id: recipient.id().clone(), amount: NativeToken::from_near(5) }],
+    )?;
+
+    let res: ProposalWithApprovals = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &proposal)
+        .await?
+        .into_result()?
+        .json()?;
+
+    assert_eq!(res.num_approvals, 1);
+
+    let bob_sk = common::generate_keypair()?;
+    let charlie_sk = common::generate_keypair()?;
+    let _res = config_helper
+        .add_members(
+            &relayer_account,
+            &alice_sk,
+            &[bob_sk.clone(), charlie_sk.clone()],
+            &context_sk,
+        )
+        .await?
+        .into_result()?;
+
+    let res2: ProposalWithApprovals = proxy_helper
+        .approve_proposal(&relayer_account, &bob_sk, &res.proposal_id)
+        .await?
+        .into_result()?
+        .json()?;
+
+    assert_eq!(res2.num_approvals, 2, "Proposal should have 2 approvals");
+
+    let recipient_balance = recipient.view_account().await?.balance;
+    assert_eq!(NativeToken::from_near(0).as_near(), recipient_balance.as_near());
+
+    let _res = proxy_helper
+        .approve_proposal(&relayer_account, &charlie_sk, &res.proposal_id)
+        .await?
+        .into_result()?;
+
+    let recipient_balance = recipient.view_account().await?.balance;
+    assert_eq!(NativeToken::from_near(5).as_near(), recipient_balance.as_near());
+
     Ok(())
 }

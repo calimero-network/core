@@ -73,6 +73,10 @@ pub enum ProposalAction {
         deposit: NearToken,
         gas: Gas,
     },
+    Transfer {
+        receiver_id: AccountId,
+        amount: NearToken,
+    },
     SetNumApprovals {
         num_approvals: u32,
     },
@@ -253,6 +257,10 @@ impl ProxyContract {
                 } => {
                     Promise::new(receiver_id).function_call(method_name, args.into(), deposit, gas)
                 }
+                ProposalAction::Transfer {
+                    receiver_id,
+                    amount,
+                } => Promise::new(receiver_id).transfer(amount),
                 ProposalAction::SetActiveRequestsLimit {
                     active_proposals_limit,
                 } => {
@@ -267,7 +275,6 @@ impl ProxyContract {
                     let value = self.internal_mutate_storage(key, value);
                     return PromiseOrValue::Value(value.is_some());
                 }
-
             };
             if result_promise.is_none() {
                 result_promise = Some(promise);
