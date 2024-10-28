@@ -1,3 +1,5 @@
+#![allow(unused_crate_dependencies, reason = "False positives")]
+
 use near_sdk::{env, near, PanicOnDefault};
 
 #[near(contract_state)]

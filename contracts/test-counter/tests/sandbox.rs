@@ -1,16 +1,17 @@
-use eyre::Result;
+#![allow(unused_crate_dependencies, reason = "False positives")]
+
 use near_workspaces::{network::Sandbox, Worker, Contract};
 
 const CONTRACT_WASM: &str = "./res/test_counter_near.wasm";
 
-async fn deploy_counter_contract(worker: &Worker<Sandbox>) -> Result<Contract> {
+async fn deploy_counter_contract(worker: &Worker<Sandbox>) -> eyre::Result<Contract> {
     let wasm = std::fs::read(CONTRACT_WASM)?;
     let contract = worker.dev_deploy(&wasm).await?;
     Ok(contract)
 }
 
 #[tokio::test]
-async fn test_counter_contract() -> Result<()> {
+async fn test_counter_contract() -> eyre::Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let counter_contract = deploy_counter_contract(&worker).await?;
 

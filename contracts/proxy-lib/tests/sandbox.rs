@@ -1,7 +1,7 @@
 use calimero_context_config::repr::ReprTransmute;
 use common::{
     config_helper::ConfigContractHelper, counter_helper::CounterContracttHelper,
-    proxy_lib_helper::{self, ProxyContractHelper},
+    proxy_lib_helper::ProxyContractHelper,
 };
 use ed25519_dalek::SigningKey;
 use eyre::Result;
@@ -52,7 +52,7 @@ async fn setup_test(
 #[tokio::test]
 async fn test_create_proposal() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
-    let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
+    let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
     let proposal = proxy_helper.create_proposal(&alice_sk, vec![])?;
@@ -72,7 +72,7 @@ async fn test_create_proposal() -> Result<()> {
 #[tokio::test]
 async fn test_create_proposal_by_non_member() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
-    let (config_helper, proxy_helper, relayer_account, _context_sk, _alice_sk) =
+    let (_config_helper, proxy_helper, relayer_account, _context_sk, _alice_sk) =
         setup_test(&worker).await?;
 
     // Bob is not a member of the context
@@ -101,7 +101,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
 async fn test_create_multiple_proposals() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
 
-    let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
+    let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
     let proposal: calimero_context_config::types::Signed<Proposal> =
@@ -163,7 +163,7 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
 async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
 
-    let (config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
+    let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
     // Bob is not a member of the context

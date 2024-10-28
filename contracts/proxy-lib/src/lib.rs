@@ -1,4 +1,4 @@
-use core::{panic, str};
+use core::str;
 use std::collections::HashSet;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
@@ -283,11 +283,10 @@ impl ProxyContract {
         proposal
     }
 
-    pub fn example_internal_function(&mut self) {
-        if env::current_account_id() != env::predecessor_account_id() {
-            env::panic_str("Only callable by this contract");
-        }
+    #[private]
+    pub fn example_internal_function(&mut self) -> u32 {
         self.counter = self.counter + 1;
+        self.counter
     }
 
     pub fn get_counter(&self) -> u32 {
