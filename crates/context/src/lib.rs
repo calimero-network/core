@@ -5,11 +5,13 @@ use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ContextConfigClientConfig;
-use calimero_context_config::client::{ContextConfigClient, RelayOrNearTransport};
+use calimero_context_config::client::{
+    ContextConfigClient, Environment, FromConfig, QueryClient, RelayOrNearTransport,
+};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
-    ApplicationSource as ApplicationSourceConfig,
+    ApplicationSource as ApplicationSourceConfig, Proposal,
 };
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
@@ -51,7 +53,7 @@ use config::ContextConfig;
 pub struct ContextManager {
     store: Store,
     client_config: ContextConfigClientConfig,
-    config_client: ContextConfigClient<RelayOrNearTransport>,
+    context_config: ContextConfigClient<RelayOrNearTransport>, //do we maybe replace this with a dedicated query and mutate client?
     blob_manager: BlobManager,
     network_client: NetworkClient,
     server_sender: ServerSender,
@@ -72,12 +74,12 @@ impl ContextManager {
         network_client: NetworkClient,
     ) -> EyreResult<Self> {
         let client_config = config.client.clone();
-        let config_client = ContextConfigClient::from_config(&client_config);
+        let context_config = ContextConfigClient::from_config(&client_config);
 
         let this = Self {
             store,
             client_config,
-            config_client,
+            context_config,
             blob_manager,
             network_client,
             server_sender,
@@ -200,7 +202,7 @@ impl ContextManager {
                 )
             }
 
-            this.config_client
+            this.context_config
                 .mutate(
                     this.client_config.new.network.as_str().into(),
                     this.client_config.new.contract_id.as_str().into(),
@@ -311,7 +313,7 @@ impl ContextManager {
         }
 
         let client = self
-            .config_client
+            .context_config
             .query(network_id.into(), contract_id.into());
 
         for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
@@ -409,7 +411,7 @@ impl ContextManager {
             return Ok(None);
         };
 
-        self.config_client
+        self.context_config
             .mutate(
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
@@ -430,6 +432,13 @@ impl ContextManager {
         )?;
 
         Ok(Some(invitation_payload))
+    }
+
+    pub async fn get_requests(&self, contract_id: &str) -> Vec<(&u32, &Proposal)> {
+        self.context_config
+            .query("near", contract_id)
+            .get_requests()
+            .await?
     }
 
     pub async fn is_context_pending_catchup(&self, context_id: &ContextId) -> bool {
@@ -850,7 +859,7 @@ impl ContextManager {
     }
 
     pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
-        let client = self.config_client.query(
+        let client = self.context_config.query(
             self.client_config.new.network.as_str().into(),
             self.client_config.new.contract_id.as_str().into(),
         );

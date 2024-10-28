@@ -7,6 +7,8 @@ use std::borrow::Cow;
 use borsh::{BorshDeserialize, BorshSerialize};
 use bs58::decode::Result as Bs58Result;
 use ed25519_dalek::{Signature, SignatureError, Verifier, VerifyingKey};
+use near_sdk::json_types::Base64VecU8;
+use near_sdk::{AccountId, Gas, NearToken};
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 
@@ -371,4 +373,31 @@ impl<'a, T: Deserialize<'a>> Signed<T> {
         key.verify(&self.payload, &self.signature)
             .map_or(Err(ConfigError::InvalidSignature), |()| Ok(parsed))
     }
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Proposal {
+    pub author_id: Repr<SignerId>,
+    pub actions: Vec<ProposalAction>,
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub enum ProposalAction {
+    ExternalFunctionCall {
+        receiver_id: AccountId,
+        method_name: String,
+        args: Base64VecU8,
+        deposit: NearToken,
+        gas: Gas,
+    },
+    SetNumApprovals {
+        num_approvals: u32,
+    },
+    SetActiveRequestsLimit {
+        active_proposals_limit: u32,
+    },
+    SetContextValue {
+        key: Box<[u8]>,
+        value: Box<[u8]>,
+    },
 }

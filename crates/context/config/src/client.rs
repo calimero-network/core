@@ -12,7 +12,9 @@ use serde_json::{json, Error as JsonError};
 use thiserror::Error;
 
 use crate::repr::Repr;
-use crate::types::{self, Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
+use crate::types::{
+    self, Application, Capability, ContextId, ContextIdentity, Proposal, Signed, SignerId,
+};
 use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 
 pub mod config;
@@ -90,9 +92,43 @@ impl<T: Transport> ContextConfigClient<T> {
 
 pub type RelayOrNearTransport = Either<relayer::RelayerTransport, near::NearTransport<'static>>;
 
-impl ContextConfigClient<RelayOrNearTransport> {
-    #[must_use]
-    pub fn from_config(config: &ContextConfigClientConfig) -> Self {
+#[derive(Clone, Debug)]
+pub struct ContextProxyClient<T> {
+    transport: T,
+}
+
+impl<T: Transport> ContextProxyClient<T> {
+    pub const fn new(transport: T) -> Self {
+        Self { transport }
+    }
+}
+
+pub trait FromConfig: Sized {
+    fn from_config(config: &ContextConfigClientConfig) -> Self;
+}
+
+pub trait NewFromTransport<T: Transport> {
+    fn new_from_transport(transport: T) -> Self;
+}
+
+impl<T: Transport> NewFromTransport<T> for ContextConfigClient<T> {
+    fn new_from_transport(transport: T) -> Self {
+        Self::new(transport)
+    }
+}
+
+impl<T: Transport> NewFromTransport<T> for ContextProxyClient<T> {
+    fn new_from_transport(transport: T) -> Self {
+        Self::new(transport)
+    }
+}
+
+impl<C> FromConfig for C
+where
+    C: NewFromTransport<RelayOrNearTransport>,
+    RelayOrNearTransport: Transport,
+{
+    fn from_config(config: &ContextConfigClientConfig) -> Self {
         let transport = match config.signer.selected {
             ContextConfigClientSelectedSigner::Relayer => {
                 Either::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
@@ -119,36 +155,112 @@ impl ContextConfigClient<RelayOrNearTransport> {
                 }))
             }
         };
-
-        Self::new(transport)
+        Self::new_from_transport(transport)
     }
 }
 
-impl<T: Transport> ContextConfigClient<T> {
-    pub const fn query<'a>(
-        &'a self,
-        network_id: Cow<'a, str>,
-        contract_id: Cow<'a, str>,
-    ) -> ContextConfigQueryClient<'a, T> {
-        ContextConfigQueryClient {
-            network_id,
-            contract_id,
-            transport: &self.transport,
-        }
-    }
+pub trait Environment {
+    type Query<'a>
+    where
+        Self: 'a;
+    type Mutate<'a>
+    where
+        Self: 'a;
 
-    pub const fn mutate<'a>(
+    fn query<'a>(&'a self, network_id: Cow<'a, str>, contract_id: Cow<'a, str>) -> Self::Query<'a>;
+
+    fn mutate<'a>(
         &'a self,
         network_id: Cow<'a, str>,
         contract_id: Cow<'a, str>,
         signer_id: SignerId,
-    ) -> ContextConfigMutateClient<'a, T> {
-        ContextConfigMutateClient {
+    ) -> Self::Mutate<'a>;
+}
+
+#[derive(Debug)]
+pub struct ContextConfigQuery<'a, T> {
+    client: QueryClient<'a, T>,
+}
+
+#[derive(Debug)]
+pub struct ContextConfigMutate<'a, T> {
+    client: MutateClient<'a, T>,
+}
+
+impl<T: Transport> Environment for ContextConfigClient<T>
+where
+    T: 'static,
+{
+    type Query<'a> = ContextConfigQuery<'a, T>;
+    type Mutate<'a> = ContextConfigMutate<'a, T>;
+
+    fn query<'a>(&'a self, network_id: Cow<'a, str>, contract_id: Cow<'a, str>) -> Self::Query<'a> {
+        let client = QueryClient {
+            network_id,
+            contract_id,
+            transport: &self.transport,
+        };
+        ContextConfigQuery { client }
+    }
+
+    fn mutate<'a>(
+        &'a self,
+        network_id: Cow<'a, str>,
+        contract_id: Cow<'a, str>,
+        signer_id: SignerId,
+    ) -> Self::Mutate<'a> {
+        let client = MutateClient {
             network_id,
             contract_id,
             signer_id,
             transport: &self.transport,
-        }
+        };
+
+        ContextConfigMutate { client }
+    }
+}
+
+#[derive(Debug)]
+pub struct ContextProxyQuery<'a, T> {
+    client: QueryClient<'a, T>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct ContextProxyMutate<'a, T> {
+    client: MutateClient<'a, T>,
+}
+
+impl<T: Transport> Environment for ContextProxyClient<T>
+where
+    T: 'static,
+{
+    type Query<'a> = ContextProxyQuery<'a, T>;
+    type Mutate<'a> = ContextProxyMutate<'a, T>;
+
+    fn query<'a>(&'a self, network_id: Cow<'a, str>, contract_id: Cow<'a, str>) -> Self::Query<'a> {
+        let client = QueryClient {
+            network_id,
+            contract_id,
+            transport: &self.transport,
+        };
+        ContextProxyQuery { client }
+    }
+
+    fn mutate<'a>(
+        &'a self,
+        network_id: Cow<'a, str>,
+        contract_id: Cow<'a, str>,
+        signer_id: SignerId,
+    ) -> Self::Mutate<'a> {
+        let client = MutateClient {
+            network_id,
+            contract_id,
+            signer_id,
+            transport: &self.transport,
+        };
+
+        ContextProxyMutate { client }
     }
 }
 
@@ -183,14 +295,14 @@ impl<T> Response<T> {
     }
 }
 
-#[derive(Debug)]
-pub struct ContextConfigQueryClient<'a, T> {
+#[derive(Debug, Clone)]
+pub struct QueryClient<'a, T> {
     network_id: Cow<'a, str>,
     contract_id: Cow<'a, str>,
     transport: &'a T,
 }
 
-impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
+impl<'a, T: Transport> QueryClient<'a, T> {
     async fn read<I: Serialize, O>(
         &self,
         method: &str,
@@ -214,18 +326,21 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
 
         Ok(Response::new(response))
     }
+}
 
+impl<'a, T: Transport> ContextConfigQuery<'a, T> {
     pub async fn application(
         &self,
         context_id: ContextId,
     ) -> Result<Response<Application<'static>>, ConfigError<T>> {
-        self.read(
-            "application",
-            json!({
-                "context_id": Repr::new(context_id),
-            }),
-        )
-        .await
+        self.client
+            .read(
+                "application",
+                json!({
+                    "context_id": Repr::new(context_id),
+                }),
+            )
+            .await
     }
 
     pub async fn members(
@@ -234,15 +349,16 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
         offset: usize,
         length: usize,
     ) -> Result<Response<Vec<Repr<ContextIdentity>>>, ConfigError<T>> {
-        self.read(
-            "members",
-            json!({
-                "context_id": Repr::new(context_id),
-                "offset": offset,
-                "length": length,
-            }),
-        )
-        .await
+        self.client
+            .read(
+                "members",
+                json!({
+                    "context_id": Repr::new(context_id),
+                    "offset": offset,
+                    "length": length,
+                }),
+            )
+            .await
     }
 
     pub async fn privileges(
@@ -254,19 +370,20 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
             &*(ptr::from_ref::<[ContextIdentity]>(identities) as *const [Repr<ContextIdentity>])
         };
 
-        self.read(
-            "privileges",
-            json!({
-                "context_id": Repr::new(context_id),
-                "identities": identities,
-            }),
-        )
-        .await
+        self.client
+            .read(
+                "privileges",
+                json!({
+                    "context_id": Repr::new(context_id),
+                    "identities": identities,
+                }),
+            )
+            .await
     }
 }
 
 #[derive(Debug)]
-pub struct ContextConfigMutateClient<'a, T> {
+pub struct MutateClient<'a, T> {
     network_id: Cow<'a, str>,
     contract_id: Cow<'a, str>,
     signer_id: SignerId,
@@ -275,7 +392,7 @@ pub struct ContextConfigMutateClient<'a, T> {
 
 #[derive(Debug)]
 pub struct ClientRequest<'a, 'b, T> {
-    client: &'a ContextConfigMutateClient<'a, T>,
+    client: &'a MutateClient<'a, T>,
     kind: RequestKind<'b>,
 }
 
@@ -304,7 +421,7 @@ impl<T: Transport> ClientRequest<'_, '_, T> {
     }
 }
 
-impl<T: Transport> ContextConfigMutateClient<'_, T> {
+impl<T: Transport> ContextConfigMutate<'_, T> {
     #[must_use]
     pub const fn add_context<'a>(
         &self,
@@ -320,7 +437,10 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             },
         });
 
-        ClientRequest { client: self, kind }
+        ClientRequest {
+            client: &self.client,
+            kind,
+        }
     }
 
     #[must_use]
@@ -334,7 +454,10 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             kind: ContextRequestKind::UpdateApplication { application },
         });
 
-        ClientRequest { client: self, kind }
+        ClientRequest {
+            client: &self.client,
+            kind,
+        }
     }
 
     #[must_use]
@@ -354,7 +477,10 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             },
         });
 
-        ClientRequest { client: self, kind }
+        ClientRequest {
+            client: &self.client,
+            kind,
+        }
     }
 
     #[must_use]
@@ -374,7 +500,10 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             },
         });
 
-        ClientRequest { client: self, kind }
+        ClientRequest {
+            client: &self.client,
+            kind,
+        }
     }
 
     #[must_use]
@@ -395,7 +524,10 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             },
         });
 
-        ClientRequest { client: self, kind }
+        ClientRequest {
+            client: &self.client,
+            kind,
+        }
     }
 
     #[must_use]
@@ -416,6 +548,21 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             },
         });
 
-        ClientRequest { client: self, kind }
+        ClientRequest {
+            client: &self.client,
+            kind,
+        }
+    }
+}
+
+impl<'a, T: Transport> ContextProxyQuery<'a, T> {
+    pub async fn get_requests(
+        &self,
+        offset: usize,
+        length: usize,
+    ) -> Result<Response<Vec<(&u32, &Proposal)>>, ConfigError<T>> {
+        self.client
+            .read("requests", json!({"offset": offset, "length": length}))
+            .await
     }
 }

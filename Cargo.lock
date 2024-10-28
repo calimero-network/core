@@ -888,6 +888,7 @@ dependencies = [
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
  "near-primitives",
+ "near-sdk",
  "reqwest 0.12.5",
  "serde",
  "serde_json",
