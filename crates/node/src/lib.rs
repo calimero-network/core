@@ -586,6 +586,66 @@ impl Node {
 
         Ok(Some(outcome))
     }
+
+    /// Executes the proposal handler in the guest code.
+    ///
+    /// This function calls the guest-defined proposal handler when proposals
+    /// need to be handled. The associated function needs to be present in the
+    /// guest code, and should carry out whatever actions are necessary to
+    /// approve or reject the proposal.
+    ///
+    /// # Guest function
+    ///
+    /// The guest function should have the following signature:
+    ///
+    /// ```ignore
+    /// fn handle_proposal() -> Vec<u8>
+    /// ```
+    ///
+    /// TODO: What parameters should be passed to the proposal handler?
+    ///
+    /// The proposal handler should return a `Vec<u8>`.
+    ///
+    /// TODO: What exactly should the proposal handler return? I.e. what should
+    ///       the `Vec<u8>` contain?
+    ///
+    /// # Parameters
+    ///
+    /// * `context_id` - The ID of the context in which to execute the proposal
+    ///                  handler.
+    /// * `public_key` - The public key of the executor.
+    ///
+    pub async fn handle_proposal(
+        &mut self,
+        context_id: ContextId,
+        executor_public_key: PublicKey,
+    ) -> Result<Option<Vec<u8>>, CallError> {
+        let Some(mut context) = self
+            .ctx_manager
+            .get_context(&context_id)
+            .map_err(|_| CallError::ContextNotFound { context_id })?
+        else {
+            return Err(CallError::ContextNotFound { context_id });
+        };
+
+        let Some(outcome) = self
+            .execute(
+                &mut context,
+                "handle_proposal".to_owned(),
+                // TODO: What parameters should be passed to the proposal handler?
+                vec![],
+                executor_public_key,
+            )
+            .await
+            .map_err(|_| CallError::InternalError)?
+        else {
+            return Err(CallError::ApplicationNotInstalled {
+                application_id: context.application_id,
+            });
+        };
+
+        Ok(outcome.returns.ok().flatten())
+    }
 }
 
 // TODO: move this into the config
