@@ -37,19 +37,16 @@ pub struct SyncConfig {
     pub interval: Duration,
 }
 
-async fn send<T>(stream: &mut Stream, message: T) -> EyreResult<()>
-where
-    T: borsh::BorshSerialize,
-{
-    let message = borsh::to_vec(&message)?;
+async fn send(stream: &mut Stream, message: &StreamMessage<'_>) -> EyreResult<()> {
+    let message = borsh::to_vec(message)?;
     stream.send(Message::new(message)).await?;
     Ok(())
 }
 
-async fn recv<T>(stream: &mut Stream, duration: Duration) -> EyreResult<Option<T>>
-where
-    T: borsh::BorshDeserialize,
-{
+async fn recv(
+    stream: &mut Stream,
+    duration: Duration,
+) -> EyreResult<Option<StreamMessage<'static>>> {
     let Some(message) = timeout(duration, stream.next()).await? else {
         return Ok(None);
     };
@@ -73,16 +70,21 @@ impl Sequencer {
 impl Node {
     async fn initiate_sync(&self, context_id: ContextId, chosen_peer: PeerId) -> EyreResult<()> {
         let Some(context) = self.ctx_manager.get_context(&context_id)? else {
-            bail!("Context not found: {}", context_id);
+            bail!("context not found: {}", context_id);
         };
 
         let Some(application) = self.ctx_manager.get_application(&context.application_id)? else {
-            bail!("Application not found: {}", context.application_id);
+            bail!("application not found: {}", context.application_id);
         };
 
         if !self.ctx_manager.has_blob_available(application.blob)? {
-            self.initiate_blob_share_request(&context, application, chosen_peer)
-                .await?;
+            self.initiate_blob_share_request(
+                &context,
+                application.blob,
+                application.size,
+                chosen_peer,
+            )
+            .await?;
         }
 
         self.initiate_state_sync(context, chosen_peer).await
@@ -90,34 +92,57 @@ impl Node {
 
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) -> EyreResult<()> {
         let Some(message) = recv(&mut stream, self.sync_config.timeout).await? else {
-            bail!("Stream closed unexpectedly")
+            bail!("stream closed unexpectedly")
         };
 
-        let (context_id, party_id, payload) = match message {
+        let (context_id, their_identity, payload) = match message {
             StreamMessage::Init {
                 context_id,
                 party_id,
                 payload,
             } => (context_id, party_id, payload),
-            message/*  @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError)  */=> {
-                bail!("Expected initialization handshake, got {:?}", message)
+            unexpected/*  @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError)  */=> {
+                bail!("expected initialization handshake, got {:?}", unexpected)
             }
         };
 
-        let result = match payload {
-            InitPayload::StateSync { root_hash } => {
-                self.handle_state_sync(context_id, party_id, root_hash, &mut stream)
-                    .await
+        let result = async {
+            let Some(context) = self.ctx_manager.get_context(&context_id)? else {
+                bail!("context not found: {}", context_id);
+            };
+
+            if !self
+                .ctx_manager
+                .has_context_identity(context_id, their_identity)?
+            {
+                // todo! check the context config, update if necessary
+                // todo! implement this when has_members has been introduced
+
+                // { application: timestamp, members: timestamp }
+
+                bail!(
+                    "unknown context member {} in context {}",
+                    their_identity,
+                    context_id
+                );
             }
-            InitPayload::BlobShare { blob_id } => {
-                self.handle_blob_share(context_id, party_id, blob_id, &mut stream)
-                    .await
+
+            match payload {
+                InitPayload::StateSync { root_hash } => {
+                    self.handle_state_sync(context, their_identity, root_hash, &mut stream)
+                        .await
+                }
+                InitPayload::BlobShare { blob_id } => {
+                    self.handle_blob_share(context, their_identity, blob_id, &mut stream)
+                        .await
+                }
             }
         };
 
-        if let Err(err) = result {
+        if let Err(err) = result.await {
             error!(%err, "Failed to handle stream message");
-            send(&mut stream, StreamMessage::OpaqueError).await?;
+
+            send(&mut stream, &StreamMessage::OpaqueError).await?;
         }
 
         Ok(())

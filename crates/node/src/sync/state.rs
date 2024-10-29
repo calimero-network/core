@@ -57,53 +57,40 @@ impl Node {
 
     pub async fn handle_state_sync(
         &self,
-        context_id: ContextId,
+        context: Context,
         their_identity: PublicKey,
         root_hash: Hash,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
         debug!(
-            context_id=%context_id,
+            context_id=%context.id,
             their_root_hash=%root_hash,
             their_identity=%their_identity,
             "Received state sync request",
         );
 
-        let Some(context) = self.ctx_manager.get_context(&context_id)? else {
-            bail!("Context not found: {}", context_id);
-        };
-
-        if !self
-            .ctx_manager
-            .has_context_identity(context.id, their_identity)?
-        {
-            bail!("Rejected state sync request: unknown context member");
-        }
-
         let mut sequencer = Sequencer::default();
 
         if context.root_hash == root_hash {
-            send(
+            return send(
                 stream,
-                StreamMessage::Message {
+                &StreamMessage::Message {
                     sequence_id: sequencer.next(),
                     payload: None,
                 },
             )
-            .await?;
-
-            return Ok(());
+            .await;
         }
 
         let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
 
         let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("No identities found for context: {}", context.id);
+            bail!("no identities found for context: {}", context.id);
         };
 
         send(
             stream,
-            StreamMessage::Init {
+            &StreamMessage::Init {
                 context_id,
                 party_id: our_identity,
                 payload: InitPayload::StateSync {

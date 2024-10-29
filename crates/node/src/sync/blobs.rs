@@ -25,54 +25,102 @@ use calimero_primitives::{
     identity::PublicKey,
 };
 use eyre::bail;
+use futures_util::stream::poll_fn;
+use futures_util::TryStreamExt;
 use libp2p::PeerId;
 use rand::{seq::IteratorRandom, thread_rng};
+use tokio::sync::mpsc;
 
 use crate::{
-    types::{InitPayload, StreamMessage},
+    types::{InitPayload, MessagePayload, StreamMessage},
     Node,
 };
 
-use super::send;
+use super::{recv, send, Sequencer};
 
 impl Node {
     pub async fn initiate_blob_share_request(
         &self,
         context: &Context,
-        application: Application,
+        blob_id: BlobId,
+        size: u64,
         chosen_peer: PeerId,
     ) -> eyre::Result<()> {
         let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
 
         let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("No identities found for context: {}", context.id);
+            bail!("no identities found for context: {}", context.id);
         };
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
 
         send(
             &mut stream,
-            StreamMessage::Init {
+            &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
-                payload: InitPayload::BlobShare {
-                    blob_id: application.blob,
-                },
+                payload: InitPayload::BlobShare { blob_id },
             },
         )
         .await?;
+
+        let (tx, mut rx) = mpsc::channel(1);
+
+        let add_task = self.ctx_manager.add_blob(
+            poll_fn(|cx| rx.poll_recv(cx)).into_async_read(),
+            Some(size),
+            None,
+        );
+
+        let read_task = async {
+            let mut sequencer = Sequencer::default();
+
+            while let Some(msg) = recv(&mut stream, self.sync_config.timeout).await? {
+                let (sequence_id, chunk) = match msg {
+                    StreamMessage::OpaqueError => bail!("other peer ran into an error"),
+                    StreamMessage::Message {
+                        sequence_id,
+                        payload: Some(MessagePayload::BlobShare { chunk }),
+                    } => (sequence_id, chunk),
+                    unexpected => bail!("unexpected message: {:?}", unexpected),
+                };
+
+                if sequencer.next() != sequence_id {
+                    bail!(
+                        "out of sequence message: expected {}, got {}",
+                        sequencer.next(),
+                        sequence_id
+                    );
+                }
+
+                tx.send(Ok(chunk)).await?;
+            }
+
+            Ok(())
+        };
+
+        let ((received_blob_id, _), _) = tokio::try_join!(add_task, read_task)?;
+
+        if received_blob_id != blob_id {
+            bail!(
+                "unexpected blob id: expected {}, got {}",
+                blob_id,
+                received_blob_id
+            );
+        }
 
         Ok(())
     }
 
     pub async fn handle_blob_share(
         &self,
-        context_id: ContextId,
+        context: Context,
         their_identity: PublicKey,
         blob_id: BlobId,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        todo!()
+        Ok(())
+
         // let Some(application) = self.ctx_manager.get_application(&blob_id)? else {
         //     bail!("Application not found: {}", blob_id)
         // };
