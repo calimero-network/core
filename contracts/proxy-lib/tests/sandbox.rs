@@ -1,6 +1,7 @@
 use calimero_context_config::repr::ReprTransmute;
 use common::{
-    config_helper::ConfigContractHelper, counter_helper::CounterContracttHelper, create_account_with_balance, proxy_lib_helper::ProxyContractHelper
+    config_helper::ConfigContractHelper, counter_helper::CounterContracttHelper,
+    create_account_with_balance, proxy_lib_helper::ProxyContractHelper,
 };
 use ed25519_dalek::SigningKey;
 use eyre::Result;
@@ -198,7 +199,7 @@ async fn setup_action_test(
     worker: &Worker<Sandbox>,
 ) -> Result<(ProxyContractHelper, Account, Vec<SigningKey>)> {
     let (config_helper, proxy_helper, relayer_account, context_sk, alice_sk) =
-    setup_test(&worker).await?;
+        setup_test(&worker).await?;
 
     let bob_sk = common::generate_keypair()?;
     let charlie_sk = common::generate_keypair()?;
@@ -340,18 +341,14 @@ async fn test_mutate_storage_value() -> Result<()> {
     }];
     let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, actions, members).await;
 
-    let default_storage_value: Option<Box<[u8]>> = proxy_helper
+    let storage_value: Box<[u8]> = proxy_helper
         .view_context_value(&relayer_account, key_data.clone())
-        .await?;
-    if let Some(ref x) = default_storage_value {
-        assert_eq!(
-            x.clone(),
-            value_data,
-            "The value did not match the expected data"
-        );
-    } else {
-        panic!("Expected some value, but got None");
-    }
+        .await?
+        .expect("Expected some value, but got None");
+    assert_eq!(
+        storage_value, value_data,
+        "The value did not match the expected data"
+    );
 
     Ok(())
 }
