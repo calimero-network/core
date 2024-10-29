@@ -7,9 +7,7 @@ use calimero_config::{
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
-    ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    Credentials, Protocol as ConfigProtocol,
+    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew, ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner, Credentials, LocalConfig, Protocol as ConfigProtocol
 };
 use calimero_context_config::client::{near, starknet as starknetCredentials};
 use calimero_network::config::{
@@ -184,39 +182,45 @@ impl InitCommand {
                     signer: ContextConfigClientSigner {
                         selected: ContextConfigClientSelectedSigner::Relayer,
                         relayer: ContextConfigClientRelayerSigner { url: relayer },
-                        local: [
-                            (
-                                "mainnet".to_owned(),
-                                generate_local_signer(
-                                    "https://rpc.mainnet.near.org".parse()?,
-                                    ConfigProtocol::Near,
-                                )?,
-                            ),
-                            (
-                                "testnet".to_owned(),
-                                generate_local_signer(
-                                    "https://rpc.testnet.near.org".parse()?,
-                                    ConfigProtocol::Near,
-                                )?,
-                            ),
-                            (
-                                "mainnet-starknet".to_owned(),
-                                generate_local_signer(
-                                    "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7"
-                                        .parse()?,
-                                    ConfigProtocol::Starknet,
-                                )?,
-                            ),
-                            (
-                                "sepolia-starknet".to_owned(),
-                                generate_local_signer(
-                                    "https://free-rpc.nethermind.io/sepolia-juno/".parse()?,
-                                    ConfigProtocol::Starknet,
-                                )?,
-                            ),
-                        ]
-                        .into_iter()
-                        .collect(),
+                        local: LocalConfig {
+                            near: [
+                                (
+                                    "mainnet".to_owned(),
+                                    generate_local_signer(
+                                        "https://rpc.mainnet.near.org".parse()?,
+                                        ConfigProtocol::Near,
+                                    )?,
+                                ),
+                                (
+                                    "testnet".to_owned(),
+                                    generate_local_signer(
+                                        "https://rpc.testnet.near.org".parse()?,
+                                        ConfigProtocol::Near,
+                                    )?,
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                            starknet: [
+                                (
+                                    "mainnet".to_owned(),
+                                    generate_local_signer(
+                                        "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7"
+                                            .parse()?,
+                                        ConfigProtocol::Starknet,
+                                    )?,
+                                ),
+                                (
+                                    "sepolia".to_owned(),
+                                    generate_local_signer(
+                                        "https://free-rpc.nethermind.io/sepolia-juno/".parse()?,
+                                        ConfigProtocol::Starknet,
+                                    )?,
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                        },
                     },
                     new: ContextConfigClientNew {
                         network: match self.protocol {
