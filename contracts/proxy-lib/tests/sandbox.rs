@@ -92,7 +92,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
         .into_result();
 
     let error = res.expect_err("Expected an error from the contract");
-    assert!(error.to_string().contains("Not a context member"));
+    assert!(error.to_string().contains("Is not a member"));
 
     let view_proposal: Option<ProposalWithApprovals> = proxy_helper
         .view_proposal_confirmations(&relayer_account, &0)
@@ -192,7 +192,7 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
         .into_result();
 
     let error = res2.expect_err("Expected an error from the contract");
-    assert!(error.to_string().contains("Not a context member"));
+    assert!(error.to_string().contains("Is not a member"));
 
     let view_proposal: ProposalWithApprovals = proxy_helper
         .view_proposal_confirmations(&relayer_account, &res.proposal_id)
