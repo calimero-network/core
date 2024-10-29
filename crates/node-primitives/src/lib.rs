@@ -43,8 +43,10 @@ pub type ServerSender = mpsc::Sender<ExecutionRequest>;
 pub enum CallError {
     #[error("no connected peers")]
     NoConnectedPeers,
-    #[error("context not found: {context_id}")]
-    ContextNotFound { context_id: ContextId },
+    #[error("context not found")]
+    ContextNotFound,
+    #[error("context state not initialized, awaiting state sync")]
+    Uninitialized,
     #[error("application not installed: {application_id}")]
     ApplicationNotInstalled { application_id: ApplicationId },
     #[error("action rejected")]

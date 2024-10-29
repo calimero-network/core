@@ -443,8 +443,12 @@ impl Node {
         executor_public_key: PublicKey,
     ) -> Result<Outcome, CallError> {
         let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
-            return Err(CallError::ContextNotFound { context_id });
+            return Err(CallError::ContextNotFound);
         };
+
+        if &context.root_hash == &[0; 32] {
+            return Err(CallError::Uninitialized);
+        }
 
         let outcome_option = self
             .execute(&mut context, method, payload, executor_public_key)
@@ -553,8 +557,6 @@ impl Node {
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> EyreResult<Option<Outcome>> {
-        let mut storage = RuntimeCompatStore::new(&mut self.store, context.id);
-
         let Some(blob) = self
             .ctx_manager
             .load_application_blob(&context.application_id)
@@ -562,6 +564,8 @@ impl Node {
         else {
             return Ok(None);
         };
+
+        let mut storage = RuntimeCompatStore::new(&mut self.store, context.id);
 
         let outcome = calimero_runtime::run(
             &blob,
