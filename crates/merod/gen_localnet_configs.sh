@@ -14,7 +14,7 @@ fi
 # Get the first command line argument
 N=$1
 
-cargo build --bin meroctl
+cargo build --bin merod
 
 # Iterate in a loop N times
 for ((i = 1; i <= N; i++)); do
@@ -22,7 +22,7 @@ for ((i = 1; i <= N; i++)); do
   echo -e "\x1b[1;36m(i)\x1b[39m Initializing Node $i at \x1b[33m$node_home\x1b[0m"
   rm -rf "$node_home"
   mkdir -p "$node_home"
-  ./target/debug/meroctl --home "$NODE_HOME" --node-name "node$i" \
+  ./target/debug/merod --home "$NODE_HOME" --node-name "node$i" \
       init --swarm-port $((2427 + $i)) --server-port $((2527 + $i)) \
     | sed 's/^/ \x1b[1;36m|\x1b[0m  /'
   if [ $? -ne 0 ]; then
