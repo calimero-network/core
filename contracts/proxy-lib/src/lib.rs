@@ -35,12 +35,12 @@ enum MemberAction {
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct ProxyContract {
-    pub context_id: Repr<ContextId>,
+    pub context_id: ContextId,
     pub context_config_account_id: AccountId,
     pub num_approvals: u32,
     pub proposal_nonce: ProposalId,
     pub proposals: IterableMap<ProposalId, Proposal>,
-    pub approvals: IterableMap<ProposalId, HashSet<Repr<SignerId>>>,
+    pub approvals: IterableMap<ProposalId, HashSet<SignerId>>,
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
     pub context_storage: LookupMap<Box<[u8]>, Box<[u8]>>,
@@ -102,7 +102,7 @@ impl ProxyContract {
     #[init]
     pub fn init(context_id: Repr<ContextId>, context_config_account_id: AccountId) -> Self {
         Self {
-            context_id,
+            context_id: context_id.rt().expect("Invalid context id"),
             context_config_account_id,
             proposal_nonce: 0,
             proposals: IterableMap::new(b"r".to_vec()),
@@ -144,7 +144,7 @@ impl ProxyContract {
         });
     }
 
-    fn internal_confirm(&mut self, request_id: ProposalId, signer_id: Repr<SignerId>) -> () {
+    fn internal_confirm(&mut self, request_id: ProposalId, signer_id: SignerId) {  
         let approvals = self.approvals.get_mut(&request_id).unwrap();
         assert!(
             !approvals.contains(&signer_id),
@@ -163,11 +163,11 @@ impl ProxyContract {
 
     fn perform_action_by_member(&self, action: MemberAction) -> Promise {
         let identity = match &action {
-            MemberAction::Approve { identity, .. } => *identity,
-            MemberAction::Create { proposal, .. } => proposal.author_id,
-        };
+            MemberAction::Approve { identity, .. } => identity,
+            MemberAction::Create { proposal, .. } => &proposal.author_id,
+        }.rt().expect("Could not transmute");
         config_contract::ext(self.context_config_account_id.clone())
-            .has_member(self.context_id, identity)
+            .has_member(Repr::new(self.context_id), identity)
             .then(match action {
                 MemberAction::Approve {
                     identity,
@@ -182,8 +182,9 @@ impl ProxyContract {
             })
     }
 
-    pub fn requests(&self, offset: usize, length: usize) -> Vec<(&u32, &Proposal)> {
-        let mut requests = Vec::with_capacity(length);
+    pub fn requests(&self, offset: usize, length: usize) -> Vec<(&u32, &Proposal)> {    
+        let effective_len = (self.proposals.len() as usize).saturating_sub(offset).min(length);
+        let mut requests = Vec::with_capacity(effective_len);
         for request in self.proposals.iter().skip(offset).take(length) {
             requests.push(request);
         }
@@ -211,7 +212,7 @@ impl ProxyContract {
     ) -> ProposalWithApprovals {
         assert_membership(call_result);
 
-        self.internal_confirm(request_id, signer_id);
+        self.internal_confirm(request_id, signer_id.rt().expect("Invalid signer"));
         return ProposalWithApprovals {
             proposal_id: request_id,
             num_approvals: self.get_confirmations_count(request_id).num_approvals,
@@ -234,7 +235,7 @@ impl ProxyContract {
 
         self.proposals.insert(proposal_id, proposal.clone());
         self.approvals.insert(proposal_id, HashSet::new());
-        self.internal_confirm(proposal_id, proposal.author_id);
+        self.internal_confirm(proposal_id, proposal.author_id.rt().expect("Invalid signer"));
 
         self.proposal_nonce += 1;
 

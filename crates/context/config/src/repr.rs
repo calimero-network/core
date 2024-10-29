@@ -5,7 +5,6 @@ use core::ops::Deref;
 use core::result::Result as CoreResult;
 use std::borrow::Cow;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use bs58::decode::{DecodeTarget, Error as Bs58Error, Result as Bs58Result};
@@ -48,13 +47,6 @@ impl<T> Repr<T> {
 impl<T: ReprBytes> Display for Repr<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(&bs58::encode(self.inner.as_bytes()).into_string())
-    }
-}
-
-impl<T: ReprBytes> Hash for Repr<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        let encoded = bs58::encode(self.inner.as_bytes()).into_string();
-        encoded.hash(state);
     }
 }
 
