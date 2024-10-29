@@ -80,7 +80,7 @@ pub enum ProposalAction {
     SetNumApprovals {
         num_approvals: u32,
     },
-    SetActiveRequestsLimit {
+    SetActiveProposalsLimit {
         active_proposals_limit: u32,
     },
     SetContextValue {
@@ -261,7 +261,7 @@ impl ProxyContract {
                     receiver_id,
                     amount,
                 } => Promise::new(receiver_id).transfer(amount),
-                ProposalAction::SetActiveRequestsLimit {
+                ProposalAction::SetActiveProposalsLimit {
                     active_proposals_limit,
                 } => {
                     self.active_proposals_limit = active_proposals_limit;
