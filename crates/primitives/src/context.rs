@@ -204,3 +204,9 @@ impl Context {
         }
     }
 }
+
+#[derive(Debug)]
+pub struct ContextConfigParams<'a> {
+    pub network_id: Cow<'a, str>,
+    pub contract_id: Cow<'a, str>,
+}

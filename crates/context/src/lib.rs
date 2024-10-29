@@ -15,7 +15,9 @@ use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
+use calimero_primitives::context::{
+    Context, ContextConfigParams, ContextId, ContextInvitationPayload,
+};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
@@ -176,7 +178,16 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
-        self.add_context(&context, identity_secret, true).await?;
+        self.add_context(
+            &context,
+            identity_secret,
+            ContextConfigParams {
+                network_id: self.client_config.new.network.as_str().into(),
+                contract_id: self.client_config.new.contract_id.as_str().into(),
+            },
+            true,
+        )
+        .await?;
 
         let (tx, rx) = oneshot::channel();
 
@@ -250,6 +261,7 @@ impl ContextManager {
         &self,
         context: &Context,
         identity_secret: PrivateKey,
+        context_config: ContextConfigParams,
         is_new: bool,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
@@ -258,8 +270,8 @@ impl ContextManager {
             handle.put(
                 &ContextConfigKey::new(context.id),
                 &ContextConfigValue::new(
-                    self.client_config.new.network.as_str().into(),
-                    self.client_config.new.contract_id.as_str().into(),
+                    context_config.network_id.into_boxed_str(),
+                    context_config.contract_id.into_boxed_str(),
                 ),
             )?;
 
@@ -309,9 +321,10 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let client = self
-            .config_client
-            .query(network_id.into(), contract_id.into());
+        let network_id = network_id.as_str().into();
+        let contract_id = contract_id.as_str().into();
+
+        let client = self.config_client.query(network_id, contract_id);
 
         for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
             let members = client
@@ -376,8 +389,16 @@ impl ContextManager {
             }
         }
 
-        self.add_context(&context, identity_secret, !context_exists)
-            .await?;
+        self.add_context(
+            &context,
+            identity_secret,
+            ContextConfigParams {
+                network_id,
+                contract_id,
+            },
+            !context_exists,
+        )
+        .await?;
 
         self.subscribe(&context.id).await?;
 
