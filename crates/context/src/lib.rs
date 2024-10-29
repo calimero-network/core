@@ -6,12 +6,13 @@ use std::sync::Arc;
 use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ContextConfigClientConfig;
 use calimero_context_config::client::{
-    ContextConfigClient, Environment, FromConfig, QueryClient, RelayOrNearTransport,
+    ContextConfigClient, ContextProxyClient, Environment, FromConfig, QueryClient,
+    RelayOrNearTransport, Response,
 };
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
-    ApplicationSource as ApplicationSourceConfig, Proposal,
+    ApplicationSource as ApplicationSourceConfig, ConfigError, Proposal,
 };
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
@@ -35,7 +36,7 @@ use calimero_store::Store;
 use camino::Utf8PathBuf;
 use ed25519_dalek::ed25519::signature::SignerMut;
 use ed25519_dalek::SigningKey;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, eyre, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -53,7 +54,8 @@ use config::ContextConfig;
 pub struct ContextManager {
     store: Store,
     client_config: ContextConfigClientConfig,
-    context_config: ContextConfigClient<RelayOrNearTransport>, //do we maybe replace this with a dedicated query and mutate client?
+    context_config: ContextConfigClient<RelayOrNearTransport>,
+    proxy_config: ContextProxyClient<RelayOrNearTransport>,
     blob_manager: BlobManager,
     network_client: NetworkClient,
     server_sender: ServerSender,
@@ -75,11 +77,13 @@ impl ContextManager {
     ) -> EyreResult<Self> {
         let client_config = config.client.clone();
         let context_config = ContextConfigClient::from_config(&client_config);
+        let proxy_config = ContextProxyClient::from_config(&client_config);
 
         let this = Self {
             store,
             client_config,
             context_config,
+            proxy_config,
             blob_manager,
             network_client,
             server_sender,
@@ -434,11 +438,17 @@ impl ContextManager {
         Ok(Some(invitation_payload))
     }
 
-    pub async fn get_requests(&self, contract_id: &str) -> Vec<(&u32, &Proposal)> {
-        self.context_config
-            .query("near", contract_id)
-            .get_requests()
-            .await?
+    pub async fn get_requests(
+        &self,
+        contract_id: &str,
+        offset: usize,
+        length: usize,
+    ) -> EyreResult<R> {
+        let x = self
+            .proxy_config
+            .query("near".into(), contract_id.into())
+            .get_requests(offset, length)
+            .await;
     }
 
     pub async fn is_context_pending_catchup(&self, context_id: &ContextId) -> bool {
