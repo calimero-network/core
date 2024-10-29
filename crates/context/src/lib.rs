@@ -375,7 +375,10 @@ impl ContextManager {
             let metadata = application.metadata.0.to_vec();
 
             let application_id = match source.scheme() {
-                "http" | "https" => self.install_application_from_url(source, metadata).await?,
+                "http" | "https" => {
+                    self.install_application_from_url(source, metadata, None)
+                        .await?
+                }
                 _ => self.install_application(
                     application.blob.as_bytes().into(),
                     application.size,
@@ -708,6 +711,35 @@ impl ContextManager {
 
     // vv~ these would be more appropriate in an ApplicationManager
 
+    #[expect(clippy::similar_names, reason = "Different enough")]
+    pub async fn add_blob<S: AsyncRead>(
+        &self,
+        stream: S,
+        expected_size: Option<u64>,
+        expected_hash: Option<Hash>,
+    ) -> EyreResult<(BlobId, u64)> {
+        let (blob_id, hash, size) = self
+            .blob_manager
+            .put_sized(expected_size.map(Size::Exact), stream)
+            .await?;
+
+        if matches!(expected_hash, Some(expected_hash) if hash != expected_hash) {
+            bail!("fatal: blob hash mismatch");
+        }
+
+        if matches!(expected_size, Some(expected_size) if size != expected_size) {
+            bail!("fatal: blob size mismatch");
+        }
+
+        Ok((blob_id, size))
+    }
+
+    pub fn has_blob_available(&self, blob_id: BlobId) -> EyreResult<bool> {
+        Ok(self.blob_manager.has(blob_id)?)
+    }
+
+    // vv~ these would be more appropriate in an ApplicationManager
+
     fn install_application(
         &self,
         blob_id: BlobId,
@@ -747,18 +779,11 @@ impl ContextManager {
 
         let file = File::open(&path).await?;
 
-        let meta = file.metadata().await?;
-
-        let expected_size = meta.len();
+        let expected_size = file.metadata().await?.len();
 
         let (blob_id, size) = self
-            .blob_manager
-            .put_sized(Some(Size::Exact(expected_size)), file.compat())
+            .add_blob(file.compat(), Some(expected_size), None)
             .await?;
-
-        if size != expected_size {
-            bail!("fatal: file size mismatch")
-        }
 
         let Ok(uri) = Url::from_file_path(path) else {
             bail!("non-absolute path")
@@ -772,8 +797,7 @@ impl ContextManager {
         &self,
         url: Url,
         metadata: Vec<u8>,
-        // hash: Hash,
-        // todo! BlobMgr should return hash of content
+        expected_hash: Option<Hash>,
     ) -> EyreResult<ApplicationId> {
         let uri = url.as_str().parse()?;
 
@@ -782,50 +806,17 @@ impl ContextManager {
         let expected_size = response.content_length();
 
         let (blob_id, size) = self
-            .blob_manager
-            .put_sized(
-                expected_size.map(Size::Exact),
+            .add_blob(
                 response
                     .bytes_stream()
                     .map_err(IoError::other)
                     .into_async_read(),
+                expected_size,
+                expected_hash,
             )
             .await?;
 
-        if matches!(expected_size, Some(expected_size) if size != expected_size) {
-            bail!("fatal: content size mismatch")
-        }
-
-        // todo! if blob hash doesn't match, remove it
-
         self.install_application(blob_id, size, &uri, metadata)
-    }
-
-    #[expect(clippy::similar_names, reason = "Different enough")]
-    pub async fn install_application_from_stream<AR>(
-        &self,
-        expected_size: u64,
-        stream: AR,
-        source: &ApplicationSource,
-        metadata: Vec<u8>,
-        // hash: Hash,
-        // todo! BlobMgr should return hash of content
-    ) -> EyreResult<ApplicationId>
-    where
-        AR: AsyncRead,
-    {
-        let (blob_id, size) = self
-            .blob_manager
-            .put_sized(Some(Size::Exact(expected_size)), stream)
-            .await?;
-
-        if size != expected_size {
-            bail!("fatal: content size mismatch: {} {}", size, expected_size)
-        }
-
-        // todo! if blob hash doesn't match, remove it
-
-        self.install_application(blob_id, size, source, metadata)
     }
 
     pub fn list_installed_applications(&self) -> EyreResult<Vec<Application>> {
@@ -859,10 +850,6 @@ impl ContextManager {
         }
 
         Ok(false)
-    }
-
-    pub fn has_blob_available(&self, blob_id: BlobId) -> EyreResult<bool> {
-        Ok(self.blob_manager.has(blob_id)?)
     }
 
     // todo! add process that polls updates

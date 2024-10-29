@@ -96,14 +96,18 @@ impl BlobManager {
         Blob::new(id, self.clone())
     }
 
-    pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, u64)>
+    pub async fn put<T>(&self, stream: T) -> EyreResult<(BlobId, Hash, u64)>
     where
         T: AsyncRead,
     {
         self.put_sized(None, stream).await
     }
 
-    pub async fn put_sized<T>(&self, size: Option<Size>, stream: T) -> EyreResult<(BlobId, u64)>
+    pub async fn put_sized<T>(
+        &self,
+        size: Option<Size>,
+        stream: T,
+    ) -> EyreResult<(BlobId, Hash, u64)>
     where
         T: AsyncRead,
     {
@@ -217,7 +221,7 @@ impl BlobManager {
             &BlobMetaValue::new(size, *hash, links.into_boxed_slice()),
         )?;
 
-        Ok((id, size)) // todo!: Ok(Blob { id, size, hash }::{fn stream()})
+        Ok((id, hash, size)) // todo!: Ok(Blob { id, size, hash }::{fn stream()})
     }
 }
 
