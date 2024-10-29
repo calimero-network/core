@@ -3,7 +3,7 @@ use calimero_context_config::types::{ContextId, Signed};
 use ed25519_dalek::{Signer, SigningKey};
 use near_workspaces::result::ViewResultDetails;
 use near_workspaces::{network::Sandbox, result::ExecutionFinalResult, Account, Contract, Worker};
-use proxy_lib::{ConfirmationRequestWithSigner, Proposal, ProposalAction, ProposalId};
+use proxy_lib::{ProposalApprovalWithSigner, Proposal, ProposalAction, ProposalId};
 use serde_json::json;
 
 use super::deploy_contract;
@@ -81,7 +81,7 @@ impl ProxyContractHelper {
             .expect("Invalid signer");
         let args = Signed::new(
             &{
-                ConfirmationRequestWithSigner {
+                ProposalApprovalWithSigner {
                     signer_id,
                     proposal_id: proposal_id.clone(),
                     added_timestamp: 0,
@@ -92,7 +92,7 @@ impl ProxyContractHelper {
         .expect("Failed to sign proposal");
         let res = caller
             .call(self.proxy_contract.id(), "approve")
-            .args_json(json!({"request": args}))
+            .args_json(json!({"proposal": args}))
             .max_gas()
             .transact()
             .await?;

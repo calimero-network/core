@@ -57,14 +57,19 @@ async fn test_create_proposal() -> Result<()> {
 
     let proposal = proxy_helper.create_proposal(&alice_sk, vec![])?;
 
-    let res: ProposalWithApprovals = proxy_helper
+    let res: Option<ProposalWithApprovals> = proxy_helper
         .create_and_approve_proposal(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
 
-    assert_eq!(res.proposal_id, 0);
-    assert_eq!(res.num_approvals, 1);
+    match res {
+        Some(proposal) => {
+            assert_eq!(proposal.proposal_id, 0, "Expected proposal_id to be 0");
+            assert_eq!(proposal.num_approvals, 1, "Expected 1 approval");
+        },
+        None => panic!("Expected to create a proposal, but got None")
+    }
 
     Ok(())
 }
@@ -89,12 +94,15 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     let error = res.expect_err("Expected an error from the contract");
     assert!(error.to_string().contains("Not a context member"));
 
-    let view_proposal: ProposalWithApprovals = proxy_helper
+    let view_proposal: Option<ProposalWithApprovals> = proxy_helper
         .view_proposal_confirmations(&relayer_account, &0)
         .await?
         .json()?;
-    assert_eq!(view_proposal.num_approvals, 0);
-    Ok(())
+
+    match view_proposal {
+        Some(proposal) => panic!("Expected to not create a proposal, but got {:?}", proposal),
+        None => Ok(())
+    }
 }
 
 #[tokio::test]
@@ -242,11 +250,13 @@ async fn create_and_approve_proposal(
 
     assert_eq!(res.num_approvals, 2, "Proposal should have 2 approvals");
 
-    let _res: ProposalWithApprovals = proxy_helper
+    let res: Option<ProposalWithApprovals> = proxy_helper
         .approve_proposal(&relayer_account, &members[2], &res.proposal_id)
         .await?
         .into_result()?
         .json()?;
+
+    assert!(res.is_none(), "Proposal should be removed after the execution");
 
     Ok(())
 }

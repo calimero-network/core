@@ -25,7 +25,7 @@ pub struct ProposalWithApprovals {
 enum MemberAction {
     Approve {
         identity: Repr<SignerId>,
-        request_id: ProposalId,
+        proposal_id: ProposalId,
     },
     Create {
         proposal: Proposal,
@@ -57,7 +57,7 @@ pub struct FunctionCallPermission {
 
 #[derive(Clone, PartialEq)]
 #[near(serializers = [json, borsh])]
-pub struct ConfirmationRequestWithSigner {
+pub struct ProposalApprovalWithSigner {
     pub proposal_id: ProposalId,
     pub signer_id: Repr<SignerId>,
     pub added_timestamp: u64,
@@ -134,24 +134,24 @@ impl ProxyContract {
         });
     }
 
-    pub fn approve(&mut self, request: Signed<ConfirmationRequestWithSigner>) -> Promise {
-        let request = request
+    pub fn approve(&mut self, proposal: Signed<ProposalApprovalWithSigner>) -> Promise {
+        let proposal = proposal
             .parse(|i| *i.signer_id)
             .expect("failed to parse input");
         return self.perform_action_by_member(MemberAction::Approve {
-            identity: request.signer_id,
-            request_id: request.proposal_id,
+            identity: proposal.signer_id,
+            proposal_id: proposal.proposal_id,
         });
     }
 
-    fn internal_confirm(&mut self, request_id: ProposalId, signer_id: SignerId) {  
-        let approvals = self.approvals.get_mut(&request_id).unwrap();
+    fn internal_confirm(&mut self, proposal_id: ProposalId, signer_id: SignerId) {  
+        let approvals = self.approvals.get_mut(&proposal_id).unwrap();
         assert!(
             !approvals.contains(&signer_id),
             "Already confirmed this request with this key"
         );
         if approvals.len() as u32 + 1 >= self.num_approvals {
-            let request = self.remove_request(request_id);
+            let request = self.remove_request(proposal_id);
             /********************************
             NOTE: If the tx execution fails for any reason, the request and confirmations are removed already, so the client has to start all over
             ********************************/
@@ -171,9 +171,9 @@ impl ProxyContract {
             .then(match action {
                 MemberAction::Approve {
                     identity,
-                    request_id,
+                    proposal_id,
                 } => Self::ext(env::current_account_id())
-                    .internal_approve_proposal(identity, request_id),
+                    .internal_approve_proposal(identity, proposal_id),
                 MemberAction::Create {
                     proposal,
                     num_proposals,
@@ -191,15 +191,16 @@ impl ProxyContract {
         requests
     }
 
-    pub fn get_confirmations_count(&self, proposal_id: ProposalId) -> ProposalWithApprovals {
-        let size = self
+    pub fn get_confirmations_count(&self, proposal_id: ProposalId) -> Option<ProposalWithApprovals> {
+        let approvals_for_proposal = self
             .approvals
-            .get(&proposal_id)
-            .unwrap_or(&HashSet::new())
-            .len();
-        ProposalWithApprovals {
-            proposal_id,
-            num_approvals: size,
+            .get(&proposal_id);
+        match approvals_for_proposal {
+            Some(approvals) => Some(ProposalWithApprovals {
+                proposal_id,
+                num_approvals: approvals.len(),
+            }),
+            None => None,
         }
     }
 
@@ -207,16 +208,13 @@ impl ProxyContract {
     pub fn internal_approve_proposal(
         &mut self,
         signer_id: Repr<SignerId>,
-        request_id: ProposalId,
+        proposal_id: ProposalId,
         #[callback_result] call_result: Result<bool, PromiseError>, // Match the return type
-    ) -> ProposalWithApprovals {
+    ) -> Option<ProposalWithApprovals> {
         assert_membership(call_result);
 
-        self.internal_confirm(request_id, signer_id.rt().expect("Invalid signer"));
-        return ProposalWithApprovals {
-            proposal_id: request_id,
-            num_approvals: self.get_confirmations_count(request_id).num_approvals,
-        };
+        self.internal_confirm(proposal_id, signer_id.rt().expect("Invalid signer"));
+        self.build_proposal_response(proposal_id)
     }
 
     #[private]
@@ -225,7 +223,7 @@ impl ProxyContract {
         proposal: Proposal,
         num_proposals: u32,
         #[callback_result] call_result: Result<bool, PromiseError>, // Match the return type
-    ) -> ProposalWithApprovals {
+    ) -> Option<ProposalWithApprovals> {
         assert_membership(call_result);
 
         self.num_proposals_pk
@@ -239,10 +237,18 @@ impl ProxyContract {
 
         self.proposal_nonce += 1;
 
-        return ProposalWithApprovals {
+        self.build_proposal_response(proposal_id)
+    }
+
+    fn build_proposal_response(&self, proposal_id: ProposalId) -> Option<ProposalWithApprovals> {
+        let approvals = self.get_confirmations_count(proposal_id);
+        match approvals {
+            None => None,
+            _ => Some(ProposalWithApprovals {
             proposal_id,
-            num_approvals: self.get_confirmations_count(proposal_id).num_approvals,
-        };
+            num_approvals: approvals.unwrap().num_approvals,
+        })
+    }
     }
 
     fn execute_request(&mut self, request: Proposal) -> PromiseOrValue<bool> {
@@ -339,7 +345,6 @@ impl ProxyContract {
 }
 
 fn assert_membership(call_result: Result<bool, PromiseError>) {
-    assert!(call_result.is_ok(), "Membership check failed");
-    assert!(call_result.unwrap(), "Not a context member");
-    log!("Membership confirmed");
+    let has_member = call_result.expect("Membership check failed");
+    assert!(has_member, "Is not a member");
 }
