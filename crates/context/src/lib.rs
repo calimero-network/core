@@ -6,13 +6,12 @@ use std::sync::Arc;
 use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ContextConfigClientConfig;
 use calimero_context_config::client::{
-    ContextConfigClient, ContextProxyClient, Environment, FromConfig, QueryClient,
-    RelayOrNearTransport, Response,
+    ContextConfigClient, ContextProxyClient, Environment, FromConfig, RelayOrNearTransport,
 };
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
-    ApplicationSource as ApplicationSourceConfig, ConfigError, Proposal,
+    ApplicationSource as ApplicationSourceConfig, Proposal, ProposalId,
 };
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
@@ -36,7 +35,7 @@ use calimero_store::Store;
 use camino::Utf8PathBuf;
 use ed25519_dalek::ed25519::signature::SignerMut;
 use ed25519_dalek::SigningKey;
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -443,12 +442,47 @@ impl ContextManager {
         contract_id: &str,
         offset: usize,
         length: usize,
-    ) -> EyreResult<R> {
-        let x = self
+    ) -> EyreResult<Vec<(ProposalId, Proposal)>> {
+        Ok(self
             .proxy_config
-            .query("near".into(), contract_id.into())
-            .get_requests(offset, length)
-            .await;
+            .query(
+                self.client_config.new.network.as_str().into(),
+                contract_id.into(),
+            )
+            .requests(offset, length)
+            .await?
+            .parse()?)
+    }
+
+    pub async fn get_context_storage_keys(
+        &self,
+        contract_id: &str,
+    ) -> EyreResult<HashSet<Box<[u8]>>> {
+        Ok(self
+            .proxy_config
+            .query(
+                self.client_config.new.network.as_str().into(),
+                contract_id.into(),
+            )
+            .get_context_storage_keys()
+            .await?
+            .parse()?)
+    }
+
+    pub async fn get_context_value(
+        &self,
+        key: Box<[u8]>,
+        contract_id: &str,
+    ) -> EyreResult<Option<Box<[u8]>>> {
+        Ok(self
+            .proxy_config
+            .query(
+                self.client_config.new.network.as_str().into(),
+                contract_id.into(),
+            )
+            .get_context_value(key)
+            .await?
+            .parse()?)
     }
 
     pub async fn is_context_pending_catchup(&self, context_id: &ContextId) -> bool {
