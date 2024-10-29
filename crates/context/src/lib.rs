@@ -262,7 +262,8 @@ impl ContextManager {
         identity_secret: PrivateKey,
         invitation_payload: ContextInvitationPayload,
     ) -> EyreResult<Option<(ContextId, PublicKey)>> {
-        let (context_id, invitee_id,protocol,  network_id, contract_id) = invitation_payload.parts()?;
+        let (context_id, invitee_id, protocol, network_id, contract_id) =
+            invitation_payload.parts()?;
 
         if identity_secret.public_key() != invitee_id {
             bail!("identity mismatch")
@@ -276,9 +277,9 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let client = self
-            .config_client
-            .query(protocol.parse()?, network_id.into(), contract_id.into());
+        let client =
+            self.config_client
+                .query(protocol.parse()?, network_id.into(), contract_id.into());
 
         for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
             let members = client

@@ -47,7 +47,11 @@ pub struct ContextConfig {
 impl ContextConfig {
     #[must_use]
     pub const fn new(protocol: Box<str>, network: Box<str>, contract: Box<str>) -> Self {
-        Self { protocol, network, contract }
+        Self {
+            protocol,
+            network,
+            contract,
+        }
     }
 }
 

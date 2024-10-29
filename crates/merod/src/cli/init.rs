@@ -7,7 +7,9 @@ use calimero_config::{
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew, ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner, Credentials, LocalConfig, Protocol as ConfigProtocol
+    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
+    ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
+    Credentials, LocalConfig, Protocol as ConfigProtocol,
 };
 use calimero_context_config::client::{near, starknet as starknetCredentials};
 use calimero_network::config::{

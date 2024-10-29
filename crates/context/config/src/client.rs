@@ -112,11 +112,7 @@ impl<L: Transport, R: Transport> Transport for BothTransport<L, R> {
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
         match request.protocol {
-            Protocol::Near => self
-                .near
-                .send(request, payload)
-                .await
-                .map_err(Either::Left),
+            Protocol::Near => self.near.send(request, payload).await.map_err(Either::Left),
             Protocol::Starknet => self
                 .starknet
                 .send(request, payload)
