@@ -261,7 +261,7 @@ impl ContextManager {
         &self,
         context: &Context,
         identity_secret: PrivateKey,
-        context_config: ContextConfigParams,
+        context_config: ContextConfigParams<'_>,
         is_new: bool,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
@@ -270,8 +270,8 @@ impl ContextManager {
             handle.put(
                 &ContextConfigKey::new(context.id),
                 &ContextConfigValue::new(
-                    context_config.network_id.into_boxed_str(),
-                    context_config.contract_id.into_boxed_str(),
+                    context_config.network_id.into_owned().into_boxed_str(),
+                    context_config.contract_id.into_owned().into_boxed_str(),
                 ),
             )?;
 
@@ -321,10 +321,12 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let network_id = network_id.as_str().into();
-        let contract_id = contract_id.as_str().into();
+        let network_id = network_id.as_str();
+        let contract_id = contract_id.as_str();
 
-        let client = self.config_client.query(network_id, contract_id);
+        let client = self
+            .config_client
+            .query(network_id.into(), contract_id.into());
 
         for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
             let members = client
@@ -352,8 +354,8 @@ impl ContextManager {
         }
 
         if !handle.has(&identity_key)? {
-            bail!("unable to join context: not a member, ask for an invite")
-        };
+            bail!("unable to join context: not a member, invalid invitation?")
+        }
 
         let response = client
             .application(context_id.rt().expect("infallible conversion"))
@@ -396,8 +398,8 @@ impl ContextManager {
             &context,
             identity_secret,
             ContextConfigParams {
-                network_id,
-                contract_id,
+                network_id: network_id.into(),
+                contract_id: contract_id.into(),
             },
             !context_exists,
         )
