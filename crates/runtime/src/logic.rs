@@ -142,6 +142,18 @@ impl<'a> VMLogic<'a> {
         }
         .build()
     }
+
+    /// Sends a blockchain proposal through the WASM bridge.
+    ///
+    /// # Parameters
+    ///
+    /// * `actions` - The actions that make up the proposal.
+    ///               TODO: This will be a `Vec<ProposalAction>` when available.
+    ///
+    pub fn send_proposal(&mut self, _actions: Vec<Vec<u8>>) -> VMLogicResult<()> {
+        // TODO: Implement actual blockchain call
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -227,9 +239,7 @@ impl VMHostFunctions<'_> {
 
         String::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
     }
-}
 
-impl VMHostFunctions<'_> {
     pub fn panic(&self, file_ptr: u64, file_len: u64, line: u32, column: u32) -> VMLogicResult<()> {
         let file = self.get_string(file_ptr, file_len)?;
         Err(HostError::Panic {
@@ -555,5 +565,25 @@ impl VMHostFunctions<'_> {
         self.borrow_memory().write(ptr, &now.to_le_bytes())?;
 
         Ok(())
+    }
+
+    /// Call the contract's `send_proposal()` function through the bridge.
+    ///
+    /// The proposal actions are obtained as raw data and then deserialised into
+    /// the individual actions that make up the proposal.
+    ///
+    /// # Parameters
+    ///
+    /// * `ptr` - Pointer to the start of the action data in WASM memory.
+    /// * `len` - Length of the action data.
+    ///
+    pub fn send_proposal(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
+        // TODO: This will need to deserialise into ProposalActions when available
+        // TODO: So this will become Vec<ProposalAction>
+        let actions: Vec<Vec<u8>> = from_borsh_slice(&self.read_guest_memory(ptr, len)?)
+            .map_err(|_| HostError::DeserializationError)?;
+
+        // Call the bridge function to send the proposal
+        self.with_logic_mut(|logic| logic.send_proposal(actions))
     }
 }
