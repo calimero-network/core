@@ -22,10 +22,13 @@ libp2p.workspace = true
 multiaddr.workspace = true
 near-crypto.workspace = true
 rand.workspace = true
+starknet.workspace = true
+starknet-crypto.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 toml_edit.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
 url = { workspace = true, features = ["serde"] }
 
 calimero-blobstore = { path = "../store/blobs" }
