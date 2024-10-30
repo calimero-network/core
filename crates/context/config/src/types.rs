@@ -401,3 +401,5 @@ pub enum ProposalAction {
         value: Box<[u8]>,
     },
 }
+
+pub type ProposalId = u32;

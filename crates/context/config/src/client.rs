@@ -3,7 +3,7 @@ use core::error::Error as CoreError;
 use core::marker::PhantomData;
 use core::ptr;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use ed25519_dalek::Signature;
 use either::Either;
@@ -13,7 +13,8 @@ use thiserror::Error;
 
 use crate::repr::Repr;
 use crate::types::{
-    self, Application, Capability, ContextId, ContextIdentity, Proposal, Signed, SignerId,
+    self, Application, Capability, ContextId, ContextIdentity, Proposal, ProposalId, Signed,
+    SignerId,
 };
 use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 
@@ -556,13 +557,29 @@ impl<T: Transport> ContextConfigMutate<'_, T> {
 }
 
 impl<'a, T: Transport> ContextProxyQuery<'a, T> {
-    pub async fn get_requests(
+    pub async fn requests(
         &self,
         offset: usize,
         length: usize,
-    ) -> Result<Response<Vec<(&u32, &Proposal)>>, ConfigError<T>> {
+    ) -> Result<Response<Vec<(ProposalId, Proposal)>>, ConfigError<T>> {
         self.client
             .read("requests", json!({"offset": offset, "length": length}))
+            .await
+    }
+
+    pub async fn get_context_storage_keys(
+        &self,
+    ) -> Result<Response<HashSet<Box<[u8]>>>, ConfigError<T>> {
+        self.client
+            .read("get_context_storage_keys", json!({}))
+            .await
+    }
+    pub async fn get_context_value(
+        &self,
+        key: Box<[u8]>,
+    ) -> Result<Response<Option<Box<[u8]>>>, ConfigError<T>> {
+        self.client
+            .read("get_context_value", json!({"key": key}))
             .await
     }
 }
