@@ -88,3 +88,11 @@ pub enum RequestType {
     Post,
     Delete,
 }
+pub async fn craft_failed_request_message(response: Response, message: &str) -> EyreResult<String> {
+    let status = response.status();
+    let error_text = response.text().await?;
+    Ok(format!(
+        "{} - Status: {}, Error: {}",
+        message, status, error_text
+    ))
+}

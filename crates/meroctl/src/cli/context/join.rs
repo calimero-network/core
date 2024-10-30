@@ -6,7 +6,7 @@ use eyre::{bail, Result as EyreResult};
 use reqwest::Client;
 use tracing::info;
 
-use crate::cli::RootArgs;
+use crate::cli::CommandContext;
 use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
 
 #[derive(Debug, Parser)]
@@ -25,8 +25,8 @@ pub struct JoinCommand {
 }
 
 impl JoinCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
-        let config = load_config(&args.home, &args.node_name)?;
+    pub async fn run(self, context: CommandContext) -> EyreResult<()> {
+        let config = load_config(&context.args.home, &context.args.node_name)?;
 
         let response = get_response(
             &Client::new(),

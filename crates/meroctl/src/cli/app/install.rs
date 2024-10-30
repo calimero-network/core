@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{
     InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
@@ -6,11 +8,14 @@ use camino::Utf8PathBuf;
 use clap::Parser;
 use eyre::{bail, Result};
 use reqwest::Client;
-use tracing::info;
+use serde::Serialize;
 use url::Url;
 
-use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
+use crate::cli::CommandContext;
+use crate::common::{
+    craft_failed_request_message, fetch_multiaddr, get_response, load_config, multiaddr_to_url,
+    RequestType,
+};
 
 #[derive(Debug, Parser)]
 #[command(about = "Install an application")]
@@ -28,26 +33,38 @@ pub struct InstallCommand {
     pub hash: Option<Hash>,
 }
 
+#[derive(Debug, Serialize)]
+struct OutputReport(InstallApplicationResponse);
+
+impl Display for OutputReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "id: {}", self.0.data.application_id)
+    }
+}
+
 impl InstallCommand {
-    pub async fn run(self, args: RootArgs) -> Result<()> {
-        let config = load_config(&args.home, &args.node_name)?;
+    pub async fn run(self, context: CommandContext) -> Result<()> {
+        let config = load_config(&context.args.home, &context.args.node_name)?;
         let mut is_dev_installation = false;
         let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
 
-        let install_request = if let Some(app_path) = self.path {
-            let install_dev_request =
-                InstallDevApplicationRequest::new(app_path.canonicalize_utf8()?, metadata);
+        let request = if let Some(app_path) = self.path {
             is_dev_installation = true;
-            serde_json::to_value(install_dev_request)?
+            serde_json::to_value(InstallDevApplicationRequest::new(
+                app_path.canonicalize_utf8()?,
+                metadata,
+            ))?
         } else if let Some(app_url) = self.url {
-            let install_request =
-                InstallApplicationRequest::new(Url::parse(&app_url)?, self.hash, metadata);
-            serde_json::to_value(install_request)?
+            serde_json::to_value(InstallApplicationRequest::new(
+                Url::parse(&app_url)?,
+                self.hash,
+                metadata,
+            ))?
         } else {
             bail!("Either path or url must be provided");
         };
 
-        let install_url = multiaddr_to_url(
+        let url = multiaddr_to_url(
             fetch_multiaddr(&config)?,
             if is_dev_installation {
                 "admin-api/dev/install-dev-application"
@@ -56,33 +73,22 @@ impl InstallCommand {
             },
         )?;
 
-        let install_response = get_response(
+        let response = get_response(
             &Client::new(),
-            install_url,
-            Some(install_request),
+            url,
+            Some(request),
             &config.identity,
             RequestType::Post,
         )
         .await?;
 
-        if !install_response.status().is_success() {
-            let status = install_response.status();
-            let error_text = install_response.text().await?;
-            bail!(
-                "Application installation failed with status: {}. Error: {}",
-                status,
-                error_text
-            )
+        if !response.status().is_success() {
+            bail!(craft_failed_request_message(response, "Application installation failed").await?)
         }
 
-        let body = install_response
-            .json::<InstallApplicationResponse>()
-            .await?;
+        let response = response.json::<InstallApplicationResponse>().await?;
 
-        info!(
-            "Application installed successfully. Application ID: {}",
-            body.data.application_id
-        );
+        context.output.write_output(OutputReport(response));
 
         Ok(())
     }

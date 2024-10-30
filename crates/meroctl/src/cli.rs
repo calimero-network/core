@@ -4,6 +4,7 @@ use const_format::concatcp;
 use eyre::Result as EyreResult;
 
 use crate::defaults;
+use crate::output::{Format, Output};
 
 mod app;
 mod context;
@@ -54,14 +55,31 @@ pub struct RootArgs {
     /// Name of node
     #[arg(short, long, value_name = "NAME")]
     pub node_name: String,
+
+    #[arg(long, value_name = "FORMAT")]
+    pub output_format: Format,
+}
+
+pub struct CommandContext {
+    pub args: RootArgs,
+    pub output: Output,
+}
+
+impl CommandContext {
+    pub fn new(args: RootArgs, output: Output) -> Self {
+        CommandContext { args, output }
+    }
 }
 
 impl RootCommand {
     pub async fn run(self) -> EyreResult<()> {
+        let output = Output::new(self.args.output_format);
+        let cmd_context = CommandContext::new(self.args, output);
+
         match self.action {
-            SubCommands::Context(context) => context.run(self.args).await,
-            SubCommands::App(application) => application.run(self.args).await,
-            SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(self.args).await,
+            SubCommands::Context(context) => context.run(cmd_context).await,
+            SubCommands::App(application) => application.run(cmd_context).await,
+            SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(cmd_context).await,
         }
     }
 }

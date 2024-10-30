@@ -1,4 +1,3 @@
-use calimero_config::ConfigFile;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
     ExecuteRequest, Request, RequestId, RequestPayload, Version,
@@ -8,8 +7,8 @@ use const_format::concatcp;
 use eyre::{bail, Result as EyreResult};
 use serde_json::Value;
 
-use super::RootArgs;
-use crate::common::{get_response, multiaddr_to_url, RequestType};
+use crate::cli::CommandContext;
+use crate::common::{get_response, load_config, multiaddr_to_url, RequestType};
 
 pub const EXAMPLES: &str = r"
   # Execute a RPC method call
@@ -51,16 +50,8 @@ pub enum CallType {
 
 #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
 impl CallCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-
-        if !ConfigFile::exists(&path) {
-            bail!("Config file does not exist")
-        };
-
-        let Ok(config) = ConfigFile::load(&path) else {
-            bail!("Failed to load config file")
-        };
+    pub async fn run(self, context: CommandContext) -> EyreResult<()> {
+        let config = load_config(&context.args.home, &context.args.node_name)?;
 
         let Some(multiaddr) = config.network.server.listen.first() else {
             bail!("No address.")

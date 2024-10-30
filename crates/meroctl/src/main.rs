@@ -12,6 +12,7 @@ use crate::cli::RootCommand;
 mod cli;
 mod common;
 mod defaults;
+mod output;
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {

@@ -5,7 +5,7 @@ use eyre::Result as EyreResult;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 
-use super::RootArgs;
+use crate::cli::CommandContext;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 
 #[derive(Debug, Parser)]
@@ -17,10 +17,8 @@ pub struct WatchCommand {
 }
 
 impl WatchCommand {
-    #[allow(clippy::print_stderr, reason = "TODO")]
-    #[allow(clippy::print_stdout, reason = "TODO")]
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
-        let config = load_config(&args.home, &args.node_name)?;
+    pub async fn run(self, context: CommandContext) -> EyreResult<()> {
+        let config = load_config(&context.args.home, &context.args.node_name)?;
 
         let mut url = multiaddr_to_url(fetch_multiaddr(&config)?, "ws")?;
         url.set_scheme("ws")
