@@ -97,6 +97,7 @@ pub type AnyTransport = Either<
     BothTransport<near::NearTransport<'static>, starknet::StarknetTransport<'static>>,
 >;
 
+#[expect(clippy::exhaustive_structs, reason = "this is exhaustive")]
 #[derive(Debug, Clone)]
 pub struct BothTransport<L, R> {
     pub near: L,

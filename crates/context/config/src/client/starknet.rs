@@ -277,7 +277,7 @@ impl Network {
         let relayer_signing_key = SigningKey::from_secret_scalar(secret_key);
         let relayer_wallet = LocalWallet::from(relayer_signing_key);
         let mut account = SingleOwnerAccount::new(
-            self.client.clone(),
+            Arc::clone(&self.client),
             relayer_wallet,
             sender_address,
             current_network,
