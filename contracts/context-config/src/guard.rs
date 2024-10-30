@@ -68,7 +68,7 @@ impl<T> Guard<T> {
         }
     }
 
-    pub fn revision(&self) -> Revision {
+    pub const fn revision(&self) -> Revision {
         self.revision
     }
 }

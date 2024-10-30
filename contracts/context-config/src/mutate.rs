@@ -1,8 +1,3 @@
-#![allow(
-    clippy::multiple_inherent_impl,
-    reason = "Needed to separate NEAR functionality"
-)]
-
 use core::mem;
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};

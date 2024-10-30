@@ -1,4 +1,8 @@
 #![allow(unused_crate_dependencies, reason = "False positives")]
+#![allow(
+    clippy::multiple_inherent_impl,
+    reason = "Needed to separate NEAR functionality"
+)]
 
 use calimero_context_config::types::{Application, ContextId, ContextIdentity};
 use calimero_context_config::Timestamp;
