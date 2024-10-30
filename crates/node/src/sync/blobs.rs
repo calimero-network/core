@@ -83,7 +83,7 @@ impl Node {
                     StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                     StreamMessage::Message {
                         sequence_id,
-                        payload: Some(MessagePayload::BlobShare { chunk }),
+                        payload: MessagePayload::BlobShare { chunk },
                     } => (sequence_id, chunk),
                     unexpected => bail!("unexpected message: {:?}", unexpected),
                 };
@@ -150,9 +150,9 @@ impl Node {
                 stream,
                 &StreamMessage::Message {
                     sequence_id: sequencer.next(),
-                    payload: Some(MessagePayload::BlobShare {
+                    payload: MessagePayload::BlobShare {
                         chunk: chunk.into_vec().into(),
-                    }),
+                    },
                 },
             )
             .await?;

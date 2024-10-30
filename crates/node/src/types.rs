@@ -121,7 +121,7 @@ pub enum StreamMessage<'a> {
     },
     Message {
         sequence_id: usize,
-        payload: Option<MessagePayload<'a>>,
+        payload: MessagePayload<'a>,
     },
     /// Other peers must not learn anything about the node's state if anything goes wrong.
     OpaqueError,

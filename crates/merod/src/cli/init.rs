@@ -26,7 +26,6 @@ use eyre::{bail, Result as EyreResult, WrapErr};
 use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
-use rand::{thread_rng, Rng};
 use tracing::{info, warn};
 use url::Url;
 
@@ -185,8 +184,8 @@ impl InitCommand {
                 ),
             ),
             SyncConfig {
-                timeout_ms: Duration::from_secs(10),
-                interval_ms: Duration::from_secs(10),
+                timeout: Duration::from_secs(10),
+                interval: Duration::from_secs(10),
             },
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),

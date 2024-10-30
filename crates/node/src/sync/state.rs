@@ -69,19 +69,6 @@ impl Node {
             "Received state sync request",
         );
 
-        let mut sequencer = Sequencer::default();
-
-        if context.root_hash == root_hash {
-            return send(
-                stream,
-                &StreamMessage::Message {
-                    sequence_id: sequencer.next(),
-                    payload: None,
-                },
-            )
-            .await;
-        }
-
         let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
 
         let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
@@ -100,14 +87,12 @@ impl Node {
         )
         .await?;
 
-        self.bidirectional_sync(
-            context,
-            our_identity,
-            their_identity,
-            &mut sequencer,
-            stream,
-        )
-        .await
+        if root_hash == context.root_hash {
+            return Ok(());
+        }
+
+        self.bidirectional_sync(context, our_identity, their_identity, stream)
+            .await
     }
 
     async fn bidirectional_sync(
