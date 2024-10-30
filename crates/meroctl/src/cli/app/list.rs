@@ -23,7 +23,7 @@ struct OutputReport(ListApplicationsResponse);
 impl Display for OutputReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for app in self.0.data.apps.iter() {
-            let app_report = ApplicationReport(app.clone());
+            let app_report = ApplicationReport(&app);
             write!(f, "{}", app_report)?;
         }
         Ok(())

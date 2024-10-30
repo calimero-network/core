@@ -30,8 +30,8 @@ struct OutputReport(GetApplicationResponse);
 
 impl Display for OutputReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0.data.application.clone() {
-            Some(application) => {
+        match self.0.data.application {
+            Some(ref application) => {
                 write!(f, "{}", ApplicationReport(application))
             }
             None => write!(f, "No application found"),

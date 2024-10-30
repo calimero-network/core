@@ -43,9 +43,9 @@ pub enum AppSubCommands {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct ApplicationReport(Application);
+pub(crate) struct ApplicationReport<'a>(&'a Application);
 
-impl Display for ApplicationReport {
+impl Display for ApplicationReport<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "id: {}", self.0.id)?;
         writeln!(f, "size: {}", self.0.size)?;
