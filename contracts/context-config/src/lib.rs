@@ -8,6 +8,7 @@ use near_sdk::{near, BorshStorageKey};
 mod guard;
 mod mutate;
 mod query;
+mod sys;
 
 use guard::Guard;
 
@@ -64,3 +65,13 @@ impl Default for ContextConfigs {
         }
     }
 }
+
+macro_rules! _parse_input {
+    ($input:ident $(: $input_ty:ty)?) => {
+        let $input = ::near_sdk::env::input().unwrap_or_default();
+
+        let $input $(: $input_ty )? = ::near_sdk::serde_json::from_slice(&$input).expect("failed to parse input");
+    };
+}
+
+use _parse_input as parse_input;

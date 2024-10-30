@@ -3,74 +3,23 @@
     reason = "Needed to separate NEAR functionality"
 )]
 
-use core::{mem, time};
+use core::mem;
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
 };
-use calimero_context_config::{
-    ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest, Timestamp,
-};
+use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
 use near_sdk::store::IterableSet;
-use near_sdk::{env, near, require, serde_json};
+use near_sdk::{env, near, require};
 
 use super::{
-    Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
+    parse_input, Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
     PrivilegeScope,
 };
 
-const MIN_VALIDITY_THRESHOLD_MS: Timestamp = 5_000;
-
-macro_rules! parse_input {
-    ($input:ident $(: $input_ty:ty)?) => {
-        let $input = env::input().unwrap_or_default();
-
-        let $input $(: $input_ty )? = serde_json::from_slice(&$input).expect("failed to parse input");
-    };
-}
-
 #[near]
 impl ContextConfigs {
-    pub fn set(&mut self) {
-        require!(
-            env::predecessor_account_id() == env::current_account_id(),
-            "access denied"
-        );
-
-        parse_input!(request);
-
-        match request {
-            SystemRequest::SetValidityThreshold { threshold_ms } => {
-                self.set_validity_threshold_ms(threshold_ms);
-            }
-        }
-    }
-
-    pub fn erase(&mut self) {
-        require!(
-            env::signer_account_id() == env::current_account_id(),
-            "Not so fast, chief.."
-        );
-
-        env::log_str(&format!(
-            "Pre-erase storage usage: {}",
-            env::storage_usage()
-        ));
-
-        env::log_str("Erasing contract");
-
-        for (_, context) in self.contexts.drain() {
-            drop(context.application.into_inner());
-            context.members.into_inner().clear();
-        }
-
-        env::log_str(&format!(
-            "Post-erase storage usage: {}",
-            env::storage_usage()
-        ));
-    }
-
     pub fn mutate(&mut self) {
         parse_input!(request: Signed<Request<'_>>);
 
@@ -178,8 +127,9 @@ impl ContextConfigs {
         let old_application = mem::replace(
             &mut *context
                 .application
-                .get_mut(signer_id)
-                .expect("unable to update application"),
+                .get(signer_id)
+                .expect("unable to update application")
+                .get_mut(),
             Application::new(
                 application.id,
                 application.blob,
@@ -208,8 +158,9 @@ impl ContextConfigs {
 
         let mut ctx_members = context
             .members
-            .get_mut(signer_id)
-            .expect("unable to update member list");
+            .get(signer_id)
+            .expect("unable to update member list")
+            .get_mut();
 
         for member in members {
             env::log_str(&format!("Added `{member}` as a member of `{context_id}`"));
@@ -231,8 +182,9 @@ impl ContextConfigs {
 
         let mut ctx_members = context
             .members
-            .get_mut(signer_id)
-            .expect("unable to update member list");
+            .get(signer_id)
+            .expect("unable to update member list")
+            .get_mut();
 
         for member in members {
             let _ = ctx_members.remove(&member);
@@ -271,13 +223,13 @@ impl ContextConfigs {
             match capability {
                 Capability::ManageApplication => context
                     .application
-                    .get_mut(signer_id)
+                    .get(signer_id)
                     .expect("unable to update application")
                     .priviledges()
                     .grant(identity),
                 Capability::ManageMembers => context
                     .members
-                    .get_mut(signer_id)
+                    .get(signer_id)
                     .expect("unable to update member list")
                     .priviledges()
                     .grant(identity),
@@ -309,13 +261,13 @@ impl ContextConfigs {
             match capability {
                 Capability::ManageApplication => context
                     .application
-                    .get_mut(signer_id)
+                    .get(signer_id)
                     .expect("unable to update application")
                     .priviledges()
                     .revoke(&identity),
                 Capability::ManageMembers => context
                     .members
-                    .get_mut(signer_id)
+                    .get(signer_id)
                     .expect("unable to update member list")
                     .priviledges()
                     .revoke(&identity),
@@ -328,18 +280,5 @@ impl ContextConfigs {
                 context_id
             ));
         }
-    }
-
-    fn set_validity_threshold_ms(&mut self, validity_threshold_ms: Timestamp) {
-        if validity_threshold_ms < MIN_VALIDITY_THRESHOLD_MS {
-            env::panic_str("invalid validity threshold");
-        }
-
-        self.config.validity_threshold_ms = validity_threshold_ms;
-
-        env::log_str(&format!(
-            "Set validity threshold to `{:?}`",
-            time::Duration::from_millis(validity_threshold_ms)
-        ));
     }
 }

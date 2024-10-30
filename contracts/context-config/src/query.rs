@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{
-    Application, Capability, ContextId, ContextIdentity, SignerId,
+    Application, Capability, ContextId, ContextIdentity, Revision, SignerId,
 };
 use near_sdk::near;
 
@@ -22,6 +22,15 @@ impl ContextConfigs {
             .expect("context does not exist");
 
         &context.application
+    }
+
+    pub fn application_revision(&self, context_id: Repr<ContextId>) -> Revision {
+        let context = self
+            .contexts
+            .get(&context_id)
+            .expect("context does not exist");
+
+        context.application.revision()
     }
 
     pub fn members(
@@ -42,6 +51,15 @@ impl ContextConfigs {
         }
 
         members
+    }
+
+    pub fn members_revision(&self, context_id: Repr<ContextId>) -> Revision {
+        let context = self
+            .contexts
+            .get(&context_id)
+            .expect("context does not exist");
+
+        context.members.revision()
     }
 
     pub fn privileges(
