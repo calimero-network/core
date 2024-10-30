@@ -42,11 +42,11 @@ impl ProxyContractHelper {
     pub fn create_proposal(
         &self,
         author: &SigningKey,
-        actions: Vec<ProposalAction>,
+        actions: &Vec<ProposalAction>,
     ) -> eyre::Result<Signed<Proposal>> {
         let proposal = Proposal {
             author_id: author.verifying_key().rt().expect("Invalid signer"),
-            actions,
+            actions: actions.clone(),
         };
         let signed = Signed::new(&proposal, |p| author.sign(p))?;
         Ok(signed)
@@ -141,6 +141,20 @@ impl ProxyContractHelper {
         let res: Option<Box<[u8]>> = caller
             .view(self.proxy_contract.id(), "get_context_value")
             .args_json(json!({ "key": key }))
+            .await?
+            .json()?;
+        Ok(res)
+    }
+
+    pub async fn view_proposals(
+        &self,
+        caller: &Account,
+        offset: usize,
+        length: usize
+    ) -> eyre::Result<Vec<(u32, Proposal)>> {
+        let res = caller
+            .view(self.proxy_contract.id(), "proposals")
+            .args_json(json!({ "offset": offset, "length": length }))
             .await?
             .json()?;
         Ok(res)
