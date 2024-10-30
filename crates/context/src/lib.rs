@@ -226,6 +226,7 @@ impl ContextManager {
 
             this.config_client
                 .mutate(
+                    this.client_config.new.protocol,
                     this.client_config.new.network.as_str().into(),
                     this.client_config.new.contract_id.as_str().into(),
                     context.id.rt().expect("infallible conversion"),
