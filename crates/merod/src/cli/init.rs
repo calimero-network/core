@@ -9,7 +9,7 @@ use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
     ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    Credentials, LocalConfig, Protocol as ConfigProtocol,
+    Credentials, LocalConfig,
 };
 use calimero_context_config::client::{near, starknet as starknetCredentials};
 use calimero_network::config::{
@@ -33,6 +33,8 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::{cli, defaults};
+
+use cli::config::ConfigProtocol;
 
 /// Initialize node configuration
 #[derive(Debug, Parser)]
@@ -226,7 +228,7 @@ impl InitCommand {
                             ConfigProtocol::Starknet => "sepolia".into(),
                             _ => "unknown".into(),
                         },
-                        protocol: self.protocol,
+                        protocol: self.protocol.into(),
                         contract_id: match self.protocol {
                             ConfigProtocol::Near => "calimero-context-config.testnet".parse()?,
                             ConfigProtocol::Starknet => {

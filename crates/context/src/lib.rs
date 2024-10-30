@@ -178,30 +178,6 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
-        self.config_client
-            .mutate(
-                self.client_config.new.protocol,
-                self.client_config.new.network.as_str().into(),
-                self.client_config.new.contract_id.as_str().into(),
-                context.id.rt().expect("infallible conversion"),
-            )
-            .add_context(
-                context.id.rt().expect("infallible conversion"),
-                identity_secret
-                    .public_key()
-                    .rt()
-                    .expect("infallible conversion"),
-                ApplicationConfig::new(
-                    application.id.rt().expect("infallible conversion"),
-                    application.blob.rt().expect("infallible conversion"),
-                    application.size,
-                    ApplicationSourceConfig(application.source.to_string().into()),
-                    ApplicationMetadataConfig(Repr::new(Cow::Borrowed(&application.metadata))),
-                ),
-            )
-            .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
-            .await?;
-
         self.add_context(&context, identity_secret, true).await?;
 
         let (tx, rx) = oneshot::channel();

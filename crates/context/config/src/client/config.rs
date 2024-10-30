@@ -1,9 +1,6 @@
 #![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
 use std::collections::BTreeMap;
 use std::str::FromStr;
-
-use clap::ValueEnum;
-use near_primitives::types::AccountId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
@@ -17,7 +14,7 @@ pub struct ContextConfigClientConfig {
 }
 
 #[non_exhaustive]
-#[derive(Copy, Clone, Debug, Deserialize, Serialize, ValueEnum)]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
     Near,
