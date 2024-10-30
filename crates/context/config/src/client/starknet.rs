@@ -6,16 +6,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use starknet_core::crypto::ecdsa_sign;
-use starknet_core::types::{
-    BlockId, BlockTag, BroadcastedInvokeTransaction, BroadcastedInvokeTransactionV1, Felt,
-    FunctionCall,
+use starknet::core::types::{
+    BlockId, BlockTag, Felt, FunctionCall, Call
 };
-use starknet_core::utils::get_selector_from_name;
-use starknet_crypto::{poseidon_hash_many, Signature};
-use starknet_providers::jsonrpc::HttpTransport;
-use starknet_providers::{JsonRpcClient, Provider, Url};
+use starknet::core::utils::get_selector_from_name;
+use starknet::accounts::Account;
+use starknet::providers::Provider;
+use starknet::signers::{LocalWallet, SigningKey};
+use starknet::providers::{jsonrpc::HttpTransport, JsonRpcClient, Url};
 use thiserror::Error;
+use starknet::accounts::{ExecutionEncoding, SingleOwnerAccount};
 
 use super::{Operation, Transport, TransportRequest};
 
@@ -54,15 +54,15 @@ mod serde_creds {
         type Error = CredentialsError;
 
         fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            let secret_key_felt = Felt::from_str(&creds.secret_key)?;
-            let public_key_felt = Felt::from_str(&creds.public_key)?;
+            let secret_key_felt = Felt::from_str(&creds.secret_key).map_err(|_| CredentialsError::ParseError(FromStrError))?;
+            let public_key_felt = Felt::from_str(&creds.public_key).map_err(|_| CredentialsError::ParseError(FromStrError))?;
             let extracted_public_key = starknet_crypto::get_public_key(&secret_key_felt);
 
             if public_key_felt != extracted_public_key {
                 return Err(CredentialsError::PublicKeyMismatch);
             }
 
-            let account_id_felt = Felt::from_str(&creds.account_id)?;
+            let account_id_felt = Felt::from_str(&creds.account_id).map_err(|_| CredentialsError::ParseError(FromStrError))?;
 
             Ok(Self {
                 account_id: account_id_felt,
@@ -185,28 +185,6 @@ impl Transport for StarknetTransport<'_> {
     }
 }
 
-fn compute_transaction_hash(
-    sender_address: Felt,
-    contract_address: Felt,
-    entry_point_selector: Felt,
-    calldata: &[Felt],
-) -> Felt {
-    let binding = [sender_address, contract_address, entry_point_selector];
-    let elements = binding.iter().chain(calldata.iter());
-
-    poseidon_hash_many(elements)
-}
-
-fn sign_transaction(hash: &Felt, secret_key: &Felt) -> Result<Signature, StarknetError> {
-    let signature = ecdsa_sign(secret_key, hash);
-    signature.map_or(
-        Err(StarknetError::InvalidResponse {
-            operation: ErrorOperation::Query,
-        }),
-        |result| Ok(result.into()),
-    )
-}
-
 impl Network {
     async fn query(
         &self,
@@ -266,13 +244,6 @@ impl Network {
     ) -> Result<Vec<u8>, StarknetError> {
         let sender_address: Felt = self.account_id;
         let secret_key: Felt = self.secret_key;
-        let nonce =
-            self.get_nonce(&self.account_id)
-                .await
-                .map_err(|_| StarknetError::InvalidResponse {
-                    operation: ErrorOperation::FetchNonce,
-                })?;
-
         let contract_id = Felt::from_str(contract_id)
             .map_err(|_| StarknetError::InvalidContractId(contract_id.to_owned()))?;
 
@@ -293,45 +264,35 @@ impl Network {
                 .collect()
         };
 
-        let transaction_hash =
-            compute_transaction_hash(sender_address, contract_id, entry_point_selector, &calldata);
-
-        let signature = sign_transaction(&transaction_hash, &secret_key).unwrap();
-
-        let signature_vec: Vec<Felt> = vec![signature.r, signature.s];
-
-        let invoke_transaction_v1 = BroadcastedInvokeTransactionV1 {
-            sender_address,
-            calldata,
-            max_fee: Felt::from(304_139_049_569_u64),
-            signature: signature_vec,
-            nonce,
-            is_query: false,
+        let current_network = match self.client.chain_id().await {
+          Ok(chain_id) => chain_id,
+          Err(e) => return Err(StarknetError::Custom {
+            operation: ErrorOperation::Query,
+            reason: e.to_string(),
+          }),
         };
-        let broadcasted_transaction = BroadcastedInvokeTransaction::V1(invoke_transaction_v1);
-        let response = self
-            .client
-            .add_invoke_transaction(&broadcasted_transaction)
-            .await
-            .map_err(|_| StarknetError::InvalidResponse {
-                operation: ErrorOperation::Mutate,
-            })?;
+
+        let relayer_signing_key = SigningKey::from_secret_scalar(secret_key);
+        let relayer_wallet = LocalWallet::from(relayer_signing_key);
+        let mut account = SingleOwnerAccount::new(
+          self.client.clone(),
+          relayer_wallet,
+          sender_address,
+          current_network,
+          ExecutionEncoding::New,
+        );
+
+        account.set_block_id(BlockId::Tag(BlockTag::Pending));
+
+        let response = account.execute_v1(vec![
+            Call {
+                to: contract_id,
+                selector: entry_point_selector,
+                calldata,
+            },
+        ]).send().await.unwrap();
 
         let transaction_hash: Vec<u8> = vec![response.transaction_hash.to_bytes_be()[0]];
         Ok(transaction_hash)
-    }
-
-    async fn get_nonce(&self, contract_id: &Felt) -> Result<Felt, StarknetError> {
-        let response = self
-            .client
-            .get_nonce(BlockId::Tag(BlockTag::Latest), contract_id)
-            .await;
-
-        response.map_or(
-            Err(StarknetError::InvalidResponse {
-                operation: ErrorOperation::FetchNonce,
-            }),
-            Ok,
-        )
     }
 }

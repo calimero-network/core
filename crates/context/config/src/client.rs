@@ -390,13 +390,15 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
         author_id: ContextIdentity,
         application: Application<'a>,
     ) -> ClientRequest<'_, 'a, T> {
-        let kind = RequestKind::Context(ContextRequest {
-            context_id: Repr::new(context_id),
-            kind: ContextRequestKind::Add {
-                author_id: Repr::new(author_id),
-                application,
-            },
-        });
+        let kind = RequestKind::Context(
+              ContextRequest {
+                  context_id: Repr::new(context_id),
+                  kind: ContextRequestKind::Add {
+                      author_id: Repr::new(author_id),
+                      application,
+                  },
+              },
+        );
 
         ClientRequest { client: self, kind }
     }

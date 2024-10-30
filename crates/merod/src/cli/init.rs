@@ -28,7 +28,7 @@ use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
 use rand::{thread_rng, Rng};
-use starknet_signers::SigningKey;
+use starknet::signers::SigningKey;
 use tracing::{info, warn};
 use url::Url;
 

@@ -15,12 +15,6 @@ futures-util.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
-starknet-core.workspace = true
-starknet-crypto.workspace = true
-starknet-macros.workspace = true
-starknet-providers.workspace = true
-starknet-signers.workspace = true
-starknet-types-core.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true

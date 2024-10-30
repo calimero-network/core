@@ -5,11 +5,12 @@ use std::vec;
 use eyre::{bail, eyre, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str as from_json_str, json, Value};
-use starknet_core::types::{BlockId, BlockTag, Felt, FunctionCall};
-use starknet_core::utils::get_selector_from_name;
+use starknet::core::types::{BlockId, BlockTag, Felt, FunctionCall};
+use starknet::core::utils::get_selector_from_name;
 use starknet_crypto::{poseidon_hash_many, verify};
-use starknet_providers::jsonrpc::HttpTransport;
-use starknet_providers::{JsonRpcClient, Provider, Url};
+use starknet::providers::jsonrpc::HttpTransport;
+use starknet::providers::{JsonRpcClient, Url};
+use starknet::providers::Provider;
 
 /// A field in a StarkNet type with a name and type.
 #[derive(Debug, Deserialize, Serialize)]
