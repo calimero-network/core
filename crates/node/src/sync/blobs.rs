@@ -88,13 +88,7 @@ impl Node {
                     unexpected => bail!("unexpected message: {:?}", unexpected),
                 };
 
-                if sequencer.next() != sequence_id {
-                    bail!(
-                        "out of sequence message: expected {}, got {}",
-                        sequencer.next(),
-                        sequence_id
-                    );
-                }
+                sequencer.test(sequence_id)?;
 
                 tx.send(Ok(chunk)).await?;
             }

@@ -60,6 +60,20 @@ struct Sequencer {
 }
 
 impl Sequencer {
+    fn test(&mut self, idx: usize) -> eyre::Result<()> {
+        self.current += 1;
+
+        if self.current != idx {
+            bail!(
+                "out of sequence message: expected {}, got {}",
+                self.current,
+                idx
+            );
+        }
+
+        Ok(())
+    }
+
     fn next(&mut self) -> usize {
         let current = self.current;
         self.current += 1;

@@ -446,7 +446,7 @@ impl Node {
             return Err(CallError::ContextNotFound);
         };
 
-        if &context.root_hash == &[0; 32] {
+        if &*context.root_hash == &[0; 32] {
             return Err(CallError::Uninitialized);
         }
 
