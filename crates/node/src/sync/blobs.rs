@@ -16,7 +16,7 @@ use crate::{
 use super::{recv, send, Sequencer};
 
 impl Node {
-    pub async fn initiate_blob_share_request(
+    pub async fn initiate_blob_share_process(
         &self,
         context: &Context,
         blob_id: BlobId,
@@ -40,6 +40,32 @@ impl Node {
             },
         )
         .await?;
+
+        let Some(ack) = recv(&mut stream, self.sync_config.timeout).await? else {
+            bail!("no response to blob share request");
+        };
+
+        let _their_identity = match ack {
+            StreamMessage::Init {
+                party_id,
+                payload:
+                    InitPayload::BlobShare {
+                        blob_id: ack_blob_id,
+                    },
+                ..
+            } => {
+                if ack_blob_id != blob_id {
+                    bail!(
+                        "unexpected ack blob id: expected {}, got {}",
+                        blob_id,
+                        ack_blob_id
+                    );
+                }
+
+                party_id
+            }
+            unexpected => bail!("unexpected message: {:?}", unexpected),
+        };
 
         let (tx, mut rx) = mpsc::channel(1);
 
@@ -89,7 +115,7 @@ impl Node {
         Ok(())
     }
 
-    pub async fn handle_blob_share(
+    pub async fn handle_blob_share_request(
         &self,
         context: Context,
         their_identity: PublicKey,
@@ -106,6 +132,22 @@ impl Node {
         let Some(mut blob) = self.ctx_manager.get_blob(blob_id)? else {
             bail!("blob not found: {}", blob_id);
         };
+
+        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+            bail!("no identities found for context: {}", context.id);
+        };
+
+        send(
+            stream,
+            &StreamMessage::Init {
+                context_id: context.id,
+                party_id: our_identity,
+                payload: InitPayload::BlobShare { blob_id },
+            },
+        )
+        .await?;
 
         let mut sequencer = Sequencer::default();
 

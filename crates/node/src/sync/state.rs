@@ -29,7 +29,7 @@ use crate::types::{InitPayload, StreamMessage};
 use crate::Node;
 
 impl Node {
-    pub async fn initiate_state_sync(
+    pub async fn initiate_state_sync_process(
         &self,
         context: Context,
         chosen_peer: PeerId,
@@ -55,7 +55,7 @@ impl Node {
         // actions_batch_sender.flush().await
     }
 
-    pub async fn handle_state_sync(
+    pub async fn handle_state_sync_request(
         &self,
         context: Context,
         their_identity: PublicKey,

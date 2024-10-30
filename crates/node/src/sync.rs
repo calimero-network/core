@@ -76,7 +76,7 @@ impl Node {
         };
 
         if !self.ctx_manager.has_blob_available(application.blob)? {
-            self.initiate_blob_share_request(
+            self.initiate_blob_share_process(
                 &context,
                 application.blob,
                 application.size,
@@ -85,7 +85,7 @@ impl Node {
             .await?;
         }
 
-        self.initiate_state_sync(context, chosen_peer).await
+        self.initiate_state_sync_process(context, chosen_peer).await
     }
 
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) -> EyreResult<()> {
@@ -129,11 +129,11 @@ impl Node {
 
             match payload {
                 InitPayload::StateSync { root_hash } => {
-                    self.handle_state_sync(context, their_identity, root_hash, &mut stream)
+                    self.handle_state_sync_request(context, their_identity, root_hash, &mut stream)
                         .await
                 }
                 InitPayload::BlobShare { blob_id } => {
-                    self.handle_blob_share(context, their_identity, blob_id, &mut stream)
+                    self.handle_blob_share_request(context, their_identity, blob_id, &mut stream)
                         .await
                 }
             }
