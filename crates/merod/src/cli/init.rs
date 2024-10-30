@@ -229,7 +229,10 @@ impl InitCommand {
                         protocol: self.protocol,
                         contract_id: match self.protocol {
                             ConfigProtocol::Near => "calimero-context-config.testnet".parse()?,
-                            ConfigProtocol::Starknet => "random.contract.id".parse()?,
+                            ConfigProtocol::Starknet => {
+                                "0x1ee8182d5dd595be9797ccae1488bdf84b19a0f05a93ce6148b0efae04f4568"
+                                    .parse()?
+                            }
                             _ => "unknown.contract.id".parse()?,
                         },
                     },
