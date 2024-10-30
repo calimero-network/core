@@ -990,8 +990,14 @@ impl ContextManager {
         &self,
         application_id: &ApplicationId,
     ) -> EyreResult<Option<Vec<u8>>> {
-        let Some(mut stream) = self.get_application_blob(application_id)? else {
+        let handle = self.store.handle();
+
+        let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? else {
             return Ok(None);
+        };
+
+        let Some(mut stream) = self.get_blob(application.blob.blob_id())? else {
+            bail!("fatal: application points to dangling blob");
         };
 
         // todo! we can preallocate the right capacity here
@@ -1006,15 +1012,9 @@ impl ContextManager {
         Ok(Some(buf))
     }
 
-    pub fn get_application_blob(&self, application_id: &ApplicationId) -> EyreResult<Option<Blob>> {
-        let handle = self.store.handle();
-
-        let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? else {
+    pub fn get_blob(&self, blob_id: BlobId) -> EyreResult<Option<Blob>> {
+        let Some(stream) = self.blob_manager.get(blob_id)? else {
             return Ok(None);
-        };
-
-        let Some(stream) = self.blob_manager.get(application.blob.blob_id())? else {
-            bail!("fatal: application points to dangling blob");
         };
 
         Ok(Some(stream))

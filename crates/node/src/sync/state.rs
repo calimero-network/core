@@ -64,8 +64,8 @@ impl Node {
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
-            their_root_hash=%root_hash,
             their_identity=%their_identity,
+            their_root_hash=%root_hash,
             "Received state sync request",
         );
 
