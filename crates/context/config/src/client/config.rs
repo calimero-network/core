@@ -55,7 +55,7 @@ impl FromStr for Protocol {
 pub struct ContextConfigClientNew {
     pub protocol: Protocol,
     pub network: String,
-    pub contract_id: AccountId,
+    pub contract_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
