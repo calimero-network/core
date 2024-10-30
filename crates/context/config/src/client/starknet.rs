@@ -6,16 +6,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use starknet::core::types::{
-    BlockId, BlockTag, Felt, FunctionCall, Call
-};
+use starknet::accounts::{Account, ExecutionEncoding, SingleOwnerAccount};
+use starknet::core::types::{BlockId, BlockTag, Call, Felt, FunctionCall};
 use starknet::core::utils::get_selector_from_name;
-use starknet::accounts::Account;
-use starknet::providers::Provider;
+use starknet::providers::jsonrpc::HttpTransport;
+use starknet::providers::{JsonRpcClient, Provider, Url};
 use starknet::signers::{LocalWallet, SigningKey};
-use starknet::providers::{jsonrpc::HttpTransport, JsonRpcClient, Url};
 use thiserror::Error;
-use starknet::accounts::{ExecutionEncoding, SingleOwnerAccount};
 
 use super::{Operation, Transport, TransportRequest};
 
@@ -54,15 +51,18 @@ mod serde_creds {
         type Error = CredentialsError;
 
         fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            let secret_key_felt = Felt::from_str(&creds.secret_key).map_err(|_| CredentialsError::ParseError(FromStrError))?;
-            let public_key_felt = Felt::from_str(&creds.public_key).map_err(|_| CredentialsError::ParseError(FromStrError))?;
+            let secret_key_felt = Felt::from_str(&creds.secret_key)
+                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
+            let public_key_felt = Felt::from_str(&creds.public_key)
+                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
             let extracted_public_key = starknet_crypto::get_public_key(&secret_key_felt);
 
             if public_key_felt != extracted_public_key {
                 return Err(CredentialsError::PublicKeyMismatch);
             }
 
-            let account_id_felt = Felt::from_str(&creds.account_id).map_err(|_| CredentialsError::ParseError(FromStrError))?;
+            let account_id_felt = Felt::from_str(&creds.account_id)
+                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
 
             Ok(Self {
                 account_id: account_id_felt,
@@ -265,32 +265,36 @@ impl Network {
         };
 
         let current_network = match self.client.chain_id().await {
-          Ok(chain_id) => chain_id,
-          Err(e) => return Err(StarknetError::Custom {
-            operation: ErrorOperation::Query,
-            reason: e.to_string(),
-          }),
+            Ok(chain_id) => chain_id,
+            Err(e) => {
+                return Err(StarknetError::Custom {
+                    operation: ErrorOperation::Query,
+                    reason: e.to_string(),
+                })
+            }
         };
 
         let relayer_signing_key = SigningKey::from_secret_scalar(secret_key);
         let relayer_wallet = LocalWallet::from(relayer_signing_key);
         let mut account = SingleOwnerAccount::new(
-          self.client.clone(),
-          relayer_wallet,
-          sender_address,
-          current_network,
-          ExecutionEncoding::New,
+            self.client.clone(),
+            relayer_wallet,
+            sender_address,
+            current_network,
+            ExecutionEncoding::New,
         );
 
         account.set_block_id(BlockId::Tag(BlockTag::Pending));
 
-        let response = account.execute_v1(vec![
-            Call {
+        let response = account
+            .execute_v1(vec![Call {
                 to: contract_id,
                 selector: entry_point_selector,
                 calldata,
-            },
-        ]).send().await.unwrap();
+            }])
+            .send()
+            .await
+            .unwrap();
 
         let transaction_hash: Vec<u8> = vec![response.transaction_hash.to_bytes_be()[0]];
         Ok(transaction_hash)

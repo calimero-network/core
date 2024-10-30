@@ -7,10 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{from_str as from_json_str, json, Value};
 use starknet::core::types::{BlockId, BlockTag, Felt, FunctionCall};
 use starknet::core::utils::get_selector_from_name;
-use starknet_crypto::{poseidon_hash_many, verify};
 use starknet::providers::jsonrpc::HttpTransport;
-use starknet::providers::{JsonRpcClient, Url};
-use starknet::providers::Provider;
+use starknet::providers::{JsonRpcClient, Provider, Url};
+use starknet_crypto::{poseidon_hash_many, verify};
 
 /// A field in a StarkNet type with a name and type.
 #[derive(Debug, Deserialize, Serialize)]
