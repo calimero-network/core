@@ -210,4 +210,6 @@ impl Context {
 pub struct ContextConfigParams<'a> {
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,
+    pub application_revision: u64,
+    pub members_revision: u64,
 }

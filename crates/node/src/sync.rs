@@ -69,9 +69,7 @@ impl Sequencer {
 
 impl Node {
     async fn initiate_sync(&self, context_id: ContextId, chosen_peer: PeerId) -> EyreResult<()> {
-        let Some(context) = self.ctx_manager.get_context(&context_id)? else {
-            bail!("context not found: {}", context_id);
-        };
+        let context = self.ctx_manager.sync_context_config(context_id).await?;
 
         let Some(application) = self.ctx_manager.get_application(&context.application_id)? else {
             bail!("application not found: {}", context.application_id);
@@ -107,7 +105,7 @@ impl Node {
         };
 
         let result = async {
-            let Some(context) = self.ctx_manager.get_context(&context_id)? else {
+            let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
                 bail!("context not found: {}", context_id);
             };
 
@@ -115,16 +113,18 @@ impl Node {
                 .ctx_manager
                 .has_context_identity(context_id, their_identity)?
             {
-                // todo! check the context config, update if necessary
-                // todo! implement this when has_members has been introduced
+                context = self.ctx_manager.sync_context_config(context_id).await?;
 
-                // { application: timestamp, members: timestamp }
-
-                bail!(
-                    "unknown context member {} in context {}",
-                    their_identity,
-                    context_id
-                );
+                if !self
+                    .ctx_manager
+                    .has_context_identity(context_id, their_identity)?
+                {
+                    bail!(
+                        "unknown context member {} in context {}",
+                        their_identity,
+                        context_id
+                    );
+                }
             }
 
             match payload {
@@ -159,7 +159,7 @@ impl Node {
             .await;
 
         for peer_id in peers.choose_multiple(&mut thread_rng(), 3) {
-            info!(%context_id, %peer_id, "Attempting to perform interval triggered sync");
+            debug!(%context_id, %peer_id, "Attempting to perform interval triggered sync");
 
             if let Err(err) = self.initiate_sync(context_id, *peer_id).await {
                 error!(%err, "Failed to perform interval sync, trying another peer");
@@ -171,7 +171,7 @@ impl Node {
                 .clear_context_pending_sync(&context_id)
                 .await;
 
-            info!(%context_id, %peer_id, "Interval triggered sync successfully finished");
+            debug!(%context_id, %peer_id, "Interval triggered sync successfully finished");
         }
     }
 

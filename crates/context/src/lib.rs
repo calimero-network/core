@@ -181,11 +181,12 @@ impl ContextManager {
         self.add_context(
             &context,
             identity_secret,
-            ContextConfigParams {
+            Some(ContextConfigParams {
                 network_id: self.client_config.new.network.as_str().into(),
                 contract_id: self.client_config.new.contract_id.as_str().into(),
-            },
-            true,
+                application_revision: 0,
+                members_revision: 0,
+            }),
         )
         .await?;
 
@@ -261,17 +262,18 @@ impl ContextManager {
         &self,
         context: &Context,
         identity_secret: PrivateKey,
-        context_config: ContextConfigParams<'_>,
-        is_new: bool,
+        context_config: Option<ContextConfigParams<'_>>,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
 
-        if is_new {
+        if let Some(context_config) = context_config {
             handle.put(
                 &ContextConfigKey::new(context.id),
                 &ContextConfigValue::new(
                     context_config.network_id.into_owned().into_boxed_str(),
                     context_config.contract_id.into_owned().into_boxed_str(),
+                    context_config.application_revision,
+                    context_config.members_revision,
                 ),
             )?;
 
@@ -313,7 +315,7 @@ impl ContextManager {
             bail!("identity mismatch")
         }
 
-        let mut handle = self.store.handle();
+        let handle = self.store.handle();
 
         let identity_key = ContextIdentityKey::new(context_id, invitee_id);
 
@@ -321,89 +323,24 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let network_id = network_id.as_str();
-        let contract_id = contract_id.as_str();
+        let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
 
-        let client = self
-            .config_client
-            .query(network_id.into(), contract_id.into());
+        let mut config = (!context_exists).then(|| ContextConfigParams {
+            network_id: network_id.into(),
+            contract_id: contract_id.into(),
+            application_revision: 0,
+            members_revision: 0,
+        });
 
-        for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
-            let members = client
-                .members(
-                    context_id.rt().expect("infallible conversion"),
-                    offset,
-                    length,
-                )
-                .await?
-                .parse()?;
-
-            if members.is_empty() {
-                break;
-            }
-
-            for member in members {
-                let member = member.as_bytes().into();
-
-                let key = ContextIdentityKey::new(context_id, member);
-
-                if !handle.has(&key)? {
-                    handle.put(&key, &ContextIdentityValue { private_key: None })?;
-                }
-            }
-        }
+        let context = self
+            .internal_sync_context_config(context_id, config.as_mut())
+            .await?;
 
         if !handle.has(&identity_key)? {
             bail!("unable to join context: not a member, invalid invitation?")
         }
 
-        let response = client
-            .application(context_id.rt().expect("infallible conversion"))
-            .await?;
-
-        let application = response.parse()?;
-
-        let context = Context::new(
-            context_id,
-            application.id.as_bytes().into(),
-            Hash::default(),
-        );
-
-        let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
-
-        if !self.is_application_installed(&context.application_id)? {
-            let source = Url::parse(&application.source.0)?;
-
-            let metadata = application.metadata.0.to_vec();
-
-            let application_id = match source.scheme() {
-                "http" | "https" => {
-                    self.install_application_from_url(source, metadata, None)
-                        .await?
-                }
-                _ => self.install_application(
-                    application.blob.as_bytes().into(),
-                    application.size,
-                    &source.into(),
-                    metadata,
-                )?,
-            };
-
-            if application_id != context.application_id {
-                bail!("application mismatch")
-            }
-        }
-
-        self.add_context(
-            &context,
-            identity_secret,
-            ContextConfigParams {
-                network_id: network_id.into(),
-                contract_id: contract_id.into(),
-            },
-            !context_exists,
-        )
-        .await?;
+        self.add_context(&context, identity_secret, config).await?;
 
         self.subscribe(&context.id).await?;
 
@@ -455,6 +392,160 @@ impl ContextManager {
         )?;
 
         Ok(Some(invitation_payload))
+    }
+
+    pub async fn sync_context_config(&self, context_id: ContextId) -> EyreResult<Context> {
+        self.internal_sync_context_config(context_id, None).await
+    }
+
+    async fn internal_sync_context_config(
+        &self,
+        context_id: ContextId,
+        config: Option<&mut ContextConfigParams<'_>>,
+    ) -> EyreResult<Context> {
+        let mut handle = self.store.handle();
+
+        let context = handle.get(&ContextMetaKey::new(context_id))?;
+
+        let mut alt_config = config.as_ref().map_or_else(
+            || {
+                let Some(config) = handle.get(&ContextConfigKey::new(context_id))? else {
+                    eyre::bail!("Context config not found")
+                };
+
+                Ok(Some(ContextConfigParams {
+                    network_id: config.network.into_string().into(),
+                    contract_id: config.contract.into_string().into(),
+                    application_revision: config.application_revision,
+                    members_revision: config.members_revision,
+                }))
+            },
+            |_| Ok(None),
+        )?;
+
+        let mut config = config;
+        let context_exists = alt_config.is_some();
+        let Some(config) = config.as_deref_mut().or(alt_config.as_mut()) else {
+            eyre::bail!("Context config not found")
+        };
+
+        let client = self.config_client.query(
+            config.network_id.as_ref().into(),
+            config.contract_id.as_ref().into(),
+        );
+
+        let members_revision = client
+            .members_revision(context_id.rt().expect("infallible conversion"))
+            .await?
+            .parse()?;
+
+        if context_exists && members_revision != config.members_revision {
+            config.members_revision = members_revision;
+
+            for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
+                let members = client
+                    .members(
+                        context_id.rt().expect("infallible conversion"),
+                        offset,
+                        length,
+                    )
+                    .await?
+                    .parse()?;
+
+                if members.is_empty() {
+                    break;
+                }
+
+                for member in members {
+                    let member = member.as_bytes().into();
+
+                    let key = ContextIdentityKey::new(context_id, member);
+
+                    if !handle.has(&key)? {
+                        handle.put(&key, &ContextIdentityValue { private_key: None })?;
+                    }
+                }
+            }
+        }
+
+        let application_revision = client
+            .application_revision(context_id.rt().expect("infallible conversion"))
+            .await?
+            .parse()?;
+
+        let mut application_id = None;
+
+        if context_exists && application_revision != config.application_revision {
+            config.application_revision = application_revision;
+
+            let response = client
+                .application(context_id.rt().expect("infallible conversion"))
+                .await?;
+
+            let application = response.parse()?;
+
+            let application_id = {
+                let id = application.id.as_bytes().into();
+                application_id = Some(id);
+                id
+            };
+
+            if !self.is_application_installed(&application_id)? {
+                let source = Url::parse(&application.source.0)?;
+
+                let metadata = application.metadata.0.to_vec();
+
+                let derived_application_id = match source.scheme() {
+                    "http" | "https" => {
+                        self.install_application_from_url(source, metadata, None)
+                            .await?
+                    }
+                    _ => self.install_application(
+                        application.blob.as_bytes().into(),
+                        application.size,
+                        &source.into(),
+                        metadata,
+                    )?,
+                };
+
+                if application_id != derived_application_id {
+                    bail!("application mismatch")
+                }
+            }
+        }
+
+        if let Some(config) = alt_config {
+            handle.put(
+                &ContextConfigKey::new(context_id),
+                &ContextConfigValue::new(
+                    config.network_id.into_owned().into_boxed_str(),
+                    config.contract_id.into_owned().into_boxed_str(),
+                    config.application_revision,
+                    config.members_revision,
+                ),
+            )?;
+        }
+
+        context.map_or_else(
+            || {
+                Ok(Context::new(
+                    context_id,
+                    application_id.expect("must've been defined"),
+                    Hash::default(),
+                ))
+            },
+            |meta| {
+                let context = Context::new(
+                    context_id,
+                    meta.application.application_id(),
+                    meta.root_hash.into(),
+                );
+
+                self.save_context(&context)?;
+
+                Ok(context)
+            },
+        )
     }
 
     pub async fn is_context_pending_catchup(&self, context_id: &ContextId) -> bool {

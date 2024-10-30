@@ -44,12 +44,24 @@ impl PredefinedEntry for ContextMetaKey {
 pub struct ContextConfig {
     pub network: Box<str>,
     pub contract: Box<str>,
+    pub application_revision: u64,
+    pub members_revision: u64,
 }
 
 impl ContextConfig {
     #[must_use]
-    pub const fn new(network: Box<str>, contract: Box<str>) -> Self {
-        Self { network, contract }
+    pub const fn new(
+        network: Box<str>,
+        contract: Box<str>,
+        application_revision: u64,
+        members_revision: u64,
+    ) -> Self {
+        Self {
+            network,
+            contract,
+            application_revision,
+            members_revision,
+        }
     }
 }
 

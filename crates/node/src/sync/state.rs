@@ -91,7 +91,7 @@ impl Node {
         send(
             stream,
             &StreamMessage::Init {
-                context_id,
+                context_id: context.id,
                 party_id: our_identity,
                 payload: InitPayload::StateSync {
                     root_hash: context.root_hash,
