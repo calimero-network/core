@@ -7,11 +7,11 @@ use calimero_config::{
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    self, ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
+    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    Credentials,
+    Credentials, LocalConfig, Protocol as ConfigProtocol,
 };
-use calimero_context_config::client::near;
+use calimero_context_config::client::{near, starknet as starknetCredentials};
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -28,6 +28,7 @@ use libp2p::identity::Keypair;
 use multiaddr::{Multiaddr, Protocol};
 use near_crypto::{KeyType, SecretKey};
 use rand::{thread_rng, Rng};
+use starknet::signers::SigningKey;
 use tracing::{info, warn};
 use url::Url;
 
@@ -69,6 +70,11 @@ pub struct InitCommand {
     /// URL of the relayer for submitting NEAR transactions
     #[clap(long, value_name = "URL")]
     pub relayer_url: Option<Url>,
+
+    /// Name of protocol
+    #[clap(long, value_name = "PROTOCOL", default_value = "near")]
+    #[clap(value_enum)]
+    pub protocol: ConfigProtocol,
 
     /// Enable mDNS discovery
     #[clap(long, default_value_t = true)]
@@ -174,23 +180,58 @@ impl InitCommand {
                     signer: ContextConfigClientSigner {
                         selected: ContextConfigClientSelectedSigner::Relayer,
                         relayer: ContextConfigClientRelayerSigner { url: relayer },
-                        local: [
-                            (
-                                "mainnet".to_owned(),
-                                generate_local_signer("https://rpc.mainnet.near.org".parse()?)?,
-                            ),
-                            (
-                                "testnet".to_owned(),
-                                generate_local_signer("https://rpc.testnet.near.org".parse()?)?,
-                            ),
-                        ]
-                        .into_iter()
-                        .collect(),
+                        local: LocalConfig {
+                            near: [
+                                (
+                                    "mainnet".to_owned(),
+                                    generate_local_signer(
+                                        "https://rpc.mainnet.near.org".parse()?,
+                                        ConfigProtocol::Near,
+                                    )?,
+                                ),
+                                (
+                                    "testnet".to_owned(),
+                                    generate_local_signer(
+                                        "https://rpc.testnet.near.org".parse()?,
+                                        ConfigProtocol::Near,
+                                    )?,
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                            starknet: [
+                                (
+                                    "mainnet".to_owned(),
+                                    generate_local_signer(
+                                        "https://cloud.argent-api.com/v1/starknet/mainnet/rpc/v0.7"
+                                            .parse()?,
+                                        ConfigProtocol::Starknet,
+                                    )?,
+                                ),
+                                (
+                                    "sepolia".to_owned(),
+                                    generate_local_signer(
+                                        "https://free-rpc.nethermind.io/sepolia-juno/".parse()?,
+                                        ConfigProtocol::Starknet,
+                                    )?,
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                        },
                     },
                     new: ContextConfigClientNew {
-                        network: "testnet".into(),
-                        protocol: config::Protocol::Near,
-                        contract_id: "calimero-context-config.testnet".parse()?,
+                        network: match self.protocol {
+                            ConfigProtocol::Near => "testnet".into(),
+                            ConfigProtocol::Starknet => "sepolia".into(),
+                            _ => "unknown".into(),
+                        },
+                        protocol: self.protocol,
+                        contract_id: match self.protocol {
+                            ConfigProtocol::Near => "calimero-context-config.testnet".parse()?,
+                            ConfigProtocol::Starknet => "random.contract.id".parse()?,
+                            _ => "unknown.contract.id".parse()?,
+                        },
                     },
                 },
             },
@@ -232,19 +273,39 @@ impl InitCommand {
     }
 }
 
-fn generate_local_signer(rpc_url: Url) -> EyreResult<ContextConfigClientLocalSigner> {
-    let secret_key = SecretKey::from_random(KeyType::ED25519);
+fn generate_local_signer(
+    rpc_url: Url,
+    config_protocol: ConfigProtocol,
+) -> EyreResult<ContextConfigClientLocalSigner> {
+    match config_protocol {
+        ConfigProtocol::Near => {
+            let secret_key = SecretKey::from_random(KeyType::ED25519);
+            let public_key = secret_key.public_key();
+            let account_id = public_key.unwrap_as_ed25519().0;
 
-    let public_key = secret_key.public_key();
+            Ok(ContextConfigClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::Near(near::Credentials {
+                    account_id: hex::encode(account_id).parse()?,
+                    public_key,
+                    secret_key,
+                }),
+            })
+        }
+        ConfigProtocol::Starknet => {
+            let keypair = SigningKey::from_random();
+            let secret_key = SigningKey::secret_scalar(&keypair);
+            let public_key = keypair.verifying_key().scalar();
 
-    let account_id = public_key.unwrap_as_ed25519().0;
-
-    Ok(ContextConfigClientLocalSigner {
-        rpc_url,
-        credentials: Credentials::Near(near::Credentials {
-            account_id: hex::encode(account_id).parse()?,
-            public_key,
-            secret_key,
-        }),
-    })
+            Ok(ContextConfigClientLocalSigner {
+                rpc_url,
+                credentials: Credentials::Starknet(starknetCredentials::Credentials {
+                    account_id: public_key,
+                    public_key,
+                    secret_key,
+                }),
+            })
+        }
+        _ => todo!(),
+    }
 }

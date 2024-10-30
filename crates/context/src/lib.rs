@@ -177,6 +177,30 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
+        self.config_client
+            .mutate(
+                self.client_config.new.protocol,
+                self.client_config.new.network.as_str().into(),
+                self.client_config.new.contract_id.as_str().into(),
+                context.id.rt().expect("infallible conversion"),
+            )
+            .add_context(
+                context.id.rt().expect("infallible conversion"),
+                identity_secret
+                    .public_key()
+                    .rt()
+                    .expect("infallible conversion"),
+                ApplicationConfig::new(
+                    application.id.rt().expect("infallible conversion"),
+                    application.blob.rt().expect("infallible conversion"),
+                    application.size,
+                    ApplicationSourceConfig(application.source.to_string().into()),
+                    ApplicationMetadataConfig(Repr::new(application.metadata.into())),
+                ),
+            )
+            .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
+            .await?;
+
         self.add_context(&context, identity_secret, true).await?;
 
         let (tx, rx) = oneshot::channel();
@@ -259,6 +283,7 @@ impl ContextManager {
             handle.put(
                 &ContextConfigKey::new(context.id),
                 &ContextConfigValue::new(
+                    self.client_config.new.protocol.as_str().into(),
                     self.client_config.new.network.as_str().into(),
                     self.client_config.new.contract_id.as_str().into(),
                 ),
@@ -296,7 +321,8 @@ impl ContextManager {
         identity_secret: PrivateKey,
         invitation_payload: ContextInvitationPayload,
     ) -> EyreResult<Option<(ContextId, PublicKey)>> {
-        let (context_id, invitee_id, network_id, contract_id) = invitation_payload.parts()?;
+        let (context_id, invitee_id, protocol, network_id, contract_id) =
+            invitation_payload.parts()?;
 
         if identity_secret.public_key() != invitee_id {
             bail!("identity mismatch")
@@ -310,9 +336,9 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let client = self
-            .config_client
-            .query(network_id.into(), contract_id.into());
+        let client =
+            self.config_client
+                .query(protocol.parse()?, network_id.into(), contract_id.into());
 
         for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
             let members = client
@@ -411,6 +437,7 @@ impl ContextManager {
 
         self.config_client
             .mutate(
+                context_config.protocol.parse()?,
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
                 inviter_id.rt().expect("infallible conversion"),
@@ -425,6 +452,7 @@ impl ContextManager {
         let invitation_payload = ContextInvitationPayload::new(
             context_id,
             invitee_id,
+            context_config.protocol.into_string().into(),
             context_config.network.into_string().into(),
             context_config.contract.into_string().into(),
         )?;
@@ -851,6 +879,7 @@ impl ContextManager {
 
     pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
         let client = self.config_client.query(
+            self.client_config.new.protocol,
             self.client_config.new.network.as_str().into(),
             self.client_config.new.contract_id.as_str().into(),
         );

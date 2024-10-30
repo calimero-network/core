@@ -6,10 +6,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use starknet_core::types::{BlockId, BlockTag, Felt, FunctionCall};
-use starknet_core::utils::get_selector_from_name;
-use starknet_providers::jsonrpc::HttpTransport;
-use starknet_providers::{JsonRpcClient, Provider, Url};
+use starknet::accounts::{Account, ExecutionEncoding, SingleOwnerAccount};
+use starknet::core::types::{BlockId, BlockTag, Call, Felt, FunctionCall};
+use starknet::core::utils::get_selector_from_name;
+use starknet::providers::jsonrpc::HttpTransport;
+use starknet::providers::{JsonRpcClient, Provider, Url};
+use starknet::signers::{LocalWallet, SigningKey};
 use thiserror::Error;
 
 use super::{Operation, Transport, TransportRequest};
@@ -49,15 +51,18 @@ mod serde_creds {
         type Error = CredentialsError;
 
         fn try_from(creds: Credentials) -> Result<Self, Self::Error> {
-            let secret_key_felt = Felt::from_str(&creds.secret_key)?;
-            let public_key_felt = Felt::from_str(&creds.public_key)?;
+            let secret_key_felt = Felt::from_str(&creds.secret_key)
+                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
+            let public_key_felt = Felt::from_str(&creds.public_key)
+                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
             let extracted_public_key = starknet_crypto::get_public_key(&secret_key_felt);
 
             if public_key_felt != extracted_public_key {
                 return Err(CredentialsError::PublicKeyMismatch);
             }
 
-            let account_id_felt = Felt::from_str(&creds.account_id)?;
+            let account_id_felt = Felt::from_str(&creds.account_id)
+                .map_err(|_| CredentialsError::ParseError(FromStrError))?;
 
             Ok(Self {
                 account_id: account_id_felt,
@@ -121,6 +126,8 @@ pub enum StarknetError {
     InvalidResponse { operation: ErrorOperation },
     #[error("invalid contract ID `{0}`")]
     InvalidContractId(String),
+    #[error("invalid method name `{0}`")]
+    InvalidMethodName(String),
     #[error("access key does not have permission to call contract `{0}`")]
     NotPermittedToCallContract(String),
     #[error(
@@ -145,6 +152,8 @@ pub enum ErrorOperation {
     Mutate,
     #[error("fetching account")]
     FetchAccount,
+    #[error("fetching nonce")]
+    FetchNonce,
 }
 
 impl Transport for StarknetTransport<'_> {
@@ -164,8 +173,14 @@ impl Transport for StarknetTransport<'_> {
         let contract_id = request.contract_id.as_ref();
 
         match request.operation {
-            Operation::Read { method } => network.query(contract_id, &method, payload).await,
-            Operation::Write { .. } => Ok(vec![]),
+            Operation::Read { method } => {
+                let response = network.query(contract_id, &method, payload).await?;
+                Ok(response)
+            }
+            Operation::Write { method } => {
+                let response = network.mutate(contract_id, &method, payload).await?;
+                Ok(response)
+            }
         }
     }
 }
@@ -178,17 +193,17 @@ impl Network {
         args: Vec<u8>,
     ) -> Result<Vec<u8>, StarknetError> {
         let contract_id = Felt::from_str(contract_id)
-            .unwrap_or_else(|_| panic!("Failed to convert contract id to felt type"));
+            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_owned()))?;
 
         let entry_point_selector = get_selector_from_name(method)
-            .unwrap_or_else(|_| panic!("Failed to convert method name to entry point selector"));
+            .map_err(|_| StarknetError::InvalidMethodName(method.to_owned()))?;
 
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
         } else {
             args.chunks(32)
                 .map(|chunk| {
-                    let mut padded_chunk = [0u8; 32];
+                    let mut padded_chunk = [0_u8; 32];
                     for (i, byte) in chunk.iter().enumerate() {
                         padded_chunk[i] = *byte;
                     }
@@ -219,5 +234,69 @@ impl Network {
                     .collect::<Vec<u8>>())
             },
         )
+    }
+
+    async fn mutate(
+        &self,
+        contract_id: &str,
+        method: &str,
+        args: Vec<u8>,
+    ) -> Result<Vec<u8>, StarknetError> {
+        let sender_address: Felt = self.account_id;
+        let secret_key: Felt = self.secret_key;
+        let contract_id = Felt::from_str(contract_id)
+            .map_err(|_| StarknetError::InvalidContractId(contract_id.to_owned()))?;
+
+        let entry_point_selector = get_selector_from_name(method)
+            .map_err(|_| StarknetError::InvalidMethodName(method.to_owned()))?;
+
+        let calldata: Vec<Felt> = if args.is_empty() {
+            vec![]
+        } else {
+            args.chunks(32)
+                .map(|chunk| {
+                    let mut padded_chunk = [0_u8; 32];
+                    for (i, byte) in chunk.iter().enumerate() {
+                        padded_chunk[i] = *byte;
+                    }
+                    Felt::from_bytes_be(&padded_chunk)
+                })
+                .collect()
+        };
+
+        let current_network = match self.client.chain_id().await {
+            Ok(chain_id) => chain_id,
+            Err(e) => {
+                return Err(StarknetError::Custom {
+                    operation: ErrorOperation::Query,
+                    reason: e.to_string(),
+                })
+            }
+        };
+
+        let relayer_signing_key = SigningKey::from_secret_scalar(secret_key);
+        let relayer_wallet = LocalWallet::from(relayer_signing_key);
+        let mut account = SingleOwnerAccount::new(
+            self.client.clone(),
+            relayer_wallet,
+            sender_address,
+            current_network,
+            ExecutionEncoding::New,
+        );
+
+        account.set_block_id(BlockId::Tag(BlockTag::Pending));
+
+        let response = account
+            .execute_v1(vec![Call {
+                to: contract_id,
+                selector: entry_point_selector,
+                calldata,
+            }])
+            .send()
+            .await
+            .unwrap();
+
+        let transaction_hash: Vec<u8> = vec![response.transaction_hash.to_bytes_be()[0]];
+        Ok(transaction_hash)
     }
 }
