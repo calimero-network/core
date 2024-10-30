@@ -12,7 +12,9 @@ use serde_json::{json, Error as JsonError};
 use thiserror::Error;
 
 use crate::repr::Repr;
-use crate::types::{self, Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
+use crate::types::{
+    self, Application, Capability, ContextId, ContextIdentity, Revision, Signed, SignerId,
+};
 use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 
 pub mod config;
@@ -228,6 +230,19 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
         .await
     }
 
+    pub async fn application_revision(
+        &self,
+        context_id: ContextId,
+    ) -> Result<Response<Revision>, ConfigError<T>> {
+        self.read(
+            "application_revision",
+            json!({
+                "context_id": Repr::new(context_id),
+            }),
+        )
+        .await
+    }
+
     pub async fn members(
         &self,
         context_id: ContextId,
@@ -240,6 +255,19 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
                 "context_id": Repr::new(context_id),
                 "offset": offset,
                 "length": length,
+            }),
+        )
+        .await
+    }
+
+    pub async fn members_revision(
+        &self,
+        context_id: ContextId,
+    ) -> Result<Response<Revision>, ConfigError<T>> {
+        self.read(
+            "members_revision",
+            json!({
+                "context_id": Repr::new(context_id),
             }),
         )
         .await
