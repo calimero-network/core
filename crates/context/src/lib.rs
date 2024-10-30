@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::Error as IoError;
 use std::str::FromStr;
@@ -195,7 +196,7 @@ impl ContextManager {
                     application.blob.rt().expect("infallible conversion"),
                     application.size,
                     ApplicationSourceConfig(application.source.to_string().into()),
-                    ApplicationMetadataConfig(Repr::new(application.metadata.into())),
+                    ApplicationMetadataConfig(Repr::new(Cow::Borrowed(&application.metadata))),
                 ),
             )
             .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
