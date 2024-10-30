@@ -208,14 +208,3 @@ pub fn time_now() -> u64 {
 
     u64::from_le_bytes(bytes)
 }
-
-/// Call the contract's `modify_value()` function through the bridge.
-///
-/// # Parameters
-///
-/// * `value` - The value to be modified. This is of indeterminate type, and
-///             used as raw data.
-///
-pub fn modify_value(value: &[u8]) {
-    unsafe { sys::modify_value(Buffer::from(value)) }
-}

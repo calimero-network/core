@@ -142,17 +142,6 @@ impl<'a> VMLogic<'a> {
         }
         .build()
     }
-
-    /// Modifies a value through the blockchain bridge
-    ///
-    /// # Parameters
-    ///
-    /// * `value` - The value to be modified on the blockchain.
-    ///
-    pub fn modify_value(&mut self, _value: Vec<u8>) -> VMLogicResult<()> {
-        // TODO: Implement actual blockchain call
-        Ok(())
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -238,7 +227,9 @@ impl VMHostFunctions<'_> {
 
         String::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
     }
+}
 
+impl VMHostFunctions<'_> {
     pub fn panic(&self, file_ptr: u64, file_len: u64, line: u32, column: u32) -> VMLogicResult<()> {
         let file = self.get_string(file_ptr, file_len)?;
         Err(HostError::Panic {
@@ -564,21 +555,5 @@ impl VMHostFunctions<'_> {
         self.borrow_memory().write(ptr, &now.to_le_bytes())?;
 
         Ok(())
-    }
-
-    /// Call the contract's `modify_value()` function through the bridge.
-    ///
-    /// The value to be modified is of indeterminate type, and used as raw data.
-    ///
-    /// # Parameters
-    ///
-    /// * `ptr` - Pointer to the start of the value data in WASM memory.
-    /// * `len` - Length of the value data.
-    ///
-    pub fn modify_value(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
-        let value = self.read_guest_memory(ptr, len)?;
-
-        // Call the bridge function to modify value on chain
-        self.with_logic_mut(|logic| logic.modify_value(value))
     }
 }

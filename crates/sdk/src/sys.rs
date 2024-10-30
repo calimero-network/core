@@ -37,8 +37,6 @@ wasm_imports! {
         // --
         fn random_bytes(buf: BufferMut<'_>);
         fn time_now(buf: BufferMut<'_>);
-        // --
-        fn modify_value(value: Buffer<'_>);
     }
 }
 
