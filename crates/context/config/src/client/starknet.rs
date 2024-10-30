@@ -284,7 +284,7 @@ impl Network {
             ExecutionEncoding::New,
         );
 
-        let _= account.set_block_id(BlockId::Tag(BlockTag::Pending));
+        let _ = account.set_block_id(BlockId::Tag(BlockTag::Pending));
 
         let response = account
             .execute_v1(vec![Call {

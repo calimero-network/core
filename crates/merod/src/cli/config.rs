@@ -3,13 +3,13 @@
 use core::net::IpAddr;
 use std::fs::{read_to_string, write};
 
+use calimero_context_config::client::config::Protocol as CoreProtocol;
 use calimero_network::config::BootstrapNodes;
 use clap::{Args, Parser, ValueEnum};
 use eyre::{eyre, Result as EyreResult};
 use multiaddr::{Multiaddr, Protocol};
 use toml_edit::{DocumentMut, Value};
 use tracing::info;
-use calimero_context_config::client::config::Protocol as CoreProtocol;
 
 use crate::cli;
 
