@@ -1,11 +1,11 @@
 use core::str;
 use std::collections::HashSet;
-use std::{result, usize};
+use std::usize;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
 use near_sdk::json_types::{Base64VecU8, U128};
-use near_sdk::store::{IterableMap, LookupMap};
+use near_sdk::store::IterableMap;
 use near_sdk::{
     env, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue, PromiseResult,
 };
@@ -88,7 +88,7 @@ pub enum ProposalAction {
     },
 }
 
-// The request the user makes specifying the receiving account and actions they want to execute (1 tx)
+// The proposal the user makes specifying the receiving account and actions they want to execute (1 tx)
 #[derive(Clone, PartialEq, Debug)]
 #[near(serializers = [json, borsh])]
 pub struct Proposal {
@@ -146,14 +146,14 @@ impl ProxyContract {
         let approvals = self.approvals.get_mut(&proposal_id).unwrap();
         assert!(
             !approvals.contains(&signer_id),
-            "Already confirmed this request with this key"
+            "Already confirmed this proposal with this key"
         );
         if approvals.len() as u32 + 1 >= self.num_approvals {
-            let request = self.remove_request(proposal_id);
+            let proposal = self.remove_proposal(proposal_id);
             /********************************
-            NOTE: If the tx execution fails for any reason, the request and confirmations are removed already, so the client has to start all over
+            NOTE: If the tx execution fails for any reason, the proposals and approvals are removed already, so the client has to start all over
             ********************************/
-            self.execute_request(request);
+            self.execute_proposal(proposal);
         } else {
             approvals.insert(signer_id);
         }
@@ -186,11 +186,11 @@ impl ProxyContract {
         let effective_len = (self.proposals.len() as usize)
             .saturating_sub(offset)
             .min(length);
-        let mut requests = Vec::with_capacity(effective_len);
-        for request in self.proposals.iter().skip(offset).take(length) {
-            requests.push(request);
+        let mut proposals = Vec::with_capacity(effective_len);
+        for proposal in self.proposals.iter().skip(offset).take(length) {
+            proposals.push(proposal);
         }
-        requests
+        proposals
     }
 
     pub fn get_confirmations_count(
@@ -258,7 +258,7 @@ impl ProxyContract {
     }
 
     #[private]
-    pub fn finalize_execution(&mut self, request: Proposal) -> bool {
+    pub fn finalize_execution(&mut self, proposal: Proposal) -> bool {
         let promise_count = env::promise_results_count();
         if promise_count > 0 {
             for i in 0..promise_count {
@@ -269,7 +269,7 @@ impl ProxyContract {
             }
         }
     
-        for action in request.actions {
+        for action in proposal.actions {
             match action {
                 ProposalAction::SetActiveProposalsLimit { active_proposals_limit } => {
                     self.active_proposals_limit = active_proposals_limit;
@@ -286,11 +286,11 @@ impl ProxyContract {
         true
     }    
     
-    fn execute_request(&mut self, request: Proposal) -> PromiseOrValue<bool> {
+    fn execute_proposal(&mut self, proposal: Proposal) -> PromiseOrValue<bool> {
         let mut promise_actions = Vec::new();
         let mut non_promise_actions = Vec::new();
     
-        for action in request.actions {
+        for action in proposal.actions {
             match action {
                 ProposalAction::ExternalFunctionCall { .. }
                 | ProposalAction::Transfer { .. } => promise_actions.push(action),
@@ -300,7 +300,7 @@ impl ProxyContract {
     
         if promise_actions.is_empty() {
             self.finalize_execution(Proposal { 
-                author_id: request.author_id, actions: non_promise_actions});
+                author_id: proposal.author_id, actions: non_promise_actions});
             return PromiseOrValue::Value(true);
         }
     
@@ -332,14 +332,14 @@ impl ProxyContract {
         match chained_promise {
             Some(promise) => PromiseOrValue::Promise(
                 promise.then(Self::ext(env::current_account_id()).finalize_execution(Proposal {
-                    author_id: request.author_id, actions: non_promise_actions,
+                    author_id: proposal.author_id, actions: non_promise_actions,
                 })),
             ),
             None => PromiseOrValue::Value(true),
         }
     }
     
-    fn remove_request(&mut self, proposal_id: ProposalId) -> Proposal {
+    fn remove_proposal(&mut self, proposal_id: ProposalId) -> Proposal {
         self.approvals.remove(&proposal_id);
         let proposal = self
             .proposals
@@ -347,12 +347,12 @@ impl ProxyContract {
             .expect("Failed to remove existing element");
 
         let author_id: SignerId = proposal.author_id.rt().expect("Invalid signer");
-        let mut num_requests = *self.num_proposals_pk.get(&author_id).unwrap_or(&0);
+        let mut num_proposals = *self.num_proposals_pk.get(&author_id).unwrap_or(&0);
 
-        if num_requests > 0 {
-            num_requests = num_requests - 1;
+        if num_proposals > 0 {
+            num_proposals = num_proposals - 1;
         }
-        self.num_proposals_pk.insert(author_id, num_requests);
+        self.num_proposals_pk.insert(author_id, num_proposals);
         proposal
     }
 
