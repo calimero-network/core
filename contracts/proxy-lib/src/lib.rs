@@ -1,13 +1,13 @@
 use core::str;
 use std::collections::HashSet;
+use std::{result, usize};
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
 use near_sdk::json_types::{Base64VecU8, U128};
 use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{
-    env, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
-    PromiseOrValue,
+    env, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue, PromiseResult,
 };
 
 pub mod ext_config;
@@ -43,8 +43,7 @@ pub struct ProxyContract {
     pub approvals: IterableMap<ProposalId, HashSet<SignerId>>,
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
-    pub context_storage: LookupMap<Box<[u8]>, Box<[u8]>>,
-    pub context_storage_keys: HashSet<Box<[u8]>>,
+    pub context_storage: IterableMap<Box<[u8]>, Box<[u8]>>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,8 +109,7 @@ impl ProxyContract {
             num_proposals_pk: IterableMap::new(b"k".to_vec()),
             num_approvals: 3,
             active_proposals_limit: 10,
-            context_storage: LookupMap::new(b"l"),
-            context_storage_keys: HashSet::new(),
+            context_storage: IterableMap::new(b"l"),
         }
     }
 
@@ -144,7 +142,7 @@ impl ProxyContract {
         });
     }
 
-    fn internal_confirm(&mut self, proposal_id: ProposalId, signer_id: SignerId) {  
+    fn internal_confirm(&mut self, proposal_id: ProposalId, signer_id: SignerId) {
         let approvals = self.approvals.get_mut(&proposal_id).unwrap();
         assert!(
             !approvals.contains(&signer_id),
@@ -165,7 +163,9 @@ impl ProxyContract {
         let identity = match &action {
             MemberAction::Approve { identity, .. } => identity,
             MemberAction::Create { proposal, .. } => &proposal.author_id,
-        }.rt().expect("Could not transmute");
+        }
+        .rt()
+        .expect("Could not transmute");
         config_contract::ext(self.context_config_account_id.clone())
             .has_member(Repr::new(self.context_id), identity)
             .then(match action {
@@ -182,8 +182,10 @@ impl ProxyContract {
             })
     }
 
-    pub fn requests(&self, offset: usize, length: usize) -> Vec<(&u32, &Proposal)> {    
-        let effective_len = (self.proposals.len() as usize).saturating_sub(offset).min(length);
+    pub fn proposals(&self, offset: usize, length: usize) -> Vec<(&u32, &Proposal)> {
+        let effective_len = (self.proposals.len() as usize)
+            .saturating_sub(offset)
+            .min(length);
         let mut requests = Vec::with_capacity(effective_len);
         for request in self.proposals.iter().skip(offset).take(length) {
             requests.push(request);
@@ -191,10 +193,11 @@ impl ProxyContract {
         requests
     }
 
-    pub fn get_confirmations_count(&self, proposal_id: ProposalId) -> Option<ProposalWithApprovals> {
-        let approvals_for_proposal = self
-            .approvals
-            .get(&proposal_id);
+    pub fn get_confirmations_count(
+        &self,
+        proposal_id: ProposalId,
+    ) -> Option<ProposalWithApprovals> {
+        let approvals_for_proposal = self.approvals.get(&proposal_id);
         match approvals_for_proposal {
             Some(approvals) => Some(ProposalWithApprovals {
                 proposal_id,
@@ -233,7 +236,10 @@ impl ProxyContract {
 
         self.proposals.insert(proposal_id, proposal.clone());
         self.approvals.insert(proposal_id, HashSet::new());
-        self.internal_confirm(proposal_id, proposal.author_id.rt().expect("Invalid signer"));
+        self.internal_confirm(
+            proposal_id,
+            proposal.author_id.rt().expect("Invalid signer"),
+        );
 
         self.proposal_nonce += 1;
 
@@ -245,15 +251,62 @@ impl ProxyContract {
         match approvals {
             None => None,
             _ => Some(ProposalWithApprovals {
-            proposal_id,
-            num_approvals: approvals.unwrap().num_approvals,
-        })
-    }
+                proposal_id,
+                num_approvals: approvals.unwrap().num_approvals,
+            }),
+        }
     }
 
-    fn execute_request(&mut self, request: Proposal) -> PromiseOrValue<bool> {
-        let mut result_promise: Option<Promise> = None;
+    #[private]
+    pub fn finalize_execution(&mut self, request: Proposal) -> bool {
+        let promise_count = env::promise_results_count();
+        if promise_count > 0 {
+            for i in 0..promise_count {
+                match env::promise_result(i) {
+                    PromiseResult::Successful(_) => continue,
+                    _ => return false,
+                }
+            }
+        }
+    
         for action in request.actions {
+            match action {
+                ProposalAction::SetActiveProposalsLimit { active_proposals_limit } => {
+                    self.active_proposals_limit = active_proposals_limit;
+                }
+                ProposalAction::SetNumApprovals { num_approvals } => {
+                    self.num_approvals = num_approvals;
+                }
+                ProposalAction::SetContextValue { key, value } => {
+                    self.internal_mutate_storage(key, value);
+                }
+                _ => {}
+            }
+        }
+        true
+    }    
+    
+    fn execute_request(&mut self, request: Proposal) -> PromiseOrValue<bool> {
+        let mut promise_actions = Vec::new();
+        let mut non_promise_actions = Vec::new();
+    
+        for action in request.actions {
+            match action {
+                ProposalAction::ExternalFunctionCall { .. }
+                | ProposalAction::Transfer { .. } => promise_actions.push(action),
+                _ => non_promise_actions.push(action),
+            }
+        }
+    
+        if promise_actions.is_empty() {
+            self.finalize_execution(Proposal { 
+                author_id: request.author_id, actions: non_promise_actions});
+            return PromiseOrValue::Value(true);
+        }
+    
+        let mut chained_promise: Option<Promise> = None;
+    
+        for action in promise_actions {
             let promise = match action {
                 ProposalAction::ExternalFunctionCall {
                     receiver_id,
@@ -264,37 +317,28 @@ impl ProxyContract {
                 } => {
                     Promise::new(receiver_id).function_call(method_name, args.into(), deposit, gas)
                 }
-                ProposalAction::Transfer {
-                    receiver_id,
-                    amount,
-                } => Promise::new(receiver_id).transfer(amount),
-                ProposalAction::SetActiveProposalsLimit {
-                    active_proposals_limit,
-                } => {
-                    self.active_proposals_limit = active_proposals_limit;
-                    return PromiseOrValue::Value(true);
+                ProposalAction::Transfer { receiver_id, amount } => {
+                    Promise::new(receiver_id).transfer(amount)
                 }
-                ProposalAction::SetNumApprovals { num_approvals } => {
-                    self.num_approvals = num_approvals;
-                    return PromiseOrValue::Value(true);
-                }
-                ProposalAction::SetContextValue { key, value } => {
-                    let value = self.internal_mutate_storage(key, value);
-                    return PromiseOrValue::Value(value.is_some());
-                }
+                _ => continue,
             };
-            if result_promise.is_none() {
-                result_promise = Some(promise);
-            } else {
-                result_promise = Some(result_promise.unwrap().then(promise));
-            }
+    
+            chained_promise = Some(match chained_promise {
+                Some(accumulated) => accumulated.then(promise),
+                None => promise,
+            });
         }
-        if result_promise.is_none() {
-            return PromiseOrValue::Value(false);
+    
+        match chained_promise {
+            Some(promise) => PromiseOrValue::Promise(
+                promise.then(Self::ext(env::current_account_id()).finalize_execution(Proposal {
+                    author_id: request.author_id, actions: non_promise_actions,
+                })),
+            ),
+            None => PromiseOrValue::Value(true),
         }
-        PromiseOrValue::Promise(result_promise.unwrap())
     }
-
+    
     fn remove_request(&mut self, proposal_id: ProposalId) -> Proposal {
         self.approvals.remove(&proposal_id);
         let proposal = self
@@ -319,16 +363,22 @@ impl ProxyContract {
         value: Box<[u8]>,
     ) -> Option<Box<[u8]>> {
         let val = self.context_storage.insert(key.clone(), value);
-        if val.is_some() {
-            if !self.context_storage_keys.contains(&key) {
-                self.context_storage_keys.insert(key);
-            }
-        }
         val
     }
 
-    pub fn get_context_storage_keys(&self) -> HashSet<Box<[u8]>> {
-        self.context_storage_keys.clone()
+    pub fn context_storage_entries(
+        &self,
+        offset: usize,
+        length: usize,
+    ) -> Vec<(&Box<[u8]>, &Box<[u8]>)> {
+        let effective_len = (self.context_storage.len() as usize)
+            .saturating_sub(offset)
+            .min(length);
+        let mut context_storage_entries = Vec::with_capacity(effective_len);
+        for entry in self.context_storage.iter().skip(offset).take(length) {
+            context_storage_entries.push(entry);
+        }
+        context_storage_entries
     }
 
     pub fn get_context_value(&self, key: Box<[u8]>) -> Option<Box<[u8]>> {

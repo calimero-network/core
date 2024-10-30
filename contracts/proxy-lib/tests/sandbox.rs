@@ -398,3 +398,88 @@ async fn test_transfer() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_combined_proposals() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
+
+    let counter_helper = CounterContracttHelper::deploy_and_initialize(&worker).await?;
+
+    let initial_counter_value: u32 = counter_helper.get_value().await?;
+    assert_eq!(initial_counter_value, 0, "Counter should start at zero");
+
+    let initial_active_proposals_limit: u32 = proxy_helper
+        .view_active_proposals_limit(&relayer_account)
+        .await?;
+    assert_eq!(initial_active_proposals_limit, 10, "Default proposals limit should be 10");
+
+    let actions = vec![
+        ProposalAction::ExternalFunctionCall {
+            receiver_id: counter_helper.counter_contract.id().clone(),
+            method_name: "increment".to_string(),
+            args: Base64VecU8::from(vec![]),
+            deposit: NearToken::from_near(0),
+            gas: Gas::from_gas(1_000_000_000_000),
+        },
+        ProposalAction::SetActiveProposalsLimit {
+            active_proposals_limit: 5,
+        },
+    ];
+
+    let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, actions, members).await;
+
+    let updated_counter_value: u32 = counter_helper.get_value().await?;
+    assert_eq!(
+        updated_counter_value, 1,
+        "Counter should be incremented by the proposal execution"
+    );
+
+    let updated_active_proposals_limit: u32 = proxy_helper
+        .view_active_proposals_limit(&relayer_account)
+        .await?;
+    assert_eq!(
+        updated_active_proposals_limit, 5,
+        "Active proposals limit should be updated to 5"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
+
+    let counter_helper = CounterContracttHelper::deploy_and_initialize(&worker).await?;
+
+    let initial_active_proposals_limit: u32 = proxy_helper
+        .view_active_proposals_limit(&relayer_account)
+        .await?;
+    assert_eq!(initial_active_proposals_limit, 10, "Default proposals limit should be 10");
+
+    let actions = vec![
+        ProposalAction::ExternalFunctionCall {
+            receiver_id: counter_helper.counter_contract.id().clone(),
+            method_name: "non_existent_method".to_string(), // This method does not exist
+            args: Base64VecU8::from(vec![]),
+            deposit: NearToken::from_near(0),
+            gas: Gas::from_gas(1_000_000_000_000),
+        },
+        ProposalAction::SetActiveProposalsLimit {
+            active_proposals_limit: 5,
+        },
+    ];
+
+    let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, actions, members).await;
+
+    let active_proposals_limit: u32 = proxy_helper
+        .view_active_proposals_limit(&relayer_account)
+        .await?;
+    assert_eq!(
+        active_proposals_limit, 10,
+        "Active proposals limit should remain unchanged due to the failed promise"
+    );
+
+    Ok(())
+}
