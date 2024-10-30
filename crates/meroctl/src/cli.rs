@@ -1,10 +1,14 @@
+use std::process::ExitCode;
+
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
-use eyre::Result as EyreResult;
+use eyre::Report as EyreReport;
+use serde::{Serialize, Serializer};
+use thiserror::Error as ThisError;
 
 use crate::defaults;
-use crate::output::{Format, Output};
+use crate::output::{Format, Output, Report};
 
 mod app;
 mod context;
@@ -60,26 +64,78 @@ pub struct RootArgs {
     pub output_format: Format,
 }
 
-pub struct CommandContext {
+pub struct Environment {
     pub args: RootArgs,
     pub output: Output,
 }
 
-impl CommandContext {
+impl Environment {
     pub fn new(args: RootArgs, output: Output) -> Self {
-        CommandContext { args, output }
+        Environment { args, output }
     }
 }
 
 impl RootCommand {
-    pub async fn run(self) -> EyreResult<()> {
+    pub async fn run(self) -> Result<(), CliError> {
         let output = Output::new(self.args.output_format);
-        let cmd_context = CommandContext::new(self.args, output);
+        let environment = Environment::new(self.args, output);
 
-        match self.action {
-            SubCommands::Context(context) => context.run(cmd_context).await,
-            SubCommands::App(application) => application.run(cmd_context).await,
-            SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(cmd_context).await,
+        let result = match self.action {
+            SubCommands::Context(context) => context.run(&environment).await,
+            SubCommands::App(application) => application.run(&environment).await,
+            SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(&environment).await,
+        };
+
+        if let Err(err) = result {
+            let err = match err.downcast::<ApiError>() {
+                Ok(err) => CliError::ApiError(err),
+                Err(err) => CliError::Other(err),
+            };
+            environment.output.write(&err);
+        }
+
+        return Ok(());
+    }
+}
+
+#[derive(Debug, Serialize, ThisError)]
+pub enum CliError {
+    #[error(transparent)]
+    ApiError(#[from] ApiError),
+
+    #[error(transparent)]
+    Other(
+        #[from]
+        #[serde(serialize_with = "serialize_eyre_report")]
+        EyreReport,
+    ),
+}
+
+impl Into<ExitCode> for CliError {
+    fn into(self) -> ExitCode {
+        match self {
+            CliError::ApiError(_) => ExitCode::from(101),
+            CliError::Other(_) => ExitCode::FAILURE,
         }
     }
+}
+
+impl Report for CliError {
+    fn report(&self) {
+        println!("{}", self);
+    }
+}
+
+#[derive(Debug, Serialize, ThisError)]
+#[error("ApiError")]
+pub struct ApiError {
+    pub status_code: u16,
+    pub message: String,
+}
+
+fn serialize_eyre_report<S>(report: &EyreReport, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(&report.to_string())
 }

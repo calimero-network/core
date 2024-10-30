@@ -1,11 +1,7 @@
-use std::env::var;
+use std::process::ExitCode;
 
 use calimero_server as _;
 use clap::Parser;
-use eyre::Result as EyreResult;
-use tracing_subscriber::fmt::layer;
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::{registry, EnvFilter};
 
 use crate::cli::RootCommand;
 
@@ -15,19 +11,16 @@ mod defaults;
 mod output;
 
 #[tokio::main]
-async fn main() -> EyreResult<()> {
-    setup()?;
+async fn main() -> ExitCode {
+    if let Err(err) = color_eyre::install() {
+        eprintln!("Failed to install color_eyre: {}", err);
+        return ExitCode::FAILURE;
+    }
 
     let command = RootCommand::parse();
 
-    command.run().await
-}
-
-fn setup() -> EyreResult<()> {
-    registry()
-        .with(EnvFilter::builder().parse(format!("info,{}", var("RUST_LOG").unwrap_or_default()))?)
-        .with(layer())
-        .init();
-
-    color_eyre::install()
+    match command.run().await {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(err) => err.into(),
+    }
 }

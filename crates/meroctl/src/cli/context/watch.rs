@@ -5,7 +5,7 @@ use eyre::Result as EyreResult;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 
-use crate::cli::CommandContext;
+use crate::cli::Environment;
 use crate::common::{fetch_multiaddr, load_config, multiaddr_to_url};
 
 #[derive(Debug, Parser)]
@@ -17,8 +17,8 @@ pub struct WatchCommand {
 }
 
 impl WatchCommand {
-    pub async fn run(self, context: CommandContext) -> EyreResult<()> {
-        let config = load_config(&context.args.home, &context.args.node_name)?;
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
         let mut url = multiaddr_to_url(fetch_multiaddr(&config)?, "ws")?;
         url.set_scheme("ws")

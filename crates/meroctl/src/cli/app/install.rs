@@ -1,5 +1,3 @@
-use std::fmt::Display;
-
 use calimero_primitives::hash::Hash;
 use calimero_server_primitives::admin::{
     InstallApplicationRequest, InstallApplicationResponse, InstallDevApplicationRequest,
@@ -8,14 +6,11 @@ use camino::Utf8PathBuf;
 use clap::Parser;
 use eyre::{bail, Result};
 use reqwest::Client;
-use serde::Serialize;
 use url::Url;
 
-use crate::cli::CommandContext;
-use crate::common::{
-    craft_failed_request_message, fetch_multiaddr, get_response, load_config, multiaddr_to_url,
-    RequestType,
-};
+use crate::cli::Environment;
+use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::output::Report;
 
 #[derive(Debug, Parser)]
 #[command(about = "Install an application")]
@@ -33,18 +28,15 @@ pub struct InstallCommand {
     pub hash: Option<Hash>,
 }
 
-#[derive(Debug, Serialize)]
-struct OutputReport(InstallApplicationResponse);
-
-impl Display for OutputReport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "id: {}", self.0.data.application_id)
+impl Report for InstallApplicationResponse {
+    fn report(&self) {
+        println!("id: {}", self.data.application_id);
     }
 }
 
 impl InstallCommand {
-    pub async fn run(self, context: CommandContext) -> Result<()> {
-        let config = load_config(&context.args.home, &context.args.node_name)?;
+    pub async fn run(self, environment: &Environment) -> Result<()> {
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
         let mut is_dev_installation = false;
         let metadata = self.metadata.map(String::into_bytes).unwrap_or_default();
 
@@ -73,7 +65,7 @@ impl InstallCommand {
             },
         )?;
 
-        let response = get_response(
+        let response: InstallApplicationResponse = do_request(
             &Client::new(),
             url,
             Some(request),
@@ -82,13 +74,7 @@ impl InstallCommand {
         )
         .await?;
 
-        if !response.status().is_success() {
-            bail!(craft_failed_request_message(response, "Application installation failed").await?)
-        }
-
-        let response = response.json::<InstallApplicationResponse>().await?;
-
-        context.output.write_output(OutputReport(response));
+        environment.output.write(&response);
 
         Ok(())
     }

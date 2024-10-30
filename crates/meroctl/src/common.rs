@@ -5,8 +5,10 @@ use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::identity::Keypair;
 use libp2p::multiaddr::Protocol;
 use libp2p::Multiaddr;
-use reqwest::{Client, Response, Url};
-use serde::Serialize;
+use reqwest::{Client, Url};
+use serde::{de::DeserializeOwned, Serialize};
+
+use crate::cli::ApiError;
 
 pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url> {
     #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
@@ -32,15 +34,16 @@ pub fn multiaddr_to_url(multiaddr: &Multiaddr, api_path: &str) -> EyreResult<Url
     Ok(url)
 }
 
-pub async fn get_response<S>(
+pub async fn do_request<I, O>(
     client: &Client,
     url: Url,
-    body: Option<S>,
+    body: Option<I>,
     keypair: &Keypair,
     req_type: RequestType,
-) -> EyreResult<Response>
+) -> EyreResult<O>
 where
-    S: Serialize,
+    I: Serialize,
+    O: DeserializeOwned,
 {
     let timestamp = Utc::now().timestamp().to_string();
     let signature = keypair.sign(timestamp.as_bytes())?;
@@ -55,11 +58,67 @@ where
         .header("X-Signature", bs58::encode(signature).into_string())
         .header("X-Timestamp", timestamp);
 
-    builder
-        .send()
-        .await
-        .map_err(|_| eyre!("Error with client request"))
+    let response = builder.send().await?;
+
+    if !response.status().is_success() {
+        bail!(ApiError {
+            status_code: response.status().as_u16(),
+            message: response.text().await?,
+        });
+    }
+
+    let result = response.json::<O>().await?;
+
+    return Ok(result);
 }
+// pub async fn do_request<I, O>(
+//     client: &Client,
+//     url: Url,
+//     body: Option<I>,
+//     keypair: &Keypair,
+//     req_type: RequestType,
+// ) -> Result<O, ServerRequestError>
+// where
+//     I: Serialize,
+//     O: DeserializeOwned,
+// {
+//     let timestamp = Utc::now().timestamp().to_string();
+//     let signature = keypair
+//         .sign(timestamp.as_bytes())
+//         .map_err(|err| ServerRequestError::SigningError(err.to_string()))?;
+
+//     let mut builder = match req_type {
+//         RequestType::Get => client.get(url),
+//         RequestType::Post => client.post(url).json(&body),
+//         RequestType::Delete => client.delete(url),
+//     };
+
+//     builder = builder
+//         .header("X-Signature", bs58::encode(signature).into_string())
+//         .header("X-Timestamp", timestamp);
+
+//     let response = builder
+//         .send()
+//         .await
+//         .map_err(|err| ServerRequestError::ExecutionError(err.to_string()))?;
+
+//     if !response.status().is_success() {
+//         return Err(ServerRequestError::ApiError(ApiError {
+//             status_code: response.status().as_u16(),
+//             message: response
+//                 .text()
+//                 .await
+//                 .map_err(|err| ServerRequestError::DeserializeError(err.to_string()))?,
+//         }));
+//     }
+
+//     let result = response
+//         .json::<O>()
+//         .await
+//         .map_err(|err| ServerRequestError::DeserializeError(err.to_string()))?;
+
+//     return Ok(result);
+// }
 
 pub fn load_config(home: &Utf8Path, node_name: &str) -> EyreResult<ConfigFile> {
     let path = home.join(node_name);
@@ -87,12 +146,4 @@ pub enum RequestType {
     Get,
     Post,
     Delete,
-}
-pub async fn craft_failed_request_message(response: Response, message: &str) -> EyreResult<String> {
-    let status = response.status();
-    let error_text = response.text().await?;
-    Ok(format!(
-        "{} - Status: {}, Error: {}",
-        message, status, error_text
-    ))
 }

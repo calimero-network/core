@@ -13,6 +13,10 @@ pub struct Output {
     format: Format,
 }
 
+pub trait Report {
+    fn report(&self);
+}
+
 impl Output {
     pub fn new(output_type: Format) -> Self {
         Output {
@@ -20,13 +24,13 @@ impl Output {
         }
     }
 
-    pub fn write_output<T: Serialize + std::fmt::Display>(&self, value: T) {
+    pub fn write<T: Serialize + Report>(&self, value: &T) {
         match self.format {
             Format::Json => match serde_json::to_string(&value) {
                 Ok(json) => println!("{}", json),
                 Err(e) => eprintln!("Failed to serialize to JSON: {}", e),
             },
-            Format::PlainText => println!("{}", value),
+            Format::PlainText => value.report(),
         }
     }
 }

@@ -1,14 +1,15 @@
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
-    ExecuteRequest, Request, RequestId, RequestPayload, Version,
+    ExecuteRequest, Request, RequestId, RequestPayload, Response, Version,
 };
 use clap::{Parser, ValueEnum};
 use const_format::concatcp;
 use eyre::{bail, Result as EyreResult};
 use serde_json::Value;
 
-use crate::cli::CommandContext;
-use crate::common::{get_response, load_config, multiaddr_to_url, RequestType};
+use crate::cli::Environment;
+use crate::common::{do_request, load_config, multiaddr_to_url, RequestType};
+use crate::output::Report;
 
 pub const EXAMPLES: &str = r"
   # Execute a RPC method call
@@ -48,10 +49,18 @@ pub enum CallType {
     Execute,
 }
 
+impl Report for Response {
+    fn report(&self) {
+        println!("jsonrpc: {:#?}", self.jsonrpc);
+        println!("id: {:?}", self.id);
+        println!("result: {:#?}", self.body);
+    }
+}
+
 #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
 impl CallCommand {
-    pub async fn run(self, context: CommandContext) -> EyreResult<()> {
-        let config = load_config(&context.args.home, &context.args.node_name)?;
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
         let Some(multiaddr) = config.network.server.listen.first() else {
             bail!("No address.")
@@ -85,7 +94,7 @@ impl CallCommand {
         }
 
         let client = reqwest::Client::new();
-        let response = get_response(
+        let response: Response = do_request(
             &client,
             url,
             Some(request),
@@ -94,7 +103,7 @@ impl CallCommand {
         )
         .await?;
 
-        println!("Response: {}", response.text().await?);
+        environment.output.write(&response);
 
         Ok(())
     }

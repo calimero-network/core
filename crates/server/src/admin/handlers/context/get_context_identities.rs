@@ -4,24 +4,14 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::context::ContextId;
-use calimero_primitives::identity::PublicKey;
+use calimero_server_primitives::admin::{
+    ContextIdentitiesResponseData, GetContextIdentitiesResponse,
+};
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct GetContextIdentitiesResponse {
-    data: ContextIdentities,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContextIdentities {
-    identities: Vec<PublicKey>,
-}
 
 pub async fn handler(
     Path(context_id): Path<ContextId>,
@@ -44,7 +34,7 @@ pub async fn handler(
                 match context_identities {
                     Ok(identities) => ApiResponse {
                         payload: GetContextIdentitiesResponse {
-                            data: ContextIdentities { identities },
+                            data: ContextIdentitiesResponseData { identities },
                         },
                     }
                     .into_response(),
