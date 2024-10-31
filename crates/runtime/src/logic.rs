@@ -108,6 +108,7 @@ pub struct VMLogic<'a> {
     events: Vec<Event>,
     actions: Vec<Vec<u8>>,
     root_hash: Option<[u8; 32]>,
+    proposals: Vec<Vec<u8>>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -123,6 +124,7 @@ impl<'a> VMLogic<'a> {
             events: vec![],
             actions: vec![],
             root_hash: None,
+            proposals: vec![],
         }
     }
 
@@ -141,18 +143,6 @@ impl<'a> VMLogic<'a> {
             memory_builder: |store| memory.view(store),
         }
         .build()
-    }
-
-    /// Sends a blockchain proposal through the WASM bridge.
-    ///
-    /// # Parameters
-    ///
-    /// * `actions` - The actions that make up the proposal.
-    ///               TODO: This will be a `Vec<ProposalAction>` when available.
-    ///
-    pub fn send_proposal(&mut self, _actions: Vec<Vec<u8>>) -> VMLogicResult<()> {
-        // TODO: Implement actual blockchain call
-        Ok(())
     }
 }
 
@@ -239,7 +229,9 @@ impl VMHostFunctions<'_> {
 
         String::from_utf8(buf).map_err(|_| HostError::BadUTF8.into())
     }
+}
 
+impl VMHostFunctions<'_> {
     pub fn panic(&self, file_ptr: u64, file_len: u64, line: u32, column: u32) -> VMLogicResult<()> {
         let file = self.get_string(file_ptr, file_len)?;
         Err(HostError::Panic {
@@ -569,21 +561,25 @@ impl VMHostFunctions<'_> {
 
     /// Call the contract's `send_proposal()` function through the bridge.
     ///
-    /// The proposal actions are obtained as raw data and then deserialised into
-    /// the individual actions that make up the proposal.
+    /// The proposal actions are obtained as raw data and pushed onto a list of
+    /// proposals to be sent to the host.
+    ///
+    /// Note that multiple actions are received, and the entire batch is pushed
+    /// onto the proposal list to represent one proposal.
     ///
     /// # Parameters
     ///
     /// * `ptr` - Pointer to the start of the action data in WASM memory.
     /// * `len` - Length of the action data.
     ///
-    pub fn send_proposal(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
-        // TODO: This will need to deserialise into ProposalActions when available
-        // TODO: So this will become Vec<ProposalAction>
-        let actions: Vec<Vec<u8>> = from_borsh_slice(&self.read_guest_memory(ptr, len)?)
-            .map_err(|_| HostError::DeserializationError)?;
+    // TODO: The u64 below will need to become a ProposalId or similar, once
+    // TODO: available.
+    pub fn send_proposal(&mut self, ptr: u64, len: u64) -> VMLogicResult<u64> {
+        let actions_bytes: Vec<u8> = self.read_guest_memory(ptr, len)?;
 
-        // Call the bridge function to send the proposal
-        self.with_logic_mut(|logic| logic.send_proposal(actions))
+        self.with_logic_mut(|logic| logic.proposals.push(actions_bytes));
+
+        // TODO: It's not clear how this ProposalID will be obtained...
+        Ok(0)
     }
 }

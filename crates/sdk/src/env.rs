@@ -215,6 +215,8 @@ pub fn time_now() -> u64 {
 ///
 /// * `actions` - The proposal actions, sent as raw data.
 ///
-pub fn send_proposal(actions: &[u8]) {
+// TODO: The u64 below will need to become a ProposalId or similar, once
+// TODO: available.
+pub fn send_proposal(actions: &[u8]) -> u64 {
     unsafe { sys::send_proposal(Buffer::from(actions)) }
 }
