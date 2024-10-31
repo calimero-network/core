@@ -39,7 +39,8 @@ jobs:
           echo "RUSTUP_HOME=$ALT_HOME/.rustup" >> $GITHUB_ENV
           echo "PNPM_HOME=$ALT_HOME/.pnpm" >> $GITHUB_ENV
           
-          mv ~/.cargo "$ALT_HOME/"
+          cd $ALT_HOME
+          mv ~/.cargo .
           ls $ALT_HOME
           exit 1
           mv ~/.rustup $ALT_HOME/
