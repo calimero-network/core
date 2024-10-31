@@ -27,9 +27,12 @@ jobs:
           which rustup
           mkdir .home
           mv ~/.cargo .home/
+          ls .home
           mv ~/.rustup .home/
+          ls .home
           echo "$PWD/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
           cat $GITHUB_PATH
+          echo "done.., testing"
           which rustup
           ls "$PWD/.home"
           ls "$PWD/.home/.cargo"
