@@ -122,7 +122,7 @@ impl From<[u8; 32]> for Id {
 
 impl From<Id> for [u8; 32] {
     fn from(id: Id) -> Self {
-        id.into()
+        id.bytes
     }
 }
 
