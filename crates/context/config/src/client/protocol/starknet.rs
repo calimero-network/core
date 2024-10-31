@@ -12,11 +12,12 @@ use starknet::providers::{JsonRpcClient, Provider, Url};
 use starknet::signers::{LocalWallet, SigningKey};
 use thiserror::Error;
 
-use super::private;
+use super::Protocol;
 use crate::client::{Operation, Transport, TransportRequest};
+
 pub enum Starknet {}
 
-impl private::Protocol for Starknet {}
+impl Protocol for Starknet {}
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]

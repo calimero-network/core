@@ -11,6 +11,7 @@ bs58.workspace = true
 borsh = { workspace = true, features = ["derive"] }
 ed25519-dalek.workspace = true
 either = { workspace = true, optional = true }
+eyre = { workspace = true, optional = true }
 near-crypto = { workspace = true, optional = true }
 near-jsonrpc-client = { workspace = true, optional = true }
 near-jsonrpc-primitives = { workspace = true, optional = true }
@@ -18,9 +19,9 @@ near-primitives = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-starknet.workspace = true
-starknet-crypto.workspace = true
-starknet-types-core.workspace = true
+starknet = { workspace = true, optional = true }
+starknet-crypto = { workspace = true, optional = true }
+starknet-types-core = { workspace = true, optional = true }
 thiserror.workspace = true
 url = { workspace = true, optional = true }
 
@@ -30,10 +31,14 @@ workspace = true
 [features]
 client = [
   "dep:either",
+  "dep:eyre",
   "dep:near-crypto",
   "dep:near-jsonrpc-client",
   "dep:near-jsonrpc-primitives",
   "dep:near-primitives",
   "reqwest/json",
-  "dep:url",
+  "dep:starknet",
+  "dep:starknet-crypto",
+  "dep:starknet-types-core",
+  "url/serde",
 ]

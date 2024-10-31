@@ -1,15 +1,15 @@
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::Method;
-use crate::client::{CallClient, Environment, Protocol, Transport};
+use crate::client::{CallClient, ConfigError, Environment, Protocol, Transport};
 
-enum ContextProxy {}
+pub enum ContextProxy {}
 
-struct ContextProxyQuery<'a, T> {
+pub struct ContextProxyQuery<'a, T> {
     client: CallClient<'a, T>,
 }
 
-struct ContextProxyMutate<'a, T> {
+pub struct ContextProxyMutate<'a, T> {
     client: CallClient<'a, T>,
 }
 
@@ -26,8 +26,8 @@ impl<'a, T: 'a> Environment<'a, T> for ContextProxy {
     }
 }
 
-impl<'a, T> ContextProxyQuery<'a, T> {
-    async fn proposals(&self, offset: usize, length: usize) -> Result<Vec<String>, Error> {
+impl<'a, T: Transport> ContextProxyQuery<'a, T> {
+    async fn proposals(&self, offset: usize, length: usize) -> Result<Vec<String>, ConfigError<T>> {
         todo!()
     }
 }
@@ -37,7 +37,7 @@ enum Proposal {
 }
 
 impl<'a, T> ContextProxyMutate<'a, T> {
-    fn propose(self, proposal: Proposal) -> ContextProxyProposeRequest<'a, T> {
+    pub fn propose(self, proposal: Proposal) -> ContextProxyProposeRequest<'a, T> {
         ContextProxyProposeRequest {
             client: self.client,
             proposal,
@@ -45,7 +45,7 @@ impl<'a, T> ContextProxyMutate<'a, T> {
     }
 }
 
-struct ContextProxyProposeRequest<'a, T> {
+pub struct ContextProxyProposeRequest<'a, T> {
     client: CallClient<'a, T>,
     proposal: Proposal,
 }
@@ -60,12 +60,12 @@ impl Method<Propose> for Near {
 
     type Returns = ();
 
-    fn encode(params: &Propose) -> Result<Vec<u8>, Error> {
+    fn encode(params: &Propose) -> eyre::Result<Vec<u8>> {
         // sign the params, encode it and return
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, Error> {
+    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }
@@ -75,17 +75,17 @@ impl Method<Propose> for Starknet {
 
     const METHOD: &'static str = "propose";
 
-    fn encode(params: &Propose) -> Result<Vec<u8>, Error> {
+    fn encode(params: &Propose) -> eyre::Result<Vec<u8>> {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, Error> {
+    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }
 
 impl<'a, T: Transport> ContextProxyProposeRequest<'a, T> {
-    async fn send(self, signing_key: [u8; 32]) -> Result<(), Error> {
+    pub async fn send(self, signing_key: [u8; 32]) -> Result<(), ConfigError<T>> {
         let request = Propose {
             signer_id: todo!(),
             proposal: self.proposal,

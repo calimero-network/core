@@ -24,11 +24,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use super::private;
+use super::Protocol;
 use crate::client::{Operation, Transport, TransportRequest};
+
 pub enum Near {}
 
-impl private::Protocol for Near {}
+impl Protocol for Near {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]

@@ -28,8 +28,6 @@ pub enum Protocol {
     Starknet,
 }
 
-pub enum Error {}
-
 impl Protocol {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -235,6 +233,8 @@ impl Client<AnyTransport> {
 pub enum ConfigError<T: Transport> {
     #[error("transport error: {0}")]
     Transport(T::Error),
+    #[error("codec error: {0}")]
+    Codec(#[from] eyre::Report),
     #[error(transparent)]
     Other(#[from] types::ConfigError<Infallible>),
 }
@@ -271,7 +271,7 @@ pub struct CallClient<'a, T> {
 
 impl<'a, T: Transport> CallClient<'a, T> {
     async fn query<M: Method<P>, P>(&self, params: P) -> Result<M::Returns, ConfigError<T>> {
-        let payload = M::encode(&params).map_err(Error::from)?;
+        let payload = M::encode(&params)?;
 
         let request = TransportRequest {
             protocol: self.protocol,
@@ -294,8 +294,8 @@ impl<'a, T: Transport> CallClient<'a, T> {
         Ok(response_decoded)
     }
 
-    async fn mutate<M: Method<P>, P>(&self, params: P) -> Result<M::Returns, Error> {
-        let payload = M::encode(&params).map_err(Error::from)?;
+    async fn mutate<M: Method<P>, P>(&self, params: P) -> Result<M::Returns, ConfigError<T>> {
+        let payload = M::encode(&params)?;
 
         let request = TransportRequest {
             protocol: self.protocol,

@@ -1,14 +1,14 @@
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::{private, Method};
+use crate::client::protocol::Method;
 use crate::client::{CallClient, ConfigError, Environment, Protocol, Transport};
 pub enum ContextConfig {}
 
-struct ContextConfigQuery<'a, T> {
+pub struct ContextConfigQuery<'a, T> {
     client: CallClient<'a, T>,
 }
 
-struct ContextConfigMutate<'a, T> {
+pub struct ContextConfigMutate<'a, T> {
     client: CallClient<'a, T>,
 }
 
@@ -30,39 +30,40 @@ struct Members {
     length: usize,
 }
 
-impl<T: Transport> Method<Members> for Near
-where
-    Near: private::Protocol,
-{
+impl Method<Members> for Near {
     const METHOD: &'static str = "members";
 
     type Returns = Vec<String>;
 
-    fn encode(params: &Members) -> Result<Vec<u8>, ConfigError<T>> {
+    fn encode(params: &Members) -> eyre::Result<Vec<u8>> {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, ConfigError<T>> {
+    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }
 
-impl<T: Transport> Method<Members> for Starknet {
+impl Method<Members> for Starknet {
     type Returns = Vec<String>;
 
     const METHOD: &'static str = "members";
 
-    fn encode(params: &Members) -> Result<Vec<u8>, ConfigError<T>> {
+    fn encode(params: &Members) -> eyre::Result<Vec<u8>> {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, ConfigError<T>> {
+    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }
 
 impl<'a, T: Transport> ContextConfigQuery<'a, T> {
-    async fn members(&self, offset: usize, length: usize) -> Result<Vec<String>, ConfigError<T>> {
+    pub async fn members(
+        &self,
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<String>, ConfigError<T>> {
         let params = Members { offset, length };
         match self.client.protocol {
             Protocol::Near => self.client.query::<Near, _>(params).await,
@@ -72,7 +73,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
 }
 
 impl<'a, T: Transport> ContextConfigMutate<'a, T> {
-    fn add_context(self, context_id: String) -> ContextConfigMutateRequest<'a, T> {
+    pub fn add_context(self, context_id: String) -> ContextConfigMutateRequest<'a, T> {
         ContextConfigMutateRequest {
             client: self.client,
             kind: RequestKind::AddContext { context_id },
@@ -84,7 +85,7 @@ enum RequestKind {
     AddContext { context_id: String },
 }
 
-struct ContextConfigMutateRequest<'a, T> {
+pub struct ContextConfigMutateRequest<'a, T> {
     client: CallClient<'a, T>,
     kind: RequestKind,
 }
@@ -95,27 +96,27 @@ struct Mutate {
     kind: RequestKind,
 }
 
-impl<T> Method<Mutate> for Near {
+impl Method<Mutate> for Near {
     const METHOD: &'static str = "mutate";
 
     type Returns = ();
 
-    fn encode(params: &Mutate) -> Result<Vec<u8>, ConfigError<T>> {
+    fn encode(params: &Mutate) -> eyre::Result<Vec<u8>> {
         // sign the params, encode it and return
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, ConfigError<T>> {
+    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }
 
-impl<T> Method<Mutate> for Starknet {
+impl Method<Mutate> for Starknet {
     type Returns = ();
 
     const METHOD: &'static str = "mutate";
 
-    fn encode(params: &Mutate) -> Result<Vec<u8>, ConfigError<T>> {
+    fn encode(params: &Mutate) -> eyre::Result<Vec<u8>> {
         // sign the params, encode it and return
         // since you will have a `Vec<Felt>` here, you can
         // `Vec::with_capacity(32 * calldata.len())` and then
@@ -125,13 +126,13 @@ impl<T> Method<Mutate> for Starknet {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, ConfigError<T>> {
+    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }
 
 impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
-    async fn send(self, signing_key: [u8; 32]) -> Result<(), ConfigError<T>> {
+    pub async fn send(self, signing_key: [u8; 32]) -> Result<(), ConfigError<T>> {
         let request = Mutate {
             signer_id: todo!(),
             nonce: 0,
