@@ -127,7 +127,7 @@ impl Report for CliError {
 }
 
 #[derive(Debug, Serialize, ThisError)]
-#[error("ApiError")]
+#[error("{status_code}: {message}")]
 pub struct ApiError {
     pub status_code: u16,
     pub message: String,
@@ -137,5 +137,5 @@ fn serialize_eyre_report<S>(report: &EyreReport, serializer: S) -> Result<S::Ok,
 where
     S: Serializer,
 {
-    serializer.serialize_str(&report.to_string())
+    serializer.collect_str(&report)
 }

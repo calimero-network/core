@@ -1,4 +1,5 @@
 use clap::ValueEnum;
+use color_eyre::owo_colors::OwoColorize;
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -40,7 +41,7 @@ pub struct InfoLine<'a>(pub &'a str);
 
 impl Report for InfoLine<'_> {
     fn report(&self) {
-        println!("{}", self.0);
+        println!("{} {}", "[INFO]".green(), self.0);
     }
 }
 
@@ -49,6 +50,6 @@ pub struct ErrorLine<'a>(pub &'a str);
 
 impl Report for ErrorLine<'_> {
     fn report(&self) {
-        println!("[ERROR] {}", self.0);
+        println!("{} {}", "[ERROR]".red(), self.0);
     }
 }
