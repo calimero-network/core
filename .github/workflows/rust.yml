@@ -38,11 +38,12 @@ jobs:
           echo "done.., testing"
           ls -a "$PWD/.home"
           ls -a "$PWD/.home/.cargo"
-          which rustup
+          ls -a "$PWD/.home/.cargo/bin"
         
       - name: Check environment
         run: |
           echo $PATH
+          which rustup
 
       - name: Checkout code
         uses: actions/checkout@v4
