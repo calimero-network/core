@@ -99,9 +99,8 @@ impl ToTokens for PublicLogicMethod<'_> {
                         SelfType::Owned(_) | SelfType::Immutable(_) => None,
                     };
                     quote! {
-                        let Some(#mutability app) = ::calimero_storage::interface::Interface::find_by_id::<#self_>(
-                            ::calimero_storage::address::Id::root()
-                        ).ok().flatten() else {
+                        let Some(#mutability app) = ::calimero_storage::interface::Interface::root::<#self_>().ok().flatten()
+                        else {
                             ::calimero_sdk::env::panic_str("Failed to find or read app state")
                         };
                     }
@@ -111,9 +110,7 @@ impl ToTokens for PublicLogicMethod<'_> {
             None => (
                 if init_method {
                     quote! {
-                        if let Some(mut app) = ::calimero_storage::interface::Interface::find_by_id::<#self_>(
-                            ::calimero_storage::address::Id::root()
-                        ).ok().flatten() {
+                        if let Some(mut app) = ::calimero_storage::interface::Interface::root::<#self_>().ok().flatten() {
                             ::calimero_sdk::env::panic_str("Cannot initialize over already existing state.")
                         };
 
