@@ -81,6 +81,12 @@ pub fn time_now() -> u64 {
     imp::time_now()
 }
 
+// Return the context id.
+#[must_use]
+pub fn context_id() -> [u8; 32] {
+    imp::context_id()
+}
+
 #[cfg(target_arch = "wasm32")]
 mod calimero_vm {
     use calimero_sdk::env;
@@ -116,6 +122,11 @@ mod calimero_vm {
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         env::random_bytes(buf)
+    }
+
+    /// Return the context id.
+    pub(super) fn context_id() -> [u8; 32] {
+        env::context_id()
     }
 
     /// Gets the current time.
@@ -167,6 +178,11 @@ mod mocked {
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         rand::thread_rng().fill_bytes(buf);
+    }
+
+    /// Return the context id.
+    pub(super) fn context_id() -> [u8; 32] {
+        [0; 32]
     }
 
     /// Gets the current time.
