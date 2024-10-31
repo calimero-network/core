@@ -3,24 +3,12 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_primitives::context::{Context, ContextId};
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::context::ContextId;
+use calimero_server_primitives::admin::GetContextResponse;
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContextObject {
-    context: Context,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct GetContextResponse {
-    data: ContextObject,
-}
 
 pub async fn handler(
     Path(context_id): Path<ContextId>,
@@ -36,9 +24,7 @@ pub async fn handler(
     match context {
         Ok(ctx) => match ctx {
             Some(context) => ApiResponse {
-                payload: GetContextResponse {
-                    data: ContextObject { context },
-                },
+                payload: GetContextResponse { data: context },
             }
             .into_response(),
             None => ApiError {
@@ -49,15 +35,4 @@ pub async fn handler(
         },
         Err(err) => err.into_response(),
     }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct GetContextIdentitiesResponse {
-    data: ContextIdentities,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContextIdentities {
-    identities: Vec<PublicKey>,
 }

@@ -1,5 +1,5 @@
+use core::mem::replace;
 use core::str::FromStr;
-use std::mem::replace;
 
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextMeta as ContextMetaKey;
@@ -42,6 +42,7 @@ enum Commands {
 }
 
 impl ContextCommand {
+    #[expect(clippy::similar_names, reason = "Acceptable here")]
     pub async fn run(self, node: &Node) -> Result<()> {
         let ind = ">>".blue();
 
@@ -125,7 +126,7 @@ impl ContextCommand {
                         None => break 'infer (None, params),
                         _ => {}
                     };
-                    println!("{ind} Invalid context seed: {}", context_seed_clone);
+                    println!("{ind} Invalid context seed: {context_seed_clone}");
                     return Err(eyre::eyre!("Invalid context seed"));
                 };
 
@@ -147,7 +148,7 @@ impl ContextCommand {
                             println!("{ind} Created context {context_id} with identity {identity}");
                             return;
                         }
-                        Ok(Err(err)) => err.into(),
+                        Ok(Err(err)) => err,
                         Err(err) => err.into(),
                     };
 

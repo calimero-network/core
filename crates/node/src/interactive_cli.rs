@@ -42,7 +42,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     let command = match RootCommand::try_parse_from(args) {
         Ok(command) => command,
         Err(err) => {
-            println!("Failed to parse command: {}", err);
+            println!("Failed to parse command: {err}");
             eyre::bail!("Failed to parse command");
         }
     };
@@ -58,7 +58,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     };
 
     if let Err(err) = result {
-        println!("Error running command: {}", err);
+        println!("Error running command: {err}");
         eyre::bail!("Failed to parse command");
     }
 

@@ -1,21 +1,17 @@
-use std::str::FromStr;
+use core::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::UpdateContextApplicationRequest;
+use calimero_server_primitives::admin::{
+    Empty, UpdateContextApplicationRequest, UpdateContextApplicationResponse,
+};
 use reqwest::StatusCode;
-use serde::Serialize;
 
-use crate::admin::service::{parse_api_error, ApiError, ApiResponse, Empty};
+use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
-
-#[derive(Debug, Serialize)]
-struct UpdateApplicationIdResponse {
-    data: Empty,
-}
 
 pub async fn handler(
     Extension(state): Extension<Arc<AdminState>>,
@@ -37,7 +33,7 @@ pub async fn handler(
 
     match result {
         Ok(()) => ApiResponse {
-            payload: UpdateApplicationIdResponse { data: Empty {} },
+            payload: UpdateContextApplicationResponse { data: Empty {} },
         }
         .into_response(),
         Err(err) => err.into_response(),
