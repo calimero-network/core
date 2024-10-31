@@ -19,6 +19,10 @@ use tower_sessions::{MemoryStore, SessionManagerLayer};
 use tracing::info;
 
 use super::handlers::did::delete_did_handler;
+use super::handlers::proposals::{
+    get_number_of_active_proposals_handler, get_number_of_proposal_approvals_handler,
+    get_proposal_approvers_handler, get_proposal_handler, get_proposals_handler,
+};
 use super::storage::ssl::get_ssl;
 use crate::admin::handlers::add_client_key::{
     add_client_key_handler, generate_jwt_token_handler, refresh_jwt_token_handler,
@@ -125,6 +129,26 @@ pub(crate) fn setup(
         .route("/contexts", get(get_contexts::handler))
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
+        .route(
+            "/contexts/:context_id/proposals/:proposal_id/approvals/count",
+            get(get_number_of_proposal_approvals_handler),
+        )
+        .route(
+            "/contexts/:context_id/proposals/:proposal_id/approvals/users",
+            get(get_proposal_approvers_handler),
+        )
+        .route(
+            "/contexts/:context_id/proposals/count",
+            get(get_number_of_active_proposals_handler),
+        )
+        .route(
+            "/contexts/:context_id/proposals",
+            get(get_proposals_handler),
+        )
+        .route(
+            "/contexts/:context_id/proposals/:proposal_id",
+            get(get_proposal_handler),
+        )
         .layer(AuthSignatureLayer::new(store))
         .layer(Extension(Arc::clone(&shared_state)));
 
