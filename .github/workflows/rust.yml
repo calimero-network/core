@@ -7,6 +7,7 @@ on:
     branches: ['master']
 
 env:
+  CARGO_HOME: ${{ github.workspace }}/.cargo
   CARGO_TERM_COLOR: always
 
 jobs:
