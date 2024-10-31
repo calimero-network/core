@@ -27,7 +27,7 @@ jobs:
           mkdir .home
           mv ~/.cargo .home/
           mv ~/.rustup .home/
-          echo "$HOME/.home/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
       
       - name: Checkout code
         uses: actions/checkout@v4
