@@ -46,6 +46,9 @@ jobs:
       - name: Check environment
         run: |
           echo $PATH
+          ls -a $ALT_HOME
+          ls -a $ALT_HOME/.cargo
+          ls -a $ALT_HOME/.cargo/bin
           which rustup
           rustup --version
 
