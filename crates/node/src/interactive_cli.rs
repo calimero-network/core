@@ -51,10 +51,10 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommands::Application(application) => application.run(node).await,
         SubCommands::Call(call) => call.run(node).await,
         SubCommands::Context(context) => context.run(node).await,
-        SubCommands::Identity(identity) => identity.run(node).await,
+        SubCommands::Identity(identity) => identity.run(node),
         SubCommands::Peers(peers) => peers.run(node.network_client.clone().into()).await,
-        SubCommands::State(state) => state.run(node).await,
-        SubCommands::Store(store) => store.run(node).await,
+        SubCommands::State(state) => state.run(node),
+        SubCommands::Store(store) => store.run(node),
     };
 
     if let Err(err) = result {

@@ -12,7 +12,7 @@ pub struct StoreCommand;
 
 impl StoreCommand {
     // todo! revisit: get specific context state
-    pub async fn run(self, node: &Node) -> Result<()> {
+    pub fn run(self, node: &Node) -> Result<()> {
         println!("Executing Store command");
         let ind = ">>".blue();
 

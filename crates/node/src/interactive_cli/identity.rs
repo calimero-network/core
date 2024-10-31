@@ -21,7 +21,7 @@ enum IdentitySubcommands {
 }
 
 impl IdentityCommand {
-    pub async fn run(self, node: &Node) -> Result<()> {
+    pub fn run(self, node: &Node) -> Result<()> {
         match &self.subcommand {
             IdentitySubcommands::Ls { context_id } => {
                 match ContextId::from_str(context_id) {
@@ -44,7 +44,7 @@ impl IdentityCommand {
                         println!("{:44} | Owned", "Identity");
 
                         for (k, v) in first.into_iter().chain(iter.entries()) {
-                            let (k, v) = (k.unwrap(), v.unwrap());
+                            let (k, v) = (k?, v?);
 
                             if k.context_id() != context_id {
                                 break;
