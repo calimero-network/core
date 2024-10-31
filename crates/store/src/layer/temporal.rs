@@ -25,6 +25,7 @@ where
         }
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.shadow.is_empty()
     }

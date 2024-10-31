@@ -1,7 +1,7 @@
-use std::borrow::Cow;
+use core::error::Error;
+use core::str::FromStr;
 use std::collections::HashSet;
 use std::io::Error as IoError;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
@@ -501,11 +501,11 @@ impl ContextManager {
         end: Option<[u8; N]>,
     ) -> EyreResult<()>
     where
-        K: FromKeyParts<Error: std::error::Error + Send + Sync>,
+        K: FromKeyParts<Error: Error + Send + Sync>,
     {
         let expected_length = Key::<K::Components>::len();
 
-        if context_id.len() + N != expected_length {
+        if context_id.len().saturating_add(N) != expected_length {
             bail!(
                 "key length mismatch, expected: {}, got: {}",
                 Key::<K::Components>::len(),
@@ -795,7 +795,6 @@ impl ContextManager {
         self.install_application(blob_id, size, &uri, metadata)
     }
 
-    #[expect(clippy::similar_names, reason = "Different enough")]
     pub async fn install_application_from_stream<AR>(
         &self,
         expected_size: u64,
@@ -931,6 +930,6 @@ impl ContextManager {
     }
 
     pub fn is_application_blob_installed(&self, blob_id: BlobId) -> EyreResult<bool> {
-        Ok(self.blob_manager.has(blob_id)?)
+        self.blob_manager.has(blob_id)
     }
 }

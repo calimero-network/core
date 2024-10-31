@@ -48,7 +48,8 @@ pub struct NetworkConfig {
 }
 
 impl NetworkConfig {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         swarm: SwarmConfig,
         bootstrap: BootstrapConfig,
         discovery: DiscoveryConfig,
@@ -81,7 +82,8 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         listen: Vec<Multiaddr>,
         admin: Option<AdminConfig>,
         jsonrpc: Option<JsonRpcConfig>,
@@ -103,7 +105,8 @@ pub struct DataStoreConfig {
 }
 
 impl DataStoreConfig {
-    pub fn new(path: Utf8PathBuf) -> Self {
+    #[must_use]
+    pub const fn new(path: Utf8PathBuf) -> Self {
         Self { path }
     }
 }
@@ -115,13 +118,15 @@ pub struct BlobStoreConfig {
 }
 
 impl BlobStoreConfig {
-    pub fn new(path: Utf8PathBuf) -> Self {
+    #[must_use]
+    pub const fn new(path: Utf8PathBuf) -> Self {
         Self { path }
     }
 }
 
 impl ConfigFile {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         identity: libp2p_identity::Keypair,
         datastore: DataStoreConfig,
         blobstore: BlobStoreConfig,
@@ -130,13 +135,14 @@ impl ConfigFile {
     ) -> Self {
         Self {
             identity,
+            network,
             datastore,
             blobstore,
             context,
-            network,
         }
     }
 
+    #[must_use]
     pub fn exists(dir: &Utf8Path) -> bool {
         dir.join(CONFIG_FILE).is_file()
     }

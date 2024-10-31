@@ -255,7 +255,7 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
         .trim_start_matches('/');
 
     // Use "index.html" for empty paths (root requests)
-    let path = if path.is_empty() { "index.html" } else { &path };
+    let path = if path.is_empty() { "index.html" } else { path };
 
     // Attempt to serve the requested file
     if let Some(file) = NodeUiStaticFiles::get(path) {

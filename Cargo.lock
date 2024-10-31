@@ -840,7 +840,7 @@ checksum = "33415e24172c1b7d6066f6d999545375ab8e1d95421d6784bdfff9496f292387"
 dependencies = [
  "bitcoin_hashes",
  "rand 0.8.5",
- "rand_core 0.4.2",
+ "rand_core 0.6.4",
  "serde",
  "unicode-normalization",
 ]
@@ -1138,7 +1138,6 @@ dependencies = [
  "calimero-primitives",
  "calimero-store",
  "camino",
- "clap",
  "ed25519-dalek 2.1.1",
  "eyre",
  "futures-util",
@@ -5272,7 +5271,6 @@ dependencies = [
  "near-crypto 0.26.0",
  "rand 0.8.5",
  "starknet",
- "starknet-crypto",
  "tokio",
  "toml_edit 0.22.20",
  "tracing",

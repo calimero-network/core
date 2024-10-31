@@ -26,7 +26,7 @@ impl StateCommand {
 
         let first = 'first: {
             let Some(k) = iter
-                .seek(ContextStateKey::new(context_id, [0; 32].into()))
+                .seek(ContextStateKey::new(context_id, [0; 32]))
                 .transpose()
             else {
                 break 'first None;
