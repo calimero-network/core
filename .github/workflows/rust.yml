@@ -11,16 +11,20 @@ env:
   RUSTUP_HOME: ${{ github.workspace }}/.home/.rustup
   PNPM_HOME: ${{ github.workspace }}/.home/.pnpm
   CARGO_TERM_COLOR: always
+  WORKSPACE_PARENT: ''
 
 jobs:
   setup:
     name: Project setup
     runs-on: ubuntu-latest
     steps:
+      - name: Prepare
+        run: echo "WORKSPACE_PARENT=$(dirname $GITHUB_WORKSPACE)" >> $GITHUB_ENV
+      
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
-          build-mount-path: ${{ github.workspace }}/..
+          build-mount-path: ${{ env.WORKSPACE_PARENT }}
           root-reserve-mb: 4096
 
       - name: Relocate environment
