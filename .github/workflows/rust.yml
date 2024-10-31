@@ -27,14 +27,17 @@ jobs:
           which rustup
           mkdir .home
           mv ~/.cargo .home/
-          ls .home
+          ls -a .home
           mv ~/.rustup .home/
-          ls .home
+          ls -a .home
+          cat $GITHUB_PATH
+          echo "pre"
           echo "$PWD/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
+          echo "post"
           cat $GITHUB_PATH
           echo "done.., testing"
-          ls "$PWD/.home"
-          ls "$PWD/.home/.cargo"
+          ls -a "$PWD/.home"
+          ls -a "$PWD/.home/.cargo"
           which rustup
         
       - name: Check environment
