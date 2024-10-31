@@ -25,7 +25,7 @@ jobs:
           echo "STAGE_DIR=$STAGE_DIR" >> $GITHUB_ENV
           export ALT_HOME="$STAGE_DIR/.home"
           echo "ALT_HOME=$ALT_HOME" >> $GITHUB_ENV
-          mkdir -p $ALT_HOME
+          mkdir $ALT_HOME
       
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
