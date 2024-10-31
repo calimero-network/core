@@ -63,27 +63,27 @@ jobs:
         run: |
           df -h
 
-      - name: Install pnpm
-        run: npm install -g pnpm
+      # - name: Install pnpm
+      #   run: npm install -g pnpm
 
-      - name: How're we looking?
-        run: |
-          df -h
+      # - name: How're we looking?
+      #   run: |
+      #     df -h
 
-      # Install and build node-ui
-      - name: Install node-ui dependencies with pnpm
-        run: pnpm install --prefix ./node-ui
+      # # Install and build node-ui
+      # - name: Install node-ui dependencies with pnpm
+      #   run: pnpm install --prefix ./node-ui
 
-      - name: How're we looking?
-        run: |
-          df -h
+      # - name: How're we looking?
+      #   run: |
+      #     df -h
 
-      - name: Build node-ui
-        run: pnpm --filter ./node-ui run build
+      # - name: Build node-ui
+      #   run: pnpm --filter ./node-ui run build
 
-      - name: How're we looking?
-        run: |
-          df -h
+      # - name: How're we looking?
+      #   run: |
+      #     df -h
 
       - name: Check environment
         run: |
