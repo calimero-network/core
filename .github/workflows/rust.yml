@@ -22,36 +22,76 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: How're we looking?
+        run: |
+          df -h
+
         # Install Node.js (version 20) and pnpm
       - name: Set up Node.js
         uses: actions/setup-node@v2
         with:
           node-version: '20'
 
+      - name: How're we looking?
+        run: |
+          df -h
+
       - name: Install pnpm
         run: npm install -g pnpm
+
+      - name: How're we looking?
+        run: |
+          df -h
 
       # Install and build node-ui
       - name: Install node-ui dependencies with pnpm
         run: pnpm install --prefix ./node-ui
 
+      - name: How're we looking?
+        run: |
+          df -h
+
       - name: Build node-ui
         run: pnpm --filter ./node-ui run build
+
+      - name: How're we looking?
+        run: |
+          df -h
 
       - name: Setup rust toolchain
         run: rustup toolchain install stable --profile minimal
 
+      - name: How're we looking?
+        run: |
+          df -h
+
       - name: Setup rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: How're we looking?
+        run: |
+          df -h
+        
       - name: Run code style checks
         uses: ./.github/actions/style
 
+      - name: How're we looking?
+        run: |
+          df -h
+
       - name: Build
         run: cargo build --verbose
+      
+      - name: How're we looking?
+        run: |
+          df -h
 
       - name: Run tests
         run: |
           chmod +x $GITHUB_WORKSPACE/scripts/build-all-apps.sh
           chmod +x $GITHUB_WORKSPACE/scripts/test.sh
           $GITHUB_WORKSPACE/scripts/test.sh
+
+      - name: How're we looking?
+        run: |
+          df -h
