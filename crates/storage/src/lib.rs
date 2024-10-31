@@ -68,7 +68,7 @@ pub mod index;
 pub mod integration;
 pub mod interface;
 pub mod store;
-pub mod types;
+pub mod collections;
 
 pub use calimero_storage_macros::{AtomicUnit, Collection};
 

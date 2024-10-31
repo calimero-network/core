@@ -4,7 +4,7 @@ use calimero_sdk::types::Error;
 use calimero_sdk::{app, env};
 use calimero_storage::address::Path;
 use calimero_storage::entities::Element;
-use calimero_storage::types::Map;
+use calimero_storage::collections::HashMap;
 use calimero_storage::AtomicUnit;
 
 #[app::state(emits = for<'a> Event<'a>)]
@@ -12,7 +12,7 @@ use calimero_storage::AtomicUnit;
 #[root]
 #[type_id(1)]
 pub struct KvStore {
-    items: Map<String, String>,
+    items: HashMap<String, String>,
     #[storage]
     storage: Element,
 }
@@ -30,7 +30,7 @@ impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
         KvStore {
-            items: Map::new(&Path::new("::items").unwrap()).unwrap(),
+            items: HashMap::new(&Path::new("::items").unwrap()).unwrap(),
             storage: Element::root(),
         }
     }
