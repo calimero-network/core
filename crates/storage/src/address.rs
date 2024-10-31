@@ -72,7 +72,7 @@ impl Id {
         Self { bytes }
     }
 
-    /// Root ID which is set to all zeroes by default.
+    /// Root ID which is set to the context ID.
     #[must_use]
     pub fn root() -> Self {
         Id::new(context_id())
