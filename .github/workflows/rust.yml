@@ -31,7 +31,8 @@ jobs:
           echo "$PWD/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
           cat $GITHUB_PATH
           which rustup
-          ls "$PWD/.home/.cargo/bin"
+          ls "$PWD/.home"
+          ls "$PWD/.home/.cargo"
         
       - name: Check environment
         run: |
