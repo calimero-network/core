@@ -27,7 +27,7 @@ fn main() {
     fn child_type_specification() {
         let parent: Parent = Parent {
             group: Group {},
-            storage: Element::new(&Path::new("::root::node").unwrap()),
+            storage: Element::new(&Path::new("::root::node").unwrap(), None),
         };
         let _: Vec<Child> = Interface::children_of(parent.id(), &parent.group).unwrap();
 
