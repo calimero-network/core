@@ -14,7 +14,7 @@ runs:
       shell: bash
       run: |
         echo "Checking for Markdown/MDX changes..."
-        if true || echo "$ALL_CHANGED_FILES" | grep -qE '\.mdx?$'; then
+        if echo "$ALL_CHANGED_FILES" | grep -qE '\.mdx?$'; then
            if ! pnpm check:md; then
             echo "Markdown or MDX files are not properly formatted."
             exit 1  # Exit with a non-zero status code to indicate failure
@@ -28,10 +28,10 @@ runs:
       shell: bash
       run: |
         echo "Checking for Rust code changes..."
-        if true || echo "$ALL_CHANGED_FILES" | grep -q '\.rs$'; then
+        if echo "$ALL_CHANGED_FILES" | grep -q '\.rs$'; then
           echo "Running checks for the Rust code..."
 
-          # Install the nightly toolchain
+        # Install the nightly toolchain
           rustup toolchain install nightly
 
           # Install rustfmt for the nightly toolchain
@@ -54,7 +54,7 @@ runs:
         ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
       run: |
         echo "Checking for changes in node-ui files"
-        if true || echo "$ALL_CHANGED_FILES" | grep -q '^node-ui/'; then
+        if echo "$ALL_CHANGED_FILES" | grep -q '^node-ui/'; then
           echo "Running checks for the node-ui..."
           cd node-ui
           if ! pnpm prettier:check .; then
@@ -75,7 +75,7 @@ runs:
         ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
       run: |
         echo "Checking for changes in calimero-sdk files"
-        if true || echo "$ALL_CHANGED_FILES" | grep -q '^packages/calimero-sdk/'; then
+        if echo "$ALL_CHANGED_FILES" | grep -q '^packages/calimero-sdk/'; then
           echo "Running checks for the calimero-sdk files"
           cd packages/calimero-sdk
           if ! pnpm prettier:check .; then
