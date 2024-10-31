@@ -5,6 +5,7 @@ use crate::sys;
 use crate::sys::{
     log_utf8, panic_utf8, Buffer, BufferMut, Event, Location, PtrSizedInt, RegisterId, ValueReturn,
 };
+use crate::types::ProposalId;
 
 #[doc(hidden)]
 pub mod ext;
@@ -217,6 +218,6 @@ pub fn time_now() -> u64 {
 ///
 // TODO: The u64 below will need to become a ProposalId or similar, once
 // TODO: available.
-pub fn send_proposal(actions: &[u8]) -> u64 {
-    unsafe { sys::send_proposal(Buffer::from(actions)) }
+pub fn send_proposal(actions: &[u8]) -> ProposalId {
+    unsafe { ProposalId(sys::send_proposal(Buffer::from(actions))) }
 }
