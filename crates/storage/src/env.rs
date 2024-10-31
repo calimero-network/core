@@ -84,6 +84,7 @@ pub fn time_now() -> u64 {
 
 /// Return the context id.
 #[must_use]
+#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn context_id() -> [u8; 32] {
     imp::context_id()
 }
@@ -182,7 +183,7 @@ mod mocked {
     }
 
     /// Return the context id.
-    pub(super) fn context_id() -> [u8; 32] {
+    pub(super) const fn context_id() -> [u8; 32] {
         [0; 32]
     }
 

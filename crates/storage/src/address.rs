@@ -67,7 +67,7 @@ impl Id {
     /// assert_eq!(id.as_bytes(), &[0; 32]);
     /// ```
     #[must_use]
-    pub fn new(bytes: [u8; 32]) -> Self {
+    pub const fn new(bytes: [u8; 32]) -> Self {
         // random_bytes(&mut bytes);
         Self { bytes }
     }
@@ -75,7 +75,7 @@ impl Id {
     /// Root ID which is set to the context ID.
     #[must_use]
     pub fn root() -> Self {
-        Id::new(context_id())
+        Self::new(context_id())
     }
 
     /// Creates a new random globally-unique identifier.
@@ -87,10 +87,10 @@ impl Id {
     /// let id = Id::random();
     /// ```
     #[must_use]
-    pub fn random() -> Id {
+    pub fn random() -> Self {
         let mut bytes = [0_u8; 32];
         random_bytes(&mut bytes);
-        Id::new(bytes)
+        Self::new(bytes)
     }
 
     /// Returns the byte array representation of the ID.
@@ -103,14 +103,15 @@ impl Id {
     /// assert_eq!(id.as_bytes(), &[0; 32]);
     /// ```
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8; 32] {
+    pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
     }
 }
 
 impl Display for Id {
+    #[expect(clippy::use_debug, reason = "fine for now")]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 

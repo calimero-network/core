@@ -133,6 +133,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
+    #[expect(clippy::len_without_is_empty, reason = "TODO: will be implemented")]
     pub fn len(&self) -> Result<usize, StoreError> {
         Ok(Interface::child_info_for(self.id(), &self.entries)?.len())
     }

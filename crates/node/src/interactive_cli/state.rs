@@ -12,7 +12,7 @@ pub struct StateCommand {
     context_id: String,
 }
 impl StateCommand {
-    pub async fn run(self, node: &Node) -> Result<()> {
+    pub fn run(self, node: &Node) -> Result<()> {
         let ind = ">>".blue();
         let handle = node.store.handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
