@@ -22,68 +22,51 @@ jobs:
         with:
           root-reserve-mb: 4096
 
-      - name: Relocate environment
-        run: |
-          which rustup
-          mkdir .home
-          mv ~/.cargo .home/
-          ls -a .home
-          mv ~/.rustup .home/
-          ls -a .home
-          cat $GITHUB_PATH
-          echo "pre"
-          echo "$PWD/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
-          echo "post"
-          cat $GITHUB_PATH
-          echo "done.., testing"
-          ls -a "$PWD/.home"
-          ls -a "$PWD/.home/.cargo"
-          ls -a "$PWD/.home/.cargo/bin"
-        
-      - name: Check environment
-        run: |
-          echo $PATH
-          which rustup
-          rustup --version
-
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Relocate environment
+        run: |
+          mkdir .home
+          mv ~/.cargo .home/
+          mv ~/.rustup .home/
+          echo "$PWD/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
 
       - name: How're we looking?
         run: |
           df -h
 
-      # # Install Node.js (version 20) and pnpm
-      # - name: Set up Node.js
-      #   uses: actions/setup-node@v2
-      #   with:
-      #     node-version: '20'
+      # Install Node.js (version 20) and pnpm
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '20'
 
-      # - name: How're we looking?
-      #   run: |
-      #     df -h
+      - name: How're we looking?
+        run: |
+          df -h
 
-      # - name: Install pnpm
-      #   run: npm install -g pnpm
+      - name: Install pnpm
+        run: npm install -g pnpm
 
-      # - name: How're we looking?
-      #   run: |
-      #     df -h
+      - name: How're we looking?
+        run: |
+          df -h
 
-      # # Install and build node-ui
-      # - name: Install node-ui dependencies with pnpm
-      #   run: pnpm install --prefix ./node-ui
+      # Install and build node-ui
+      - name: Install node-ui dependencies with pnpm
+        run: pnpm install --prefix ./node-ui
 
-      # - name: How're we looking?
-      #   run: |
-      #     df -h
+      - name: How're we looking?
+        run: |
+          df -h
 
-      # - name: Build node-ui
-      #   run: pnpm --filter ./node-ui run build
+      - name: Build node-ui
+        run: pnpm --filter ./node-ui run build
 
-      # - name: How're we looking?
-      #   run: |
-      #     df -h
+      - name: How're we looking?
+        run: |
+          df -h
 
       - name: Check environment
         run: |
