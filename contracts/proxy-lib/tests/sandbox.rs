@@ -1,12 +1,14 @@
 use calimero_context_config::repr::ReprTransmute;
-use common::{
-    config_helper::ConfigContractHelper, counter_helper::CounterContractHelper,
-    create_account_with_balance, proxy_lib_helper::ProxyContractHelper,
-};
+use common::config_helper::ConfigContractHelper;
+use common::counter_helper::CounterContractHelper;
+use common::create_account_with_balance;
+use common::proxy_lib_helper::ProxyContractHelper;
 use ed25519_dalek::SigningKey;
 use eyre::Result;
-use near_sdk::{json_types::Base64VecU8, Gas, NearToken};
-use near_workspaces::{network::Sandbox, Account, Worker};
+use near_sdk::json_types::Base64VecU8;
+use near_sdk::{Gas, NearToken};
+use near_workspaces::network::Sandbox;
+use near_workspaces::{Account, Worker};
 use proxy_lib::{Proposal, ProposalAction, ProposalWithApprovals};
 
 mod common;
@@ -67,8 +69,8 @@ async fn test_create_proposal() -> Result<()> {
         Some(proposal) => {
             assert_eq!(proposal.proposal_id, 0, "Expected proposal_id to be 0");
             assert_eq!(proposal.num_approvals, 1, "Expected 1 approval");
-        },
-        None => panic!("Expected to create a proposal, but got None")
+        }
+        None => panic!("Expected to create a proposal, but got None"),
     }
 
     Ok(())
@@ -101,7 +103,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
 
     match view_proposal {
         Some(proposal) => panic!("Expected to not create a proposal, but got {:?}", proposal),
-        None => Ok(())
+        None => Ok(()),
     }
 }
 
@@ -256,7 +258,10 @@ async fn create_and_approve_proposal(
         .into_result()?
         .json()?;
 
-    assert!(res.is_none(), "Proposal should be removed after the execution");
+    assert!(
+        res.is_none(),
+        "Proposal should be removed after the execution"
+    );
 
     Ok(())
 }
@@ -281,7 +286,8 @@ async fn test_execute_proposal() -> Result<()> {
         deposit: NearToken::from_near(0),
         gas: Gas::from_gas(1_000_000_000_000),
     }];
-    let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+    let _res =
+        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
 
     let counter_value: u32 = counter_helper.get_value().await?;
     assert_eq!(
@@ -305,7 +311,8 @@ async fn test_action_change_active_proposals_limit() -> Result<()> {
     let actions = vec![ProposalAction::SetActiveProposalsLimit {
         active_proposals_limit: 6,
     }];
-    let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+    let _res =
+        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
 
     let new_active_proposals_limit: u32 = proxy_helper
         .view_active_proposals_limit(&relayer_account)
@@ -324,7 +331,8 @@ async fn test_action_change_number_of_approvals() -> Result<()> {
     assert_eq!(default_new_num_approvals, 3);
 
     let actions = vec![ProposalAction::SetNumApprovals { num_approvals: 2 }];
-    let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+    let _res =
+        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
 
     let new_num_approvals: u32 = proxy_helper.view_num_approvals(&relayer_account).await?;
     assert_eq!(new_num_approvals, 2);
@@ -349,7 +357,8 @@ async fn test_mutate_storage_value() -> Result<()> {
         key: key_data.clone(),
         value: value_data.clone(),
     }];
-    let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+    let _res =
+        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
 
     let storage_value: Box<[u8]> = proxy_helper
         .view_context_value(&relayer_account, key_data.clone())
@@ -388,7 +397,8 @@ async fn test_transfer() -> Result<()> {
         receiver_id: recipient.id().clone(),
         amount: NearToken::from_near(5),
     }];
-    let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+    let _res =
+        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
 
     let recipient_balance = recipient.view_account().await?.balance;
     assert_eq!(
@@ -412,7 +422,10 @@ async fn test_combined_proposals() -> Result<()> {
     let initial_active_proposals_limit: u32 = proxy_helper
         .view_active_proposals_limit(&relayer_account)
         .await?;
-    assert_eq!(initial_active_proposals_limit, 10, "Default proposals limit should be 10");
+    assert_eq!(
+        initial_active_proposals_limit, 10,
+        "Default proposals limit should be 10"
+    );
 
     let actions = vec![
         ProposalAction::ExternalFunctionCall {
@@ -427,7 +440,8 @@ async fn test_combined_proposals() -> Result<()> {
         },
     ];
 
-    let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+    let _res =
+        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
 
     let updated_counter_value: u32 = counter_helper.get_value().await?;
     assert_eq!(
@@ -456,7 +470,10 @@ async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
     let initial_active_proposals_limit: u32 = proxy_helper
         .view_active_proposals_limit(&relayer_account)
         .await?;
-    assert_eq!(initial_active_proposals_limit, 10, "Default proposals limit should be 10");
+    assert_eq!(
+        initial_active_proposals_limit, 10,
+        "Default proposals limit should be 10"
+    );
 
     let actions = vec![
         ProposalAction::ExternalFunctionCall {
@@ -471,7 +488,8 @@ async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
         },
     ];
 
-    let _res = create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
+    let _res =
+        create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
 
     let active_proposals_limit: u32 = proxy_helper
         .view_active_proposals_limit(&relayer_account)
@@ -491,63 +509,93 @@ async fn test_view_proposals() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal1_actions = vec![
-        ProposalAction::SetActiveProposalsLimit { active_proposals_limit: 5 },
-    ];
+    let proposal1_actions = vec![ProposalAction::SetActiveProposalsLimit {
+        active_proposals_limit: 5,
+    }];
     let proposal1 = proxy_helper.create_proposal(&alice_sk, &proposal1_actions)?;
-    let proposal2_actions =vec![
-        ProposalAction::SetNumApprovals { num_approvals: 2 },
-    ];
+    let proposal2_actions = vec![ProposalAction::SetNumApprovals { num_approvals: 2 }];
     let proposal2 = proxy_helper.create_proposal(&alice_sk, &proposal2_actions)?;
-    let proposal3_actions = vec![
-        ProposalAction::SetContextValue {
-            key: b"example_key".to_vec().into_boxed_slice(),
-            value: b"example_value".to_vec().into_boxed_slice(),
-        },
-    ];
-    let proposal3 = proxy_helper.create_proposal(&alice_sk,&proposal3_actions)?;
+    let proposal3_actions = vec![ProposalAction::SetContextValue {
+        key: b"example_key".to_vec().into_boxed_slice(),
+        value: b"example_value".to_vec().into_boxed_slice(),
+    }];
+    let proposal3 = proxy_helper.create_proposal(&alice_sk, &proposal3_actions)?;
 
-    let _ = proxy_helper.create_and_approve_proposal(&relayer_account, &proposal1).await?;
-    let _ = proxy_helper.create_and_approve_proposal(&relayer_account, &proposal2).await?;
-    let _ = proxy_helper.create_and_approve_proposal(&relayer_account, &proposal3).await?;
-
-    let proposals = proxy_helper
-        .view_proposals(&relayer_account, 0, 3)
+    let _ = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &proposal1)
         .await?;
-    
+    let _ = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &proposal2)
+        .await?;
+    let _ = proxy_helper
+        .create_and_approve_proposal(&relayer_account, &proposal3)
+        .await?;
+
+    let proposals = proxy_helper.view_proposals(&relayer_account, 0, 3).await?;
+
     assert_eq!(proposals.len(), 3, "Expected to retrieve 3 proposals");
 
     assert_eq!(proposals[0].0, 0, "Expected first proposal to have id 0");
     assert_eq!(proposals[1].0, 1, "Expected second proposal to have id 1");
     assert_eq!(proposals[2].0, 2, "Expected third proposal to have id 2");
 
-    assert_eq!(&proposals[0].1.actions[0], &proposal1_actions[0], "First proposal actions should match proposal 1");
-    assert_eq!(&proposals[1].1.actions[0], &proposal2_actions[0], "Second proposal actions should match proposal 2");
-    assert_eq!(&proposals[2].1.actions[0], &proposal3_actions[0], "Third proposal actions should match proposal 3");
-    
+    assert_eq!(
+        &proposals[0].1.actions[0], &proposal1_actions[0],
+        "First proposal actions should match proposal 1"
+    );
+    assert_eq!(
+        &proposals[1].1.actions[0], &proposal2_actions[0],
+        "Second proposal actions should match proposal 2"
+    );
+    assert_eq!(
+        &proposals[2].1.actions[0], &proposal3_actions[0],
+        "Third proposal actions should match proposal 3"
+    );
 
     // Retrieve proposals with offset 1 and length 2
-    let proposals = proxy_helper
-    .view_proposals(&relayer_account, 1, 2)
-    .await?;
-    
-    assert_eq!(proposals.len(), 2, "Expected to retrieve 2 proposals starting from offset 1");
+    let proposals = proxy_helper.view_proposals(&relayer_account, 1, 2).await?;
 
-    assert_eq!(proposals[0].0, 1, "Expected the first returned proposal to have id 1");
-    assert_eq!(proposals[1].0, 2, "Expected the second returned proposal to have id 2");
+    assert_eq!(
+        proposals.len(),
+        2,
+        "Expected to retrieve 2 proposals starting from offset 1"
+    );
 
-    assert_eq!(&proposals[0].1.actions[0], &proposal2_actions[0], "First proposal actions should match proposal 2");
-    assert_eq!(&proposals[1].1.actions[0], &proposal3_actions[0], "Second proposal actions should match proposal 3");
+    assert_eq!(
+        proposals[0].0, 1,
+        "Expected the first returned proposal to have id 1"
+    );
+    assert_eq!(
+        proposals[1].0, 2,
+        "Expected the second returned proposal to have id 2"
+    );
+
+    assert_eq!(
+        &proposals[0].1.actions[0], &proposal2_actions[0],
+        "First proposal actions should match proposal 2"
+    );
+    assert_eq!(
+        &proposals[1].1.actions[0], &proposal3_actions[0],
+        "Second proposal actions should match proposal 3"
+    );
 
     // Verify retrieval with a length of 1
-    let single_proposal = proxy_helper
-        .view_proposals(&relayer_account, 2, 1)
-        .await?;
-    
-    assert_eq!(single_proposal.len(), 1, "Expected to retrieve 1 proposal starting from offset 3");
-    assert_eq!(single_proposal[0].0, 2, "Expected the proposal to have id 2");
+    let single_proposal = proxy_helper.view_proposals(&relayer_account, 2, 1).await?;
 
-    assert_eq!(&proposals[1].1.actions[0], &proposal3_actions[0], "first proposal actions should match proposal 3");
+    assert_eq!(
+        single_proposal.len(),
+        1,
+        "Expected to retrieve 1 proposal starting from offset 3"
+    );
+    assert_eq!(
+        single_proposal[0].0, 2,
+        "Expected the proposal to have id 2"
+    );
+
+    assert_eq!(
+        &proposals[1].1.actions[0], &proposal3_actions[0],
+        "first proposal actions should match proposal 3"
+    );
 
     Ok(())
 }

@@ -1,5 +1,6 @@
 use eyre::Result;
-use near_workspaces::{network::Sandbox, Contract, Worker};
+use near_workspaces::network::Sandbox;
+use near_workspaces::{Contract, Worker};
 
 use super::deploy_contract;
 
@@ -18,17 +19,12 @@ impl CounterContractHelper {
             .call("new")
             .transact()
             .await?
-            .into_result()?; 
-        Ok(Self {
-            counter_contract,
-        })
+            .into_result()?;
+        Ok(Self { counter_contract })
     }
 
     pub async fn get_value(&self) -> Result<u32> {
-        let counter_value: u32 = self.counter_contract
-            .view("get_count")
-            .await?
-            .json()?;
+        let counter_value: u32 = self.counter_contract.view("get_count").await?.json()?;
         Ok(counter_value)
     }
 }

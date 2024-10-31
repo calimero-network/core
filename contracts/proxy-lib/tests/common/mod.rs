@@ -1,6 +1,8 @@
 use ed25519_dalek::SigningKey;
 use eyre::Result;
-use near_workspaces::{network::Sandbox, types::NearToken, Account, Contract, Worker};
+use near_workspaces::network::Sandbox;
+use near_workspaces::types::NearToken;
+use near_workspaces::{Account, Contract, Worker};
 use rand::Rng;
 
 pub mod config_helper;

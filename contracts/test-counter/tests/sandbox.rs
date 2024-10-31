@@ -1,6 +1,7 @@
 #![allow(unused_crate_dependencies, reason = "False positives")]
 
-use near_workspaces::{network::Sandbox, Worker, Contract};
+use near_workspaces::network::Sandbox;
+use near_workspaces::{Contract, Worker};
 
 const CONTRACT_WASM: &str = "./res/test_counter_near.wasm";
 
@@ -19,7 +20,7 @@ async fn test_counter_contract() -> eyre::Result<()> {
         .call("new")
         .transact()
         .await?
-        .into_result()?; 
+        .into_result()?;
 
     let _res = counter_contract
         .call("increment")
@@ -27,10 +28,7 @@ async fn test_counter_contract() -> eyre::Result<()> {
         .await?
         .into_result()?;
 
-    let counter_value: u32 = counter_contract
-        .view("get_count")
-        .await?
-        .json()?;
+    let counter_value: u32 = counter_contract.view("get_count").await?.json()?;
 
     assert_eq!(counter_value, 1, "Counter should be incremented once");
 

@@ -1,9 +1,10 @@
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed};
 use ed25519_dalek::{Signer, SigningKey};
-use near_workspaces::result::ViewResultDetails;
-use near_workspaces::{network::Sandbox, result::ExecutionFinalResult, Account, Contract, Worker};
-use proxy_lib::{ProposalApprovalWithSigner, Proposal, ProposalAction, ProposalId};
+use near_workspaces::network::Sandbox;
+use near_workspaces::result::{ExecutionFinalResult, ViewResultDetails};
+use near_workspaces::{Account, Contract, Worker};
+use proxy_lib::{Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId};
 use serde_json::json;
 
 use super::deploy_contract;
@@ -111,10 +112,7 @@ impl ProxyContractHelper {
         Ok(res)
     }
 
-    pub async fn view_active_proposals_limit(
-        &self,
-        caller: &Account,
-    ) -> eyre::Result<u32> {
+    pub async fn view_active_proposals_limit(&self, caller: &Account) -> eyre::Result<u32> {
         let res: u32 = caller
             .view(self.proxy_contract.id(), "get_active_proposals_limit")
             .await?
@@ -122,10 +120,7 @@ impl ProxyContractHelper {
         Ok(res)
     }
 
-    pub async fn view_num_approvals(
-        &self,
-        caller: &Account,
-    ) -> eyre::Result<u32> {
+    pub async fn view_num_approvals(&self, caller: &Account) -> eyre::Result<u32> {
         let res: u32 = caller
             .view(self.proxy_contract.id(), "get_num_approvals")
             .await?
@@ -136,7 +131,7 @@ impl ProxyContractHelper {
     pub async fn view_context_value(
         &self,
         caller: &Account,
-        key: Box<[u8]>
+        key: Box<[u8]>,
     ) -> eyre::Result<Option<Box<[u8]>>> {
         let res: Option<Box<[u8]>> = caller
             .view(self.proxy_contract.id(), "get_context_value")
@@ -150,7 +145,7 @@ impl ProxyContractHelper {
         &self,
         caller: &Account,
         offset: usize,
-        length: usize
+        length: usize,
     ) -> eyre::Result<Vec<(u32, Proposal)>> {
         let res = caller
             .view(self.proxy_contract.id(), "proposals")

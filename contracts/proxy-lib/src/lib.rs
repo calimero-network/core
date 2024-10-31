@@ -7,7 +7,8 @@ use calimero_context_config::types::{ContextId, Signed, SignerId};
 use near_sdk::json_types::{Base64VecU8, U128};
 use near_sdk::store::IterableMap;
 use near_sdk::{
-    env, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue, PromiseResult,
+    env, near, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue,
+    PromiseResult,
 };
 
 pub mod ext_config;
@@ -268,10 +269,12 @@ impl ProxyContract {
                 }
             }
         }
-    
+
         for action in proposal.actions {
             match action {
-                ProposalAction::SetActiveProposalsLimit { active_proposals_limit } => {
+                ProposalAction::SetActiveProposalsLimit {
+                    active_proposals_limit,
+                } => {
                     self.active_proposals_limit = active_proposals_limit;
                 }
                 ProposalAction::SetNumApprovals { num_approvals } => {
@@ -284,28 +287,31 @@ impl ProxyContract {
             }
         }
         true
-    }    
-    
+    }
+
     fn execute_proposal(&mut self, proposal: Proposal) -> PromiseOrValue<bool> {
         let mut promise_actions = Vec::new();
         let mut non_promise_actions = Vec::new();
-    
+
         for action in proposal.actions {
             match action {
-                ProposalAction::ExternalFunctionCall { .. }
-                | ProposalAction::Transfer { .. } => promise_actions.push(action),
+                ProposalAction::ExternalFunctionCall { .. } | ProposalAction::Transfer { .. } => {
+                    promise_actions.push(action)
+                }
                 _ => non_promise_actions.push(action),
             }
         }
-    
+
         if promise_actions.is_empty() {
-            self.finalize_execution(Proposal { 
-                author_id: proposal.author_id, actions: non_promise_actions});
+            self.finalize_execution(Proposal {
+                author_id: proposal.author_id,
+                actions: non_promise_actions,
+            });
             return PromiseOrValue::Value(true);
         }
-    
+
         let mut chained_promise: Option<Promise> = None;
-    
+
         for action in promise_actions {
             let promise = match action {
                 ProposalAction::ExternalFunctionCall {
@@ -317,28 +323,30 @@ impl ProxyContract {
                 } => {
                     Promise::new(receiver_id).function_call(method_name, args.into(), deposit, gas)
                 }
-                ProposalAction::Transfer { receiver_id, amount } => {
-                    Promise::new(receiver_id).transfer(amount)
-                }
+                ProposalAction::Transfer {
+                    receiver_id,
+                    amount,
+                } => Promise::new(receiver_id).transfer(amount),
                 _ => continue,
             };
-    
+
             chained_promise = Some(match chained_promise {
                 Some(accumulated) => accumulated.then(promise),
                 None => promise,
             });
         }
-    
+
         match chained_promise {
-            Some(promise) => PromiseOrValue::Promise(
-                promise.then(Self::ext(env::current_account_id()).finalize_execution(Proposal {
-                    author_id: proposal.author_id, actions: non_promise_actions,
-                })),
-            ),
+            Some(promise) => PromiseOrValue::Promise(promise.then(
+                Self::ext(env::current_account_id()).finalize_execution(Proposal {
+                    author_id: proposal.author_id,
+                    actions: non_promise_actions,
+                }),
+            )),
             None => PromiseOrValue::Value(true),
         }
     }
-    
+
     fn remove_proposal(&mut self, proposal_id: ProposalId) -> Proposal {
         self.approvals.remove(&proposal_id);
         let proposal = self

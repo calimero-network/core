@@ -3,7 +3,9 @@ use calimero_context_config::types::{Application, ContextId, ContextIdentity, Si
 use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
 use ed25519_dalek::{Signer, SigningKey};
 use eyre::Result;
-use near_workspaces::{network::Sandbox, result::ExecutionFinalResult, Account, Contract, Worker};
+use near_workspaces::network::Sandbox;
+use near_workspaces::result::ExecutionFinalResult;
+use near_workspaces::{Account, Contract, Worker};
 use rand::Rng;
 
 use super::deploy_contract;
