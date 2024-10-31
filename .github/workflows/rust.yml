@@ -85,6 +85,12 @@ jobs:
         run: |
           df -h
 
+      - name: Check environment
+        run: |
+          echo $PATH
+          which rustup
+          rustup --version
+          
       - name: Setup rust toolchain
         run: rustup toolchain install stable --profile minimal
 
