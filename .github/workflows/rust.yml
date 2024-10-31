@@ -28,7 +28,11 @@ jobs:
           mv ~/.cargo .home/
           mv ~/.rustup .home/
           echo "$HOME/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
-      
+          cat $GITHUB_PATH
+        
+      - name: Check environment
+        run: echo $PATH
+
       - name: Checkout code
         uses: actions/checkout@v4
 
