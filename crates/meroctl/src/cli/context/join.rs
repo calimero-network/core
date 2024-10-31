@@ -2,12 +2,12 @@ use calimero_primitives::context::ContextInvitationPayload;
 use calimero_primitives::identity::PrivateKey;
 use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
+use eyre::Result as EyreResult;
 use reqwest::Client;
-use tracing::info;
 
-use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
+use crate::cli::Environment;
+use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::output::Report;
 
 #[derive(Debug, Parser)]
 #[command(about = "Join an application context")]
@@ -24,11 +24,23 @@ pub struct JoinCommand {
     invitation_payload: ContextInvitationPayload,
 }
 
-impl JoinCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
-        let config = load_config(&args.home, &args.node_name)?;
+impl Report for JoinContextResponse {
+    fn report(&self) {
+        match self.data {
+            Some(ref payload) => {
+                print!("context_id {}", payload.context_id);
+                print!("member_public_key: {}", payload.member_public_key);
+            }
+            None => todo!(),
+        }
+    }
+}
 
-        let response = get_response(
+impl JoinCommand {
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+
+        let response: JoinContextResponse = do_request(
             &Client::new(),
             multiaddr_to_url(fetch_multiaddr(&config)?, "admin-api/dev/contexts/join")?,
             Some(JoinContextRequest::new(
@@ -40,18 +52,7 @@ impl JoinCommand {
         )
         .await?;
 
-        if !response.status().is_success() {
-            bail!("Request failed with status: {}", response.status())
-        }
-
-        let Some(body) = response.json::<JoinContextResponse>().await?.data else {
-            bail!("Unable to join context");
-        };
-
-        info!(
-            "Context {} sucesfully joined as {}",
-            body.context_id, body.member_public_key
-        );
+        environment.output.write(&response);
 
         Ok(())
     }
