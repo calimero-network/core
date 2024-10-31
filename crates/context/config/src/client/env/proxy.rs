@@ -1,4 +1,6 @@
-use crate::client::protocol::{Method, Near, Starknet};
+use crate::client::protocol::near::Near;
+use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::Method;
 use crate::client::{CallClient, Environment, Protocol, Transport};
 
 enum ContextProxy {}

@@ -1,5 +1,7 @@
-use crate::client::protocol::{Method, Near, Starknet};
-use crate::client::{CallClient, Environment, Protocol, Transport};
+use crate::client::protocol::near::Near;
+use crate::client::protocol::starknet::Starknet;
+use crate::client::protocol::{private, Method};
+use crate::client::{CallClient, ConfigError, Environment, Protocol, Transport};
 pub enum ContextConfig {}
 
 struct ContextConfigQuery<'a, T> {
@@ -28,36 +30,39 @@ struct Members {
     length: usize,
 }
 
-impl Method<Members> for Near {
+impl<T: Transport> Method<Members> for Near
+where
+    Near: private::Protocol,
+{
     const METHOD: &'static str = "members";
 
     type Returns = Vec<String>;
 
-    fn encode(params: &Members) -> Result<Vec<u8>, Error> {
+    fn encode(params: &Members) -> Result<Vec<u8>, ConfigError<T>> {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, Error> {
+    fn decode(response: &[u8]) -> Result<Self::Returns, ConfigError<T>> {
         todo!()
     }
 }
 
-impl Method<Members> for Starknet {
+impl<T: Transport> Method<Members> for Starknet {
     type Returns = Vec<String>;
 
     const METHOD: &'static str = "members";
 
-    fn encode(params: &Members) -> Result<Vec<u8>, Error> {
+    fn encode(params: &Members) -> Result<Vec<u8>, ConfigError<T>> {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, Error> {
+    fn decode(response: &[u8]) -> Result<Self::Returns, ConfigError<T>> {
         todo!()
     }
 }
 
 impl<'a, T: Transport> ContextConfigQuery<'a, T> {
-    async fn members(&self, offset: usize, length: usize) -> Result<Vec<String>, Error> {
+    async fn members(&self, offset: usize, length: usize) -> Result<Vec<String>, ConfigError<T>> {
         let params = Members { offset, length };
         match self.client.protocol {
             Protocol::Near => self.client.query::<Near, _>(params).await,
@@ -90,27 +95,27 @@ struct Mutate {
     kind: RequestKind,
 }
 
-impl Method<Mutate> for Near {
+impl<T> Method<Mutate> for Near {
     const METHOD: &'static str = "mutate";
 
     type Returns = ();
 
-    fn encode(params: &Mutate) -> Result<Vec<u8>, Error> {
+    fn encode(params: &Mutate) -> Result<Vec<u8>, ConfigError<T>> {
         // sign the params, encode it and return
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, Error> {
+    fn decode(response: &[u8]) -> Result<Self::Returns, ConfigError<T>> {
         todo!()
     }
 }
 
-impl Method<Mutate> for Starknet {
+impl<T> Method<Mutate> for Starknet {
     type Returns = ();
 
     const METHOD: &'static str = "mutate";
 
-    fn encode(params: &Mutate) -> Result<Vec<u8>, Error> {
+    fn encode(params: &Mutate) -> Result<Vec<u8>, ConfigError<T>> {
         // sign the params, encode it and return
         // since you will have a `Vec<Felt>` here, you can
         // `Vec::with_capacity(32 * calldata.len())` and then
@@ -120,13 +125,13 @@ impl Method<Mutate> for Starknet {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> Result<Self::Returns, Error> {
+    fn decode(response: &[u8]) -> Result<Self::Returns, ConfigError<T>> {
         todo!()
     }
 }
 
 impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
-    async fn send(self, signing_key: [u8; 32]) -> Result<(), Error> {
+    async fn send(self, signing_key: [u8; 32]) -> Result<(), ConfigError<T>> {
         let request = Mutate {
             signer_id: todo!(),
             nonce: 0,

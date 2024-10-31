@@ -270,7 +270,7 @@ pub struct CallClient<'a, T> {
 }
 
 impl<'a, T: Transport> CallClient<'a, T> {
-    async fn query<M: Method<P>, P>(&self, params: P) -> Result<M::Returns, Error> {
+    async fn query<M: Method<P>, P>(&self, params: P) -> Result<M::Returns, ConfigError<T>> {
         let payload = M::encode(&params).map_err(Error::from)?;
 
         let request = TransportRequest {

@@ -3,12 +3,9 @@ use super::Error;
 pub mod near;
 pub mod starknet;
 
-mod private {
+pub mod private {
     pub trait Protocol {}
 }
-
-pub enum Near {}
-pub enum Starknet {}
 
 pub trait Method<Params>: private::Protocol {
     type Returns;

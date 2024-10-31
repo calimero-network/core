@@ -12,8 +12,9 @@ use starknet::providers::{JsonRpcClient, Provider, Url};
 use starknet::signers::{LocalWallet, SigningKey};
 use thiserror::Error;
 
-use super::{private, Starknet};
+use super::private;
 use crate::client::{Operation, Transport, TransportRequest};
+pub enum Starknet {}
 
 impl private::Protocol for Starknet {}
 

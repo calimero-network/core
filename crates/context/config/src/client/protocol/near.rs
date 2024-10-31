@@ -24,8 +24,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use super::{private, Near};
+use super::private;
 use crate::client::{Operation, Transport, TransportRequest};
+pub enum Near {}
 
 impl private::Protocol for Near {}
 

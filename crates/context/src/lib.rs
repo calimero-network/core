@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ClientConfig;
-use calimero_context_config::client::{AnyTransport, Client};
+use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
@@ -73,7 +73,7 @@ impl ContextManager {
         network_client: NetworkClient,
     ) -> EyreResult<Self> {
         let client_config = config.client.clone();
-        let config_client = Client::from_config(&client_config);
+        let config_client = ExternalClient::from_config(&client_config);
 
         let this = Self {
             store,
