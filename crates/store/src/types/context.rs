@@ -36,14 +36,19 @@ impl PredefinedEntry for ContextMetaKey {
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextConfig {
+    pub protocol: Box<str>,
     pub network: Box<str>,
     pub contract: Box<str>,
 }
 
 impl ContextConfig {
     #[must_use]
-    pub const fn new(network: Box<str>, contract: Box<str>) -> Self {
-        Self { network, contract }
+    pub const fn new(protocol: Box<str>, network: Box<str>, contract: Box<str>) -> Self {
+        Self {
+            protocol,
+            network,
+            contract,
+        }
     }
 }
 
