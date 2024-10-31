@@ -40,6 +40,8 @@ jobs:
           echo "PNPM_HOME=$ALT_HOME/.pnpm" >> $GITHUB_ENV
           
           mv ~/.cargo $ALT_HOME/
+          ls $ALT_HOME
+          exit 1
           mv ~/.rustup $ALT_HOME/
           echo "$ALT_HOME/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
 
