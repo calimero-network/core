@@ -44,7 +44,7 @@ pub enum Action {
 pub struct ExternalFunctionCall {
     pub(crate) receiver_id: User,
     pub(crate) method_name: String,
-    pub(crate) args: String, // Represents Base64VecU8 as String
+    pub(crate) args: Value,
     pub(crate) deposit: String,
     pub(crate) gas: String,
 }
@@ -122,7 +122,7 @@ pub async fn get_proposals_handler(
     let sample_action = Action::ExternalFunctionCall(ExternalFunctionCall {
         receiver_id: get_mock_user(),
         method_name: "sampleMethod".to_string(),
-        args: "sampleArgs".to_string(),
+        args: serde_json::json!({"example": "value"}),
         deposit: "100".to_string(),
         gas: "10".to_string(),
     });
@@ -229,7 +229,7 @@ pub fn get_mock_actions() -> Vec<Action> {
         Action::ExternalFunctionCall(ExternalFunctionCall {
             receiver_id: get_mock_user(),
             method_name: "sampleMethod".to_string(),
-            args: "sampleArgs".to_string(),
+            args: serde_json::json!({"example": "value"}),
             deposit: "100".to_string(),
             gas: "5000".to_string(),
         }),
