@@ -241,6 +241,7 @@ pub struct InviteToContextRequest {
 }
 
 impl InviteToContextRequest {
+    #[expect(clippy::similar_names, reason = "Acceptable here")]
     #[must_use]
     pub const fn new(context_id: ContextId, inviter_id: PublicKey, invitee_id: PublicKey) -> Self {
         Self {

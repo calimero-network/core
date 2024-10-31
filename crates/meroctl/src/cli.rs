@@ -70,8 +70,8 @@ pub struct Environment {
 }
 
 impl Environment {
-    pub fn new(args: RootArgs, output: Output) -> Self {
-        Environment { args, output }
+    pub const fn new(args: RootArgs, output: Output) -> Self {
+        Self { args, output }
     }
 }
 
@@ -95,7 +95,7 @@ impl RootCommand {
             return Err(err);
         }
 
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -112,18 +112,18 @@ pub enum CliError {
     ),
 }
 
-impl Into<ExitCode> for CliError {
-    fn into(self) -> ExitCode {
-        match self {
-            CliError::ApiError(_) => ExitCode::from(101),
-            CliError::Other(_) => ExitCode::FAILURE,
+impl From<CliError> for ExitCode {
+    fn from(error: CliError) -> Self {
+        match error {
+            CliError::ApiError(_) => Self::from(101),
+            CliError::Other(_) => Self::FAILURE,
         }
     }
 }
 
 impl Report for CliError {
     fn report(&self) {
-        println!("{}", self);
+        println!("{self}");
     }
 }
 

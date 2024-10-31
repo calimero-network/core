@@ -24,8 +24,8 @@ pub enum ConfigProtocol {
 impl From<ConfigProtocol> for CoreProtocol {
     fn from(protocol: ConfigProtocol) -> Self {
         match protocol {
-            ConfigProtocol::Near => CoreProtocol::Near,
-            ConfigProtocol::Starknet => CoreProtocol::Starknet,
+            ConfigProtocol::Near => Self::Near,
+            ConfigProtocol::Starknet => Self::Starknet,
         }
     }
 }

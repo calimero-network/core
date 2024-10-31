@@ -27,6 +27,7 @@ pub fn send_action(action: &Action) {
 /// Commits the root hash to the runtime.
 /// This function should be called after the root hash has been updated.
 ///
+#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn commit_root(root_hash: &[u8; 32]) {
     imp::commit_root(root_hash);
 }
@@ -145,7 +146,7 @@ mod mocked {
 
     /// Commits the root hash to the runtime.
     /// This function should be called after the root hash has been updated.
-    pub(super) fn commit_root(_root_hash: &[u8; 32]) {
+    pub(super) const fn commit_root(_root_hash: &[u8; 32]) {
         // Do nothing.
     }
 

@@ -80,7 +80,6 @@ impl Node {
         blob_sender.flush().await
     }
 
-    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     async fn handle_action_catchup(
         &self,
         request: CatchupSyncRequest,
@@ -180,7 +179,7 @@ impl Node {
         match source.scheme() {
             "http" | "https" => {
                 info!("Skipping blob catchup for HTTP/HTTPS source");
-                return Ok(());
+                Ok(())
             }
             _ => {
                 self.perform_blob_stream_catchup(chosen_peer, latest_application)
@@ -221,7 +220,7 @@ impl Node {
                         ));
                     }
 
-                    current_sequential_id += 1;
+                    current_sequential_id = current_sequential_id.saturating_add(1);
 
                     Ok(chunk.chunk)
                 })

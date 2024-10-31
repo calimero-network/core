@@ -1,6 +1,6 @@
 #![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
+use core::str::FromStr;
 use std::collections::BTreeMap;
-use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -23,10 +23,11 @@ pub enum Protocol {
 }
 
 impl Protocol {
-    pub fn as_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
         match self {
-            Protocol::Near => "near",
-            Protocol::Starknet => "starknet",
+            Self::Near => "near",
+            Self::Starknet => "starknet",
         }
     }
 }
@@ -42,8 +43,8 @@ impl FromStr for Protocol {
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         match input.to_lowercase().as_str() {
-            "near" => Ok(Protocol::Near),
-            "starknet" => Ok(Protocol::Starknet),
+            "near" => Ok(Self::Near),
+            "starknet" => Ok(Self::Starknet),
             _ => Err(ProtocolParseError { _priv: () }),
         }
     }

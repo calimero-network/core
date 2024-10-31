@@ -13,7 +13,7 @@ pub struct ListCommand;
 
 impl Report for ListApplicationsResponse {
     fn report(&self) {
-        for application in self.data.apps.iter() {
+        for application in &self.data.apps {
             application.report();
         }
     }

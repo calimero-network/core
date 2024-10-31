@@ -70,7 +70,7 @@ where
 
     let result = response.json::<O>().await?;
 
-    return Ok(result);
+    Ok(result)
 }
 // pub async fn do_request<I, O>(
 //     client: &Client,
