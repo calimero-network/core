@@ -16,9 +16,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::serde::{Deserialize, Serialize};
 use fixedstr::Flexstr;
 use thiserror::Error as ThisError;
-use uuid::{Bytes, Uuid};
 
-use crate::env::random_bytes;
+use crate::env::{context_id, random_bytes};
 
 /// Globally-unique identifier for an [`Element`](crate::entities::Element).
 ///
@@ -35,101 +34,95 @@ use crate::env::random_bytes;
 /// system operation. Abstracting the true type away provides a level of
 /// insulation that is useful for any future changes.
 ///
-#[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    BorshSerialize,
+    BorshDeserialize,
+    Copy,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    Serialize,
+)]
 #[serde(crate = "calimero_sdk::serde")]
-pub struct Id(Uuid);
+pub struct Id {
+    /// The byte array representation of the ID.
+    bytes: [u8; 32],
+}
 
 impl Id {
     /// Creates a new globally-unique identifier.
+    ///
+    /// Returns the byte array representation of the ID.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use calimero_storage::address::Id;
-    /// let id = Id::new();
+    /// let id = Id::new([0; 32]);
+    /// assert_eq!(id.as_bytes(), &[0; 32]);
     /// ```
-    ///
     #[must_use]
-    pub fn new() -> Self {
-        let mut bytes = [0; 16];
-        random_bytes(&mut bytes);
-        Self(uuid::Builder::from_random_bytes(bytes).into_uuid())
-    }
-
-    /// Returns a slice of 16 octets containing the value.
-    #[must_use]
-    pub const fn as_bytes(&self) -> &Bytes {
-        self.0.as_bytes()
+    pub fn new(bytes: [u8; 32]) -> Self {
+        // random_bytes(&mut bytes);
+        Self { bytes }
     }
 
     /// Root ID which is set to all zeroes by default.
     #[must_use]
-    pub const fn root() -> Self {
-        Self(Uuid::nil())
-    }
-}
-
-impl BorshDeserialize for Id {
-    fn deserialize(buf: &mut &[u8]) -> Result<Self, IoError> {
-        if buf.len() < 16 {
-            return Err(IoError::new(
-                IoErrorKind::UnexpectedEof,
-                "Not enough bytes to deserialize Id",
-            ));
-        }
-        let (bytes, rest) = buf.split_at(16);
-        *buf = rest;
-        Ok(Self(Uuid::from_slice(bytes).map_err(|err| {
-            IoError::new(IoErrorKind::InvalidData, err)
-        })?))
+    pub fn root() -> Self {
+        Id::new(context_id())
     }
 
-    fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self, IoError> {
-        let mut bytes = [0_u8; 16];
-        reader.read_exact(&mut bytes)?;
-        Ok(Self(Uuid::from_bytes(bytes)))
+    /// Creates a new random globally-unique identifier.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Id;
+    /// let id = Id::random();
+    /// ```
+    #[must_use]
+    pub fn random() -> Id {
+        let mut bytes = [0_u8; 32];
+        random_bytes(&mut bytes);
+        Id::new(bytes)
     }
-}
 
-impl BorshSerialize for Id {
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<(), IoError> {
-        writer.write_all(self.0.as_bytes())
-    }
-}
-
-impl Default for Id {
-    fn default() -> Self {
-        Self::new()
+    /// Returns the byte array representation of the ID.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Id;
+    /// let id = Id::new([0; 32]);
+    /// assert_eq!(id.as_bytes(), &[0; 32]);
+    /// ```
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.bytes
     }
 }
 
 impl Display for Id {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{:?}", self.bytes)
     }
 }
 
-impl From<[u8; 16]> for Id {
-    fn from(bytes: [u8; 16]) -> Self {
-        Self(Uuid::from_bytes(bytes))
+impl From<[u8; 32]> for Id {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self::new(bytes)
     }
 }
 
-impl From<&[u8; 16]> for Id {
-    fn from(bytes: &[u8; 16]) -> Self {
-        Self(Uuid::from_bytes(*bytes))
-    }
-}
-
-impl From<Id> for [u8; 16] {
+impl From<Id> for [u8; 32] {
     fn from(id: Id) -> Self {
-        *id.0.as_bytes()
-    }
-}
-
-impl From<Id> for Uuid {
-    fn from(id: Id) -> Self {
-        id.0
+        id.into()
     }
 }
 

@@ -654,7 +654,7 @@ impl Element {
     pub fn new(path: &Path) -> Self {
         let timestamp = time_now();
         Self {
-            id: Id::new(),
+            id: Id::random(),
             is_dirty: true,
             metadata: Metadata {
                 created_at: timestamp,
