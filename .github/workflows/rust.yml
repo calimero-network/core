@@ -35,16 +35,13 @@ jobs:
 
       - name: Relocate environment
         run: |
-          export "CARGO_HOME=$ALT_HOME/.cargo"
-          echo "CARGO_HOME=$CARGO_HOME" >> $GITHUB_ENV
-          export "RUSTUP_HOME=$ALT_HOME/.rustup"
-          echo "RUSTUP_HOME=$RUSTUP_HOME" >> $GITHUB_ENV
-          export "PNPM_HOME=$ALT_HOME/.pnpm"
-          echo "PNPM_HOME=$PNPM_HOME" >> $GITHUB_ENV
+          echo "CARGO_HOME=$ALT_HOME/.cargo" >> $GITHUB_ENV
+          echo "RUSTUP_HOME=$ALT_HOME/.rustup" >> $GITHUB_ENV
+          echo "PNPM_HOME=$ALT_HOME/.pnpm" >> $GITHUB_ENV
           
-          mv ~/.cargo $CARGO_HOME
-          mv ~/.rustup $RUSTUP_HOME
-          echo "$CARGO_HOME/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
+          mv ~/.cargo $ALT_HOME
+          mv ~/.rustup $ALT_HOME
+          echo "$ALT_HOME/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
 
       - name: Checkout code
         uses: actions/checkout@v4
