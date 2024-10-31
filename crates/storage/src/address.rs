@@ -110,7 +110,7 @@ impl Id {
 
 impl Display for Id {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.bytes)
+        write!(f, "{:?}", self)
     }
 }
 
