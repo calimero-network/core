@@ -43,8 +43,20 @@ jobs:
           mv ~/.rustup $ALT_HOME
           echo "$ALT_HOME/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
 
+      - name: Check environment
+        run: |
+          echo $PATH
+          which rustup
+          rustup --version
+
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Check environment
+        run: |
+          echo $PATH
+          which rustup
+          rustup --version
 
       - name: How're we looking?
         run: |
