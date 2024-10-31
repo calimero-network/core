@@ -25,7 +25,7 @@ jobs:
           echo "STAGE_DIR=$STAGE_DIR" >> $GITHUB_ENV
           export ALT_HOME="$STAGE_DIR/.home"
           echo "ALT_HOME=$ALT_HOME" >> $GITHUB_ENV
-      
+
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
@@ -37,7 +37,7 @@ jobs:
           echo "CARGO_HOME=$ALT_HOME/.cargo" >> $GITHUB_ENV
           echo "RUSTUP_HOME=$ALT_HOME/.rustup" >> $GITHUB_ENV
           echo "PNPM_HOME=$ALT_HOME/.pnpm" >> $GITHUB_ENV
-          
+
           mkdir $ALT_HOME
           mv ~/.cargo $ALT_HOME
           mv ~/.rustup $ALT_HOME
@@ -73,7 +73,7 @@ jobs:
 
       - name: Build
         run: cargo build --verbose
-      
+
       - name: Run tests
         run: |
           chmod +x $GITHUB_WORKSPACE/scripts/build-all-apps.sh
