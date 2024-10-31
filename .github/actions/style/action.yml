@@ -31,7 +31,7 @@ runs:
         if echo "$ALL_CHANGED_FILES" | grep -q '\.rs$'; then
           echo "Running checks for the Rust code..."
 
-        # Install the nightly toolchain
+          # Install the nightly toolchain
           rustup toolchain install nightly
 
           # Install rustfmt for the nightly toolchain
