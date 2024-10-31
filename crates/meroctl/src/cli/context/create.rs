@@ -1,9 +1,3 @@
-#![allow(
-    clippy::print_stdout,
-    clippy::print_stderr,
-    reason = "Acceptable for CLI"
-)]
-
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
@@ -25,7 +19,7 @@ use tokio::sync::mpsc;
 
 use crate::cli::Environment;
 use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
-use crate::output::Report;
+use crate::output::{ErrorLine, InfoLine, Report};
 
 #[derive(Debug, Parser)]
 #[command(about = "Create a new context")]
@@ -201,13 +195,15 @@ async fn watch_app_and_update_context(
 
     watcher.watch(path.as_std_path(), RecursiveMode::NonRecursive)?;
 
-    println!("(i) Watching for changes to \"\x1b[36m{path}\x1b[0m\"");
+    environment
+        .output
+        .write(&InfoLine(&format!("Watching for changes to {}", path)));
 
     while let Some(event) = rx.recv().await {
         let event = match event {
             Ok(event) => event,
             Err(err) => {
-                eprintln!("\x1b[1mERROR\x1b[0m: {err:?}");
+                environment.output.write(&ErrorLine(&format!("{err:?}")));
                 continue;
             }
         };
@@ -215,7 +211,9 @@ async fn watch_app_and_update_context(
         match event.kind {
             EventKind::Modify(ModifyKind::Data(_)) => {}
             EventKind::Remove(_) => {
-                eprintln!("\x1b[33mWARN\x1b[0m: file removed, ignoring..");
+                environment
+                    .output
+                    .write(&ErrorLine("File removed, ignoring.."));
                 continue;
             }
             EventKind::Any
@@ -297,18 +295,12 @@ async fn install_app(
     metadata: Option<Vec<u8>>,
     keypair: &Keypair,
 ) -> EyreResult<ApplicationId> {
-    let install_url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
+    let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
 
-    let install_request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
+    let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
 
-    let response: InstallApplicationResponse = do_request(
-        client,
-        install_url,
-        Some(install_request),
-        keypair,
-        RequestType::Post,
-    )
-    .await?;
+    let response: InstallApplicationResponse =
+        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
 
     environment.output.write(&response);
 

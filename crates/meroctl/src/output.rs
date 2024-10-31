@@ -1,7 +1,7 @@
 use clap::ValueEnum;
 use serde::Serialize;
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum, Serialize)]
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
 pub enum Format {
     Json,
     #[default]
@@ -32,5 +32,23 @@ impl Output {
             },
             Format::PlainText => value.report(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InfoLine<'a>(pub &'a str);
+
+impl Report for InfoLine<'_> {
+    fn report(&self) {
+        println!("{}", self.0);
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ErrorLine<'a>(pub &'a str);
+
+impl Report for ErrorLine<'_> {
+    fn report(&self) {
+        println!("[ERROR] {}", self.0);
     }
 }
