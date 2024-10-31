@@ -20,10 +20,8 @@ jobs:
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
+          build-mount-path: ${{ github.workspace }}/..
           root-reserve-mb: 4096
-
-      - name: Checkout code
-        uses: actions/checkout@v4
 
       - name: Relocate environment
         run: |
@@ -31,6 +29,9 @@ jobs:
           mv ~/.cargo .home/
           mv ~/.rustup .home/
           echo "$PWD/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
+
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: How're we looking?
         run: |
