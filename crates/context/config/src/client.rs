@@ -1,26 +1,61 @@
 use core::convert::Infallible;
 use core::error::Error as CoreError;
 use core::marker::PhantomData;
-use core::ptr;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::str::FromStr;
 
-use ed25519_dalek::Signature;
 use either::Either;
+use protocol::Method;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Error as JsonError};
+use serde_json::Error as JsonError;
 use thiserror::Error;
 
-use crate::repr::Repr;
-use crate::types::{self, Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
-use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
+use crate::client::protocol::{near, starknet};
+use crate::types::{self};
 
 pub mod config;
-pub mod near;
+pub mod env;
+pub mod protocol;
 pub mod relayer;
-pub mod starknet;
 
-use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner, Credentials, Protocol};
+use config::{ClientConfig, ClientSelectedSigner, Credentials};
+
+#[non_exhaustive]
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Protocol {
+    Near,
+    Starknet,
+}
+
+pub enum Error {}
+
+impl Protocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Protocol::Near => "near",
+            Protocol::Starknet => "starknet",
+        }
+    }
+}
+
+#[derive(Debug, Error, Copy, Clone)]
+#[error("Failed to parse protocol")]
+pub struct ProtocolParseError {
+    _priv: (),
+}
+
+impl FromStr for Protocol {
+    type Err = ProtocolParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input.to_lowercase().as_str() {
+            "near" => Ok(Protocol::Near),
+            "starknet" => Ok(Protocol::Starknet),
+            _ => Err(ProtocolParseError { _priv: () }),
+        }
+    }
+}
 
 pub trait Transport {
     type Error: CoreError;
@@ -81,17 +116,6 @@ pub enum Operation<'a> {
     Write { method: Cow<'a, str> },
 }
 
-#[derive(Clone, Debug)]
-pub struct ContextConfigClient<T> {
-    transport: T,
-}
-
-impl<T: Transport> ContextConfigClient<T> {
-    pub const fn new(transport: T) -> Self {
-        Self { transport }
-    }
-}
-
 pub type AnyTransport = Either<
     relayer::RelayerTransport,
     BothTransport<near::NearTransport<'static>, starknet::StarknetTransport<'static>>,
@@ -123,18 +147,29 @@ impl<L: Transport, R: Transport> Transport for BothTransport<L, R> {
     }
 }
 
-impl ContextConfigClient<AnyTransport> {
+#[derive(Clone, Debug)]
+pub struct Client<T> {
+    transport: T,
+}
+
+impl<T: Transport> Client<T> {
+    pub const fn new(transport: T) -> Self {
+        Self { transport }
+    }
+}
+
+impl Client<AnyTransport> {
     #[must_use]
-    pub fn from_config(config: &ContextConfigClientConfig) -> Self {
+    pub fn from_config(config: &ClientConfig) -> Self {
         let transport = match config.signer.selected {
-            ContextConfigClientSelectedSigner::Relayer => {
+            ClientSelectedSigner::Relayer => {
                 // If the selected signer is Relayer, use the Left variant.
                 Either::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
                     url: config.signer.relayer.url.clone(),
                 }))
             }
 
-            ContextConfigClientSelectedSigner::Local => Either::Right(BothTransport {
+            ClientSelectedSigner::Local => Either::Right(BothTransport {
                 near: near::NearTransport::new(&near::NearConfig {
                     networks: config
                         .signer
@@ -195,38 +230,6 @@ impl ContextConfigClient<AnyTransport> {
     }
 }
 
-impl<T: Transport> ContextConfigClient<T> {
-    pub const fn query<'a>(
-        &'a self,
-        protocol: Protocol,
-        network_id: Cow<'a, str>,
-        contract_id: Cow<'a, str>,
-    ) -> ContextConfigQueryClient<'a, T> {
-        ContextConfigQueryClient {
-            protocol,
-            network_id,
-            contract_id,
-            transport: &self.transport,
-        }
-    }
-
-    pub const fn mutate<'a>(
-        &'a self,
-        protocol: Protocol,
-        network_id: Cow<'a, str>,
-        contract_id: Cow<'a, str>,
-        signer_id: SignerId,
-    ) -> ContextConfigMutateClient<'a, T> {
-        ContextConfigMutateClient {
-            protocol,
-            network_id,
-            contract_id,
-            signer_id,
-            transport: &self.transport,
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ConfigError<T: Transport> {
@@ -259,242 +262,97 @@ impl<T> Response<T> {
 }
 
 #[derive(Debug)]
-pub struct ContextConfigQueryClient<'a, T> {
+pub struct CallClient<'a, T> {
     protocol: Protocol,
-    network_id: Cow<'a, str>,
-    contract_id: Cow<'a, str>,
-    transport: &'a T,
+    network_id: String,
+    contract_id: String,
+    client: &'a Client<T>,
 }
 
-impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
-    async fn read<I: Serialize, O>(
-        &self,
-        method: &str,
-        body: I,
-    ) -> Result<Response<O>, ConfigError<T>> {
-        let payload = serde_json::to_vec(&body).map_err(|err| ConfigError::Other(err.into()))?;
+impl<'a, T: Transport> CallClient<'a, T> {
+    async fn query<M: Method<P>, P>(&self, params: P) -> Result<M::Returns, Error> {
+        let payload = M::encode(&params).map_err(Error::from)?;
 
         let request = TransportRequest {
             protocol: self.protocol,
             network_id: Cow::Borrowed(&self.network_id),
             contract_id: Cow::Borrowed(&self.contract_id),
             operation: Operation::Read {
-                method: Cow::Borrowed(method),
+                method: Cow::Borrowed(M::METHOD),
             },
         };
 
         let response = self
-            .transport
-            .send(request, payload)
-            .await
-            .map_err(ConfigError::Transport)?;
-
-        Ok(Response::new(response))
-    }
-
-    pub async fn application(
-        &self,
-        context_id: ContextId,
-    ) -> Result<Response<Application<'static>>, ConfigError<T>> {
-        self.read(
-            "application",
-            json!({
-                "context_id": Repr::new(context_id),
-            }),
-        )
-        .await
-    }
-
-    pub async fn members(
-        &self,
-        context_id: ContextId,
-        offset: usize,
-        length: usize,
-    ) -> Result<Response<Vec<Repr<ContextIdentity>>>, ConfigError<T>> {
-        self.read(
-            "members",
-            json!({
-                "context_id": Repr::new(context_id),
-                "offset": offset,
-                "length": length,
-            }),
-        )
-        .await
-    }
-
-    pub async fn privileges(
-        &self,
-        context_id: ContextId,
-        identities: &[ContextIdentity],
-    ) -> Result<Response<BTreeMap<Repr<SignerId>, Vec<Capability>>>, ConfigError<T>> {
-        let identities = unsafe {
-            &*(ptr::from_ref::<[ContextIdentity]>(identities) as *const [Repr<ContextIdentity>])
-        };
-
-        self.read(
-            "privileges",
-            json!({
-                "context_id": Repr::new(context_id),
-                "identities": identities,
-            }),
-        )
-        .await
-    }
-}
-
-#[derive(Debug)]
-pub struct ContextConfigMutateClient<'a, T> {
-    protocol: Protocol,
-    network_id: Cow<'a, str>,
-    contract_id: Cow<'a, str>,
-    signer_id: SignerId,
-    transport: &'a T,
-}
-
-#[derive(Debug)]
-pub struct ClientRequest<'a, 'b, T> {
-    client: &'a ContextConfigMutateClient<'a, T>,
-    kind: RequestKind<'b>,
-}
-
-impl<T: Transport> ClientRequest<'_, '_, T> {
-    pub async fn send<F: FnOnce(&[u8]) -> Signature>(self, sign: F) -> Result<(), ConfigError<T>> {
-        let signed = Signed::new(&Request::new(self.client.signer_id, self.kind), sign)?;
-
-        let request = TransportRequest {
-            protocol: self.client.protocol,
-            network_id: Cow::Borrowed(&self.client.network_id),
-            contract_id: Cow::Borrowed(&self.client.contract_id),
-            operation: Operation::Write {
-                method: Cow::Borrowed("mutate"),
-            },
-        };
-
-        let payload = serde_json::to_vec(&signed).map_err(|err| ConfigError::Other(err.into()))?;
-
-        let _unused = self
             .client
             .transport
             .send(request, payload)
             .await
             .map_err(ConfigError::Transport)?;
 
-        Ok(())
+        let response_decoded = M::decode(response.as_ref())?;
+
+        Ok(response_decoded)
+    }
+
+    async fn mutate<M: Method<P>, P>(&self, params: P) -> Result<M::Returns, Error> {
+        let payload = M::encode(&params).map_err(Error::from)?;
+
+        let request = TransportRequest {
+            protocol: self.protocol,
+            network_id: Cow::Borrowed(&self.network_id),
+            contract_id: Cow::Borrowed(&self.contract_id),
+            operation: Operation::Read {
+                method: Cow::Borrowed(M::METHOD),
+            },
+        };
+
+        let response = self
+            .client
+            .transport
+            .send(request, payload)
+            .await
+            .map_err(ConfigError::Transport)?;
+
+        let response_decoded = M::decode(response.as_ref())?;
+
+        Ok(response_decoded)
     }
 }
 
-impl<T: Transport> ContextConfigMutateClient<'_, T> {
-    #[must_use]
-    pub const fn add_context<'a>(
-        &self,
-        context_id: ContextId,
-        author_id: ContextIdentity,
-        application: Application<'a>,
-    ) -> ClientRequest<'_, 'a, T> {
-        let kind = RequestKind::Context(ContextRequest {
-            context_id: Repr::new(context_id),
-            kind: ContextRequestKind::Add {
-                author_id: Repr::new(author_id),
-                application,
-            },
-        });
-
-        ClientRequest { client: self, kind }
+impl<T> Client<T> {
+    pub fn query<'a, E: Environment<'a, T>>(
+        &'a self,
+        protocol: Protocol,
+        network_id: String,
+        contract_id: String,
+    ) -> E::Query {
+        E::query(CallClient {
+            protocol,
+            network_id,
+            contract_id,
+            client: self,
+        })
     }
 
-    #[must_use]
-    pub const fn update_application<'a>(
-        &self,
-        context_id: ContextId,
-        application: Application<'a>,
-    ) -> ClientRequest<'_, 'a, T> {
-        let kind = RequestKind::Context(ContextRequest {
-            context_id: Repr::new(context_id),
-            kind: ContextRequestKind::UpdateApplication { application },
-        });
-
-        ClientRequest { client: self, kind }
+    pub fn mutate<'a, E: Environment<'a, T>>(
+        &'a self,
+        protocol: Protocol,
+        network_id: String,
+        contract_id: String,
+    ) -> E::Mutate {
+        E::mutate(CallClient {
+            protocol,
+            network_id,
+            contract_id,
+            client: self,
+        })
     }
+}
 
-    #[must_use]
-    pub const fn add_members(
-        &self,
-        context_id: ContextId,
-        members: &[ContextIdentity],
-    ) -> ClientRequest<'_, 'static, T> {
-        let members = unsafe {
-            &*(ptr::from_ref::<[ContextIdentity]>(members) as *const [Repr<ContextIdentity>])
-        };
+trait Environment<'a, T> {
+    type Query;
+    type Mutate;
 
-        let kind = RequestKind::Context(ContextRequest {
-            context_id: Repr::new(context_id),
-            kind: ContextRequestKind::AddMembers {
-                members: Cow::Borrowed(members),
-            },
-        });
-
-        ClientRequest { client: self, kind }
-    }
-
-    #[must_use]
-    pub const fn remove_members(
-        &self,
-        context_id: ContextId,
-        members: &[ContextIdentity],
-    ) -> ClientRequest<'_, 'static, T> {
-        let members = unsafe {
-            &*(ptr::from_ref::<[ContextIdentity]>(members) as *const [Repr<ContextIdentity>])
-        };
-
-        let kind = RequestKind::Context(ContextRequest {
-            context_id: Repr::new(context_id),
-            kind: ContextRequestKind::RemoveMembers {
-                members: Cow::Borrowed(members),
-            },
-        });
-
-        ClientRequest { client: self, kind }
-    }
-
-    #[must_use]
-    pub const fn grant(
-        &self,
-        context_id: ContextId,
-        capabilities: &[(ContextIdentity, Capability)],
-    ) -> ClientRequest<'_, 'static, T> {
-        let capabilities = unsafe {
-            &*(ptr::from_ref::<[(ContextIdentity, Capability)]>(capabilities)
-                as *const [(Repr<ContextIdentity>, Capability)])
-        };
-
-        let kind = RequestKind::Context(ContextRequest {
-            context_id: Repr::new(context_id),
-            kind: ContextRequestKind::Grant {
-                capabilities: Cow::Borrowed(capabilities),
-            },
-        });
-
-        ClientRequest { client: self, kind }
-    }
-
-    #[must_use]
-    pub const fn revoke(
-        &self,
-        context_id: ContextId,
-        capabilities: &[(ContextIdentity, Capability)],
-    ) -> ClientRequest<'_, 'static, T> {
-        let capabilities = unsafe {
-            &*(ptr::from_ref::<[(ContextIdentity, Capability)]>(capabilities)
-                as *const [(Repr<ContextIdentity>, Capability)])
-        };
-
-        let kind = RequestKind::Context(ContextRequest {
-            context_id: Repr::new(context_id),
-            kind: ContextRequestKind::Revoke {
-                capabilities: Cow::Borrowed(capabilities),
-            },
-        });
-
-        ClientRequest { client: self, kind }
-    }
+    fn query(client: CallClient<'a, T>) -> Self::Query;
+    fn mutate(client: CallClient<'a, T>) -> Self::Mutate;
 }

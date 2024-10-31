@@ -5,8 +5,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
-use calimero_context_config::client::config::ContextConfigClientConfig;
-use calimero_context_config::client::{AnyTransport, ContextConfigClient};
+use calimero_context_config::client::config::ClientConfig;
+use calimero_context_config::client::{AnyTransport, Client};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
@@ -38,7 +38,7 @@ use eyre::{bail, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use reqwest::{Client, Url};
+use reqwest::{Client as ReqClient, Url};
 use tokio::fs::File;
 use tokio::sync::{oneshot, RwLock};
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -51,8 +51,8 @@ use config::ContextConfig;
 #[derive(Clone, Debug)]
 pub struct ContextManager {
     store: Store,
-    client_config: ContextConfigClientConfig,
-    config_client: ContextConfigClient<AnyTransport>,
+    client_config: ClientConfig,
+    config_client: Client<AnyTransport>,
     blob_manager: BlobManager,
     network_client: NetworkClient,
     server_sender: ServerSender,
@@ -73,7 +73,7 @@ impl ContextManager {
         network_client: NetworkClient,
     ) -> EyreResult<Self> {
         let client_config = config.client.clone();
-        let config_client = ContextConfigClient::from_config(&client_config);
+        let config_client = Client::from_config(&client_config);
 
         let this = Self {
             store,
@@ -206,7 +206,6 @@ impl ContextManager {
                     this.client_config.new.protocol,
                     this.client_config.new.network.as_str().into(),
                     this.client_config.new.contract_id.as_str().into(),
-                    context.id.rt().expect("infallible conversion"),
                 )
                 .add_context(
                     context.id.rt().expect("infallible conversion"),
@@ -418,7 +417,6 @@ impl ContextManager {
                 context_config.protocol.parse()?,
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
-                inviter_id.rt().expect("infallible conversion"),
             )
             .add_members(
                 context_id.rt().expect("infallible conversion"),
@@ -771,7 +769,7 @@ impl ContextManager {
     ) -> EyreResult<ApplicationId> {
         let uri = url.as_str().parse()?;
 
-        let response = Client::new().get(url).send().await?;
+        let response = ReqClient::new().get(url).send().await?;
 
         let expected_size = response.content_length();
 

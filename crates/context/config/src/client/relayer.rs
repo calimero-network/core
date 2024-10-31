@@ -3,8 +3,8 @@ use std::borrow::Cow;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::config::Protocol;
 use super::{Operation, Transport, TransportRequest};
+use crate::client::Protocol;
 
 #[derive(Debug)]
 #[non_exhaustive]

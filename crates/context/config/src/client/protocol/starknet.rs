@@ -1,5 +1,3 @@
-#![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
-
 use core::str::FromStr;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -14,7 +12,10 @@ use starknet::providers::{JsonRpcClient, Provider, Url};
 use starknet::signers::{LocalWallet, SigningKey};
 use thiserror::Error;
 
-use super::{Operation, Transport, TransportRequest};
+use super::{private, Starknet};
+use crate::client::{Operation, Transport, TransportRequest};
+
+impl private::Protocol for Starknet {}
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]

@@ -1,5 +1,3 @@
-#![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
-
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time;
@@ -26,7 +24,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use super::{Operation, Transport, TransportRequest};
+use super::{private, Near};
+use crate::client::{Operation, Transport, TransportRequest};
+
+impl private::Protocol for Near {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]
