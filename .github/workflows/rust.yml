@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
+        with:
+          build-mount-path: /home/runner
       
       - name: Checkout code
         uses: actions/checkout@v4
