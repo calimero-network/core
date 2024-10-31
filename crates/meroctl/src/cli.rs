@@ -92,6 +92,7 @@ impl RootCommand {
                 Err(err) => CliError::Other(err),
             };
             environment.output.write(&err);
+            return Err(err);
         }
 
         return Ok(());
