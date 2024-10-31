@@ -1,6 +1,6 @@
 use calimero_context_config::repr::ReprTransmute;
 use common::{
-    config_helper::ConfigContractHelper, counter_helper::CounterContracttHelper,
+    config_helper::ConfigContractHelper, counter_helper::CounterContractHelper,
     create_account_with_balance, proxy_lib_helper::ProxyContractHelper,
 };
 use ed25519_dalek::SigningKey;
@@ -266,7 +266,7 @@ async fn test_execute_proposal() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
-    let counter_helper = CounterContracttHelper::deploy_and_initialize(&worker).await?;
+    let counter_helper = CounterContractHelper::deploy_and_initialize(&worker).await?;
 
     let counter_value: u32 = counter_helper.get_value().await?;
     assert_eq!(
@@ -404,7 +404,7 @@ async fn test_combined_proposals() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
-    let counter_helper = CounterContracttHelper::deploy_and_initialize(&worker).await?;
+    let counter_helper = CounterContractHelper::deploy_and_initialize(&worker).await?;
 
     let initial_counter_value: u32 = counter_helper.get_value().await?;
     assert_eq!(initial_counter_value, 0, "Counter should start at zero");
@@ -451,7 +451,7 @@ async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
     let worker = near_workspaces::sandbox().await?;
     let (proxy_helper, relayer_account, members) = setup_action_test(&worker).await?;
 
-    let counter_helper = CounterContracttHelper::deploy_and_initialize(&worker).await?;
+    let counter_helper = CounterContractHelper::deploy_and_initialize(&worker).await?;
 
     let initial_active_proposals_limit: u32 = proxy_helper
         .view_active_proposals_limit(&relayer_account)

@@ -6,11 +6,11 @@ use super::deploy_contract;
 const COUNTER_WASM: &str = "../test-counter/res/test_counter_near.wasm";
 
 #[derive(Clone)]
-pub struct CounterContracttHelper {
+pub struct CounterContractHelper {
     pub counter_contract: Contract,
 }
 
-impl CounterContracttHelper {
+impl CounterContractHelper {
     pub async fn deploy_and_initialize(worker: &Worker<Sandbox>) -> Result<Self> {
         let counter_contract = deploy_contract(worker, COUNTER_WASM).await?;
 
