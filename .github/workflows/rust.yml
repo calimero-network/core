@@ -24,11 +24,14 @@ jobs:
 
       - name: Relocate environment
         run: |
+          which rustup
           mkdir .home
           mv ~/.cargo .home/
           mv ~/.rustup .home/
           echo "$PWD/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
           cat $GITHUB_PATH
+          which rustup
+          ls "$PWD/.home/.cargo/bin"
         
       - name: Check environment
         run: |
