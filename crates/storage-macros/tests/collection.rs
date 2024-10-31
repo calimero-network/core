@@ -134,7 +134,7 @@ mod hashing {
         _ = child.set_content("Child Content".to_owned());
 
         let mut hasher = Sha256::new();
-        hasher.update(child.id().as_bytes());
+        hasher.update(child.id().bytes);
         hasher.update(&to_vec(&child.content).unwrap());
         hasher.update(&to_vec(&child.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();
@@ -148,7 +148,7 @@ mod hashing {
         _ = parent.set_title("Parent Title".to_owned());
 
         let mut hasher = Sha256::new();
-        hasher.update(parent.id().as_bytes());
+        hasher.update(parent.id().bytes);
         hasher.update(&to_vec(&parent.title).unwrap());
         hasher.update(&to_vec(&parent.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();

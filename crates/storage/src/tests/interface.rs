@@ -50,7 +50,7 @@ mod interface__public_methods {
 
     #[test]
     fn find_by_id__non_existent() {
-        assert_none!(Interface::find_by_id::<Page>(Id::new()).unwrap());
+        assert_none!(Interface::find_by_id::<Page>(Id::default()).unwrap());
     }
 
     #[test]

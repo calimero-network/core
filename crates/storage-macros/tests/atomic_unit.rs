@@ -250,7 +250,7 @@ mod hashing {
         _ = unit.set_private("Private".to_owned());
 
         let mut hasher = Sha256::new();
-        hasher.update(unit.id().as_bytes());
+        hasher.update(unit.id().bytes);
         hasher.update(&to_vec(&unit.public).unwrap());
         hasher.update(&to_vec(&unit.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();
@@ -273,7 +273,7 @@ mod hashing {
         _ = unit.set_value(42);
 
         let mut hasher = Sha256::new();
-        hasher.update(unit.id().as_bytes());
+        hasher.update(unit.id().bytes);
         hasher.update(&to_vec(&unit.name).unwrap());
         hasher.update(&to_vec(&unit.value).unwrap());
         hasher.update(&to_vec(&unit.element().metadata()).unwrap());
@@ -293,7 +293,7 @@ mod hashing {
         unit.skipped = "Skipped".to_owned();
 
         let mut hasher = Sha256::new();
-        hasher.update(unit.id().as_bytes());
+        hasher.update(unit.id().bytes);
         hasher.update(&to_vec(&unit.included).unwrap());
         hasher.update(&to_vec(&unit.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();

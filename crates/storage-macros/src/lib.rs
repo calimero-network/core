@@ -352,7 +352,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
             fn calculate_merkle_hash(&self) -> Result<[u8; 32], calimero_storage::interface::StorageError> {
                 use calimero_storage::exports::Digest;
                 let mut hasher = calimero_storage::exports::Sha256::new();
-                hasher.update(self.element().id().as_bytes());
+                hasher.update(self.element().id().bytes);
                 #(
                     hasher.update(
                         &calimero_sdk::borsh::to_vec(&self.#regular_fields)
