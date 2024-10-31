@@ -7,11 +7,12 @@ on:
     branches: ['master']
 
 env:
-  CARGO_HOME: ${{ github.workspace }}/.home/.cargo
-  RUSTUP_HOME: ${{ github.workspace }}/.home/.rustup
-  PNPM_HOME: ${{ github.workspace }}/.home/.pnpm
   CARGO_TERM_COLOR: always
-  WORKSPACE_PARENT: ''
+  CARGO_HOME:
+  RUSTUP_HOME:
+  PNPM_HOME:
+  ALT_HOME:
+  STAGE_DIR:
 
 jobs:
   setup:
@@ -19,20 +20,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Prepare
-        run: echo "WORKSPACE_PARENT=$(dirname $GITHUB_WORKSPACE)" >> $GITHUB_ENV
+        run: |
+          export STAGE_DIR=$(dirname $GITHUB_WORKSPACE)
+          echo "STAGE_DIR=$STAGE_DIR" >> $GITHUB_ENV
+          export ALT_HOME="$STAGE_DIR/.home"
+          echo "ALT_HOME=$ALT_HOME" >> $GITHUB_ENV
+          mkdir -p $ALT_HOME
       
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
-          build-mount-path: ${{ env.WORKSPACE_PARENT }}
+          build-mount-path: ${{ env.STAGE_DIR }}
           root-reserve-mb: 4096
 
       - name: Relocate environment
         run: |
-          mkdir .home
-          mv ~/.cargo .home/
-          mv ~/.rustup .home/
-          echo "$PWD/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
+          echo "CARGO_HOME=$ALT_HOME/.cargo" >> $GITHUB_ENV
+          echo "RUSTUP_HOME=$ALT_HOME/.rustup" >> $GITHUB_ENV
+          echo "PNPM_HOME=$ALT_HOME/.pnpm" >> $GITHUB_ENV
+          
+          mv ~/.cargo $CARGO_HOME
+          mv ~/.rustup $RUSTUP_HOME
+          echo "$CARGO_HOME/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
 
       - name: Checkout code
         uses: actions/checkout@v4
