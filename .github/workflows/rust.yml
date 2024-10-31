@@ -33,9 +33,9 @@ jobs:
           echo "$PWD/.home/.cargo/bin" | cat - $GITHUB_PATH > temp && mv temp $GITHUB_PATH
           cat $GITHUB_PATH
           echo "done.., testing"
-          which rustup
           ls "$PWD/.home"
           ls "$PWD/.home/.cargo"
+          which rustup
         
       - name: Check environment
         run: |
