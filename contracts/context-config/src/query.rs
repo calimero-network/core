@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{
-    Application, Capability, ContextId, ContextIdentity, SignerId,
+    Application, Capability, ContextId, ContextIdentity, SignerId
 };
 use near_sdk::near;
 
@@ -90,5 +90,13 @@ impl ContextConfigs {
         }
 
         privileges
+    }
+
+    pub fn fetch_nonce(&self, member_id: Repr<ContextIdentity>, context_id: Repr<ContextId>) -> Option<&u64> {
+        let context = self
+            .contexts
+            .get(&context_id)
+            .expect("context does not exist");
+        context.member_nonces.get(&member_id)
     }
 }

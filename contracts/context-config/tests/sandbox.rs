@@ -1,16 +1,42 @@
 #![allow(unused_crate_dependencies)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
-use calimero_context_config::types::{Application, Capability, ContextIdentity, Signed, SignerId};
+use calimero_context_config::types::{Application, Capability, ContextId, ContextIdentity, Signed, SignerId};
 use calimero_context_config::{
     ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
+use near_workspaces::{Account, Contract};
 use rand::Rng;
 use serde_json::json;
 use tokio::{fs, time};
+
+#[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
+enum Member {
+    Alice,
+    Bob,
+    Carol,
+}
+
+impl Member {
+    fn all() -> &'static [Member] {
+        &[Member::Alice, Member::Bob, Member::Carol]
+    }
+}
+
+async fn fetch_nonce(contract: &Contract, context_id: Repr<ContextId>, member_pk: Repr<ContextIdentity>)-> eyre::Result<Option<u64>> {
+    let res: Option<u64> = contract
+    .view("fetch_nonce")
+    .args_json(json!({
+        "context_id": context_id,
+        "member_id": member_pk,
+    }))
+    .await?
+    .json()?;
+    Ok(res)
+}
 
 #[tokio::test]
 async fn main() -> eyre::Result<()> {
@@ -53,6 +79,11 @@ async fn main() -> eyre::Result<()> {
 
     let application_id = rng.gen::<[_; 32]>().rt()?;
     let blob_id = rng.gen::<[_; 32]>().rt()?;
+
+    let mut nonces: HashMap<Member, u64> = Member::all()
+    .iter()
+    .map(|&member| (member, 1))
+    .collect();
 
     let res = node1
         .call(contract.id(), "mutate")
@@ -201,6 +232,7 @@ async fn main() -> eyre::Result<()> {
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
                     ContextRequestKind::AddMembers {
+                        nonce: *nonces.get(&Member::Alice).unwrap(),
                         members: vec![bob_cx_id].into(),
                     },
                 ));
@@ -220,6 +252,8 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         ),]
     );
+    assert_eq!(fetch_nonce(&contract, context_id, alice_cx_id).await?.unwrap(), 1, "sssss");
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res: Vec<Repr<ContextIdentity>> = contract
         .view("members")
@@ -257,6 +291,7 @@ async fn main() -> eyre::Result<()> {
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
                     ContextRequestKind::AddMembers {
+                        nonce: *nonces.get(&Member::Bob).unwrap(),
                         members: vec![carol_cx_id].into(),
                     },
                 ));
@@ -286,6 +321,7 @@ async fn main() -> eyre::Result<()> {
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
                     ContextRequestKind::Grant {
+                        nonce: *nonces.get(&Member::Alice).unwrap(),
                         capabilities: (vec![(bob_cx_id, Capability::ManageMembers)]).into(),
                     },
                 ));
@@ -305,6 +341,9 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         )]
     );
+    assert_eq!(fetch_nonce(&contract, context_id, alice_cx_id).await?.unwrap(), 2, "sssss");
+
+    *nonces.entry(Member::Bob).or_insert(0) += 1;
 
     let res = node1
         .call(contract.id(), "mutate")
@@ -313,6 +352,7 @@ async fn main() -> eyre::Result<()> {
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
                     ContextRequestKind::AddMembers {
+                        nonce: *nonces.get(&Member::Bob).unwrap(),
                         members: vec![carol_cx_id].into(),
                     },
                 ));
@@ -324,6 +364,9 @@ async fn main() -> eyre::Result<()> {
         .transact()
         .await?
         .into_result()?;
+    assert_eq!(fetch_nonce(&contract, context_id, bob_cx_id).await?.unwrap(), 2, "sssss");
+
+    *nonces.entry(Member::Bob).or_insert(0) += 1;
 
     assert_eq!(
         res.logs(),
@@ -383,6 +426,7 @@ async fn main() -> eyre::Result<()> {
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
                     ContextRequestKind::UpdateApplication {
+                        nonce: *nonces.get(&Member::Bob).unwrap(),
                         application: Application::new(
                             new_application_id,
                             new_blob_id,
@@ -423,6 +467,9 @@ async fn main() -> eyre::Result<()> {
     assert_eq!(res.source, Default::default());
     assert_eq!(res.metadata, Default::default());
 
+    assert_eq!(fetch_nonce(&contract, context_id, alice_cx_id).await?.unwrap(), 2, "sssss");
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
+
     let res = node1
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
@@ -430,6 +477,7 @@ async fn main() -> eyre::Result<()> {
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
                     ContextRequestKind::UpdateApplication {
+                        nonce: *nonces.get(&Member::Alice).unwrap(),
                         application: Application::new(
                             new_application_id,
                             new_blob_id,
@@ -455,6 +503,7 @@ async fn main() -> eyre::Result<()> {
             context_id, application_id, new_application_id
         )]
     );
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res = contract
         .view("application")
@@ -475,6 +524,7 @@ async fn main() -> eyre::Result<()> {
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
                     ContextRequestKind::RemoveMembers {
+                        nonce: *nonces.get(&Member::Alice).unwrap(),
                         members: vec![bob_cx_id].into(),
                     },
                 ));
@@ -494,6 +544,8 @@ async fn main() -> eyre::Result<()> {
             bob_cx_id, context_id
         )]
     );
+    assert_eq!(fetch_nonce(&contract, context_id, alice_cx_id).await?.unwrap(), 4, "sssss");
+    *nonces.entry(Member::Alice).or_insert(0) += 1;
 
     let res: BTreeMap<Repr<SignerId>, Vec<Capability>> = contract
         .view("privileges")
@@ -545,6 +597,7 @@ async fn main() -> eyre::Result<()> {
             let kind = RequestKind::Context(ContextRequest::new(
                 context_id,
                 ContextRequestKind::RemoveMembers {
+                    nonce: *nonces.get(&Member::Alice).unwrap(),
                     members: vec![carol_cx_id].into(),
                 },
             ));
@@ -581,7 +634,7 @@ async fn main() -> eyre::Result<()> {
 
     let state = contract.view_state().await?;
 
-    assert_eq!(state.len(), 11);
+    assert_eq!(state.len(), 15);
 
     let res = contract
         .call("erase")

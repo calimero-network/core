@@ -331,7 +331,7 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
     ) -> ClientRequest<'_, 'a, T> {
         let kind = RequestKind::Context(ContextRequest {
             context_id: Repr::new(context_id),
-            kind: ContextRequestKind::UpdateApplication { application },
+            kind: ContextRequestKind::UpdateApplication { application, nonce: 0 },
         });
 
         ClientRequest { client: self, kind }
@@ -351,6 +351,7 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             context_id: Repr::new(context_id),
             kind: ContextRequestKind::AddMembers {
                 members: Cow::Borrowed(members),
+                nonce: 0
             },
         });
 
@@ -371,6 +372,7 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             context_id: Repr::new(context_id),
             kind: ContextRequestKind::RemoveMembers {
                 members: Cow::Borrowed(members),
+                nonce: 0,
             },
         });
 
@@ -392,6 +394,7 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             context_id: Repr::new(context_id),
             kind: ContextRequestKind::Grant {
                 capabilities: Cow::Borrowed(capabilities),
+                nonce: 0
             },
         });
 
@@ -413,9 +416,21 @@ impl<T: Transport> ContextConfigMutateClient<'_, T> {
             context_id: Repr::new(context_id),
             kind: ContextRequestKind::Revoke {
                 capabilities: Cow::Borrowed(capabilities),
+                nonce: 0,
             },
         });
 
         ClientRequest { client: self, kind }
     }
+
+    // #[must_use]
+    // pub const fn get_member_nonce(
+    //     &self,
+    //     context_id: ContextId,
+    //     member: &ContextIdentity,
+    // ) -> ClientRequest<'_, 'static, T> {
+    //     Net
+
+    //     ClientRequest { client: self, kind }
+    // }
 }

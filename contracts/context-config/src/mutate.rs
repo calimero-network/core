@@ -7,12 +7,12 @@ use core::{mem, time};
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
-    Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
+    Application, Capability, ContextId, ContextIdentity, Signed, SignerId
 };
 use calimero_context_config::{
     ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest, Timestamp,
 };
-use near_sdk::store::IterableSet;
+use near_sdk::store::{IterableMap, IterableSet};
 use near_sdk::{env, near, require, serde_json};
 
 use super::{
@@ -60,9 +60,10 @@ impl ContextConfigs {
 
         env::log_str("Erasing contract");
 
-        for (_, context) in self.contexts.drain() {
+        for (_, mut context) in self.contexts.drain() {
             drop(context.application.into_inner());
             context.members.into_inner().clear();
+            context.member_nonces.clear();
         }
 
         env::log_str(&format!(
@@ -94,19 +95,24 @@ impl ContextConfigs {
                 } => {
                     self.add_context(&request.signer_id, context_id, author_id, application);
                 }
-                ContextRequestKind::UpdateApplication { application } => {
+                ContextRequestKind::UpdateApplication { nonce, application } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.update_application(&request.signer_id, context_id, application);
                 }
-                ContextRequestKind::AddMembers { members } => {
+                ContextRequestKind::AddMembers { nonce, members } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.add_members(&request.signer_id, context_id, members.into_owned());
                 }
-                ContextRequestKind::RemoveMembers { members } => {
+                ContextRequestKind::RemoveMembers { nonce, members } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.remove_members(&request.signer_id, context_id, members.into_owned());
                 }
-                ContextRequestKind::Grant { capabilities } => {
+                ContextRequestKind::Grant { nonce, capabilities } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.grant(&request.signer_id, context_id, capabilities.into_owned());
                 }
-                ContextRequestKind::Revoke { capabilities } => {
+                ContextRequestKind::Revoke { nonce, capabilities } => {
+                    self.check_and_increment_nonce(&nonce, &request.signer_id, context_id);
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
             },
@@ -153,6 +159,7 @@ impl ContextConfigs {
                 author_id.rt().expect("infallible conversion"),
                 members,
             ),
+            member_nonces: IterableMap::new(b"n"),
         };
 
         if self.contexts.insert(*context_id, context).is_some() {
@@ -160,6 +167,17 @@ impl ContextConfigs {
         }
 
         env::log_str(&format!("Context `{context_id}` added"));
+    }
+
+    fn check_and_increment_nonce(&mut self, nonce: &u64, signer_id: &SignerId, context_id: Repr<ContextId>) {
+        let context: &mut Context = self
+            .contexts
+            .get_mut(&context_id)
+            .expect("context does not exist");
+        let context_identity: ContextIdentity = signer_id.rt().expect("Infallible");
+        let current_nonce = context.member_nonces.get(&context_identity).unwrap_or(&0);
+        require!(current_nonce < nonce, "invalid nonce");
+        let _ = context.member_nonces.insert(context_identity, nonce.clone());
     }
 
     fn update_application(
