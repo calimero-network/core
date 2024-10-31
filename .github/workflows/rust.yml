@@ -44,6 +44,7 @@ jobs:
         run: |
           echo $PATH
           which rustup
+          rustup --version
 
       - name: Checkout code
         uses: actions/checkout@v4
