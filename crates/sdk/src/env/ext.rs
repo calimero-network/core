@@ -98,11 +98,16 @@ impl DraftProposal {
     /// Finalise the proposal and send it to the blockchain.
     #[must_use]
     pub fn send(self) -> ProposalId {
-        #[expect(unused_mut, reason = "Needed by the unsafe code")]
         let mut buf = [0; 32];
         let actions = to_vec(&self.actions).unwrap();
 
-        unsafe { sys::send_proposal(Buffer::from(actions.as_slice()), BufferMut::new(buf)) }
+        #[expect(
+            clippy::needless_borrows_for_generic_args,
+            reason = "We don't want to copy the buffer, but write to the same one that's returned"
+        )]
+        unsafe {
+            sys::send_proposal(Buffer::from(&*actions), BufferMut::new(&mut buf))
+        }
 
         ProposalId(buf)
     }
