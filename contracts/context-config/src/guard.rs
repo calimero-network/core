@@ -1,7 +1,7 @@
 use core::ops::{Deref, DerefMut};
 use std::fmt;
 
-use calimero_context_config::types::SignerId;
+use calimero_context_config::types::{Revision, SignerId};
 use near_sdk::near;
 use near_sdk::store::IterableSet;
 
@@ -11,6 +11,7 @@ use super::Prefix;
 #[near(serializers = [borsh])]
 pub struct Guard<T> {
     inner: T,
+    revision: Revision,
     priviledged: IterableSet<SignerId>,
 }
 
@@ -36,15 +37,19 @@ impl<T> Guard<T> {
         let mut priviledged = IterableSet::new(prefix);
         let _ = priviledged.insert(signer_id);
 
-        Self { inner, priviledged }
+        Self {
+            inner,
+            revision: 0,
+            priviledged,
+        }
     }
 
-    pub fn get_mut(&mut self, signer_id: &SignerId) -> Result<GuardMut<'_, T>, UnauthorizedAccess> {
+    pub fn get(&mut self, signer_id: &SignerId) -> Result<GuardHandle<'_, T>, UnauthorizedAccess> {
         if !self.priviledged.contains(signer_id) {
             return Err(UnauthorizedAccess { _priv: () });
         }
 
-        Ok(GuardMut { inner: self })
+        Ok(GuardHandle { inner: self })
     }
 
     pub fn into_inner(self) -> T {
@@ -62,6 +67,10 @@ impl<T> Guard<T> {
             inner: &mut self.priviledged,
         }
     }
+
+    pub const fn revision(&self) -> Revision {
+        self.revision
+    }
 }
 
 impl<T> Deref for Guard<T> {
@@ -73,15 +82,28 @@ impl<T> Deref for Guard<T> {
 }
 
 #[derive(Debug)]
+pub struct GuardHandle<'a, T> {
+    inner: &'a mut Guard<T>,
+}
+
+impl<'a, T> GuardHandle<'a, T> {
+    pub fn get_mut(self) -> GuardMut<'a, T> {
+        GuardMut { inner: self.inner }
+    }
+
+    pub fn priviledges(&mut self) -> Priviledges<'_> {
+        self.inner.priviledges()
+    }
+}
+
+#[derive(Debug)]
 pub struct GuardMut<'a, T> {
     inner: &'a mut Guard<T>,
 }
 
 impl<T> GuardMut<'_, T> {
     pub fn priviledges(&mut self) -> Priviledges<'_> {
-        Priviledges {
-            inner: &mut self.inner.priviledged,
-        }
+        self.inner.priviledges()
     }
 }
 
@@ -96,6 +118,12 @@ impl<T> Deref for GuardMut<'_, T> {
 impl<T> DerefMut for GuardMut<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner.inner
+    }
+}
+
+impl<T> Drop for GuardMut<'_, T> {
+    fn drop(&mut self) {
+        self.inner.revision = self.inner.revision.wrapping_add(1);
     }
 }
 
