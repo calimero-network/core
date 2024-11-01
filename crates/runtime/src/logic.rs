@@ -2,6 +2,7 @@
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
 use core::num::NonZeroU64;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::from_slice as from_borsh_slice;
@@ -108,7 +109,7 @@ pub struct VMLogic<'a> {
     events: Vec<Event>,
     actions: Vec<Vec<u8>>,
     root_hash: Option<[u8; 32]>,
-    proposals: Vec<Vec<u8>>,
+    proposals: BTreeMap<[u8; 32], Vec<u8>>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -124,7 +125,7 @@ impl<'a> VMLogic<'a> {
             events: vec![],
             actions: vec![],
             root_hash: None,
-            proposals: vec![],
+            proposals: BTreeMap::new(),
         }
     }
 
@@ -569,17 +570,23 @@ impl VMHostFunctions<'_> {
     ///
     /// # Parameters
     ///
-    /// * `ptr` - Pointer to the start of the action data in WASM memory.
-    /// * `len` - Length of the action data.
+    /// * `actions_ptr` - Pointer to the start of the action data in WASM
+    ///                   memory.
+    /// * `actions_len` - Length of the action data.
+    /// * `actions_ptr` - Pointer to the start of the id data in WASM memory.
+    ///                   This should always be exactly 32 bytes in length.
     ///
-    // TODO: The u64 below will need to become a ProposalId or similar, once
-    // TODO: available.
-    pub fn send_proposal(&mut self, ptr: u64, len: u64) -> VMLogicResult<u64> {
-        let actions_bytes: Vec<u8> = self.read_guest_memory(ptr, len)?;
-
-        self.with_logic_mut(|logic| logic.proposals.push(actions_bytes));
-
-        // TODO: It's not clear how this ProposalID will be obtained...
-        Ok(0)
+    pub fn send_proposal(
+        &mut self,
+        actions_ptr: u64,
+        actions_len: u64,
+        id_ptr: u64,
+    ) -> VMLogicResult<()> {
+        let actions_bytes: Vec<u8> = self.read_guest_memory(actions_ptr, actions_len)?;
+        let mut proposal_id = [0; 32];
+        rand::thread_rng().fill_bytes(&mut proposal_id);
+        drop(self.with_logic_mut(|logic| logic.proposals.insert(proposal_id, actions_bytes)));
+        self.borrow_memory().write(id_ptr, &proposal_id)?;
+        Ok(())
     }
 }
