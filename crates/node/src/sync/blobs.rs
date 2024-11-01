@@ -1,19 +1,19 @@
 use calimero_network::stream::Stream;
-use calimero_primitives::{blobs::BlobId, context::Context, identity::PublicKey};
+use calimero_primitives::blobs::BlobId;
+use calimero_primitives::context::Context;
+use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use futures_util::stream::poll_fn;
 use futures_util::TryStreamExt;
 use libp2p::PeerId;
-use rand::{seq::IteratorRandom, thread_rng};
+use rand::seq::IteratorRandom;
+use rand::thread_rng;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::{
-    types::{InitPayload, MessagePayload, StreamMessage},
-    Node,
-};
-
 use super::{recv, send, Sequencer};
+use crate::types::{InitPayload, MessagePayload, StreamMessage};
+use crate::Node;
 
 impl Node {
     pub async fn initiate_blob_share_process(

@@ -1,31 +1,17 @@
-use std::cell::{RefCell, RefMut};
-use std::io::{Error as StdIoError, ErrorKind as StdIoErrorKind};
-use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Duration;
 
 use calimero_network::stream::{Message, Stream};
-use calimero_primitives::application::Application;
-use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::{Context, ContextId};
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::context::ContextId;
 use eyre::{bail, Result as EyreResult};
-use futures_util::io::BufReader;
-use futures_util::stream::poll_fn;
-use futures_util::{SinkExt, StreamExt, TryStreamExt};
+use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
-use rand::seq::{IteratorRandom, SliceRandom};
+use rand::seq::SliceRandom;
 use rand::thread_rng;
-use serde::{Deserialize, Serialize};
-use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
-use tokio::spawn;
-use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tracing::{debug, error, info, warn};
-use url::Url;
+use tracing::{debug, error};
 
-use crate::types::{InitPayload, MessagePayload, StreamMessage};
+use crate::types::{InitPayload, StreamMessage};
 use crate::Node;
 
 mod blobs;
@@ -82,8 +68,9 @@ impl Sequencer {
 }
 
 impl Node {
+    // todo! whole process should be capped by a timeout
     async fn initiate_sync(&self, context_id: ContextId, chosen_peer: PeerId) -> EyreResult<()> {
-        let context = self.ctx_manager.sync_context_config(context_id).await?;
+        let mut context = self.ctx_manager.sync_context_config(context_id).await?;
 
         let Some(application) = self.ctx_manager.get_application(&context.application_id)? else {
             bail!("application not found: {}", context.application_id);
@@ -99,7 +86,8 @@ impl Node {
             .await?;
         }
 
-        self.initiate_state_sync_process(context, chosen_peer).await
+        self.initiate_state_sync_process(&mut context, chosen_peer)
+            .await
     }
 
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
@@ -192,6 +180,7 @@ impl Node {
     }
 
     pub async fn perform_interval_sync(&self) {
+        // todo! prioritize contexts we have peers connected
         let Some(context_id) = self.ctx_manager.get_any_pending_sync_context().await else {
             return;
         };

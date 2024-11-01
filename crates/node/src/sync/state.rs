@@ -1,58 +1,100 @@
-// use core::mem::take;
-
-// use calimero_network::stream::{Message, Stream};
-// use eyre::Result as EyreResult;
-// use futures_util::SinkExt;
-// use serde_json::to_vec as to_json_vec;
-
-// use crate::types::{ActionMessage, BlobError, CatchupActionsBatch, DirectMessage};
-
-// pub struct ActionsBatchSender {
-//     batch_size: u8,
-//     batch: Vec<ActionMessage>,
-//     stream: Box<Stream>,
-// }
-
-use std::{cell::RefCell, sync::Arc};
+use std::borrow::Cow;
 
 use calimero_network::stream::Stream;
+use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::Context;
-use calimero_primitives::{context::ContextId, hash::Hash, identity::PublicKey};
+use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::PublicKey;
 use eyre::bail;
 use libp2p::PeerId;
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
 use tracing::debug;
 
-use crate::sync::{send, Sequencer};
-use crate::types::{InitPayload, StreamMessage};
+use crate::sync::{recv, send, Sequencer};
+use crate::types::{InitPayload, MessagePayload, StreamMessage};
 use crate::Node;
 
 impl Node {
     pub async fn initiate_state_sync_process(
         &self,
-        context: Context,
+        context: &mut Context,
         chosen_peer: PeerId,
     ) -> eyre::Result<()> {
+        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+            bail!("no identities found for context: {}", context.id);
+        };
+
+        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+
+        send(
+            &mut stream,
+            &StreamMessage::Init {
+                context_id: context.id,
+                party_id: our_identity,
+                payload: InitPayload::StateSync {
+                    root_hash: context.root_hash,
+                    application_id: context.application_id,
+                },
+            },
+        )
+        .await?;
+
+        let Some(ack) = recv(&mut stream, self.sync_config.timeout).await? else {
+            bail!("no response to state sync request");
+        };
+
+        let (root_hash, their_identity) = match ack {
+            StreamMessage::Init {
+                party_id,
+                payload:
+                    InitPayload::StateSync {
+                        root_hash,
+                        application_id,
+                    },
+                ..
+            } => {
+                if application_id != context.application_id {
+                    bail!(
+                        "unexpected application id: expected {}, got {}",
+                        context.application_id,
+                        application_id
+                    );
+                }
+
+                (root_hash, party_id)
+            }
+            unexpected => bail!("unexpected message: {:?}", unexpected),
+        };
+
+        if root_hash == context.root_hash {
+            return Ok(());
+        }
+
+        let mut sqx_out = Sequencer::default();
+
+        send(
+            &mut stream,
+            &StreamMessage::Message {
+                sequence_id: sqx_out.next(),
+                payload: MessagePayload::StateSync {
+                    artifact: Cow::from(&[]),
+                },
+            },
+        );
+
+        self.bidirectional_sync(
+            context,
+            our_identity,
+            their_identity,
+            &mut sqx_out,
+            &mut stream,
+        )
+        .await?;
+
         Ok(())
-        // let mut stream = self.network_client.open_stream(chosen_peer).await?;
-
-        // let request = CatchupSyncRequest {
-        //     context_id: context.id,
-        //     root_hash: context.root_hash,
-        // };
-
-        // send(&mut stream, DirectMessage::SyncRequest(request))?;
-
-        // let mut sequencer = Sequencer::default();
-
-        // let mut actions_batch_sender = ActionsBatchSender::new(10, stream);
-
-        // for action in context.actions.iter() {
-        //     actions_batch_sender.send(action.clone()).await?;
-        // }
-
-        // actions_batch_sender.flush().await
     }
 
     pub async fn handle_state_sync_request(
@@ -94,75 +136,58 @@ impl Node {
             return Ok(());
         }
 
-        self.bidirectional_sync(context, our_identity, their_identity, stream)
-            .await
+        let mut sqx_out = Sequencer::default();
+
+        let mut context = context;
+        self.bidirectional_sync(
+            &mut context,
+            our_identity,
+            their_identity,
+            &mut sqx_out,
+            stream,
+        )
+        .await
+
+        // should we compare root hashes again?
     }
 
     async fn bidirectional_sync(
         &self,
-        context: Context,
+        context: &mut Context,
         our_identity: PublicKey,
         their_identity: PublicKey,
-        sequencer: &mut Sequencer,
+        sqx_out: &mut Sequencer,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
-        // debug!(
-        //     our_root_hash=%context.root_hash,
-        //     our_party_id=%party_id,
-        //     "Processing state sync request",
-        // );
+        debug!(
+            context_id=%context.id,
+            our_identity=%our_identity,
+            their_identity=%their_identity,
+            "Starting bidirectional sync",
+        );
+
+        let mut sqx_in = Sequencer::default();
+
+        while let Some(msg) = recv(stream, self.sync_config.timeout).await? {
+            let (sequence_id, artifact) = match msg {
+                StreamMessage::OpaqueError => bail!("other peer ran into an error"),
+                StreamMessage::Message {
+                    sequence_id,
+                    payload: MessagePayload::StateSync { artifact },
+                } => (sequence_id, artifact),
+                unexpected => bail!("unexpected message: {:?}", unexpected),
+            };
+
+            sqx_in.test(sequence_id)?;
+
+            let outcome = self.execute(
+                context,
+                "__calimero_sync_next",
+                artifact.into_owned(),
+                our_identity,
+            );
+        }
 
         Ok(())
     }
 }
-
-// impl ActionsBatchSender {
-//     pub(crate) fn new(batch_size: u8, stream: Box<Stream>) -> Self {
-//         Self {
-//             batch_size,
-//             batch: Vec::with_capacity(batch_size as usize),
-//             stream,
-//         }
-//     }
-
-//     pub(crate) async fn send(&mut self, action_message: ActionMessage) -> EyreResult<()> {
-//         self.batch.push(action_message);
-
-//         if self.batch.len() == self.batch_size as usize {
-//             let message = DirectMessage::ActionsBatch(CatchupActionsBatch {
-//                 actions: take(&mut self.batch),
-//             });
-
-//             let message = to_json_vec(&message)?;
-
-//             self.stream.send(Message::new(message)).await?;
-
-//             self.batch.clear();
-//         }
-
-//         Ok(())
-//     }
-
-//     pub(crate) async fn flush(&mut self) -> EyreResult<()> {
-//         if !self.batch.is_empty() {
-//             let message = DirectMessage::ActionsBatch(CatchupActionsBatch {
-//                 actions: take(&mut self.batch),
-//             });
-
-//             let message = to_json_vec(&message)?;
-
-//             self.stream.send(Message::new(message)).await?;
-//         }
-
-//         Ok(())
-//     }
-
-//     pub(crate) async fn flush_with_error(&mut self, error: BlobError) -> EyreResult<()> {
-//         self.flush().await?;
-
-//         let message = to_json_vec(&DirectMessage::Error(error))?;
-//         self.stream.send(Message::new(message)).await?;
-
-//         Ok(())
-//     }
-// }
