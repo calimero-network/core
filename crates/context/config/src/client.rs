@@ -18,8 +18,9 @@ use crate::{ContextRequest, ContextRequestKind, Request, RequestKind};
 pub mod config;
 pub mod near;
 pub mod relayer;
+pub mod starknet;
 
-use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner};
+use config::{ContextConfigClientConfig, ContextConfigClientSelectedSigner, Credentials, Protocol};
 
 pub trait Transport {
     type Error: CoreError;
@@ -50,6 +51,7 @@ impl<L: Transport, R: Transport> Transport for Either<L, R> {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct TransportRequest<'a> {
+    pub protocol: Protocol,
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,
     pub operation: Operation<'a>,
@@ -58,11 +60,13 @@ pub struct TransportRequest<'a> {
 impl<'a> TransportRequest<'a> {
     #[must_use]
     pub const fn new(
+        protocol: Protocol,
         network_id: Cow<'a, str>,
         contract_id: Cow<'a, str>,
         operation: Operation<'a>,
     ) -> Self {
         Self {
+            protocol,
             network_id,
             contract_id,
             operation,
@@ -88,36 +92,103 @@ impl<T: Transport> ContextConfigClient<T> {
     }
 }
 
-pub type RelayOrNearTransport = Either<relayer::RelayerTransport, near::NearTransport<'static>>;
+pub type AnyTransport = Either<
+    relayer::RelayerTransport,
+    BothTransport<near::NearTransport<'static>, starknet::StarknetTransport<'static>>,
+>;
 
-impl ContextConfigClient<RelayOrNearTransport> {
+#[expect(clippy::exhaustive_structs, reason = "this is exhaustive")]
+#[derive(Debug, Clone)]
+pub struct BothTransport<L, R> {
+    pub near: L,
+    pub starknet: R,
+}
+
+impl<L: Transport, R: Transport> Transport for BothTransport<L, R> {
+    type Error = Either<L::Error, R::Error>;
+
+    async fn send(
+        &self,
+        request: TransportRequest<'_>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, Self::Error> {
+        match request.protocol {
+            Protocol::Near => self.near.send(request, payload).await.map_err(Either::Left),
+            Protocol::Starknet => self
+                .starknet
+                .send(request, payload)
+                .await
+                .map_err(Either::Right),
+        }
+    }
+}
+
+impl ContextConfigClient<AnyTransport> {
     #[must_use]
     pub fn from_config(config: &ContextConfigClientConfig) -> Self {
         let transport = match config.signer.selected {
             ContextConfigClientSelectedSigner::Relayer => {
+                // If the selected signer is Relayer, use the Left variant.
                 Either::Left(relayer::RelayerTransport::new(&relayer::RelayerConfig {
                     url: config.signer.relayer.url.clone(),
                 }))
             }
-            ContextConfigClientSelectedSigner::Local => {
-                Either::Right(near::NearTransport::new(&near::NearConfig {
+
+            ContextConfigClientSelectedSigner::Local => Either::Right(BothTransport {
+                near: near::NearTransport::new(&near::NearConfig {
                     networks: config
                         .signer
                         .local
+                        .near
                         .iter()
                         .map(|(network, config)| {
+                            let (account_id, secret_key) = match &config.credentials {
+                                Credentials::Near(credentials) => (
+                                    credentials.account_id.clone(),
+                                    credentials.secret_key.clone(),
+                                ),
+                                Credentials::Starknet(_) => {
+                                    panic!("Expected Near credentials but got something else.")
+                                }
+                            };
                             (
                                 network.clone().into(),
                                 near::NetworkConfig {
                                     rpc_url: config.rpc_url.clone(),
-                                    account_id: config.credentials.account_id.clone(),
-                                    access_key: config.credentials.secret_key.clone(),
+                                    account_id,
+                                    access_key: secret_key,
                                 },
                             )
                         })
                         .collect(),
-                }))
-            }
+                }),
+                starknet: starknet::StarknetTransport::new(&starknet::StarknetConfig {
+                    networks: config
+                        .signer
+                        .local
+                        .starknet
+                        .iter()
+                        .map(|(network, config)| {
+                            let (account_id, secret_key) = match &config.credentials {
+                                Credentials::Starknet(credentials) => {
+                                    (credentials.account_id, credentials.secret_key)
+                                }
+                                Credentials::Near(_) => {
+                                    panic!("Expected Starknet credentials but got something else.")
+                                }
+                            };
+                            (
+                                network.clone().into(),
+                                starknet::NetworkConfig {
+                                    rpc_url: config.rpc_url.clone(),
+                                    account_id,
+                                    access_key: secret_key,
+                                },
+                            )
+                        })
+                        .collect(),
+                }),
+            }),
         };
 
         Self::new(transport)
@@ -127,10 +198,12 @@ impl ContextConfigClient<RelayOrNearTransport> {
 impl<T: Transport> ContextConfigClient<T> {
     pub const fn query<'a>(
         &'a self,
+        protocol: Protocol,
         network_id: Cow<'a, str>,
         contract_id: Cow<'a, str>,
     ) -> ContextConfigQueryClient<'a, T> {
         ContextConfigQueryClient {
+            protocol,
             network_id,
             contract_id,
             transport: &self.transport,
@@ -139,11 +212,13 @@ impl<T: Transport> ContextConfigClient<T> {
 
     pub const fn mutate<'a>(
         &'a self,
+        protocol: Protocol,
         network_id: Cow<'a, str>,
         contract_id: Cow<'a, str>,
         signer_id: SignerId,
     ) -> ContextConfigMutateClient<'a, T> {
         ContextConfigMutateClient {
+            protocol,
             network_id,
             contract_id,
             signer_id,
@@ -185,6 +260,7 @@ impl<T> Response<T> {
 
 #[derive(Debug)]
 pub struct ContextConfigQueryClient<'a, T> {
+    protocol: Protocol,
     network_id: Cow<'a, str>,
     contract_id: Cow<'a, str>,
     transport: &'a T,
@@ -199,6 +275,7 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
         let payload = serde_json::to_vec(&body).map_err(|err| ConfigError::Other(err.into()))?;
 
         let request = TransportRequest {
+            protocol: self.protocol,
             network_id: Cow::Borrowed(&self.network_id),
             contract_id: Cow::Borrowed(&self.contract_id),
             operation: Operation::Read {
@@ -267,6 +344,7 @@ impl<'a, T: Transport> ContextConfigQueryClient<'a, T> {
 
 #[derive(Debug)]
 pub struct ContextConfigMutateClient<'a, T> {
+    protocol: Protocol,
     network_id: Cow<'a, str>,
     contract_id: Cow<'a, str>,
     signer_id: SignerId,
@@ -284,6 +362,7 @@ impl<T: Transport> ClientRequest<'_, '_, T> {
         let signed = Signed::new(&Request::new(self.client.signer_id, self.kind), sign)?;
 
         let request = TransportRequest {
+            protocol: self.client.protocol,
             network_id: Cow::Borrowed(&self.client.network_id),
             contract_id: Cow::Borrowed(&self.client.contract_id),
             operation: Operation::Write {

@@ -1,36 +1,47 @@
-use calimero_config::ConfigFile;
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::jsonrpc::{
-    ExecuteRequest, Request, RequestId, RequestPayload, Version,
+    ExecuteRequest, Request, RequestId, RequestPayload, Response, Version,
 };
 use clap::{Parser, ValueEnum};
+use const_format::concatcp;
 use eyre::{bail, Result as EyreResult};
 use serde_json::Value;
 
-use super::RootArgs;
-use crate::common::{get_response, multiaddr_to_url, RequestType};
+use crate::cli::Environment;
+use crate::common::{do_request, load_config, multiaddr_to_url, RequestType};
+use crate::output::Report;
+
+pub const EXAMPLES: &str = r"
+  # Execute a RPC method call
+  $ meroctl -- --node-name node1 call <CONTEXT_ID> <METHOD>
+";
 
 #[derive(Debug, Parser)]
-pub struct JsonRpcCommand {
-    /// Type of method execute call
-    #[arg(long)]
-    pub call_type: CallType,
-
-    /// ContextId of the context we are using
-    #[arg(long)]
+#[command(about = "Executing read and write RPC calls")]
+#[command(after_help = concatcp!(
+    "Examples:",
+    EXAMPLES
+))]
+pub struct CallCommand {
+    #[arg(value_name = "CONTEXT_ID", help = "ContextId of the context")]
     pub context_id: ContextId,
 
-    /// Name of the method in the app
-    #[arg(long)]
+    #[arg(value_name = "METHOD", help = "Method to fetch details")]
     pub method: String,
 
-    /// Arguemnts to the method in the app
-    #[arg(long, default_value = "{}")]
+    #[arg(
+        long,
+        default_value = "{}",
+        help = "Arguments to the method in the app"
+    )]
     pub args_json: String,
 
-    /// Id of the JsonRpc execute call
-    #[arg(long, default_value = "dontcare")]
-    pub id: String,
+    #[arg(
+        long,
+        default_value = "dontcare",
+        help = "Id of the JsonRpc execute call"
+    )]
+    pub id: Option<String>,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -38,18 +49,18 @@ pub enum CallType {
     Execute,
 }
 
+impl Report for Response {
+    fn report(&self) {
+        println!("jsonrpc: {:#?}", self.jsonrpc);
+        println!("id: {:?}", self.id);
+        println!("result: {:#?}", self.body);
+    }
+}
+
 #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
-impl JsonRpcCommand {
-    pub async fn run(self, root_args: RootArgs) -> EyreResult<()> {
-        let path = root_args.home.join(&root_args.node_name);
-
-        if !ConfigFile::exists(&path) {
-            bail!("Config file does not exist")
-        };
-
-        let Ok(config) = ConfigFile::load(&path) else {
-            bail!("Failed to load config file")
-        };
+impl CallCommand {
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
 
         let Some(multiaddr) = config.network.server.listen.first() else {
             bail!("No address.")
@@ -59,23 +70,21 @@ impl JsonRpcCommand {
 
         let json_payload: Value = serde_json::from_str(&self.args_json)?;
 
-        let payload = match self.call_type {
-            CallType::Execute => RequestPayload::Execute(ExecuteRequest::new(
-                self.context_id,
-                self.method,
-                json_payload,
-                config
-                    .identity
-                    .public()
-                    .try_into_ed25519()?
-                    .to_bytes()
-                    .into(),
-            )),
-        };
+        let payload = RequestPayload::Execute(ExecuteRequest::new(
+            self.context_id,
+            self.method,
+            json_payload,
+            config
+                .identity
+                .public()
+                .try_into_ed25519()?
+                .to_bytes()
+                .into(),
+        ));
 
         let request = Request::new(
             Version::TwoPointZero,
-            Some(RequestId::String(self.id)),
+            self.id.map(RequestId::String),
             payload,
         );
 
@@ -85,7 +94,7 @@ impl JsonRpcCommand {
         }
 
         let client = reqwest::Client::new();
-        let response = get_response(
+        let response: Response = do_request(
             &client,
             url,
             Some(request),
@@ -94,7 +103,7 @@ impl JsonRpcCommand {
         )
         .await?;
 
-        println!("Response: {}", response.text().await?);
+        environment.output.write(&response);
 
         Ok(())
     }

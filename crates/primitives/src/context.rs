@@ -80,12 +80,13 @@ impl fmt::Debug for ContextInvitationPayload {
         {
             let is_alternate = f.alternate();
             let mut d = f.debug_struct("ContextInvitationPayload");
-            let (context_id, invitee_id, network, contract_id) =
+            let (context_id, invitee_id, protocol, network, contract_id) =
                 self.parts().map_err(|_| fmt::Error)?;
 
             _ = d
                 .field("context_id", &context_id)
                 .field("invitee_id", &invitee_id)
+                .field("protocol", &protocol)
                 .field("network", &network)
                 .field("contract_id", &contract_id);
 
@@ -145,6 +146,7 @@ const _: () = {
     struct InvitationPayload<'a> {
         context_id: [u8; 32],
         invitee_id: [u8; 32],
+        protocol: Cow<'a, str>,
         network: Cow<'a, str>,
         contract_id: Cow<'a, str>,
     }
@@ -153,12 +155,14 @@ const _: () = {
         pub fn new(
             context_id: ContextId,
             invitee_id: PublicKey,
+            protocol: Cow<'_, str>,
             network: Cow<'_, str>,
             contract_id: Cow<'_, str>,
         ) -> io::Result<Self> {
             let payload = InvitationPayload {
                 context_id: *context_id,
                 invitee_id: *invitee_id,
+                protocol,
                 network,
                 contract_id,
             };
@@ -166,12 +170,13 @@ const _: () = {
             borsh::to_vec(&payload).map(Self)
         }
 
-        pub fn parts(&self) -> io::Result<(ContextId, PublicKey, String, String)> {
+        pub fn parts(&self) -> io::Result<(ContextId, PublicKey, String, String, String)> {
             let payload: InvitationPayload<'_> = borsh::from_slice(&self.0)?;
 
             Ok((
                 payload.context_id.into(),
                 payload.invitee_id.into(),
+                payload.protocol.into_owned(),
                 payload.network.into_owned(),
                 payload.contract_id.into_owned(),
             ))
@@ -208,6 +213,7 @@ impl Context {
 
 #[derive(Debug)]
 pub struct ContextConfigParams<'a> {
+    pub protocol: Cow<'a, str>,
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,
     pub application_revision: u64,

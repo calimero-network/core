@@ -1,10 +1,13 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
+
+use core::error::Error;
 use std::collections::HashSet;
 use std::io::Error as IoError;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ContextConfigClientConfig;
-use calimero_context_config::client::{ContextConfigClient, RelayOrNearTransport};
+use calimero_context_config::client::{AnyTransport, ContextConfigClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
@@ -52,7 +55,7 @@ use config::ContextConfig;
 pub struct ContextManager {
     store: Store,
     client_config: ContextConfigClientConfig,
-    config_client: ContextConfigClient<RelayOrNearTransport>,
+    config_client: ContextConfigClient<AnyTransport>,
     blob_manager: BlobManager,
     network_client: NetworkClient,
     server_sender: ServerSender,
@@ -140,7 +143,7 @@ impl ContextManager {
         PrivateKey::random(&mut rand::thread_rng())
     }
 
-    pub async fn create_context(
+    pub fn create_context(
         &self,
         seed: Option<[u8; 32]>,
         application_id: ApplicationId,
@@ -182,13 +185,13 @@ impl ContextManager {
             &context,
             identity_secret,
             Some(ContextConfigParams {
+                protocol: self.client_config.new.protocol.as_str().into(),
                 network_id: self.client_config.new.network.as_str().into(),
                 contract_id: self.client_config.new.contract_id.as_str().into(),
                 application_revision: 0,
                 members_revision: 0,
             }),
-        )
-        .await?;
+        )?;
 
         let (tx, rx) = oneshot::channel();
 
@@ -213,6 +216,7 @@ impl ContextManager {
 
             this.config_client
                 .mutate(
+                    this.client_config.new.protocol,
                     this.client_config.new.network.as_str().into(),
                     this.client_config.new.contract_id.as_str().into(),
                     context.id.rt().expect("infallible conversion"),
@@ -258,7 +262,7 @@ impl ContextManager {
         Ok(())
     }
 
-    async fn add_context(
+    fn add_context(
         &self,
         context: &Context,
         identity_secret: PrivateKey,
@@ -270,6 +274,7 @@ impl ContextManager {
             handle.put(
                 &ContextConfigKey::new(context.id),
                 &ContextConfigValue::new(
+                    context_config.protocol.into_owned().into_boxed_str(),
                     context_config.network_id.into_owned().into_boxed_str(),
                     context_config.contract_id.into_owned().into_boxed_str(),
                     context_config.application_revision,
@@ -309,7 +314,8 @@ impl ContextManager {
         identity_secret: PrivateKey,
         invitation_payload: ContextInvitationPayload,
     ) -> EyreResult<Option<(ContextId, PublicKey)>> {
-        let (context_id, invitee_id, network_id, contract_id) = invitation_payload.parts()?;
+        let (context_id, invitee_id, protocol, network_id, contract_id) =
+            invitation_payload.parts()?;
 
         if identity_secret.public_key() != invitee_id {
             bail!("identity mismatch")
@@ -326,6 +332,7 @@ impl ContextManager {
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
 
         let mut config = (!context_exists).then(|| ContextConfigParams {
+            protocol: protocol.into(),
             network_id: network_id.into(),
             contract_id: contract_id.into(),
             application_revision: 0,
@@ -340,7 +347,7 @@ impl ContextManager {
             bail!("unable to join context: not a member, invalid invitation?")
         }
 
-        self.add_context(&context, identity_secret, config).await?;
+        self.add_context(&context, identity_secret, config)?;
 
         self.subscribe(&context.id).await?;
 
@@ -373,6 +380,7 @@ impl ContextManager {
 
         self.config_client
             .mutate(
+                context_config.protocol.parse()?,
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
                 inviter_id.rt().expect("infallible conversion"),
@@ -387,6 +395,7 @@ impl ContextManager {
         let invitation_payload = ContextInvitationPayload::new(
             context_id,
             invitee_id,
+            context_config.protocol.into_string().into(),
             context_config.network.into_string().into(),
             context_config.contract.into_string().into(),
         )?;
@@ -414,6 +423,7 @@ impl ContextManager {
                 };
 
                 Ok(Some(ContextConfigParams {
+                    protocol: config.protocol.into_string().into(),
                     network_id: config.network.into_string().into(),
                     contract_id: config.contract.into_string().into(),
                     application_revision: config.application_revision,
@@ -430,6 +440,7 @@ impl ContextManager {
         };
 
         let client = self.config_client.query(
+            config.protocol.parse()?,
             config.network_id.as_ref().into(),
             config.contract_id.as_ref().into(),
         );
@@ -518,6 +529,7 @@ impl ContextManager {
             handle.put(
                 &ContextConfigKey::new(context_id),
                 &ContextConfigValue::new(
+                    config.protocol.into_owned().into_boxed_str(),
                     config.network_id.into_owned().into_boxed_str(),
                     config.contract_id.into_owned().into_boxed_str(),
                     config.application_revision,
@@ -611,11 +623,11 @@ impl ContextManager {
         end: Option<[u8; N]>,
     ) -> EyreResult<()>
     where
-        K: FromKeyParts<Error: std::error::Error + Send + Sync>,
+        K: FromKeyParts<Error: Error + Send + Sync>,
     {
         let expected_length = Key::<K::Components>::len();
 
-        if context_id.len() + N != expected_length {
+        if context_id.len().saturating_add(N) != expected_length {
             bail!(
                 "key length mismatch, expected: {}, got: {}",
                 Key::<K::Components>::len(),
@@ -678,6 +690,7 @@ impl ContextManager {
 
             drop(iter);
 
+            #[expect(clippy::iter_with_drain, reason = "reallocation would be a bad idea")]
             for k in keys.drain(..) {
                 store.delete(&k)?;
             }
@@ -1021,6 +1034,6 @@ impl ContextManager {
     }
 
     pub fn is_application_blob_installed(&self, blob_id: BlobId) -> EyreResult<bool> {
-        Ok(self.blob_manager.has(blob_id)?)
+        self.blob_manager.has(blob_id)
     }
 }

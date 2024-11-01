@@ -1,45 +1,45 @@
+use calimero_server_primitives::admin::DeleteContextResponse;
 use clap::Parser;
-use eyre::{bail, Result as EyreResult};
-use libp2p::identity::Keypair;
-use libp2p::Multiaddr;
+use eyre::Result as EyreResult;
 use reqwest::Client;
 
-use crate::cli::RootArgs;
-use crate::common::{fetch_multiaddr, get_response, load_config, multiaddr_to_url, RequestType};
+use crate::cli::Environment;
+use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, RequestType};
+use crate::output::Report;
 
 #[derive(Debug, Parser)]
+#[command(about = "Delete an context")]
 pub struct DeleteCommand {
-    #[clap(long, short)]
+    #[clap(name = "CONTEXT_ID", help = "The context ID to delete")]
     pub context_id: String,
 }
 
-impl DeleteCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
-        let config = load_config(&args.home, &args.node_name)?;
-
-        self.delete_context(fetch_multiaddr(&config)?, &Client::new(), &config.identity)
-            .await
+impl Report for DeleteContextResponse {
+    fn report(&self) {
+        println!("is_deleted: {}", self.data.is_deleted);
     }
+}
 
-    #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
-    async fn delete_context(
-        &self,
-        multiaddr: &Multiaddr,
-        client: &Client,
-        keypair: &Keypair,
-    ) -> EyreResult<()> {
+impl DeleteCommand {
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
+        let config = load_config(&environment.args.home, &environment.args.node_name)?;
+
         let url = multiaddr_to_url(
-            multiaddr,
+            fetch_multiaddr(&config)?,
             &format!("admin-api/dev/contexts/{}", self.context_id),
         )?;
-        let response = get_response(client, url, None::<()>, keypair, RequestType::Delete).await?;
 
-        if !response.status().is_success() {
-            bail!("Request failed with status: {}", response.status())
-        }
+        let response: DeleteContextResponse = do_request(
+            &Client::new(),
+            url,
+            None::<()>,
+            &config.identity,
+            RequestType::Delete,
+        )
+        .await?;
 
-        let text = response.text().await?;
-        println!("Context deleted successfully: {text}");
+        environment.output.write(&response);
+
         Ok(())
     }
 }

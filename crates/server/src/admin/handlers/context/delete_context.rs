@@ -1,27 +1,16 @@
-use std::str::FromStr;
+use core::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::context::ContextId;
+use calimero_server_primitives::admin::{DeleteContextResponse, DeletedContextResponseData};
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeletedContext {
-    is_deleted: bool,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-pub struct DeleteContextResponse {
-    data: DeletedContext,
-}
 
 pub async fn handler(
     Path(context_id): Path<String>,
@@ -46,7 +35,7 @@ pub async fn handler(
     match result {
         Ok(result) => ApiResponse {
             payload: DeleteContextResponse {
-                data: DeletedContext { is_deleted: result },
+                data: DeletedContextResponseData { is_deleted: result },
             },
         }
         .into_response(),
