@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
+use crate::env::ext::External;
 use crate::event::AppEvent;
-use crate::external::External;
 
 pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
     type Event<'a>: AppEvent + 'a;
