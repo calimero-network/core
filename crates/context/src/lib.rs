@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::Error as IoError;
 use std::str::FromStr;

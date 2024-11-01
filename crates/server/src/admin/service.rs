@@ -30,9 +30,11 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_client_keys, get_context_identities,
-    get_context_storage, get_context_users, get_contexts, join_context, update_context_application,
+    get_context_storage, get_context_users, get_contexts, invite_to_context, join_context,
+    update_context_application,
 };
 use crate::admin::handlers::did::fetch_did_handler;
+use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
 use crate::middleware::auth::AuthSignatureLayer;
@@ -121,8 +123,13 @@ pub(crate) fn setup(
             "/contexts/:context_id/identities",
             get(get_context_identities::handler),
         )
+        .route("/contexts/invite", post(invite_to_context::handler))
         .route("/contexts/join", post(join_context::handler))
         .route("/contexts", get(get_contexts::handler))
+        .route(
+            "/identity/context",
+            post(generate_context_identity::handler),
+        )
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .layer(AuthSignatureLayer::new(store))
@@ -156,6 +163,7 @@ pub(crate) fn setup(
             "/dev/contexts",
             get(get_contexts::handler).post(create_context::handler),
         )
+        .route("/dev/contexts/invite", post(invite_to_context::handler))
         .route("/dev/contexts/join", post(join_context::handler))
         .route(
             "/dev/contexts/:context_id/application",
@@ -180,6 +188,10 @@ pub(crate) fn setup(
             get(get_context_identities::handler),
         )
         .route("/dev/contexts/:context_id", delete(delete_context::handler))
+        .route(
+            "/dev/identity/context",
+            post(generate_context_identity::handler),
+        )
         .route_layer(from_fn(dev_mode_auth));
 
     let admin_router = Router::new()
