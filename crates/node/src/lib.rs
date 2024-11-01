@@ -232,13 +232,11 @@ impl Node {
                 }
             }
             NetworkEvent::StreamOpened { peer_id, stream } => {
-                debug!("Stream opened from peer: {}", peer_id);
+                debug!(%peer_id, "Stream opened!");
 
-                if let Err(err) = self.handle_opened_stream(stream).await {
-                    error!(?err, "Failed to handle stream");
-                }
+                self.handle_opened_stream(stream).await;
 
-                debug!("Stream closed from peer: {:?}", peer_id);
+                debug!(%peer_id, "Stream closed!");
             }
             _ => error!("Unhandled event: {:?}", event),
         }
@@ -423,7 +421,7 @@ impl Node {
     pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
         let task = self.handle_call(
             request.context_id,
-            request.method,
+            &request.method,
             request.payload,
             request.executor_public_key,
         );
@@ -438,7 +436,7 @@ impl Node {
     async fn handle_call(
         &mut self,
         context_id: ContextId,
-        method: String,
+        method: &str,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> Result<Outcome, CallError> {
@@ -506,12 +504,7 @@ impl Node {
         public_key: PublicKey,
     ) -> EyreResult<()> {
         let outcome = self
-            .execute(
-                context,
-                "apply_action".to_owned(),
-                to_vec(action)?,
-                public_key,
-            )
+            .execute(context, "apply_action", to_vec(action)?, public_key)
             .await
             .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))?;
         drop(outcome.returns?);
@@ -524,14 +517,9 @@ impl Node {
         comparison: &Comparison,
         public_key: PublicKey,
     ) -> EyreResult<Outcome> {
-        self.execute(
-            context,
-            "compare_trees".to_owned(),
-            to_vec(comparison)?,
-            public_key,
-        )
-        .await
-        .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
+        self.execute(context, "compare_trees", to_vec(comparison)?, public_key)
+            .await
+            .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
     }
 
     async fn generate_comparison_data(
@@ -542,7 +530,7 @@ impl Node {
     ) -> EyreResult<Outcome> {
         self.execute(
             context,
-            "generate_comparison_data".to_owned(),
+            "generate_comparison_data",
             to_vec(&id)?,
             public_key,
         )
@@ -551,9 +539,9 @@ impl Node {
     }
 
     async fn execute(
-        &mut self,
+        &self,
         context: &mut Context,
-        method: String,
+        method: &str,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> EyreResult<Option<Outcome>> {
@@ -565,7 +553,9 @@ impl Node {
             return Ok(None);
         };
 
-        let mut storage = RuntimeCompatStore::new(&mut self.store, context.id);
+        let mut store = self.store.clone();
+
+        let mut storage = RuntimeCompatStore::new(&mut store, context.id);
 
         let outcome = calimero_runtime::run(
             &blob,

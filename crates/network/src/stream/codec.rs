@@ -3,7 +3,8 @@
 mod tests;
 
 use core::slice;
-use std::{borrow::Cow, io::Error as IoError};
+use std::borrow::Cow;
+use std::io::Error as IoError;
 
 use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
