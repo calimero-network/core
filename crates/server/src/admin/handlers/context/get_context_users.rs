@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
-use calimero_server_primitives::admin::{GetContextUsersResponse, GetContextUsersResponseData};
+use calimero_server_primitives::admin::GetContextUsersResponse;
 
 use crate::admin::service::ApiResponse;
 use crate::AdminState;
@@ -13,11 +13,7 @@ pub async fn handler(
     Extension(_state): Extension<Arc<AdminState>>,
 ) -> impl IntoResponse {
     ApiResponse {
-        payload: GetContextUsersResponse {
-            data: GetContextUsersResponseData {
-                context_users: vec![],
-            },
-        },
+        payload: GetContextUsersResponse::new(vec![]),
     }
     .into_response()
 }

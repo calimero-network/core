@@ -4,11 +4,8 @@ use axum::extract::Path;
 use axum::response::IntoResponse;
 use axum::Extension;
 use calimero_primitives::context::ContextId;
-use calimero_server_primitives::admin::{
-    ContextIdentitiesResponseData, GetContextIdentitiesResponse,
-};
+use calimero_server_primitives::admin::GetContextIdentitiesResponse;
 use reqwest::StatusCode;
-use tracing::error;
 
 use crate::admin::service::{parse_api_error, ApiError, ApiResponse};
 use crate::AdminState;
@@ -22,38 +19,32 @@ pub async fn handler(
         .get_context(&context_id)
         .map_err(|err| parse_api_error(err).into_response());
 
-    match context {
-        #[expect(clippy::option_if_let_else, reason = "Clearer here")]
-        Ok(ctx) => match ctx {
-            Some(context) => {
-                let context_identities = state
-                    .ctx_manager
-                    .get_context_owned_identities(context.id)
-                    .map_err(|err| parse_api_error(err).into_response());
+    let context = match context {
+        Ok(context) => context,
+        Err(err) => return err.into_response(),
+    };
 
-                match context_identities {
-                    Ok(identities) => ApiResponse {
-                        payload: GetContextIdentitiesResponse {
-                            data: ContextIdentitiesResponseData { identities },
-                        },
-                    }
-                    .into_response(),
-                    Err(err) => {
-                        error!("Error getting context identities: {:?}", err);
-                        ApiError {
-                            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                            message: "Something went wrong".into(),
-                        }
-                        .into_response()
-                    }
-                }
-            }
-            None => ApiError {
+    let context = match context {
+        Some(context) => context,
+        None => {
+            return ApiError {
                 status_code: StatusCode::NOT_FOUND,
                 message: "Context not found".into(),
             }
-            .into_response(),
-        },
+            .into_response()
+        }
+    };
+
+    let context_identities = state
+        .ctx_manager
+        .get_context_owned_identities(context.id)
+        .map_err(|err| parse_api_error(err).into_response());
+
+    match context_identities {
+        Ok(identities) => ApiResponse {
+            payload: GetContextIdentitiesResponse::new(identities),
+        }
+        .into_response(),
         Err(err) => err.into_response(),
     }
 }
