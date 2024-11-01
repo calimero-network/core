@@ -102,89 +102,91 @@ impl Node {
         self.initiate_state_sync_process(context, chosen_peer).await
     }
 
-    pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) -> EyreResult<()> {
+    pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
+        if let Err(err) = self.internal_handle_opened_stream(&mut stream).await {
+            error!(%err, "Failed to handle stream message");
+
+            if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
+                error!(%err, "Failed to send error message");
+            }
+        }
+    }
+
+    async fn internal_handle_opened_stream(&self, mut stream: &mut Stream) -> EyreResult<()> {
         let Some(message) = recv(&mut stream, self.sync_config.timeout).await? else {
             bail!("stream closed unexpectedly")
         };
 
         let (context_id, their_identity, payload) = match message {
-            StreamMessage::Init {
-                context_id,
-                party_id,
-                payload,
-            } => (context_id, party_id, payload),
-            unexpected/*  @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError)  */=> {
-                bail!("expected initialization handshake, got {:?}", unexpected)
-            }
-        };
-
-        let result = async {
-            let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
-                bail!("context not found: {}", context_id);
+                StreamMessage::Init {
+                    context_id,
+                    party_id,
+                    payload,
+                } => (context_id, party_id, payload),
+                unexpected/*  @ (StreamMessage::Message { .. } | StreamMessage::OpaqueError)  */=> {
+                    bail!("expected initialization handshake, got {:?}", unexpected)
+                }
             };
 
-            let mut updated = None;
+        let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
+            bail!("context not found: {}", context_id);
+        };
+
+        let mut updated = None;
+
+        if !self
+            .ctx_manager
+            .has_context_identity(context_id, their_identity)?
+        {
+            updated = Some(self.ctx_manager.sync_context_config(context_id).await?);
 
             if !self
                 .ctx_manager
                 .has_context_identity(context_id, their_identity)?
             {
-                updated = Some(self.ctx_manager.sync_context_config(context_id).await?);
-
-                if !self
-                    .ctx_manager
-                    .has_context_identity(context_id, their_identity)?
-                {
-                    bail!(
-                        "unknown context member {} in context {}",
-                        their_identity,
-                        context_id
-                    );
-                }
+                bail!(
+                    "unknown context member {} in context {}",
+                    their_identity,
+                    context_id
+                );
             }
+        }
 
-            match payload {
-                InitPayload::StateSync {
+        match payload {
+            InitPayload::BlobShare { blob_id } => {
+                self.handle_blob_share_request(context, their_identity, blob_id, &mut stream)
+                    .await?
+            }
+            InitPayload::StateSync {
+                root_hash,
+                application_id,
+            } => {
+                if updated.is_none() && context.application_id != application_id {
+                    updated = Some(self.ctx_manager.sync_context_config(context_id).await?);
+                }
+
+                if let Some(updated) = updated {
+                    if application_id != updated.application_id {
+                        bail!(
+                            "application mismatch: expected {}, got {}",
+                            updated.application_id,
+                            application_id
+                        );
+                    }
+
+                    context = updated;
+                }
+
+                self.handle_state_sync_request(
+                    context,
+                    their_identity,
                     root_hash,
                     application_id,
-                } => {
-                    if updated.is_none() && context.application_id != application_id {
-                        updated = Some(self.ctx_manager.sync_context_config(context_id).await?);
-                    }
-
-                    if let Some(updated) = updated {
-                        if application_id != updated.application_id {
-                            bail!(
-                                "application mismatch: expected {}, got {}",
-                                updated.application_id,
-                                application_id
-                            );
-                        }
-
-                        context = updated;
-                    }
-
-                    self.handle_state_sync_request(
-                        context,
-                        their_identity,
-                        root_hash,
-                        application_id,
-                        &mut stream,
-                    )
-                    .await
-                }
-                InitPayload::BlobShare { blob_id } => {
-                    self.handle_blob_share_request(context, their_identity, blob_id, &mut stream)
-                        .await
-                }
+                    &mut stream,
+                )
+                .await?
             }
         };
-
-        if let Err(err) = result.await {
-            error!(%err, "Failed to handle stream message");
-
-            send(&mut stream, &StreamMessage::OpaqueError).await?;
-        }
 
         Ok(())
     }
