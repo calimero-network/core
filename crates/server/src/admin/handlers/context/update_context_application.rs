@@ -6,7 +6,7 @@ use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use calimero_primitives::context::ContextId;
 use calimero_server_primitives::admin::{
-    Empty, UpdateContextApplicationRequest, UpdateContextApplicationResponse,
+    UpdateContextApplicationRequest, UpdateContextApplicationResponse,
 };
 use reqwest::StatusCode;
 
@@ -33,7 +33,7 @@ pub async fn handler(
 
     match result {
         Ok(()) => ApiResponse {
-            payload: UpdateContextApplicationResponse { data: Empty {} },
+            payload: UpdateContextApplicationResponse::new(),
         }
         .into_response(),
         Err(err) => err.into_response(),
