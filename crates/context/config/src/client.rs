@@ -349,7 +349,7 @@ impl<T> Client<T> {
     }
 }
 
-trait Environment<'a, T> {
+pub trait Environment<'a, T> {
     type Query;
     type Mutate;
 

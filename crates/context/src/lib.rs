@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::Error as IoError;
 use std::str::FromStr;
@@ -6,6 +5,7 @@ use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ClientConfig;
+use calimero_context_config::client::env::config::ContextConfig as ContextConfigEnv;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
@@ -52,7 +52,7 @@ use config::ContextConfig;
 pub struct ContextManager {
     store: Store,
     client_config: ClientConfig,
-    config_client: Client<AnyTransport>,
+    config_client: ExternalClient<AnyTransport>,
     blob_manager: BlobManager,
     network_client: NetworkClient,
     server_sender: ServerSender,
@@ -202,7 +202,7 @@ impl ContextManager {
             }
 
             this.config_client
-                .mutate(
+                .mutate::<ContextConfigEnv>(
                     this.client_config.new.protocol,
                     this.client_config.new.network.as_str().into(),
                     this.client_config.new.contract_id.as_str().into(),
@@ -221,7 +221,7 @@ impl ContextManager {
                         ApplicationMetadataConfig(Repr::new(application.metadata.into())),
                     ),
                 )
-                .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
+                .send(SigningKey::from_bytes(&context_secret).sign(b))
                 .await?;
 
             Ok((context.id, identity_secret.public_key()))
@@ -313,19 +313,14 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let client =
-            self.config_client
-                .query(protocol.parse()?, network_id.into(), contract_id.into());
+        let client = self.config_client.query::<ContextConfigEnv>(
+            protocol.parse()?,
+            network_id.into(),
+            contract_id.into(),
+        );
 
         for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
-            let members = client
-                .members(
-                    context_id.rt().expect("infallible conversion"),
-                    offset,
-                    length,
-                )
-                .await?
-                .parse()?;
+            let members = client.members(offset, length).await?;
 
             if members.is_empty() {
                 break;
@@ -346,11 +341,7 @@ impl ContextManager {
             bail!("unable to join context: not a member, ask for an invite")
         };
 
-        let response = client
-            .application(context_id.rt().expect("infallible conversion"))
-            .await?;
-
-        let application = response.parse()?;
+        let application = client.application().await?;
 
         let context = Context::new(
             context_id,
@@ -413,7 +404,7 @@ impl ContextManager {
         };
 
         self.config_client
-            .mutate(
+            .mutate::<ContextConfigEnv>(
                 context_config.protocol.parse()?,
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
@@ -853,18 +844,14 @@ impl ContextManager {
         Ok(false)
     }
 
-    pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
-        let client = self.config_client.query(
+    pub async fn get_latest_application(&self) -> EyreResult<Application> {
+        let client = self.config_client.query::<ContextConfigEnv>(
             self.client_config.new.protocol,
             self.client_config.new.network.as_str().into(),
             self.client_config.new.contract_id.as_str().into(),
         );
 
-        let response = client
-            .application(context_id.rt().expect("infallible conversion"))
-            .await?;
-
-        let application = response.parse()?;
+        let application = client.application().await?;
 
         Ok(Application::new(
             application.id.as_bytes().into(),

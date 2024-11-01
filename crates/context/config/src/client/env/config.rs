@@ -1,7 +1,19 @@
+use std::collections::BTreeMap;
+
+use query::appilcation_revision::{ApplicationRevision, Revision};
+use query::application::ApplicationRequest;
+use query::members::Members;
+use query::members_revision::MembersRevision;
+use query::privileges::IdentitiyPrivileges;
+
+mod query;
+
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::Method;
 use crate::client::{CallClient, ConfigError, Environment, Protocol, Transport};
+use crate::repr::Repr;
+use crate::types::{Application, Capability, ContextIdentity, SignerId};
 pub enum ContextConfig {}
 
 pub struct ContextConfigQuery<'a, T> {
@@ -17,44 +29,29 @@ impl<'a, T: 'a> Environment<'a, T> for ContextConfig {
     type Mutate = ContextConfigMutate<'a, T>;
 
     fn query(client: CallClient<'a, T>) -> Self::Query {
-        todo!()
+        match client.protocol {
+            Protocol::Near => client.client.query::<ContextConfig>(
+                Protocol::Near,
+                client.network_id,
+                client.contract_id,
+            ),
+            Protocol::Starknet => client.client.query::<ContextConfig>(
+                Protocol::Starknet,
+                client.network_id,
+                client.contract_id,
+            ),
+        }
     }
 
     fn mutate(client: CallClient<'a, T>) -> Self::Mutate {
-        todo!()
-    }
-}
-
-struct Members {
-    offset: usize,
-    length: usize,
-}
-
-impl Method<Members> for Near {
-    const METHOD: &'static str = "members";
-
-    type Returns = Vec<String>;
-
-    fn encode(params: &Members) -> eyre::Result<Vec<u8>> {
-        todo!()
-    }
-
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
-        todo!()
-    }
-}
-
-impl Method<Members> for Starknet {
-    type Returns = Vec<String>;
-
-    const METHOD: &'static str = "members";
-
-    fn encode(params: &Members) -> eyre::Result<Vec<u8>> {
-        todo!()
-    }
-
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
-        todo!()
+        match client.protocol {
+            Protocol::Near => client.client.mutate::<ContextConfig>(
+                Protocol::Near,
+                client.network_id,
+                client.contract_id,
+            ),
+            Protocol::Starknet => todo!(),
+        }
     }
 }
 
@@ -63,11 +60,60 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         &self,
         offset: usize,
         length: usize,
-    ) -> Result<Vec<String>, ConfigError<T>> {
+    ) -> Result<Vec<Repr<ContextIdentity>>, ConfigError<T>> {
         let params = Members { offset, length };
         match self.client.protocol {
-            Protocol::Near => self.client.query::<Near, _>(params).await,
-            Protocol::Starknet => self.client.query::<Starknet, _>(params).await,
+            Protocol::Near => self.client.query::<Near, Members>(params).await,
+            Protocol::Starknet => self.client.query::<Starknet, Members>(params).await,
+        }
+    }
+    pub async fn application_revision(&self) -> Result<Revision, ConfigError<T>> {
+        let params = ApplicationRevision {};
+        match self.client.protocol {
+            Protocol::Near => self.client.query::<Near, ApplicationRevision>(params).await,
+            Protocol::Starknet => {
+                self.client
+                    .query::<Starknet, ApplicationRevision>(params)
+                    .await
+            }
+        }
+    }
+    pub async fn application(&self) -> Result<Application<'static>, ConfigError<T>> {
+        let params = ApplicationRequest {};
+        match self.client.protocol {
+            Protocol::Near => self.client.query::<Near, ApplicationRequest>(params).await,
+            Protocol::Starknet => {
+                self.client
+                    .query::<Starknet, ApplicationRequest>(params)
+                    .await
+            }
+        }
+    }
+
+    pub async fn members_revision(&self) -> Result<Revision, ConfigError<T>> {
+        let params = MembersRevision {};
+        match self.client.protocol {
+            Protocol::Near => self.client.query::<Near, MembersRevision>(params).await,
+            Protocol::Starknet => self.client.query::<Starknet, MembersRevision>(params).await,
+        }
+    }
+
+    pub async fn privileges(
+        &self,
+        identities: &[ContextIdentity],
+    ) -> Result<BTreeMap<Repr<SignerId>, Vec<Capability>>, ConfigError<T>> {
+        let params = IdentitiyPrivileges { identities };
+        match self.client.protocol {
+            Protocol::Near => {
+                self.client
+                    .query::<Near, IdentitiyPrivileges<'_>>(params)
+                    .await
+            }
+            Protocol::Starknet => {
+                self.client
+                    .query::<Starknet, IdentitiyPrivileges<'_>>(params)
+                    .await
+            }
         }
     }
 }
