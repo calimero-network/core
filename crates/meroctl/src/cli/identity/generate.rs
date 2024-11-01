@@ -9,7 +9,7 @@ use crate::output::Report;
 
 #[derive(Debug, Parser)]
 #[command(about = "Generate public/private key pair used for context identity")]
-pub struct GenerateCommand {}
+pub struct GenerateCommand;
 
 impl Report for GenerateContextIdentityResponse {
     fn report(&self) {
