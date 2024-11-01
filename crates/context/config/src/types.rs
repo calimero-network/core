@@ -12,6 +12,8 @@ use thiserror::Error as ThisError;
 
 use crate::repr::{self, LengthMismatch, Repr, ReprBytes, ReprTransmute};
 
+pub type Revision = u64;
+
 #[derive(
     BorshDeserialize,
     BorshSerialize,
