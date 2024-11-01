@@ -60,12 +60,14 @@ impl Node {
         context: Context,
         their_identity: PublicKey,
         root_hash: Hash,
+        application_id: ApplicationId,
         stream: &mut Stream,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
             their_identity=%their_identity,
             their_root_hash=%root_hash,
+            their_application_id=%application_id,
             "Received state sync request",
         );
 
@@ -82,6 +84,7 @@ impl Node {
                 party_id: our_identity,
                 payload: InitPayload::StateSync {
                     root_hash: context.root_hash,
+                    application_id: context.application_id,
                 },
             },
         )

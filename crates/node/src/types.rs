@@ -129,8 +129,13 @@ pub enum StreamMessage<'a> {
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum InitPayload {
-    StateSync { root_hash: Hash },
-    BlobShare { blob_id: BlobId },
+    StateSync {
+        root_hash: Hash,
+        application_id: ApplicationId,
+    },
+    BlobShare {
+        blob_id: BlobId,
+    },
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]

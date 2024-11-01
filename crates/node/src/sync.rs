@@ -123,11 +123,13 @@ impl Node {
                 bail!("context not found: {}", context_id);
             };
 
+            let mut updated = None;
+
             if !self
                 .ctx_manager
                 .has_context_identity(context_id, their_identity)?
             {
-                context = self.ctx_manager.sync_context_config(context_id).await?;
+                updated = Some(self.ctx_manager.sync_context_config(context_id).await?);
 
                 if !self
                     .ctx_manager
@@ -142,9 +144,34 @@ impl Node {
             }
 
             match payload {
-                InitPayload::StateSync { root_hash } => {
-                    self.handle_state_sync_request(context, their_identity, root_hash, &mut stream)
-                        .await
+                InitPayload::StateSync {
+                    root_hash,
+                    application_id,
+                } => {
+                    if updated.is_none() && context.application_id != application_id {
+                        updated = Some(self.ctx_manager.sync_context_config(context_id).await?);
+                    }
+
+                    if let Some(updated) = updated {
+                        if application_id != updated.application_id {
+                            bail!(
+                                "application mismatch: expected {}, got {}",
+                                updated.application_id,
+                                application_id
+                            );
+                        }
+
+                        context = updated;
+                    }
+
+                    self.handle_state_sync_request(
+                        context,
+                        their_identity,
+                        root_hash,
+                        application_id,
+                        &mut stream,
+                    )
+                    .await
                 }
                 InitPayload::BlobShare { blob_id } => {
                     self.handle_blob_share_request(context, their_identity, blob_id, &mut stream)
