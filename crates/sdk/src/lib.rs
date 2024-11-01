@@ -2,6 +2,7 @@ pub use {borsh, serde, serde_json};
 
 pub mod env;
 pub mod event;
+pub mod external;
 mod returns;
 pub mod state;
 mod sys;
