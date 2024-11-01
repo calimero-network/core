@@ -177,7 +177,7 @@ mod child_info__constructor {
 
     #[test]
     fn new() {
-        let id = Id::new();
+        let id = Id::random();
         let hash = Sha256::digest(b"1").into();
         let info = ChildInfo::new(id, hash);
         assert_eq!(info.id, id);
@@ -191,13 +191,13 @@ mod child_info__public_methods {
 
     #[test]
     fn id() {
-        let info = ChildInfo::new(Id::new(), Sha256::digest(b"1").into());
+        let info = ChildInfo::new(Id::random(), Sha256::digest(b"1").into());
         assert_eq!(info.id(), info.id);
     }
 
     #[test]
     fn merkle_hash() {
-        let info = ChildInfo::new(Id::new(), Sha256::digest(b"1").into());
+        let info = ChildInfo::new(Id::random(), Sha256::digest(b"1").into());
         assert_eq!(info.merkle_hash(), info.merkle_hash);
     }
 }
@@ -208,7 +208,7 @@ mod child_info__traits {
 
     #[test]
     fn display() {
-        let info = ChildInfo::new(Id::new(), Sha256::digest(b"1").into());
+        let info = ChildInfo::new(Id::random(), Sha256::digest(b"1").into());
         assert_eq!(
             format!("{info}"),
             format!(

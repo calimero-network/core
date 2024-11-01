@@ -1,6 +1,5 @@
 use core::str;
 use std::collections::HashSet;
-use std::usize;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed, SignerId};
@@ -127,20 +126,20 @@ impl ProxyContract {
             num_proposals <= self.active_proposals_limit,
             "Account has too many active proposals. Confirm or delete some."
         );
-        return self.perform_action_by_member(MemberAction::Create {
+        self.perform_action_by_member(MemberAction::Create {
             proposal,
             num_proposals,
-        });
+        })
     }
 
     pub fn approve(&mut self, proposal: Signed<ProposalApprovalWithSigner>) -> Promise {
         let proposal = proposal
             .parse(|i| *i.signer_id)
             .expect("failed to parse input");
-        return self.perform_action_by_member(MemberAction::Approve {
+        self.perform_action_by_member(MemberAction::Approve {
             identity: proposal.signer_id,
             proposal_id: proposal.proposal_id,
-        });
+        })
     }
 
     fn internal_confirm(&mut self, proposal_id: ProposalId, signer_id: SignerId) {
@@ -199,13 +198,10 @@ impl ProxyContract {
         proposal_id: ProposalId,
     ) -> Option<ProposalWithApprovals> {
         let approvals_for_proposal = self.approvals.get(&proposal_id);
-        match approvals_for_proposal {
-            Some(approvals) => Some(ProposalWithApprovals {
-                proposal_id,
-                num_approvals: approvals.len(),
-            }),
-            None => None,
-        }
+        approvals_for_proposal.map(|approvals| ProposalWithApprovals {
+            proposal_id,
+            num_approvals: approvals.len(),
+        })
     }
 
     #[private]
@@ -357,9 +353,7 @@ impl ProxyContract {
         let author_id: SignerId = proposal.author_id.rt().expect("Invalid signer");
         let mut num_proposals = *self.num_proposals_pk.get(&author_id).unwrap_or(&0);
 
-        if num_proposals > 0 {
-            num_proposals = num_proposals - 1;
-        }
+        num_proposals = num_proposals.saturating_sub(1);
         self.num_proposals_pk.insert(author_id, num_proposals);
         proposal
     }
@@ -370,10 +364,10 @@ impl ProxyContract {
         key: Box<[u8]>,
         value: Box<[u8]>,
     ) -> Option<Box<[u8]>> {
-        let val = self.context_storage.insert(key.clone(), value);
-        val
+        self.context_storage.insert(key.clone(), value)
     }
 
+    #[expect(clippy::type_complexity, reason = "Acceptable here")]
     pub fn context_storage_entries(
         &self,
         offset: usize,

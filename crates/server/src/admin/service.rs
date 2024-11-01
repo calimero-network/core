@@ -259,13 +259,13 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
 
     // Attempt to serve the requested file
     if let Some(file) = NodeUiStaticFiles::get(path) {
-        return serve_file(file).await;
+        return serve_file(file);
     }
 
     // Fallback to index.html for SPA routing if the file wasn't found and it's not already "index.html"
     if path != "index.html" {
         if let Some(index_file) = NodeUiStaticFiles::get("index.html") {
-            return serve_file(index_file).await;
+            return serve_file(index_file);
         }
     }
 
@@ -285,7 +285,7 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
 /// - `Result<impl IntoResponse, StatusCode>`: If the response is successfully built, it returns an `Ok`
 ///   with the response. If there is an error building the response, it returns an `Err` with a
 ///   500 INTERNAL_SERVER_ERROR status code.
-async fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
+fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", file.metadata.mimetype())

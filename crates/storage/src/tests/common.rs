@@ -1,33 +1,11 @@
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
 
 use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use sha2::{Digest, Sha256};
 use velcro::btree_map;
 
-use crate::address::Id;
 use crate::entities::{AtomicUnit, ChildInfo, Collection, Data, Element};
 use crate::interface::{Interface, StorageError};
-
-/// A set of non-empty test UUIDs.
-pub const TEST_UUID: [[u8; 16]; 5] = [
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-    [2, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-    [3, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-    [4, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-    [5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-];
-
-/// A set of non-empty test IDs.
-pub static TEST_ID: LazyLock<[Id; 5]> = LazyLock::new(|| {
-    [
-        Id::from(TEST_UUID[0]),
-        Id::from(TEST_UUID[1]),
-        Id::from(TEST_UUID[2]),
-        Id::from(TEST_UUID[3]),
-        Id::from(TEST_UUID[4]),
-    ]
-});
 
 /// For tests against empty data structs.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq, PartialOrd)]

@@ -1,4 +1,9 @@
-#![allow(unused_crate_dependencies, reason = "False positives")]
+#![allow(
+    clippy::use_self,
+    clippy::must_use_candidate,
+    unused_crate_dependencies,
+    reason = "False positives"
+)]
 
 use near_sdk::{env, near, PanicOnDefault};
 
@@ -11,16 +16,16 @@ pub struct CounterContract {
 #[near]
 impl CounterContract {
     #[init]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { counter: 0 }
     }
 
     pub fn increment(&mut self) {
-        self.counter += 1;
+        self.counter = self.counter.wrapping_add(1);
         env::log_str("Counter incremented");
     }
 
-    pub fn get_count(&self) -> u32 {
+    pub const fn get_count(&self) -> u32 {
         self.counter
     }
 }

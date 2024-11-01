@@ -6,11 +6,11 @@ use crate::env;
 #[derive(Debug, Serialize)]
 pub struct Error(#[serde(serialize_with = "error_string")] Box<dyn CoreError>);
 
-fn error_string<S>(error: &Box<dyn CoreError>, serializer: S) -> Result<S::Ok, S::Error>
+fn error_string<S>(error: &impl AsRef<dyn CoreError>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    serializer.serialize_str(&error.to_string())
+    serializer.serialize_str(&error.as_ref().to_string())
 }
 
 impl Error {

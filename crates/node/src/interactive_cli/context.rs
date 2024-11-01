@@ -43,6 +43,7 @@ enum Commands {
 
 impl ContextCommand {
     #[expect(clippy::similar_names, reason = "Acceptable here")]
+    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     pub async fn run(self, node: &Node) -> Result<()> {
         let ind = ">>".blue();
 
@@ -110,7 +111,7 @@ impl ContextCommand {
                 let application_id = application_id.parse()?;
 
                 let (context_seed, params) = 'infer: {
-                    let Some(context_seed) = context_seed.clone() else {
+                    let Some(context_seed) = context_seed else {
                         break 'infer (None, None);
                     };
                     let context_seed_clone = context_seed.clone();
@@ -132,15 +133,13 @@ impl ContextCommand {
 
                 let (tx, rx) = oneshot::channel();
 
-                node.ctx_manager
-                    .create_context(
-                        context_seed.map(Into::into),
-                        application_id,
-                        None,
-                        params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
-                        tx,
-                    )
-                    .await?;
+                node.ctx_manager.create_context(
+                    context_seed.map(Into::into),
+                    application_id,
+                    None,
+                    params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                    tx,
+                )?;
 
                 let _ignored = tokio::spawn(async move {
                     let err: eyre::Report = match rx.await {

@@ -25,7 +25,7 @@ use crate::types::{
 };
 use crate::Node;
 
-mod actions;
+// mod actions;
 mod blobs;
 
 impl Node {
@@ -170,7 +170,7 @@ impl Node {
     }
 
     async fn perform_blob_catchup(
-        &mut self,
+        &self,
         chosen_peer: PeerId,
         latest_application: Application,
     ) -> EyreResult<()> {
@@ -189,7 +189,7 @@ impl Node {
     }
 
     async fn perform_blob_stream_catchup(
-        &mut self,
+        &self,
         chosen_peer: PeerId,
         latest_application: Application,
     ) -> EyreResult<()> {
