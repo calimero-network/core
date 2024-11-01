@@ -1,19 +1,23 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::ptr;
 
-use query::appilcation_revision::{ApplicationRevision, Revision};
+use mutate::context::Mutate;
 use query::application::ApplicationRequest;
+use query::application_revision::{ApplicationRevision, Revision};
 use query::members::Members;
 use query::members_revision::MembersRevision;
 use query::privileges::IdentitiyPrivileges;
 
+mod mutate;
 mod query;
 
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::Method;
 use crate::client::{CallClient, ConfigError, Environment, Protocol, Transport};
 use crate::repr::Repr;
-use crate::types::{Application, Capability, ContextIdentity, SignerId};
+use crate::types::{Application, Capability, ContextId, ContextIdentity, SignerId};
+use crate::{ContextRequest, ContextRequestKind, RequestKind};
 pub enum ContextConfig {}
 
 pub struct ContextConfigQuery<'a, T> {
@@ -118,76 +122,139 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
     }
 }
 
-impl<'a, T: Transport> ContextConfigMutate<'a, T> {
-    pub fn add_context(self, context_id: String) -> ContextConfigMutateRequest<'a, T> {
-        ContextConfigMutateRequest {
-            client: self.client,
-            kind: RequestKind::AddContext { context_id },
-        }
-    }
-}
-
-enum RequestKind {
-    AddContext { context_id: String },
-}
-
+#[derive(Debug)]
 pub struct ContextConfigMutateRequest<'a, T> {
     client: CallClient<'a, T>,
-    kind: RequestKind,
+    kind: RequestKind<'a>,
 }
 
-struct Mutate {
-    signer_id: String,
-    nonce: u64,
-    kind: RequestKind,
-}
-
-impl Method<Mutate> for Near {
-    const METHOD: &'static str = "mutate";
-
-    type Returns = ();
-
-    fn encode(params: &Mutate) -> eyre::Result<Vec<u8>> {
-        // sign the params, encode it and return
-        todo!()
+impl<'a, T: Transport> ContextConfigMutate<'a, T> {
+    pub fn add_context(
+        self,
+        context_id: ContextId,
+        author_id: ContextIdentity,
+        application: Application<'a>,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: Repr::new(context_id),
+                kind: ContextRequestKind::Add {
+                    author_id: Repr::new(author_id),
+                    application,
+                },
+            }),
+        }
     }
 
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
-        todo!()
-    }
-}
-
-impl Method<Mutate> for Starknet {
-    type Returns = ();
-
-    const METHOD: &'static str = "mutate";
-
-    fn encode(params: &Mutate) -> eyre::Result<Vec<u8>> {
-        // sign the params, encode it and return
-        // since you will have a `Vec<Felt>` here, you can
-        // `Vec::with_capacity(32 * calldata.len())` and then
-        // extend the `Vec` with each `Felt::to_bytes_le()`
-        // when this `Vec<u8>` makes it to `StarknetTransport`,
-        // reconstruct the `Vec<Felt>` from it
-        todo!()
+    pub fn update_application(
+        self,
+        context_id: ContextId,
+        application: Application<'a>,
+    ) -> ContextConfigMutateRequest<'a, T> {
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: Repr::new(context_id),
+                kind: ContextRequestKind::UpdateApplication { application },
+            }),
+        }
     }
 
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
-        todo!()
+    pub fn add_members(
+        self,
+        context_id: ContextId,
+        members: &[ContextIdentity],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let members = unsafe {
+            &*(ptr::from_ref::<[ContextIdentity]>(members) as *const [Repr<ContextIdentity>])
+        };
+
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: Repr::new(context_id),
+                kind: ContextRequestKind::AddMembers {
+                    members: Cow::Borrowed(members),
+                },
+            }),
+        }
+    }
+
+    pub fn remove_members(
+        self,
+        context_id: ContextId,
+        members: &[ContextIdentity],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let members = unsafe {
+            &*(ptr::from_ref::<[ContextIdentity]>(members) as *const [Repr<ContextIdentity>])
+        };
+
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: Repr::new(context_id),
+                kind: ContextRequestKind::RemoveMembers {
+                    members: Cow::Borrowed(members),
+                },
+            }),
+        }
+    }
+
+    pub fn grant(
+        self,
+        context_id: ContextId,
+        capabilities: &[(ContextIdentity, Capability)],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let capabilities = unsafe {
+            &*(ptr::from_ref::<[(ContextIdentity, Capability)]>(capabilities)
+                as *const [(Repr<ContextIdentity>, Capability)])
+        };
+
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: Repr::new(context_id),
+                kind: ContextRequestKind::Grant {
+                    capabilities: Cow::Borrowed(capabilities),
+                },
+            }),
+        }
+    }
+
+    pub fn revoke(
+        self,
+        context_id: ContextId,
+        capabilities: &[(ContextIdentity, Capability)],
+    ) -> ContextConfigMutateRequest<'a, T> {
+        let capabilities = unsafe {
+            &*(ptr::from_ref::<[(ContextIdentity, Capability)]>(capabilities)
+                as *const [(Repr<ContextIdentity>, Capability)])
+        };
+
+        ContextConfigMutateRequest {
+            client: self.client,
+            kind: RequestKind::Context(ContextRequest {
+                context_id: Repr::new(context_id),
+                kind: ContextRequestKind::Revoke {
+                    capabilities: Cow::Borrowed(capabilities),
+                },
+            }),
+        }
     }
 }
 
 impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
     pub async fn send(self, signing_key: [u8; 32]) -> Result<(), ConfigError<T>> {
         let request = Mutate {
-            signer_id: todo!(),
+            signer_id: signing_key,
             nonce: 0,
             kind: self.kind,
         };
 
         match self.client.protocol {
-            Protocol::Near => self.client.mutate::<Near, _>(request).await?,
-            Protocol::Starknet => self.client.mutate::<Starknet, _>(request).await?,
+            Protocol::Near => self.client.mutate::<Near, Mutate<'_>>(request).await?,
+            Protocol::Starknet => self.client.mutate::<Starknet, Mutate<'_>>(request).await?,
         }
 
         Ok(())

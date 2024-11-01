@@ -301,7 +301,7 @@ impl<'a, T: Transport> CallClient<'a, T> {
             protocol: self.protocol,
             network_id: Cow::Borrowed(&self.network_id),
             contract_id: Cow::Borrowed(&self.contract_id),
-            operation: Operation::Read {
+            operation: Operation::Write {
                 method: Cow::Borrowed(M::METHOD),
             },
         };

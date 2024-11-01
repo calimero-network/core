@@ -4,7 +4,7 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::Method;
 use crate::repr::Repr;
-use crate::types::ContextIdentity;
+use crate::types::{ContextId, ContextIdentity};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Members {

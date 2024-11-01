@@ -221,7 +221,7 @@ impl ContextManager {
                         ApplicationMetadataConfig(Repr::new(application.metadata.into())),
                     ),
                 )
-                .send(SigningKey::from_bytes(&context_secret).sign(b))
+                .send(context.id.rt().expect("infallible conversion"))
                 .await?;
 
             Ok((context.id, identity_secret.public_key()))
@@ -413,7 +413,7 @@ impl ContextManager {
                 context_id.rt().expect("infallible conversion"),
                 &[invitee_id.rt().expect("infallible conversion")],
             )
-            .send(|b| SigningKey::from_bytes(&requester_secret).sign(b))
+            .send(requester_secret)
             .await?;
 
         let invitation_payload = ContextInvitationPayload::new(
