@@ -48,6 +48,15 @@ impl ContextConfigs {
         members
     }
 
+    pub fn has_member(&self, context_id: Repr<ContextId>, identity: Repr<ContextIdentity>) -> bool {
+        let context = self
+            .contexts
+            .get(&context_id)
+            .expect("context does not exist");
+
+        context.members.contains(&identity)
+    }
+
     pub fn members_revision(&self, context_id: Repr<ContextId>) -> Revision {
         let context = self
             .contexts

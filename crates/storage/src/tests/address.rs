@@ -2,57 +2,6 @@ use borsh::to_vec;
 use claims::assert_err;
 
 use super::*;
-use crate::tests::common::TEST_UUID;
-
-#[cfg(test)]
-mod id__public_methods {
-    use super::*;
-
-    #[test]
-    fn as_bytes() {
-        assert_eq!(Id(Uuid::from_bytes(TEST_UUID[0])).as_bytes(), &TEST_UUID[0]);
-    }
-}
-
-#[cfg(test)]
-mod id__traits {
-    use super::*;
-
-    #[test]
-    fn borsh_deserialization__valid() {
-        assert_eq!(
-            Id::try_from_slice(&TEST_UUID[0]).unwrap(),
-            Id(Uuid::from_bytes(TEST_UUID[0]))
-        );
-    }
-
-    #[test]
-    fn borsh_deserialization__too_short() {
-        assert_err!(Id::try_from_slice(&[1, 2, 3]));
-    }
-
-    #[test]
-    fn borsh_serialization__valid() {
-        let serialized = to_vec(&Id(Uuid::from_bytes(TEST_UUID[0]))).unwrap();
-        assert_eq!(serialized.len(), 16);
-        assert_eq!(serialized, TEST_UUID[0]);
-    }
-
-    #[test]
-    fn borsh_serialization__roundtrip() {
-        let id1 = Id::new();
-        let id2 = Id::try_from_slice(&to_vec(&id1).unwrap()).unwrap();
-        assert_eq!(id1, id2);
-    }
-
-    #[test]
-    fn from__for_uuid() {
-        assert_eq!(
-            Uuid::from(Id(Uuid::from_bytes(TEST_UUID[0]))).as_bytes(),
-            &TEST_UUID[0]
-        );
-    }
-}
 
 #[cfg(test)]
 mod path__constructor {

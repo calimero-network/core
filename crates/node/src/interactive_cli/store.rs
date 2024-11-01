@@ -7,13 +7,12 @@ use owo_colors::OwoColorize;
 use crate::Node;
 
 #[derive(Debug, Parser)]
-#[allow(missing_copy_implementations, reason = "TODO")]
 #[non_exhaustive]
 pub struct StoreCommand;
 
 impl StoreCommand {
     // todo! revisit: get specific context state
-    pub async fn run(self, node: &Node) -> Result<()> {
+    pub fn run(self, node: &Node) -> Result<()> {
         println!("Executing Store command");
         let ind = ">>".blue();
 

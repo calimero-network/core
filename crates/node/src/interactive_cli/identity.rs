@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use core::str::FromStr;
 
 use calimero_primitives::context::ContextId;
 use calimero_store::key::ContextIdentity as ContextIdentityKey;
@@ -21,7 +21,7 @@ enum IdentitySubcommands {
 }
 
 impl IdentityCommand {
-    pub async fn run(self, node: &Node) -> Result<()> {
+    pub fn run(self, node: &Node) -> Result<()> {
         match &self.subcommand {
             IdentitySubcommands::Ls { context_id } => {
                 match ContextId::from_str(context_id) {
@@ -30,7 +30,6 @@ impl IdentityCommand {
                         let handle = node.store.handle();
                         let mut iter = handle.iter::<ContextIdentityKey>()?;
 
-                        let context_id = ContextId::from(context_id);
                         let first = 'first: {
                             let Some(k) = iter
                                 .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
@@ -45,7 +44,7 @@ impl IdentityCommand {
                         println!("{:44} | Owned", "Identity");
 
                         for (k, v) in first.into_iter().chain(iter.entries()) {
-                            let (k, v) = (k.unwrap(), v.unwrap());
+                            let (k, v) = (k?, v?);
 
                             if k.context_id() != context_id {
                                 break;
@@ -62,7 +61,7 @@ impl IdentityCommand {
                         }
                     }
                     Err(_) => {
-                        println!("Invalid context ID: {}", context_id);
+                        println!("Invalid context ID: {context_id}");
                     }
                 }
             }

@@ -1,25 +1,23 @@
 use calimero_primitives::application::{Application, ApplicationId};
 use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::{PrivateKey, PublicKey, WalletType};
+use calimero_primitives::identity::{ClientKey, ContextUser, PrivateKey, PublicKey, WalletType};
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[expect(clippy::exhaustive_structs, reason = "Exhaustive")]
+pub struct Empty;
+
+// -------------------------------------------- Application API --------------------------------------------
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct InstallApplicationRequest {
     pub url: Url,
     pub hash: Option<Hash>,
     pub metadata: Vec<u8>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct UninstallApplicationRequest {
-    pub application_id: ApplicationId,
 }
 
 impl InstallApplicationRequest {
@@ -29,6 +27,27 @@ impl InstallApplicationRequest {
             url,
             hash,
             metadata,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct ApplicationInstallResponseData {
+    pub application_id: ApplicationId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct InstallApplicationResponse {
+    pub data: ApplicationInstallResponseData,
+}
+
+impl InstallApplicationResponse {
+    #[must_use]
+    pub const fn new(application_id: ApplicationId) -> Self {
+        Self {
+            data: ApplicationInstallResponseData { application_id },
         }
     }
 }
@@ -47,28 +66,57 @@ impl InstallDevApplicationRequest {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct UninstallApplicationRequest {
+    pub application_id: ApplicationId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct UninstallApplicationResponseData {
+    pub application_id: ApplicationId,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct UninstallApplicationResponse {
+    pub data: UninstallApplicationResponseData,
+}
+
+impl UninstallApplicationResponse {
+    #[must_use]
+    pub const fn new(application_id: ApplicationId) -> Self {
+        Self {
+            data: UninstallApplicationResponseData { application_id },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
-pub struct ApplicationListResult {
+pub struct ListApplicationResponseData {
     pub apps: Vec<Application>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct ListApplicationsResponse {
-    pub data: ApplicationListResult,
+    pub data: ListApplicationResponseData,
 }
 
 impl ListApplicationsResponse {
     #[must_use]
     pub const fn new(apps: Vec<Application>) -> Self {
         Self {
-            data: ApplicationListResult { apps },
+            data: ListApplicationResponseData { apps },
         }
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct GetApplicationDetailsResponse {
     pub data: Application,
@@ -79,49 +127,6 @@ impl GetApplicationDetailsResponse {
     pub const fn new(application: Application) -> Self {
         Self { data: application }
     }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct InstallApplicationResponse {
-    pub data: ApplicationInstallResult,
-}
-
-impl InstallApplicationResponse {
-    #[must_use]
-    pub const fn new(application_id: ApplicationId) -> Self {
-        Self {
-            data: ApplicationInstallResult { application_id },
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct UninstallApplicationResponse {
-    pub data: ApplicationUninstallResult,
-}
-
-impl UninstallApplicationResponse {
-    #[must_use]
-    pub const fn new(application_id: ApplicationId) -> Self {
-        Self {
-            data: ApplicationUninstallResult { application_id },
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct ApplicationInstallResult {
-    pub application_id: ApplicationId,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct ApplicationUninstallResult {
-    pub application_id: ApplicationId,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -145,6 +150,253 @@ pub struct GetApplicationResult {
     pub application: Option<Application>,
 }
 
+// -------------------------------------------- Context API --------------------------------------------
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct GetContextsResponse {
+    pub data: ContextList,
+}
+
+impl GetContextsResponse {
+    #[must_use]
+    pub const fn new(contexts: Vec<Context>) -> Self {
+        Self {
+            data: ContextList { contexts },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct ContextList {
+    pub contexts: Vec<Context>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct CreateContextRequest {
+    pub application_id: ApplicationId,
+    pub context_seed: Option<Hash>,
+    pub initialization_params: Vec<u8>,
+}
+
+impl CreateContextRequest {
+    #[must_use]
+    pub const fn new(
+        application_id: ApplicationId,
+        context_seed: Option<Hash>,
+        initialization_params: Vec<u8>,
+    ) -> Self {
+        Self {
+            application_id,
+            context_seed,
+            initialization_params,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct CreateContextResponseData {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct CreateContextResponse {
+    pub data: CreateContextResponseData,
+}
+
+impl CreateContextResponse {
+    #[must_use]
+    pub const fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
+        Self {
+            data: CreateContextResponseData {
+                context_id,
+                member_public_key,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedContextResponseData {
+    pub is_deleted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct DeleteContextResponse {
+    pub data: DeletedContextResponseData,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct InviteToContextRequest {
+    pub context_id: ContextId,
+    pub inviter_id: PublicKey,
+    pub invitee_id: PublicKey,
+}
+
+impl InviteToContextRequest {
+    #[expect(clippy::similar_names, reason = "Acceptable here")]
+    #[must_use]
+    pub const fn new(context_id: ContextId, inviter_id: PublicKey, invitee_id: PublicKey) -> Self {
+        Self {
+            context_id,
+            inviter_id,
+            invitee_id,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct InviteToContextResponse {
+    pub invitation_payload: Option<ContextInvitationPayload>,
+}
+
+impl InviteToContextResponse {
+    #[must_use]
+    pub const fn new(invitation_payload: Option<ContextInvitationPayload>) -> Self {
+        Self { invitation_payload }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct JoinContextRequest {
+    pub private_key: PrivateKey,
+    pub invitation_payload: ContextInvitationPayload,
+}
+
+impl JoinContextRequest {
+    #[must_use]
+    pub const fn new(
+        private_key: PrivateKey,
+        invitation_payload: ContextInvitationPayload,
+    ) -> Self {
+        Self {
+            private_key,
+            invitation_payload,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct JoinContextResponseData {
+    pub context_id: ContextId,
+    pub member_public_key: PublicKey,
+}
+
+impl JoinContextResponseData {
+    #[must_use]
+    pub const fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
+        Self {
+            context_id,
+            member_public_key,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct JoinContextResponse {
+    pub data: Option<JoinContextResponseData>,
+}
+
+impl JoinContextResponse {
+    #[must_use]
+    pub const fn new(data: Option<JoinContextResponseData>) -> Self {
+        Self { data }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct UpdateContextApplicationRequest {
+    pub application_id: ApplicationId,
+}
+
+impl UpdateContextApplicationRequest {
+    #[must_use]
+    pub const fn new(application_id: ApplicationId) -> Self {
+        Self { application_id }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct UpdateContextApplicationResponse {
+    pub data: Empty,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct GetContextStorageResponseData {
+    pub size_in_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextStorageResponse {
+    pub data: GetContextStorageResponseData,
+}
+
+impl GetContextStorageResponse {
+    #[must_use]
+    pub const fn new(size_in_bytes: u64) -> Self {
+        Self {
+            data: GetContextStorageResponseData { size_in_bytes },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextResponse {
+    pub data: Context,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextIdentitiesResponseData {
+    pub identities: Vec<PublicKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextIdentitiesResponse {
+    pub data: ContextIdentitiesResponseData,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextClientKeysResponseData {
+    pub client_keys: Vec<ClientKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct GetContextClientKeysResponse {
+    pub data: GetContextClientKeysResponseData,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetContextUsersResponseData {
+    pub context_users: Vec<ContextUser>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GetContextUsersResponse {
+    pub data: GetContextUsersResponseData,
+}
+
+// -------------------------------------------- Misc API --------------------------------------------
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -360,191 +612,5 @@ impl NodeChallengeMessage {
             context_id,
             timestamp,
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct ContextStorage {
-    pub size_in_bytes: u64,
-}
-
-impl ContextStorage {
-    #[must_use]
-    pub const fn new(size_in_bytes: u64) -> Self {
-        Self { size_in_bytes }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct ContextList {
-    pub contexts: Vec<Context>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct GetContextsResponse {
-    pub data: ContextList,
-}
-
-impl GetContextsResponse {
-    #[must_use]
-    pub const fn new(contexts: Vec<Context>) -> Self {
-        Self {
-            data: ContextList { contexts },
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct CreateContextRequest {
-    pub application_id: ApplicationId,
-    pub context_seed: Option<Hash>,
-    pub initialization_params: Vec<u8>,
-}
-
-impl CreateContextRequest {
-    #[must_use]
-    pub const fn new(
-        application_id: ApplicationId,
-        context_seed: Option<Hash>,
-        initialization_params: Vec<u8>,
-    ) -> Self {
-        Self {
-            application_id,
-            context_seed,
-            initialization_params,
-        }
-    }
-}
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct InviteToContextRequest {
-    pub context_id: ContextId,
-    pub inviter_id: PublicKey,
-    pub invitee_id: PublicKey,
-}
-
-impl InviteToContextRequest {
-    #[must_use]
-    pub const fn new(context_id: ContextId, inviter_id: PublicKey, invitee_id: PublicKey) -> Self {
-        Self {
-            context_id,
-            inviter_id,
-            invitee_id,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct InviteToContextResponse {
-    pub invitation_payload: Option<ContextInvitationPayload>,
-}
-
-impl InviteToContextResponse {
-    #[must_use]
-    pub const fn new(invitation_payload: Option<ContextInvitationPayload>) -> Self {
-        Self { invitation_payload }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct InviteToContextResponseData {
-    pub context_id: ContextId,
-    pub invitee_public_key: PublicKey,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct ContextResponse {
-    pub context_id: ContextId,
-    pub member_public_key: PublicKey,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct CreateContextResponse {
-    pub data: ContextResponse,
-}
-
-impl CreateContextResponse {
-    #[must_use]
-    pub const fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
-        Self {
-            data: ContextResponse {
-                context_id,
-                member_public_key,
-            },
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct JoinContextRequest {
-    pub private_key: PrivateKey,
-    pub invitation_payload: ContextInvitationPayload,
-}
-
-impl JoinContextRequest {
-    #[must_use]
-    pub const fn new(
-        private_key: PrivateKey,
-        invitation_payload: ContextInvitationPayload,
-    ) -> Self {
-        Self {
-            private_key,
-            invitation_payload,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct JoinContextResponseData {
-    pub context_id: ContextId,
-    pub member_public_key: PublicKey,
-}
-
-impl JoinContextResponseData {
-    #[must_use]
-    pub const fn new(context_id: ContextId, member_public_key: PublicKey) -> Self {
-        Self {
-            context_id,
-            member_public_key,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct JoinContextResponse {
-    pub data: Option<JoinContextResponseData>,
-}
-
-impl JoinContextResponse {
-    #[must_use]
-    pub const fn new(data: Option<JoinContextResponseData>) -> Self {
-        Self { data }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct UpdateContextApplicationRequest {
-    pub application_id: ApplicationId,
-}
-
-impl UpdateContextApplicationRequest {
-    #[must_use]
-    pub const fn new(application_id: ApplicationId) -> Self {
-        Self { application_id }
     }
 }

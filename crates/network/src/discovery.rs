@@ -184,7 +184,7 @@ impl EventLoop {
     // Finds a new rendezvous peer for registration.
     // Prioritizes Discovered peers, falls back to dialing Expired peers if necessary.
     // Returns Some(PeerId) if a suitable peer is found, None otherwise.
-    pub(crate) async fn find_new_rendezvous_peer(&mut self) -> Option<PeerId> {
+    pub(crate) fn find_new_rendezvous_peer(&self) -> Option<PeerId> {
         let mut candidate = None;
 
         for peer_id in self.discovery.state.get_rendezvous_peer_ids() {

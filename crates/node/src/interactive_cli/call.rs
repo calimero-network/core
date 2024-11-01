@@ -26,7 +26,7 @@ impl CallCommand {
         let outcome_result = node
             .handle_call(
                 context.id,
-                self.method.to_owned(),
+                self.method.clone(),
                 serde_json::to_vec(&self.payload)?,
                 self.executor_key,
             )
@@ -37,13 +37,13 @@ impl CallCommand {
                 match outcome.returns {
                     Ok(result) => match result {
                         Some(result) => {
-                            println!("{}   return value:", ind);
+                            println!("{ind}   return value:");
                             #[expect(clippy::option_if_let_else, reason = "clearer here")]
                             let result = if let Ok(value) = serde_json::from_slice::<Value>(&result)
                             {
                                 format!(
                                     "(json): {}",
-                                    format!("{:#}", value)
+                                    format!("{value:#}")
                                         .lines()
                                         .map(|line| line.cyan().to_string())
                                         .collect::<Vec<_>>()
@@ -54,35 +54,35 @@ impl CallCommand {
                             };
 
                             for line in result.lines() {
-                                println!("{}     > {}", ind, line);
+                                println!("{ind}     > {line}");
                             }
                         }
-                        None => println!("{}   (no return value)", ind),
+                        None => println!("{ind}   (no return value)"),
                     },
                     Err(err) => {
-                        let err = format!("{:#?}", err);
+                        let err = format!("{err:#?}");
 
-                        println!("{}   error:", ind);
+                        println!("{ind}   error:");
                         for line in err.lines() {
-                            println!("{}     > {}", ind, line.yellow());
+                            println!("{ind}     > {}", line.yellow());
                         }
                     }
                 }
 
                 if !outcome.logs.is_empty() {
-                    println!("{}   logs:", ind);
+                    println!("{ind}   logs:");
 
                     for log in outcome.logs {
-                        println!("{}     > {}", ind, log.cyan());
+                        println!("{ind}     > {}", log.cyan());
                     }
                 }
             }
             Err(err) => {
-                let err = format!("{:#?}", err);
+                let err = format!("{err:#?}");
 
-                println!("{}   error:", ind);
+                println!("{ind}   error:");
                 for line in err.lines() {
-                    println!("{}     > {}", ind, line.yellow());
+                    println!("{ind}     > {}", line.yellow());
                 }
             }
         }

@@ -31,7 +31,7 @@ runs:
         if echo "$ALL_CHANGED_FILES" | grep -q '\.rs$'; then
           echo "Running checks for the Rust code..."
 
-        # Install the nightly toolchain
+          # Install the nightly toolchain
           rustup toolchain install nightly
 
           # Install rustfmt for the nightly toolchain
@@ -41,7 +41,7 @@ runs:
             echo "Rust code is not properly formatted."
             exit 1  # Exit with a non-zero status code if formatting fails
           fi
-          if ! cargo clippy; then
+          if ! cargo clippy -- -D warnings; then
             echo "Rust code is not properly linted."
             exit 1  # Exit with a non-zero status code if formatting fails
           fi

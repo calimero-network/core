@@ -15,7 +15,7 @@ pub async fn handler(
     Json(req): Json<UninstallApplicationRequest>,
 ) -> impl IntoResponse {
     match state.ctx_manager.uninstall_application(req.application_id) {
-        Ok(_) => ApiResponse {
+        Ok(()) => ApiResponse {
             payload: UninstallApplicationResponse::new(req.application_id),
         }
         .into_response(),

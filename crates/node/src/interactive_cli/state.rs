@@ -12,7 +12,7 @@ pub struct StateCommand {
     context_id: String,
 }
 impl StateCommand {
-    pub async fn run(self, node: &Node) -> Result<()> {
+    pub fn run(self, node: &Node) -> Result<()> {
         let ind = ">>".blue();
         let handle = node.store.handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
@@ -26,7 +26,7 @@ impl StateCommand {
 
         let first = 'first: {
             let Some(k) = iter
-                .seek(ContextStateKey::new(context_id, [0; 32].into()))
+                .seek(ContextStateKey::new(context_id, [0; 32]))
                 .transpose()
             else {
                 break 'first None;

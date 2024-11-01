@@ -3,6 +3,7 @@
 use core::net::IpAddr;
 use std::fs::{read_to_string, write};
 
+use calimero_context_config::client::config::Protocol as CoreProtocol;
 use calimero_network::config::BootstrapNodes;
 use clap::{Args, Parser, ValueEnum};
 use eyre::{eyre, Result as EyreResult};
@@ -11,6 +12,23 @@ use toml_edit::{DocumentMut, Value};
 use tracing::info;
 
 use crate::cli;
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum ConfigProtocol {
+    Near,
+    Starknet,
+}
+
+// Implement conversion from CLI Protocol to Core Protocol
+impl From<ConfigProtocol> for CoreProtocol {
+    fn from(protocol: ConfigProtocol) -> Self {
+        match protocol {
+            ConfigProtocol::Near => Self::Near,
+            ConfigProtocol::Starknet => Self::Starknet,
+        }
+    }
+}
 
 /// Configure the node
 #[derive(Debug, Parser)]

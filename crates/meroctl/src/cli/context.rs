@@ -1,3 +1,4 @@
+use calimero_primitives::context::Context;
 use clap::{Parser, Subcommand};
 use const_format::concatcp;
 use eyre::Result as EyreResult;
@@ -8,7 +9,8 @@ use crate::cli::context::get::GetCommand;
 use crate::cli::context::join::JoinCommand;
 use crate::cli::context::list::ListCommand;
 use crate::cli::context::watch::WatchCommand;
-use crate::cli::RootArgs;
+use crate::cli::Environment;
+use crate::output::Report;
 
 mod create;
 mod delete;
@@ -52,15 +54,23 @@ pub enum ContextSubCommands {
     Watch(WatchCommand),
 }
 
+impl Report for Context {
+    fn report(&self) {
+        println!("id: {}", self.id);
+        println!("application_id: {}", self.application_id);
+        println!("root_hash: {}", self.root_hash);
+    }
+}
+
 impl ContextCommand {
-    pub async fn run(self, args: RootArgs) -> EyreResult<()> {
+    pub async fn run(self, environment: &Environment) -> EyreResult<()> {
         match self.subcommand {
-            ContextSubCommands::Create(create) => create.run(args).await,
-            ContextSubCommands::Delete(delete) => delete.run(args).await,
-            ContextSubCommands::Get(get) => get.run(args).await,
-            ContextSubCommands::Join(join) => join.run(args).await,
-            ContextSubCommands::List(list) => list.run(args).await,
-            ContextSubCommands::Watch(watch) => watch.run(args).await,
+            ContextSubCommands::Create(create) => create.run(environment).await,
+            ContextSubCommands::Delete(delete) => delete.run(environment).await,
+            ContextSubCommands::Get(get) => get.run(environment).await,
+            ContextSubCommands::Join(join) => join.run(environment).await,
+            ContextSubCommands::List(list) => list.run(environment).await,
+            ContextSubCommands::Watch(watch) => watch.run(environment).await,
         }
     }
 }

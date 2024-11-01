@@ -213,7 +213,7 @@ async fn handle_node_events(
             )),
         };
 
-        let response = Response::new(None, body);
+        let response = Response { id: None, body };
 
         if let Err(err) = command_sender.send(Command::Send(response)).await {
             error!(
@@ -263,7 +263,6 @@ async fn handle_commands(
                     error!(%connection_id, %err, "Failed to send Message::Text");
                 }
             }
-            _ => unreachable!("Unexpected Command"),
         }
     }
 }
@@ -302,7 +301,6 @@ async fn handle_text_message(
                 .handle(Arc::clone(&state), connection_state.clone())
                 .await
                 .to_res_body(),
-            _ => unreachable!("Unsupported WebSocket method"),
         },
         Err(err) => {
             error!(%connection_id, %err, "Failed to deserialize RequestPayload");
@@ -315,7 +313,10 @@ async fn handle_text_message(
 
     if let Err(err) = connection_state
         .commands
-        .send(Command::Send(Response::new(message.id, body)))
+        .send(Command::Send(Response {
+            id: message.id,
+            body,
+        }))
         .await
     {
         error!(

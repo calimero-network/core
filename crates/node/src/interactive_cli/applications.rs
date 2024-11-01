@@ -47,7 +47,7 @@ impl ApplicationCommand {
                     }
                     InstallType::File => {
                         let path = Utf8PathBuf::from(resource);
-                        if let Some(application_id) = node
+                        if let Ok(application_id) = node
                             .ctx_manager
                             .install_application_from_path(
                                 path,
@@ -56,7 +56,6 @@ impl ApplicationCommand {
                                     .unwrap_or_default(),
                             )
                             .await
-                            .ok()
                         {
                             application_id
                         } else {

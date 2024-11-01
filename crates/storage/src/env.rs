@@ -27,6 +27,7 @@ pub fn send_action(action: &Action) {
 /// Commits the root hash to the runtime.
 /// This function should be called after the root hash has been updated.
 ///
+#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
 pub fn commit_root(root_hash: &[u8; 32]) {
     imp::commit_root(root_hash);
 }
@@ -81,6 +82,13 @@ pub fn time_now() -> u64 {
     imp::time_now()
 }
 
+/// Return the context id.
+#[must_use]
+#[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
+pub fn context_id() -> [u8; 32] {
+    imp::context_id()
+}
+
 #[cfg(target_arch = "wasm32")]
 mod calimero_vm {
     use calimero_sdk::env;
@@ -118,6 +126,11 @@ mod calimero_vm {
         env::random_bytes(buf)
     }
 
+    /// Return the context id.
+    pub(super) fn context_id() -> [u8; 32] {
+        env::context_id()
+    }
+
     /// Gets the current time.
     ///
     /// This function obtains the current time as a nanosecond timestamp.
@@ -145,7 +158,7 @@ mod mocked {
 
     /// Commits the root hash to the runtime.
     /// This function should be called after the root hash has been updated.
-    pub(super) fn commit_root(_root_hash: &[u8; 32]) {
+    pub(super) const fn commit_root(_root_hash: &[u8; 32]) {
         // Do nothing.
     }
 
@@ -167,6 +180,11 @@ mod mocked {
     /// Fills the buffer with random bytes.
     pub(super) fn random_bytes(buf: &mut [u8]) {
         rand::thread_rng().fill_bytes(buf);
+    }
+
+    /// Return the context id.
+    pub(super) const fn context_id() -> [u8; 32] {
+        [0; 32]
     }
 
     /// Gets the current time.
