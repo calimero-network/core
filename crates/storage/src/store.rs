@@ -17,16 +17,16 @@ pub enum Key {
 impl Key {
     /// Converts the key to a byte array.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; 17] {
-        let mut bytes = [0; 17];
+    pub fn to_bytes(&self) -> [u8; 33] {
+        let mut bytes = [0; 33];
         match *self {
             Self::Index(id) => {
                 bytes[0] = 0;
-                bytes[1..17].copy_from_slice(id.as_bytes());
+                bytes[1..33].copy_from_slice(id.as_bytes());
             }
             Self::Entry(id) => {
                 bytes[0] = 1;
-                bytes[1..17].copy_from_slice(id.as_bytes());
+                bytes[1..33].copy_from_slice(id.as_bytes());
             }
         }
         bytes

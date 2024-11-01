@@ -7,7 +7,9 @@ pub mod state;
 mod sys;
 pub mod types;
 
-pub type Result<T> = std::result::Result<T, types::Error>;
+use core::result::Result as CoreResult;
+
+pub type Result<T> = CoreResult<T, types::Error>;
 
 pub mod app {
     pub use calimero_sdk_macros::{destroy, emit, event, init, logic, state};

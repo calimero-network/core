@@ -25,7 +25,7 @@ use crate::types::{
 };
 use crate::Node;
 
-mod actions;
+// mod actions;
 mod blobs;
 
 impl Node {
@@ -80,7 +80,6 @@ impl Node {
         blob_sender.flush().await
     }
 
-    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     async fn handle_action_catchup(
         &self,
         request: CatchupSyncRequest,
@@ -171,7 +170,7 @@ impl Node {
     }
 
     async fn perform_blob_catchup(
-        &mut self,
+        &self,
         chosen_peer: PeerId,
         latest_application: Application,
     ) -> EyreResult<()> {
@@ -180,7 +179,7 @@ impl Node {
         match source.scheme() {
             "http" | "https" => {
                 info!("Skipping blob catchup for HTTP/HTTPS source");
-                return Ok(());
+                Ok(())
             }
             _ => {
                 self.perform_blob_stream_catchup(chosen_peer, latest_application)
@@ -190,7 +189,7 @@ impl Node {
     }
 
     async fn perform_blob_stream_catchup(
-        &mut self,
+        &self,
         chosen_peer: PeerId,
         latest_application: Application,
     ) -> EyreResult<()> {
@@ -221,7 +220,7 @@ impl Node {
                         ));
                     }
 
-                    current_sequential_id += 1;
+                    current_sequential_id = current_sequential_id.saturating_add(1);
 
                     Ok(chunk.chunk)
                 })

@@ -1,5 +1,5 @@
+use core::mem::replace;
 use core::str::FromStr;
-use std::mem::replace;
 
 use calimero_primitives::hash::Hash;
 use calimero_store::key::ContextMeta as ContextMetaKey;
@@ -42,6 +42,8 @@ enum Commands {
 }
 
 impl ContextCommand {
+    #[expect(clippy::similar_names, reason = "Acceptable here")]
+    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     pub async fn run(self, node: &Node) -> Result<()> {
         let ind = ">>".blue();
 
@@ -109,7 +111,7 @@ impl ContextCommand {
                 let application_id = application_id.parse()?;
 
                 let (context_seed, params) = 'infer: {
-                    let Some(context_seed) = context_seed.clone() else {
+                    let Some(context_seed) = context_seed else {
                         break 'infer (None, None);
                     };
                     let context_seed_clone = context_seed.clone();
@@ -125,21 +127,19 @@ impl ContextCommand {
                         None => break 'infer (None, params),
                         _ => {}
                     };
-                    println!("{ind} Invalid context seed: {}", context_seed_clone);
+                    println!("{ind} Invalid context seed: {context_seed_clone}");
                     return Err(eyre::eyre!("Invalid context seed"));
                 };
 
                 let (tx, rx) = oneshot::channel();
 
-                node.ctx_manager
-                    .create_context(
-                        context_seed.map(Into::into),
-                        application_id,
-                        None,
-                        params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
-                        tx,
-                    )
-                    .await?;
+                node.ctx_manager.create_context(
+                    context_seed.map(Into::into),
+                    application_id,
+                    None,
+                    params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                    tx,
+                )?;
 
                 let _ignored = tokio::spawn(async move {
                     let err: eyre::Report = match rx.await {
@@ -147,7 +147,7 @@ impl ContextCommand {
                             println!("{ind} Created context {context_id} with identity {identity}");
                             return;
                         }
-                        Ok(Err(err)) => err.into(),
+                        Ok(Err(err)) => err,
                         Err(err) => err.into(),
                     };
 

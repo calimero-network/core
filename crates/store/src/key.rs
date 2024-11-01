@@ -76,11 +76,17 @@ impl<T: KeyComponents> Key<T> {
         self.as_bytes().into()
     }
 
+    #[must_use]
     pub const fn len() -> usize {
         GenericArray::<u8, T::LEN>::len()
     }
 
+    #[must_use]
     pub fn try_from_slice(slice: &[u8]) -> Option<Self> {
+        #[expect(
+            clippy::use_self,
+            reason = "Needed here in order to specify type parameter"
+        )]
         (slice.len() == Key::<T>::len()).then_some(())?;
 
         let mut key = GenericArray::default();

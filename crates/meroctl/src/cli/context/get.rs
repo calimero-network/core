@@ -35,7 +35,7 @@ pub enum GetRequest {
 
 impl Report for GetContextResponse {
     fn report(&self) {
-        self.data.report()
+        self.data.report();
     }
 }
 
@@ -50,19 +50,19 @@ impl Report for GetContextUsersResponse {
 
 impl Report for GetContextClientKeysResponse {
     fn report(&self) {
-        println!("Client Keys: {:?}", self)
+        println!("Client Keys: {self:?}");
     }
 }
 
 impl Report for GetContextStorageResponse {
     fn report(&self) {
-        println!("Storage: {:?}", self)
+        println!("Storage: {self:?}");
     }
 }
 
 impl Report for GetContextIdentitiesResponse {
     fn report(&self) {
-        println!("Identities: {:?}", self)
+        println!("Identities: {self:?}");
     }
 }
 
@@ -74,23 +74,23 @@ impl GetCommand {
 
         match self.method {
             GetRequest::Context => {
-                self.get_context(&environment, &multiaddr, &client, &config.identity)
+                self.get_context(environment, multiaddr, &client, &config.identity)
                     .await
             }
             GetRequest::Users => {
-                self.get_users(&environment, &multiaddr, &client, &config.identity)
+                self.get_users(environment, multiaddr, &client, &config.identity)
                     .await
             }
             GetRequest::ClientKeys => {
-                self.get_client_keys(&environment, &multiaddr, &client, &config.identity)
+                self.get_client_keys(environment, multiaddr, &client, &config.identity)
                     .await
             }
             GetRequest::Storage => {
-                self.get_storage(&environment, &multiaddr, &client, &config.identity)
+                self.get_storage(environment, multiaddr, &client, &config.identity)
                     .await
             }
             GetRequest::Identities => {
-                self.get_identities(&environment, &multiaddr, &client, &config.identity)
+                self.get_identities(environment, multiaddr, &client, &config.identity)
                     .await
             }
         }
@@ -171,7 +171,6 @@ impl GetCommand {
             .await
     }
 
-    #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
     async fn make_request<O>(
         &self,
         environment: &Environment,

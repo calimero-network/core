@@ -1,6 +1,9 @@
+#![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
+
+use core::error::Error;
+use core::str::FromStr;
 use std::collections::HashSet;
 use std::io::Error as IoError;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
@@ -139,7 +142,7 @@ impl ContextManager {
         PrivateKey::random(&mut rand::thread_rng())
     }
 
-    pub async fn create_context(
+    pub fn create_context(
         &self,
         seed: Option<[u8; 32]>,
         application_id: ApplicationId,
@@ -177,7 +180,7 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
-        self.add_context(&context, identity_secret, true).await?;
+        self.add_context(&context, identity_secret, true)?;
 
         let (tx, rx) = oneshot::channel();
 
@@ -248,7 +251,7 @@ impl ContextManager {
         Ok(())
     }
 
-    async fn add_context(
+    fn add_context(
         &self,
         context: &Context,
         identity_secret: PrivateKey,
@@ -380,8 +383,7 @@ impl ContextManager {
             }
         }
 
-        self.add_context(&context, identity_secret, !context_exists)
-            .await?;
+        self.add_context(&context, identity_secret, !context_exists)?;
 
         self.subscribe(&context.id).await?;
 
@@ -500,11 +502,11 @@ impl ContextManager {
         end: Option<[u8; N]>,
     ) -> EyreResult<()>
     where
-        K: FromKeyParts<Error: std::error::Error + Send + Sync>,
+        K: FromKeyParts<Error: Error + Send + Sync>,
     {
         let expected_length = Key::<K::Components>::len();
 
-        if context_id.len() + N != expected_length {
+        if context_id.len().saturating_add(N) != expected_length {
             bail!(
                 "key length mismatch, expected: {}, got: {}",
                 Key::<K::Components>::len(),
@@ -567,6 +569,7 @@ impl ContextManager {
 
             drop(iter);
 
+            #[expect(clippy::iter_with_drain, reason = "reallocation would be a bad idea")]
             for k in keys.drain(..) {
                 store.delete(&k)?;
             }
@@ -794,7 +797,6 @@ impl ContextManager {
         self.install_application(blob_id, size, &uri, metadata)
     }
 
-    #[expect(clippy::similar_names, reason = "Different enough")]
     pub async fn install_application_from_stream<AR>(
         &self,
         expected_size: u64,
@@ -930,6 +932,6 @@ impl ContextManager {
     }
 
     pub fn is_application_blob_installed(&self, blob_id: BlobId) -> EyreResult<bool> {
-        Ok(self.blob_manager.has(blob_id)?)
+        self.blob_manager.has(blob_id)
     }
 }

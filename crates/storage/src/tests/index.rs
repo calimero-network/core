@@ -1,13 +1,12 @@
 use super::*;
 use crate::store::MainStorage;
-use crate::tests::common::TEST_ID;
 
 mod index__public_methods {
     use super::*;
 
     #[test]
     fn add_child_to() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
@@ -19,7 +18,7 @@ mod index__public_methods {
         assert!(root_index.children.is_empty());
 
         let collection_name = "Books";
-        let child_id = Id::new();
+        let child_id = Id::random();
         let child_own_hash = [2_u8; 32];
         let child_full_hash: [u8; 32] =
             hex::decode("75877bb41d393b5fb8455ce60ecd8dda001d06316496b14dfa7f895656eeca4a")
@@ -54,7 +53,7 @@ mod index__public_methods {
 
     #[test]
     fn add_root() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
@@ -68,7 +67,7 @@ mod index__public_methods {
 
     #[test]
     fn get_ancestors_of() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
         let child_collection_name = "Books";
         let grandchild_collection_name = "Pages";
@@ -76,7 +75,7 @@ mod index__public_methods {
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
-        let child_id = Id::new();
+        let child_id = Id::random();
         let child_hash = [2_u8; 32];
         let child_info = ChildInfo::new(child_id, child_hash);
         assert!(
@@ -84,7 +83,7 @@ mod index__public_methods {
                 .is_ok()
         );
 
-        let grandchild_id = Id::new();
+        let grandchild_id = Id::random();
         let grandchild_hash = [3_u8; 32];
         let grandchild_info = ChildInfo::new(grandchild_id, grandchild_hash);
         assert!(<Index<MainStorage>>::add_child_to(
@@ -95,7 +94,7 @@ mod index__public_methods {
         )
         .is_ok());
 
-        let greatgrandchild_id = Id::new();
+        let greatgrandchild_id = Id::random();
         let greatgrandchild_hash = [4_u8; 32];
         let greatgrandchild_info = ChildInfo::new(greatgrandchild_id, greatgrandchild_hash);
         assert!(<Index<MainStorage>>::add_child_to(
@@ -142,13 +141,13 @@ mod index__public_methods {
 
     #[test]
     fn get_children_of__single_collection() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let collection_name = "Books";
-        let child1_id = Id::new();
+        let child1_id = Id::random();
         let child1_own_hash = [2_u8; 32];
         let child1_full_hash: [u8; 32] =
             hex::decode("75877bb41d393b5fb8455ce60ecd8dda001d06316496b14dfa7f895656eeca4a")
@@ -156,7 +155,7 @@ mod index__public_methods {
                 .try_into()
                 .unwrap();
 
-        let child2_id = Id::new();
+        let child2_id = Id::random();
         let child2_own_hash = [3_u8; 32];
         let child2_full_hash: [u8; 32] =
             hex::decode("648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b")
@@ -187,20 +186,20 @@ mod index__public_methods {
 
     #[test]
     fn get_children_of__two_collections() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
 
         let collection1_name = "Pages";
-        let child1_id = Id::new();
+        let child1_id = Id::random();
         let child1_own_hash = [2_u8; 32];
         let child1_full_hash: [u8; 32] =
             hex::decode("75877bb41d393b5fb8455ce60ecd8dda001d06316496b14dfa7f895656eeca4a")
                 .unwrap()
                 .try_into()
                 .unwrap();
-        let child2_id = Id::new();
+        let child2_id = Id::random();
         let child2_own_hash = [3_u8; 32];
         let child2_full_hash: [u8; 32] =
             hex::decode("648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b")
@@ -209,7 +208,7 @@ mod index__public_methods {
                 .unwrap();
 
         let collection2_name = "Reviews";
-        let child3_id = Id::new();
+        let child3_id = Id::random();
         let child3_own_hash = [4_u8; 32];
         let child3_full_hash: [u8; 32] =
             hex::decode("9f4fb68f3e1dac82202f9aa581ce0bbf1f765df0e9ac3c8c57e20f685abab8ed")
@@ -250,7 +249,7 @@ mod index__public_methods {
 
     #[test]
     fn get_collection_names_for() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
@@ -259,9 +258,9 @@ mod index__public_methods {
         let collection2_name = "Chapters";
         let mut collection_names = vec![collection1_name.to_owned(), collection2_name.to_owned()];
         collection_names.sort();
-        let child1_id = Id::new();
+        let child1_id = Id::random();
         let child1_own_hash = [2_u8; 32];
-        let child2_id = Id::new();
+        let child2_id = Id::random();
         let child2_own_hash = [3_u8; 32];
 
         assert!(<Index<MainStorage>>::add_child_to(
@@ -287,7 +286,7 @@ mod index__public_methods {
 
     #[test]
     fn get_hashes_for() {
-        let root_id = TEST_ID[0];
+        let root_id = Id::new([0_u8; 32]);
         let root_own_hash = [1_u8; 32];
         let root_full_hash = [0_u8; 32];
 
@@ -303,7 +302,7 @@ mod index__public_methods {
 
     #[test]
     fn get_parent_id() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
@@ -315,7 +314,7 @@ mod index__public_methods {
         assert!(root_index.children.is_empty());
 
         let collection_name = "Books";
-        let child_id = Id::new();
+        let child_id = Id::random();
         let child_own_hash = [2_u8; 32];
 
         assert!(<Index<MainStorage>>::add_child_to(
@@ -335,7 +334,7 @@ mod index__public_methods {
 
     #[test]
     fn get_type_id() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 99).is_ok());
@@ -350,14 +349,14 @@ mod index__public_methods {
 
     #[test]
     fn has_children() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
         let collection_name = "Books";
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
         assert!(!<Index<MainStorage>>::has_children(root_id, collection_name).unwrap());
 
-        let child_id = Id::new();
+        let child_id = Id::random();
         let child_own_hash = [2_u8; 32];
 
         assert!(<Index<MainStorage>>::add_child_to(
@@ -372,7 +371,7 @@ mod index__public_methods {
 
     #[test]
     fn remove_child_from() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
 
         assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, root_hash), 1).is_ok());
@@ -384,7 +383,7 @@ mod index__public_methods {
         assert!(root_index.children.is_empty());
 
         let collection_name = "Books";
-        let child_id = Id::new();
+        let child_id = Id::random();
         let child_own_hash = [2_u8; 32];
 
         assert!(<Index<MainStorage>>::add_child_to(
@@ -409,7 +408,7 @@ mod index__private_methods {
 
     #[test]
     fn get_and_save_index() {
-        let id = Id::new();
+        let id = Id::random();
         let hash1 = [1_u8; 32];
         let hash2 = [2_u8; 32];
         assert!(<Index<MainStorage>>::get_index(id).unwrap().is_none());
@@ -429,7 +428,7 @@ mod index__private_methods {
 
     #[test]
     fn save_and_remove_index() {
-        let id = Id::new();
+        let id = Id::random();
         let hash1 = [1_u8; 32];
         let hash2 = [2_u8; 32];
         assert!(<Index<MainStorage>>::get_index(id).unwrap().is_none());
@@ -456,23 +455,23 @@ mod hashing {
 
     #[test]
     fn calculate_full_merkle_hash_for__with_children() {
-        let root_id = TEST_ID[0];
-        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(TEST_ID[0], [0_u8; 32]), 1).is_ok());
+        let root_id = Id::random();
+        assert!(<Index<MainStorage>>::add_root(ChildInfo::new(root_id, [0_u8; 32]), 1).is_ok());
 
         let collection_name = "Children";
-        let child1_id = TEST_ID[1];
+        let child1_id = Id::random();
         let child1_hash = [1_u8; 32];
         let child1_info = ChildInfo::new(child1_id, child1_hash);
         assert!(
             <Index<MainStorage>>::add_child_to(root_id, collection_name, child1_info, 2).is_ok()
         );
-        let child2_id = TEST_ID[2];
+        let child2_id = Id::random();
         let child2_hash = [2_u8; 32];
         let child2_info = ChildInfo::new(child2_id, child2_hash);
         assert!(
             <Index<MainStorage>>::add_child_to(root_id, collection_name, child2_info, 2).is_ok()
         );
-        let child3_id = TEST_ID[3];
+        let child3_id = Id::random();
         let child3_hash = [3_u8; 32];
         let child3_info = ChildInfo::new(child3_id, child3_hash);
         assert!(
@@ -507,7 +506,7 @@ mod hashing {
 
     #[test]
     fn recalculate_ancestor_hashes_for() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash = [1_u8; 32];
         let child_collection_name = "Books";
         let grandchild_collection_name = "Pages";
@@ -518,7 +517,7 @@ mod hashing {
         let root_index = <Index<MainStorage>>::get_index(root_id).unwrap().unwrap();
         assert_eq!(root_index.full_hash, [0_u8; 32]);
 
-        let child_id = Id::new();
+        let child_id = Id::random();
         let child_hash = [2_u8; 32];
         let child_info = ChildInfo::new(child_id, child_hash);
         assert!(
@@ -537,7 +536,7 @@ mod hashing {
             "75877bb41d393b5fb8455ce60ecd8dda001d06316496b14dfa7f895656eeca4a"
         );
 
-        let grandchild_id = Id::new();
+        let grandchild_id = Id::random();
         let grandchild_hash = [3_u8; 32];
         let grandchild_info = ChildInfo::new(grandchild_id, grandchild_hash);
         assert!(<Index<MainStorage>>::add_child_to(
@@ -567,7 +566,7 @@ mod hashing {
             "648aa5c579fb30f38af744d97d6ec840c7a91277a499a0d780f3e7314eca090b"
         );
 
-        let greatgrandchild_id = Id::new();
+        let greatgrandchild_id = Id::random();
         let greatgrandchild_hash = [4_u8; 32];
         let greatgrandchild_info = ChildInfo::new(greatgrandchild_id, greatgrandchild_hash);
         assert!(<Index<MainStorage>>::add_child_to(
@@ -682,7 +681,7 @@ mod hashing {
 
     #[test]
     fn update_hash_for__full() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash0 = [0_u8; 32];
         let root_hash1 = [1_u8; 32];
         let root_hash2 = [2_u8; 32];
@@ -706,7 +705,7 @@ mod hashing {
 
     #[test]
     fn update_hash_for__own() {
-        let root_id = Id::new();
+        let root_id = Id::random();
         let root_hash1 = [1_u8; 32];
         let root_hash2 = [2_u8; 32];
 

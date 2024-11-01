@@ -1,16 +1,19 @@
-use serde::Serialize;
+use core::error::Error as CoreError;
+
+use serde::{Serialize, Serializer};
 
 #[derive(Debug, Serialize)]
-pub struct Error(#[serde(serialize_with = "error_string")] Box<dyn std::error::Error>);
+pub struct Error(#[serde(serialize_with = "error_string")] Box<dyn CoreError>);
 
-fn error_string<S>(error: &Box<dyn std::error::Error>, serializer: S) -> Result<S::Ok, S::Error>
+fn error_string<S>(error: &impl AsRef<dyn CoreError>, serializer: S) -> Result<S::Ok, S::Error>
 where
-    S: serde::Serializer,
+    S: Serializer,
 {
-    serializer.serialize_str(&error.to_string())
+    serializer.serialize_str(&error.as_ref().to_string())
 }
 
 impl Error {
+    #[must_use]
     pub fn msg(s: &str) -> Self {
         Self(s.to_owned().into())
     }
@@ -18,9 +21,9 @@ impl Error {
 
 impl<T> From<T> for Error
 where
-    T: std::error::Error + 'static,
+    T: CoreError + 'static,
 {
     fn from(error: T) -> Self {
-        Error(Box::new(error))
+        Self(Box::new(error))
     }
 }

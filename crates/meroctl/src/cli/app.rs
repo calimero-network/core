@@ -48,7 +48,7 @@ impl Report for Application {
         println!("source: {}", self.source);
         println!("metadata:");
         for item in &self.metadata {
-            println!("  {:?}", item);
+            println!("  {item:?}");
         }
     }
 }

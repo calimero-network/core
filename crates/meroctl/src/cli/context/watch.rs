@@ -31,7 +31,7 @@ impl WatchCommand {
 
         let mut url = multiaddr_to_url(fetch_multiaddr(&config)?, "ws")?;
         url.set_scheme("ws")
-            .map_err(|_| eyre::eyre!("Failed to set URL scheme"))?;
+            .map_err(|()| eyre::eyre!("Failed to set URL scheme"))?;
 
         environment
             .output
@@ -55,9 +55,9 @@ impl WatchCommand {
             "Subscribed to context {}",
             self.context_id
         )));
-        environment.output.write(&InfoLine(&format!(
-            "Streaming events (press Ctrl+C to stop):"
-        )));
+        environment
+            .output
+            .write(&InfoLine("Streaming events (press Ctrl+C to stop):"));
 
         while let Some(message) = read.next().await {
             match message {
@@ -67,7 +67,7 @@ impl WatchCommand {
                         environment.output.write(&response);
                     }
                 }
-                Err(e) => eprintln!("Error receiving message: {}", e),
+                Err(err) => eprintln!("Error receiving message: {err}"),
             }
         }
 
