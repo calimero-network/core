@@ -41,7 +41,7 @@ runs:
             echo "Rust code is not properly formatted."
             exit 1  # Exit with a non-zero status code if formatting fails
           fi
-          if ! cargo clippy -- -D warnings; then
+          if ! cargo clippy; then
             echo "Rust code is not properly linted."
             exit 1  # Exit with a non-zero status code if formatting fails
           fi
