@@ -77,6 +77,14 @@ pub struct DraftProposal {
 }
 
 impl DraftProposal {
+    /// Create a new draft proposal.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            actions: Vec::new(),
+        }
+    }
+
     /// Add an action to transfer tokens to an account.
     #[must_use]
     pub fn transfer(mut self, receiver: AccountId, amount: u64) -> Self {

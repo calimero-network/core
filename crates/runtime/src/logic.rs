@@ -155,6 +155,7 @@ pub struct Outcome {
     pub events: Vec<Event>,
     pub actions: Vec<Vec<u8>>,
     pub root_hash: Option<[u8; 32]>,
+    pub proposals: BTreeMap<[u8; 32], Vec<u8>>,
     // execution runtime
     // current storage usage of the app
 }
@@ -184,6 +185,7 @@ impl VMLogic<'_> {
             events: self.events,
             actions: self.actions,
             root_hash: self.root_hash,
+            proposals: self.proposals,
         }
     }
 }
@@ -573,20 +575,28 @@ impl VMHostFunctions<'_> {
     /// * `actions_ptr` - Pointer to the start of the action data in WASM
     ///                   memory.
     /// * `actions_len` - Length of the action data.
-    /// * `actions_ptr` - Pointer to the start of the id data in WASM memory.
-    ///                   This should always be exactly 32 bytes in length.
+    /// * `id_ptr`      - Pointer to the start of the id data in WASM memory.
+    /// * `id_len`      - Length of the action data. This should be 32 bytes.
     ///
     pub fn send_proposal(
         &mut self,
         actions_ptr: u64,
         actions_len: u64,
         id_ptr: u64,
+        id_len: u64,
     ) -> VMLogicResult<()> {
+        if id_len != 32 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
         let actions_bytes: Vec<u8> = self.read_guest_memory(actions_ptr, actions_len)?;
         let mut proposal_id = [0; 32];
+
         rand::thread_rng().fill_bytes(&mut proposal_id);
         drop(self.with_logic_mut(|logic| logic.proposals.insert(proposal_id, actions_bytes)));
+
         self.borrow_memory().write(id_ptr, &proposal_id)?;
+
         Ok(())
     }
 }

@@ -51,7 +51,7 @@ impl ToTokens for StateImpl<'_> {
                 type Event<#lifetime> = #event;
             }
 
-            impl #impl_generics #ident #ty_generics {
+            impl #impl_generics #ident #ty_generics #where_clause {
                 fn external() -> ::calimero_sdk::env::ext::External {
                     ::calimero_sdk::env::ext::External {}
                 }
