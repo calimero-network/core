@@ -72,6 +72,7 @@ impl ContextConfigs {
             priviledged: IterableSet<SignerId>,
         }
 
+        #[expect(clippy::unnecessary_wraps, reason = "borsh needs this")]
         pub fn skipped<R: io::Read>(_reader: &mut R) -> Result<u64, io::Error> {
             Ok(Default::default())
         }

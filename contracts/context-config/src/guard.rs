@@ -123,7 +123,7 @@ impl<T> DerefMut for GuardMut<'_, T> {
 
 impl<T> Drop for GuardMut<'_, T> {
     fn drop(&mut self) {
-        self.inner.revision += 1;
+        self.inner.revision = self.inner.revision.wrapping_add(1);
     }
 }
 
