@@ -1,15 +1,9 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
-use crate::env::ext::External;
 use crate::event::AppEvent;
 
 pub trait AppState: BorshSerialize + BorshDeserialize + AppStateInit {
     type Event<'a>: AppEvent + 'a;
-
-    #[inline]
-    fn external(&self) -> External {
-        External {}
-    }
 }
 
 pub trait Identity<This = Self> {}

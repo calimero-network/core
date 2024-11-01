@@ -1,8 +1,8 @@
 use borsh::{to_vec as to_borsh_vec, to_vec, BorshDeserialize, BorshSerialize};
 
 use super::{expected_boolean, expected_register, panic_str, read_register, DATA_REGISTER};
-use crate::sys::Buffer;
-use crate::{env, sys};
+use crate::sys;
+use crate::sys::{Buffer, BufferMut};
 
 /// A blockchain proposal action.
 ///
@@ -90,8 +90,12 @@ impl DraftProposal {
     /// Finalise the proposal and send it to the blockchain.
     #[must_use]
     pub fn send(self) -> ProposalId {
+        #[expect(unused_mut, reason = "Needed by the unsafe code")]
         let mut buf = [0; 32];
-        env::send_proposal(&to_vec(&self.actions).unwrap(), &mut buf);
+        let actions = to_vec(&self.actions).unwrap();
+
+        unsafe { sys::send_proposal(Buffer::from(actions.as_slice()), BufferMut::new(buf)) }
+
         ProposalId(buf)
     }
 }

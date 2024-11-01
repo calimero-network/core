@@ -208,14 +208,3 @@ pub fn time_now() -> u64 {
 
     u64::from_le_bytes(bytes)
 }
-
-/// Call the contract's `send_proposal()` function through the bridge.
-///
-/// # Parameters
-///
-/// * `actions` - The proposal actions, sent as raw data.
-/// * `buf`     - The buffer to write the proposal ID to.
-///
-pub fn send_proposal(actions: &[u8], buf: &mut [u8]) {
-    unsafe { sys::send_proposal(Buffer::from(actions), BufferMut::new(buf)) }
-}
