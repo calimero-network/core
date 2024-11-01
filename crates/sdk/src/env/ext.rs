@@ -115,8 +115,8 @@ pub struct External;
 impl External {
     /// Create a new proposal. This will initially be a draft, until sent.
     #[must_use]
-    pub fn propose(self) -> DraftProposal {
-        DraftProposal::default()
+    pub const fn propose(self) -> DraftProposal {
+        DraftProposal::new()
     }
 }
 
