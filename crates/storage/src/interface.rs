@@ -1039,10 +1039,6 @@ impl<S: StorageAdaptor> MainInterface<S> {
             &to_vec(entity).map_err(StorageError::SerializationError)?,
         );
 
-        if Id::root() == id {
-            env::commit_root(&own_hash);
-        }
-
         entity.element_mut().is_dirty = false;
 
         let action = if is_new {

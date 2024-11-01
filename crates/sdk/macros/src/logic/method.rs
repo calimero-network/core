@@ -146,10 +146,15 @@ impl ToTokens for PublicLogicMethod<'_> {
 
         let state_finalizer = match (&self.self_type, init_method) {
             (Some(SelfType::Mutable(_)), _) | (_, true) => quote! {
-                ::calimero_storage::entities::Data::element_mut(&mut app).update();
-                if let Err(_) = ::calimero_storage::interface::Interface::save(&mut app) {
-                    ::calimero_sdk::env::panic_str("Failed to save app state")
-                }
+                {
+                    ::calimero_storage::entities::Data::element_mut(&mut app).update();
+                    if let Err(_) = ::calimero_storage::interface::Interface::save(&mut app) {
+                        ::calimero_sdk::env::panic_str("Failed to save app state")
+                    }
+                    ::calimero_sdk::env::commit_root(
+                        &::calimero_storage::entities::Data::element(&app).merkle_hash()
+                    );
+                };
             },
             _ => quote! {},
         };
