@@ -115,7 +115,7 @@ impl<V: BorshSerialize + BorshDeserialize> Vector<V> {
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn get_raw(&self, index: usize) -> Result<Option<Entry<V>>, StoreError> {
+    fn get_raw(&self, index: usize) -> Result<Option<Entry<V>>, StoreError> {
         let id = match Interface::child_info_for(self.id(), &self.entries)?
             .get(index)
         {
