@@ -7,9 +7,7 @@ use calimero_config::{
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
-    ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    Credentials, LocalConfig,
+    ClientConfig, ClientLocalSigner, ClientNew, ClientRelayerSigner, ClientSelectedSigner, ClientSigner, Credentials, LocalConfig
 };
 use calimero_context_config::client::protocol::{near, starknet as starknetCredentials};
 use calimero_network::config::{
@@ -177,10 +175,10 @@ impl InitCommand {
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
             ContextConfig {
-                client: ContextConfigClientConfig {
-                    signer: ContextConfigClientSigner {
-                        selected: ContextConfigClientSelectedSigner::Relayer,
-                        relayer: ContextConfigClientRelayerSigner { url: relayer },
+                client: ClientConfig {
+                    signer: ClientSigner {
+                        selected: ClientSelectedSigner::Relayer,
+                        relayer: ClientRelayerSigner { url: relayer },
                         local: LocalConfig {
                             near: [
                                 (
@@ -221,7 +219,7 @@ impl InitCommand {
                             .collect(),
                         },
                     },
-                    new: ContextConfigClientNew {
+                    new: ClientNew {
                         network: match self.protocol {
                             ConfigProtocol::Near => "testnet".into(),
                             ConfigProtocol::Starknet => "sepolia".into(),
@@ -280,14 +278,14 @@ impl InitCommand {
 fn generate_local_signer(
     rpc_url: Url,
     config_protocol: ConfigProtocol,
-) -> EyreResult<ContextConfigClientLocalSigner> {
+) -> EyreResult<ClientLocalSigner> {
     match config_protocol {
         ConfigProtocol::Near => {
             let secret_key = SecretKey::from_random(KeyType::ED25519);
             let public_key = secret_key.public_key();
             let account_id = public_key.unwrap_as_ed25519().0;
 
-            Ok(ContextConfigClientLocalSigner {
+            Ok(ClientLocalSigner {
                 rpc_url,
                 credentials: Credentials::Near(near::Credentials {
                     account_id: hex::encode(account_id).parse()?,
@@ -301,7 +299,7 @@ fn generate_local_signer(
             let secret_key = SigningKey::secret_scalar(&keypair);
             let public_key = keypair.verifying_key().scalar();
 
-            Ok(ContextConfigClientLocalSigner {
+            Ok(ClientLocalSigner {
                 rpc_url,
                 credentials: Credentials::Starknet(starknetCredentials::Credentials {
                     account_id: public_key,
