@@ -4,7 +4,7 @@ use crate::client::env::{utils, Method};
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
-use crate::client::{CallClient, Error};
+use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::ReprTransmute;
 use crate::types::Signed;
 use crate::{Request, RequestKind};
@@ -71,7 +71,7 @@ impl<'a> Method<Starknet> for Mutate<'a> {
 }
 
 impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
-    pub async fn send(self, signing_key: [u8; 32]) -> Result<(), Error<T>> {
+    pub async fn send(self, signing_key: [u8; 32]) -> Result<(), ClientError<T>> {
         let request = Mutate {
             signing_key,
             // todo! when nonces are implemented in context
@@ -80,6 +80,6 @@ impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
             kind: self.kind,
         };
 
-        utils::send_near_or_starknet(&self.client, crate::client::Operation::Write(request)).await
+        utils::send_near_or_starknet(&self.client, Operation::Write(request)).await
     }
 }

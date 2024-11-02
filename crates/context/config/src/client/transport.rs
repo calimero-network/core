@@ -1,3 +1,4 @@
+use core::error::Error;
 use std::borrow::Cow;
 
 use either::Either;
@@ -7,7 +8,7 @@ use thiserror::Error;
 use super::protocol::Protocol;
 
 pub trait Transport {
-    type Error: std::error::Error;
+    type Error: Error;
 
     #[expect(async_fn_in_trait, reason = "Should be fine")]
     async fn send(
@@ -69,6 +70,7 @@ pub trait AssociatedTransport: Transport {
     type Protocol: Protocol;
 
     #[inline]
+    #[must_use]
     fn protocol() -> &'static str {
         Self::Protocol::PROTOCOL
     }

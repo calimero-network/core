@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::client::env::utils;
 use crate::client::transport::Transport;
-use crate::client::{CallClient, Error, Operation};
+use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::Repr;
 use crate::types::{Application, Capability, ContextId, ContextIdentity, SignerId};
 
@@ -26,7 +26,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         context_id: ContextId,
         offset: usize,
         length: usize,
-    ) -> Result<Vec<ContextIdentity>, Error<T>> {
+    ) -> Result<Vec<ContextIdentity>, ClientError<T>> {
         let params = members::MembersRequest {
             context_id: Repr::new(context_id),
             offset,
@@ -36,7 +36,10 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
-    pub async fn application_revision(&self, context_id: ContextId) -> Result<Revision, Error<T>> {
+    pub async fn application_revision(
+        &self,
+        context_id: ContextId,
+    ) -> Result<Revision, ClientError<T>> {
         let params = application_revision::ApplicationRevisionRequest {
             context_id: Repr::new(context_id),
         };
@@ -47,7 +50,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
     pub async fn application(
         &self,
         context_id: ContextId,
-    ) -> Result<Application<'static>, Error<T>> {
+    ) -> Result<Application<'static>, ClientError<T>> {
         let params = application::ApplicationRequest {
             context_id: Repr::new(context_id),
         };
@@ -55,7 +58,10 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
-    pub async fn members_revision(&self, context_id: ContextId) -> Result<Revision, Error<T>> {
+    pub async fn members_revision(
+        &self,
+        context_id: ContextId,
+    ) -> Result<Revision, ClientError<T>> {
         let params = members_revision::MembersRevisionRequest {
             context_id: Repr::new(context_id),
         };
@@ -67,7 +73,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         &self,
         context_id: ContextId,
         identities: &[ContextIdentity],
-    ) -> Result<BTreeMap<SignerId, Vec<Capability>>, Error<T>> {
+    ) -> Result<BTreeMap<SignerId, Vec<Capability>>, ClientError<T>> {
         let params = privileges::PrivilegesRequest::new(context_id, identities);
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await

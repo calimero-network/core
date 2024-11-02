@@ -1,5 +1,5 @@
+use core::ptr;
 use std::borrow::Cow;
-use std::ptr;
 
 use super::{ContextConfigMutate, ContextConfigMutateRequest};
 use crate::repr::Repr;

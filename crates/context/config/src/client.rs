@@ -104,7 +104,7 @@ impl Client<AnyTransport> {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum Error<T: Transport> {
+pub enum ClientError<T: Transport> {
     #[error("transport error: {0}")]
     Transport(T::Error),
     #[error("codec error: {0}")]
@@ -166,7 +166,10 @@ pub enum Operation<M> {
 }
 
 impl<'a, T: Transport> CallClient<'a, T> {
-    async fn send<P, M: Method<P>>(&self, params: Operation<M>) -> Result<M::Returns, Error<T>>
+    async fn send<P, M: Method<P>>(
+        &self,
+        params: Operation<M>,
+    ) -> Result<M::Returns, ClientError<T>>
     where
         P: Protocol,
     {
@@ -188,9 +191,9 @@ impl<'a, T: Transport> CallClient<'a, T> {
             .client
             .send(request, payload)
             .await
-            .map_err(Error::Transport)?;
+            .map_err(ClientError::Transport)?;
 
-        M::decode(response).map_err(Error::Codec)
+        M::decode(response).map_err(ClientError::Codec)
     }
 }
 

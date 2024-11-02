@@ -1,4 +1,4 @@
-use std::mem;
+use core::mem;
 
 use serde::Serialize;
 
@@ -28,7 +28,12 @@ impl Method<Near> for MembersRequest {
         let members: Vec<Repr<ContextIdentity>> = serde_json::from_slice(&response)?;
 
         // safety: `Repr<T>` is a transparent wrapper around `T`
-        let members = unsafe { mem::transmute(members) };
+        #[expect(
+            clippy::transmute_undefined_repr,
+            reason = "Repr<T> is a transparent wrapper around T"
+        )]
+        let members =
+            unsafe { mem::transmute::<Vec<Repr<ContextIdentity>>, Vec<ContextIdentity>>(members) };
 
         Ok(members)
     }

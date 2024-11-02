@@ -1,5 +1,6 @@
+use core::mem;
+use core::slice::from_raw_parts;
 use std::collections::BTreeMap;
-use std::mem;
 
 use serde::Serialize;
 
@@ -16,9 +17,8 @@ pub(super) struct PrivilegesRequest<'a> {
 }
 
 impl<'a> PrivilegesRequest<'a> {
-    pub fn new(context_id: ContextId, identities: &'a [ContextIdentity]) -> Self {
-        // safety: `Repr<T>` is a transparent wrapper around `T`
-        let identities = unsafe { mem::transmute::<_, &[Repr<ContextIdentity>]>(identities) };
+    pub const fn new(context_id: ContextId, identities: &'a [ContextIdentity]) -> Self {
+        let identities = unsafe { from_raw_parts(identities.as_ptr().cast(), identities.len()) };
 
         Self {
             context_id: Repr::new(context_id),
@@ -41,7 +41,16 @@ impl<'a> Method<Near> for PrivilegesRequest<'a> {
             serde_json::from_slice(&response)?;
 
         // safety: `Repr<T>` is a transparent wrapper around `T`
-        let privileges = unsafe { mem::transmute(privileges) };
+        let privileges = unsafe {
+            #[expect(
+                clippy::transmute_undefined_repr,
+                reason = "Repr<T> is a transparent wrapper around T"
+            )]
+            mem::transmute::<
+                BTreeMap<Repr<SignerId>, Vec<Capability>>,
+                BTreeMap<SignerId, Vec<Capability>>,
+            >(privileges)
+        };
 
         Ok(privileges)
     }
