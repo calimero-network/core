@@ -8,6 +8,7 @@ use crate::types::{Application, Capability, ContextId, ContextIdentity, Revision
 
 pub mod application;
 pub mod application_revision;
+pub mod has_member;
 pub mod members;
 pub mod members_revision;
 pub mod privileges;
@@ -18,16 +19,12 @@ pub struct ContextConfigQuery<'a, T> {
 }
 
 impl<'a, T: Transport> ContextConfigQuery<'a, T> {
-    pub async fn members(
+    pub async fn application(
         &self,
         context_id: ContextId,
-        offset: usize,
-        length: usize,
-    ) -> Result<Vec<ContextIdentity>, ClientError<T>> {
-        let params = members::MembersRequest {
+    ) -> Result<Application<'static>, ClientError<T>> {
+        let params = application::ApplicationRequest {
             context_id: Repr::new(context_id),
-            offset,
-            length,
         };
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
@@ -44,12 +41,29 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
-    pub async fn application(
+    pub async fn members(
         &self,
         context_id: ContextId,
-    ) -> Result<Application<'static>, ClientError<T>> {
-        let params = application::ApplicationRequest {
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<ContextIdentity>, ClientError<T>> {
+        let params = members::MembersRequest {
             context_id: Repr::new(context_id),
+            offset,
+            length,
+        };
+
+        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn has_member(
+        &self,
+        context_id: ContextId,
+        identity: ContextIdentity,
+    ) -> Result<bool, ClientError<T>> {
+        let params = has_member::HasMemberRequest {
+            context_id: Repr::new(context_id),
+            identity: Repr::new(identity),
         };
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
