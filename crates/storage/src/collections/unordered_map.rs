@@ -47,10 +47,8 @@ pub struct Entry<K, V> {
     storage: Element,
 }
 
-impl<
-        K: BorshSerialize + BorshDeserialize,
-        V: BorshSerialize + BorshDeserialize,
-    > UnorderedMap<K, V>
+impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
+    UnorderedMap<K, V>
 {
     /// Create a new map collection.
     ///
@@ -107,26 +105,29 @@ impl<
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn insert(&mut self, key: K, value: V) -> Result<bool, StoreError> {
+    pub fn insert(&mut self, key: K, value: V) -> Result<bool, StoreError>
+    where
+        K: AsRef<[u8]> + PartialEq,
+    {
         if let Some(mut entry) = self.get_raw(&key)? {
             entry.value = value;
             // has to be called to update the entry
             entry.element_mut().update();
             let _ = Interface::save(&mut entry)?;
             return Ok(false);
-        } else {
-            let path = self.path();
-            let storage = Element::new(&path, Some(self.compute_id(key.as_ref())));
-            let _ = Interface::add_child_to(
-                self.storage.id(),
-                &mut self.entries,
-                &mut Entry {
-                    key,
-                    value,
-                    storage,
-                },
-            )?;
         }
+
+        let path = self.path();
+        let storage = Element::new(&path, Some(self.compute_id(key.as_ref())));
+        let _ = Interface::add_child_to(
+            self.storage.id(),
+            &mut self.entries,
+            &mut Entry {
+                key,
+                value,
+                storage,
+            },
+        )?;
 
         Ok(true)
     }
@@ -186,7 +187,7 @@ impl<
     ///
     pub fn contains<Q>(&self, key: &Q) -> Result<bool, StoreError>
     where
-        K: Borrow<Q>,
+        K: Borrow<Q> + PartialEq,
         Q: PartialEq + AsRef<[u8]> + ?Sized,
     {
         Ok(self.get_raw(key)?.is_some())

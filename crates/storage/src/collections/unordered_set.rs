@@ -45,7 +45,7 @@ pub struct Entry<V> {
     storage: Element,
 }
 
-impl<V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq> UnorderedSet<V> {
+impl<V: BorshSerialize + BorshDeserialize> UnorderedSet<V> {
     /// Create a new set collection.
     ///
     /// # Errors
@@ -83,7 +83,10 @@ impl<V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq> UnorderedSe
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn insert(&mut self, value: V) -> Result<bool, StoreError> {
+    pub fn insert(&mut self, value: V) -> Result<bool, StoreError>
+    where
+        V: AsRef<[u8]> + PartialEq,
+    {
         let path = self.path();
 
         if self.contains(&value)? {
@@ -137,7 +140,7 @@ impl<V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq> UnorderedSe
     pub fn contains<Q>(&self, value: &Q) -> Result<bool, StoreError>
     where
         V: Borrow<Q>,
-        Q: PartialEq<V> + ?Sized + AsRef<[u8]>,
+        Q: PartialEq + ?Sized + AsRef<[u8]>,
     {
         let entry = Interface::find_by_id::<Entry<V>>(self.compute_id(value.as_ref()))?;
         Ok(entry.is_some())
