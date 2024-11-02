@@ -234,7 +234,7 @@ impl ContextManager {
                         ApplicationMetadataConfig(Repr::new(application.metadata.into())),
                     ),
                 )
-                .send(context.id.rt().expect("infallible conversion"))
+                .send(*context_secret)
                 .await?;
 
             Ok((context.id, identity_secret.public_key()))
