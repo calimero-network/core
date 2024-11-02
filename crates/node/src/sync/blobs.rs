@@ -64,7 +64,11 @@ impl Node {
 
                 party_id
             }
-            unexpected => bail!("unexpected message: {:?}", unexpected),
+            unexpected @ (StreamMessage::Init { .. }
+            | StreamMessage::Message { .. }
+            | StreamMessage::OpaqueError) => {
+                bail!("unexpected message: {:?}", unexpected)
+            }
         };
 
         let (tx, mut rx) = mpsc::channel(1);
@@ -85,7 +89,9 @@ impl Node {
                         sequence_id,
                         payload: MessagePayload::BlobShare { chunk },
                     } => (sequence_id, chunk),
-                    unexpected => bail!("unexpected message: {:?}", unexpected),
+                    unexpected @ (StreamMessage::Init { .. } | StreamMessage::Message { .. }) => {
+                        bail!("unexpected message: {:?}", unexpected)
+                    }
                 };
 
                 sequencer.test(sequence_id)?;

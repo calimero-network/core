@@ -709,6 +709,11 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// Compares a foreign entity with a local one, and applies the resulting
     /// actions to bring the two entities into sync.
     ///
+    /// # Errors
+    ///
+    /// This function will return an error if there are issues accessing local
+    /// data or if there are problems during the comparison process.
+    ///
     pub fn compare_affective<D: Data>(
         data: Option<Vec<u8>>,
         comparison_data: ComparisonData,
@@ -992,6 +997,11 @@ impl<S: StorageAdaptor> MainInterface<S> {
     ///
     /// This function must only be called once otherwise it will panic.
     ///
+    /// # Errors
+    ///
+    /// This function will return an error if there are issues accessing local
+    /// data or if there are problems during the comparison process.
+    ///
     pub fn commit_root<D: Data>(mut root: D) -> Result<(), StorageError> {
         if root.id() != Id::root() {
             return Err(StorageError::UnexpectedId(root.id()));
@@ -1004,7 +1014,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
 
         let _ = Self::save(&mut root)?;
 
-        sync::commit_root(&root.element().merkle_hash());
+        sync::commit_root(&root.element().merkle_hash())?;
 
         Ok(())
     }

@@ -62,18 +62,23 @@ pub fn push_comparison(comparison: Comparison) {
 /// If both actions and comparisons are present, this function will panic.
 /// This function must only be called once.
 ///
-pub fn commit_root(root_hash: &[u8; 32]) {
+/// # Errors
+///
+/// This function will return an error if there are issues accessing local
+/// data or if there are problems during the comparison process.
+///
+pub fn commit_root(root_hash: &[u8; 32]) -> eyre::Result<()> {
     let actions = ACTIONS.with(RefCell::take);
     let comparison = COMPARISON.with(RefCell::take);
 
     let artifact = match (&*actions, &*comparison) {
         (&[], &[]) => vec![],
-        (&[], _) => {
-            to_vec(&SyncArtifact::Comparisons(comparison)).expect("serialization shouldn't fail")
-        }
-        (_, &[]) => to_vec(&SyncArtifact::Actions(actions)).expect("serialization shouldn't fail"),
-        _ => panic!("both actions and comparison are present"),
+        (&[], _) => to_vec(&SyncArtifact::Comparisons(comparison))?,
+        (_, &[]) => to_vec(&SyncArtifact::Actions(actions))?,
+        _ => eyre::bail!("both actions and comparison are present"),
     };
 
     env::commit(root_hash, &artifact);
+
+    Ok(())
 }

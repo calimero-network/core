@@ -66,7 +66,11 @@ impl Node {
 
                 (root_hash, party_id)
             }
-            unexpected => bail!("unexpected message: {:?}", unexpected),
+            unexpected @ (StreamMessage::Init { .. }
+            | StreamMessage::Message { .. }
+            | StreamMessage::OpaqueError) => {
+                bail!("unexpected message: {:?}", unexpected)
+            }
         };
 
         if root_hash == context.root_hash {
@@ -177,7 +181,9 @@ impl Node {
                     sequence_id,
                     payload: MessagePayload::StateSync { artifact },
                 } => (sequence_id, artifact),
-                unexpected => bail!("unexpected message: {:?}", unexpected),
+                unexpected @ (StreamMessage::Init { .. } | StreamMessage::Message { .. }) => {
+                    bail!("unexpected message: {:?}", unexpected)
+                }
             };
 
             sqx_in.test(sequence_id)?;

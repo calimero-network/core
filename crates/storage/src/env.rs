@@ -135,8 +135,8 @@ mod mocked {
     /// Commits the root hash to the runtime.
     pub(super) fn commit(root_hash: &[u8; 32], _artifact: &[u8]) {
         ROOT_HASH.with(|rh| {
-            if let Some(old) = rh.borrow_mut().replace(*root_hash) {
-                panic!("Root hash already committed: {:?}", old);
+            if rh.borrow_mut().replace(*root_hash).is_some() {
+                Option::expect(None, "State previously committed")
             }
         });
     }

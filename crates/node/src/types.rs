@@ -1,4 +1,4 @@
-#![allow(single_use_lifetimes)]
+#![expect(single_use_lifetimes, reason = "borsh shenanigans")]
 
 use std::borrow::Cow;
 
