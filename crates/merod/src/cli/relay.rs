@@ -9,8 +9,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use calimero_config::ConfigFile;
 use calimero_context_config::client::config::Credentials;
+use calimero_context_config::client::protocol::{near, starknet};
 use calimero_context_config::client::relayer::RelayRequest;
-use calimero_context_config::client::{near, starknet, BothTransport, Transport, TransportRequest};
+use calimero_context_config::client::transport::{Both, Transport, TransportRequest};
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 use futures_util::FutureExt;
@@ -93,10 +94,9 @@ impl RelayCommand {
                 .iter()
                 .map(|(network, config)| {
                     let (account_id, access_key) = match &config.credentials {
-                        Credentials::Starknet(credentials) => (
-                            credentials.account_id.clone(),
-                            credentials.secret_key.clone(),
-                        ),
+                        Credentials::Starknet(credentials) => {
+                            (credentials.account_id, credentials.secret_key)
+                        }
                         Credentials::Near(_) => bail!("Expected Starknet credentials."),
                         _ => bail!("Expected NEAR credentials."),
                     };
@@ -112,9 +112,9 @@ impl RelayCommand {
                 .collect::<EyreResult<_>>()?,
         });
 
-        let both_transport = BothTransport {
-            near: near_transport,
-            starknet: starknet_transport,
+        let both_transport = Both {
+            left: near_transport,
+            right: starknet_transport,
         };
 
         let handle = async move {

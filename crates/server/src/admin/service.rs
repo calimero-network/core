@@ -34,9 +34,11 @@ use crate::admin::handlers::applications::{
 use crate::admin::handlers::challenge::request_challenge_handler;
 use crate::admin::handlers::context::{
     create_context, delete_context, get_context, get_context_client_keys, get_context_identities,
-    get_context_storage, get_context_users, get_contexts, join_context, update_context_application,
+    get_context_storage, get_context_users, get_contexts, invite_to_context, join_context,
+    update_context_application,
 };
 use crate::admin::handlers::did::fetch_did_handler;
+use crate::admin::handlers::identity::generate_context_identity;
 use crate::admin::handlers::root_keys::{create_root_key_handler, delete_auth_keys_handler};
 use crate::config::ServerConfig;
 use crate::middleware::auth::AuthSignatureLayer;
@@ -125,8 +127,13 @@ pub(crate) fn setup(
             "/contexts/:context_id/identities",
             get(get_context_identities::handler),
         )
+        .route("/contexts/invite", post(invite_to_context::handler))
         .route("/contexts/join", post(join_context::handler))
         .route("/contexts", get(get_contexts::handler))
+        .route(
+            "/identity/context",
+            post(generate_context_identity::handler),
+        )
         .route("/identity/keys", delete(delete_auth_keys_handler))
         .route("/generate-jwt-token", post(generate_jwt_token_handler))
         .route(
@@ -180,6 +187,7 @@ pub(crate) fn setup(
             "/dev/contexts",
             get(get_contexts::handler).post(create_context::handler),
         )
+        .route("/dev/contexts/invite", post(invite_to_context::handler))
         .route("/dev/contexts/join", post(join_context::handler))
         .route(
             "/dev/contexts/:context_id/application",
@@ -204,6 +212,10 @@ pub(crate) fn setup(
             get(get_context_identities::handler),
         )
         .route("/dev/contexts/:context_id", delete(delete_context::handler))
+        .route(
+            "/dev/identity/context",
+            post(generate_context_identity::handler),
+        )
         .route_layer(from_fn(dev_mode_auth));
 
     let admin_router = Router::new()
@@ -279,17 +291,17 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
         .trim_start_matches('/');
 
     // Use "index.html" for empty paths (root requests)
-    let path = if path.is_empty() { "index.html" } else { &path };
+    let path = if path.is_empty() { "index.html" } else { path };
 
     // Attempt to serve the requested file
     if let Some(file) = NodeUiStaticFiles::get(path) {
-        return serve_file(file).await;
+        return serve_file(file);
     }
 
     // Fallback to index.html for SPA routing if the file wasn't found and it's not already "index.html"
     if path != "index.html" {
         if let Some(index_file) = NodeUiStaticFiles::get("index.html") {
-            return serve_file(index_file).await;
+            return serve_file(index_file);
         }
     }
 
@@ -309,7 +321,7 @@ async fn serve_embedded_file(uri: Uri) -> Result<impl IntoResponse, StatusCode> 
 /// - `Result<impl IntoResponse, StatusCode>`: If the response is successfully built, it returns an `Ok`
 ///   with the response. If there is an error building the response, it returns an `Err` with a
 ///   500 INTERNAL_SERVER_ERROR status code.
-async fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
+fn serve_file(file: EmbeddedFile) -> Result<impl IntoResponse, StatusCode> {
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", file.metadata.mimetype())

@@ -156,7 +156,7 @@ pub struct RelayConfig {
 
 impl RelayConfig {
     #[must_use]
-    pub fn new(registrations_limit: usize) -> Self {
+    pub const fn new(registrations_limit: usize) -> Self {
         Self {
             registrations_limit,
         }

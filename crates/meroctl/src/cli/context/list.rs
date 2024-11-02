@@ -13,7 +13,7 @@ pub struct ListCommand;
 
 impl Report for GetContextsResponse {
     fn report(&self) {
-        for context in self.data.contexts.iter() {
+        for context in &self.data.contexts {
             context.report();
         }
     }

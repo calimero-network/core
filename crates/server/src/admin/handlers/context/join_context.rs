@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use calimero_server_primitives::admin::{
-    JoinContextRequest, JoinContextResponse, JoinContextResponseData,
-};
+use calimero_server_primitives::admin::{JoinContextRequest, JoinContextResponse};
 
 use crate::admin::service::{parse_api_error, ApiResponse};
 use crate::AdminState;
@@ -14,7 +12,6 @@ pub async fn handler(
     Json(JoinContextRequest {
         private_key,
         invitation_payload,
-        ..
     }): Json<JoinContextRequest>,
 ) -> impl IntoResponse {
     let result = state
@@ -24,10 +21,8 @@ pub async fn handler(
         .map_err(parse_api_error);
 
     match result {
-        Ok(r) => ApiResponse {
-            payload: JoinContextResponse::new(r.map(|(context_id, member_public_key)| {
-                JoinContextResponseData::new(context_id, member_public_key)
-            })),
+        Ok(result) => ApiResponse {
+            payload: JoinContextResponse::new(result),
         }
         .into_response(),
         Err(err) => err.into_response(),

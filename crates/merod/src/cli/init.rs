@@ -7,11 +7,12 @@ use calimero_config::{
 };
 use calimero_context::config::ContextConfig;
 use calimero_context_config::client::config::{
-    ContextConfigClientConfig, ContextConfigClientLocalSigner, ContextConfigClientNew,
-    ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
-    Credentials, LocalConfig,
+    ClientConfig, ClientLocalSigner, ClientNew, ClientRelayerSigner, ClientSelectedSigner,
+    ClientSigner, Credentials, LocalConfig,
 };
-use calimero_context_config::client::{near, starknet as starknetCredentials};
+use calimero_context_config::client::protocol::{
+    near as near_protocol, starknet as starknet_protocol,
+};
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -177,10 +178,10 @@ impl InitCommand {
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
             ContextConfig {
-                client: ContextConfigClientConfig {
-                    signer: ContextConfigClientSigner {
-                        selected: ContextConfigClientSelectedSigner::Relayer,
-                        relayer: ContextConfigClientRelayerSigner { url: relayer },
+                client: ClientConfig {
+                    signer: ClientSigner {
+                        selected: ClientSelectedSigner::Relayer,
+                        relayer: ClientRelayerSigner { url: relayer },
                         local: LocalConfig {
                             near: [
                                 (
@@ -221,20 +222,18 @@ impl InitCommand {
                             .collect(),
                         },
                     },
-                    new: ContextConfigClientNew {
+                    new: ClientNew {
                         network: match self.protocol {
                             ConfigProtocol::Near => "testnet".into(),
                             ConfigProtocol::Starknet => "sepolia".into(),
-                            _ => "unknown".into(),
                         },
-                        protocol: self.protocol.into(),
+                        protocol: self.protocol.as_str().to_owned(),
                         contract_id: match self.protocol {
                             ConfigProtocol::Near => "calimero-context-config.testnet".parse()?,
                             ConfigProtocol::Starknet => {
                                 "0x1ee8182d5dd595be9797ccae1488bdf84b19a0f05a93ce6148b0efae04f4568"
                                     .parse()?
                             }
-                            _ => "unknown.contract.id".parse()?,
                         },
                     },
                 },
@@ -280,16 +279,16 @@ impl InitCommand {
 fn generate_local_signer(
     rpc_url: Url,
     config_protocol: ConfigProtocol,
-) -> EyreResult<ContextConfigClientLocalSigner> {
+) -> EyreResult<ClientLocalSigner> {
     match config_protocol {
         ConfigProtocol::Near => {
             let secret_key = SecretKey::from_random(KeyType::ED25519);
             let public_key = secret_key.public_key();
             let account_id = public_key.unwrap_as_ed25519().0;
 
-            Ok(ContextConfigClientLocalSigner {
+            Ok(ClientLocalSigner {
                 rpc_url,
-                credentials: Credentials::Near(near::Credentials {
+                credentials: Credentials::Near(near_protocol::Credentials {
                     account_id: hex::encode(account_id).parse()?,
                     public_key,
                     secret_key,
@@ -301,15 +300,14 @@ fn generate_local_signer(
             let secret_key = SigningKey::secret_scalar(&keypair);
             let public_key = keypair.verifying_key().scalar();
 
-            Ok(ContextConfigClientLocalSigner {
+            Ok(ClientLocalSigner {
                 rpc_url,
-                credentials: Credentials::Starknet(starknetCredentials::Credentials {
+                credentials: Credentials::Starknet(starknet_protocol::Credentials {
                     account_id: public_key,
                     public_key,
                     secret_key,
                 }),
             })
         }
-        _ => todo!(),
     }
 }

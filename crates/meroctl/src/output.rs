@@ -19,8 +19,8 @@ pub trait Report {
 }
 
 impl Output {
-    pub fn new(output_type: Format) -> Self {
-        Output {
+    pub const fn new(output_type: Format) -> Self {
+        Self {
             format: output_type,
         }
     }
@@ -28,8 +28,8 @@ impl Output {
     pub fn write<T: Serialize + Report>(&self, value: &T) {
         match self.format {
             Format::Json => match serde_json::to_string(&value) {
-                Ok(json) => println!("{}", json),
-                Err(e) => eprintln!("Failed to serialize to JSON: {}", e),
+                Ok(json) => println!("{json}"),
+                Err(err) => eprintln!("Failed to serialize to JSON: {err}"),
             },
             Format::PlainText => value.report(),
         }

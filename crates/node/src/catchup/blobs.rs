@@ -16,7 +16,7 @@ pub struct ApplicationBlobChunkSender {
 }
 
 impl ApplicationBlobChunkSender {
-    #[allow(clippy::integer_division, reason = "TODO")]
+    #[expect(clippy::integer_division, reason = "TODO")]
     pub(crate) fn new(stream: Box<Stream>) -> Self {
         // Stream messages are encoded with length delimited codec.
         // Calculate batch size based on the maximum message size and blob chunk size.
@@ -32,9 +32,9 @@ impl ApplicationBlobChunkSender {
     }
 
     pub(crate) async fn send(&mut self, chunk: &[u8]) -> EyreResult<()> {
-        self.batch.extend_from_slice(&chunk);
+        self.batch.extend_from_slice(chunk);
 
-        if self.batch.len() >= self.batch_size * BLOB_CHUNK_SIZE {
+        if self.batch.len() >= self.batch_size.saturating_mul(BLOB_CHUNK_SIZE) {
             let message = to_json_vec(&CatchupStreamMessage::ApplicationBlobChunk(
                 CatchupApplicationBlobChunk {
                     sequential_id: self.sequential_id,
@@ -44,7 +44,7 @@ impl ApplicationBlobChunkSender {
 
             self.stream.send(Message::new(message)).await?;
 
-            self.sequential_id += 1;
+            self.sequential_id = self.sequential_id.saturating_add(1);
         }
 
         Ok(())

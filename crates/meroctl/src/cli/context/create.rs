@@ -88,9 +88,9 @@ impl CreateCommand {
                 params,
             } => {
                 let _ = create_context(
-                    &environment,
+                    environment,
                     &client,
-                    &multiaddr,
+                    multiaddr,
                     context_seed,
                     app_id,
                     params,
@@ -109,9 +109,9 @@ impl CreateCommand {
                 let metadata = metadata.map(String::into_bytes);
 
                 let application_id = install_app(
-                    &environment,
+                    environment,
                     &client,
-                    &multiaddr,
+                    multiaddr,
                     path.clone(),
                     metadata.clone(),
                     &config.identity,
@@ -119,9 +119,9 @@ impl CreateCommand {
                 .await?;
 
                 let context_id = create_context(
-                    &environment,
+                    environment,
                     &client,
-                    &multiaddr,
+                    multiaddr,
                     context_seed,
                     application_id,
                     params,
@@ -130,9 +130,9 @@ impl CreateCommand {
                 .await?;
 
                 watch_app_and_update_context(
-                    &environment,
+                    environment,
                     &client,
-                    &multiaddr,
+                    multiaddr,
                     context_id,
                     path,
                     metadata,
@@ -197,7 +197,7 @@ async fn watch_app_and_update_context(
 
     environment
         .output
-        .write(&InfoLine(&format!("Watching for changes to {}", path)));
+        .write(&InfoLine(&format!("Watching for changes to {path}")));
 
     while let Some(event) = rx.recv().await {
         let event = match event {
