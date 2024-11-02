@@ -1,5 +1,4 @@
-use core::mem;
-use core::slice::from_raw_parts;
+use core::{mem, ptr};
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -18,7 +17,9 @@ pub(super) struct PrivilegesRequest<'a> {
 
 impl<'a> PrivilegesRequest<'a> {
     pub const fn new(context_id: ContextId, identities: &'a [ContextIdentity]) -> Self {
-        let identities = unsafe { from_raw_parts(identities.as_ptr().cast(), identities.len()) };
+        let identities = unsafe {
+            &*(ptr::from_ref::<[ContextIdentity]>(identities) as *const [Repr<ContextIdentity>])
+        };
 
         Self {
             context_id: Repr::new(context_id),
