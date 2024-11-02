@@ -1,35 +1,17 @@
 //! Environment bindings for the storage crate.
 
-use borsh::to_vec;
 #[cfg(target_arch = "wasm32")]
 use calimero_vm as imp;
 #[cfg(not(target_arch = "wasm32"))]
 use mocked as imp;
 
-use crate::interface::Action;
 use crate::store::Key;
 
-/// Sends an action to the runtime.
-///
-/// # Parameters
-///
-/// * `action` - The action to send.
-///
-/// # Panics
-///
-/// This function will panic if the action cannot be serialised.
-///
-#[expect(clippy::expect_used, reason = "Effectively infallible here")]
-pub fn send_action(action: &Action) {
-    imp::send_action(&to_vec(&action).expect("Failed to serialize action"));
-}
-
 /// Commits the root hash to the runtime.
-/// This function should be called after the root hash has been updated.
 ///
 #[expect(clippy::missing_const_for_fn, reason = "Cannot be const here")]
-pub fn commit_root(root_hash: &[u8; 32]) {
-    imp::commit_root(root_hash);
+pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
+    imp::commit(root_hash, artifact);
 }
 
 /// Reads data from persistent storage.
@@ -95,15 +77,9 @@ mod calimero_vm {
 
     use crate::store::Key;
 
-    /// Sends an action to the runtime.
-    pub(super) fn send_action(action: &[u8]) {
-        env::send_action(action);
-    }
-
     /// Commits the root hash to the runtime.
-    /// This function should be called after the root hash has been updated.
-    pub(super) fn commit_root(root_hash: &[u8; 32]) {
-        env::commit_root(root_hash);
+    pub(super) fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
+        env::commit(root_hash, artifact);
     }
 
     /// Reads data from persistent storage.
@@ -142,24 +118,27 @@ mod calimero_vm {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod mocked {
+    use std::cell::RefCell;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use rand::RngCore;
 
     use crate::store::{Key, MockedStorage, StorageAdaptor};
 
+    thread_local! {
+        static ROOT_HASH: RefCell<Option<[u8; 32]>> = const { RefCell::new(None) };
+    }
+
     /// The default storage system.
     type DefaultStore = MockedStorage<{ usize::MAX }>;
 
-    /// Sends an action to the runtime.
-    pub(super) const fn send_action(_action: &[u8]) {
-        // Do nothing.
-    }
-
     /// Commits the root hash to the runtime.
-    /// This function should be called after the root hash has been updated.
-    pub(super) const fn commit_root(_root_hash: &[u8; 32]) {
-        // Do nothing.
+    pub(super) fn commit(root_hash: &[u8; 32], _artifact: &[u8]) {
+        ROOT_HASH.with(|rh| {
+            if let Some(old) = rh.borrow_mut().replace(*root_hash) {
+                panic!("Root hash already committed: {:?}", old);
+            }
+        });
     }
 
     /// Reads data from persistent storage.

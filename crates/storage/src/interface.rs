@@ -226,9 +226,9 @@ use thiserror::Error as ThisError;
 
 use crate::address::{Id, Path};
 use crate::entities::{ChildInfo, Collection, Data};
-use crate::env;
 use crate::index::Index;
 use crate::store::{Key, MainStorage, StorageAdaptor};
+use crate::sync;
 
 /// Convenient type alias for the main storage system.
 pub type Interface = MainInterface<MainStorage>;
@@ -575,22 +575,28 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// data or if there are problems during the comparison process.
     ///
     pub fn compare_trees<D: Data>(
-        foreign_entity: &D,
+        foreign_entity_data: Option<Vec<u8>>,
         foreign_index_data: &ComparisonData,
     ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
-        if foreign_entity.id() != foreign_index_data.id {
-            return Err(StorageError::IdentifierMismatch(foreign_index_data.id));
-        }
-
         let mut actions = (vec![], vec![]);
-        let Some(local_entity) = Self::find_by_id::<D>(foreign_entity.id())? else {
-            // Local entity doesn't exist, so we need to add it
-            actions.0.push(Action::Add {
-                id: foreign_entity.id(),
-                type_id: D::type_id(),
-                data: to_vec(foreign_entity).map_err(StorageError::SerializationError)?,
-                ancestors: foreign_index_data.ancestors.clone(),
-            });
+
+        let foreign_entity = foreign_entity_data
+            .as_ref()
+            .map(|d| D::try_from_slice(d))
+            .transpose()
+            .map_err(StorageError::DeserializationError)?;
+
+        let Some(local_entity) = Self::find_by_id::<D>(foreign_index_data.id)? else {
+            if let Some(foreign_entity) = foreign_entity_data {
+                // Local entity doesn't exist, so we need to add it
+                actions.0.push(Action::Add {
+                    id: foreign_index_data.id,
+                    type_id: D::type_id(),
+                    data: foreign_entity,
+                    ancestors: foreign_index_data.ancestors.clone(),
+                });
+            }
+
             return Ok(actions);
         };
 
@@ -598,28 +604,32 @@ impl<S: StorageAdaptor> MainInterface<S> {
             .ok_or(StorageError::IndexNotFound(local_entity.id()))?;
 
         // Compare full Merkle hashes
-        if local_entity.element().merkle_hash() == foreign_entity.element().merkle_hash()
-            || local_full_hash == foreign_index_data.full_hash
-        {
+        if local_full_hash == foreign_index_data.full_hash {
             return Ok(actions);
         }
 
         // Compare own hashes and timestamps
         if local_own_hash != foreign_index_data.own_hash {
-            if local_entity.element().updated_at() <= foreign_entity.element().updated_at() {
-                actions.0.push(Action::Update {
-                    id: local_entity.id(),
-                    type_id: D::type_id(),
-                    data: to_vec(foreign_entity).map_err(StorageError::SerializationError)?,
-                    ancestors: foreign_index_data.ancestors.clone(),
-                });
-            } else {
-                actions.1.push(Action::Update {
-                    id: foreign_entity.id(),
-                    type_id: D::type_id(),
-                    data: to_vec(&local_entity).map_err(StorageError::SerializationError)?,
-                    ancestors: <Index<S>>::get_ancestors_of(local_entity.id())?,
-                });
+            match (foreign_entity, foreign_entity_data) {
+                (Some(foreign_entity), Some(foreign_entity_data))
+                    if local_entity.element().updated_at()
+                        <= foreign_entity.element().updated_at() =>
+                {
+                    actions.0.push(Action::Update {
+                        id: local_entity.id(),
+                        type_id: D::type_id(),
+                        data: foreign_entity_data,
+                        ancestors: foreign_index_data.ancestors.clone(),
+                    });
+                }
+                _ => {
+                    actions.1.push(Action::Update {
+                        id: foreign_index_data.id,
+                        type_id: D::type_id(),
+                        data: to_vec(&local_entity).map_err(StorageError::SerializationError)?,
+                        ancestors: <Index<S>>::get_ancestors_of(local_entity.id())?,
+                    });
+                }
             }
         }
 
@@ -694,6 +704,26 @@ impl<S: StorageAdaptor> MainInterface<S> {
         }
 
         Ok(actions)
+    }
+
+    /// Compares a foreign entity with a local one, and applies the resulting
+    /// actions to bring the two entities into sync.
+    ///
+    pub fn compare_affective<D: Data>(
+        data: Option<Vec<u8>>,
+        comparison_data: ComparisonData,
+    ) -> Result<(), StorageError> {
+        let (local, remote) = Interface::compare_trees::<D>(data, &comparison_data)?;
+
+        for action in local {
+            let _ignored = Interface::apply_action::<D>(action)?;
+        }
+
+        for action in remote {
+            sync::push_action(action);
+        }
+
+        Ok(())
     }
 
     /// Finds an [`Element`](crate::entities::Element) by its unique identifier.
@@ -824,7 +854,19 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    pub fn generate_comparison_data<D: Data>(entity: &D) -> Result<ComparisonData, StorageError> {
+    pub fn generate_comparison_data<D: Data>(
+        entity: Option<&D>,
+    ) -> Result<ComparisonData, StorageError> {
+        let Some(entity) = entity else {
+            return Ok(ComparisonData {
+                id: Id::root(),
+                own_hash: [0; 32],
+                full_hash: [0; 32],
+                ancestors: Vec::new(),
+                children: BTreeMap::new(),
+            });
+        };
+
         let (full_hash, own_hash) = <Index<S>>::get_hashes_for(entity.id())?
             .ok_or(StorageError::IndexNotFound(entity.id()))?;
 
@@ -922,10 +964,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
 
         _ = S::storage_remove(Key::Entry(child_id));
 
-        // We have to serialise here rather than send the Action itself, as the SDK
-        // has no knowledge of the Action type, and cannot use it as it would be a
-        // circular dependency.
-        env::send_action(&Action::Delete {
+        sync::push_action(Action::Delete {
             id: child_id,
             ancestors,
         });
@@ -946,6 +985,28 @@ impl<S: StorageAdaptor> MainInterface<S> {
     ///
     pub fn root<D: Data>() -> Result<Option<D>, StorageError> {
         Self::find_by_id(Id::root())
+    }
+
+    /// Saves the root entity to the storage system, and commits any recorded
+    /// actions or comparisons.
+    ///
+    /// This function must only be called once otherwise it will panic.
+    ///
+    pub fn commit_root<D: Data>(mut root: D) -> Result<(), StorageError> {
+        if root.id() != Id::root() {
+            return Err(StorageError::UnexpectedId(root.id()));
+        }
+
+        // fixme! mutations (action application) doesn't propagate to the root
+        // fixme! so, a best-attempt approach is to force a save on the root
+        // fixme! deeply nested entries have undefined behaviour
+        root.element_mut().is_dirty = true;
+
+        let _ = Self::save(&mut root)?;
+
+        sync::commit_root(&root.element().merkle_hash());
+
+        Ok(())
     }
 
     /// Saves an [`Element`](crate::entities::Element) to the storage system.
@@ -1057,7 +1118,7 @@ impl<S: StorageAdaptor> MainInterface<S> {
             }
         };
 
-        env::send_action(&action);
+        sync::push_action(action);
 
         Ok(true)
     }
@@ -1150,6 +1211,10 @@ pub enum StorageError {
     #[error("Record not found with ID: {0}")]
     NotFound(Id),
 
+    /// An unexpected ID was encountered.
+    #[error("Unexpected ID: {0}")]
+    UnexpectedId(Id),
+
     /// An error occurred during serialization.
     #[error("Serialization error: {0}")]
     SerializationError(IoError),
@@ -1181,6 +1246,7 @@ impl Serialize for StorageError {
             | Self::IndexNotFound(id)
             | Self::IdentifierMismatch(id)
             | Self::InvalidDataFound(id)
+            | Self::UnexpectedId(id)
             | Self::NotFound(id) => serializer.serialize_str(&id.to_string()),
             Self::StoreError(ref err) => serializer.serialize_str(&err.to_string()),
             Self::UnknownType(err) => serializer.serialize_u8(err),

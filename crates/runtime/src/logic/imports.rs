@@ -42,8 +42,7 @@ impl VMLogic<'_> {
             fn log_utf8(ptr: u64, len: u64);
             fn emit(kind_ptr: u64, kind_len: u64, data_ptr: u64, data_len: u64);
 
-            fn send_action(action_ptr: u64, action_len: u64);
-            fn commit_root(ptr: u64, len: u64);
+            fn commit(root_hash_ptr: u64, root_hash_len: u64, artifact_ptr: u64, artifact_len: u64);
 
             fn storage_write(
                 key_ptr: u64,

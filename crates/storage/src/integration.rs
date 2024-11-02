@@ -25,7 +25,7 @@ pub struct Comparison {
     pub type_id: u8,
 
     /// The serialised data of the entity.
-    pub data: Vec<u8>,
+    pub data: Option<Vec<u8>>,
 
     /// The comparison data for the entity.
     pub comparison_data: ComparisonData,

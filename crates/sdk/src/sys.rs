@@ -20,8 +20,7 @@ wasm_imports! {
         fn log_utf8(msg: Buffer<'_>);
         fn emit(event: Event<'_>);
         // --
-        fn send_action(action: Buffer<'_>);
-        fn commit_root(root: Buffer<'_>);
+        fn commit(root: Buffer<'_>, artifact: Buffer<'_>);
         // --
         fn storage_read(key: Buffer<'_>, register_id: RegisterId) -> Bool;
         fn storage_remove(key: Buffer<'_>, register_id: RegisterId) -> Bool;
