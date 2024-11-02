@@ -94,7 +94,7 @@ fn main() -> EyreResult<()> {
         // dbg!(&outcome);
 
         println!("New Root Hash: {:?}", outcome.root_hash);
-        println!("Actions: {}", outcome.actions.len());
+        println!("Artifact Size: {}", outcome.artifact.len());
         println!("Logs:");
 
         if outcome.logs.is_empty() {
