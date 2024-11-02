@@ -179,22 +179,20 @@ impl Node {
     }
 
     pub async fn perform_interval_sync(&self) {
-        if let Err(err) = timeout(
-            self.sync_config.interval,
-            self.internal_perform_interval_sync(),
-        )
+        if let Err(err) = timeout(self.sync_config.interval, async {
+            for context in self.ctx_manager.get_n_pending_sync_context(3).await {
+                if self.internal_perform_interval_sync(context).await.is_some() {
+                    break;
+                }
+            }
+        })
         .await
         {
             error!(%err, "Timeout while performing interval sync");
         }
     }
 
-    async fn internal_perform_interval_sync(&self) {
-        // todo! prioritize contexts we have peers connected
-        let Some(context_id) = self.ctx_manager.get_any_pending_sync_context().await else {
-            return;
-        };
-
+    async fn internal_perform_interval_sync(&self, context_id: ContextId) -> Option<()> {
         let peers = self
             .network_client
             .mesh_peers(TopicHash::from_raw(context_id))
@@ -214,6 +212,10 @@ impl Node {
                 .await;
 
             debug!(%context_id, %peer_id, "Interval triggered sync successfully finished");
+
+            return Some(());
         }
+
+        None
     }
 }

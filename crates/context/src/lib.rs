@@ -40,6 +40,7 @@ use ed25519_dalek::SigningKey;
 use eyre::{bail, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
+use rand::seq::IteratorRandom;
 use rand::SeedableRng;
 use reqwest::{Client, Url};
 use tokio::fs::File;
@@ -564,14 +565,14 @@ impl ContextManager {
         self.state.read().await.pending_catchup.contains(context_id)
     }
 
-    pub async fn get_any_pending_sync_context(&self) -> Option<ContextId> {
+    pub async fn get_n_pending_sync_context(&self, amount: usize) -> Vec<ContextId> {
         self.state
             .read()
             .await
             .pending_catchup
             .iter()
-            .next()
             .copied()
+            .choose_multiple(&mut rand::thread_rng(), amount)
     }
 
     pub async fn clear_context_pending_sync(&self, context_id: &ContextId) -> bool {
