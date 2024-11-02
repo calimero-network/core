@@ -1,11 +1,10 @@
 use serde::Serialize;
 
-use super::Revision;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::repr::Repr;
-use crate::types::ContextId;
+use crate::types::{ContextId, Revision};
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct MembersRevisionRequest {

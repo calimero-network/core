@@ -4,16 +4,13 @@ use crate::client::env::utils;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
 use crate::repr::Repr;
-use crate::types::{Application, Capability, ContextId, ContextIdentity, SignerId};
+use crate::types::{Application, Capability, ContextId, ContextIdentity, Revision, SignerId};
 
 pub mod application;
 pub mod application_revision;
 pub mod members;
 pub mod members_revision;
 pub mod privileges;
-
-// todo! use calimero_context_config::types::Revision when rebased
-type Revision = u64;
 
 #[derive(Debug)]
 pub struct ContextConfigQuery<'a, T> {
