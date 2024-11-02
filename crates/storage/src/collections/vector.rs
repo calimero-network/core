@@ -117,8 +117,7 @@ impl<V: BorshSerialize + BorshDeserialize> Vector<V> {
     ///
     pub fn get_raw(&self, index: usize) -> Result<Option<Entry<V>>, StoreError> {
         let id = match Interface::child_info_for(self.id(), &self.entries)?
-            .into_iter()
-            .nth(index)
+            .get(index)
         {
             Some(info) => info.id(),
             None => return Ok(None),
