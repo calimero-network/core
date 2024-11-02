@@ -88,14 +88,14 @@ impl<V: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq> UnorderedSe
 
         if self.contains(&value)? {
             return Ok(false);
-        } else {
-            let storage = Element::new(&path, Some(self.compute_id(value.as_ref())));
-            let _ = Interface::add_child_to(
-                self.storage.id(),
-                &mut self.entries,
-                &mut Entry { value, storage },
-            )?;
         }
+
+        let storage = Element::new(&path, Some(self.compute_id(value.as_ref())));
+        let _ = Interface::add_child_to(
+            self.storage.id(),
+            &mut self.entries,
+            &mut Entry { value, storage },
+        )?;
 
         Ok(true)
     }
