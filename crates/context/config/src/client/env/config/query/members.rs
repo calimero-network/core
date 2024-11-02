@@ -6,7 +6,7 @@ use crate::client::protocol::Method;
 use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct Members {
     pub(crate) context_id: Repr<ContextId>,
     pub(crate) offset: usize,

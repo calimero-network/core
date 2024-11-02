@@ -18,12 +18,16 @@ use crate::client::{CallClient, ConfigError, Environment, Protocol, Transport};
 use crate::repr::Repr;
 use crate::types::{Application, Capability, ContextId, ContextIdentity, SignerId};
 use crate::{ContextRequest, ContextRequestKind, RequestKind};
+
+#[derive(Debug, Clone, Copy)]
 pub enum ContextConfig {}
 
+#[derive(Debug)]
 pub struct ContextConfigQuery<'a, T> {
     client: CallClient<'a, T>,
 }
 
+#[derive(Debug)]
 pub struct ContextConfigMutate<'a, T> {
     client: CallClient<'a, T>,
 }

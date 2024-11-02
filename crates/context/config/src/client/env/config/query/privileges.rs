@@ -7,6 +7,7 @@ use crate::client::protocol::Method;
 use crate::repr::Repr;
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
+#[derive(Debug, Clone, Copy)]
 pub struct IdentitiyPrivileges<'a> {
     pub(crate) context_id: Repr<ContextId>,
     pub(crate) identities: &'a [ContextIdentity],
@@ -37,7 +38,7 @@ impl<'a> Method<IdentitiyPrivileges<'a>> for Starknet {
 
     const METHOD: &'static str = "privileges";
 
-    fn encode(params: &IdentitiyPrivileges) -> eyre::Result<Vec<u8>> {
+    fn encode(params: &IdentitiyPrivileges<'_>) -> eyre::Result<Vec<u8>> {
         todo!()
     }
 

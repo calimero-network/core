@@ -6,7 +6,7 @@ use crate::client::protocol::Method;
 use crate::repr::Repr;
 use crate::types::{Application, ApplicationSource, ContextId};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct ApplicationRequest {
     pub(crate) context_id: Repr<ContextId>,
 }

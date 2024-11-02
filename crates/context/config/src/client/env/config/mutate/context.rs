@@ -19,7 +19,7 @@ impl<'a> Method<Mutate<'a>> for Near {
 
     type Returns = ();
 
-    fn encode(params: &Mutate) -> eyre::Result<Vec<u8>> {
+    fn encode(params: &Mutate<'_>) -> eyre::Result<Vec<u8>> {
         let signed = Signed::new(&Request::new(todo!(), params.kind), |b| {
             SigningKey::from_bytes(&params.signer_id).sign(b)
         })?;
@@ -39,7 +39,7 @@ impl<'a> Method<Mutate<'a>> for Starknet {
 
     const METHOD: &'static str = "mutate";
 
-    fn encode(params: &Mutate) -> eyre::Result<Vec<u8>> {
+    fn encode(params: &Mutate<'_>) -> eyre::Result<Vec<u8>> {
         // sign the params, encode it and return
         // since you will have a `Vec<Felt>` here, you can
         // `Vec::with_capacity(32 * calldata.len())` and then

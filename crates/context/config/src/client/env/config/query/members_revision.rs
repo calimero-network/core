@@ -8,7 +8,7 @@ use crate::types::ContextId;
 
 pub type Revision = u64;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct MembersRevision {
     pub(crate) context_id: Repr<ContextId>,
 }

@@ -865,7 +865,6 @@ dependencies = [
  "calimero-primitives",
  "calimero-store",
  "camino",
- "ed25519-dalek",
  "eyre",
  "futures-util",
  "rand 0.8.5",

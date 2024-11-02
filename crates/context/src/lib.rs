@@ -32,8 +32,6 @@ use calimero_store::types::{
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use ed25519_dalek::ed25519::signature::SignerMut;
-use ed25519_dalek::SigningKey;
 use eyre::{bail, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
