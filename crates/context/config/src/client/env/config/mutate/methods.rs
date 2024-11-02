@@ -1,5 +1,4 @@
 use core::ptr;
-use std::borrow::Cow;
 
 use super::{ContextConfigMutate, ContextConfigMutateRequest};
 use crate::repr::Repr;
@@ -53,7 +52,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
             kind: RequestKind::Context(ContextRequest {
                 context_id: Repr::new(context_id),
                 kind: ContextRequestKind::AddMembers {
-                    members: Cow::Borrowed(members),
+                    members: members.into(),
                 },
             }),
         }
@@ -73,7 +72,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
             kind: RequestKind::Context(ContextRequest {
                 context_id: Repr::new(context_id),
                 kind: ContextRequestKind::RemoveMembers {
-                    members: Cow::Borrowed(members),
+                    members: members.into(),
                 },
             }),
         }
@@ -94,7 +93,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
             kind: RequestKind::Context(ContextRequest {
                 context_id: Repr::new(context_id),
                 kind: ContextRequestKind::Grant {
-                    capabilities: Cow::Borrowed(capabilities),
+                    capabilities: capabilities.into(),
                 },
             }),
         }
@@ -115,7 +114,7 @@ impl<'a, T> ContextConfigMutate<'a, T> {
             kind: RequestKind::Context(ContextRequest {
                 context_id: Repr::new(context_id),
                 kind: ContextRequestKind::Revoke {
-                    capabilities: Cow::Borrowed(capabilities),
+                    capabilities: capabilities.into(),
                 },
             }),
         }
