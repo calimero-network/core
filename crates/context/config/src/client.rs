@@ -1,144 +1,23 @@
-use core::error::Error as CoreError;
 use std::borrow::Cow;
-use std::str::FromStr;
 
 use either::Either;
 use env::Method;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod config;
 pub mod env;
 pub mod protocol;
 pub mod relayer;
+pub mod transport;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
-use protocol::{near, starknet};
-
-#[non_exhaustive]
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Protocol {
-    Near,
-    Starknet,
-}
-
-impl Protocol {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Protocol::Near => "near",
-            Protocol::Starknet => "starknet",
-        }
-    }
-}
-
-#[derive(Debug, Error, Copy, Clone)]
-#[error("Failed to parse protocol")]
-pub struct ProtocolParseError {
-    _priv: (),
-}
-
-impl FromStr for Protocol {
-    type Err = ProtocolParseError;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        match input.to_lowercase().as_str() {
-            "near" => Ok(Protocol::Near),
-            "starknet" => Ok(Protocol::Starknet),
-            _ => Err(ProtocolParseError { _priv: () }),
-        }
-    }
-}
-
-pub trait Transport {
-    type Error: CoreError;
-
-    #[expect(async_fn_in_trait, reason = "Should be fine")]
-    async fn send(
-        &self,
-        request: TransportRequest<'_>,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Self::Error>;
-}
-
-impl<L: Transport, R: Transport> Transport for Either<L, R> {
-    type Error = Either<L::Error, R::Error>;
-
-    async fn send(
-        &self,
-        request: TransportRequest<'_>,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Self::Error> {
-        match self {
-            Self::Left(left) => left.send(request, payload).await.map_err(Either::Left),
-            Self::Right(right) => right.send(request, payload).await.map_err(Either::Right),
-        }
-    }
-}
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct TransportRequest<'a> {
-    pub protocol: Protocol,
-    pub network_id: Cow<'a, str>,
-    pub contract_id: Cow<'a, str>,
-    pub operation: Operation<'a>,
-}
-
-impl<'a> TransportRequest<'a> {
-    #[must_use]
-    pub const fn new(
-        protocol: Protocol,
-        network_id: Cow<'a, str>,
-        contract_id: Cow<'a, str>,
-        operation: Operation<'a>,
-    ) -> Self {
-        Self {
-            protocol,
-            network_id,
-            contract_id,
-            operation,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
-pub enum Operation<'a> {
-    Read { method: Cow<'a, str> },
-    Write { method: Cow<'a, str> },
-}
+use protocol::{near, starknet, Protocol};
+use transport::{Both, Transport, TransportRequest};
 
 pub type AnyTransport = Either<
     relayer::RelayerTransport,
-    BothTransport<near::NearTransport<'static>, starknet::StarknetTransport<'static>>,
+    Both<near::NearTransport<'static>, starknet::StarknetTransport<'static>>,
 >;
-
-#[expect(clippy::exhaustive_structs, reason = "this is exhaustive")]
-#[derive(Debug, Clone)]
-pub struct BothTransport<L, R> {
-    pub near: L,
-    pub starknet: R,
-}
-
-impl<L: Transport, R: Transport> Transport for BothTransport<L, R> {
-    type Error = Either<L::Error, R::Error>;
-
-    async fn send(
-        &self,
-        request: TransportRequest<'_>,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Self::Error> {
-        match request.protocol {
-            Protocol::Near => self.near.send(request, payload).await.map_err(Either::Left),
-            Protocol::Starknet => self
-                .starknet
-                .send(request, payload)
-                .await
-                .map_err(Either::Right),
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct Client<T> {
@@ -162,8 +41,8 @@ impl Client<AnyTransport> {
                 }))
             }
 
-            ClientSelectedSigner::Local => Either::Right(BothTransport {
-                near: near::NearTransport::new(&near::NearConfig {
+            ClientSelectedSigner::Local => Either::Right(Both {
+                left: near::NearTransport::new(&near::NearConfig {
                     networks: config
                         .signer
                         .local
@@ -190,7 +69,7 @@ impl Client<AnyTransport> {
                         })
                         .collect(),
                 }),
-                starknet: starknet::StarknetTransport::new(&starknet::StarknetConfig {
+                right: starknet::StarknetTransport::new(&starknet::StarknetConfig {
                     networks: config
                         .signer
                         .local
@@ -230,6 +109,8 @@ pub enum Error<T: Transport> {
     Transport(T::Error),
     #[error("codec error: {0}")]
     Codec(#[from] eyre::Report),
+    #[error("unsupported protocol: {0}")]
+    UnsupportedProtocol(String),
 }
 
 impl<T: Transport> Client<T> {
@@ -243,7 +124,7 @@ impl<T: Transport> Client<T> {
 
     pub fn query<'a, E: Environment<'a, T>>(
         &'a self,
-        protocol: Protocol,
+        protocol: Cow<'a, str>,
         network_id: Cow<'a, str>,
         contract_id: Cow<'a, str>,
     ) -> E::Query {
@@ -257,7 +138,7 @@ impl<T: Transport> Client<T> {
 
     pub fn mutate<'a, E: Environment<'a, T>>(
         &'a self,
-        protocol: Protocol,
+        protocol: Cow<'a, str>,
         network_id: Cow<'a, str>,
         contract_id: Cow<'a, str>,
     ) -> E::Mutate {
@@ -272,47 +153,35 @@ impl<T: Transport> Client<T> {
 
 #[derive(Debug)]
 pub struct CallClient<'a, T> {
-    protocol: Protocol,
+    protocol: Cow<'a, str>,
     network_id: Cow<'a, str>,
     contract_id: Cow<'a, str>,
     client: &'a Client<T>,
 }
 
+#[derive(Debug)]
+pub enum Operation<M> {
+    Read(M),
+    Write(M),
+}
+
 impl<'a, T: Transport> CallClient<'a, T> {
-    async fn query<P, M>(&self, params: M) -> Result<M::Returns, Error<T>>
+    async fn send<P, M: Method<P>>(&self, params: Operation<M>) -> Result<M::Returns, Error<T>>
     where
-        M: Method<P>,
-        P: protocol::Protocol,
+        P: Protocol,
     {
-        self.send::<P, _>(false, params).await
-    }
-
-    async fn mutate<P, M>(&self, params: M) -> Result<M::Returns, Error<T>>
-    where
-        M: Method<P>,
-        P: protocol::Protocol,
-    {
-        self.send::<P, _>(true, params).await
-    }
-
-    async fn send<P, M>(&self, write: bool, params: M) -> Result<M::Returns, Error<T>>
-    where
-        M: Method<P>,
-        P: protocol::Protocol,
-    {
-        let payload = M::encode(params)?;
-
         let method = Cow::Borrowed(M::METHOD);
 
+        let (operation, payload) = match params {
+            Operation::Read(params) => (transport::Operation::Read { method }, params.encode()?),
+            Operation::Write(params) => (transport::Operation::Write { method }, params.encode()?),
+        };
+
         let request = TransportRequest {
-            protocol: self.protocol,
+            protocol: Cow::Borrowed(&self.protocol),
             network_id: Cow::Borrowed(&self.network_id),
             contract_id: Cow::Borrowed(&self.contract_id),
-            operation: if write {
-                Operation::Write { method }
-            } else {
-                Operation::Read { method }
-            },
+            operation,
         };
 
         let response = self

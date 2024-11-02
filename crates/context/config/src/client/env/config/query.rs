@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::client::protocol::near::Near;
-use crate::client::protocol::starknet::Starknet;
-use crate::client::{CallClient, Error, Protocol, Transport};
+use crate::client::env::utils;
+use crate::client::transport::Transport;
+use crate::client::{CallClient, Error, Operation};
 use crate::repr::Repr;
 use crate::types::{Application, Capability, ContextId, ContextIdentity, SignerId};
 
@@ -33,10 +33,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             length,
         };
 
-        match self.client.protocol {
-            Protocol::Near => self.client.query::<Near, _>(params).await,
-            Protocol::Starknet => self.client.query::<Starknet, _>(params).await,
-        }
+        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
     pub async fn application_revision(&self, context_id: ContextId) -> Result<Revision, Error<T>> {
@@ -44,10 +41,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             context_id: Repr::new(context_id),
         };
 
-        match self.client.protocol {
-            Protocol::Near => self.client.query::<Near, _>(params).await,
-            Protocol::Starknet => self.client.query::<Starknet, _>(params).await,
-        }
+        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
     pub async fn application(
@@ -58,10 +52,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             context_id: Repr::new(context_id),
         };
 
-        match self.client.protocol {
-            Protocol::Near => self.client.query::<Near, _>(params).await,
-            Protocol::Starknet => self.client.query::<Starknet, _>(params).await,
-        }
+        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
     pub async fn members_revision(&self, context_id: ContextId) -> Result<Revision, Error<T>> {
@@ -69,10 +60,7 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             context_id: Repr::new(context_id),
         };
 
-        match self.client.protocol {
-            Protocol::Near => self.client.query::<Near, _>(params).await,
-            Protocol::Starknet => self.client.query::<Starknet, _>(params).await,
-        }
+        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 
     pub async fn privileges(
@@ -82,9 +70,6 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
     ) -> Result<BTreeMap<SignerId, Vec<Capability>>, Error<T>> {
         let params = privileges::PrivilegesRequest::new(context_id, identities);
 
-        match self.client.protocol {
-            Protocol::Near => self.client.query::<Near, _>(params).await,
-            Protocol::Starknet => self.client.query::<Starknet, _>(params).await,
-        }
+        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 }

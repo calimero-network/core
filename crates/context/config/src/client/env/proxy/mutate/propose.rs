@@ -1,8 +1,9 @@
 use super::ContextProxyMutate;
-use crate::client::env::Method;
+use crate::client::env::{utils, Method};
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::{CallClient, Error, Protocol, Transport};
+use crate::client::transport::Transport;
+use crate::client::{CallClient, Error, Operation};
 
 // todo! this should be replaced with primitives lib
 #[derive(Debug)]
@@ -67,9 +68,6 @@ impl<'a, T: Transport> ContextProxyProposeRequest<'a, T> {
             proposal: self.proposal,
         };
 
-        match self.client.protocol {
-            Protocol::Near => self.client.mutate::<Near, _>(request).await,
-            Protocol::Starknet => self.client.mutate::<Starknet, _>(request).await,
-        }
+        utils::send_near_or_starknet(&self.client, Operation::Write(request)).await
     }
 }

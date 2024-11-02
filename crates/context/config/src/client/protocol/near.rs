@@ -25,12 +25,18 @@ use thiserror::Error;
 use url::Url;
 
 use super::Protocol;
-use crate::client::{Operation, Transport, TransportRequest};
+use crate::client::transport::{AssociatedTransport, Operation, Transport, TransportRequest};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Near {}
 
-impl Protocol for Near {}
+impl Protocol for Near {
+    const PROTOCOL: &'static str = "near";
+}
+
+impl AssociatedTransport for NearTransport<'_> {
+    type Protocol = Near;
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]

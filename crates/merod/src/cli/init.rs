@@ -10,7 +10,9 @@ use calimero_context_config::client::config::{
     ClientConfig, ClientLocalSigner, ClientNew, ClientRelayerSigner, ClientSelectedSigner,
     ClientSigner, Credentials, LocalConfig,
 };
-use calimero_context_config::client::protocol::{near, starknet as starknetCredentials};
+use calimero_context_config::client::protocol::{
+    near as near_protocol, starknet as starknet_protocol,
+};
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
@@ -224,16 +226,14 @@ impl InitCommand {
                         network: match self.protocol {
                             ConfigProtocol::Near => "testnet".into(),
                             ConfigProtocol::Starknet => "sepolia".into(),
-                            _ => "unknown".into(),
                         },
-                        protocol: self.protocol.into(),
+                        protocol: self.protocol.as_str().to_owned(),
                         contract_id: match self.protocol {
                             ConfigProtocol::Near => "calimero-context-config.testnet".parse()?,
                             ConfigProtocol::Starknet => {
                                 "0x1ee8182d5dd595be9797ccae1488bdf84b19a0f05a93ce6148b0efae04f4568"
                                     .parse()?
                             }
-                            _ => "unknown.contract.id".parse()?,
                         },
                     },
                 },
@@ -288,7 +288,7 @@ fn generate_local_signer(
 
             Ok(ClientLocalSigner {
                 rpc_url,
-                credentials: Credentials::Near(near::Credentials {
+                credentials: Credentials::Near(near_protocol::Credentials {
                     account_id: hex::encode(account_id).parse()?,
                     public_key,
                     secret_key,
@@ -302,13 +302,12 @@ fn generate_local_signer(
 
             Ok(ClientLocalSigner {
                 rpc_url,
-                credentials: Credentials::Starknet(starknetCredentials::Credentials {
+                credentials: Credentials::Starknet(starknet_protocol::Credentials {
                     account_id: public_key,
                     public_key,
                     secret_key,
                 }),
             })
         }
-        _ => todo!(),
     }
 }

@@ -1,4 +1,5 @@
-use crate::client::{CallClient, Error, Transport};
+use crate::client::transport::Transport;
+use crate::client::{CallClient, Error};
 
 #[derive(Debug)]
 pub struct ContextProxyQuery<'a, T> {

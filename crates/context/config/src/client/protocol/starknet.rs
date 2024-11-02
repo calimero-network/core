@@ -13,12 +13,18 @@ use starknet::signers::{LocalWallet, SigningKey};
 use thiserror::Error;
 
 use super::Protocol;
-use crate::client::{Operation, Transport, TransportRequest};
+use crate::client::transport::{AssociatedTransport, Operation, Transport, TransportRequest};
 
 #[derive(Copy, Clone, Debug)]
 pub enum Starknet {}
 
-impl Protocol for Starknet {}
+impl Protocol for Starknet {
+    const PROTOCOL: &'static str = "starknet";
+}
+
+impl AssociatedTransport for StarknetTransport<'_> {
+    type Protocol = Starknet;
+}
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]

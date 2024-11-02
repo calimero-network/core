@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::Protocol;
 use crate::client::protocol::near::Credentials as NearCredentials;
 use crate::client::protocol::starknet::Credentials as StarknetCredentials;
 
@@ -16,7 +15,7 @@ pub struct ClientConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClientNew {
-    pub protocol: Protocol,
+    pub protocol: String,
     pub network: String,
     pub contract_id: String,
 }

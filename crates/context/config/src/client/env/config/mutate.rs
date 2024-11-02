@@ -1,9 +1,10 @@
 use ed25519_dalek::{Signer, SigningKey};
 
-use crate::client::env::Method;
+use crate::client::env::{utils, Method};
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::{CallClient, Error, Protocol, Transport};
+use crate::client::transport::Transport;
+use crate::client::{CallClient, Error};
 use crate::repr::ReprTransmute;
 use crate::types::Signed;
 use crate::{Request, RequestKind};
@@ -79,9 +80,6 @@ impl<'a, T: Transport> ContextConfigMutateRequest<'a, T> {
             kind: self.kind,
         };
 
-        match self.client.protocol {
-            Protocol::Near => self.client.mutate::<Near, _>(request).await,
-            Protocol::Starknet => self.client.mutate::<Starknet, _>(request).await,
-        }
+        utils::send_near_or_starknet(&self.client, crate::client::Operation::Write(request)).await
     }
 }

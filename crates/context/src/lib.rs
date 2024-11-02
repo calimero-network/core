@@ -201,7 +201,7 @@ impl ContextManager {
 
             this.config_client
                 .mutate::<ContextConfigEnv>(
-                    this.client_config.new.protocol,
+                    this.client_config.new.protocol.as_str().into(),
                     this.client_config.new.network.as_str().into(),
                     this.client_config.new.contract_id.as_str().into(),
                 )
@@ -312,7 +312,7 @@ impl ContextManager {
         }
 
         let client = self.config_client.query::<ContextConfigEnv>(
-            protocol.parse()?,
+            protocol.into(),
             network_id.into(),
             contract_id.into(),
         );
@@ -411,7 +411,7 @@ impl ContextManager {
 
         self.config_client
             .mutate::<ContextConfigEnv>(
-                context_config.protocol.parse()?,
+                context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
             )
@@ -852,7 +852,7 @@ impl ContextManager {
 
     pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
         let client = self.config_client.query::<ContextConfigEnv>(
-            self.client_config.new.protocol,
+            self.client_config.new.protocol.as_str().into(),
             self.client_config.new.network.as_str().into(),
             self.client_config.new.contract_id.as_str().into(),
         );
