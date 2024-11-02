@@ -1,73 +1,36 @@
 #![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
-use core::str::FromStr;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use url::Url;
 
-use super::{near, starknet};
+use crate::client::protocol::near::Credentials as NearCredentials;
+use crate::client::protocol::starknet::Credentials as StarknetCredentials;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextConfigClientConfig {
-    pub new: ContextConfigClientNew,
-    pub signer: ContextConfigClientSigner,
-}
-
-#[non_exhaustive]
-#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Protocol {
-    Near,
-    Starknet,
-}
-
-impl Protocol {
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Near => "near",
-            Self::Starknet => "starknet",
-        }
-    }
-}
-
-#[derive(Debug, Error, Copy, Clone)]
-#[error("Failed to parse protocol")]
-pub struct ProtocolParseError {
-    _priv: (),
-}
-
-impl FromStr for Protocol {
-    type Err = ProtocolParseError;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        match input.to_lowercase().as_str() {
-            "near" => Ok(Self::Near),
-            "starknet" => Ok(Self::Starknet),
-            _ => Err(ProtocolParseError { _priv: () }),
-        }
-    }
+pub struct ClientConfig {
+    pub new: ClientNew,
+    pub signer: ClientSigner,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextConfigClientNew {
-    pub protocol: Protocol,
+pub struct ClientNew {
+    pub protocol: String,
     pub network: String,
     pub contract_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LocalConfig {
-    pub near: BTreeMap<String, ContextConfigClientLocalSigner>,
-    pub starknet: BTreeMap<String, ContextConfigClientLocalSigner>,
+    pub near: BTreeMap<String, ClientLocalSigner>,
+    pub starknet: BTreeMap<String, ClientLocalSigner>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextConfigClientSigner {
+pub struct ClientSigner {
     #[serde(rename = "use")]
-    pub selected: ContextConfigClientSelectedSigner,
-    pub relayer: ContextConfigClientRelayerSigner,
+    pub selected: ClientSelectedSigner,
+    pub relayer: ClientRelayerSigner,
     #[serde(rename = "self")]
     pub local: LocalConfig,
 }
@@ -75,19 +38,19 @@ pub struct ContextConfigClientSigner {
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
-pub enum ContextConfigClientSelectedSigner {
+pub enum ClientSelectedSigner {
     Relayer,
     #[serde(rename = "self")]
     Local,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextConfigClientRelayerSigner {
+pub struct ClientRelayerSigner {
     pub url: Url,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ContextConfigClientLocalSigner {
+pub struct ClientLocalSigner {
     pub rpc_url: Url,
     #[serde(flatten)]
     pub credentials: Credentials,
@@ -97,6 +60,6 @@ pub struct ContextConfigClientLocalSigner {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Credentials {
-    Near(near::Credentials),
-    Starknet(starknet::Credentials),
+    Near(NearCredentials),
+    Starknet(StarknetCredentials),
 }

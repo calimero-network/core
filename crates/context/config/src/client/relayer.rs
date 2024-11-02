@@ -3,8 +3,7 @@ use std::borrow::Cow;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::config::Protocol;
-use super::{Operation, Transport, TransportRequest};
+use super::transport::{Operation, Transport, TransportRequest};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -33,7 +32,7 @@ impl RelayerTransport {
 #[derive(Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct RelayRequest<'a> {
-    pub protocol: Protocol,
+    pub protocol: Cow<'a, str>,
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,
     pub operation: Operation<'a>,
