@@ -46,7 +46,11 @@ impl<'a> Method<Near> for Mutate<'a> {
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        serde_json::from_slice(&response).map_err(Into::into)
+        if !response.is_empty() {
+            eyre::bail!("unexpected response {:?}", response);
+        }
+
+        Ok(())
     }
 }
 
