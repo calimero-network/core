@@ -161,6 +161,7 @@ impl Node {
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
+            our_root_hash=%context.root_hash,
             our_identity=%our_identity,
             their_identity=%their_identity,
             "Starting bidirectional sync",
@@ -180,12 +181,36 @@ impl Node {
 
             sqx_in.test(sequence_id)?;
 
-            let outcome = self.execute(
-                context,
-                "__calimero_sync_next",
-                artifact.into_owned(),
-                our_identity,
+            let outcome = self
+                .execute(
+                    context,
+                    "__calimero_sync_next",
+                    artifact.into_owned(),
+                    our_identity,
+                )
+                .await?
+                .ok_or_eyre("the application was not found??")?;
+
+            debug!(
+                context_id=%context.id,
+                root_hash=?context.root_hash,
+                "State sync outcome",
             );
+
+            if outcome.artifact.is_empty() {
+                break;
+            }
+
+            send(
+                stream,
+                &StreamMessage::Message {
+                    sequence_id: sqx_out.next(),
+                    payload: MessagePayload::StateSync {
+                        artifact: Cow::from(&outcome.artifact),
+                    },
+                },
+            )
+            .await?;
         }
 
         Ok(())
