@@ -167,7 +167,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
             line = stdin.next_line() => {
                 if let Some(line) = line? {
                     if let Err(err) = interactive_cli::handle_line(&mut node, line).await {
-                        error!("Failed to handle line: {:?}", err);
+                        error!("Failed handling user command: {:?}", err);
                     }
                 }
             }
