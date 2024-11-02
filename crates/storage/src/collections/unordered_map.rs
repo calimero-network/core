@@ -48,7 +48,7 @@ pub struct Entry<K, V> {
 }
 
 impl<
-        K: BorshSerialize + BorshDeserialize + AsRef<[u8]> + PartialEq,
+        K: BorshSerialize + BorshDeserialize,
         V: BorshSerialize + BorshDeserialize,
     > UnorderedMap<K, V>
 {
