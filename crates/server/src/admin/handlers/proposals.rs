@@ -121,19 +121,19 @@ pub async fn get_proposals_handler(
 ) -> impl IntoResponse {
     let sample_action = Action::ExternalFunctionCall(ExternalFunctionCall {
         receiver_id: get_mock_user(),
-        method_name: "sampleMethod".to_string(),
+        method_name: "sampleMethod".to_owned(),
         args: serde_json::json!({"example": "value"}),
-        deposit: "100".to_string(),
-        gas: "10".to_string(),
+        deposit: "100".to_owned(),
+        gas: "10".to_owned(),
     });
 
     let proposals = vec![Proposal {
-        id: "proposal_1".to_string(),
+        id: "proposal_1".to_owned(),
         author: get_mock_user(),
         actions: vec![sample_action],
-        title: "Proposal 1".to_string(),
-        description: "This is the first proposal.".to_string(),
-        created_at: "2024-10-31T12:00:00Z".to_string(),
+        title: "Proposal 1".to_owned(),
+        description: "This is the first proposal.".to_owned(),
+        created_at: "2024-10-31T12:00:00Z".to_owned(),
     }];
 
     ApiResponse {
@@ -149,12 +149,12 @@ pub async fn get_proposal_handler(
     Json(req): Json<GetProposalResponse>,
 ) -> impl IntoResponse {
     let proposal = Proposal {
-        id: "proposal_1".to_string(),
+        id: "proposal_1".to_owned(),
         author: get_mock_user(),
         actions: get_mock_actions(),
-        title: "Proposal Title".to_string(),
-        description: "Proposal Description".to_string(),
-        created_at: "2024-10-31T12:00:00Z".to_string(),
+        title: "Proposal Title".to_owned(),
+        description: "Proposal Description".to_owned(),
+        created_at: "2024-10-31T12:00:00Z".to_owned(),
     };
 
     ApiResponse {
@@ -220,7 +220,7 @@ pub async fn get_proposal_approvers_handler(
 
 pub fn get_mock_user() -> User {
     User {
-        identity_public_key: "sample_public_key".to_string(),
+        identity_public_key: "sample_public_key".to_owned(),
     }
 }
 
@@ -228,13 +228,13 @@ pub fn get_mock_actions() -> Vec<Action> {
     vec![
         Action::ExternalFunctionCall(ExternalFunctionCall {
             receiver_id: get_mock_user(),
-            method_name: "sampleMethod".to_string(),
+            method_name: "sampleMethod".to_owned(),
             args: serde_json::json!({"example": "value"}),
-            deposit: "100".to_string(),
-            gas: "5000".to_string(),
+            deposit: "100".to_owned(),
+            gas: "5000".to_owned(),
         }),
         Action::Transfer(Transfer {
-            amount: "250".to_string(),
+            amount: "250".to_owned(),
         }),
         Action::SetNumApprovals(SetNumApprovals {
             num_of_approvals: 3,
@@ -243,7 +243,7 @@ pub fn get_mock_actions() -> Vec<Action> {
             active_proposals_limit: 10,
         }),
         Action::SetContextValue(SetContextValue {
-            key: "sampleKey".to_string(),
+            key: "sampleKey".to_owned(),
             value: serde_json::json!({"example": "value"}), // Using serde_json::Value for any JSON-compatible structure
         }),
     ]
