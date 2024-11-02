@@ -249,10 +249,10 @@ impl ContextManager {
                 if let Err(err) = this.delete_context(&context_id).await {
                     error!(%context_id, %err, "Failed to clean up context after failed creation");
                 }
-            }
-
-            if let Err(err) = this.subscribe(&context.id).await {
-                error!(%context_id, %err, "Failed to subscribe to context after creation");
+            } else {
+                if let Err(err) = this.subscribe(&context.id).await {
+                    error!(%context_id, %err, "Failed to subscribe to context after creation");
+                }
             }
 
             let _ignored = result_sender.send(result);
