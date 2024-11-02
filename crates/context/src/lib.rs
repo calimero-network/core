@@ -320,7 +320,13 @@ impl ContextManager {
         );
 
         for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
-            let members = client.members(offset, length).await?;
+            let members = client
+                .members(
+                    context_id.rt().expect("infallible conversion"),
+                    offset,
+                    length,
+                )
+                .await?;
 
             if members.is_empty() {
                 break;
@@ -341,7 +347,9 @@ impl ContextManager {
             bail!("unable to join context: not a member, ask for an invite")
         };
 
-        let application = client.application().await?;
+        let application = client
+            .application(context_id.rt().expect("infallible conversion"))
+            .await?;
 
         let context = Context::new(
             context_id,
@@ -844,14 +852,16 @@ impl ContextManager {
         Ok(false)
     }
 
-    pub async fn get_latest_application(&self) -> EyreResult<Application> {
+    pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
         let client = self.config_client.query::<ContextConfigEnv>(
             self.client_config.new.protocol,
             self.client_config.new.network.as_str().into(),
             self.client_config.new.contract_id.as_str().into(),
         );
 
-        let application = client.application().await?;
+        let application = client
+            .application(context_id.rt().expect("infallible conversion"))
+            .await?;
 
         Ok(Application::new(
             application.id.as_bytes().into(),

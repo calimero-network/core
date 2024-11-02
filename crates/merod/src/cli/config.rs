@@ -3,7 +3,7 @@
 use core::net::IpAddr;
 use std::fs::{read_to_string, write};
 
-use calimero_context_config::client::config::Protocol as CoreProtocol;
+use calimero_context_config::client::Protocol as CoreProtocol;
 use calimero_network::config::BootstrapNodes;
 use clap::{Args, Parser, ValueEnum};
 use eyre::{eyre, Result as EyreResult};

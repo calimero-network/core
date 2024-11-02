@@ -5,9 +5,10 @@ use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::Method;
 use crate::repr::Repr;
-use crate::types::{Capability, ContextIdentity, SignerId};
+use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
 
 pub struct IdentitiyPrivileges<'a> {
+    pub(crate) context_id: Repr<ContextId>,
     pub(crate) identities: &'a [ContextIdentity],
 }
 

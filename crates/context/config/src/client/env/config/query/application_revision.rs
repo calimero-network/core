@@ -3,11 +3,15 @@ use serde::{Deserialize, Serialize};
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::Method;
+use crate::repr::Repr;
+use crate::types::ContextId;
 
 pub type Revision = u64;
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct ApplicationRevision {}
+pub struct ApplicationRevision {
+    pub(crate) context_id: Repr<ContextId>,
+}
 
 impl Method<ApplicationRevision> for Near {
     const METHOD: &'static str = "application_revision";

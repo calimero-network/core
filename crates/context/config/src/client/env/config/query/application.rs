@@ -3,10 +3,13 @@ use serde::{Deserialize, Serialize};
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::protocol::Method;
-use crate::types::{Application, ApplicationSource};
+use crate::repr::Repr;
+use crate::types::{Application, ApplicationSource, ContextId};
 
 #[derive(Serialize, Deserialize)]
-pub struct ApplicationRequest {}
+pub struct ApplicationRequest {
+    pub(crate) context_id: Repr<ContextId>,
+}
 
 impl Method<ApplicationRequest> for Near {
     const METHOD: &'static str = "application_revision";

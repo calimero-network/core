@@ -62,17 +62,25 @@ impl<'a, T: 'a> Environment<'a, T> for ContextConfig {
 impl<'a, T: Transport> ContextConfigQuery<'a, T> {
     pub async fn members(
         &self,
+        context_id: Repr<ContextId>,
         offset: usize,
         length: usize,
     ) -> Result<Vec<Repr<ContextIdentity>>, ConfigError<T>> {
-        let params = Members { offset, length };
+        let params = Members {
+            context_id,
+            offset,
+            length,
+        };
         match self.client.protocol {
             Protocol::Near => self.client.query::<Near, Members>(params).await,
             Protocol::Starknet => self.client.query::<Starknet, Members>(params).await,
         }
     }
-    pub async fn application_revision(&self) -> Result<Revision, ConfigError<T>> {
-        let params = ApplicationRevision {};
+    pub async fn application_revision(
+        &self,
+        context_id: Repr<ContextId>,
+    ) -> Result<Revision, ConfigError<T>> {
+        let params = ApplicationRevision { context_id };
         match self.client.protocol {
             Protocol::Near => self.client.query::<Near, ApplicationRevision>(params).await,
             Protocol::Starknet => {
@@ -82,8 +90,11 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
             }
         }
     }
-    pub async fn application(&self) -> Result<Application<'static>, ConfigError<T>> {
-        let params = ApplicationRequest {};
+    pub async fn application(
+        &self,
+        context_id: Repr<ContextId>,
+    ) -> Result<Application<'static>, ConfigError<T>> {
+        let params = ApplicationRequest { context_id };
         match self.client.protocol {
             Protocol::Near => self.client.query::<Near, ApplicationRequest>(params).await,
             Protocol::Starknet => {
@@ -94,8 +105,11 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         }
     }
 
-    pub async fn members_revision(&self) -> Result<Revision, ConfigError<T>> {
-        let params = MembersRevision {};
+    pub async fn members_revision(
+        &self,
+        context_id: Repr<ContextId>,
+    ) -> Result<Revision, ConfigError<T>> {
+        let params = MembersRevision { context_id };
         match self.client.protocol {
             Protocol::Near => self.client.query::<Near, MembersRevision>(params).await,
             Protocol::Starknet => self.client.query::<Starknet, MembersRevision>(params).await,
@@ -104,9 +118,13 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
 
     pub async fn privileges(
         &self,
+        context_id: Repr<ContextId>,
         identities: &[ContextIdentity],
     ) -> Result<BTreeMap<Repr<SignerId>, Vec<Capability>>, ConfigError<T>> {
-        let params = IdentitiyPrivileges { identities };
+        let params = IdentitiyPrivileges {
+            context_id,
+            identities,
+        };
         match self.client.protocol {
             Protocol::Near => {
                 self.client

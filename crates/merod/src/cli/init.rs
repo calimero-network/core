@@ -11,7 +11,7 @@ use calimero_context_config::client::config::{
     ContextConfigClientRelayerSigner, ContextConfigClientSelectedSigner, ContextConfigClientSigner,
     Credentials, LocalConfig,
 };
-use calimero_context_config::client::{near, starknet as starknetCredentials};
+use calimero_context_config::client::protocol::{near, starknet as starknetCredentials};
 use calimero_network::config::{
     BootstrapConfig, BootstrapNodes, CatchupConfig, DiscoveryConfig, RelayConfig, RendezvousConfig,
     SwarmConfig,
