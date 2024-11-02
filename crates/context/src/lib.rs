@@ -960,28 +960,6 @@ impl ContextManager {
         Ok(false)
     }
 
-    // todo! add process that polls updates
-    // pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
-    //     let client = self.config_client.query(
-    //         self.client_config.new.network.as_str().into(),
-    //         self.client_config.new.contract_id.as_str().into(),
-    //     );
-
-    //     let response = client
-    //         .application(context_id.rt().expect("infallible conversion"))
-    //         .await?;
-
-    //     let application = response.parse()?;
-
-    //     Ok(Application::new(
-    //         application.id.as_bytes().into(),
-    //         application.blob.as_bytes().into(),
-    //         application.size,
-    //         ApplicationSource::from_str(&application.source.0)?,
-    //         application.metadata.0.into_inner().into_owned(),
-    //     ))
-    // }
-
     pub fn get_application(
         &self,
         application_id: &ApplicationId,

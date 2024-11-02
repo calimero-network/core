@@ -50,7 +50,6 @@ pub mod types;
 use runtime_compat::RuntimeCompatStore;
 use sync::SyncConfig;
 use types::BroadcastMessage;
-// use crate::types::{ActionMessage, BroadcastMessage, SyncMessage};
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -326,7 +325,7 @@ impl Node {
         artifact: Vec<u8>,
     ) -> EyreResult<()> {
         let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
-            bail!("Context '{}' not found", context_id);
+            bail!("context '{}' not found", context_id);
         };
 
         if root_hash == context.root_hash {
@@ -343,7 +342,7 @@ impl Node {
             )
             .await?
         else {
-            bail!("Application not installed");
+            bail!("application not installed");
         };
 
         if let Some(derived_root_hash) = outcome.root_hash {
@@ -468,7 +467,7 @@ impl Node {
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {
                 if outcome.artifact.is_empty() {
-                    eyre::bail!("Context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+                    eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
                 }
 
                 context.root_hash = root_hash.into();
