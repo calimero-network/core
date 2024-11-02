@@ -191,22 +191,15 @@ pub struct Context {
     pub id: ContextId,
     pub application_id: ApplicationId,
     pub root_hash: Hash,
-    // pub wire_version: usize,
 }
 
 impl Context {
     #[must_use]
-    pub const fn new(
-        id: ContextId,
-        application_id: ApplicationId,
-        root_hash: Hash,
-        // wire_version: usize,
-    ) -> Self {
+    pub const fn new(id: ContextId, application_id: ApplicationId, root_hash: Hash) -> Self {
         Self {
             id,
             application_id,
             root_hash,
-            // wire_version,
         }
     }
 }
