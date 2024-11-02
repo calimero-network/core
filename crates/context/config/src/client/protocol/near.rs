@@ -27,6 +27,7 @@ use url::Url;
 use super::Protocol;
 use crate::client::{Operation, Transport, TransportRequest};
 
+#[derive(Copy, Clone, Debug)]
 pub enum Near {}
 
 impl Protocol for Near {}

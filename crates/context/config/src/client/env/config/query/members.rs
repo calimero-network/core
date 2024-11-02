@@ -1,44 +1,49 @@
-use serde::{Deserialize, Serialize};
+use std::mem;
 
+use serde::Serialize;
+
+use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::Method;
 use crate::repr::Repr;
 use crate::types::{ContextId, ContextIdentity};
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
-pub struct Members {
-    pub(crate) context_id: Repr<ContextId>,
-    pub(crate) offset: usize,
-    pub(crate) length: usize,
+#[derive(Copy, Clone, Debug, Serialize)]
+pub(super) struct MembersRequest {
+    pub(super) context_id: Repr<ContextId>,
+    pub(super) offset: usize,
+    pub(super) length: usize,
 }
 
-impl Method<Members> for Near {
+impl Method<Near> for MembersRequest {
     const METHOD: &'static str = "members";
 
-    type Returns = Vec<Repr<ContextIdentity>>;
+    type Returns = Vec<ContextIdentity>;
 
-    fn encode(params: &Members) -> eyre::Result<Vec<u8>> {
-        let encoded_body = serde_json::to_vec(&params)?;
-        Ok(encoded_body)
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
     }
 
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
-        let decoded_body = serde_json::from_slice(response)?;
-        Ok(decoded_body)
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let members: Vec<Repr<ContextIdentity>> = serde_json::from_slice(&response)?;
+
+        // safety: `Repr<T>` is a transparent wrapper around `T`
+        let members = unsafe { mem::transmute(members) };
+
+        Ok(members)
     }
 }
 
-impl Method<Members> for Starknet {
-    type Returns = Vec<Repr<ContextIdentity>>;
+impl Method<Starknet> for MembersRequest {
+    type Returns = Vec<ContextIdentity>;
 
     const METHOD: &'static str = "members";
 
-    fn encode(params: &Members) -> eyre::Result<Vec<u8>> {
+    fn encode(self) -> eyre::Result<Vec<u8>> {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }

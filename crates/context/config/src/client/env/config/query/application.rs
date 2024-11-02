@@ -1,48 +1,50 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
+use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::Method;
 use crate::repr::Repr;
-use crate::types::{Application, ApplicationSource, ContextId};
+use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
-pub struct ApplicationRequest {
-    pub(crate) context_id: Repr<ContextId>,
+#[derive(Copy, Clone, Debug, Serialize)]
+pub(super) struct ApplicationRequest {
+    pub(super) context_id: Repr<ContextId>,
 }
 
-impl Method<ApplicationRequest> for Near {
-    const METHOD: &'static str = "application_revision";
+impl Method<Near> for ApplicationRequest {
+    const METHOD: &'static str = "application";
 
     type Returns = Application<'static>;
 
-    fn encode(params: &ApplicationRequest) -> eyre::Result<Vec<u8>> {
-        let encoded_body = serde_json::to_vec(&params)?;
-        Ok(encoded_body)
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
     }
 
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
-        let temp: Application<'_> = serde_json::from_slice(response)?;
-        Ok(Application {
-            id: temp.id,
-            blob: temp.blob,
-            size: temp.size,
-            source: ApplicationSource(temp.source.0.into_owned().into()),
-            metadata: temp.metadata.to_owned(),
-        })
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        let application: Application<'_> = serde_json::from_slice(&response)?;
+
+        Ok(Application::new(
+            application.id,
+            application.blob,
+            application.size,
+            ApplicationSource(application.source.0.into_owned().into()),
+            ApplicationMetadata(Repr::new(
+                application.metadata.0.into_inner().into_owned().into(),
+            )),
+        ))
     }
 }
 
-impl Method<ApplicationRequest> for Starknet {
+impl Method<Starknet> for ApplicationRequest {
     type Returns = Application<'static>;
 
-    const METHOD: &'static str = "application_revision";
+    const METHOD: &'static str = "application";
 
-    fn encode(params: &ApplicationRequest) -> eyre::Result<Vec<u8>> {
+    fn encode(self) -> eyre::Result<Vec<u8>> {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }

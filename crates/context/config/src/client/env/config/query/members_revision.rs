@@ -1,44 +1,41 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
+use super::Revision;
+use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::client::protocol::Method;
 use crate::repr::Repr;
 use crate::types::ContextId;
 
-pub type Revision = u64;
-
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
-pub struct MembersRevision {
-    pub(crate) context_id: Repr<ContextId>,
+#[derive(Copy, Clone, Debug, Serialize)]
+pub(super) struct MembersRevisionRequest {
+    pub(super) context_id: Repr<ContextId>,
 }
 
-impl Method<MembersRevision> for Near {
-    const METHOD: &'static str = "application_revision";
+impl Method<Near> for MembersRevisionRequest {
+    const METHOD: &'static str = "members_revision";
 
     type Returns = Revision;
 
-    fn encode(params: &MembersRevision) -> eyre::Result<Vec<u8>> {
-        let encoded_body = serde_json::to_vec(&params)?;
-        Ok(encoded_body)
+    fn encode(self) -> eyre::Result<Vec<u8>> {
+        serde_json::to_vec(&self).map_err(Into::into)
     }
 
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
-        let decoded_body = serde_json::from_slice(response)?;
-        Ok(decoded_body)
+    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+        serde_json::from_slice(&response).map_err(Into::into)
     }
 }
 
-impl Method<MembersRevision> for Starknet {
+impl Method<Starknet> for MembersRevisionRequest {
     type Returns = Revision;
 
-    const METHOD: &'static str = "application_revision";
+    const METHOD: &'static str = "members_revision";
 
-    fn encode(params: &MembersRevision) -> eyre::Result<Vec<u8>> {
+    fn encode(self) -> eyre::Result<Vec<u8>> {
         todo!()
     }
 
-    fn decode(response: &[u8]) -> eyre::Result<Self::Returns> {
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }

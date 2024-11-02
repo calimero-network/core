@@ -1,17 +1,11 @@
-use core::convert::Infallible;
 use core::error::Error as CoreError;
-use core::marker::PhantomData;
 use std::borrow::Cow;
 use std::str::FromStr;
 
 use either::Either;
-use protocol::Method;
+use env::Method;
 use serde::{Deserialize, Serialize};
-use serde_json::Error as JsonError;
 use thiserror::Error;
-
-use crate::client::protocol::{near, starknet};
-use crate::types::{self};
 
 pub mod config;
 pub mod env;
@@ -19,6 +13,7 @@ pub mod protocol;
 pub mod relayer;
 
 use config::{ClientConfig, ClientSelectedSigner, Credentials};
+use protocol::{near, starknet};
 
 #[non_exhaustive]
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]
@@ -230,101 +225,27 @@ impl Client<AnyTransport> {
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum ConfigError<T: Transport> {
+pub enum Error<T: Transport> {
     #[error("transport error: {0}")]
     Transport(T::Error),
     #[error("codec error: {0}")]
     Codec(#[from] eyre::Report),
-    #[error(transparent)]
-    Other(#[from] types::ConfigError<Infallible>),
 }
 
-#[derive(Debug)]
-pub struct Response<T> {
-    bytes: Vec<u8>,
-    _priv: PhantomData<T>,
-}
-
-impl<T> Response<T> {
-    const fn new(bytes: Vec<u8>) -> Self {
-        Self {
-            bytes,
-            _priv: PhantomData,
-        }
+impl<T: Transport> Client<T> {
+    async fn send(
+        &self,
+        request: TransportRequest<'_>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, T::Error> {
+        self.transport.send(request, payload).await
     }
 
-    pub fn parse<'a>(&'a self) -> Result<T, JsonError>
-    where
-        T: Deserialize<'a>,
-    {
-        serde_json::from_slice(&self.bytes)
-    }
-}
-
-#[derive(Debug)]
-pub struct CallClient<'a, T> {
-    protocol: Protocol,
-    network_id: String,
-    contract_id: String,
-    client: &'a Client<T>,
-}
-
-impl<'a, T: Transport> CallClient<'a, T> {
-    async fn query<M: Method<P>, P>(&self, params: P) -> Result<M::Returns, ConfigError<T>> {
-        let payload = M::encode(&params)?;
-
-        let request = TransportRequest {
-            protocol: self.protocol,
-            network_id: Cow::Borrowed(&self.network_id),
-            contract_id: Cow::Borrowed(&self.contract_id),
-            operation: Operation::Read {
-                method: Cow::Borrowed(M::METHOD),
-            },
-        };
-
-        let response = self
-            .client
-            .transport
-            .send(request, payload)
-            .await
-            .map_err(ConfigError::Transport)?;
-
-        let response_decoded = M::decode(response.as_ref())?;
-
-        Ok(response_decoded)
-    }
-
-    async fn mutate<M: Method<P>, P>(&self, params: P) -> Result<M::Returns, ConfigError<T>> {
-        let payload = M::encode(&params)?;
-
-        let request = TransportRequest {
-            protocol: self.protocol,
-            network_id: Cow::Borrowed(&self.network_id),
-            contract_id: Cow::Borrowed(&self.contract_id),
-            operation: Operation::Write {
-                method: Cow::Borrowed(M::METHOD),
-            },
-        };
-
-        let response = self
-            .client
-            .transport
-            .send(request, payload)
-            .await
-            .map_err(ConfigError::Transport)?;
-
-        let response_decoded = M::decode(response.as_ref())?;
-
-        Ok(response_decoded)
-    }
-}
-
-impl<T> Client<T> {
     pub fn query<'a, E: Environment<'a, T>>(
         &'a self,
         protocol: Protocol,
-        network_id: String,
-        contract_id: String,
+        network_id: Cow<'a, str>,
+        contract_id: Cow<'a, str>,
     ) -> E::Query {
         E::query(CallClient {
             protocol,
@@ -337,8 +258,8 @@ impl<T> Client<T> {
     pub fn mutate<'a, E: Environment<'a, T>>(
         &'a self,
         protocol: Protocol,
-        network_id: String,
-        contract_id: String,
+        network_id: Cow<'a, str>,
+        contract_id: Cow<'a, str>,
     ) -> E::Mutate {
         E::mutate(CallClient {
             protocol,
@@ -346,6 +267,61 @@ impl<T> Client<T> {
             contract_id,
             client: self,
         })
+    }
+}
+
+#[derive(Debug)]
+pub struct CallClient<'a, T> {
+    protocol: Protocol,
+    network_id: Cow<'a, str>,
+    contract_id: Cow<'a, str>,
+    client: &'a Client<T>,
+}
+
+impl<'a, T: Transport> CallClient<'a, T> {
+    async fn query<P, M>(&self, params: M) -> Result<M::Returns, Error<T>>
+    where
+        M: Method<P>,
+        P: protocol::Protocol,
+    {
+        self.send::<P, _>(false, params).await
+    }
+
+    async fn mutate<P, M>(&self, params: M) -> Result<M::Returns, Error<T>>
+    where
+        M: Method<P>,
+        P: protocol::Protocol,
+    {
+        self.send::<P, _>(true, params).await
+    }
+
+    async fn send<P, M>(&self, write: bool, params: M) -> Result<M::Returns, Error<T>>
+    where
+        M: Method<P>,
+        P: protocol::Protocol,
+    {
+        let payload = M::encode(params)?;
+
+        let method = Cow::Borrowed(M::METHOD);
+
+        let request = TransportRequest {
+            protocol: self.protocol,
+            network_id: Cow::Borrowed(&self.network_id),
+            contract_id: Cow::Borrowed(&self.contract_id),
+            operation: if write {
+                Operation::Write { method }
+            } else {
+                Operation::Read { method }
+            },
+        };
+
+        let response = self
+            .client
+            .send(request, payload)
+            .await
+            .map_err(Error::Transport)?;
+
+        M::decode(response).map_err(Error::Codec)
     }
 }
 

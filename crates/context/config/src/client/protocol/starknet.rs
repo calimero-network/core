@@ -15,6 +15,7 @@ use thiserror::Error;
 use super::Protocol;
 use crate::client::{Operation, Transport, TransportRequest};
 
+#[derive(Copy, Clone, Debug)]
 pub enum Starknet {}
 
 impl Protocol for Starknet {}
