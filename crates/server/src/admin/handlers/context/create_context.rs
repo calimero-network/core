@@ -23,7 +23,6 @@ pub async fn handler(
             req.initialization_params,
             tx,
         )
-        .await
         .map_err(parse_api_error);
 
     if let Err(err) = result {

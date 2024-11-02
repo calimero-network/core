@@ -1,7 +1,7 @@
 //! High-level data structures for storage.
 
-use std::borrow::Borrow;
-use std::marker::PhantomData;
+use core::borrow::Borrow;
+use core::marker::PhantomData;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use thiserror::Error;
@@ -73,7 +73,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
             storage: Element::new(path),
         };
 
-        let _ = Interface::save(&mut this)?;
+        _ = Interface::save(&mut this)?;
 
         Ok(this)
     }
@@ -98,7 +98,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
         // fixme! ideally, the Id should be defined as hash(concat(map_id, key))
         // fixme! which will save on map-wide lookups, getting the item directly
 
-        let _ = Interface::add_child_to(
+        _ = Interface::add_child_to(
             self.storage.id(),
             &mut self.entries,
             &mut Entry {
@@ -133,6 +133,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
+    #[expect(clippy::len_without_is_empty, reason = "TODO: will be implemented")]
     pub fn len(&self) -> Result<usize, StoreError> {
         Ok(Interface::child_info_for(self.id(), &self.entries)?.len())
     }
@@ -174,13 +175,13 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     {
         let entries = Interface::children_of(self.id(), &self.entries)?;
 
-        let entry = entries.into_iter().find(|entry| entry.key.borrow() == key);
+        let entry_opt = entries.into_iter().find(|entry| entry.key.borrow() == key);
 
-        if let Some(entry) = &entry {
-            let _ = Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
+        if let Some(ref entry) = entry_opt {
+            _ = Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
         }
 
-        Ok(entry.map(|entry| entry.value))
+        Ok(entry_opt.map(|entry| entry.value))
     }
 
     /// Clear the map, removing all entries.
@@ -195,7 +196,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
         let entries = Interface::children_of(self.id(), &self.entries)?;
 
         for entry in entries {
-            let _ = Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
+            _ = Interface::remove_child_from(self.id(), &mut self.entries, entry.id())?;
         }
 
         Ok(())

@@ -94,10 +94,9 @@ impl RelayCommand {
                 .iter()
                 .map(|(network, config)| {
                     let (account_id, access_key) = match &config.credentials {
-                        Credentials::Starknet(credentials) => (
-                            credentials.account_id.clone(),
-                            credentials.secret_key.clone(),
-                        ),
+                        Credentials::Starknet(credentials) => {
+                            (credentials.account_id, credentials.secret_key)
+                        }
                         Credentials::Near(_) => bail!("Expected Starknet credentials."),
                         _ => bail!("Expected NEAR credentials."),
                     };

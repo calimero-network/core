@@ -8,4 +8,4 @@ pub mod get_context_users;
 pub mod get_contexts;
 pub mod invite_to_context;
 pub mod join_context;
-pub mod update_application_id;
+pub mod update_context_application;

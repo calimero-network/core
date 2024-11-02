@@ -167,40 +167,44 @@ impl DiscoveryState {
         self.rendezvous_index.contains(peer_id)
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Cannot use saturating_add() due to non-specific integer type"
+    )]
     pub(crate) fn is_rendezvous_registration_required(&self, max: usize) -> bool {
         let sum = self
             .get_rendezvous_peer_ids()
             .filter_map(|peer_id| self.get_peer_info(&peer_id))
             .fold(0, |acc, peer_info| {
-                if let Some(rendezvous_info) = peer_info.rendezvous() {
+                peer_info.rendezvous().map_or(acc, |rendezvous_info| {
                     match rendezvous_info.registration_status() {
                         RendezvousRegistrationStatus::Requested
                         | RendezvousRegistrationStatus::Registered => acc + 1,
                         RendezvousRegistrationStatus::Discovered
                         | RendezvousRegistrationStatus::Expired => acc,
                     }
-                } else {
-                    acc
-                }
+                })
             });
         sum < max
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "Cannot use saturating_add() due to non-specific integer type"
+    )]
     pub(crate) fn is_relay_reservation_required(&self, max: usize) -> bool {
         let sum = self
             .get_relay_peer_ids()
             .filter_map(|peer_id| self.get_peer_info(&peer_id))
             .fold(0, |acc, peer_info| {
-                if let Some(rendezvous_info) = peer_info.relay() {
+                peer_info.relay().map_or(acc, |rendezvous_info| {
                     match rendezvous_info.reservation_status() {
                         RelayReservationStatus::Accepted | RelayReservationStatus::Requested => {
                             acc + 1
                         }
                         RelayReservationStatus::Discovered | RelayReservationStatus::Expired => acc,
                     }
-                } else {
-                    acc
-                }
+                })
             });
         sum < max
     }

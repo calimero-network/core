@@ -944,8 +944,8 @@ impl<S: StorageAdaptor> MainInterface<S> {
     /// If an error occurs when interacting with the storage system, an error
     /// will be returned.
     ///
-    pub fn root<D: Data>(context_id: &[u8; 16]) -> Result<Option<D>, StorageError> {
-        Self::find_by_id(context_id.into())
+    pub fn root<D: Data>() -> Result<Option<D>, StorageError> {
+        Self::find_by_id(Id::root())
     }
 
     /// Saves an [`Element`](crate::entities::Element) to the storage system.

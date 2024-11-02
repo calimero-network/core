@@ -334,7 +334,7 @@ pub fn atomic_unit_derive(input: TokenStream) -> TokenStream {
         }
     };
 
-    let mut local_where_clause = where_clause.clone();
+    let mut local_where_clause = where_clause;
 
     for ty in input.generics.type_params() {
         let ident = &ty.ident;
@@ -547,7 +547,7 @@ pub fn collection_derive(input: TokenStream) -> TokenStream {
         }
     };
 
-    let mut collection_where_clause = where_clause.clone();
+    let mut collection_where_clause = where_clause;
 
     for ty in input.generics.type_params() {
         let ident = &ty.ident;
