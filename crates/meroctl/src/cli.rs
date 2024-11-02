@@ -12,10 +12,12 @@ use crate::output::{Format, Output, Report};
 
 mod app;
 mod context;
+mod identity;
 mod jsonrpc;
 
 use app::AppCommand;
 use context::ContextCommand;
+use identity::IdentityCommand;
 use jsonrpc::CallCommand;
 
 pub const EXAMPLES: &str = r"
@@ -44,8 +46,9 @@ pub struct RootCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SubCommands {
-    Context(ContextCommand),
     App(AppCommand),
+    Context(ContextCommand),
+    Identity(IdentityCommand),
     JsonRpc(CallCommand),
 }
 
@@ -81,8 +84,9 @@ impl RootCommand {
         let environment = Environment::new(self.args, output);
 
         let result = match self.action {
-            SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::App(application) => application.run(&environment).await,
+            SubCommands::Context(context) => context.run(&environment).await,
+            SubCommands::Identity(identity) => identity.run(&environment).await,
             SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(&environment).await,
         };
 
