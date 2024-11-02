@@ -192,8 +192,8 @@ impl InitCommand {
                 ),
             ),
             SyncConfig {
-                timeout: Duration::from_secs(10),
-                interval: Duration::from_secs(10),
+                timeout: Duration::from_secs(30),
+                interval: Duration::from_secs(30),
             },
             StoreConfigFile::new("data".into()),
             BlobStoreConfig::new("blobs".into()),
