@@ -69,6 +69,8 @@ impl VMLogic<'_> {
 
             fn random_bytes(ptr: u64, len: u64);
             fn time_now(ptr: u64, len: u64);
+
+            fn send_proposal(actions_ptr: u64, actions_len: u64, id_ptr: u64, id_len: u64);
         }
     }
 }
