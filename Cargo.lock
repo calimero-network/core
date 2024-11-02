@@ -1218,7 +1218,6 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",
- "calimero-storage",
  "calimero-store",
  "camino",
  "clap",
@@ -1227,12 +1226,9 @@ dependencies = [
  "libp2p",
  "owo-colors",
  "rand 0.8.5",
- "serde",
  "serde_json",
- "thiserror",
  "tokio",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -5267,7 +5263,6 @@ dependencies = [
  "libp2p",
  "multiaddr",
  "near-crypto 0.26.0",
- "rand 0.8.5",
  "starknet",
  "tokio",
  "toml_edit 0.22.20",

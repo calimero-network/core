@@ -17,7 +17,7 @@ use crate::Node;
 mod blobs;
 mod state;
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct SyncConfig {
     pub timeout: Duration,
     pub interval: Duration,

@@ -800,6 +800,8 @@ impl ContextManager {
         context_id: ContextId,
         application_id: ApplicationId,
     ) -> EyreResult<()> {
+        // todo! use context config
+
         let mut handle = self.store.handle();
 
         let key = ContextMetaKey::new(context_id);

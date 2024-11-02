@@ -26,7 +26,7 @@ impl CallCommand {
         let outcome_result = node
             .handle_call(
                 context.id,
-                self.method.clone(),
+                &self.method,
                 serde_json::to_vec(&self.payload)?,
                 self.executor_key,
             )

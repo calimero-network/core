@@ -1,3 +1,5 @@
+#![allow(single_use_lifetimes)]
+
 use std::borrow::Cow;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -35,7 +37,7 @@ pub enum StreamMessage<'a> {
     OpaqueError,
 }
 
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Copy, Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub enum InitPayload {
     BlobShare {
         blob_id: BlobId,

@@ -5,7 +5,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::Context;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use eyre::bail;
+use eyre::{bail, OptionExt};
 use libp2p::PeerId;
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
@@ -83,7 +83,8 @@ impl Node {
                     artifact: Cow::from(&[]),
                 },
             },
-        );
+        )
+        .await?;
 
         self.bidirectional_sync(
             context,

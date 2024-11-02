@@ -8,7 +8,7 @@ use core::future::{pending, Future};
 use core::pin::Pin;
 use std::time::Duration;
 
-use borsh::to_vec;
+use borsh::{from_slice, to_vec};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
@@ -22,13 +22,11 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
     StateMutationPayload,
 };
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
-use calimero_storage::address::Id;
-use calimero_storage::integration::Comparison;
-use calimero_storage::interface::Action;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::key::ContextMeta as ContextMetaKey;
@@ -38,7 +36,6 @@ use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, Rng};
-use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -52,6 +49,7 @@ pub mod types;
 
 use runtime_compat::RuntimeCompatStore;
 use sync::SyncConfig;
+use types::BroadcastMessage;
 // use crate::types::{ActionMessage, BroadcastMessage, SyncMessage};
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
@@ -296,127 +294,95 @@ impl Node {
             return Ok(());
         };
 
-        // let message = from_json_slice(&message.data)?;
+        let message = from_slice::<BroadcastMessage<'static>>(&message.data)?;
 
-        // match from_json_slice(&message.data)? {
-        //     PeerAction::ActionList(action_list) => {
-        //         debug!(?action_list, %source, "Received action list");
+        match message {
+            BroadcastMessage::StateDelta {
+                context_id,
+                author_id,
+                root_hash,
+                artifact,
+            } => {
+                self.handle_state_delta(
+                    source,
+                    context_id,
+                    author_id,
+                    root_hash,
+                    artifact.into_owned(),
+                )
+                .await?;
+            }
+        }
 
-        //         for action in action_list.actions {
-        //             debug!(?action, %source, "Received action");
-        //             let Some(mut context) =
-        //                 self.ctx_manager.get_context(&action_list.context_id)?
-        //             else {
-        //                 bail!("Context '{}' not found", action_list.context_id);
-        //             };
-        //             match action {
-        //                 Action::Compare { id } => {
-        //                     self.send_comparison_message(&mut context, id, action_list.public_key)
-        //                         .await
-        //                 }
-        //                 Action::Add { .. } | Action::Delete { .. } | Action::Update { .. } => {
-        //                     self.apply_action(&mut context, &action, action_list.public_key)
-        //                         .await
-        //                 }
-        //             }?;
-        //         }
-        //         Ok(())
-        //     }
-        //     PeerAction::Sync(sync) => {
-        //         debug!(?sync, %source, "Received sync request");
+        todo!()
+    }
 
-        //         let Some(mut context) = self.ctx_manager.get_context(&sync.context_id)? else {
-        //             bail!("Context '{}' not found", sync.context_id);
-        //         };
-        //         let outcome = self
-        //             .compare_trees(&mut context, &sync.comparison, sync.public_key)
-        //             .await?;
+    async fn handle_state_delta(
+        &mut self,
+        source: PeerId,
+        context_id: ContextId,
+        author_id: PublicKey,
+        root_hash: Hash,
+        artifact: Vec<u8>,
+    ) -> EyreResult<()> {
+        let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
+            bail!("Context '{}' not found", context_id);
+        };
 
-        //         match outcome.returns {
-        //             Ok(Some(actions_data)) => {
-        //                 let (local_actions, remote_actions): (Vec<Action>, Vec<Action>) =
-        //                     from_json_slice(&actions_data)?;
+        if root_hash == context.root_hash {
+            debug!(%context_id, "Received state delta with same root hash, ignoring..");
+            return Ok(());
+        }
 
-        //                 // Apply local actions
-        //                 for action in local_actions {
-        //                     match action {
-        //                         Action::Compare { id } => {
-        //                             self.send_comparison_message(&mut context, id, sync.public_key)
-        //                                 .await
-        //                         }
-        //                         Action::Add { .. }
-        //                         | Action::Delete { .. }
-        //                         | Action::Update { .. } => {
-        //                             self.apply_action(&mut context, &action, sync.public_key)
-        //                                 .await
-        //                         }
-        //                     }?;
-        //                 }
+        let Some(outcome) = self
+            .execute(
+                &mut context,
+                "apply_state_delta",
+                to_vec(&artifact)?,
+                author_id,
+            )
+            .await?
+        else {
+            bail!("Application not installed");
+        };
 
-        //                 if !remote_actions.is_empty() {
-        //                     // Send remote actions back to the peer
-        //                     // TODO: This just sends one at present - needs to send a batch
-        //                     let new_message = ActionMessage {
-        //                         actions: remote_actions,
-        //                         context_id: sync.context_id,
-        //                         public_key: sync.public_key,
-        //                         root_hash: context.root_hash,
-        //                     };
-        //                     self.push_action(sync.context_id, PeerAction::ActionList(new_message))
-        //                         .await?;
-        //                 }
-        //             }
-        //             Ok(None) => {
-        //                 // No actions needed
-        //             }
-        //             Err(err) => {
-        //                 error!("Error during comparison: {err:?}");
-        //                 // TODO: Handle the error appropriately
-        //             }
-        //         }
-        //         Ok(())
-        //     }
-        // }
+        if let Some(derived_root_hash) = outcome.root_hash {
+            if derived_root_hash != *root_hash {
+                self.initiate_state_sync_process(&mut context, source)
+                    .await?;
+            }
+        }
 
         Ok(())
     }
 
-    // async fn send_comparison_message(
-    //     &mut self,
-    //     context: &mut Context,
-    //     id: Id,
-    //     public_key: PublicKey,
-    // ) -> EyreResult<()> {
-    //     let compare_outcome = self
-    //         .generate_comparison_data(context, id, public_key)
-    //         .await?;
-    //     match compare_outcome.returns {
-    //         Ok(Some(comparison_data)) => {
-    //             // Generate a new Comparison for this entity and send it to the peer
-    //             let new_sync = SyncMessage {
-    //                 comparison: from_json_slice(&comparison_data)?,
-    //                 context_id: context.id,
-    //                 public_key,
-    //                 root_hash: context.root_hash,
-    //             };
-    //             self.push_action(context.id, BroadcastMessage::Sync(new_sync))
-    //                 .await?;
-    //             Ok(())
-    //         }
-    //         Ok(None) => Err(eyre!("No comparison data generated")),
-    //         Err(err) => Err(eyre!(err)),
-    //     }
-    // }
+    async fn send_state_delta(
+        &self,
+        context: &Context,
+        outcome: &Outcome,
+        executor_public_key: PublicKey,
+    ) -> EyreResult<()> {
+        if self
+            .network_client
+            .mesh_peer_count(TopicHash::from_raw(context.id))
+            .await
+            != 0
+        {
+            let message = to_vec(&BroadcastMessage::StateDelta {
+                context_id: context.id,
+                author_id: executor_public_key,
+                root_hash: context.root_hash,
+                artifact: outcome.artifact.as_slice().into(),
+            })?;
 
-    // async fn push_action(&self, context_id: ContextId, action: BroadcastMessage) -> EyreResult<()> {
-    //     drop(
-    //         self.network_client
-    //             .publish(TopicHash::from_raw(context_id), to_json_vec(&action)?)
-    //             .await?,
-    //     );
+            let _ignored = self
+                .network_client
+                .publish(TopicHash::from_raw(context.id), message)
+                .await?;
+        }
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 
     pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
         let task = self.handle_call(
@@ -462,80 +428,14 @@ impl Node {
             });
         };
 
-        if self
-            .network_client
-            .mesh_peer_count(TopicHash::from_raw(context.id))
+        if let Err(err) = self
+            .send_state_delta(&context, &outcome, executor_public_key)
             .await
-            != 0
         {
-            let actions = outcome
-                .actions
-                .iter()
-                .map(|a| borsh::from_slice(a))
-                .collect::<Result<Vec<Action>, _>>()
-                .map_err(|err| {
-                    error!(%err, "Failed to deserialize actions.");
-                    CallError::InternalError
-                })?;
-
-            // self.push_action(
-            //     context.id,
-            //     BroadcastMessage::ActionList(ActionMessage {
-            //         actions,
-            //         context_id: context.id,
-            //         public_key: executor_public_key,
-            //         root_hash: context.root_hash,
-            //     }),
-            // )
-            // .await
-            // .map_err(|err| {
-            //     error!(%err, "Failed to push action over the network.");
-            //     CallError::InternalError
-            // })?;
+            error!(%err, "Failed to send state delta.");
         }
 
         Ok(outcome)
-    }
-
-    async fn apply_action(
-        &mut self,
-        context: &mut Context,
-        action: &Action,
-        public_key: PublicKey,
-    ) -> EyreResult<()> {
-        let outcome = self
-            .execute(context, "apply_action", to_vec(action)?, public_key)
-            .await
-            .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))?;
-        drop(outcome.returns?);
-        Ok(())
-    }
-
-    async fn compare_trees(
-        &mut self,
-        context: &mut Context,
-        comparison: &Comparison,
-        public_key: PublicKey,
-    ) -> EyreResult<Outcome> {
-        self.execute(context, "compare_trees", to_vec(comparison)?, public_key)
-            .await
-            .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
-    }
-
-    async fn generate_comparison_data(
-        &mut self,
-        context: &mut Context,
-        id: Id,
-        public_key: PublicKey,
-    ) -> EyreResult<Outcome> {
-        self.execute(
-            context,
-            "generate_comparison_data",
-            to_vec(&id)?,
-            public_key,
-        )
-        .await
-        .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
     }
 
     async fn execute(
@@ -567,7 +467,7 @@ impl Node {
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {
-                if outcome.actions.is_empty() {
+                if outcome.artifact.is_empty() {
                     eyre::bail!("Context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
                 }
 
