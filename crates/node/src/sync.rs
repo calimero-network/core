@@ -68,7 +68,6 @@ impl Sequencer {
 }
 
 impl Node {
-    // todo! whole process should be capped by a timeout
     async fn initiate_sync(&self, context_id: ContextId, chosen_peer: PeerId) -> EyreResult<()> {
         let mut context = self.ctx_manager.sync_context_config(context_id).await?;
 
@@ -180,6 +179,17 @@ impl Node {
     }
 
     pub async fn perform_interval_sync(&self) {
+        if let Err(err) = timeout(
+            self.sync_config.interval,
+            self.internal_perform_interval_sync(),
+        )
+        .await
+        {
+            error!(%err, "Timeout while performing interval sync");
+        }
+    }
+
+    async fn internal_perform_interval_sync(&self) {
         // todo! prioritize contexts we have peers connected
         let Some(context_id) = self.ctx_manager.get_any_pending_sync_context().await else {
             return;
