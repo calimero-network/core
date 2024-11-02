@@ -180,7 +180,6 @@ impl VMLogic<'_> {
 
         Outcome {
             returns,
-
             logs: self.logs,
             events: self.events,
             root_hash: self.root_hash,
