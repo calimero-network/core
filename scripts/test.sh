@@ -81,9 +81,7 @@ for file in "${changed_files[@]}"; do
     done
 done
 
-echo "vuuuuuuuuuki"
 echo $matched_crates
-
 
 calimero_package_names=()
 # Loop through each element in the original array
@@ -122,19 +120,39 @@ for calimero_package_name in "${calimero_package_names[@]}"; do
     done
 done
 
+crates_to_test=()
+seen=()
+# Loop through the calimero_package_names array
+for item in "${calimero_package_names[@]}"; do
+    if [[ -z "${seen[$item]}" ]]; then
+        seen[$item]=1 # Mark the item as seen
+        crates_to_test+=("$item")
+    fi
+done
+
+# Loop through the dep_arr array
+for item in "${dep_arr[@]}"; do
+    if [[ -z "${seen[$item]}" ]]; then
+        seen[$item]=1
+        crates_to_test+=("$item")
+    fi
+done
+
 # Run tests for each module and its dependencies
 echo "Running tests for affected modules and their dependencies..."
 # Install the nightly toolchain
 rustup toolchain install nightly
 
-#Test crates from changed files
-for crate in "${calimero_package_names[@]}"; do
-    echo "Testing crate $crate"
-    cargo +nightly test -p "$crate"
-done
-
-#Test dependencies
-for crate in "${dep_arr[@]}"; do
-    echo "Testing crate $crate"
-    cargo +nightly test -p "$crate"
+#Test all crates from changed files
+for crate in "${crates_to_test[@]}"; do
+    if [[  "$crate" == "calimero-merod" ]]; then
+        echo "Testing crate merod"
+        cargo +nightly test -p "merod"
+    elif [[ "$crate" == "calimero-meroctl" ]]; then
+        echo "Testing crate meroctl"
+        cargo +nightly test -p "meroctl"
+    else
+        echo "Testing crate $crate"
+        cargo +nightly test -p "$crate"
+    fi
 done
