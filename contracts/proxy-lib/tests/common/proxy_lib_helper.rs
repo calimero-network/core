@@ -1,10 +1,12 @@
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{ContextId, Signed};
+use calimero_context_config::{
+    Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId, ProxyMutateRequest,
+};
 use ed25519_dalek::{Signer, SigningKey};
 use near_workspaces::network::Sandbox;
 use near_workspaces::result::{ExecutionFinalResult, ViewResultDetails};
 use near_workspaces::{Account, Contract, Worker};
-use proxy_lib::{Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId};
 use serde_json::json;
 
 use super::deploy_contract;
@@ -40,28 +42,30 @@ impl ProxyContractHelper {
             .await
     }
 
-    pub fn create_proposal(
+    pub fn create_proposal_request(
         &self,
         author: &SigningKey,
         actions: &Vec<ProposalAction>,
-    ) -> eyre::Result<Signed<Proposal>> {
-        let proposal = Proposal {
-            author_id: author.verifying_key().rt().expect("Invalid signer"),
-            actions: actions.clone(),
+    ) -> eyre::Result<Signed<ProxyMutateRequest>> {
+        let request = ProxyMutateRequest::Propose {
+            proposal: Proposal {
+                author_id: author.verifying_key().rt().expect("Invalid signer"),
+                actions: actions.clone(),
+            },
         };
-        let signed = Signed::new(&proposal, |p| author.sign(p))?;
+        let signed = Signed::new(&request, |p| author.sign(p))?;
         Ok(signed)
     }
 
-    pub async fn create_and_approve_proposal(
+    pub async fn proxy_mutate(
         &self,
         caller: &Account,
-        proposal: &Signed<Proposal>,
+        request: &Signed<ProxyMutateRequest>,
     ) -> eyre::Result<ExecutionFinalResult> {
         let call = caller
-            .call(self.proxy_contract.id(), "create_and_approve_proposal")
+            .call(self.proxy_contract.id(), "mutate")
             .args_json(json!({
-                "proposal": proposal
+                "request": request
             }))
             .max_gas()
             .transact()
@@ -80,20 +84,18 @@ impl ProxyContractHelper {
             .to_bytes()
             .rt()
             .expect("Invalid signer");
-        let args = Signed::new(
-            &{
-                ProposalApprovalWithSigner {
-                    signer_id,
-                    proposal_id: proposal_id.clone(),
-                    added_timestamp: 0,
-                }
+
+        let request = ProxyMutateRequest::Approve {
+            approval: ProposalApprovalWithSigner {
+                signer_id,
+                proposal_id: proposal_id.clone(),
+                added_timestamp: 0,
             },
-            |p| signer.sign(p),
-        )
-        .expect("Failed to sign proposal");
+        };
+        let signed_request = Signed::new(&request, |p| signer.sign(p))?;
         let res = caller
-            .call(self.proxy_contract.id(), "approve")
-            .args_json(json!({"proposal": args}))
+            .call(self.proxy_contract.id(), "mutate")
+            .args_json(json!({"request": signed_request}))
             .max_gas()
             .transact()
             .await?;
