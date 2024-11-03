@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::process::Stdio;
 
 use camino::Utf8PathBuf;
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 use tokio::fs::{create_dir_all, File};
 use tokio::io::copy;
 use tokio::process::{Child, Command};
@@ -51,7 +51,10 @@ impl Merod {
             .await?;
 
         let result = child.wait().await?;
-        assert_eq!(result.code(), Some(0));
+
+        if !result.success() {
+            bail!("Failed to initialize node '{}'", self.name);
+        }
 
         Ok(())
     }

@@ -1,4 +1,4 @@
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 
 use crate::driver::{Test, TestContext};
@@ -34,8 +34,21 @@ impl Test for InviteJoinContextStep {
             .context_join(&ctx.invitee_node, &invitee_private_key, &invitation_payload)
             .await?;
 
-        assert_eq!(context_id, invitee_context_id);
-        assert_eq!(invitee_public_key, invite_member_public_key);
+        if context_id != invitee_context_id {
+            bail!(
+                "Context ID mismatch: {} != {}",
+                context_id,
+                invitee_context_id
+            );
+        }
+
+        if invitee_public_key != invite_member_public_key {
+            bail!(
+                "Invitee public key mismatch: {} != {}",
+                invitee_public_key,
+                invite_member_public_key
+            );
+        }
 
         Ok(())
     }

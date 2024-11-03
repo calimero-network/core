@@ -28,7 +28,7 @@ impl Meroctl {
             .as_str()
             .expect("data.applicationId not found");
 
-        Ok(app_id.to_string())
+        Ok(app_id.to_owned())
     }
 
     pub async fn context_create(
@@ -47,7 +47,7 @@ impl Meroctl {
             .as_str()
             .expect("data.memberPublicKey not found");
 
-        Ok((context_id.to_string(), member_public_key.to_string()))
+        Ok((context_id.to_owned(), member_public_key.to_owned()))
     }
 
     pub async fn context_invite(
@@ -70,11 +70,11 @@ impl Meroctl {
             )
             .await?;
 
-        let data = &json["data"]
+        let data = json["data"]
             .as_str()
             .expect("Invite response data not found");
 
-        Ok(data.to_string())
+        Ok(data.to_owned())
     }
 
     pub async fn context_join(
@@ -97,7 +97,7 @@ impl Meroctl {
             .as_str()
             .expect("data.memberPublicKey not found");
 
-        Ok((context_id.to_string(), member_public_key.to_string()))
+        Ok((context_id.to_owned(), member_public_key.to_owned()))
     }
 
     pub async fn identity_generate(&self, node_name: &str) -> EyreResult<(String, String)> {
@@ -112,7 +112,7 @@ impl Meroctl {
             .as_str()
             .expect("data.privateKey not found");
 
-        Ok((public_key.to_string(), private_key.to_string()))
+        Ok((public_key.to_owned(), private_key.to_owned()))
     }
 
     pub async fn json_rpc_execute(

@@ -1,4 +1,4 @@
-use eyre::Result as EyreResult;
+use eyre::{bail, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 
 use crate::driver::{Test, TestContext};
@@ -28,10 +28,13 @@ impl Test for JsonRpcExecuteStep {
             .await?;
 
         if let Some(expected_result_json) = &self.expected_result_json {
-            assert_eq!(
-                *expected_result_json, response["result"]["output"],
-                "Expected response does not match actual response"
-            );
+            if *expected_result_json != response["result"]["output"] {
+                bail!(
+                    "JSON RPC Result mismatch: {} != {}",
+                    *expected_result_json,
+                    response["result"]["output"]
+                );
+            }
         }
 
         Ok(())
