@@ -1,5 +1,3 @@
-#![allow(clippy::exhaustive_structs, reason = "TODO: Allowed until reviewed")]
-
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time;
@@ -26,7 +24,19 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use super::{Operation, Transport, TransportRequest};
+use super::Protocol;
+use crate::client::transport::{AssociatedTransport, Operation, Transport, TransportRequest};
+
+#[derive(Copy, Clone, Debug)]
+pub enum Near {}
+
+impl Protocol for Near {
+    const PROTOCOL: &'static str = "near";
+}
+
+impl AssociatedTransport for NearTransport<'_> {
+    type Protocol = Near;
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(try_from = "serde_creds::Credentials")]

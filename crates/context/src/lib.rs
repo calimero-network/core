@@ -7,8 +7,9 @@ use std::io::Error as IoError;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
-use calimero_context_config::client::config::ContextConfigClientConfig;
-use calimero_context_config::client::{AnyTransport, ContextConfigClient};
+use calimero_context_config::client::config::ClientConfig;
+use calimero_context_config::client::env::config::ContextConfig as ContextConfigEnv;
+use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
@@ -34,13 +35,11 @@ use calimero_store::types::{
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use ed25519_dalek::ed25519::signature::SignerMut;
-use ed25519_dalek::SigningKey;
 use eyre::{bail, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
-use reqwest::{Client, Url};
+use reqwest::{Client as ReqClient, Url};
 use tokio::fs::File;
 use tokio::sync::{oneshot, RwLock};
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -53,8 +52,8 @@ use config::ContextConfig;
 #[derive(Clone, Debug)]
 pub struct ContextManager {
     store: Store,
-    client_config: ContextConfigClientConfig,
-    config_client: ContextConfigClient<AnyTransport>,
+    client_config: ClientConfig,
+    config_client: ExternalClient<AnyTransport>,
     blob_manager: BlobManager,
     network_client: NetworkClient,
     server_sender: ServerSender,
@@ -75,7 +74,7 @@ impl ContextManager {
         network_client: NetworkClient,
     ) -> EyreResult<Self> {
         let client_config = config.client.clone();
-        let config_client = ContextConfigClient::from_config(&client_config);
+        let config_client = ExternalClient::from_config(&client_config);
 
         let this = Self {
             store,
@@ -204,11 +203,10 @@ impl ContextManager {
             }
 
             this.config_client
-                .mutate(
-                    this.client_config.new.protocol,
+                .mutate::<ContextConfigEnv>(
+                    this.client_config.new.protocol.as_str().into(),
                     this.client_config.new.network.as_str().into(),
                     this.client_config.new.contract_id.as_str().into(),
-                    context.id.rt().expect("infallible conversion"),
                 )
                 .add_context(
                     context.id.rt().expect("infallible conversion"),
@@ -224,7 +222,7 @@ impl ContextManager {
                         ApplicationMetadataConfig(Repr::new(application.metadata.into())),
                     ),
                 )
-                .send(|b| SigningKey::from_bytes(&context_secret).sign(b))
+                .send(context.id.rt().expect("infallible conversion"))
                 .await?;
 
             Ok((context.id, identity_secret.public_key()))
@@ -316,9 +314,11 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let client =
-            self.config_client
-                .query(protocol.parse()?, network_id.into(), contract_id.into());
+        let client = self.config_client.query::<ContextConfigEnv>(
+            protocol.into(),
+            network_id.into(),
+            contract_id.into(),
+        );
 
         for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
             let members = client
@@ -327,8 +327,7 @@ impl ContextManager {
                     offset,
                     length,
                 )
-                .await?
-                .parse()?;
+                .await?;
 
             if members.is_empty() {
                 break;
@@ -349,11 +348,9 @@ impl ContextManager {
             bail!("unable to join context: not a member, ask for an invite")
         };
 
-        let response = client
+        let application = client
             .application(context_id.rt().expect("infallible conversion"))
             .await?;
-
-        let application = response.parse()?;
 
         let context = Context::new(
             context_id,
@@ -415,17 +412,16 @@ impl ContextManager {
         };
 
         self.config_client
-            .mutate(
-                context_config.protocol.parse()?,
+            .mutate::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
-                inviter_id.rt().expect("infallible conversion"),
             )
             .add_members(
                 context_id.rt().expect("infallible conversion"),
                 &[invitee_id.rt().expect("infallible conversion")],
             )
-            .send(|b| SigningKey::from_bytes(&requester_secret).sign(b))
+            .send(requester_secret)
             .await?;
 
         let invitation_payload = ContextInvitationPayload::new(
@@ -773,7 +769,7 @@ impl ContextManager {
     ) -> EyreResult<ApplicationId> {
         let uri = url.as_str().parse()?;
 
-        let response = Client::new().get(url).send().await?;
+        let response = ReqClient::new().get(url).send().await?;
 
         let expected_size = response.content_length();
 
@@ -857,17 +853,15 @@ impl ContextManager {
     }
 
     pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
-        let client = self.config_client.query(
-            self.client_config.new.protocol,
+        let client = self.config_client.query::<ContextConfigEnv>(
+            self.client_config.new.protocol.as_str().into(),
             self.client_config.new.network.as_str().into(),
             self.client_config.new.contract_id.as_str().into(),
         );
 
-        let response = client
+        let application = client
             .application(context_id.rt().expect("infallible conversion"))
             .await?;
-
-        let application = response.parse()?;
 
         Ok(Application::new(
             application.id.as_bytes().into(),

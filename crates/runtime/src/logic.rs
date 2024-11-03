@@ -2,6 +2,7 @@
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
 use core::num::NonZeroU64;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use borsh::from_slice as from_borsh_slice;
@@ -108,6 +109,7 @@ pub struct VMLogic<'a> {
     events: Vec<Event>,
     actions: Vec<Vec<u8>>,
     root_hash: Option<[u8; 32]>,
+    proposals: BTreeMap<[u8; 32], Vec<u8>>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -123,6 +125,7 @@ impl<'a> VMLogic<'a> {
             events: vec![],
             actions: vec![],
             root_hash: None,
+            proposals: BTreeMap::new(),
         }
     }
 
@@ -152,6 +155,7 @@ pub struct Outcome {
     pub events: Vec<Event>,
     pub actions: Vec<Vec<u8>>,
     pub root_hash: Option<[u8; 32]>,
+    pub proposals: BTreeMap<[u8; 32], Vec<u8>>,
     // execution runtime
     // current storage usage of the app
 }
@@ -181,6 +185,7 @@ impl VMLogic<'_> {
             events: self.events,
             actions: self.actions,
             root_hash: self.root_hash,
+            proposals: self.proposals,
         }
     }
 }
@@ -553,6 +558,44 @@ impl VMHostFunctions<'_> {
             .as_nanos() as u64;
 
         self.borrow_memory().write(ptr, &now.to_le_bytes())?;
+
+        Ok(())
+    }
+
+    /// Call the contract's `send_proposal()` function through the bridge.
+    ///
+    /// The proposal actions are obtained as raw data and pushed onto a list of
+    /// proposals to be sent to the host.
+    ///
+    /// Note that multiple actions are received, and the entire batch is pushed
+    /// onto the proposal list to represent one proposal.
+    ///
+    /// # Parameters
+    ///
+    /// * `actions_ptr` - Pointer to the start of the action data in WASM
+    ///                   memory.
+    /// * `actions_len` - Length of the action data.
+    /// * `id_ptr`      - Pointer to the start of the id data in WASM memory.
+    /// * `id_len`      - Length of the action data. This should be 32 bytes.
+    ///
+    pub fn send_proposal(
+        &mut self,
+        actions_ptr: u64,
+        actions_len: u64,
+        id_ptr: u64,
+        id_len: u64,
+    ) -> VMLogicResult<()> {
+        if id_len != 32 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let actions_bytes: Vec<u8> = self.read_guest_memory(actions_ptr, actions_len)?;
+        let mut proposal_id = [0; 32];
+
+        rand::thread_rng().fill_bytes(&mut proposal_id);
+        drop(self.with_logic_mut(|logic| logic.proposals.insert(proposal_id, actions_bytes)));
+
+        self.borrow_memory().write(id_ptr, &proposal_id)?;
 
         Ok(())
     }
