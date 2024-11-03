@@ -51,16 +51,12 @@ impl Driver {
         let scenarios_dir = self.environment.input_dir.join("scenarios");
         let mut entries = read_dir(scenarios_dir).await?;
 
-        // let a = crate::steps::help();
-        // println!("{:?}", serde_json::to_string(&a)?);
-
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.is_dir() {
                 let test_file_path = path.join("test.json");
                 if test_file_path.exists() {
-                    let data = read(&test_file_path).await?;
-                    let scenario: TestScenario = from_slice(&data)?;
+                    let scenario = from_slice(&read(&test_file_path).await?)?;
 
                     println!(
                         "Loaded test scenario from file: {:?}\n{:?}",
