@@ -13,7 +13,7 @@ fi
 
 # Initialize variables
 mode=""
-changed_rust_files=""
+changed_files=()
 
 # Parse arguments
 for arg in "$@"; do
@@ -26,7 +26,7 @@ for arg in "$@"; do
       ;;
     *)
       if [ -n "$mode" ]; then
-        changed_files="$changed_files $arg"
+        changed_files+=("$arg")
       fi
       ;;
   esac
@@ -65,20 +65,76 @@ echo "The following Rust files have changed:" $changed_files
 # Step 2: Find affected modules
 modules_to_test=""
 
-for file in $changed_files; do
-    echo $file
-    # Convert file paths to module names (strip .rs)
-    module_name=$(echo "$file" | sed -e 's/\.rs//')
-    modules_to_test="$modules_to_test $module_name"
+# Initialize an array to hold matched crates
+matched_crates=()
+all_crates=($(awk '/\[workspace\]/,/^\s*$/' ../Cargo.toml | grep -E 'members' -A 100 | grep -Eo '"[^"]*"' | tr -d '"' | sed 's|^\./||'))
+
+# Loop through each changed file
+for file in "${changed_files[@]}"; do
+    # Extract the crate name by stripping the path to get the crate folder
+    crate_name=$(echo "$file" | sed -E 's|^(crates/[^/]+)/.*|\1|')
+    # Check if the crate exists in the list of crates
+    for crate in "${all_crates[@]}"; do
+        if [[ "$crate" == "$crate_name" ]]; then
+            matched_crates+=("$crate")
+        fi
+    done
 done
 
-# Step 3: Run tests for each module and its dependencies
-echo "Running tests for affected modules and their dependencies..."
+echo "vuuuuuuuuuki"
+echo $matched_crates
 
+
+calimero_package_names=()
+# Loop through each element in the original array
+for item in "${matched_crates[@]}"; do
+    echo $item
+    # Replace "crates/" with "calimero-" and add to new_names array
+    calimero_package_names+=("${item/crates\//calimero-}")
+done
+
+dep_arr=()
+
+#for each crate from changed file find his dependencies
+for calimero_package_name in "${calimero_package_names[@]}"; do
+    echo $calimero_package_name
+    # Initialize an array to hold the matched dependencies
+    for matched_crate in "${matched_crates[@]}"; do
+        dependencies=($(cargo metadata --format-version=1 --no-deps | jq -r --arg CRATE "$calimero_package_name" '
+            .packages[] |
+            select(.dependencies | any(.name == $CRATE)) |
+            .name
+        '))
+        # e.g. calimero-node-primitives. In list I have crates/node-primitives
+        # Loop through each dependency
+        for dep in "${dependencies[@]}"; do
+            # Create the full crate path
+            echo "Checking dependency: $dep"
+            #replace crates with calimero-
+            calimero_dep_crate_path="${dep/calimero-/crates/}"
+            for crate in "${all_crates[@]}"; do
+                if [[ "$crate" == "$calimero_dep_crate_path" ]]; then
+                    echo "Found matching dependency: $calimero_dep_crate_path"
+                    dep_arr+=("$calimero_dep_crate_path")
+                fi
+            done
+        done
+    done
+done
+
+# Run tests for each module and its dependencies
+echo "Running tests for affected modules and their dependencies..."
 # Install the nightly toolchain
 rustup toolchain install nightly
 
-for module in $modules_to_test; do
-    echo "Testing module $module and its dependencies"
-    cargo +nightly test $module
+#Test crates from changed files
+for crate in "${calimero_package_names[@]}"; do
+    echo "Testing crate $crate"
+    cargo +nightly test -p "$crate"
+done
+
+#Test dependencies
+for crate in "${dep_arr[@]}"; do
+    echo "Testing crate $crate"
+    cargo +nightly test -p "$crate"
 done
