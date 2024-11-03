@@ -4,6 +4,7 @@ components = ["cargo", "clippy"]
 
 [profile.dev]
 opt-level = 0
+incremental = true
 
 [profile.release]
 opt-level = 3
