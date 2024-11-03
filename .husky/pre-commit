@@ -10,7 +10,7 @@ if git diff --cached --name-only | grep -q '\.mdx?$'; then
 fi
 
 # Check for changes in Rust files
-changed_rust_files=$(git diff --cached --name-only | grep -E '\.rs$')
+changed_rust_files=$(git diff --cached --name-only | grep -E '\.rs$' || echo "" )
 if [ -n "${changed_rust_files}" ]; then
   echo "Running checks for the Rust code..."
   cargo +nightly fmt

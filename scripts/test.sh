@@ -67,8 +67,8 @@ modules_to_test=""
 
 for file in $changed_files; do
     echo $file
-    # Convert file paths to module names (strip src/ and .rs)
-    module_name=$(echo "$file" | sed -e 's/src\///' -e 's/\.rs//')
+    # Convert file paths to module names (strip .rs)
+    module_name=$(echo "$file" | sed -e 's/\.rs//')
     modules_to_test="$modules_to_test $module_name"
 done
 
