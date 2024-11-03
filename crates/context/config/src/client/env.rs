@@ -1,7 +1,7 @@
 use super::protocol::Protocol;
 
 pub mod config;
-// pub mod proxy;
+pub mod proxy;
 
 pub trait Method<P: Protocol> {
     type Returns;

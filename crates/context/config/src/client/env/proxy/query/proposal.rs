@@ -1,8 +1,10 @@
 use serde::Serialize;
 
-use crate::{client::{env::Method, protocol::{near::Near, starknet::Starknet}}, types::Proposal};
-
 use super::ProposalId;
+use crate::client::env::Method;
+use crate::client::protocol::near::Near;
+use crate::client::protocol::starknet::Starknet;
+use crate::Proposal;
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct ProposalRequest {
