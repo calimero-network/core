@@ -9,7 +9,6 @@ use eyre::Result;
 use near_sdk::NearToken;
 use near_workspaces::network::Sandbox;
 use near_workspaces::{Account, Worker};
-use serde_json::json;
 
 mod common;
 
