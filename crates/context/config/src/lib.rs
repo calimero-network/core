@@ -102,7 +102,11 @@ pub enum ContextRequestKind<'a> {
     },
 }
 
+/// Proxy contract
+/// todo: refactor
 pub type ProposalId = u32;
+pub type Gas = u64;
+pub type NativeToken = u128;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
 #[serde(tag = "scope", content = "params")]
@@ -113,12 +117,12 @@ pub enum ProposalAction {
         receiver_id: String,
         method_name: String,
         args: String,
-        deposit: u128,
-        gas: u64,
+        deposit: NativeToken,
+        gas: Gas,
     },
     Transfer {
         receiver_id: String,
-        amount: u128,
+        amount: NativeToken,
     },
     SetNumApprovals {
         num_approvals: u32,

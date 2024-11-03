@@ -6,11 +6,9 @@ use common::create_account_with_balance;
 use common::proxy_lib_helper::ProxyContractHelper;
 use ed25519_dalek::SigningKey;
 use eyre::Result;
-use near_sdk::json_types::Base64VecU8;
-use near_sdk::{Gas, NearToken};
+use near_sdk::NearToken;
 use near_workspaces::network::Sandbox;
 use near_workspaces::{Account, Worker};
-use serde_json::json;
 
 mod common;
 
