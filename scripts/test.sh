@@ -75,6 +75,9 @@ done
 # Step 3: Run tests for each module and its dependencies
 echo "Running tests for affected modules and their dependencies..."
 
+# Install the nightly toolchain
+rustup toolchain install nightly
+
 for module in $modules_to_test; do
     echo "Testing module $module and its dependencies"
     cargo +nightly test $module
