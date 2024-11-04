@@ -102,8 +102,17 @@ pub enum ContextRequestKind<'a> {
     },
 }
 
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "scope", content = "params")]
+#[serde(deny_unknown_fields)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
+pub enum SystemRequest {
+    #[serde(rename_all = "camelCase")]
+    SetValidityThreshold { threshold_ms: Timestamp },
+}
+
 /// Proxy contract
-/// todo: refactor
+/// TODO: move these to a separate cratexs
 pub type ProposalId = u32;
 pub type Gas = u64;
 pub type NativeToken = u128;
@@ -172,13 +181,4 @@ pub enum ProxyMutateRequest {
 pub struct ProposalWithApprovals {
     pub proposal_id: ProposalId,
     pub num_approvals: usize,
-}
-
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "scope", content = "params")]
-#[serde(deny_unknown_fields)]
-#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
-pub enum SystemRequest {
-    #[serde(rename_all = "camelCase")]
-    SetValidityThreshold { threshold_ms: Timestamp },
 }
