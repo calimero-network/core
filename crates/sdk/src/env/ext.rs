@@ -62,7 +62,7 @@ pub enum ProposalAction {
 
 /// Unique identifier for an account.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct AccountId(String);
+pub struct AccountId(pub String);
 
 /// A draft proposal.
 ///
