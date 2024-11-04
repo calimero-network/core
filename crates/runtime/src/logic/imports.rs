@@ -129,7 +129,7 @@ macro_rules! _imports {
 
                     #[cfg(feature = "host-traces")]
                     {
-                        #[expect(unused_mut, unused_assignments)]
+                        #[allow(unused_mut, unused_assignments)]
                         let mut return_ty = "()";
                         $( return_ty = stringify!($returns); )?
                         println!(
