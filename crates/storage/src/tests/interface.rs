@@ -14,7 +14,7 @@ mod interface__public_methods {
 
     #[test]
     fn children_of() {
-        let element = Element::new(&Path::new("::root::node").unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap(), None);
         let mut page = Page::new_from_element("Node", element);
         assert!(Interface::save(&mut page).unwrap());
         assert_eq!(
@@ -22,9 +22,9 @@ mod interface__public_methods {
             vec![]
         );
 
-        let child1 = Element::new(&Path::new("::root::node::leaf1").unwrap());
-        let child2 = Element::new(&Path::new("::root::node::leaf2").unwrap());
-        let child3 = Element::new(&Path::new("::root::node::leaf3").unwrap());
+        let child1 = Element::new(&Path::new("::root::node::leaf1").unwrap(), None);
+        let child2 = Element::new(&Path::new("::root::node::leaf2").unwrap(), None);
+        let child3 = Element::new(&Path::new("::root::node::leaf3").unwrap(), None);
         let mut para1 = Paragraph::new_from_element("Leaf1", child1);
         let mut para2 = Paragraph::new_from_element("Leaf2", child2);
         let mut para3 = Paragraph::new_from_element("Leaf3", child3);
@@ -40,7 +40,7 @@ mod interface__public_methods {
 
     #[test]
     fn find_by_id__existent() {
-        let element = Element::new(&Path::new("::root::node").unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap(), None);
         let mut page = Page::new_from_element("Leaf", element);
         let id = page.id();
         assert!(Interface::save(&mut page).unwrap());
@@ -73,7 +73,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__basic() {
-        let element = Element::new(&Path::new("::root::node").unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap(), None);
         let mut page = Page::new_from_element("Node", element);
 
         assert_ok!(Interface::save(&mut page));
@@ -81,8 +81,8 @@ mod interface__public_methods {
 
     #[test]
     fn save__multiple() {
-        let element1 = Element::new(&Path::new("::root::node1").unwrap());
-        let element2 = Element::new(&Path::new("::root::node2").unwrap());
+        let element1 = Element::new(&Path::new("::root::node1").unwrap(), None);
+        let element2 = Element::new(&Path::new("::root::node2").unwrap(), None);
         let mut page1 = Page::new_from_element("Node1", element1);
         let mut page2 = Page::new_from_element("Node2", element2);
 
@@ -94,7 +94,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__not_dirty() {
-        let element = Element::new(&Path::new("::root::node").unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap(), None);
         let mut page = Page::new_from_element("Node", element);
 
         assert!(Interface::save(&mut page).unwrap());
@@ -104,7 +104,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__too_old() {
-        let element1 = Element::new(&Path::new("::root::node").unwrap());
+        let element1 = Element::new(&Path::new("::root::node").unwrap(), None);
         let mut page1 = Page::new_from_element("Node", element1);
         let mut page2 = page1.clone();
 
@@ -118,7 +118,7 @@ mod interface__public_methods {
 
     #[test]
     fn save__update_existing() {
-        let element = Element::new(&Path::new("::root::node").unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap(), None);
         let mut page = Page::new_from_element("Node", element);
         let id = page.id();
         assert!(Interface::save(&mut page).unwrap());
@@ -163,7 +163,10 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__add() {
-        let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        let page = Page::new_from_element(
+            "Test Page",
+            Element::new(&Path::new("::test").unwrap(), None),
+        );
         let serialized = to_vec(&page).unwrap();
         let action = Action::Add {
             id: page.id(),
@@ -182,8 +185,10 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__update() {
-        let mut page =
-            Page::new_from_element("Old Title", Element::new(&Path::new("::test").unwrap()));
+        let mut page = Page::new_from_element(
+            "Old Title",
+            Element::new(&Path::new("::test").unwrap(), None),
+        );
         assert!(Interface::save(&mut page).unwrap());
 
         page.title = "New Title".to_owned();
@@ -205,8 +210,10 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__delete() {
-        let mut page =
-            Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        let mut page = Page::new_from_element(
+            "Test Page",
+            Element::new(&Path::new("::test").unwrap(), None),
+        );
         assert!(Interface::save(&mut page).unwrap());
 
         let action = Action::Delete {
@@ -223,7 +230,10 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__compare() {
-        let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        let page = Page::new_from_element(
+            "Test Page",
+            Element::new(&Path::new("::test").unwrap(), None),
+        );
         let action = Action::Compare { id: page.id() };
 
         // Compare should fail
@@ -232,7 +242,10 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__wrong_type() {
-        let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        let page = Page::new_from_element(
+            "Test Page",
+            Element::new(&Path::new("::test").unwrap(), None),
+        );
         let serialized = to_vec(&page).unwrap();
         let action = Action::Add {
             id: page.id(),
@@ -247,7 +260,10 @@ mod interface__apply_actions {
 
     #[test]
     fn apply_action__non_existent_update() {
-        let page = Page::new_from_element("Test Page", Element::new(&Path::new("::test").unwrap()));
+        let page = Page::new_from_element(
+            "Test Page",
+            Element::new(&Path::new("::test").unwrap(), None),
+        );
         let serialized = to_vec(&page).unwrap();
         let action = Action::Update {
             id: page.id(),
@@ -287,7 +303,7 @@ mod interface__comparison {
 
     #[test]
     fn compare_trees__identical() {
-        let element = Element::new(&Path::new("::root::node").unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap(), None);
         let mut local = Page::new_from_element("Test Page", element);
         let mut foreign = local.clone();
 
@@ -308,7 +324,7 @@ mod interface__comparison {
 
     #[test]
     fn compare_trees__local_newer() {
-        let element = Element::new(&Path::new("::root::node").unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap(), None);
         let mut local = Page::new_from_element("Test Page", element.clone());
         let mut foreign = Page::new_from_element("Old Test Page", element);
 
@@ -340,7 +356,7 @@ mod interface__comparison {
 
     #[test]
     fn compare_trees__foreign_newer() {
-        let element = Element::new(&Path::new("::root::node").unwrap());
+        let element = Element::new(&Path::new("::root::node").unwrap(), None);
         let mut local = Page::new_from_element("Old Test Page", element.clone());
         let mut foreign = Page::new_from_element("Test Page", element);
 
@@ -372,10 +388,10 @@ mod interface__comparison {
 
     #[test]
     fn compare_trees__with_collections() {
-        let page_element = Element::new(&Path::new("::root::node").unwrap());
-        let para1_element = Element::new(&Path::new("::root::node::leaf1").unwrap());
-        let para2_element = Element::new(&Path::new("::root::node::leaf2").unwrap());
-        let para3_element = Element::new(&Path::new("::root::node::leaf3").unwrap());
+        let page_element = Element::new(&Path::new("::root::node").unwrap(), None);
+        let para1_element = Element::new(&Path::new("::root::node::leaf1").unwrap(), None);
+        let para2_element = Element::new(&Path::new("::root::node::leaf2").unwrap(), None);
+        let para3_element = Element::new(&Path::new("::root::node::leaf3").unwrap(), None);
 
         let mut local_page = Page::new_from_element("Local Page", page_element.clone());
         let mut local_para1 =

@@ -1,10 +1,10 @@
 use calimero_sdk::borsh::{from_slice, to_vec};
 use calimero_sdk::{app, env};
+use calimero_storage::collections::unordered_map::{Entry, UnorderedMap};
 use calimero_storage::entities::Data;
 use calimero_storage::integration::Comparison;
 use calimero_storage::interface::{Action, Interface, StorageError};
 use calimero_storage::sync::{self, SyncArtifact};
-use calimero_storage::types::{Entry, Map};
 
 use crate::KvStore;
 
@@ -26,7 +26,9 @@ impl KvStore {
                             match type_id {
                                 1 => Interface::apply_action::<KvStore>(action)?,
                                 254 => Interface::apply_action::<Entry<String, String>>(action)?,
-                                255 => Interface::apply_action::<Map<String, String>>(action)?,
+                                255 => {
+                                    Interface::apply_action::<UnorderedMap<String, String>>(action)?
+                                }
                                 _ => return Err(StorageError::UnknownType(type_id)),
                             }
                         }
@@ -68,7 +70,7 @@ impl KvStore {
                             data,
                             comparison_data,
                         )?,
-                        255 => Interface::compare_affective::<Map<String, String>>(
+                        255 => Interface::compare_affective::<UnorderedMap<String, String>>(
                             data,
                             comparison_data,
                         )?,
