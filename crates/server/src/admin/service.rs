@@ -216,6 +216,26 @@ pub(crate) fn setup(
             "/dev/identity/context",
             post(generate_context_identity::handler),
         )
+        .route(
+            "/dev/contexts/:context_id/proposals/:proposal_id/approvals/count",
+            get(get_number_of_proposal_approvals_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/proposals/:proposal_id/approvals/users",
+            get(get_proposal_approvers_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/proposals/count",
+            get(get_number_of_active_proposals_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/proposals",
+            get(get_proposals_handler),
+        )
+        .route(
+            "/dev/contexts/:context_id/proposals/:proposal_id",
+            get(get_proposal_handler),
+        )
         .route_layer(from_fn(dev_mode_auth));
 
     let admin_router = Router::new()
