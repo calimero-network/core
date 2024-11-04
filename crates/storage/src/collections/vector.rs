@@ -97,10 +97,7 @@ impl<V: BorshSerialize + BorshDeserialize> Vector<V> {
     /// returned.
     ///
     pub fn pop(&mut self) -> Result<Option<V>, StoreError> {
-        let id = match Interface::child_info_for(self.id(), &self.entries)?
-            .into_iter()
-            .last()
-        {
+        let id = match Interface::child_info_for(self.id(), &self.entries)?.pop() {
             Some(info) => info.id(),
             None => return Ok(None),
         };
