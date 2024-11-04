@@ -4,9 +4,8 @@ use std::collections::BTreeMap;
 
 use calimero_sdk::types::Error;
 use calimero_sdk::{app, env};
-use calimero_storage::address::Path;
+use calimero_storage::collections::UnorderedMap;
 use calimero_storage::entities::Element;
-use calimero_storage::types::Map;
 use calimero_storage::AtomicUnit;
 
 #[app::state(emits = for<'a> Event<'a>)]
@@ -14,7 +13,7 @@ use calimero_storage::AtomicUnit;
 #[root]
 #[type_id(1)]
 pub struct KvStore {
-    items: Map<String, String>,
+    items: UnorderedMap<String, String>,
     #[storage]
     storage: Element,
 }
@@ -32,7 +31,7 @@ impl KvStore {
     #[app::init]
     pub fn init() -> KvStore {
         KvStore {
-            items: Map::new(&Path::new("::items").unwrap()).unwrap(),
+            items: UnorderedMap::new().unwrap(),
             storage: Element::root(),
         }
     }
@@ -87,7 +86,7 @@ impl KvStore {
         self.get(key)?.ok_or_else(|| Error::msg("Key not found."))
     }
 
-    pub fn remove(&mut self, key: &str) -> Result<Option<String>, Error> {
+    pub fn remove(&mut self, key: &str) -> Result<bool, Error> {
         env::log(&format!("Removing key: {:?}", key));
 
         app::emit!(Event::Removed { key });
