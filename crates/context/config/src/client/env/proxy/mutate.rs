@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use ed25519_dalek::{Signer, SigningKey};
 
 use crate::client::env::{utils, Method};
@@ -24,13 +22,12 @@ pub struct ContextProxyMutateRequest<'a, T> {
 }
 
 #[derive(Debug)]
-struct Mutate<'a> {
+struct Mutate {
     pub(crate) signing_key: [u8; 32],
     pub(crate) raw_request: ProxyMutateRequest,
-    _marker: PhantomData<&'a ()>,
 }
 
-impl<'a> Method<Near> for Mutate<'a> {
+impl Method<Near> for Mutate {
     const METHOD: &'static str = "mutate";
 
     type Returns = Option<ProposalWithApprovals>;
@@ -50,7 +47,7 @@ impl<'a> Method<Near> for Mutate<'a> {
     }
 }
 
-impl<'a> Method<Starknet> for Mutate<'a> {
+impl Method<Starknet> for Mutate {
     type Returns = Option<ProposalWithApprovals>;
 
     const METHOD: &'static str = "mutate";
@@ -77,7 +74,6 @@ impl<'a, T: Transport> ContextProxyMutateRequest<'a, T> {
     ) -> Result<Option<ProposalWithApprovals>, ClientError<T>> {
         let request = Mutate {
             signing_key,
-            _marker: PhantomData,
             raw_request: self.raw_request,
         };
 
