@@ -44,11 +44,13 @@ impl ProxyContractHelper {
 
     pub fn create_proposal_request(
         &self,
+        id: &ProposalId,
         author: &SigningKey,
         actions: &Vec<ProposalAction>,
     ) -> eyre::Result<Signed<ProxyMutateRequest>> {
         let request = ProxyMutateRequest::Propose {
             proposal: Proposal {
+                id: id.clone(),
                 author_id: author.verifying_key().rt().expect("Invalid signer"),
                 actions: actions.clone(),
             },
@@ -148,7 +150,7 @@ impl ProxyContractHelper {
         caller: &Account,
         offset: usize,
         length: usize,
-    ) -> eyre::Result<Vec<(u32, Proposal)>> {
+    ) -> eyre::Result<Vec<Proposal>> {
         let res = caller
             .view(self.proxy_contract.id(), "proposals")
             .args_json(json!({ "offset": offset, "length": length }))

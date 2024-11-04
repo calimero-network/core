@@ -6,6 +6,7 @@ use crate::{Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId, Pr
 impl<'a, T> ContextProxyMutate<'a, T> {
     pub fn propose(
         self,
+        proposal_id: ProposalId,
         author_id: SignerId,
         actions: Vec<ProposalAction>,
     ) -> ContextProxyMutateRequest<'a, T> {
@@ -13,6 +14,7 @@ impl<'a, T> ContextProxyMutate<'a, T> {
             client: self.client,
             raw_request: ProxyMutateRequest::Propose {
                 proposal: Proposal {
+                    id: proposal_id,
                     author_id: Repr::new(author_id),
                     actions,
                 },

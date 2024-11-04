@@ -119,7 +119,18 @@ pub type ProposalId = u32;
 pub type Gas = u64;
 pub type NativeToken = u128;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    BorshDeserialize,
+    BorshSerialize,
+    Ord,
+    PartialOrd,
+    Eq,
+)]
 #[serde(tag = "scope", content = "params")]
 #[serde(deny_unknown_fields)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
@@ -148,10 +159,22 @@ pub enum ProposalAction {
 }
 
 // The proposal the user makes specifying the receiving account and actions they want to execute (1 tx)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    BorshDeserialize,
+    BorshSerialize,
+    Ord,
+    PartialOrd,
+    Eq,
+)]
 #[serde(deny_unknown_fields)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
 pub struct Proposal {
+    pub id: ProposalId,
     pub author_id: Repr<SignerId>,
     pub actions: Vec<ProposalAction>,
 }
