@@ -105,16 +105,17 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn insert(&mut self, key: K, value: V) -> Result<bool, StoreError>
+    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, StoreError>
     where
         K: AsRef<[u8]> + PartialEq,
     {
         if let Some(mut entry) = self.get_raw(&key)? {
+            let ret_value = entry.value;
             entry.value = value;
             // has to be called to update the entry
             entry.element_mut().update();
             let _ = Interface::save(&mut entry)?;
-            return Ok(false);
+            return Ok(Some(ret_value));
         }
 
         let path = self.path();
@@ -129,7 +130,7 @@ impl<K: BorshSerialize + BorshDeserialize, V: BorshSerialize + BorshDeserialize>
             },
         )?;
 
-        Ok(true)
+        Ok(None)
     }
 
     /// Get an iterator over the entries in the map.
@@ -244,7 +245,8 @@ mod tests {
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
 
         assert_eq!(
             map.get("key").expect("get failed"),
@@ -255,12 +257,15 @@ mod tests {
             Some("value2".to_string())
         );
 
-        assert!(!map
-            .insert("key".to_string(), "value2".to_string())
-            .expect("insert failed"));
+        assert_eq!(
+            map.insert("key".to_string(), "value2".to_string())
+                .expect("insert failed"),
+            Some("value".to_string())
+        );
         assert!(map
             .insert("key2".to_string(), "value".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
 
         assert_eq!(
             map.get("key").expect("get failed"),
@@ -283,10 +288,12 @@ mod tests {
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
         assert!(map
             .insert("key2".to_string(), "value2".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
 
         assert_eq!(
             map.get("key1").expect("get failed"),
@@ -304,10 +311,12 @@ mod tests {
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
         assert!(!map
             .insert("key".to_string(), "new_value".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
 
         assert_eq!(
             map.get("key").expect("get failed"),
@@ -321,7 +330,8 @@ mod tests {
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
 
         assert_eq!(map.remove("key").expect("remove failed"), true);
         assert_eq!(map.get("key").expect("get failed"), None);
@@ -333,10 +343,12 @@ mod tests {
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
         assert!(map
             .insert("key2".to_string(), "value2".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
 
         map.clear().expect("clear failed");
 
@@ -352,13 +364,16 @@ mod tests {
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
         assert!(map
             .insert("key2".to_string(), "value2".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
         assert!(!map
             .insert("key2".to_string(), "value3".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
 
         assert_eq!(map.len().expect("len failed"), 2);
 
@@ -373,7 +388,8 @@ mod tests {
 
         assert!(map
             .insert("key".to_string(), "value".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
 
         assert_eq!(map.contains("key").expect("contains failed"), true);
         assert_eq!(map.contains("nonexistent").expect("contains failed"), false);
@@ -385,13 +401,16 @@ mod tests {
 
         assert!(map
             .insert("key1".to_string(), "value1".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
         assert!(map
             .insert("key2".to_string(), "value2".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
         assert!(!map
             .insert("key2".to_string(), "value3".to_string())
-            .expect("insert failed"));
+            .expect("insert failed")
+            .is_none());
 
         let entries: Vec<(String, String)> = map.entries().expect("entries failed").collect();
 
