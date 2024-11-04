@@ -1,13 +1,11 @@
 import {
   ContextStorage,
-  Context,
   HealthRequest,
   HealthStatus,
   ContextClientKeysList,
   ContextUsersList,
   GetInstalledApplicationsResponse,
   ApiContext,
-  ContextList,
   DidResponse,
   DeleteContextResponse,
   JoinContextResponse,
@@ -20,6 +18,8 @@ import {
   ContextIdentitiesResponse,
   CreateTokenResponse,
   UninstallApplicationResponse,
+  CreateContextResponse,
+  GetContextsResponse,
 } from './dataSource/NodeDataSource';
 import { ApiResponse } from './response';
 
@@ -28,15 +28,15 @@ export interface NodeApi {
   getInstalledApplicationDetails(
     appId: string,
   ): ApiResponse<InstalledApplication>;
-  getContexts(): ApiResponse<ContextList>;
+  getContexts(): ApiResponse<GetContextsResponse>;
   getContext(contextId: string): ApiResponse<ApiContext>;
   getContextClientKeys(contextId: string): ApiResponse<ContextClientKeysList>;
   getContextUsers(contextId: string): ApiResponse<ContextUsersList>;
   deleteContext(contextId: string): ApiResponse<DeleteContextResponse>;
-  startContexts(
+  createContexts(
     applicationId: string,
     initArguments: string,
-  ): ApiResponse<Context>;
+  ): ApiResponse<CreateContextResponse>;
   getDidList(): ApiResponse<DidResponse>;
   health(request: HealthRequest): ApiResponse<HealthStatus>;
   getContextStorageUsage(contextId: string): ApiResponse<ContextStorage>;

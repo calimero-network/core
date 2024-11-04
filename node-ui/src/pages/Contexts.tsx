@@ -7,15 +7,11 @@ import { ContextOptions } from '../constants/ContextConstants';
 import { useNavigate } from 'react-router-dom';
 import { useRPC } from '../hooks/useNear';
 import apiClient from '../api/index';
-import {
-  Context,
-  ContextList,
-  ContextsList,
-} from '../api/dataSource/NodeDataSource';
+import { Context, GetContextsResponse } from '../api/dataSource/NodeDataSource';
 import { ModalContent } from '../components/common/StatusModal';
 import { TableOptions } from '../components/common/OptionsHeader';
 import { ResponseData } from '../api/response';
-import { ContextObject } from '../types/context';
+import { ContextObject, ContextsList } from '../types/context';
 import { useServerDown } from '../context/ServerDownContext';
 import { parseAppMetadata } from '../utils/metadata';
 
@@ -47,9 +43,7 @@ export default function ContextsPage() {
     message: '',
     error: false,
   });
-  const [nodeContextList, setNodeContextList] = useState<
-    ContextsList<ContextObject>
-  >({
+  const [nodeContextList, setNodeContextList] = useState<ContextsList>({
     joined: [],
   });
 
@@ -89,11 +83,8 @@ export default function ContextsPage() {
 
   const fetchNodeContexts = useCallback(async () => {
     setErrorMessage('');
-    const fetchContextsResponse: ResponseData<ContextList> = await apiClient(
-      showServerDownPopup,
-    )
-      .node()
-      .getContexts();
+    const fetchContextsResponse: ResponseData<GetContextsResponse> =
+      await apiClient(showServerDownPopup).node().getContexts();
     // TODO - fetch invitations
     if (fetchContextsResponse.error) {
       setErrorMessage(fetchContextsResponse.error.message);
@@ -105,7 +96,7 @@ export default function ContextsPage() {
         nodeContexts.contexts,
       );
 
-      setNodeContextList((prevState: ContextsList<ContextObject>) => ({
+      setNodeContextList((prevState: ContextsList) => ({
         ...prevState,
         joined: joinedContexts,
       }));

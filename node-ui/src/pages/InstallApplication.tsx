@@ -75,7 +75,7 @@ export default function InstallApplication() {
         message: `Installed application ${application.name}, version ${application.version}.`,
         error: false,
       });
-      return response.data.application_id;
+      return response.data.applicationId;
     }
   };
 
