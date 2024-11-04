@@ -28,7 +28,6 @@ pub struct ProxyContract {
     pub context_id: ContextId,
     pub context_config_account_id: AccountId,
     pub num_approvals: u32,
-    pub proposal_nonce: ProposalId,
     pub proposals: IterableMap<ProposalId, Proposal>,
     pub approvals: IterableMap<ProposalId, HashSet<SignerId>>,
     pub num_proposals_pk: IterableMap<SignerId, u32>,
@@ -51,7 +50,6 @@ impl ProxyContract {
         Self {
             context_id: context_id.rt().expect("Invalid context id"),
             context_config_account_id,
-            proposal_nonce: 0,
             proposals: IterableMap::new(b"r".to_vec()),
             approvals: IterableMap::new(b"c".to_vec()),
             num_proposals_pk: IterableMap::new(b"k".to_vec()),
@@ -61,15 +59,19 @@ impl ProxyContract {
         }
     }
 
-    pub fn proposals(&self, offset: usize, length: usize) -> Vec<(&u32, &Proposal)> {
+    pub fn proposals(&self, offset: usize, length: usize) -> Vec<&Proposal> {
         let effective_len = (self.proposals.len() as usize)
             .saturating_sub(offset)
             .min(length);
         let mut proposals = Vec::with_capacity(effective_len);
         for proposal in self.proposals.iter().skip(offset).take(length) {
-            proposals.push(proposal);
+            proposals.push(proposal.1);
         }
         proposals
+    }
+
+    pub fn proposal(&self, proposal_id: &ProposalId) -> Option<Proposal> {
+        self.proposals.get(proposal_id).cloned()
     }
 
     pub fn get_confirmations_count(

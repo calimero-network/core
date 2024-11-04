@@ -7,7 +7,8 @@ use calimero_context_config::{
     ProposalAction, ProposalId, ProposalWithApprovals, ProxyMutateRequest,
 };
 use near_sdk::{
-    env, near, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue, PromiseResult,
+    env, near, require, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
+    PromiseResult,
 };
 
 use super::{Proposal, ProxyContract, ProxyContractExt, Signed};
@@ -60,18 +61,13 @@ impl ProxyContract {
         self.num_proposals_pk
             .insert(*proposal.author_id, num_proposals);
 
-        let proposal_id = self.proposal_nonce;
-
-        self.proposals.insert(proposal_id, proposal.clone());
-        self.approvals.insert(proposal_id, HashSet::new());
+        self.proposals.insert(proposal.id, proposal.clone());
+        self.approvals.insert(proposal.id, HashSet::new());
         self.internal_confirm(
-            proposal_id,
+            proposal.id,
             proposal.author_id.rt().expect("Invalid signer"),
         );
-
-        self.proposal_nonce += 1;
-
-        self.build_proposal_response(proposal_id)
+        self.build_proposal_response(proposal.id)
     }
 
     #[private]
@@ -120,6 +116,7 @@ impl ProxyContract {
 
         if promise_actions.is_empty() {
             self.finalize_execution(Proposal {
+                id: proposal.id,
                 author_id: proposal.author_id,
                 actions: non_promise_actions,
             });
@@ -166,6 +163,7 @@ impl ProxyContract {
         match chained_promise {
             Some(promise) => PromiseOrValue::Promise(promise.then(
                 Self::ext(env::current_account_id()).finalize_execution(Proposal {
+                    id: proposal.id,
                     author_id: proposal.author_id,
                     actions: non_promise_actions,
                 }),
@@ -203,8 +201,11 @@ impl ProxyContract {
 
 impl ProxyContract {
     fn propose(&self, proposal: Proposal) -> Promise {
+        require!(
+            !self.proposals.contains_key(&proposal.id),
+            "Proposal already exists"
+        );
         let author_id = proposal.author_id;
-
         let num_proposals = self.num_proposals_pk.get(&author_id).unwrap_or(&0) + 1;
         assert!(
             num_proposals <= self.active_proposals_limit,
