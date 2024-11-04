@@ -62,13 +62,14 @@
 )]
 
 pub mod address;
+pub mod collections;
 pub mod entities;
 pub mod env;
 pub mod index;
 pub mod integration;
 pub mod interface;
 pub mod store;
-pub mod types;
+pub mod sync;
 
 pub use calimero_storage_macros::{AtomicUnit, Collection};
 

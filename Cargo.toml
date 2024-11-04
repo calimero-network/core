@@ -31,6 +31,7 @@ members = [
     "./apps/kv-store",
     "./apps/only-peers",
     "./apps/gen-ext",
+    "./apps/visited",
 
     "./contracts/context-config",
     "./contracts/registry",

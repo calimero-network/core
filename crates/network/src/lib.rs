@@ -168,7 +168,6 @@ fn init(
     let (event_sender, event_receiver) = mpsc::channel(32);
 
     let client = NetworkClient {
-        catchup_config: config.catchup,
         sender: command_sender,
     };
 
