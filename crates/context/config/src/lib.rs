@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::time;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "client")]
@@ -108,4 +109,76 @@ pub enum ContextRequestKind<'a> {
 pub enum SystemRequest {
     #[serde(rename_all = "camelCase")]
     SetValidityThreshold { threshold_ms: Timestamp },
+}
+
+/// Proxy contract
+/// TODO: move these to a separate cratexs
+pub type ProposalId = u32;
+pub type Gas = u64;
+pub type NativeToken = u128;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
+#[serde(tag = "scope", content = "params")]
+#[serde(deny_unknown_fields)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
+pub enum ProposalAction {
+    ExternalFunctionCall {
+        receiver_id: String,
+        method_name: String,
+        args: String,
+        deposit: NativeToken,
+        gas: Gas,
+    },
+    Transfer {
+        receiver_id: String,
+        amount: NativeToken,
+    },
+    SetNumApprovals {
+        num_approvals: u32,
+    },
+    SetActiveProposalsLimit {
+        active_proposals_limit: u32,
+    },
+    SetContextValue {
+        key: Box<[u8]>,
+        value: Box<[u8]>,
+    },
+}
+
+// The proposal the user makes specifying the receiving account and actions they want to execute (1 tx)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
+#[serde(deny_unknown_fields)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
+pub struct Proposal {
+    pub author_id: Repr<SignerId>,
+    pub actions: Vec<ProposalAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Copy)]
+#[serde(deny_unknown_fields)]
+pub struct ProposalApprovalWithSigner {
+    pub proposal_id: ProposalId,
+    pub signer_id: Repr<SignerId>,
+    pub added_timestamp: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "scope", content = "params")]
+#[serde(deny_unknown_fields)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
+pub enum ProxyMutateRequest {
+    Propose {
+        proposal: Proposal,
+    },
+    Approve {
+        approval: ProposalApprovalWithSigner,
+    },
+}
+
+#[derive(PartialEq, Serialize, Deserialize, Copy, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+#[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]
+pub struct ProposalWithApprovals {
+    pub proposal_id: ProposalId,
+    pub num_approvals: usize,
 }

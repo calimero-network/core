@@ -1,15 +1,14 @@
 use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::{ProposalAction, ProposalWithApprovals};
 use common::config_helper::ConfigContractHelper;
 use common::counter_helper::CounterContractHelper;
 use common::create_account_with_balance;
 use common::proxy_lib_helper::ProxyContractHelper;
 use ed25519_dalek::SigningKey;
 use eyre::Result;
-use near_sdk::json_types::Base64VecU8;
-use near_sdk::{Gas, NearToken};
+use near_sdk::NearToken;
 use near_workspaces::network::Sandbox;
 use near_workspaces::{Account, Worker};
-use proxy_lib::{Proposal, ProposalAction, ProposalWithApprovals};
 
 mod common;
 
@@ -57,10 +56,10 @@ async fn test_create_proposal() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal = proxy_helper.create_proposal(&alice_sk, &vec![])?;
+    let proposal = proxy_helper.create_proposal_request(&alice_sk, &vec![])?;
 
     let res: Option<ProposalWithApprovals> = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
@@ -85,11 +84,10 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
 
-    let proposal: calimero_context_config::types::Signed<Proposal> =
-        proxy_helper.create_proposal(&bob_sk, &vec![])?;
+    let proposal = proxy_helper.create_proposal_request(&bob_sk, &vec![])?;
 
     let res = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result();
 
@@ -114,16 +112,15 @@ async fn test_create_multiple_proposals() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal: calimero_context_config::types::Signed<Proposal> =
-        proxy_helper.create_proposal(&alice_sk, &vec![])?;
+    let proposal = proxy_helper.create_proposal_request(&alice_sk, &vec![])?;
 
     let _res = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result();
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
@@ -148,11 +145,10 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
         .await?
         .into_result()?;
 
-    let proposal: calimero_context_config::types::Signed<Proposal> =
-        proxy_helper.create_proposal(&alice_sk, &vec![])?;
+    let proposal = proxy_helper.create_proposal_request(&alice_sk, &vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
@@ -179,11 +175,10 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
 
-    let proposal: calimero_context_config::types::Signed<Proposal> =
-        proxy_helper.create_proposal(&alice_sk, &vec![])?;
+    let proposal = proxy_helper.create_proposal_request(&alice_sk, &vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
@@ -234,10 +229,10 @@ async fn create_and_approve_proposal(
     actions: &Vec<ProposalAction>,
     members: Vec<SigningKey>,
 ) -> Result<()> {
-    let proposal = proxy_helper.create_proposal(&members[0], actions)?;
+    let proposal = proxy_helper.create_proposal_request(&members[0], actions)?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
@@ -280,11 +275,11 @@ async fn test_execute_proposal() -> Result<()> {
     );
 
     let actions = vec![ProposalAction::ExternalFunctionCall {
-        receiver_id: counter_helper.counter_contract.id().clone(),
+        receiver_id: counter_helper.counter_contract.id().to_string(),
         method_name: "increment".to_string(),
-        args: Base64VecU8::from(vec![]),
-        deposit: NearToken::from_near(0),
-        gas: Gas::from_gas(1_000_000_000_000),
+        args: serde_json::to_string(&Vec::<u8>::new())?,
+        deposit: 0,
+        gas: 1_000_000_000_000,
     }];
     let _res =
         create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
@@ -394,8 +389,8 @@ async fn test_transfer() -> Result<()> {
     );
 
     let actions = vec![ProposalAction::Transfer {
-        receiver_id: recipient.id().clone(),
-        amount: NearToken::from_near(5),
+        receiver_id: recipient.id().to_string(),
+        amount: 5,
     }];
     let _res =
         create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
@@ -429,11 +424,11 @@ async fn test_combined_proposals() -> Result<()> {
 
     let actions = vec![
         ProposalAction::ExternalFunctionCall {
-            receiver_id: counter_helper.counter_contract.id().clone(),
+            receiver_id: counter_helper.counter_contract.id().to_string(),
             method_name: "increment".to_string(),
-            args: Base64VecU8::from(vec![]),
-            deposit: NearToken::from_near(0),
-            gas: Gas::from_gas(1_000_000_000_000),
+            args: serde_json::to_string(&Vec::<u8>::new())?,
+            deposit: 0,
+            gas: 1_000_000_000_000,
         },
         ProposalAction::SetActiveProposalsLimit {
             active_proposals_limit: 5,
@@ -477,11 +472,11 @@ async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
 
     let actions = vec![
         ProposalAction::ExternalFunctionCall {
-            receiver_id: counter_helper.counter_contract.id().clone(),
+            receiver_id: counter_helper.counter_contract.id().to_string(),
             method_name: "non_existent_method".to_string(), // This method does not exist
-            args: Base64VecU8::from(vec![]),
-            deposit: NearToken::from_near(0),
-            gas: Gas::from_gas(1_000_000_000_000),
+            args: serde_json::to_string(&Vec::<u8>::new())?,
+            deposit: 0,
+            gas: 1_000_000_000_000,
         },
         ProposalAction::SetActiveProposalsLimit {
             active_proposals_limit: 5,
@@ -512,23 +507,23 @@ async fn test_view_proposals() -> Result<()> {
     let proposal1_actions = vec![ProposalAction::SetActiveProposalsLimit {
         active_proposals_limit: 5,
     }];
-    let proposal1 = proxy_helper.create_proposal(&alice_sk, &proposal1_actions)?;
+    let proposal1 = proxy_helper.create_proposal_request(&alice_sk, &proposal1_actions)?;
     let proposal2_actions = vec![ProposalAction::SetNumApprovals { num_approvals: 2 }];
-    let proposal2 = proxy_helper.create_proposal(&alice_sk, &proposal2_actions)?;
+    let proposal2 = proxy_helper.create_proposal_request(&alice_sk, &proposal2_actions)?;
     let proposal3_actions = vec![ProposalAction::SetContextValue {
         key: b"example_key".to_vec().into_boxed_slice(),
         value: b"example_value".to_vec().into_boxed_slice(),
     }];
-    let proposal3 = proxy_helper.create_proposal(&alice_sk, &proposal3_actions)?;
+    let proposal3 = proxy_helper.create_proposal_request(&alice_sk, &proposal3_actions)?;
 
     let _ = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal1)
+        .proxy_mutate(&relayer_account, &proposal1)
         .await?;
     let _ = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal2)
+        .proxy_mutate(&relayer_account, &proposal2)
         .await?;
     let _ = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal3)
+        .proxy_mutate(&relayer_account, &proposal3)
         .await?;
 
     let proposals = proxy_helper.view_proposals(&relayer_account, 0, 3).await?;
