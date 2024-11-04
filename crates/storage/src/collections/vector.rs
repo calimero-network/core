@@ -73,17 +73,19 @@ impl<V: BorshSerialize + BorshDeserialize> Vector<V> {
     /// [`Element`](crate::entities::Element) cannot be found, an error will be
     /// returned.
     ///
-    pub fn push(&mut self, value: V) -> Result<bool, StoreError> {
+    pub fn push(&mut self, value: V) -> Result<(), StoreError> {
         let mut entry = Entry {
             value,
             storage: Element::new(&self.path(), None),
         };
 
-        Ok(Interface::add_child_to(
-            self.id(),
-            &mut self.entries,
-            &mut entry,
-        )?)
+        if Interface::add_child_to(self.id(), &mut self.entries, &mut entry)? {
+            return Ok(());
+        }
+
+        Err(StoreError::StorageError(StorageError::ActionNotAllowed(
+            "Failed to add child".to_owned(),
+        )))
     }
 
     /// Remove and return the last value from the vector.
