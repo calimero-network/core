@@ -2,7 +2,7 @@ use calimero_server::admin::handlers::proposals::Proposal;
 use clap::{Parser, Subcommand};
 use eyre::Result as EyreResult;
 
-use super::{Environment, RootArgs};
+use super::Environment;
 use crate::output::Report;
 
 mod get;
