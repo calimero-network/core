@@ -1,19 +1,25 @@
+use proposals::ProposalRequest;
+
+use crate::client::env::utils;
 use crate::client::transport::Transport;
-use crate::client::{CallClient, Error};
+use crate::client::{CallClient, ClientError, Operation};
+use crate::{Proposal, ProposalId};
+
+mod proposal;
+mod proposals;
 
 #[derive(Debug)]
 pub struct ContextProxyQuery<'a, T> {
-    client: CallClient<'a, T>,
+    pub client: CallClient<'a, T>,
 }
-
-type ProposalId = [u8; 32];
 
 impl<'a, T: Transport> ContextProxyQuery<'a, T> {
     pub async fn proposals(
         &self,
-        _offset: usize,
-        _length: usize,
-    ) -> Result<Vec<ProposalId>, Error<T>> {
-        todo!()
+        offset: usize,
+        length: usize,
+    ) -> Result<Vec<(ProposalId, Proposal)>, ClientError<T>> {
+        let params = ProposalRequest { offset, length };
+        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
 }

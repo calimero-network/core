@@ -1,6 +1,7 @@
 use core::fmt;
 use core::ops::Deref;
 use core::str::FromStr;
+use std::borrow::Cow;
 use std::io;
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,10 @@ use crate::application::ApplicationId;
 use crate::hash::{Hash, HashError};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
 // todo! define macros that construct newtypes
 // todo! wrapping Hash<N> with this interface
 pub struct ContextId(Hash);
@@ -17,12 +22,6 @@ pub struct ContextId(Hash);
 impl From<[u8; 32]> for ContextId {
     fn from(id: [u8; 32]) -> Self {
         Self(id.into())
-    }
-}
-
-impl From<ContextId> for [u8; 32] {
-    fn from(id: ContextId) -> Self {
-        *id
     }
 }
 
@@ -203,4 +202,13 @@ impl Context {
             root_hash,
         }
     }
+}
+
+#[derive(Debug)]
+pub struct ContextConfigParams<'a> {
+    pub protocol: Cow<'a, str>,
+    pub network_id: Cow<'a, str>,
+    pub contract_id: Cow<'a, str>,
+    pub application_revision: u64,
+    pub members_revision: u64,
 }

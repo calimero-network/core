@@ -42,7 +42,7 @@ impl ApplicationCommand {
                         let url = resource.parse()?;
                         println!("{ind} Downloading application..");
                         node.ctx_manager
-                            .install_application_from_url(url, vec![])
+                            .install_application_from_url(url, vec![], None)
                             .await?
                     }
                     InstallType::File => {

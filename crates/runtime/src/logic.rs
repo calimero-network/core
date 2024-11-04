@@ -107,8 +107,8 @@ pub struct VMLogic<'a> {
     returns: Option<VMLogicResult<Vec<u8>, Vec<u8>>>,
     logs: Vec<String>,
     events: Vec<Event>,
-    actions: Vec<Vec<u8>>,
     root_hash: Option<[u8; 32]>,
+    artifact: Vec<u8>,
     proposals: BTreeMap<[u8; 32], Vec<u8>>,
 }
 
@@ -123,8 +123,8 @@ impl<'a> VMLogic<'a> {
             returns: None,
             logs: vec![],
             events: vec![],
-            actions: vec![],
             root_hash: None,
+            artifact: vec![],
             proposals: BTreeMap::new(),
         }
     }
@@ -153,8 +153,8 @@ pub struct Outcome {
     pub returns: VMLogicResult<Option<Vec<u8>>, FunctionCallError>,
     pub logs: Vec<String>,
     pub events: Vec<Event>,
-    pub actions: Vec<Vec<u8>>,
     pub root_hash: Option<[u8; 32]>,
+    pub artifact: Vec<u8>,
     pub proposals: BTreeMap<[u8; 32], Vec<u8>>,
     // execution runtime
     // current storage usage of the app
@@ -180,11 +180,10 @@ impl VMLogic<'_> {
 
         Outcome {
             returns,
-
             logs: self.logs,
             events: self.events,
-            actions: self.actions,
             root_hash: self.root_hash,
+            artifact: self.artifact,
             proposals: self.proposals,
         }
     }
@@ -369,25 +368,26 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
-    /// Sends an action to the host.
-    ///
-    /// After a storage event, other nodes need to be updated. Consequently, the
-    /// host must be informed about the action that was taken. This function
-    /// sends that action to the host, which can then be used to update the
-    /// network.
-    ///
-    pub fn send_action(&mut self, action_ptr: u64, action_len: u64) -> VMLogicResult<()> {
-        let action_bytes = self.read_guest_memory(action_ptr, action_len)?;
+    pub fn commit(
+        &mut self,
+        root_hash_ptr: u64,
+        root_hash_len: u64,
+        artifact_ptr: u64,
+        artifact_len: u64,
+    ) -> VMLogicResult<()> {
+        let root_hash = self.read_guest_memory_sized::<32>(root_hash_ptr, root_hash_len)?;
+        let artifact = self.read_guest_memory(artifact_ptr, artifact_len)?;
 
-        self.with_logic_mut(|logic| logic.actions.push(action_bytes));
+        self.with_logic_mut(|logic| {
+            if logic.root_hash.is_some() {
+                return Err(HostError::InvalidMemoryAccess);
+            }
 
-        Ok(())
-    }
+            logic.root_hash = Some(root_hash);
+            logic.artifact = artifact;
 
-    pub fn commit_root(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
-        let bytes = self.read_guest_memory_sized::<32>(ptr, len)?;
-
-        let _ = self.with_logic_mut(|logic| logic.root_hash.replace(bytes));
+            Ok(())
+        })?;
 
         Ok(())
     }

@@ -43,7 +43,7 @@ impl Child {
     fn new(path: &Path) -> Self {
         Self {
             content: String::new(),
-            storage: Element::new(path),
+            storage: Element::new(path, None),
         }
     }
 }
@@ -53,7 +53,7 @@ impl Child {
 struct Group;
 
 impl Group {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {}
     }
 }
@@ -74,7 +74,7 @@ impl Parent {
         Self {
             title: String::new(),
             children: Group::new(),
-            storage: Element::new(path),
+            storage: Element::new(path, None),
         }
     }
 }
@@ -94,7 +94,7 @@ impl Simple {
         Self {
             name: String::new(),
             value: 0,
-            storage: Element::new(path),
+            storage: Element::new(path, None),
         }
     }
 }
@@ -135,8 +135,8 @@ mod hashing {
 
         let mut hasher = Sha256::new();
         hasher.update(child.id().as_bytes());
-        hasher.update(&to_vec(&child.content).unwrap());
-        hasher.update(&to_vec(&child.element().metadata()).unwrap());
+        hasher.update(to_vec(&child.content).unwrap());
+        hasher.update(to_vec(&child.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();
 
         assert_eq!(child.calculate_merkle_hash().unwrap(), expected_hash);
@@ -149,8 +149,8 @@ mod hashing {
 
         let mut hasher = Sha256::new();
         hasher.update(parent.id().as_bytes());
-        hasher.update(&to_vec(&parent.title).unwrap());
-        hasher.update(&to_vec(&parent.element().metadata()).unwrap());
+        hasher.update(to_vec(&parent.title).unwrap());
+        hasher.update(to_vec(&parent.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();
 
         assert_eq!(parent.calculate_merkle_hash().unwrap(), expected_hash);

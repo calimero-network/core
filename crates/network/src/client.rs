@@ -5,13 +5,11 @@ use libp2p::gossipsub::{IdentTopic, MessageId, TopicHash};
 use libp2p::{Multiaddr, PeerId};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::config::CatchupConfig;
 use crate::stream::Stream;
 use crate::Command;
 
 #[derive(Clone, Debug)]
 pub struct NetworkClient {
-    pub catchup_config: CatchupConfig,
     pub(crate) sender: mpsc::Sender<Command>,
 }
 

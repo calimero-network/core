@@ -1,6 +1,7 @@
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_config::ConfigFile;
 use calimero_network::config::NetworkConfig;
+use calimero_node::sync::SyncConfig;
 use calimero_node::{start, NodeConfig};
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
@@ -31,8 +32,11 @@ impl RunCommand {
                 config.network.swarm,
                 config.network.bootstrap,
                 config.network.discovery,
-                config.network.catchup,
             ),
+            SyncConfig {
+                timeout: config.sync.timeout,
+                interval: config.sync.interval,
+            },
             StoreConfig::new(path.join(config.datastore.path)),
             BlobStoreConfig::new(path.join(config.blobstore.path)),
             config.context,

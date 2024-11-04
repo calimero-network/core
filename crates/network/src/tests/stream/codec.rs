@@ -15,7 +15,7 @@ fn test_my_frame_encoding_decoding() {
     };
 
     let mut buffer = BytesMut::new();
-    let mut codec = MessageJsonCodec::new(MAX_MESSAGE_SIZE);
+    let mut codec = MessageCodec::new(MAX_MESSAGE_SIZE);
     codec.encode(request.clone(), &mut buffer).unwrap();
     codec.encode(response.clone(), &mut buffer).unwrap();
 
@@ -36,12 +36,12 @@ async fn test_multiple_objects_stream() {
     };
 
     let mut buffer = BytesMut::new();
-    let mut codec = MessageJsonCodec::new(MAX_MESSAGE_SIZE);
+    let mut codec = MessageCodec::new(MAX_MESSAGE_SIZE);
     codec.encode(request.clone(), &mut buffer).unwrap();
     codec.encode(response.clone(), &mut buffer).unwrap();
 
     let mut stream = Builder::new().read(&buffer.freeze()).build();
-    let mut framed = FramedRead::new(&mut stream, MessageJsonCodec::new(MAX_MESSAGE_SIZE));
+    let mut framed = FramedRead::new(&mut stream, MessageCodec::new(MAX_MESSAGE_SIZE));
 
     let decoded_request = framed.next().await.unwrap().unwrap();
     assert_eq!(decoded_request, request);

@@ -48,7 +48,7 @@ impl Private {
         Self {
             public: String::new(),
             private: String::new(),
-            storage: Element::new(path),
+            storage: Element::new(path, None),
         }
     }
 }
@@ -68,7 +68,7 @@ impl Simple {
         Self {
             name: String::new(),
             value: 0,
-            storage: Element::new(path),
+            storage: Element::new(path, None),
         }
     }
 }
@@ -89,7 +89,7 @@ impl Skipped {
         Self {
             included: String::new(),
             skipped: String::new(),
-            storage: Element::new(path),
+            storage: Element::new(path, None),
         }
     }
 }
@@ -251,8 +251,8 @@ mod hashing {
 
         let mut hasher = Sha256::new();
         hasher.update(unit.id().as_bytes());
-        hasher.update(&to_vec(&unit.public).unwrap());
-        hasher.update(&to_vec(&unit.element().metadata()).unwrap());
+        hasher.update(to_vec(&unit.public).unwrap());
+        hasher.update(to_vec(&unit.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();
 
         assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
@@ -274,9 +274,9 @@ mod hashing {
 
         let mut hasher = Sha256::new();
         hasher.update(unit.id().as_bytes());
-        hasher.update(&to_vec(&unit.name).unwrap());
-        hasher.update(&to_vec(&unit.value).unwrap());
-        hasher.update(&to_vec(&unit.element().metadata()).unwrap());
+        hasher.update(to_vec(&unit.name).unwrap());
+        hasher.update(to_vec(&unit.value).unwrap());
+        hasher.update(to_vec(&unit.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();
 
         assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);
@@ -294,8 +294,8 @@ mod hashing {
 
         let mut hasher = Sha256::new();
         hasher.update(unit.id().as_bytes());
-        hasher.update(&to_vec(&unit.included).unwrap());
-        hasher.update(&to_vec(&unit.element().metadata()).unwrap());
+        hasher.update(to_vec(&unit.included).unwrap());
+        hasher.update(to_vec(&unit.element().metadata()).unwrap());
         let expected_hash: [u8; 32] = hasher.finalize().into();
 
         assert_eq!(unit.calculate_merkle_hash().unwrap(), expected_hash);

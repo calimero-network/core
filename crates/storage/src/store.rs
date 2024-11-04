@@ -1,5 +1,7 @@
 //! Storage operations.
 
+use sha2::{Digest, Sha256};
+
 use crate::address::Id;
 use crate::env::{storage_read, storage_remove, storage_write};
 
@@ -17,7 +19,7 @@ pub enum Key {
 impl Key {
     /// Converts the key to a byte array.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; 33] {
+    pub fn to_bytes(&self) -> [u8; 32] {
         let mut bytes = [0; 33];
         match *self {
             Self::Index(id) => {
@@ -29,7 +31,7 @@ impl Key {
                 bytes[1..33].copy_from_slice(id.as_bytes());
             }
         }
-        bytes
+        Sha256::digest(bytes).into()
     }
 }
 

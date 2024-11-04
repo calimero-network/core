@@ -7,17 +7,17 @@ use mutate::ContextProxyMutate;
 use query::ContextProxyQuery;
 
 #[derive(Copy, Clone, Debug)]
-pub enum ContextProxy {}
+pub enum ContextConfig {}
 
-impl<'a, T: 'a> Environment<'a, T> for ContextProxy {
+impl<'a, T: 'a> Environment<'a, T> for ContextConfig {
     type Query = ContextProxyQuery<'a, T>;
     type Mutate = ContextProxyMutate<'a, T>;
 
-    fn query(_client: CallClient<'a, T>) -> Self::Query {
-        todo!()
+    fn query(client: CallClient<'a, T>) -> Self::Query {
+        ContextProxyQuery { client }
     }
 
-    fn mutate(_client: CallClient<'a, T>) -> Self::Mutate {
-        todo!()
+    fn mutate(client: CallClient<'a, T>) -> Self::Mutate {
+        ContextProxyMutate { client }
     }
 }

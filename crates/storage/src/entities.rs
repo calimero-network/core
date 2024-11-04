@@ -644,6 +644,7 @@ impl Element {
     /// # Parameters
     ///
     /// * `path` - The path to the [`Element`] in the hierarchy of the storage.
+    /// * `id` - The id of the [`Element`] in the hierarchy of the storage.
     ///
     /// # Panics
     ///
@@ -651,10 +652,11 @@ impl Element {
     /// before the Unix epoch, which should never ever happen!
     ///
     #[must_use]
-    pub fn new(path: &Path) -> Self {
+    pub fn new(path: &Path, id: Option<Id>) -> Self {
         let timestamp = time_now();
+        let element_id = id.unwrap_or_else(Id::random);
         Self {
-            id: Id::random(),
+            id: element_id,
             is_dirty: true,
             metadata: Metadata {
                 created_at: timestamp,

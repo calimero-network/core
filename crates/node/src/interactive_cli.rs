@@ -36,7 +36,7 @@ pub enum SubCommands {
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     // IMPORTANT: Parser needs first string to be binary name
-    let mut args = vec![""];
+    let mut args = vec!["<repl>"];
     args.extend(line.split_whitespace());
 
     let command = match RootCommand::try_parse_from(args) {
@@ -47,19 +47,14 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         }
     };
 
-    let result = match command.action {
-        SubCommands::Application(application) => application.run(node).await,
-        SubCommands::Call(call) => call.run(node).await,
-        SubCommands::Context(context) => context.run(node).await,
-        SubCommands::Identity(identity) => identity.run(node),
-        SubCommands::Peers(peers) => peers.run(node.network_client.clone().into()).await,
-        SubCommands::State(state) => state.run(node),
-        SubCommands::Store(store) => store.run(node),
-    };
-
-    if let Err(err) = result {
-        println!("Error running command: {err}");
-        eyre::bail!("Failed to parse command");
+    match command.action {
+        SubCommands::Application(application) => application.run(node).await?,
+        SubCommands::Call(call) => call.run(node).await?,
+        SubCommands::Context(context) => context.run(node).await?,
+        SubCommands::Identity(identity) => identity.run(node)?,
+        SubCommands::Peers(peers) => peers.run(node.network_client.clone().into()).await?,
+        SubCommands::State(state) => state.run(node)?,
+        SubCommands::Store(store) => store.run(node)?,
     }
 
     Ok(())
