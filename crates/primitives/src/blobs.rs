@@ -8,6 +8,10 @@ use thiserror::Error as ThisError;
 use crate::hash::{Hash, HashError};
 
 #[derive(Copy, Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
 pub struct BlobId(Hash);
 
 impl BlobId {

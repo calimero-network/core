@@ -1,7 +1,8 @@
+use core::time::Duration;
 use std::fs::{read_to_string, write};
 
 use calimero_context::config::ContextConfig;
-use calimero_network::config::{BootstrapConfig, CatchupConfig, DiscoveryConfig, SwarmConfig};
+use calimero_network::config::{BootstrapConfig, DiscoveryConfig, SwarmConfig};
 use calimero_server::admin::service::AdminConfig;
 use calimero_server::jsonrpc::JsonRpcConfig;
 use calimero_server::ws::WsConfig;
@@ -24,11 +25,21 @@ pub struct ConfigFile {
     #[serde(flatten)]
     pub network: NetworkConfig,
 
+    pub sync: SyncConfig,
+
     pub datastore: DataStoreConfig,
 
     pub blobstore: BlobStoreConfig,
 
     pub context: ContextConfig,
+}
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub struct SyncConfig {
+    #[serde(rename = "timeout_ms", with = "serde_duration")]
+    pub timeout: Duration,
+    #[serde(rename = "interval_ms", with = "serde_duration")]
+    pub interval: Duration,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -43,8 +54,6 @@ pub struct NetworkConfig {
 
     #[serde(default)]
     pub discovery: DiscoveryConfig,
-
-    pub catchup: CatchupConfig,
 }
 
 impl NetworkConfig {
@@ -54,14 +63,12 @@ impl NetworkConfig {
         bootstrap: BootstrapConfig,
         discovery: DiscoveryConfig,
         server: ServerConfig,
-        catchup: CatchupConfig,
     ) -> Self {
         Self {
             swarm,
             server,
             bootstrap,
             discovery,
-            catchup,
         }
     }
 }
@@ -128,14 +135,16 @@ impl ConfigFile {
     #[must_use]
     pub const fn new(
         identity: libp2p_identity::Keypair,
+        network: NetworkConfig,
+        sync: SyncConfig,
         datastore: DataStoreConfig,
         blobstore: BlobStoreConfig,
         context: ContextConfig,
-        network: NetworkConfig,
     ) -> Self {
         Self {
             identity,
             network,
+            sync,
             datastore,
             blobstore,
             context,
@@ -171,6 +180,26 @@ impl ConfigFile {
         })?;
 
         Ok(())
+    }
+}
+
+mod serde_duration {
+    use core::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(duration.as_millis() as u64)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        u64::deserialize(deserializer).map(Duration::from_millis)
     }
 }
 

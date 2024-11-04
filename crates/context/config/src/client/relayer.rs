@@ -60,6 +60,8 @@ impl Transport for RelayerTransport {
             .send()
             .await?;
 
+        // todo! check response.status code
+
         response.bytes().await.map(Into::into)
     }
 }

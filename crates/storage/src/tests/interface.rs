@@ -288,6 +288,19 @@ mod interface__comparison {
 
     type ForeignInterface = MainInterface<MockedStorage<0>>;
 
+    fn compare_trees<D: Data>(
+        foreign: Option<&D>,
+        comparison_data: &ComparisonData,
+    ) -> Result<(Vec<Action>, Vec<Action>), StorageError> {
+        Interface::compare_trees::<D>(
+            foreign
+                .map(to_vec)
+                .transpose()
+                .map_err(StorageError::SerializationError)?,
+            comparison_data,
+        )
+    }
+
     #[test]
     fn compare_trees__identical() {
         let element = Element::new(&Path::new("::root::node").unwrap(), None);
@@ -301,9 +314,9 @@ mod interface__comparison {
             foreign.element().merkle_hash()
         );
 
-        let result = Interface::compare_trees(
-            &foreign,
-            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
+        let result = compare_trees(
+            Some(&foreign),
+            &ForeignInterface::generate_comparison_data(Some(&foreign)).unwrap(),
         )
         .unwrap();
         assert_eq!(result, (vec![], vec![]));
@@ -322,9 +335,9 @@ mod interface__comparison {
         local.element_mut().update();
         assert!(Interface::save(&mut local).unwrap());
 
-        let result = Interface::compare_trees(
-            &foreign,
-            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
+        let result = compare_trees(
+            Some(&foreign),
+            &ForeignInterface::generate_comparison_data(Some(&foreign)).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -354,9 +367,9 @@ mod interface__comparison {
         foreign.element_mut().update();
         assert!(ForeignInterface::save(&mut foreign).unwrap());
 
-        let result = Interface::compare_trees(
-            &foreign,
-            &ForeignInterface::generate_comparison_data(&foreign).unwrap(),
+        let result = compare_trees(
+            Some(&foreign),
+            &ForeignInterface::generate_comparison_data(Some(&foreign)).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -417,9 +430,9 @@ mod interface__comparison {
         )
         .unwrap());
 
-        let (local_actions, foreign_actions) = Interface::compare_trees(
-            &foreign_page,
-            &ForeignInterface::generate_comparison_data(&foreign_page).unwrap(),
+        let (local_actions, foreign_actions) = compare_trees(
+            Some(&foreign_page),
+            &ForeignInterface::generate_comparison_data(Some(&foreign_page)).unwrap(),
         )
         .unwrap();
 
@@ -462,9 +475,9 @@ mod interface__comparison {
         );
 
         // Compare the updated para1
-        let (local_para1_actions, foreign_para1_actions) = Interface::compare_trees(
-            &foreign_para1,
-            &ForeignInterface::generate_comparison_data(&foreign_para1).unwrap(),
+        let (local_para1_actions, foreign_para1_actions) = compare_trees(
+            Some(&foreign_para1),
+            &ForeignInterface::generate_comparison_data(Some(&foreign_para1)).unwrap(),
         )
         .unwrap();
 
@@ -493,9 +506,9 @@ mod interface__comparison {
         assert_eq!(foreign_para1_actions, vec![]);
 
         // Compare para3 which doesn't exist locally
-        let (local_para3_actions, foreign_para3_actions) = Interface::compare_trees(
-            &foreign_para3,
-            &ForeignInterface::generate_comparison_data(&foreign_para3).unwrap(),
+        let (local_para3_actions, foreign_para3_actions) = compare_trees(
+            Some(&foreign_para3),
+            &ForeignInterface::generate_comparison_data(Some(&foreign_para3)).unwrap(),
         )
         .unwrap();
 

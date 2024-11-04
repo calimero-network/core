@@ -8,6 +8,8 @@ use calimero_storage::collections::UnorderedMap;
 use calimero_storage::entities::Element;
 use calimero_storage::AtomicUnit;
 
+mod __private;
+
 #[app::state(emits = for<'a> Event<'a>)]
 #[derive(AtomicUnit, Clone, Debug, PartialEq, PartialOrd)]
 #[root]

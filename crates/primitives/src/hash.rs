@@ -9,10 +9,10 @@ use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::str::{from_utf8, FromStr};
 #[cfg(feature = "borsh")]
-use std::io::Result as IoResult;
+use std::io;
 
 #[cfg(feature = "borsh")]
-use borsh::BorshSerialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 use bs58::decode::Error as Bs58Error;
 use serde::de::{Error as SerdeError, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -59,7 +59,7 @@ impl Hash {
     }
 
     #[cfg(feature = "borsh")]
-    pub fn hash_borsh<T: BorshSerialize>(data: &T) -> IoResult<Self> {
+    pub fn hash_borsh<T: BorshSerialize>(data: &T) -> io::Result<Self> {
         let mut hasher = Sha256::default();
 
         data.serialize(&mut hasher)?;
@@ -192,6 +192,25 @@ impl FromStr for Hash {
             Err(None) => Err(HashError::InvalidLength),
             Err(Some(err)) => Err(HashError::DecodeError(err)),
         }
+    }
+}
+
+#[cfg(feature = "borsh")]
+impl BorshSerialize for Hash {
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        writer.write_all(&self.bytes)
+    }
+}
+
+#[cfg(feature = "borsh")]
+impl BorshDeserialize for Hash {
+    fn deserialize_reader<R: io::Read>(reader: &mut R) -> io::Result<Self> {
+        let mut bytes = [0; BYTES_LEN];
+        reader.read_exact(&mut bytes)?;
+        Ok(Self {
+            bytes,
+            bs58: MaybeUninit::zeroed(),
+        })
     }
 }
 
