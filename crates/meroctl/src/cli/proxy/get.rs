@@ -124,8 +124,6 @@ impl GetCommand {
                 self.context_id, self.proposal_id
             ),
         )?;
-
-        println!("{:#?}", url);
         self.make_request::<GetNumberOfProposalApprovalsResponse>(environment, client, url, keypair)
             .await
     }
