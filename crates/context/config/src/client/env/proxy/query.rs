@@ -1,4 +1,4 @@
-use proposal::ProposalRequest;
+use proposals::ProposalRequest;
 
 use crate::client::env::utils;
 use crate::client::transport::Transport;
@@ -6,6 +6,7 @@ use crate::client::{CallClient, ClientError, Operation};
 use crate::{Proposal, ProposalId};
 
 mod proposal;
+mod proposals;
 
 #[derive(Debug)]
 pub struct ContextProxyQuery<'a, T> {

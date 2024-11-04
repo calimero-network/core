@@ -158,4 +158,17 @@ impl ProxyContractHelper {
             .json()?;
         Ok(res)
     }
+
+    pub async fn view_proposal(
+        &self,
+        caller: &Account,
+        id: &ProposalId,
+    ) -> eyre::Result<Option<Proposal>> {
+        let res = caller
+            .view(self.proxy_contract.id(), "proposal")
+            .args_json(json!({ "proposal_id": id }))
+            .await?
+            .json()?;
+        Ok(res)
+    }
 }

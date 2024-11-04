@@ -13,17 +13,17 @@ pub(super) struct ProposalRequest {
 }
 
 impl Method<Near> for ProposalRequest {
-    const METHOD: &'static str = "proposal";
+    const METHOD: &'static str = "proposals";
 
-    type Returns = Option<Proposal>;
+    type Returns = Vec<(ProposalId, Proposal)>;
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
         serde_json::to_vec(&self).map_err(Into::into)
     }
 
     fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
-        let proposal: Option<Proposal> = serde_json::from_slice(&response)?;
-        Ok(proposal)
+        let proposals: Vec<(ProposalId, Proposal)> = serde_json::from_slice(&response)?;
+        Ok(proposals)
     }
 }
 

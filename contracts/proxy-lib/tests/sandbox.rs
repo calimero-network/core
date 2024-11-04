@@ -1,5 +1,5 @@
 use calimero_context_config::repr::ReprTransmute;
-use calimero_context_config::{ProposalAction, ProposalWithApprovals};
+use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use common::config_helper::ConfigContractHelper;
 use common::counter_helper::CounterContractHelper;
 use common::create_account_with_balance;
@@ -77,6 +77,38 @@ async fn test_create_proposal() -> Result<()> {
         None => panic!("Expected to create a proposal, but got None"),
     }
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_view_proposal() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    let proposal_id = rand::thread_rng().gen();
+    let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
+
+    let _res = proxy_helper
+        .proxy_mutate(&relayer_account, &proposal)
+        .await?
+        .into_result()?;
+
+    let view_proposal: Option<Proposal> = proxy_helper
+        .view_proposal(&relayer_account, &proposal_id)
+        .await?;
+    assert!(view_proposal.is_some());
+
+    let result_proposal = view_proposal.unwrap();
+    assert_eq!(result_proposal.id, proposal_id);
+    assert_eq!(result_proposal.actions, vec![]);
+    assert_eq!(result_proposal.author_id, alice_sk.verifying_key().rt()?);
+
+    let non_existent_proposal_id: u32 = 2;
+    let view_proposal: Option<Proposal> = proxy_helper
+        .view_proposal(&relayer_account, &non_existent_proposal_id)
+        .await?;
+    assert!(view_proposal.is_none());
     Ok(())
 }
 

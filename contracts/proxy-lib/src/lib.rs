@@ -70,6 +70,10 @@ impl ProxyContract {
         proposals
     }
 
+    pub fn proposal(&self, proposal_id: &ProposalId) -> Option<Proposal> {
+        self.proposals.get(proposal_id).cloned()
+    }
+
     pub fn get_confirmations_count(
         &self,
         proposal_id: ProposalId,
