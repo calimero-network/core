@@ -15,7 +15,7 @@ use crate::common::{do_request, fetch_multiaddr, load_config, multiaddr_to_url, 
 use crate::output::Report;
 
 #[derive(Parser, Debug)]
-#[command(about = "Fetch details about the context")]
+#[command(about = "Fetch details about the proxy contract")]
 pub struct GetCommand {
     #[arg(value_name = "METHOD", help = "Method to fetch details", value_enum)]
     pub method: GetRequest,
