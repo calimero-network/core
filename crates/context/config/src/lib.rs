@@ -113,8 +113,6 @@ pub enum SystemRequest {
 
 /// Proxy contract
 /// TODO: move these to a separate cratexs
-/// Proxy contract
-/// todo: refactor
 pub type ProposalId = u32;
 pub type Gas = u64;
 pub type NativeToken = u128;
