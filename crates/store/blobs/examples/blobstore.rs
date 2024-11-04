@@ -4,7 +4,7 @@ use std::env::args;
 use std::process::exit;
 
 use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager, FileSystem, Size};
+use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::Store;
