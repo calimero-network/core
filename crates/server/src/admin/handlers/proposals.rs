@@ -26,7 +26,7 @@ pub enum ActionType {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
-    pub(crate) identity_public_key: String,
+    pub identity_public_key: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -78,11 +78,11 @@ pub struct SetContextValue {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Proposal {
-    pub(crate) id: String,
-    pub(crate) author: User,
+    pub id: String,
+    pub author: User,
     pub(crate) actions: Vec<Action>,
-    pub(crate) title: String,
-    pub(crate) description: String,
+    pub title: String,
+    pub description: String,
     pub(crate) created_at: String,
 }
 
@@ -105,19 +105,19 @@ pub struct Message {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalsResponse {
-    data: Vec<Proposal>,
+    pub data: Vec<Proposal>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalResponse {
-    data: Proposal,
+    pub data: Proposal,
 }
 
 pub async fn get_proposals_handler(
+    Path(context_id): Path<String>,
     session: Session,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<GetProposalsResponse>,
 ) -> impl IntoResponse {
     let sample_action = Action::ExternalFunctionCall(ExternalFunctionCall {
         receiver_id: get_mock_user(),
@@ -143,10 +143,9 @@ pub async fn get_proposals_handler(
 }
 
 pub async fn get_proposal_handler(
-    Path(proposal_id): Path<String>,
+    Path((context_id, proposal_id)): Path<(String, String)>,
     session: Session,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<GetProposalResponse>,
 ) -> impl IntoResponse {
     let proposal = Proposal {
         id: "proposal_1".to_owned(),
@@ -166,13 +165,13 @@ pub async fn get_proposal_handler(
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetNumberOfActiveProposalsResponse {
-    pub(crate) data: u16,
+    pub data: u16,
 }
 
 pub async fn get_number_of_active_proposals_handler(
+    Path(context_id): Path<String>,
     session: Session,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<GetNumberOfActiveProposalsResponse>,
 ) -> impl IntoResponse {
     ApiResponse {
         payload: GetNumberOfActiveProposalsResponse { data: 4 },
@@ -183,14 +182,13 @@ pub async fn get_number_of_active_proposals_handler(
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetNumberOfProposalApprovalsResponse {
-    data: u16,
+    pub data: u16,
 }
 
 pub async fn get_number_of_proposal_approvals_handler(
-    Path(proposal_id): Path<String>,
+    Path((context_id, proposal_id)): Path<(String, String)>,
     session: Session,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<GetNumberOfProposalApprovalsResponse>,
 ) -> impl IntoResponse {
     ApiResponse {
         payload: GetNumberOfProposalApprovalsResponse { data: 5 },
@@ -201,14 +199,14 @@ pub async fn get_number_of_proposal_approvals_handler(
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetProposalApproversResponse {
-    data: Vec<User>,
+    pub data: Vec<User>,
 }
 
 pub async fn get_proposal_approvers_handler(
-    Path(proposal_id): Path<String>,
+    Path((context_id, proposal_id)): Path<(String, String)>,
     session: Session,
     Extension(state): Extension<Arc<AdminState>>,
-    Json(req): Json<GetProposalApproversResponse>,
+    //Json(req): Json<GetProposalApproversResponse>,
 ) -> impl IntoResponse {
     ApiResponse {
         payload: GetProposalApproversResponse {
