@@ -1,9 +1,11 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::time;
+use std::str::FromStr;
+use std::{time, vec};
 
 pub use near_crypto::SecretKey;
 use near_crypto::{InMemorySigner, PublicKey, Signer};
+use near_jsonrpc_client::methods::block;
 use near_jsonrpc_client::methods::query::{RpcQueryRequest, RpcQueryResponse};
 use near_jsonrpc_client::methods::send_tx::RpcSendTransactionRequest;
 use near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest;
@@ -260,6 +262,41 @@ impl Network {
         println!(" - Network::mutateeeeeeeeeee");
         let (nonce, block_hash) = self.get_nonce(contract_id.clone(), method.clone()).await?;
 
+        // let (nonce, block_hash) = (
+        //     178716232000007 + 1,
+        //     CryptoHash::from_str("3tZmojurpmFk8NsJC92kzhPPr6HfrRWgzNr1Hskde2wv").unwrap(),
+        // );
+
+        println!(" - Network::nonce");
+
+        // let request = ProxyMutateRequest::Propose {
+        //     proposal: Proposal {
+        //         id: 1,
+        //         author_id: "Hobd97dpvbVkzmupktXLc2HwRoQjXP3B8f8L6YcHJX8b".into(),
+        //         actions: vec![],
+        //     },
+        // };
+
+        // let signer_id = bs58::decode("Hobd97dpvbVkzmupktXLc2HwRoQjXP3B8f8L6YcHJX8b").into_vec()?;
+        // let signer_id: Repr<SignerId> = Repr::new(signer_id.as_bytes());
+
+        // let identity: [u8; 32] = [
+        //     241, 136, 113, 171, 51, 197, 214, 121, 46, 19, 24, 101, 156, 42, 109, 126, 4, 126, 179,
+        //     239, 210, 131, 156, 79, 133, 163, 85, 52, 72, 184, 132, 125,
+        // ];
+
+        // let i = identity.rt().unwrap();
+
+        // let args = json!({
+        //     "request": ProxyMutateRequest::Propose {
+        //         proposal: Proposal {
+        //             id: [47, 188, 181, 55, 18, 15, 134, 29, 8, 178, 147, 18, 124, 31, 216, 179, 125, 106, 148, 160, 15, 114, 164, 244, 213, 27, 254, 219, 87, 175, 145, 102], // Replace with an appropriate [u8; 32] value
+        //             author_id: i,
+        //             actions: vec![],
+        //         },
+        //     },
+        // });
+
         let transaction = Transaction::V0(TransactionV0 {
             signer_id: self.account_id.clone(),
             public_key: self.secret_key.public_key(),
@@ -268,13 +305,13 @@ impl Network {
             block_hash,
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: method,
-                args,
+                args,                     // : args.to_string().into_bytes(),
                 gas: 100_000_000_000_000, // 100 TeraGas
                 deposit: 0,
             }))],
         });
 
-        println!(" - Network::transaction {:?}", transaction);
+        // println!(" - Network::transaction {:?}", transaction);
 
         let (tx_hash, _) = transaction.get_hash_and_size();
 
@@ -293,7 +330,9 @@ impl Network {
             })
             .await;
 
-        let response = loop {
+        println!(" - Network::response 1111 {:?}", response);
+
+        let response: near_jsonrpc_client::methods::tx::RpcTransactionResponse = loop {
             match response {
                 Ok(response) => break response,
                 Err(err) => {
@@ -322,6 +361,8 @@ impl Network {
             }
         };
 
+        // println!(" - Network::response {:?}", response);
+
         let Some(outcome) = response.final_execution_outcome else {
             return Err(NearError::InvalidResponse {
                 operation: ErrorOperation::Mutate,
@@ -347,6 +388,8 @@ impl Network {
         contract_id: AccountId,
         method: String,
     ) -> Result<(u64, CryptoHash), NearError> {
+        println!(" - Network::get_nonce");
+
         let response = self
             .client
             .call(RpcQueryRequest {
@@ -362,6 +405,7 @@ impl Network {
                 reason: err.to_string(),
             })?;
 
+        println!(" - Network::get_nonce response {:?}", response);
         let RpcQueryResponse {
             kind: QueryResponseKind::AccessKey(AccessKeyView { nonce, permission }),
             block_hash,

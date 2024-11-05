@@ -186,6 +186,7 @@ impl<'a, T: Transport> CallClient<'a, T> {
             protocol: Cow::Borrowed(&self.protocol),
             network_id: Cow::Borrowed(&self.network_id),
             contract_id: Cow::Borrowed(&self.contract_id),
+            // contract_id: Cow::Borrowed("caliproxy.testnet"),
             operation,
         };
 

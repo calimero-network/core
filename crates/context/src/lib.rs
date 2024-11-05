@@ -1015,7 +1015,7 @@ impl ContextManager {
     pub async fn propose(
         &self,
         context_id: ContextId,
-        signing_key: PublicKey,
+        signer_id: PublicKey,
         proposal_id: ProposalId,
         actions: Vec<ProposalAction>,
     ) -> EyreResult<()> {
@@ -1028,16 +1028,27 @@ impl ContextManager {
         };
 
         let Some(ContextIdentityValue {
-            private_key: Some(signer_id),
-        }) = handle.get(&ContextIdentityKey::new(context_id, signing_key))?
+            private_key: Some(signing_key),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             panic!("No private key found for signer");
         };
-        let signer_id = signer_id.rt().unwrap();
 
         println!("Propose in context proposal_id {:?}", proposal_id);
-        println!("Propose in context signer_id {:?}", signer_id);
+        println!("Propose in context signer_id {:?}", signing_key);
         println!("Propose in context actions {:?}", actions);
+
+        let members = self
+            .config_client
+            .query::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .members(context_id.rt()?, 0, 100)
+            .await?;
+
+        println!("Propose in context members {:?}", members);
 
         let res = self
             .config_client
@@ -1046,8 +1057,8 @@ impl ContextManager {
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
             )
-            .propose(proposal_id, signer_id, actions)
-            .send(*signing_key)
+            .propose(proposal_id, signer_id.rt().unwrap(), actions)
+            .send(signing_key)
             .await?;
 
         println!("Propose in context res {:?}", res);
@@ -1058,7 +1069,7 @@ impl ContextManager {
     pub async fn approve(
         &self,
         context_id: ContextId,
-        signing_key: PublicKey,
+        signer_id: PublicKey,
         proposal_id: ProposalId,
     ) -> EyreResult<()> {
         println!("Call approve proposal in context");
@@ -1071,13 +1082,12 @@ impl ContextManager {
         };
 
         let Some(ContextIdentityValue {
-            private_key: Some(signer_id),
-        }) = handle.get(&ContextIdentityKey::new(context_id, signing_key))?
+            private_key: Some(signing_key),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             //handle gracefully
             panic!("No private key found for signer");
         };
-        let signer_id = signer_id.rt().unwrap();
 
         let _ = self
             .config_client
@@ -1086,8 +1096,8 @@ impl ContextManager {
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
             )
-            .approve(signer_id, proposal_id)
-            .send(*signing_key)
+            .approve(signer_id.rt().unwrap(), proposal_id)
+            .send(signing_key)
             .await?;
 
         Ok(())
