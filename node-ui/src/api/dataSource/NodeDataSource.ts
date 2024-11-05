@@ -115,10 +115,6 @@ export interface ClientKey {
   applicationId: string;
 }
 
-export interface ApiContext {
-  context: Context;
-}
-
 interface Did {
   client_keys: ClientKey[];
   contexts: Context[];
