@@ -36,7 +36,7 @@ pub enum ProposalAction {
         receiver_id: AccountId,
 
         /// The amount of tokens to transfer.
-        amount: u64,
+        amount: u128,
     },
 
     /// Set the number of approvals required for a proposal to be executed.
@@ -90,7 +90,7 @@ impl DraftProposal {
 
     /// Add an action to transfer tokens to an account.
     #[must_use]
-    pub fn transfer(mut self, receiver: AccountId, amount: u64) -> Self {
+    pub fn transfer(mut self, receiver: AccountId, amount: u128) -> Self {
         self.actions.push(ProposalAction::Transfer {
             receiver_id: receiver,
             amount,

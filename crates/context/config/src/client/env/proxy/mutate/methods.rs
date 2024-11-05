@@ -10,6 +10,7 @@ impl<'a, T> ContextProxyMutate<'a, T> {
         author_id: SignerId,
         actions: Vec<ProposalAction>,
     ) -> ContextProxyMutateRequest<'a, T> {
+        println!("Proposing a new proposal with id: {:?}", proposal_id);
         ContextProxyMutateRequest {
             client: self.client,
             raw_request: ProxyMutateRequest::Propose {

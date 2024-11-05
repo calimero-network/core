@@ -9,10 +9,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Deserialize)]
 #[serde(crate = "calimero_sdk::serde")]
-pub struct CreateProposalRequest {
-    proposal_id: String,
-    author: String,
-}
+pub struct CreateProposalRequest {}
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Deserialize)]
 #[serde(crate = "calimero_sdk::serde", rename_all = "camelCase")]
@@ -68,9 +65,10 @@ impl AppState {
         }
     }
 
-    pub fn create_new_proposal(&mut self, _request: CreateProposalRequest) -> Result<bool, Error> {
-        println!("Create new proposal: {:?}", _request);
-        let account_id = env::ext::AccountId("cali.near".to_string());
+    pub fn create_new_proposal(&self, receiver: String) -> Result<bool, Error> {
+        env::log("env Call in wasm create new proposal");
+        println!("Call in wasm create new proposal {:?}", receiver);
+        let account_id = env::ext::AccountId("vuki.testnet".to_string());
         let amount = 1;
         let proposal_id = Self::external()
             .propose()
@@ -94,12 +92,10 @@ impl AppState {
         // request: GetProposalMessagesRequest, I cannot to this??
         proposal_id: String,
     ) -> Result<Vec<Message>, Error> {
+        env::log("env Get messages for proposal");
+
         let proposal_id = env::ext::ProposalId(Self::string_to_u8_32(proposal_id.as_str()));
-
-        println!("Get messages for proposal: {:?}", proposal_id);
-
         let res = &self.messages.get(&proposal_id).unwrap();
-        println!("Messages: {:?}", res);
 
         match res {
             Some(messages) => Ok(messages.clone()),
@@ -113,6 +109,8 @@ impl AppState {
         proposal_id: String,
         message: Message,
     ) -> Result<bool, Error> {
+        env::log("env send_proposal_messages");
+
         let proposal_id = env::ext::ProposalId(Self::string_to_u8_32(proposal_id.as_str()));
 
         println!("Send message to proposal: {:?}", proposal_id);

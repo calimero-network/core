@@ -8,11 +8,12 @@ use core::future::{pending, Future};
 use core::pin::Pin;
 use std::time::Duration;
 
-use borsh::{from_slice, to_vec};
+use borsh::{from_slice, to_vec, BorshDeserialize};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
+use calimero_context_config::ProposalAction;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
@@ -429,22 +430,34 @@ impl Node {
         };
 
         for proposal in &outcome.proposals {
-            let _ = self
-                .ctx_manager
-                .propose(
-                    context_id,
-                    executor_public_key,
-                    proposal.0.clone(),
-                    proposal.1.clone(),
-                )
-                .await;
+            println!("Proposal: {:?}", proposal);
+            println!("Aaaa: {:?}", proposal.0);
+            println!("Ppppp: {:?}", proposal.1);
+
+            let action = ProposalAction::Transfer {
+                receiver_id: "vuki.testnet".to_string(),
+                amount: 1,
+            };
+            let actions = vec![action];
+
+            // let actions = BorshDeserialize::deserialize(&mut actions.as_slice()).map_err(|e| {
+            //     error!(%e, "Failed to deserialize proposal actions.");
+            //     CallError::InternalError
+            // })?;
+
+            drop(
+                self.ctx_manager
+                    .propose(context_id, executor_public_key, proposal.0.clone(), actions)
+                    .await,
+            );
         }
 
         for approval in &outcome.approvals {
-            let _ = self
-                .ctx_manager
-                .approve(context_id, executor_public_key, approval.clone())
-                .await;
+            drop(
+                self.ctx_manager
+                    .approve(context_id, executor_public_key, approval.clone())
+                    .await,
+            );
         }
 
         if let Err(err) = self

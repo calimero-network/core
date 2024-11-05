@@ -1222,6 +1222,7 @@ dependencies = [
  "borsh",
  "calimero-blobstore",
  "calimero-context",
+ "calimero-context-config",
  "calimero-network",
  "calimero-node-primitives",
  "calimero-primitives",

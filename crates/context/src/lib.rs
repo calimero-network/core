@@ -1017,24 +1017,29 @@ impl ContextManager {
         context_id: ContextId,
         signing_key: PublicKey,
         proposal_id: ProposalId,
-        actions: Vec<u8>,
+        actions: Vec<ProposalAction>,
     ) -> EyreResult<()> {
+        println!("Call create proposal in context");
+
         let handle = self.store.handle();
-
-        let actions: Vec<ProposalAction> = vec![]; // - How to deserialize actions?
-
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
             //handle
             return Ok(());
         };
 
-        //How to get signer id?
-        let signer_id = SignerId::from_bytes(|buffer: &mut [u8; 32]| {
-            *buffer = [0; 32];
-            Ok(32)
-        })?;
+        let Some(ContextIdentityValue {
+            private_key: Some(signer_id),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signing_key))?
+        else {
+            panic!("No private key found for signer");
+        };
+        let signer_id = signer_id.rt().unwrap();
 
-        let _ = self
+        println!("Propose in context proposal_id {:?}", proposal_id);
+        println!("Propose in context signer_id {:?}", signer_id);
+        println!("Propose in context actions {:?}", actions);
+
+        let res = self
             .config_client
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
@@ -1045,6 +1050,8 @@ impl ContextManager {
             .send(*signing_key)
             .await?;
 
+        println!("Propose in context res {:?}", res);
+
         Ok(())
     }
 
@@ -1054,18 +1061,23 @@ impl ContextManager {
         signing_key: PublicKey,
         proposal_id: ProposalId,
     ) -> EyreResult<()> {
+        println!("Call approve proposal in context");
+
         let handle = self.store.handle();
 
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
-            //handle
-            return Ok(());
+            //handle gracefully
+            panic!("Context not found");
         };
 
-        //How to get signer id?
-        let signer_id = SignerId::from_bytes(|buffer: &mut [u8; 32]| {
-            *buffer = [0; 32];
-            Ok(32)
-        })?;
+        let Some(ContextIdentityValue {
+            private_key: Some(signer_id),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signing_key))?
+        else {
+            //handle gracefully
+            panic!("No private key found for signer");
+        };
+        let signer_id = signer_id.rt().unwrap();
 
         let _ = self
             .config_client
