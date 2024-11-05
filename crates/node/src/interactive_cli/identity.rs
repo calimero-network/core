@@ -52,8 +52,8 @@ impl IdentityCommand {
 
                             let entry = format!(
                                 "{:44} | {}",
-                                if v.private_key.is_some() { "*" } else { " " },
                                 k.public_key(),
+                                if v.private_key.is_some() { "*" } else { " " },
                             );
                             for line in entry.lines() {
                                 println!("{}", line.cyan());

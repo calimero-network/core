@@ -31,7 +31,6 @@ libp2p-stream.workspace = true
 multiaddr.workspace = true
 owo-colors.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros"] }
 tokio-util = { workspace = true, features = ["codec", "compat"] }

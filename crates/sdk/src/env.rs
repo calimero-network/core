@@ -158,12 +158,8 @@ pub fn emit<T: AppEvent>(event: &T) {
     unsafe { sys::emit(Event::new(&kind, &data)) }
 }
 
-pub fn send_action(action: &[u8]) {
-    unsafe { sys::send_action(Buffer::from(action)) }
-}
-
-pub fn commit_root(action: &[u8; 32]) {
-    unsafe { sys::commit_root(Buffer::from(&action[..])) }
+pub fn commit(root_hash: &[u8; 32], artifact: &[u8]) {
+    unsafe { sys::commit(Buffer::from(&root_hash[..]), Buffer::from(artifact)) }
 }
 
 #[inline]

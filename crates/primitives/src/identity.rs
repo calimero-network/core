@@ -82,6 +82,10 @@ impl FromStr for PrivateKey {
 }
 
 #[derive(Eq, Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
 pub struct PublicKey(Hash);
 
 impl From<[u8; 32]> for PublicKey {

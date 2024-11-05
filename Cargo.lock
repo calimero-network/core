@@ -1208,7 +1208,6 @@ dependencies = [
  "multiaddr",
  "owo-colors",
  "serde",
- "serde_json",
  "thiserror",
  "tokio",
  "tokio-test",
@@ -1228,7 +1227,6 @@ dependencies = [
  "calimero-primitives",
  "calimero-runtime",
  "calimero-server",
- "calimero-storage",
  "calimero-store",
  "camino",
  "clap",
@@ -1237,12 +1235,9 @@ dependencies = [
  "libp2p",
  "owo-colors",
  "rand 0.8.5",
- "serde",
  "serde_json",
- "thiserror",
  "tokio",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -5277,7 +5272,6 @@ dependencies = [
  "libp2p",
  "multiaddr",
  "near-crypto 0.26.0",
- "rand 0.8.5",
  "starknet",
  "tokio",
  "toml_edit 0.22.20",
@@ -10229,6 +10223,14 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "visited"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
 
 [[package]]
 name = "void"

@@ -1,7 +1,6 @@
 #![expect(clippy::unwrap_in_result, reason = "Repr transmute")]
 
 use core::error::Error;
-use core::str::FromStr;
 use std::collections::HashSet;
 use std::io::Error as IoError;
 use std::sync::Arc;
@@ -20,7 +19,9 @@ use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
 use calimero_primitives::application::{Application, ApplicationId, ApplicationSource};
 use calimero_primitives::blobs::BlobId;
-use calimero_primitives::context::{Context, ContextId, ContextInvitationPayload};
+use calimero_primitives::context::{
+    Context, ContextConfigParams, ContextId, ContextInvitationPayload,
+};
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::{
@@ -38,6 +39,7 @@ use camino::Utf8PathBuf;
 use eyre::{bail, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
+use rand::seq::IteratorRandom;
 use rand::SeedableRng;
 use reqwest::{Client as ReqClient, Url};
 use tokio::fs::File;
@@ -179,7 +181,17 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
-        self.add_context(&context, identity_secret, true)?;
+        self.add_context(
+            &context,
+            identity_secret,
+            Some(ContextConfigParams {
+                protocol: self.client_config.new.protocol.as_str().into(),
+                network_id: self.client_config.new.network.as_str().into(),
+                contract_id: self.client_config.new.contract_id.as_str().into(),
+                application_revision: 0,
+                members_revision: 0,
+            }),
+        )?;
 
         let (tx, rx) = oneshot::channel();
 
@@ -222,7 +234,7 @@ impl ContextManager {
                         ApplicationMetadataConfig(Repr::new(application.metadata.into())),
                     ),
                 )
-                .send(context.id.rt().expect("infallible conversion"))
+                .send(*context_secret)
                 .await?;
 
             Ok((context.id, identity_secret.public_key()))
@@ -237,10 +249,10 @@ impl ContextManager {
                 if let Err(err) = this.delete_context(&context_id).await {
                     error!(%context_id, %err, "Failed to clean up context after failed creation");
                 }
-            }
-
-            if let Err(err) = this.subscribe(&context.id).await {
-                error!(%context_id, %err, "Failed to subscribe to context after creation");
+            } else {
+                if let Err(err) = this.subscribe(&context.id).await {
+                    error!(%context_id, %err, "Failed to subscribe to context after creation");
+                }
             }
 
             let _ignored = result_sender.send(result);
@@ -253,17 +265,19 @@ impl ContextManager {
         &self,
         context: &Context,
         identity_secret: PrivateKey,
-        is_new: bool,
+        context_config: Option<ContextConfigParams<'_>>,
     ) -> EyreResult<()> {
         let mut handle = self.store.handle();
 
-        if is_new {
+        if let Some(context_config) = context_config {
             handle.put(
                 &ContextConfigKey::new(context.id),
                 &ContextConfigValue::new(
-                    self.client_config.new.protocol.as_str().into(),
-                    self.client_config.new.network.as_str().into(),
-                    self.client_config.new.contract_id.as_str().into(),
+                    context_config.protocol.into_owned().into_boxed_str(),
+                    context_config.network_id.into_owned().into_boxed_str(),
+                    context_config.contract_id.into_owned().into_boxed_str(),
+                    context_config.application_revision,
+                    context_config.members_revision,
                 ),
             )?;
 
@@ -306,7 +320,7 @@ impl ContextManager {
             bail!("identity mismatch")
         }
 
-        let mut handle = self.store.handle();
+        let handle = self.store.handle();
 
         let identity_key = ContextIdentityKey::new(context_id, invitee_id);
 
@@ -314,73 +328,25 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let client = self.config_client.query::<ContextConfigEnv>(
-            protocol.into(),
-            network_id.into(),
-            contract_id.into(),
-        );
-
-        for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
-            let members = client
-                .members(
-                    context_id.rt().expect("infallible conversion"),
-                    offset,
-                    length,
-                )
-                .await?;
-
-            if members.is_empty() {
-                break;
-            }
-
-            for member in members {
-                let member = member.as_bytes().into();
-
-                let key = ContextIdentityKey::new(context_id, member);
-
-                if !handle.has(&key)? {
-                    handle.put(&key, &ContextIdentityValue { private_key: None })?;
-                }
-            }
-        }
-
-        if !handle.has(&identity_key)? {
-            bail!("unable to join context: not a member, ask for an invite")
-        };
-
-        let application = client
-            .application(context_id.rt().expect("infallible conversion"))
-            .await?;
-
-        let context = Context::new(
-            context_id,
-            application.id.as_bytes().into(),
-            Hash::default(),
-        );
-
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
 
-        if !self.is_application_installed(&context.application_id)? {
-            let source = Url::parse(&application.source.0)?;
+        let mut config = (!context_exists).then(|| ContextConfigParams {
+            protocol: protocol.into(),
+            network_id: network_id.into(),
+            contract_id: contract_id.into(),
+            application_revision: 0,
+            members_revision: 0,
+        });
 
-            let metadata = application.metadata.0.to_vec();
+        let context = self
+            .internal_sync_context_config(context_id, config.as_mut())
+            .await?;
 
-            let application_id = match source.scheme() {
-                "http" | "https" => self.install_application_from_url(source, metadata).await?,
-                _ => self.install_application(
-                    application.blob.as_bytes().into(),
-                    application.size,
-                    &source.into(),
-                    metadata,
-                )?,
-            };
-
-            if application_id != context.application_id {
-                bail!("application mismatch")
-            }
+        if !handle.has(&identity_key)? {
+            bail!("unable to join context: not a member, invalid invitation?")
         }
 
-        self.add_context(&context, identity_secret, !context_exists)?;
+        self.add_context(&context, identity_secret, config)?;
 
         self.subscribe(&context.id).await?;
 
@@ -435,21 +401,173 @@ impl ContextManager {
         Ok(Some(invitation_payload))
     }
 
+    pub async fn sync_context_config(&self, context_id: ContextId) -> EyreResult<Context> {
+        self.internal_sync_context_config(context_id, None).await
+    }
+
+    async fn internal_sync_context_config(
+        &self,
+        context_id: ContextId,
+        config: Option<&mut ContextConfigParams<'_>>,
+    ) -> EyreResult<Context> {
+        let mut handle = self.store.handle();
+
+        let context = handle.get(&ContextMetaKey::new(context_id))?;
+
+        let mut alt_config = config.as_ref().map_or_else(
+            || {
+                let Some(config) = handle.get(&ContextConfigKey::new(context_id))? else {
+                    eyre::bail!("Context config not found")
+                };
+
+                Ok(Some(ContextConfigParams {
+                    protocol: config.protocol.into_string().into(),
+                    network_id: config.network.into_string().into(),
+                    contract_id: config.contract.into_string().into(),
+                    application_revision: config.application_revision,
+                    members_revision: config.members_revision,
+                }))
+            },
+            |_| Ok(None),
+        )?;
+
+        let mut config = config;
+        let context_exists = alt_config.is_some();
+        let Some(config) = config.as_deref_mut().or(alt_config.as_mut()) else {
+            eyre::bail!("Context config not found")
+        };
+
+        let client = self.config_client.query::<ContextConfigEnv>(
+            config.protocol.as_ref().into(),
+            config.network_id.as_ref().into(),
+            config.contract_id.as_ref().into(),
+        );
+
+        let members_revision = client
+            .members_revision(context_id.rt().expect("infallible conversion"))
+            .await?;
+
+        if context_exists && members_revision != config.members_revision {
+            config.members_revision = members_revision;
+
+            for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
+                let members = client
+                    .members(
+                        context_id.rt().expect("infallible conversion"),
+                        offset,
+                        length,
+                    )
+                    .await?;
+
+                if members.is_empty() {
+                    break;
+                }
+
+                for member in members {
+                    let member = member.as_bytes().into();
+
+                    let key = ContextIdentityKey::new(context_id, member);
+
+                    if !handle.has(&key)? {
+                        handle.put(&key, &ContextIdentityValue { private_key: None })?;
+                    }
+                }
+            }
+        }
+
+        let application_revision = client
+            .application_revision(context_id.rt().expect("infallible conversion"))
+            .await?;
+
+        let mut application_id = None;
+
+        if context_exists && application_revision != config.application_revision {
+            config.application_revision = application_revision;
+
+            let application = client
+                .application(context_id.rt().expect("infallible conversion"))
+                .await?;
+
+            let application_id = {
+                let id = application.id.as_bytes().into();
+                application_id = Some(id);
+                id
+            };
+
+            if !self.is_application_installed(&application_id)? {
+                let source = Url::parse(&application.source.0)?;
+
+                let metadata = application.metadata.0.to_vec();
+
+                let derived_application_id = match source.scheme() {
+                    "http" | "https" => {
+                        self.install_application_from_url(source, metadata, None)
+                            .await?
+                    }
+                    _ => self.install_application(
+                        application.blob.as_bytes().into(),
+                        application.size,
+                        &source.into(),
+                        metadata,
+                    )?,
+                };
+
+                if application_id != derived_application_id {
+                    bail!("application mismatch")
+                }
+            }
+        }
+
+        if let Some(config) = alt_config {
+            handle.put(
+                &ContextConfigKey::new(context_id),
+                &ContextConfigValue::new(
+                    config.protocol.into_owned().into_boxed_str(),
+                    config.network_id.into_owned().into_boxed_str(),
+                    config.contract_id.into_owned().into_boxed_str(),
+                    config.application_revision,
+                    config.members_revision,
+                ),
+            )?;
+        }
+
+        context.map_or_else(
+            || {
+                Ok(Context::new(
+                    context_id,
+                    application_id.expect("must've been defined"),
+                    Hash::default(),
+                ))
+            },
+            |meta| {
+                let context = Context::new(
+                    context_id,
+                    meta.application.application_id(),
+                    meta.root_hash.into(),
+                );
+
+                self.save_context(&context)?;
+
+                Ok(context)
+            },
+        )
+    }
+
     pub async fn is_context_pending_catchup(&self, context_id: &ContextId) -> bool {
         self.state.read().await.pending_catchup.contains(context_id)
     }
 
-    pub async fn get_any_pending_catchup_context(&self) -> Option<ContextId> {
+    pub async fn get_n_pending_sync_context(&self, amount: usize) -> Vec<ContextId> {
         self.state
             .read()
             .await
             .pending_catchup
             .iter()
-            .next()
             .copied()
+            .choose_multiple(&mut rand::thread_rng(), amount)
     }
 
-    pub async fn clear_context_pending_catchup(&self, context_id: &ContextId) -> bool {
+    pub async fn clear_context_pending_sync(&self, context_id: &ContextId) -> bool {
         self.state.write().await.pending_catchup.remove(context_id)
     }
 
@@ -579,19 +697,25 @@ impl ContextManager {
 
         let mut iter = handle.iter::<ContextMetaKey>()?;
 
+        let start = start.and_then(|s| iter.seek(ContextMetaKey::new(s)).transpose());
+
         let mut ids = vec![];
 
-        if let Some(start) = start {
-            if let Some(key) = iter.seek(ContextMetaKey::new(start))? {
-                ids.push(key.context_id());
-            }
-        }
-
-        for key in iter.keys() {
+        for key in start.into_iter().chain(iter.keys()) {
             ids.push(key?.context_id());
         }
 
         Ok(ids)
+    }
+
+    pub fn has_context_identity(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<bool> {
+        let handle = self.store.handle();
+
+        Ok(handle.has(&ContextIdentityKey::new(context_id, public_key))?)
     }
 
     fn get_context_identities(
@@ -602,18 +726,13 @@ impl ContextManager {
         let handle = self.store.handle();
 
         let mut iter = handle.iter::<ContextIdentityKey>()?;
-        let mut ids = Vec::<PublicKey>::new();
 
-        let first = 'first: {
-            let Some(k) = iter
-                .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
-                .transpose()
-            else {
-                break 'first None;
-            };
+        let first = iter
+            .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
+            .transpose()
+            .map(|k| (k, iter.read()));
 
-            Some((k, iter.read()))
-        };
+        let mut ids = Vec::new();
 
         for (k, v) in first.into_iter().chain(iter.entries()) {
             let (k, v) = (k?, v?);
@@ -653,20 +772,11 @@ impl ContextManager {
 
         let mut contexts = vec![];
 
-        if let Some(start) = start {
-            // todo! Iter shouldn't behave like DBIter, first next should return sought element
-            if let Some(key) = iter.seek(ContextMetaKey::new(start))? {
-                let value = iter.read()?;
+        // todo! Iter shouldn't behave like DBIter, first next should return sought element
+        let start =
+            start.and_then(|s| Some((iter.seek(ContextMetaKey::new(s)).transpose()?, iter.read())));
 
-                contexts.push(Context::new(
-                    key.context_id(),
-                    value.application.application_id(),
-                    value.root_hash.into(),
-                ));
-            }
-        }
-
-        for (k, v) in iter.entries() {
+        for (k, v) in start.into_iter().chain(iter.entries()) {
             let (k, v) = (k?, v?);
             contexts.push(Context::new(
                 k.context_id(),
@@ -683,6 +793,8 @@ impl ContextManager {
         context_id: ContextId,
         application_id: ApplicationId,
     ) -> EyreResult<()> {
+        // todo! use context config
+
         let mut handle = self.store.handle();
 
         let key = ContextMetaKey::new(context_id);
@@ -696,6 +808,35 @@ impl ContextManager {
         handle.put(&key, &value)?;
 
         Ok(())
+    }
+
+    // vv~ these would be more appropriate in an ApplicationManager
+
+    #[expect(clippy::similar_names, reason = "Different enough")]
+    pub async fn add_blob<S: AsyncRead>(
+        &self,
+        stream: S,
+        expected_size: Option<u64>,
+        expected_hash: Option<Hash>,
+    ) -> EyreResult<(BlobId, u64)> {
+        let (blob_id, hash, size) = self
+            .blob_manager
+            .put_sized(expected_size.map(Size::Exact), stream)
+            .await?;
+
+        if matches!(expected_hash, Some(expected_hash) if hash != expected_hash) {
+            bail!("fatal: blob hash mismatch");
+        }
+
+        if matches!(expected_size, Some(expected_size) if size != expected_size) {
+            bail!("fatal: blob size mismatch");
+        }
+
+        Ok((blob_id, size))
+    }
+
+    pub fn has_blob_available(&self, blob_id: BlobId) -> EyreResult<bool> {
+        Ok(self.blob_manager.has(blob_id)?)
     }
 
     // vv~ these would be more appropriate in an ApplicationManager
@@ -739,18 +880,11 @@ impl ContextManager {
 
         let file = File::open(&path).await?;
 
-        let meta = file.metadata().await?;
-
-        let expected_size = meta.len();
+        let expected_size = file.metadata().await?.len();
 
         let (blob_id, size) = self
-            .blob_manager
-            .put_sized(Some(Size::Exact(expected_size)), file.compat())
+            .add_blob(file.compat(), Some(expected_size), None)
             .await?;
-
-        if size != expected_size {
-            bail!("fatal: file size mismatch")
-        }
 
         let Ok(uri) = Url::from_file_path(path) else {
             bail!("non-absolute path")
@@ -764,8 +898,7 @@ impl ContextManager {
         &self,
         url: Url,
         metadata: Vec<u8>,
-        // hash: Hash,
-        // todo! BlobMgr should return hash of content
+        expected_hash: Option<Hash>,
     ) -> EyreResult<ApplicationId> {
         let uri = url.as_str().parse()?;
 
@@ -774,49 +907,17 @@ impl ContextManager {
         let expected_size = response.content_length();
 
         let (blob_id, size) = self
-            .blob_manager
-            .put_sized(
-                expected_size.map(Size::Exact),
+            .add_blob(
                 response
                     .bytes_stream()
                     .map_err(IoError::other)
                     .into_async_read(),
+                expected_size,
+                expected_hash,
             )
             .await?;
 
-        if matches!(expected_size, Some(expected_size) if size != expected_size) {
-            bail!("fatal: content size mismatch")
-        }
-
-        // todo! if blob hash doesn't match, remove it
-
         self.install_application(blob_id, size, &uri, metadata)
-    }
-
-    pub async fn install_application_from_stream<AR>(
-        &self,
-        expected_size: u64,
-        stream: AR,
-        source: &ApplicationSource,
-        metadata: Vec<u8>,
-        // hash: Hash,
-        // todo! BlobMgr should return hash of content
-    ) -> EyreResult<ApplicationId>
-    where
-        AR: AsyncRead,
-    {
-        let (blob_id, size) = self
-            .blob_manager
-            .put_sized(Some(Size::Exact(expected_size)), stream)
-            .await?;
-
-        if size != expected_size {
-            bail!("fatal: content size mismatch: {} {}", size, expected_size)
-        }
-
-        // todo! if blob hash doesn't match, remove it
-
-        self.install_application(blob_id, size, source, metadata)
     }
 
     pub fn list_installed_applications(&self) -> EyreResult<Vec<Application>> {
@@ -844,32 +945,12 @@ impl ContextManager {
         let handle = self.store.handle();
 
         if let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? {
-            if handle.has(&application.blob)? {
+            if self.has_blob_available(application.blob.blob_id())? {
                 return Ok(true);
             }
-        };
+        }
 
         Ok(false)
-    }
-
-    pub async fn get_latest_application(&self, context_id: ContextId) -> EyreResult<Application> {
-        let client = self.config_client.query::<ContextConfigEnv>(
-            self.client_config.new.protocol.as_str().into(),
-            self.client_config.new.network.as_str().into(),
-            self.client_config.new.contract_id.as_str().into(),
-        );
-
-        let application = client
-            .application(context_id.rt().expect("infallible conversion"))
-            .await?;
-
-        Ok(Application::new(
-            application.id.as_bytes().into(),
-            application.blob.as_bytes().into(),
-            application.size,
-            ApplicationSource::from_str(&application.source.0)?,
-            application.metadata.0.into_inner().into_owned(),
-        ))
     }
 
     pub fn get_application(
@@ -895,8 +976,14 @@ impl ContextManager {
         &self,
         application_id: &ApplicationId,
     ) -> EyreResult<Option<Vec<u8>>> {
-        let Some(mut stream) = self.get_application_blob(application_id)? else {
+        let handle = self.store.handle();
+
+        let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? else {
             return Ok(None);
+        };
+
+        let Some(mut stream) = self.get_blob(application.blob.blob_id())? else {
+            bail!("fatal: application points to dangling blob");
         };
 
         // todo! we can preallocate the right capacity here
@@ -911,15 +998,9 @@ impl ContextManager {
         Ok(Some(buf))
     }
 
-    pub fn get_application_blob(&self, application_id: &ApplicationId) -> EyreResult<Option<Blob>> {
-        let handle = self.store.handle();
-
-        let Some(application) = handle.get(&ApplicationMetaKey::new(*application_id))? else {
+    pub fn get_blob(&self, blob_id: BlobId) -> EyreResult<Option<Blob>> {
+        let Some(stream) = self.blob_manager.get(blob_id)? else {
             return Ok(None);
-        };
-
-        let Some(stream) = self.blob_manager.get(application.blob.blob_id())? else {
-            bail!("fatal: application points to dangling blob");
         };
 
         Ok(Some(stream))

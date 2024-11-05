@@ -6,8 +6,9 @@
 
 use core::future::{pending, Future};
 use core::pin::Pin;
+use std::time::Duration;
 
-use borsh::to_vec;
+use borsh::{from_slice, to_vec};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
@@ -21,13 +22,11 @@ use calimero_primitives::events::{
     ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
     StateMutationPayload,
 };
+use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
-use calimero_storage::address::Id;
-use calimero_storage::integration::Comparison;
-use calimero_storage::interface::Action;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::key::ContextMeta as ContextMetaKey;
@@ -36,20 +35,21 @@ use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
-use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
+use rand::{thread_rng, Rng};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval_at, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::runtime_compat::RuntimeCompatStore;
-use crate::types::{ActionMessage, PeerAction, SyncMessage};
-
-pub mod catchup;
 pub mod interactive_cli;
 pub mod runtime_compat;
+pub mod sync;
 pub mod types;
+
+use runtime_compat::RuntimeCompatStore;
+use sync::SyncConfig;
+use types::BroadcastMessage;
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -59,6 +59,7 @@ pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
     pub network: NetworkConfig,
+    pub sync: SyncConfig,
     pub datastore: StoreConfig,
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
@@ -71,6 +72,7 @@ impl NodeConfig {
         home: Utf8PathBuf,
         identity: Keypair,
         network: NetworkConfig,
+        sync: SyncConfig,
         datastore: StoreConfig,
         blobstore: BlobStoreConfig,
         context: ContextConfig,
@@ -80,6 +82,7 @@ impl NodeConfig {
             home,
             identity,
             network,
+            sync,
             datastore,
             blobstore,
             context,
@@ -90,6 +93,7 @@ impl NodeConfig {
 
 #[derive(Debug)]
 pub struct Node {
+    sync_config: SyncConfig,
     store: Store,
     ctx_manager: ContextManager,
     network_client: NetworkClient,
@@ -120,21 +124,13 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
     )
     .await?;
 
-    let mut node = Node::new(
-        &config,
-        network_client.clone(),
-        node_events.clone(),
-        ctx_manager.clone(),
-        store.clone(),
-    );
-
     #[expect(trivial_casts, reason = "Necessary here")]
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,
-        ctx_manager,
-        node_events,
-        store,
+        ctx_manager.clone(),
+        node_events.clone(),
+        store.clone(),
     )) as BoxedFuture<EyreResult<()>>;
 
     let mut stdin = BufReader::new(stdin()).lines();
@@ -152,10 +148,12 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     let mut catchup_interval_tick = interval_at(
         Instant::now()
-            .checked_add(config.network.catchup.initial_delay)
+            .checked_add(Duration::from_millis(thread_rng().gen_range(0..1001)))
             .ok_or_else(|| eyre!("Overflow when calculating initial catchup interval delay"))?,
-        config.network.catchup.interval,
+        config.sync.interval,
     );
+
+    let mut node = Node::new(config.sync, network_client, node_events, ctx_manager, store);
 
     #[expect(clippy::redundant_pub_crate, reason = "Tokio code")]
     loop {
@@ -169,7 +167,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
             line = stdin.next_line() => {
                 if let Some(line) = line? {
                     if let Err(err) = interactive_cli::handle_line(&mut node, line).await {
-                        error!("Failed to handle line: {:?}", err);
+                        error!("Failed handling user command: {:?}", err);
                     }
                 }
             }
@@ -179,7 +177,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
                 continue;
             }
             Some(request) = server_receiver.recv() => node.handle_server_request(request).await,
-            _ = catchup_interval_tick.tick() => node.perform_interval_catchup().await,
+            _ = catchup_interval_tick.tick() => node.perform_interval_sync().await,
         }
     }
 
@@ -189,13 +187,14 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 impl Node {
     #[must_use]
     pub const fn new(
-        _config: &NodeConfig,
+        sync_config: SyncConfig,
         network_client: NetworkClient,
         node_events: broadcast::Sender<NodeEvent>,
         ctx_manager: ContextManager,
         store: Store,
     ) -> Self {
         Self {
+            sync_config,
             store,
             ctx_manager,
             network_client,
@@ -230,13 +229,11 @@ impl Node {
                 }
             }
             NetworkEvent::StreamOpened { peer_id, stream } => {
-                info!("Stream opened from peer: {}", peer_id);
+                debug!(%peer_id, "Stream opened!");
 
-                if let Err(err) = self.handle_opened_stream(stream).await {
-                    error!(?err, "Failed to handle stream");
-                }
+                self.handle_opened_stream(stream).await;
 
-                info!("Stream closed from peer: {:?}", peer_id);
+                debug!(%peer_id, "Stream closed!");
             }
             _ => error!("Unhandled event: {:?}", event),
         }
@@ -296,120 +293,92 @@ impl Node {
             return Ok(());
         };
 
-        match from_json_slice(&message.data)? {
-            PeerAction::ActionList(action_list) => {
-                debug!(?action_list, %source, "Received action list");
+        let message = from_slice::<BroadcastMessage<'static>>(&message.data)?;
 
-                for action in action_list.actions {
-                    debug!(?action, %source, "Received action");
-                    let Some(mut context) =
-                        self.ctx_manager.get_context(&action_list.context_id)?
-                    else {
-                        bail!("Context '{}' not found", action_list.context_id);
-                    };
-                    match action {
-                        Action::Compare { id } => {
-                            self.send_comparison_message(&mut context, id, action_list.public_key)
-                                .await
-                        }
-                        Action::Add { .. } | Action::Delete { .. } | Action::Update { .. } => {
-                            self.apply_action(&mut context, &action, action_list.public_key)
-                                .await
-                        }
-                    }?;
-                }
-                Ok(())
-            }
-            PeerAction::Sync(sync) => {
-                debug!(?sync, %source, "Received sync request");
-
-                let Some(mut context) = self.ctx_manager.get_context(&sync.context_id)? else {
-                    bail!("Context '{}' not found", sync.context_id);
-                };
-                let outcome = self
-                    .compare_trees(&mut context, &sync.comparison, sync.public_key)
-                    .await?;
-
-                match outcome.returns {
-                    Ok(Some(actions_data)) => {
-                        let (local_actions, remote_actions): (Vec<Action>, Vec<Action>) =
-                            from_json_slice(&actions_data)?;
-
-                        // Apply local actions
-                        for action in local_actions {
-                            match action {
-                                Action::Compare { id } => {
-                                    self.send_comparison_message(&mut context, id, sync.public_key)
-                                        .await
-                                }
-                                Action::Add { .. }
-                                | Action::Delete { .. }
-                                | Action::Update { .. } => {
-                                    self.apply_action(&mut context, &action, sync.public_key)
-                                        .await
-                                }
-                            }?;
-                        }
-
-                        if !remote_actions.is_empty() {
-                            // Send remote actions back to the peer
-                            // TODO: This just sends one at present - needs to send a batch
-                            let new_message = ActionMessage {
-                                actions: remote_actions,
-                                context_id: sync.context_id,
-                                public_key: sync.public_key,
-                                root_hash: context.root_hash,
-                            };
-                            self.push_action(sync.context_id, PeerAction::ActionList(new_message))
-                                .await?;
-                        }
-                    }
-                    Ok(None) => {
-                        // No actions needed
-                    }
-                    Err(err) => {
-                        error!("Error during comparison: {err:?}");
-                        // TODO: Handle the error appropriately
-                    }
-                }
-                Ok(())
+        match message {
+            BroadcastMessage::StateDelta {
+                context_id,
+                author_id,
+                root_hash,
+                artifact,
+            } => {
+                self.handle_state_delta(
+                    source,
+                    context_id,
+                    author_id,
+                    root_hash,
+                    artifact.into_owned(),
+                )
+                .await?;
             }
         }
+
+        todo!()
     }
 
-    async fn send_comparison_message(
+    async fn handle_state_delta(
         &mut self,
-        context: &mut Context,
-        id: Id,
-        public_key: PublicKey,
+        source: PeerId,
+        context_id: ContextId,
+        author_id: PublicKey,
+        root_hash: Hash,
+        artifact: Vec<u8>,
     ) -> EyreResult<()> {
-        let compare_outcome = self
-            .generate_comparison_data(context, id, public_key)
-            .await?;
-        match compare_outcome.returns {
-            Ok(Some(comparison_data)) => {
-                // Generate a new Comparison for this entity and send it to the peer
-                let new_sync = SyncMessage {
-                    comparison: from_json_slice(&comparison_data)?,
-                    context_id: context.id,
-                    public_key,
-                    root_hash: context.root_hash,
-                };
-                self.push_action(context.id, PeerAction::Sync(new_sync))
-                    .await?;
-                Ok(())
-            }
-            Ok(None) => Err(eyre!("No comparison data generated")),
-            Err(err) => Err(eyre!(err)),
+        let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
+            bail!("context '{}' not found", context_id);
+        };
+
+        if root_hash == context.root_hash {
+            debug!(%context_id, "Received state delta with same root hash, ignoring..");
+            return Ok(());
         }
+
+        let Some(outcome) = self
+            .execute(
+                &mut context,
+                "apply_state_delta",
+                to_vec(&artifact)?,
+                author_id,
+            )
+            .await?
+        else {
+            bail!("application not installed");
+        };
+
+        if let Some(derived_root_hash) = outcome.root_hash {
+            if derived_root_hash != *root_hash {
+                self.initiate_state_sync_process(&mut context, source)
+                    .await?;
+            }
+        }
+
+        Ok(())
     }
 
-    async fn push_action(&self, context_id: ContextId, action: PeerAction) -> EyreResult<()> {
-        drop(
-            self.network_client
-                .publish(TopicHash::from_raw(context_id), to_json_vec(&action)?)
-                .await?,
-        );
+    async fn send_state_delta(
+        &self,
+        context: &Context,
+        outcome: &Outcome,
+        executor_public_key: PublicKey,
+    ) -> EyreResult<()> {
+        if self
+            .network_client
+            .mesh_peer_count(TopicHash::from_raw(context.id))
+            .await
+            != 0
+        {
+            let message = to_vec(&BroadcastMessage::StateDelta {
+                context_id: context.id,
+                author_id: executor_public_key,
+                root_hash: context.root_hash,
+                artifact: outcome.artifact.as_slice().into(),
+            })?;
+
+            let _ignored = self
+                .network_client
+                .publish(TopicHash::from_raw(context.id), message)
+                .await?;
+        }
 
         Ok(())
     }
@@ -417,7 +386,7 @@ impl Node {
     pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
         let task = self.handle_call(
             request.context_id,
-            request.method,
+            &request.method,
             request.payload,
             request.executor_public_key,
         );
@@ -432,13 +401,17 @@ impl Node {
     async fn handle_call(
         &mut self,
         context_id: ContextId,
-        method: String,
+        method: &str,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> Result<Outcome, CallError> {
         let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
-            return Err(CallError::ContextNotFound { context_id });
+            return Err(CallError::ContextNotFound);
         };
+
+        if method != "init" && &*context.root_hash == &[0; 32] {
+            return Err(CallError::Uninitialized);
+        }
 
         let outcome_option = self
             .execute(&mut context, method, payload, executor_public_key)
@@ -454,101 +427,23 @@ impl Node {
             });
         };
 
-        if self
-            .network_client
-            .mesh_peer_count(TopicHash::from_raw(context.id))
+        if let Err(err) = self
+            .send_state_delta(&context, &outcome, executor_public_key)
             .await
-            != 0
         {
-            let actions = outcome
-                .actions
-                .iter()
-                .map(|a| borsh::from_slice(a))
-                .collect::<Result<Vec<Action>, _>>()
-                .map_err(|err| {
-                    error!(%err, "Failed to deserialize actions.");
-                    CallError::InternalError
-                })?;
-
-            self.push_action(
-                context.id,
-                PeerAction::ActionList(ActionMessage {
-                    actions,
-                    context_id: context.id,
-                    public_key: executor_public_key,
-                    root_hash: context.root_hash,
-                }),
-            )
-            .await
-            .map_err(|err| {
-                error!(%err, "Failed to push action over the network.");
-                CallError::InternalError
-            })?;
+            error!(%err, "Failed to send state delta.");
         }
 
         Ok(outcome)
     }
 
-    async fn apply_action(
-        &mut self,
-        context: &mut Context,
-        action: &Action,
-        public_key: PublicKey,
-    ) -> EyreResult<()> {
-        let outcome = self
-            .execute(
-                context,
-                "apply_action".to_owned(),
-                to_vec(action)?,
-                public_key,
-            )
-            .await
-            .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))?;
-        drop(outcome.returns?);
-        Ok(())
-    }
-
-    async fn compare_trees(
-        &mut self,
-        context: &mut Context,
-        comparison: &Comparison,
-        public_key: PublicKey,
-    ) -> EyreResult<Outcome> {
-        self.execute(
-            context,
-            "compare_trees".to_owned(),
-            to_vec(comparison)?,
-            public_key,
-        )
-        .await
-        .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
-    }
-
-    async fn generate_comparison_data(
-        &mut self,
-        context: &mut Context,
-        id: Id,
-        public_key: PublicKey,
-    ) -> EyreResult<Outcome> {
-        self.execute(
-            context,
-            "generate_comparison_data".to_owned(),
-            to_vec(&id)?,
-            public_key,
-        )
-        .await
-        .and_then(|outcome| outcome.ok_or_else(|| eyre!("Application not installed")))
-    }
-
     async fn execute(
-        &mut self,
+        &self,
         context: &mut Context,
-        method: String,
+        method: &str,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
     ) -> EyreResult<Option<Outcome>> {
-        let mut storage = RuntimeCompatStore::new(&mut self.store, context.id);
-
         let Some(blob) = self
             .ctx_manager
             .load_application_blob(&context.application_id)
@@ -557,18 +452,22 @@ impl Node {
             return Ok(None);
         };
 
+        let mut store = self.store.clone();
+
+        let mut storage = RuntimeCompatStore::new(&mut store, context.id);
+
         let outcome = calimero_runtime::run(
             &blob,
             &method,
-            VMContext::new(payload, context.id.into(), *executor_public_key),
+            VMContext::new(payload, *context.id, *executor_public_key),
             &mut storage,
             &get_runtime_limits()?,
         )?;
 
         if outcome.returns.is_ok() {
             if let Some(root_hash) = outcome.root_hash {
-                if outcome.actions.is_empty() {
-                    eyre::bail!("Context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+                if outcome.artifact.is_empty() {
+                    eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
                 }
 
                 context.root_hash = root_hash.into();

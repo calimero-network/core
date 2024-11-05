@@ -1,15 +1,15 @@
 use calimero_context_config::repr::ReprTransmute;
+use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use common::config_helper::ConfigContractHelper;
 use common::counter_helper::CounterContractHelper;
 use common::create_account_with_balance;
 use common::proxy_lib_helper::ProxyContractHelper;
 use ed25519_dalek::SigningKey;
 use eyre::Result;
-use near_sdk::json_types::Base64VecU8;
-use near_sdk::{Gas, NearToken};
+use near_sdk::NearToken;
 use near_workspaces::network::Sandbox;
 use near_workspaces::{Account, Worker};
-use proxy_lib::{Proposal, ProposalAction, ProposalWithApprovals};
+use rand::Rng;
 
 mod common;
 
@@ -57,22 +57,82 @@ async fn test_create_proposal() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal = proxy_helper.create_proposal(&alice_sk, &vec![])?;
+    let proposal_id = rand::thread_rng().gen();
+    let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let res: Option<ProposalWithApprovals> = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
 
     match res {
         Some(proposal) => {
-            assert_eq!(proposal.proposal_id, 0, "Expected proposal_id to be 0");
+            assert_eq!(
+                proposal.proposal_id, proposal_id,
+                "Expected proposal_id to be 0"
+            );
             assert_eq!(proposal.num_approvals, 1, "Expected 1 approval");
         }
         None => panic!("Expected to create a proposal, but got None"),
     }
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_view_proposal() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    let proposal_id = rand::thread_rng().gen();
+    let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
+
+    let _res = proxy_helper
+        .proxy_mutate(&relayer_account, &proposal)
+        .await?
+        .into_result()?;
+
+    let view_proposal: Option<Proposal> = proxy_helper
+        .view_proposal(&relayer_account, &proposal_id)
+        .await?;
+    assert!(view_proposal.is_some());
+
+    let result_proposal = view_proposal.unwrap();
+    assert_eq!(result_proposal.id, proposal_id);
+    assert_eq!(result_proposal.actions, vec![]);
+    assert_eq!(result_proposal.author_id, alice_sk.verifying_key().rt()?);
+
+    let non_existent_proposal_id: u32 = 2;
+    let view_proposal: Option<Proposal> = proxy_helper
+        .view_proposal(&relayer_account, &non_existent_proposal_id)
+        .await?;
+    assert!(view_proposal.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_create_proposal_with_existing_id() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    let proposal_id = rand::thread_rng().gen();
+    let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
+
+    let _res = proxy_helper
+        .proxy_mutate(&relayer_account, &proposal)
+        .await?
+        .into_result();
+
+    let res = proxy_helper
+        .proxy_mutate(&relayer_account, &proposal)
+        .await?
+        .into_result();
+
+    let error = res.expect_err("Expected an error from the contract");
+    assert!(error.to_string().contains("Proposal already exists"));
     Ok(())
 }
 
@@ -85,11 +145,11 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
 
-    let proposal: calimero_context_config::types::Signed<Proposal> =
-        proxy_helper.create_proposal(&bob_sk, &vec![])?;
+    let proposal_id = rand::thread_rng().gen();
+    let proposal = proxy_helper.create_proposal_request(&proposal_id, &bob_sk, &vec![])?;
 
     let res = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result();
 
@@ -114,21 +174,28 @@ async fn test_create_multiple_proposals() -> Result<()> {
     let (_config_helper, proxy_helper, relayer_account, _context_sk, alice_sk) =
         setup_test(&worker).await?;
 
-    let proposal: calimero_context_config::types::Signed<Proposal> =
-        proxy_helper.create_proposal(&alice_sk, &vec![])?;
-
-    let _res = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
-        .await?
-        .into_result();
+    let mut rng = rand::thread_rng();
+    let proposal_1_id = rng.gen();
+    let proposal_2_id = rng.gen();
+    let proposal_1 = proxy_helper.create_proposal_request(&proposal_1_id, &alice_sk, &vec![])?;
+    let proposal_2 = proxy_helper.create_proposal_request(&proposal_2_id, &alice_sk, &vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal_1)
         .await?
         .into_result()?
         .json()?;
 
-    assert_eq!(res.proposal_id, 1);
+    assert_eq!(res.proposal_id, proposal_1_id);
+    assert_eq!(res.num_approvals, 1);
+
+    let res: ProposalWithApprovals = proxy_helper
+        .proxy_mutate(&relayer_account, &proposal_2)
+        .await?
+        .into_result()?
+        .json()?;
+
+    assert_eq!(res.proposal_id, proposal_2_id);
     assert_eq!(res.num_approvals, 1);
 
     Ok(())
@@ -148,11 +215,11 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
         .await?
         .into_result()?;
 
-    let proposal: calimero_context_config::types::Signed<Proposal> =
-        proxy_helper.create_proposal(&alice_sk, &vec![])?;
+    let proposal_id = rand::thread_rng().gen();
+    let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
@@ -163,7 +230,7 @@ async fn test_create_proposal_and_approve_by_member() -> Result<()> {
         .into_result()?
         .json()?;
 
-    assert_eq!(res2.proposal_id, 0);
+    assert_eq!(res2.proposal_id, proposal_id);
     assert_eq!(res2.num_approvals, 2);
 
     Ok(())
@@ -179,11 +246,11 @@ async fn test_create_proposal_and_approve_by_non_member() -> Result<()> {
     // Bob is not a member of the context
     let bob_sk: SigningKey = common::generate_keypair()?;
 
-    let proposal: calimero_context_config::types::Signed<Proposal> =
-        proxy_helper.create_proposal(&alice_sk, &vec![])?;
+    let proposal_id = rand::thread_rng().gen();
+    let proposal = proxy_helper.create_proposal_request(&proposal_id, &alice_sk, &vec![])?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
@@ -234,15 +301,17 @@ async fn create_and_approve_proposal(
     actions: &Vec<ProposalAction>,
     members: Vec<SigningKey>,
 ) -> Result<()> {
-    let proposal = proxy_helper.create_proposal(&members[0], actions)?;
+    let proposal_id = rand::thread_rng().gen();
+    let proposal = proxy_helper.create_proposal_request(&proposal_id, &members[0], actions)?;
 
     let res: ProposalWithApprovals = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal)
+        .proxy_mutate(&relayer_account, &proposal)
         .await?
         .into_result()?
         .json()?;
 
     assert_eq!(res.num_approvals, 1);
+    assert_eq!(res.proposal_id, proposal_id);
 
     let res: ProposalWithApprovals = proxy_helper
         .approve_proposal(&relayer_account, &members[1], &res.proposal_id)
@@ -280,11 +349,11 @@ async fn test_execute_proposal() -> Result<()> {
     );
 
     let actions = vec![ProposalAction::ExternalFunctionCall {
-        receiver_id: counter_helper.counter_contract.id().clone(),
+        receiver_id: counter_helper.counter_contract.id().to_string(),
         method_name: "increment".to_string(),
-        args: Base64VecU8::from(vec![]),
-        deposit: NearToken::from_near(0),
-        gas: Gas::from_gas(1_000_000_000_000),
+        args: serde_json::to_string(&Vec::<u8>::new())?,
+        deposit: 0,
+        gas: 1_000_000_000_000,
     }];
     let _res =
         create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
@@ -394,8 +463,8 @@ async fn test_transfer() -> Result<()> {
     );
 
     let actions = vec![ProposalAction::Transfer {
-        receiver_id: recipient.id().clone(),
-        amount: NearToken::from_near(5),
+        receiver_id: recipient.id().to_string(),
+        amount: 5,
     }];
     let _res =
         create_and_approve_proposal(&proxy_helper, &relayer_account, &actions, members).await;
@@ -429,11 +498,11 @@ async fn test_combined_proposals() -> Result<()> {
 
     let actions = vec![
         ProposalAction::ExternalFunctionCall {
-            receiver_id: counter_helper.counter_contract.id().clone(),
+            receiver_id: counter_helper.counter_contract.id().to_string(),
             method_name: "increment".to_string(),
-            args: Base64VecU8::from(vec![]),
-            deposit: NearToken::from_near(0),
-            gas: Gas::from_gas(1_000_000_000_000),
+            args: serde_json::to_string(&Vec::<u8>::new())?,
+            deposit: 0,
+            gas: 1_000_000_000_000,
         },
         ProposalAction::SetActiveProposalsLimit {
             active_proposals_limit: 5,
@@ -477,11 +546,11 @@ async fn test_combined_proposal_actions_with_promise_failure() -> Result<()> {
 
     let actions = vec![
         ProposalAction::ExternalFunctionCall {
-            receiver_id: counter_helper.counter_contract.id().clone(),
+            receiver_id: counter_helper.counter_contract.id().to_string(),
             method_name: "non_existent_method".to_string(), // This method does not exist
-            args: Base64VecU8::from(vec![]),
-            deposit: NearToken::from_near(0),
-            gas: Gas::from_gas(1_000_000_000_000),
+            args: serde_json::to_string(&Vec::<u8>::new())?,
+            deposit: 0,
+            gas: 1_000_000_000_000,
         },
         ProposalAction::SetActiveProposalsLimit {
             active_proposals_limit: 5,
@@ -512,43 +581,58 @@ async fn test_view_proposals() -> Result<()> {
     let proposal1_actions = vec![ProposalAction::SetActiveProposalsLimit {
         active_proposals_limit: 5,
     }];
-    let proposal1 = proxy_helper.create_proposal(&alice_sk, &proposal1_actions)?;
+    let proposal1_id = rand::thread_rng().gen();
+    let proposal1 =
+        proxy_helper.create_proposal_request(&proposal1_id, &alice_sk, &proposal1_actions)?;
     let proposal2_actions = vec![ProposalAction::SetNumApprovals { num_approvals: 2 }];
-    let proposal2 = proxy_helper.create_proposal(&alice_sk, &proposal2_actions)?;
+    let proposal2_id = rand::thread_rng().gen();
+    let proposal2 =
+        proxy_helper.create_proposal_request(&proposal2_id, &alice_sk, &proposal2_actions)?;
     let proposal3_actions = vec![ProposalAction::SetContextValue {
         key: b"example_key".to_vec().into_boxed_slice(),
         value: b"example_value".to_vec().into_boxed_slice(),
     }];
-    let proposal3 = proxy_helper.create_proposal(&alice_sk, &proposal3_actions)?;
+    let proposal3_id = rand::thread_rng().gen();
+    let proposal3 =
+        proxy_helper.create_proposal_request(&proposal3_id, &alice_sk, &proposal3_actions)?;
 
     let _ = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal1)
+        .proxy_mutate(&relayer_account, &proposal1)
         .await?;
     let _ = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal2)
+        .proxy_mutate(&relayer_account, &proposal2)
         .await?;
     let _ = proxy_helper
-        .create_and_approve_proposal(&relayer_account, &proposal3)
+        .proxy_mutate(&relayer_account, &proposal3)
         .await?;
 
     let proposals = proxy_helper.view_proposals(&relayer_account, 0, 3).await?;
 
     assert_eq!(proposals.len(), 3, "Expected to retrieve 3 proposals");
 
-    assert_eq!(proposals[0].0, 0, "Expected first proposal to have id 0");
-    assert_eq!(proposals[1].0, 1, "Expected second proposal to have id 1");
-    assert_eq!(proposals[2].0, 2, "Expected third proposal to have id 2");
+    assert_eq!(
+        proposals[0].id, proposal1_id,
+        "Expected first proposal to have proposal_id 1"
+    );
+    assert_eq!(
+        proposals[1].id, proposal2_id,
+        "Expected second proposal to have proposal_id 2"
+    );
+    assert_eq!(
+        proposals[2].id, proposal3_id,
+        "Expected third proposal to have proposal_id 3"
+    );
 
     assert_eq!(
-        &proposals[0].1.actions[0], &proposal1_actions[0],
+        &proposals[0].actions[0], &proposal1_actions[0],
         "First proposal actions should match proposal 1"
     );
     assert_eq!(
-        &proposals[1].1.actions[0], &proposal2_actions[0],
+        &proposals[1].actions[0], &proposal2_actions[0],
         "Second proposal actions should match proposal 2"
     );
     assert_eq!(
-        &proposals[2].1.actions[0], &proposal3_actions[0],
+        &proposals[2].actions[0], &proposal3_actions[0],
         "Third proposal actions should match proposal 3"
     );
 
@@ -562,20 +646,20 @@ async fn test_view_proposals() -> Result<()> {
     );
 
     assert_eq!(
-        proposals[0].0, 1,
-        "Expected the first returned proposal to have id 1"
+        proposals[0].id, proposal2_id,
+        "Expected the first returned proposal to have proposal_id 2"
     );
     assert_eq!(
-        proposals[1].0, 2,
-        "Expected the second returned proposal to have id 2"
+        proposals[1].id, proposal3_id,
+        "Expected the second returned proposal to have proposal_id 3"
     );
 
     assert_eq!(
-        &proposals[0].1.actions[0], &proposal2_actions[0],
+        &proposals[0].actions[0], &proposal2_actions[0],
         "First proposal actions should match proposal 2"
     );
     assert_eq!(
-        &proposals[1].1.actions[0], &proposal3_actions[0],
+        &proposals[1].actions[0], &proposal3_actions[0],
         "Second proposal actions should match proposal 3"
     );
 
@@ -588,12 +672,12 @@ async fn test_view_proposals() -> Result<()> {
         "Expected to retrieve 1 proposal starting from offset 3"
     );
     assert_eq!(
-        single_proposal[0].0, 2,
-        "Expected the proposal to have id 2"
+        single_proposal[0].id, proposal3_id,
+        "Expected the proposal to have proposal id 3"
     );
 
     assert_eq!(
-        &proposals[1].1.actions[0], &proposal3_actions[0],
+        &proposals[1].actions[0], &proposal3_actions[0],
         "first proposal actions should match proposal 3"
     );
 

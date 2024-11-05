@@ -4,7 +4,7 @@ use std::env::args;
 use std::process::exit;
 
 use calimero_blobstore::config::BlobStoreConfig;
-use calimero_blobstore::{BlobManager, FileSystem, Size};
+use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
 use calimero_store::Store;
@@ -18,16 +18,11 @@ const BLOB_DIR: &'static str = "blob-tests/blob";
 
 #[tokio::main]
 async fn main() -> EyreResult<()> {
-    let config = StoreConfig {
-        path: DATA_DIR.into(),
-    };
+    let config = StoreConfig::new(DATA_DIR.into());
 
     let data_store = Store::open::<RocksDB>(&config)?;
 
-    let blob_store = FileSystem::new(&BlobStoreConfig {
-        path: BLOB_DIR.into(),
-    })
-    .await?;
+    let blob_store = FileSystem::new(&BlobStoreConfig::new(BLOB_DIR.into())).await?;
 
     let blob_mgr = BlobManager::new(data_store, blob_store);
 
@@ -50,7 +45,11 @@ async fn main() -> EyreResult<()> {
         None => {
             let stdin = stdin().compat();
 
-            println!("{}", blob_mgr.put_sized(None, stdin).await?);
+            let (blob_id, hash, size) = blob_mgr.put_sized(None, stdin).await?;
+
+            println!("Blob ID: {}", blob_id);
+            println!("Hash: {}", hash);
+            println!("Size: {}", size);
         }
     }
 

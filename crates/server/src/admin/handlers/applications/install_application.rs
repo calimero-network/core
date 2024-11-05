@@ -14,7 +14,7 @@ pub async fn handler(
 ) -> impl IntoResponse {
     match state
         .ctx_manager
-        .install_application_from_url(req.url, req.metadata /*, req.hash */)
+        .install_application_from_url(req.url, req.metadata, req.hash)
         .await
     {
         Ok(application_id) => ApiResponse {
