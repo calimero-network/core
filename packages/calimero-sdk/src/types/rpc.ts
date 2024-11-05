@@ -8,6 +8,15 @@ export interface RpcClient {
     config?: RequestConfig,
   ): Promise<RpcResult<RpcQueryResponse<Out>>>;
 
+  query<Args, Out>(
+    params: RpcQueryParams<Args>,
+    config?: RequestConfig,
+  ): Promise<RpcResult<RpcQueryResponse<Out>>>;
+  mutate<Args, Out>(
+    params: RpcMutateParams<Args>,
+    config?: RequestConfig,
+  ): Promise<RpcResult<RpcMutateResponse<Out>>>;
+
   //???
   // execute<Args, Out>(
   //   params: RpcMutateParams<Args>,

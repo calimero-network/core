@@ -75,6 +75,7 @@ pub struct DraftProposal {
     /// The actions to be executed by the proposal. One proposal can contain
     /// multiple actions to execute.
     actions: Vec<ProposalAction>,
+    approval: Option<ProposalId>,
 }
 
 impl DraftProposal {
@@ -83,6 +84,7 @@ impl DraftProposal {
     pub const fn new() -> Self {
         Self {
             actions: Vec::new(),
+            approval: None,
         }
     }
 
@@ -111,6 +113,13 @@ impl DraftProposal {
         }
 
         ProposalId(buf)
+    }
+
+    /// Finalise the proposal and send it to the blockchain.
+    #[must_use]
+    pub fn approve(self, proposal_id: ProposalId) -> ProposalId {
+        unsafe { sys::approve_proposal(BufferMut::new(&proposal_id)) }
+        proposal_id
     }
 }
 

@@ -427,6 +427,18 @@ impl Node {
             });
         };
 
+        for proposal in outcome.proposals {
+            self.ctx_manager
+                .propose(context_id, executor_public_key, proposal.0, proposal.1)
+                .await?;
+        }
+
+        for approval in outcome.approvals {
+            self.ctx_manager
+                .approve(context_id, executor_public_key, approval)
+                .await?;
+        }
+
         if let Err(err) = self
             .send_state_delta(&context, &outcome, executor_public_key)
             .await
