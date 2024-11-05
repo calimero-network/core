@@ -191,7 +191,7 @@ export function useIcp(): useIcpReturn {
   const signMessageAndLogin = useCallback(
     async (isLogin: boolean, setErrorMessage: (msg: string) => void) => {
       if (!getAppEndpointKey()) {
-        navigate('/?node_url_error=true');
+        navigate('/');
         return;
       }
       try {

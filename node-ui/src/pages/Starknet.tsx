@@ -33,7 +33,7 @@ export default function StarknetLogin({ isLogin }: StarknetLoginProps) {
   }, [starknetInstance, requestNodeData]);
 
   useEffect(() => {
-    getAppEndpointKey() || navigate('/?node_error=true');
+    getAppEndpointKey() || navigate('/');
     if (starknetInstance && signData) {
       login({ isLogin, setErrorMessage });
     }

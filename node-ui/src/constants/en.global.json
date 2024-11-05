@@ -408,8 +408,6 @@
     "nodeHealthCheckError": "Connection failed. Please check if node url is correct.",
     "modalTitle": "App setup",
     "urlInputPlacerholder": "node url",
-    "buttonSetText": "Set node url",
-    "errorTitle": "Node url error",
-    "errorMessage": "'There was an error with the node url. Please setup the node url again."
+    "buttonSetText": "Set node url"
   }
 }

@@ -39,7 +39,7 @@ export default function NearLogin({ isLogin }: NearLoginProps) {
   const appName = 'me';
 
   useEffect(() => {
-    getAppEndpointKey() || navigate('/?node_error=true');
+    getAppEndpointKey() || navigate('/');
     const timeoutId = setTimeout(() => {
       verifyMessageBrowserWallet(isLogin, setErrorMessage, showServerDownPopup);
     }, 500);
@@ -89,7 +89,7 @@ export default function NearLogin({ isLogin }: NearLoginProps) {
         }
         handleSwitchWallet={() => handleSwitchWallet(modal)}
         handleSignMessage={() => {
-          getAppEndpointKey() || navigate('/?node_error=true');
+          getAppEndpointKey() || navigate('/');
           handleSignMessage({
             selector,
             appName,

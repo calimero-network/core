@@ -34,7 +34,7 @@ export default function MetamaskLogin({ isLogin }: MetamaskLoginProps) {
   }, [isConnected]);
 
   useEffect(() => {
-    getAppEndpointKey() || navigate('/?node_error=true');
+    getAppEndpointKey() || navigate('/');
     if (isSignSuccess && walletSignatureData) {
       login({ isLogin, setErrorMessage });
     }

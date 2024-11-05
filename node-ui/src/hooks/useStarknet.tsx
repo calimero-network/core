@@ -71,7 +71,7 @@ export function useStarknet(): useStarknetReturn {
   const walletLogin = useCallback(
     async (walletType: string, setErrorMessage: (msg: string) => void) => {
       if (!getAppEndpointKey()) {
-        navigate('/?node_error=true');
+        navigate('/');
       }
       try {
         setReady(false);
