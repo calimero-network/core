@@ -36,7 +36,7 @@ impl Method<Starknet> for ProposalRequest {
         todo!()
     }
 
-    fn decode(response: Vec<u8>) -> eyre::Result<Self::Returns> {
+    fn decode(_response: Vec<u8>) -> eyre::Result<Self::Returns> {
         todo!()
     }
 }
