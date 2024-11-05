@@ -191,6 +191,7 @@ impl Transport for NearTransport<'_> {
         request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
+        println!(" - NearTransport::send");
         let Some(network) = self.networks.get(&request.network_id) else {
             return Err(NearError::UnknownNetwork(request.network_id.into_owned()));
         };
@@ -200,6 +201,8 @@ impl Transport for NearTransport<'_> {
             .parse()
             .map_err(NearError::InvalidContractId)?;
 
+        println!(" - NearTransport:: contract_id");
+
         match request.operation {
             Operation::Read { method } => {
                 network
@@ -207,6 +210,7 @@ impl Transport for NearTransport<'_> {
                     .await
             }
             Operation::Write { method } => {
+                println!(" - NearTransport::send Operation::Write");
                 network
                     .mutate(contract_id, method.into_owned(), payload)
                     .await
@@ -253,6 +257,7 @@ impl Network {
         method: String,
         args: Vec<u8>,
     ) -> Result<Vec<u8>, NearError> {
+        println!(" - Network::mutateeeeeeeeeee");
         let (nonce, block_hash) = self.get_nonce(contract_id.clone(), method.clone()).await?;
 
         let transaction = Transaction::V0(TransactionV0 {
@@ -268,6 +273,8 @@ impl Network {
                 deposit: 0,
             }))],
         });
+
+        println!(" - Network::transaction {:?}", transaction);
 
         let (tx_hash, _) = transaction.get_hash_and_size();
 
