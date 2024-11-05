@@ -1,4 +1,5 @@
 use borsh::{to_vec as to_borsh_vec, to_vec, BorshDeserialize, BorshSerialize};
+use serde::{Deserialize, Serialize};
 
 use super::{expected_boolean, expected_register, panic_str, read_register, DATA_REGISTER};
 use crate::sys;
@@ -126,8 +127,26 @@ impl External {
 }
 
 /// Unique identifier for a proposal.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+)]
 pub struct ProposalId(pub [u8; 32]);
+
+impl AsRef<[u8]> for ProposalId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 #[doc(hidden)]
 pub unsafe fn fetch(
