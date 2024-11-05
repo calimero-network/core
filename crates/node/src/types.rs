@@ -9,6 +9,9 @@ use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use calimero_storage::integration::Comparison;
+use calimero_storage::interface::Action;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 #[non_exhaustive]
@@ -25,16 +28,6 @@ pub enum PeerAction {
     ActionList(ActionMessage),
     Sync(SyncMessage),
     RequestSenderKey(RequestSenderKeyMessage),
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub enum CatchupStreamMessage {
-    ActionsBatch(CatchupActionsBatch),
-    ApplicationBlobRequest(CatchupApplicationBlobRequest),
-    ApplicationBlobChunk(CatchupApplicationBlobChunk),
-    SyncRequest(CatchupSyncRequest),
-    Error(CatchupError),
 }
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]

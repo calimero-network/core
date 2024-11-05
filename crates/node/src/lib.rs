@@ -53,7 +53,7 @@ pub mod types;
 
 use runtime_compat::RuntimeCompatStore;
 use sync::SyncConfig;
-use types::BroadcastMessage;
+use types::{BroadcastMessage, PeerAction};
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -331,10 +331,6 @@ impl Node {
                     artifact.into_owned(),
                 )
                 .await?;
-            }
-            PeerAction::RequestSenderKey(request_sender_key_message) => {
-                debug!(?request_sender_key_message, %source, "Received request sender key message");
-                Ok(())
             }
         }
 

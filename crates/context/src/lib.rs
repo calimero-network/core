@@ -471,7 +471,13 @@ impl ContextManager {
                     let key = ContextIdentityKey::new(context_id, member);
 
                     if !handle.has(&key)? {
-                        handle.put(&key, &ContextIdentityValue { private_key: None })?;
+                        handle.put(
+                            &key,
+                            &ContextIdentityValue {
+                                private_key: None,
+                                sender_key: None,
+                            },
+                        )?;
                     }
                 }
             }
