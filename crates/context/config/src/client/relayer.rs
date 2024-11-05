@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use url::Url;
 
 use super::transport::{Operation, Transport, TransportRequest};
@@ -39,8 +40,22 @@ pub struct RelayRequest<'a> {
     pub payload: Vec<u8>,
 }
 
+#[derive(Debug, Error)]
+pub enum RelayerError {
+    #[error(transparent)]
+    Raw(#[from] reqwest::Error),
+    #[error(
+        "relayer response ({status}): {}",
+        body.is_empty().then(|| "<empty>").unwrap_or_else(|| body)
+    )]
+    Response {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+}
+
 impl Transport for RelayerTransport {
-    type Error = reqwest::Error;
+    type Error = RelayerError;
 
     async fn send(
         &self,
@@ -60,6 +75,13 @@ impl Transport for RelayerTransport {
             .send()
             .await?;
 
-        response.error_for_status()?.bytes().await.map(Into::into)
+        if !response.status().is_success() {
+            return Err(RelayerError::Response {
+                status: response.status(),
+                body: response.text().await?,
+            });
+        }
+
+        response.bytes().await.map(Into::into).map_err(Into::into)
     }
 }
