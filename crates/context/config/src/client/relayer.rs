@@ -46,7 +46,7 @@ pub enum RelayerError {
     Raw(#[from] reqwest::Error),
     #[error(
         "relayer response ({status}): {}",
-        body.is_empty().then(|| "<empty>").unwrap_or_else(|| body)
+        body.is_empty().then_some("<empty>").unwrap_or(body)
     )]
     Response {
         status: reqwest::StatusCode,
