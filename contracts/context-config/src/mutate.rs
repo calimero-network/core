@@ -1,4 +1,5 @@
 use core::mem;
+use std::str::FromStr;
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
@@ -6,7 +7,7 @@ use calimero_context_config::types::{
 };
 use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
 use near_sdk::store::IterableSet;
-use near_sdk::{env, near, require};
+use near_sdk::{env, near, require, AccountId, Promise, PromiseError, PromiseResult};
 
 use super::{
     parse_input, Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
@@ -53,8 +54,35 @@ impl ContextConfigs {
                 ContextRequestKind::Revoke { capabilities } => {
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
+                ContextRequestKind::DeployProxyContract { account, code } => {
+                    self.deploy_proxy_contract(
+                        &request.signer_id,
+                        context_id,
+                        account.into_owned(),
+                        code.into_owned(),
+                    );
+                }
             },
         }
+    }
+
+    #[private]
+    pub fn proxy_deployment_callback(
+        &mut self,
+        context_id: Repr<ContextId>,
+        account_id: AccountId,
+        #[callback_result] call_result: Result<bool, PromiseError>, // Match the return type
+    ) {
+        require!(call_result.is_ok(), "proxy contract deployment failed");
+        env::log_str(&format!(
+            "Proxy contract for `{}` deployed at `{}`",
+            context_id, account_id
+        ));
+        let context = self
+            .contexts
+            .get_mut(&context_id)
+            .expect("context does not exist");
+        context.proxy = Some(account_id.to_string());
     }
 }
 
@@ -97,6 +125,7 @@ impl ContextConfigs {
                 author_id.rt().expect("infallible conversion"),
                 members,
             ),
+            proxy: None,
         };
 
         if self.contexts.insert(*context_id, context).is_some() {
@@ -275,5 +304,23 @@ impl ContextConfigs {
                 context_id
             ));
         }
+    }
+
+    fn deploy_proxy_contract(
+        &mut self,
+        _signer_id: &SignerId,
+        context_id: Repr<ContextId>,
+        account: String,
+        code: Vec<u8>,
+    ) {
+        let account_id = AccountId::from_str(&account).expect("invalid account ID");
+        let _res = Promise::new(account_id.clone())
+            .create_account()
+            .deploy_contract(code.clone())
+            .transfer(env::attached_deposit())
+            .then(
+                Self::ext(env::current_account_id())
+                    .proxy_deployment_callback(context_id, account_id),
+            );
     }
 }

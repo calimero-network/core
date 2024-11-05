@@ -36,6 +36,7 @@ struct Config {
 struct Context {
     pub application: Guard<Application<'static>>,
     pub members: Guard<IterableSet<ContextIdentity>>,
+    pub proxy: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, BorshStorageKey)]
