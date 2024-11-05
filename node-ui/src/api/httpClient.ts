@@ -42,7 +42,7 @@ export class AxiosHttpClient implements HttpClient {
       (response: AxiosResponse) => response,
       (error: AxiosError) => {
         if (error.response?.status === 401) {
-          window.location.href = "/admin-dashboard/";
+          window.location.href = '/admin-dashboard/';
         }
         if (!error.response) {
           this.showServerDownPopup();

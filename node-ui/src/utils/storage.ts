@@ -12,12 +12,11 @@ export interface ClientKey {
   publicKey: string;
 }
 
-
 export const clearStorage = () => {
   localStorage.removeItem(APP_URL);
   localStorage.removeItem(AUTHORIZED);
   localStorage.removeItem(CLIENT_KEY);
-}
+};
 
 export const getAppEndpointKey = (): string | null => {
   try {
