@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::fmt::Debug;
 
 use either::Either;
 use env::Method;
@@ -119,6 +120,7 @@ impl<T: Transport> Client<T> {
         request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, T::Error> {
+        println!("send {:?}", request);
         self.transport.send(request, payload).await
     }
 
@@ -183,7 +185,7 @@ impl<'a, T: Transport> CallClient<'a, T> {
         let request = TransportRequest {
             protocol: Cow::Borrowed(&self.protocol),
             network_id: Cow::Borrowed(&self.network_id),
-            contract_id: Cow::Borrowed(&"caliproxy.testnet"),
+            contract_id: Cow::Borrowed(&self.contract_id),
             operation,
         };
 

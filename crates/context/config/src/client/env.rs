@@ -32,6 +32,7 @@ mod utils {
         M: Method<Starknet, Returns = R>,
     {
         println!("send_near_or_starknet {:?}", client.protocol);
+
         match &*client.protocol {
             Near::PROTOCOL => client.send::<Near, _>(params).await,
             Starknet::PROTOCOL => client.send::<Starknet, _>(params).await,
