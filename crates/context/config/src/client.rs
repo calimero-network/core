@@ -185,8 +185,8 @@ impl<'a, T: Transport> CallClient<'a, T> {
         let request = TransportRequest {
             protocol: Cow::Borrowed(&self.protocol),
             network_id: Cow::Borrowed(&self.network_id),
-            contract_id: Cow::Borrowed(&self.contract_id),
-            // contract_id: Cow::Borrowed("caliproxy.testnet"),
+            // contract_id: Cow::Borrowed(&self.contract_id),
+            contract_id: Cow::Borrowed("vukiproxy.testnet"),
             operation,
         };
 

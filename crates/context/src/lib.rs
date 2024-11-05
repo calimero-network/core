@@ -1038,17 +1038,17 @@ impl ContextManager {
         println!("Propose in context signer_id {:?}", signing_key);
         println!("Propose in context actions {:?}", actions);
 
-        let members = self
-            .config_client
-            .query::<ContextConfigEnv>(
-                context_config.protocol.as_ref().into(),
-                context_config.network.as_ref().into(),
-                context_config.contract.as_ref().into(),
-            )
-            .members(context_id.rt()?, 0, 100)
-            .await?;
+        // let members = self
+        //     .config_client
+        //     .query::<ContextConfigEnv>(
+        //         context_config.protocol.as_ref().into(),
+        //         context_config.network.as_ref().into(),
+        //         context_config.contract.as_ref().into(),
+        //     )
+        //     .members(context_id.rt()?, 0, 100)
+        //     .await?;
 
-        println!("Propose in context members {:?}", members);
+        // println!("Propose in context members {:?}", members);
 
         let res = self
             .config_client

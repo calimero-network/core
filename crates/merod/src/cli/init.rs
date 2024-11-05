@@ -250,7 +250,7 @@ impl InitCommand {
                         },
                         protocol: self.protocol.as_str().to_owned(),
                         contract_id: match self.protocol {
-                            ConfigProtocol::Near => "calimero-context-config.testnet".parse()?,
+                            ConfigProtocol::Near => "vukiconfig.testnet".parse()?,
                             ConfigProtocol::Starknet => {
                                 "0x1ee8182d5dd595be9797ccae1488bdf84b19a0f05a93ce6148b0efae04f4568"
                                     .parse()?
