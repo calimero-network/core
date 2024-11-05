@@ -5,7 +5,6 @@ import {
   ContextClientKeysList,
   ContextUsersList,
   GetInstalledApplicationsResponse,
-  ApiContext,
   DidResponse,
   DeleteContextResponse,
   JoinContextResponse,
@@ -20,6 +19,7 @@ import {
   UninstallApplicationResponse,
   CreateContextResponse,
   GetContextsResponse,
+  Context,
 } from './dataSource/NodeDataSource';
 import { ApiResponse } from './response';
 
@@ -29,7 +29,7 @@ export interface NodeApi {
     appId: string,
   ): ApiResponse<InstalledApplication>;
   getContexts(): ApiResponse<GetContextsResponse>;
-  getContext(contextId: string): ApiResponse<ApiContext>;
+  getContext(contextId: string): ApiResponse<Context>;
   getContextClientKeys(contextId: string): ApiResponse<ContextClientKeysList>;
   getContextUsers(contextId: string): ApiResponse<ContextUsersList>;
   deleteContext(contextId: string): ApiResponse<DeleteContextResponse>;

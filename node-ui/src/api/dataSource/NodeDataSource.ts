@@ -381,13 +381,13 @@ export class NodeDataSource implements NodeApi {
     }
   }
 
-  async getContext(contextId: string): ApiResponse<ApiContext> {
+  async getContext(contextId: string): ApiResponse<Context> {
     try {
       const headers: Header | null = await createAuthHeader(
         contextId,
         getNearEnvironment(),
       );
-      const response = await this.client.get<ApiContext>(
+      const response = await this.client.get<Context>(
         `${getAppEndpointKey()}/admin-api/contexts/${contextId}`,
         headers ?? {},
       );
