@@ -69,7 +69,6 @@ impl CallCommand {
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
         let json_payload: Value = serde_json::from_str(&self.args_json)?;
-
         let payload = RequestPayload::Execute(ExecuteRequest::new(
             self.context_id,
             self.method,
