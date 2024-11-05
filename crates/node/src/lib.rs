@@ -35,6 +35,7 @@ use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
+use libp2p::relay::client::new;
 use rand::{thread_rng, Rng};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
@@ -427,16 +428,23 @@ impl Node {
             });
         };
 
-        for proposal in outcome.proposals {
-            self.ctx_manager
-                .propose(context_id, executor_public_key, proposal.0, proposal.1)
-                .await?;
+        for proposal in &outcome.proposals {
+            let _ = self
+                .ctx_manager
+                .propose(
+                    context_id,
+                    executor_public_key,
+                    proposal.0.clone(),
+                    proposal.1.clone(),
+                )
+                .await;
         }
 
-        for approval in outcome.approvals {
-            self.ctx_manager
-                .approve(context_id, executor_public_key, approval)
-                .await?;
+        for approval in &outcome.approvals {
+            let _ = self
+                .ctx_manager
+                .approve(context_id, executor_public_key, approval.clone())
+                .await;
         }
 
         if let Err(err) = self

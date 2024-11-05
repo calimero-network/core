@@ -133,6 +133,10 @@ impl External {
     pub const fn propose(self) -> DraftProposal {
         DraftProposal::new()
     }
+
+    pub const fn approve(self) -> DraftProposal {
+        DraftProposal::new()
+    }
 }
 
 /// Unique identifier for a proposal.

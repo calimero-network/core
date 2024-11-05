@@ -2,7 +2,7 @@
 
 use core::error::Error;
 use std::collections::HashSet;
-use std::io::Error as IoError;
+use std::io::{Error as IoError, Read};
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
@@ -13,7 +13,7 @@ use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
-    ApplicationSource as ApplicationSourceConfig, SignerId,
+    ApplicationSource as ApplicationSourceConfig, Identity, SignerId,
 };
 use calimero_context_config::{ProposalAction, ProposalId};
 use calimero_network::client::NetworkClient;
@@ -38,7 +38,7 @@ use calimero_store::types::{
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use eyre::{bail, Ok, Result as EyreResult};
+use eyre::{bail, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
@@ -1012,35 +1012,46 @@ impl ContextManager {
         self.blob_manager.has(blob_id)
     }
 
-    pub fn propose(
+    pub async fn propose(
         &self,
         context_id: ContextId,
-        signer_id: SignerId,
+        signing_key: PublicKey,
         proposal_id: ProposalId,
-        actions: Vec<ProposalAction>,
+        actions: Vec<u8>,
     ) -> EyreResult<()> {
         let handle = self.store.handle();
+
+        let actions: Vec<ProposalAction> = vec![]; // - How to deserialize actions?
 
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
             //handle
             return Ok(());
         };
 
-        self.config_client
+        //How to get signer id?
+        let signer_id = SignerId::from_bytes(|buffer: &mut [u8; 32]| {
+            *buffer = [0; 32];
+            Ok(32)
+        })?;
+
+        let _ = self
+            .config_client
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
             )
-            .propose(proposal_id, signer_id, actions);
+            .propose(proposal_id, signer_id, actions)
+            .send(*signing_key)
+            .await?;
 
         Ok(())
     }
 
-    pub fn approve(
+    pub async fn approve(
         &self,
         context_id: ContextId,
-        signer_id: SignerId,
+        signing_key: PublicKey,
         proposal_id: ProposalId,
     ) -> EyreResult<()> {
         let handle = self.store.handle();
@@ -1050,13 +1061,22 @@ impl ContextManager {
             return Ok(());
         };
 
-        self.config_client
+        //How to get signer id?
+        let signer_id = SignerId::from_bytes(|buffer: &mut [u8; 32]| {
+            *buffer = [0; 32];
+            Ok(32)
+        })?;
+
+        let _ = self
+            .config_client
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
                 context_config.contract.as_ref().into(),
             )
-            .approve(Repr::new(signer_id), proposal_id);
+            .approve(signer_id, proposal_id)
+            .send(*signing_key)
+            .await?;
 
         Ok(())
     }
