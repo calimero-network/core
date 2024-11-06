@@ -184,10 +184,16 @@ impl Node {
 
     pub async fn perform_interval_sync(&self) {
         let task = async {
-            for context in self.ctx_manager.get_n_pending_sync_context(3).await {
-                if self.internal_perform_interval_sync(context).await.is_some() {
+            for context_id in self.ctx_manager.get_n_pending_sync_context(3).await {
+                if self
+                    .internal_perform_interval_sync(context_id)
+                    .await
+                    .is_some()
+                {
                     break;
                 }
+
+                debug!(%context_id, "Unable to perform interval sync for context, trying another");
             }
         };
 
