@@ -65,5 +65,3 @@ macro_rules! wasm_imports {
 }
 
 use wasm_imports;
-
-use crate::env::ext::ProposalId;

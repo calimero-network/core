@@ -114,13 +114,6 @@ impl DraftProposal {
 
         ProposalId(buf)
     }
-
-    /// Finalise the proposal and send it to the blockchain.
-    #[must_use]
-    pub fn approve(self, proposal_id: ProposalId) -> ProposalId {
-        unsafe { sys::approve_proposal(BufferMut::new(&proposal_id)) }
-        proposal_id
-    }
 }
 
 /// Interface for interacting with external proposals for blockchain actions.
@@ -134,8 +127,8 @@ impl External {
         DraftProposal::new()
     }
 
-    pub const fn approve(self) -> DraftProposal {
-        DraftProposal::new()
+    pub fn approve(self, proposal_id: ProposalId) {
+        unsafe { sys::approve_proposal(BufferMut::new(&proposal_id)) }
     }
 }
 

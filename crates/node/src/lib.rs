@@ -8,7 +8,7 @@ use core::future::{pending, Future};
 use core::pin::Pin;
 use std::time::Duration;
 
-use borsh::{from_slice, to_vec, BorshDeserialize};
+use borsh::{from_slice, to_vec};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
@@ -36,7 +36,6 @@ use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
-use libp2p::relay::client::new;
 use rand::{thread_rng, Rng};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
