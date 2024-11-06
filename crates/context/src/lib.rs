@@ -447,7 +447,7 @@ impl ContextManager {
             .members_revision(context_id.rt().expect("infallible conversion"))
             .await?;
 
-        if context_exists && members_revision != config.members_revision {
+        if !context_exists || members_revision != config.members_revision {
             config.members_revision = members_revision;
 
             for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
@@ -481,7 +481,7 @@ impl ContextManager {
 
         let mut application_id = None;
 
-        if context_exists && application_revision != config.application_revision {
+        if !context_exists || application_revision != config.application_revision {
             config.application_revision = application_revision;
 
             let application = client
