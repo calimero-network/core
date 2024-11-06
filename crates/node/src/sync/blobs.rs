@@ -99,6 +99,8 @@ impl Node {
                 tx.send(Ok(chunk)).await?;
             }
 
+            drop(tx);
+
             Ok(())
         };
 

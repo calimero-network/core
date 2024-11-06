@@ -66,7 +66,6 @@ async fn handle_request(
     Json(request): Json<PrimitiveRequest<Value>>,
 ) -> Json<PrimitiveResponse> {
     debug!(?request, "Received request");
-
     let body = match from_json_value::<RequestPayload>(request.payload) {
         Ok(payload) => match payload {
             RequestPayload::Execute(request) => request.handle(state).await.to_res_body(),

@@ -257,7 +257,7 @@ impl Node {
         }
 
         info!(
-            "Peer {:?} subscribed to context '{}'",
+            "Peer '{}' subscribed to context '{}'",
             their_peer_id, context_id
         );
 
@@ -281,7 +281,7 @@ impl Node {
         }
 
         info!(
-            "Peer {:?} unsubscribed from context '{}'",
+            "Peer '{}' unsubscribed from context '{}'",
             their_peer_id, context_id
         );
 
