@@ -304,7 +304,7 @@ impl ContextManager {
                 context.root_hash.into(),
             ),
         )?;
-        
+
         Ok(())
     }
 
@@ -497,7 +497,6 @@ impl ContextManager {
         let mut application_id = None;
 
         if context_exists || application_revision != config.application_revision {
-            
             config.application_revision = application_revision;
 
             let application = client

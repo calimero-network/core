@@ -48,12 +48,12 @@ impl Method<Starknet> for MembersRequest {
     const METHOD: &'static str = "members";
 
     fn encode(self) -> eyre::Result<Vec<u8>> {
-
         let req: StarknetMembersRequest = self.into();
         let mut serialized_request = vec![];
         req.encode(&mut serialized_request).unwrap();
 
-        let bytes: Vec<u8> = serialized_request.iter()
+        let bytes: Vec<u8> = serialized_request
+            .iter()
             .flat_map(|felt| felt.to_bytes_be())
             .collect();
 
@@ -73,7 +73,7 @@ impl Method<Starknet> for MembersRequest {
             .map(|chunk| {
                 let felt1 = Felt::from_bytes_be_slice(&chunk[..32]);
                 let felt2 = Felt::from_bytes_be_slice(&chunk[32..]);
-                
+
                 let felt1_bytes = felt1.to_bytes_be();
                 let felt2_bytes = felt2.to_bytes_be();
 
@@ -84,7 +84,7 @@ impl Method<Starknet> for MembersRequest {
                 })
             })
             .collect();
-            
+
         let members = members.map_err(|e| eyre::eyre!("Failed to decode members: {:?}", e))?;
         Ok(members)
     }

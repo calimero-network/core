@@ -1,21 +1,19 @@
 use std::fmt::Debug;
-use crate::repr::ReprTransmute;
-use ed25519_dalek::{Signer, SigningKey};
-use starknet::signers::SigningKey as StarknetSigningKey;
-use starknet::core::codec::Encode;
-use starknet_crypto::Felt;
-use starknet_crypto::poseidon_hash_many;
 
+use ed25519_dalek::{Signer, SigningKey};
+use starknet::core::codec::Encode;
+use starknet::signers::SigningKey as StarknetSigningKey;
+use starknet_crypto::{poseidon_hash_many, Felt};
+
+use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
 use crate::client::env::{utils, Method};
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
 use crate::client::transport::Transport;
 use crate::client::{CallClient, ClientError, Operation};
-use crate::repr::{Repr, ReprBytes};
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::Signed;
-use crate::{Request, RequestKind};
-use super::types::starknet::{Request as StarknetRequest, Signed as StarknetSigned};
-use crate::ContextIdentity;
+use crate::{ContextIdentity, Request, RequestKind};
 pub mod methods;
 
 #[derive(Debug)]
@@ -114,8 +112,9 @@ impl<'a> Method<Starknet> for Mutate<'a> {
 
         let mut signed_request_serialized = vec![];
         signed_request.encode(&mut signed_request_serialized)?;
-        
-        let bytes: Vec<u8> = signed_request_serialized.iter()
+
+        let bytes: Vec<u8> = signed_request_serialized
+            .iter()
             .flat_map(|felt| felt.to_bytes_be())
             .collect();
 

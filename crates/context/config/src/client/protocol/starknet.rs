@@ -235,7 +235,6 @@ impl Network {
                 operation: ErrorOperation::Query,
             }),
             |result| {
-                
                 Ok(result
                     .into_iter()
                     // Remove the skip(1) here

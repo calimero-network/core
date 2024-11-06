@@ -1,10 +1,8 @@
+use hex;
 use starknet::core::codec::{Encode, Error, FeltWriter};
 use starknet::core::types::Felt;
-use hex;
-use crate::repr::Repr;
 
-use crate::repr::ReprBytes;
-
+use crate::repr::{Repr, ReprBytes};
 use crate::types::SignerId;
 
 #[derive(Debug, Clone, Encode)]
@@ -96,7 +94,7 @@ pub enum RequestKind {
 impl From<crate::RequestKind<'_>> for RequestKind {
     fn from(value: crate::RequestKind<'_>) -> Self {
         match value {
-            crate::RequestKind::Context(ctx_req) => RequestKind::Context(ctx_req.to_owned().into())
+            crate::RequestKind::Context(ctx_req) => RequestKind::Context(ctx_req.to_owned().into()),
         }
     }
 }
@@ -111,7 +109,7 @@ impl From<crate::ContextRequest<'_>> for ContextRequest {
     fn from(value: crate::ContextRequest<'_>) -> Self {
         ContextRequest {
             context_id: value.context_id.into(),
-            kind: value.kind.to_owned().into()
+            kind: value.kind.to_owned().into(),
         }
     }
 }
@@ -126,7 +124,9 @@ pub struct Signed {
 impl<T> From<crate::types::Signed<T>> for Signed {
     fn from(value: crate::types::Signed<T>) -> Self {
         // Convert the payload bytes to Felts
-        let payload = value.payload.into_inner()
+        let payload = value
+            .payload
+            .into_inner()
             .chunks_exact(32)
             .map(|chunk| {
                 let chunk_array: [u8; 32] = chunk.try_into().expect("chunk should be 32 bytes");
@@ -139,7 +139,7 @@ impl<T> From<crate::types::Signed<T>> for Signed {
         // Convert slices to fixed arrays
         let r_array: [u8; 32] = r_bytes.try_into().expect("r should be 32 bytes");
         let s_array: [u8; 32] = s_bytes.try_into().expect("s should be 32 bytes");
-        
+
         Signed {
             payload,
             signature_r: Felt::from_bytes_be(&r_array),
@@ -158,10 +158,10 @@ pub struct Request {
 
 impl From<crate::Request<'_>> for Request {
     fn from(value: crate::Request<'_>) -> Self {
-        Request { 
-            kind: value.kind.into(), 
-            signer_id: value.signer_id.into(), 
-            user_id: ContextIdentity { 
+        Request {
+            kind: value.kind.into(),
+            signer_id: value.signer_id.into(),
+            user_id: ContextIdentity {
                 high: Felt::ZERO,
                 low: Felt::ZERO,
             },
@@ -204,40 +204,37 @@ pub enum ContextRequestKind {
 impl From<crate::ContextRequestKind<'_>> for ContextRequestKind {
     fn from(value: crate::ContextRequestKind<'_>) -> Self {
         match value {
-            crate::ContextRequestKind::Add { author_id, application } => 
-                ContextRequestKind::Add(author_id.into(), application.into()),
-            crate::ContextRequestKind::UpdateApplication { application } => 
-                ContextRequestKind::UpdateApplication(application.into()),
-            crate::ContextRequestKind::AddMembers { members } => 
-                ContextRequestKind::AddMembers(
-                    members.into_iter()
-                        .map(|m| m.into())
-                        .collect()
-                ),
-            crate::ContextRequestKind::RemoveMembers { members } => 
-                ContextRequestKind::RemoveMembers(
-                    members.into_iter()
-                        .map(|m| m.into())
-                        .collect()
-                ),
-            crate::ContextRequestKind::Grant { capabilities } => 
-                ContextRequestKind::Grant(
-                    capabilities.into_iter()
-                        .map(|(id, cap)| CapabilityAssignment { 
-                            member: id.into(), 
-                            capability: cap.into() 
-                        })
-                        .collect()
-                ),
-            crate::ContextRequestKind::Revoke { capabilities } => 
-                ContextRequestKind::Revoke(
-                    capabilities.into_iter()
-                        .map(|(id, cap)| CapabilityAssignment { 
-                            member: id.into(), 
-                            capability: cap.into() 
-                        })
-                        .collect()
-                ),
+            crate::ContextRequestKind::Add {
+                author_id,
+                application,
+            } => ContextRequestKind::Add(author_id.into(), application.into()),
+            crate::ContextRequestKind::UpdateApplication { application } => {
+                ContextRequestKind::UpdateApplication(application.into())
+            }
+            crate::ContextRequestKind::AddMembers { members } => {
+                ContextRequestKind::AddMembers(members.into_iter().map(|m| m.into()).collect())
+            }
+            crate::ContextRequestKind::RemoveMembers { members } => {
+                ContextRequestKind::RemoveMembers(members.into_iter().map(|m| m.into()).collect())
+            }
+            crate::ContextRequestKind::Grant { capabilities } => ContextRequestKind::Grant(
+                capabilities
+                    .into_iter()
+                    .map(|(id, cap)| CapabilityAssignment {
+                        member: id.into(),
+                        capability: cap.into(),
+                    })
+                    .collect(),
+            ),
+            crate::ContextRequestKind::Revoke { capabilities } => ContextRequestKind::Revoke(
+                capabilities
+                    .into_iter()
+                    .map(|(id, cap)| CapabilityAssignment {
+                        member: id.into(),
+                        capability: cap.into(),
+                    })
+                    .collect(),
+            ),
         }
     }
 }
@@ -260,7 +257,7 @@ pub struct Application {
     pub blob: ApplicationBlob,
     pub size: u64,
     pub source: EncodableString,
-    pub metadata: EncodableString
+    pub metadata: EncodableString,
 }
 
 impl From<crate::Application<'_>> for Application {
@@ -271,7 +268,7 @@ impl From<crate::Application<'_>> for Application {
         let blob_bytes = value.blob.as_bytes();
         let (blob_high, blob_low) = blob_bytes.split_at(blob_bytes.len() / 2);
 
-        Application { 
+        Application {
             id: ApplicationId {
                 high: Felt::from_bytes_be_slice(id_high),
                 low: Felt::from_bytes_be_slice(id_low),
@@ -280,9 +277,9 @@ impl From<crate::Application<'_>> for Application {
                 high: Felt::from_bytes_be_slice(blob_high),
                 low: Felt::from_bytes_be_slice(blob_low),
             },
-            size: value.size, 
-            source: value.source.into(), 
-            metadata: value.metadata.into() 
+            size: value.size,
+            source: value.source.into(),
+            metadata: value.metadata.into(),
         }
     }
 }
@@ -358,36 +355,36 @@ impl From<&Repr<crate::types::BlobId>> for ApplicationBlob {
 pub struct EncodableString(pub String);
 
 impl From<crate::types::ApplicationSource<'_>> for EncodableString {
-  fn from(value: crate::types::ApplicationSource<'_>) -> Self {
-      EncodableString(value.0.into_owned())
-  }
+    fn from(value: crate::types::ApplicationSource<'_>) -> Self {
+        EncodableString(value.0.into_owned())
+    }
 }
 
 impl From<crate::types::ApplicationMetadata<'_>> for EncodableString {
-  fn from(value: crate::types::ApplicationMetadata<'_>) -> Self {
-      EncodableString(String::from_utf8_lossy(&value.0.into_inner()).into_owned())
-  }
+    fn from(value: crate::types::ApplicationMetadata<'_>) -> Self {
+        EncodableString(String::from_utf8_lossy(&value.0.into_inner()).into_owned())
+    }
 }
 
 // Optional: Add this if you need to convert from string references
 impl From<&str> for EncodableString {
-  fn from(value: &str) -> Self {
-      EncodableString(value.to_string())
-  }
+    fn from(value: &str) -> Self {
+        EncodableString(value.to_string())
+    }
 }
 
 impl Encode for EncodableString {
     fn encode<W: FeltWriter>(&self, writer: &mut W) -> Result<(), Error> {
         const WORD_SIZE: usize = 31;
         let bytes = self.0.as_bytes();
-        
+
         // Calculate full words and pending word
         let full_words_count = bytes.len() / WORD_SIZE;
         let pending_len = bytes.len() % WORD_SIZE;
-        
+
         // Write number of full words
         writer.write(Felt::from(full_words_count));
-        
+
         // Write full words (31 chars each)
         for i in 0..full_words_count {
             let start = i * WORD_SIZE;
@@ -395,7 +392,7 @@ impl Encode for EncodableString {
             let word_hex = hex::encode(word_bytes);
             writer.write(Felt::from_hex(&format!("0x{}", word_hex)).unwrap());
         }
-        
+
         // Write pending word if exists
         if pending_len > 0 {
             let pending_bytes = &bytes[full_words_count * WORD_SIZE..];
@@ -404,10 +401,10 @@ impl Encode for EncodableString {
         } else {
             writer.write(Felt::ZERO);
         }
-        
+
         // Write pending word length
         writer.write(Felt::from(pending_len));
-        
+
         Ok(())
     }
 }
@@ -421,10 +418,10 @@ pub struct StarknetMembersRequest {
 
 impl From<crate::client::env::config::query::members::MembersRequest> for StarknetMembersRequest {
     fn from(value: crate::client::env::config::query::members::MembersRequest) -> Self {
-        StarknetMembersRequest { 
+        StarknetMembersRequest {
             context_id: value.context_id.into(),
-            offset: value.offset as u32, 
-            length: value.length as u32 
+            offset: value.offset as u32,
+            length: value.length as u32,
         }
     }
 }
@@ -470,10 +467,14 @@ pub struct StarknetApplicationRevisionRequest {
 }
 
 // Add From implementation
-impl From<crate::client::env::config::query::application_revision::ApplicationRevisionRequest> for StarknetApplicationRevisionRequest {
-    fn from(value: crate::client::env::config::query::application_revision::ApplicationRevisionRequest) -> Self {
+impl From<crate::client::env::config::query::application_revision::ApplicationRevisionRequest>
+    for StarknetApplicationRevisionRequest
+{
+    fn from(
+        value: crate::client::env::config::query::application_revision::ApplicationRevisionRequest,
+    ) -> Self {
         StarknetApplicationRevisionRequest {
-            context_id: value.context_id.into()
+            context_id: value.context_id.into(),
         }
     }
 }

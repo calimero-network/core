@@ -1,12 +1,11 @@
 use serde::Serialize;
+use starknet_crypto::Felt;
 
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprBytes};
 use crate::types::{ContextId, Revision};
-use crate::repr::ReprBytes;
-use starknet_crypto::Felt;
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct MembersRevisionRequest {
@@ -36,11 +35,11 @@ impl Method<Starknet> for MembersRevisionRequest {
         // Split context_id into high/low parts
         let bytes = self.context_id.as_bytes();
         let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        
+
         // Convert to Felts
         let high_felt = Felt::from_bytes_be_slice(high_bytes);
         let low_felt = Felt::from_bytes_be_slice(low_bytes);
-        
+
         // Convert both Felts to bytes and concatenate
         let mut result = Vec::new();
         result.extend_from_slice(&high_felt.to_bytes_be());
@@ -55,9 +54,9 @@ impl Method<Starknet> for MembersRevisionRequest {
         }
 
         // Response should be a single u64 in the last 8 bytes of a felt
-        let revision_bytes = &response[24..32];  // Take last 8 bytes
+        let revision_bytes = &response[24..32]; // Take last 8 bytes
         let revision = u64::from_be_bytes(revision_bytes.try_into()?);
-        
+
         Ok(revision)
     }
 }

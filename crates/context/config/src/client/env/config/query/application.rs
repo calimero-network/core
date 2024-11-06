@@ -1,12 +1,10 @@
 use serde::Serialize;
 use starknet_crypto::Felt;
-use crate::repr::ReprBytes;
-use crate::repr::ReprTransmute;
 
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprBytes, ReprTransmute};
 use crate::types::{Application, ApplicationMetadata, ApplicationSource, ContextId};
 
 #[derive(Copy, Clone, Debug, Serialize)]
@@ -47,11 +45,11 @@ impl Method<Starknet> for ApplicationRequest {
         // Split context_id into high/low parts
         let bytes = self.context_id.as_bytes();
         let (high_bytes, low_bytes) = bytes.split_at(bytes.len() / 2);
-        
+
         // Convert to Felts
         let high_felt = Felt::from_bytes_be_slice(high_bytes);
         let low_felt = Felt::from_bytes_be_slice(low_bytes);
-        
+
         // Convert both Felts to bytes and concatenate
         let mut result = Vec::new();
         result.extend_from_slice(&high_felt.to_bytes_be());
@@ -74,13 +72,13 @@ impl Method<Starknet> for ApplicationRequest {
 
         // Next two Felts are application id (high/low)
         let mut id_bytes = [0u8; 32];
-        id_bytes[..16].copy_from_slice(&response[16..32]);     // high part
-        id_bytes[16..].copy_from_slice(&response[48..64]);     // low part
+        id_bytes[..16].copy_from_slice(&response[16..32]); // high part
+        id_bytes[16..].copy_from_slice(&response[48..64]); // low part
         let id = Repr::new(id_bytes.rt()?);
 
         // Next two Felts are blob id (high/low)
         let mut blob_bytes = [0u8; 32];
-        blob_bytes[..16].copy_from_slice(&response[80..96]);   // high part
+        blob_bytes[..16].copy_from_slice(&response[80..96]); // high part
         blob_bytes[16..].copy_from_slice(&response[112..128]); // low part
         let blob = Repr::new(blob_bytes.rt()?);
 
@@ -89,7 +87,7 @@ impl Method<Starknet> for ApplicationRequest {
 
         // Source string starts after the length Felt (0x2)
         let mut source_bytes = Vec::new();
-        let mut i = 192;  // Start after length Felt
+        let mut i = 192; // Start after length Felt
         while i < response.len() {
             let chunk = &response[i..];
             if chunk.iter().take(32).all(|&b| b == 0) {
@@ -101,17 +99,12 @@ impl Method<Starknet> for ApplicationRequest {
         let source = ApplicationSource(String::from_utf8(source_bytes)?.into());
 
         // Find metadata after source string (look for 0.0.1)
-        let metadata_bytes: Vec<u8> = response.windows(5)
+        let metadata_bytes: Vec<u8> = response
+            .windows(5)
             .find(|window| window == b"0.0.1")
             .map(|_| b"0.0.1".to_vec())
             .unwrap_or_default();
         let metadata = ApplicationMetadata(Repr::new(metadata_bytes.into()));
-        Ok(Application::new(
-            id,
-            blob,
-            size,
-            source,
-            metadata
-        ))
+        Ok(Application::new(id, blob, size, source, metadata))
     }
 }

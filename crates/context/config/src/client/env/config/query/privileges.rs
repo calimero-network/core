@@ -7,10 +7,8 @@ use starknet_crypto::Felt;
 use crate::client::env::Method;
 use crate::client::protocol::near::Near;
 use crate::client::protocol::starknet::Starknet;
-use crate::repr::Repr;
+use crate::repr::{Repr, ReprBytes};
 use crate::types::{Capability, ContextId, ContextIdentity, SignerId};
-
-use crate::repr::ReprBytes;
 
 #[derive(Copy, Clone, Debug, Serialize)]
 pub(super) struct PrivilegesRequest<'a> {
@@ -69,7 +67,7 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
         // Split context_id into high/low parts
         let context_bytes = self.context_id.as_bytes();
         let (high_bytes, low_bytes) = context_bytes.split_at(context_bytes.len() / 2);
-        
+
         // Convert to Felts and then to bytes
         let mut result = Vec::new();
         result.extend_from_slice(&Felt::from_bytes_be_slice(high_bytes).to_bytes_be());
@@ -82,7 +80,7 @@ impl<'a> Method<Starknet> for PrivilegesRequest<'a> {
         for identity in self.identities {
             let id_bytes = identity.as_bytes();
             let (id_high, id_low) = id_bytes.split_at(id_bytes.len() / 2);
-            
+
             result.extend_from_slice(&Felt::from_bytes_be_slice(id_high).to_bytes_be());
             result.extend_from_slice(&Felt::from_bytes_be_slice(id_low).to_bytes_be());
         }
