@@ -32,7 +32,7 @@ pub enum SubCommand {
     Context(context::ContextCommand),
     Identity(identity::IdentityCommand),
     Peers(peers::PeersCommand),
-    Store(store::StoreCommand),
+    // Store(store::StoreCommand),
     State(state::StateCommand),
 }
 
@@ -58,7 +58,7 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommand::Identity(identity) => identity.run(node)?,
         SubCommand::Peers(peers) => peers.run(node.network_client.clone().into()).await?,
         SubCommand::State(state) => state.run(node)?,
-        SubCommand::Store(store) => store.run(node)?,
+        // SubCommand::Store(store) => store.run(node)?,
     }
 
     Ok(())
