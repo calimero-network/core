@@ -25,7 +25,9 @@ pub struct SyncConfig {
 
 async fn send(stream: &mut Stream, message: &StreamMessage<'_>) -> EyreResult<()> {
     let message = borsh::to_vec(message)?;
+
     stream.send(Message::new(message)).await?;
+
     Ok(())
 }
 
@@ -37,7 +39,9 @@ async fn recv(
         return Ok(None);
     };
 
-    Ok(borsh::from_slice(&message?.data)?)
+    let message = borsh::from_slice(&message?.data)?;
+
+    Ok(Some(message))
 }
 
 #[derive(Default)]
@@ -47,8 +51,6 @@ struct Sequencer {
 
 impl Sequencer {
     fn test(&mut self, idx: usize) -> eyre::Result<()> {
-        self.current += 1;
-
         if self.current != idx {
             bail!(
                 "out of sequence message: expected {}, got {}",
@@ -56,6 +58,8 @@ impl Sequencer {
                 idx
             );
         }
+
+        self.current += 1;
 
         Ok(())
     }
