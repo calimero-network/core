@@ -303,8 +303,19 @@ impl ContextConfigs {
     }
 
     fn deploy_proxy_contract(&mut self, signer_id: &SignerId, context_id: Repr<ContextId>) {
+        let context = self
+            .contexts
+            .get_mut(&context_id)
+            .expect("context does not exist");
+
+        let _ = context
+            .application
+            .get(signer_id)
+            .expect("unable to deploy proxy contract");
+
         let contract = hex::encode(context_id.as_bytes());
         let account_id: AccountId = AccountId::from_str(&contract).expect("invalid account ID");
+
         let _res = Promise::new(account_id.clone())
             .transfer(env::attached_deposit())
             .deploy_contract(self.proxy_code.clone().unwrap())

@@ -875,8 +875,11 @@ async fn test_deploy() -> eyre::Result<()> {
 
     let root_account = worker.root_account()?;
 
+    let initial_balance = near_workspaces::types::NearToken::from_yoctonear(1000000000000000000000000u128);
+
     let node1 = root_account
         .create_subaccount("node1")
+        .initial_balance(initial_balance)
         .transact()
         .await?
         .into_result()?;
@@ -914,6 +917,7 @@ async fn test_deploy() -> eyre::Result<()> {
             },
             |p| context_secret.sign(p),
         )?)
+        .gas(Gas::from_gas(300000000000000))
         .transact()
         .await?
         .into_result()?;
@@ -934,7 +938,7 @@ async fn test_deploy() -> eyre::Result<()> {
             },
             |p| alice_cx_sk.sign(p),
         )?)
-        .gas(Gas::from_gas(300_000_000_000_000_000))
+        .gas(Gas::from_gas(300000000000000))
         .transact()
         .await?
         .into_result()?;

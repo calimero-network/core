@@ -100,9 +100,7 @@ pub enum ContextRequestKind<'a> {
     Revoke {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
     },
-    DeployProxyContract {
-        // code: Cow<'a, [u8]>,
-    },
+    DeployProxyContract {},
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]

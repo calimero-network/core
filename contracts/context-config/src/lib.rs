@@ -59,6 +59,7 @@ enum PrivilegeScope {
 enum ContextPrivilegeScope {
     Application,
     MemberList,
+    Proxy,
 }
 
 impl Default for ContextConfigs {
