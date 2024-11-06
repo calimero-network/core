@@ -148,7 +148,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     let mut catchup_interval_tick = interval_at(
         Instant::now()
-            .checked_add(Duration::from_millis(thread_rng().gen_range(0..1001)))
+            .checked_add(Duration::from_millis(thread_rng().gen_range(1000..5000)))
             .ok_or_else(|| eyre!("Overflow when calculating initial catchup interval delay"))?,
         config.sync.interval,
     );
@@ -347,8 +347,7 @@ impl Node {
 
         if let Some(derived_root_hash) = outcome.root_hash {
             if derived_root_hash != *root_hash {
-                self.initiate_state_sync_process(&mut context, source)
-                    .await?;
+                self.initiate_sync(context_id, source).await?;
             }
         }
 

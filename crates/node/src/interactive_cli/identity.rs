@@ -22,6 +22,8 @@ enum IdentitySubcommands {
 
 impl IdentityCommand {
     pub fn run(self, node: &Node) -> Result<()> {
+        let ind = ">>".blue();
+
         match &self.subcommand {
             IdentitySubcommands::Ls { context_id } => {
                 match ContextId::from_str(context_id) {
@@ -41,7 +43,7 @@ impl IdentityCommand {
                             Some((k, iter.read()))
                         };
 
-                        println!("{:44} | Owned", "Identity");
+                        println!("{ind} {:44} | Owned", "Identity");
 
                         for (k, v) in first.into_iter().chain(iter.entries()) {
                             let (k, v) = (k?, v?);
@@ -53,23 +55,23 @@ impl IdentityCommand {
                             let entry = format!(
                                 "{:44} | {}",
                                 k.public_key(),
-                                if v.private_key.is_some() { "*" } else { " " },
+                                if v.private_key.is_some() { "Yes" } else { "No" },
                             );
                             for line in entry.lines() {
-                                println!("{}", line.cyan());
+                                println!("{ind} {}", line.cyan());
                             }
                         }
                     }
                     Err(_) => {
-                        println!("Invalid context ID: {context_id}");
+                        println!("{ind} Invalid context ID: {context_id}");
                     }
                 }
             }
             IdentitySubcommands::New => {
                 // Handle the "new" subcommand
                 let identity = node.ctx_manager.new_identity();
-                println!("Private Key: {}", identity.cyan());
-                println!("Public Key: {}", identity.public_key().cyan());
+                println!("{ind} Private Key: {}", identity.cyan());
+                println!("{ind} Public Key: {}", identity.public_key().cyan());
             }
         }
 

@@ -36,14 +36,18 @@ pub enum SubCommands {
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
     // IMPORTANT: Parser needs first string to be binary name
-    let mut args = vec!["<repl>"];
+    let mut args = vec!["{repl}"];
     args.extend(line.split_whitespace());
+
+    if args.len() == 1 {
+        return Ok(());
+    }
 
     let command = match RootCommand::try_parse_from(args) {
         Ok(command) => command,
         Err(err) => {
-            println!("Failed to parse command: {err}");
-            eyre::bail!("Failed to parse command");
+            println!("{err}");
+            return Ok(());
         }
     };
 

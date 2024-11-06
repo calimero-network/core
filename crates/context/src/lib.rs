@@ -1005,8 +1005,4 @@ impl ContextManager {
 
         Ok(Some(stream))
     }
-
-    pub fn is_application_blob_installed(&self, blob_id: BlobId) -> EyreResult<bool> {
-        self.blob_manager.has(blob_id)
-    }
 }

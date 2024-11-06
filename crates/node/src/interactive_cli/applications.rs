@@ -68,16 +68,21 @@ impl ApplicationCommand {
             }
             ApplicationSubcommand::Ls => {
                 println!(
-                    "{ind} {c1:44} | {c2:44} | Source",
+                    "{ind} {c1:44} | {c2:44} | Installed | Source",
                     c1 = "Application ID",
                     c2 = "Blob ID",
                 );
                 for application in node.ctx_manager.list_installed_applications()? {
                     let entry = format!(
-                        "{c1:44} | {c2:44} | {c3}",
+                        "{c1:44} | {c2:44} | {c3:9} | {c4}",
                         c1 = application.id,
                         c2 = application.blob,
-                        c3 = application.source
+                        c3 = if node.ctx_manager.has_blob_available(application.blob)? {
+                            "Yes"
+                        } else {
+                            "No"
+                        },
+                        c4 = application.source
                     );
                     for line in entry.lines() {
                         println!("{ind} {}", line.cyan());
