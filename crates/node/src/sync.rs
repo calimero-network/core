@@ -183,15 +183,15 @@ impl Node {
     }
 
     pub async fn perform_interval_sync(&self) {
-        if let Err(err) = timeout(self.sync_config.interval, async {
+        let task = async {
             for context in self.ctx_manager.get_n_pending_sync_context(3).await {
                 if self.internal_perform_interval_sync(context).await.is_some() {
                     break;
                 }
             }
-        })
-        .await
-        {
+        };
+
+        if timeout(self.sync_config.interval, task).await.is_err() {
             error!("Timeout while performing interval sync");
         }
     }
