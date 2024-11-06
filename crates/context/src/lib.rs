@@ -304,7 +304,7 @@ impl ContextManager {
                 context.root_hash.into(),
             ),
         )?;
-
+        
         Ok(())
     }
 
@@ -338,18 +338,33 @@ impl ContextManager {
             members_revision: 0,
         });
 
-        let context = self
+        let context = match self
             .internal_sync_context_config(context_id, config.as_mut())
-            .await?;
+            .await
+        {
+            Ok(ctx) => {
+                println!("Successfully got context from internal_sync");
+                ctx
+            }
+            Err(e) => {
+                println!("Error in internal_sync_context_config: {:?}", e);
+                return Err(e);
+            }
+        };
 
         if !handle.has(&identity_key)? {
             bail!("unable to join context: not a member, invalid invitation?")
         }
 
-        self.add_context(&context, identity_secret, config)?;
+        match self.add_context(&context, identity_secret, config) {
+            Ok(_) => println!("Successfully added context"),
+            Err(e) => {
+                println!("Error in add_context: {:?}", e);
+                return Err(e);
+            }
+        }
 
         self.subscribe(&context.id).await?;
-
         let _ = self.state.write().await.pending_catchup.insert(context_id);
 
         info!(%context_id, "Joined context with pending catchup");
@@ -447,7 +462,7 @@ impl ContextManager {
             .members_revision(context_id.rt().expect("infallible conversion"))
             .await?;
 
-        if context_exists && members_revision != config.members_revision {
+        if context_exists || members_revision != config.members_revision {
             config.members_revision = members_revision;
 
             for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
@@ -481,7 +496,8 @@ impl ContextManager {
 
         let mut application_id = None;
 
-        if context_exists && application_revision != config.application_revision {
+        if context_exists || application_revision != config.application_revision {
+            
             config.application_revision = application_revision;
 
             let application = client
@@ -547,7 +563,6 @@ impl ContextManager {
                 );
 
                 self.save_context(&context)?;
-
                 Ok(context)
             },
         )

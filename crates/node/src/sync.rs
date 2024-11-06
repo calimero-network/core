@@ -70,12 +70,13 @@ impl Sequencer {
 impl Node {
     async fn initiate_sync(&self, context_id: ContextId, chosen_peer: PeerId) -> EyreResult<()> {
         let mut context = self.ctx_manager.sync_context_config(context_id).await?;
-
+        println!("initiating sync for context: {:?}", context);
         let Some(application) = self.ctx_manager.get_application(&context.application_id)? else {
             bail!("application not found: {}", context.application_id);
         };
-
+        println!("application found: {:?}", application);
         if !self.ctx_manager.has_blob_available(application.blob)? {
+            println!("blob not available, initiating blob share process");
             self.initiate_blob_share_process(
                 &context,
                 application.blob,
@@ -84,6 +85,8 @@ impl Node {
             )
             .await?;
         }
+
+        println!("blob available, initiating state sync process");
 
         self.initiate_state_sync_process(&mut context, chosen_peer)
             .await

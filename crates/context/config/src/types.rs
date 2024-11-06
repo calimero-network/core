@@ -290,8 +290,8 @@ pub enum Capability {
 
 #[derive(Eq, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Signed<T> {
-    payload: Repr<Box<[u8]>>,
-    signature: Repr<Signature>,
+    pub payload: Repr<Box<[u8]>>,
+    pub signature: Repr<Signature>,
 
     #[serde(skip)]
     _priv: PhantomData<T>,

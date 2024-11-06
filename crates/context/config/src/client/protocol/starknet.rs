@@ -211,13 +211,10 @@ impl Network {
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
         } else {
-            args.chunks(32)
+            args.chunks_exact(32)
                 .map(|chunk| {
-                    let mut padded_chunk = [0_u8; 32];
-                    for (i, byte) in chunk.iter().enumerate() {
-                        padded_chunk[i] = *byte;
-                    }
-                    Felt::from_bytes_be(&padded_chunk)
+                    let chunk_array: [u8; 32] = chunk.try_into().expect("chunk should be 32 bytes");
+                    Felt::from_bytes_be(&chunk_array)
                 })
                 .collect()
         };
@@ -238,9 +235,12 @@ impl Network {
                 operation: ErrorOperation::Query,
             }),
             |result| {
+                
                 Ok(result
                     .into_iter()
-                    .flat_map(|felt| felt.to_bytes_be().to_vec())
+                    // Remove the skip(1) here
+                    .map(|felt| felt.to_bytes_be())
+                    .flatten()
                     .collect::<Vec<u8>>())
             },
         )
@@ -263,13 +263,10 @@ impl Network {
         let calldata: Vec<Felt> = if args.is_empty() {
             vec![]
         } else {
-            args.chunks(32)
+            args.chunks_exact(32)
                 .map(|chunk| {
-                    let mut padded_chunk = [0_u8; 32];
-                    for (i, byte) in chunk.iter().enumerate() {
-                        padded_chunk[i] = *byte;
-                    }
-                    Felt::from_bytes_be(&padded_chunk)
+                    let chunk_array: [u8; 32] = chunk.try_into().expect("chunk should be 32 bytes");
+                    Felt::from_bytes_be(&chunk_array)
                 })
                 .collect()
         };

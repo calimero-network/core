@@ -10,12 +10,16 @@ license.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 eyre.workspace = true
 futures-util.workspace = true
+hex.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 tokio = { workspace = true, features = ["sync", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true
+
+starknet-crypto = { workspace = true }
+starknet = { workspace = true }
 
 calimero-context-config = { path = "./config", features = ["client"] }
 calimero-blobstore = { path = "../store/blobs" }
