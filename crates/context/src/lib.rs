@@ -279,7 +279,10 @@ impl ContextManager {
                     context_config.protocol.into_owned().into_boxed_str(),
                     context_config.network_id.into_owned().into_boxed_str(),
                     context_config.contract_id.into_owned().into_boxed_str(),
-                    context_config.proxy_contract_id.into_owned().into_boxed_str(),
+                    context_config
+                        .proxy_contract_id
+                        .into_owned()
+                        .into_boxed_str(),
                     context_config.application_revision,
                     context_config.members_revision,
                 ),

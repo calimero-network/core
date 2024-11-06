@@ -61,7 +61,6 @@ impl ContextConfig {
             proxy_contract,
             application_revision,
             members_revision,
-
         }
     }
 }
