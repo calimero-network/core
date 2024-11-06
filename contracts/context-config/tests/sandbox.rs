@@ -875,7 +875,8 @@ async fn test_deploy() -> eyre::Result<()> {
 
     let root_account = worker.root_account()?;
 
-    let initial_balance = near_workspaces::types::NearToken::from_yoctonear(1000000000000000000000000u128);
+    let initial_balance =
+        near_workspaces::types::NearToken::from_yoctonear(1000000000000000000000000u128);
 
     let node1 = root_account
         .create_subaccount("node1")
