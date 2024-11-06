@@ -24,6 +24,7 @@ pub struct ContextConfigs {
     contexts: IterableMap<ContextId, Context>,
     config: Config,
     proxy_code: LazyOption<Vec<u8>>,
+    next_proxy_id: u64,
 }
 
 #[derive(Debug)]
@@ -69,6 +70,7 @@ impl Default for ContextConfigs {
                 validity_threshold_ms: DEFAULT_VALIDITY_THRESHOLD_MS,
             },
             proxy_code: LazyOption::new("code".as_bytes(), Some(DEFAULT_CONTRACT.to_vec())),
+            next_proxy_id: 0,
         }
     }
 }
