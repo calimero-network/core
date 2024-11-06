@@ -35,7 +35,7 @@ impl Node {
         .await?;
 
         let Some(ack) = recv(stream, self.sync_config.timeout).await? else {
-            bail!("no response to state sync request");
+            bail!("connection closed while awaiting state sync handshake");
         };
 
         let (root_hash, their_identity) = match ack {
@@ -76,7 +76,7 @@ impl Node {
             &StreamMessage::Message {
                 sequence_id: sqx_out.next(),
                 payload: MessagePayload::StateSync {
-                    artifact: Cow::from(&[]),
+                    artifact: b"".into(),
                 },
             },
         )
@@ -174,6 +174,10 @@ impl Node {
 
             sqx_in.test(sequence_id)?;
 
+            if artifact.is_empty() && sqx_out.current() != 0 {
+                break;
+            }
+
             let outcome = self
                 .execute(
                     context,
@@ -189,10 +193,6 @@ impl Node {
                 root_hash=?context.root_hash,
                 "State sync outcome",
             );
-
-            if outcome.artifact.is_empty() {
-                break;
-            }
 
             send(
                 stream,

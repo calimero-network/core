@@ -50,6 +50,10 @@ struct Sequencer {
 }
 
 impl Sequencer {
+    fn current(&self) -> usize {
+        self.current
+    }
+
     fn test(&mut self, idx: usize) -> eyre::Result<()> {
         if self.current != idx {
             bail!(
@@ -107,18 +111,24 @@ impl Node {
     }
 
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
-        if let Err(err) = self.internal_handle_opened_stream(&mut stream).await {
-            error!(%err, "Failed to handle stream message");
+        loop {
+            match self.internal_handle_opened_stream(&mut stream).await {
+                Ok(None) => break,
+                Ok(Some(())) => {}
+                Err(err) => {
+                    error!(%err, "Failed to handle stream message");
 
-            if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
-                error!(%err, "Failed to send error message");
+                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
+                        error!(%err, "Failed to send error message");
+                    }
+                }
             }
         }
     }
 
-    async fn internal_handle_opened_stream(&self, mut stream: &mut Stream) -> EyreResult<()> {
-        let Some(message) = recv(&mut stream, self.sync_config.timeout).await? else {
-            bail!("stream closed unexpectedly")
+    async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> EyreResult<Option<()>> {
+        let Some(message) = recv(stream, self.sync_config.timeout).await? else {
+            return Ok(None);
         };
 
         let (context_id, their_identity, payload) = match message {
@@ -158,7 +168,7 @@ impl Node {
 
         match payload {
             InitPayload::BlobShare { blob_id } => {
-                self.handle_blob_share_request(context, their_identity, blob_id, &mut stream)
+                self.handle_blob_share_request(context, their_identity, blob_id, stream)
                     .await?
             }
             InitPayload::StateSync {
@@ -186,13 +196,13 @@ impl Node {
                     their_identity,
                     root_hash,
                     application_id,
-                    &mut stream,
+                    stream,
                 )
                 .await?
             }
         };
 
-        Ok(())
+        Ok(Some(()))
     }
 
     pub async fn perform_interval_sync(&self) {
@@ -206,11 +216,11 @@ impl Node {
                     break;
                 }
 
-                debug!(%context_id, "Unable to perform interval sync for context, trying another");
+                debug!(%context_id, "Unable to perform interval sync for context, trying another..");
             }
         };
 
-        if timeout(self.sync_config.interval * 2, task).await.is_err() {
+        if timeout(self.sync_config.interval, task).await.is_err() {
             error!("Timeout while performing interval sync");
         }
     }

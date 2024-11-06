@@ -8,7 +8,7 @@ use futures_util::TryStreamExt;
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{recv, send, Sequencer};
 use crate::types::{InitPayload, MessagePayload, StreamMessage};
@@ -34,7 +34,7 @@ impl Node {
         .await?;
 
         let Some(ack) = recv(stream, self.sync_config.timeout).await? else {
-            bail!("no response to blob share request");
+            bail!("connection closed while awaiting blob share handshake");
         };
 
         let _their_identity = match ack {
@@ -88,6 +88,10 @@ impl Node {
 
                 sequencer.test(sequence_id)?;
 
+                if chunk.is_empty() {
+                    break;
+                }
+
                 tx.send(Ok(chunk)).await?;
             }
 
@@ -124,7 +128,9 @@ impl Node {
         );
 
         let Some(mut blob) = self.ctx_manager.get_blob(blob_id)? else {
-            bail!("blob not found: {}", blob_id);
+            warn!(%blob_id, "blob not found");
+
+            return Ok(());
         };
 
         let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
@@ -157,6 +163,15 @@ impl Node {
             )
             .await?;
         }
+
+        send(
+            stream,
+            &StreamMessage::Message {
+                sequence_id: sequencer.next(),
+                payload: MessagePayload::BlobShare { chunk: b"".into() },
+            },
+        )
+        .await?;
 
         Ok(())
     }
