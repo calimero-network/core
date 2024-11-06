@@ -16,3 +16,7 @@ export interface ContextObject {
   id: string;
   package: Package | null;
 }
+
+export interface ContextsList {
+  joined: ContextObject[];
+}
