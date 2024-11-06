@@ -1,11 +1,13 @@
 use core::mem;
+
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
 };
 use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
+use near_sdk::serde_json::json;
 use near_sdk::store::IterableSet;
-use near_sdk::{env, near, require, AccountId, Promise, PromiseResult, serde_json::json, NearToken, Gas};
+use near_sdk::{env, near, require, AccountId, Gas, NearToken, Promise, PromiseResult};
 
 use super::{
     parse_input, Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
@@ -61,10 +63,17 @@ impl ContextConfigs {
     }
 
     #[private]
-    pub fn proxy_deployment_callback(&mut self, context_id: Repr<ContextId>, account_id: AccountId) {
+    pub fn proxy_deployment_callback(
+        &mut self,
+        context_id: Repr<ContextId>,
+        account_id: AccountId,
+    ) {
         // Verify the deployment succeeded
-        require!(env::promise_results_count() == 1, "Expected 1 promise result");
-        
+        require!(
+            env::promise_results_count() == 1,
+            "Expected 1 promise result"
+        );
+
         match env::promise_result(0) {
             PromiseResult::Successful(_) => {
                 // Store the proxy contract address for this context
@@ -301,15 +310,19 @@ impl ContextConfigs {
         }
     }
 
-    fn deploy_proxy_contract(&mut self, _signer_id: &SignerId, context_id: Repr<ContextId>) -> Promise {
+    fn deploy_proxy_contract(
+        &mut self,
+        _signer_id: &SignerId,
+        context_id: Repr<ContextId>,
+    ) -> Promise {
         // Create incremental account ID
         let account_id: AccountId = format!("{}.{}", self.next_proxy_id, env::current_account_id())
             .parse()
             .expect("invalid account ID");
-        
+
         // Increment the counter for next deployment
         self.next_proxy_id += 1;
-        
+
         // Deploy and initialize the proxy contract
         Promise::new(account_id.clone())
             .create_account()
@@ -324,7 +337,7 @@ impl ContextConfigs {
                 .to_string()
                 .into_bytes(),
                 NearToken::from_near(0),
-                Gas::from_tgas(30)
+                Gas::from_tgas(30),
             )
             .then(
                 Self::ext(env::current_account_id())
