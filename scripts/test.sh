@@ -44,7 +44,7 @@ if [ "$mode" = "local" ] && [ -z "$changed_files" ]; then
   exit 0
 fi
 
-# prepare apps
+# Prepare apps
 ./build-all-apps.sh
 
 # Prepare contracts
@@ -52,107 +52,114 @@ fi
 ../contracts/context-config/build.sh
 ../contracts/proxy-lib/build-test-deps.sh
 
-# Handle the cases based on the mode
+# Run all tests
 if [ "$mode" = "all" ]; then
   echo "Running all tests..."
   cargo +nightly test
   exit 0
 fi
 
-# # Step 1: Find changed files
-echo "The following Rust files have changed:" $changed_files
-
-# Step 2: Find affected modules
-modules_to_test=""
-
-# Initialize an array to hold matched crates
-matched_crates=()
+# Run tests for changed files
+echo "The following Rust files have changed:" "${changed_files[@]}"
+# Find affected crates
+changed_crates=()
+# List of crates defined in workspace
 all_crates=($(awk '/\[workspace\]/,/^\s*$/' ../Cargo.toml | grep -E 'members' -A 100 | grep -Eo '"[^"]*"' | tr -d '"' | sed 's|^\./||'))
+echo "All workspace crates" "${all_crates[@]}"
 
-# Loop through each changed file
 for file in "${changed_files[@]}"; do
     # Extract the crate name by stripping the path to get the crate folder
     crate_name=$(echo "$file" | sed -E 's|^(crates/[^/]+)/.*|\1|')
-    # Check if the crate exists in the list of crates
-    for crate in "${all_crates[@]}"; do
-        if [[ "$crate" == "$crate_name" ]]; then
-            matched_crates+=("$crate")
+    changed_crates+=("$crate_name")
+done
+echo "Detected crates from changed files" "${changed_crates[@]}"
+
+# Remove duplicates
+unique_changed_crates=()
+for item in "${changed_crates[@]}"; do
+    # Check if item is already in unique_array
+    duplicate=false
+    for unique_item in "${unique_changed_crates[@]}"; do
+        if [[ "$item" == "$unique_item" ]]; then
+            duplicate=true
+            break
         fi
     done
+    # If item is not a duplicate, add it to unique_array
+    if ! $duplicate; then
+        unique_changed_crates+=("$item")
+    fi
 done
+echo "Unique crates from changed files" "${unique_changed_crates[@]}"
 
-echo $matched_crates
-
-calimero_package_names=()
-# Loop through each element in the original array
-for item in "${matched_crates[@]}"; do
-    echo $item
-    # Replace "crates/" with "calimero-" and add to new_names array
-    calimero_package_names+=("${item/crates\//calimero-}")
-done
-
+# array of dependencies in format crates/crate
 dep_arr=()
+for changed_crate in "${unique_changed_crates[@]}"; do
+    # Replace "crates/" with "calimero-" to find dependencies as dependencies are imported as calimero-name from crates/name
+    # e.g. In list I have crates/node-primitives but as dependency it is calimero-node-primitives.
+    calimero_package_name+=("${changed_crate/crates\//calimero-}")
+    # get list of all dependencies from the crate including external dependencies
+    dependencies=($(cargo metadata --format-version=1 --no-deps | jq -r --arg CRATE "$calimero_package_name" '
+        .packages[] |
+        select(.dependencies | any(.name == $CRATE)) |
+        .name
+    '))
 
-#for each crate from changed file find his dependencies
-for calimero_package_name in "${calimero_package_names[@]}"; do
-    echo $calimero_package_name
-    # Initialize an array to hold the matched dependencies
-    for matched_crate in "${matched_crates[@]}"; do
-        dependencies=($(cargo metadata --format-version=1 --no-deps | jq -r --arg CRATE "$calimero_package_name" '
-            .packages[] |
-            select(.dependencies | any(.name == $CRATE)) |
-            .name
-        '))
-        # e.g. calimero-node-primitives. In list I have crates/node-primitives
-        # Loop through each dependency
-        for dep in "${dependencies[@]}"; do
-            # Create the full crate path
-            echo "Checking dependency: $dep"
-            #replace crates with calimero-
-            calimero_dep_crate_path="${dep/calimero-/crates/}"
-            for crate in "${all_crates[@]}"; do
-                if [[ "$crate" == "$calimero_dep_crate_path" ]]; then
-                    echo "Found matching dependency: $calimero_dep_crate_path"
-                    dep_arr+=("$calimero_dep_crate_path")
-                fi
-            done
+    for dep in "${dependencies[@]}"; do
+        # Compare dependency with list of crates from workspace to skip external dependencies
+        calimero_dep_crate_path="${dep/calimero-/crates/}"
+        for crate in "${all_crates[@]}"; do
+            if [[ "$crate" == "$calimero_dep_crate_path" ]]; then
+                echo "Found matching dependency: $calimero_dep_crate_path"
+                dep_arr+=("$calimero_dep_crate_path")
+            fi
         done
     done
 done
+echo "Dependencies array:" "${dep_arr[@]}"
 
-crates_to_test=()
-seen=()
-# Loop through the calimero_package_names array
-for item in "${calimero_package_names[@]}"; do
-    if [[ -z "${seen[$item]}" ]]; then
-        seen[$item]=1 # Mark the item as seen
-        crates_to_test+=("$item")
-    fi
-done
-
-# Loop through the dep_arr array
+# Merge crates from changed file and their dependencies
 for item in "${dep_arr[@]}"; do
     if [[ -z "${seen[$item]}" ]]; then
-        seen[$item]=1
+        seen[$item]=1 # Mark the item as seen
+        unique_changed_crates+=("$item")
+    fi
+done
+
+# Remove duplicates
+crates_to_test=()
+for item in "${unique_changed_crates[@]}"; do
+    # Check if item is already in unique_array
+    duplicate=false
+    for unique_item in "${crates_to_test[@]}"; do
+        if [[ "$item" == "$unique_item" ]]; then
+            duplicate=true
+            break
+        fi
+    done
+    # If item is not a duplicate, add it to unique_array
+    if ! $duplicate; then
         crates_to_test+=("$item")
     fi
 done
 
-# Run tests for each module and its dependencies
-echo "Running tests for affected modules and their dependencies..."
 # Install the nightly toolchain
 rustup toolchain install nightly
 
-#Test all crates from changed files
+# Run tests for each module and its dependencies
+echo "Running tests for affected modules and their dependencies..."
+echo "Crates to run tests:" "${crates_to_test[@]}"
 for crate in "${crates_to_test[@]}"; do
-    if [[  "$crate" == "calimero-merod" ]]; then
+    # Convert from folder name to package name
+    crate_package_name=("${crate/crates\//calimero-}")
+    if [[  "$crate_package_name" == "calimero-merod" ]]; then
         echo "Testing crate merod"
         cargo +nightly test -p "merod"
-    elif [[ "$crate" == "calimero-meroctl" ]]; then
+    elif [[ "$crate_package_name" == "calimero-meroctl" ]]; then
         echo "Testing crate meroctl"
         cargo +nightly test -p "meroctl"
     else
-        echo "Testing crate $crate"
-        cargo +nightly test -p "$crate"
+        echo "Testing crate $crate_package_name"
+        cargo +nightly test -p "$crate_package_name"
     fi
 done
