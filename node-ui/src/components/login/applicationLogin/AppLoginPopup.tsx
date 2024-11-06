@@ -4,8 +4,8 @@ import apiClient from '../../../api';
 import {
   Context,
   ContextIdentitiesResponse,
-  ContextList,
   CreateTokenResponse,
+  GetContextsResponse,
 } from '../../../api/dataSource/NodeDataSource';
 import { ResponseData } from '../../../api/response';
 import SelectContextStep from './SelectContextStep';
@@ -48,11 +48,8 @@ export default function AppLoginPopup({
 
   useEffect(() => {
     const fetchAvailableContexts = async () => {
-      const fetchContextsResponse: ResponseData<ContextList> = await apiClient(
-        showServerDownPopup,
-      )
-        .node()
-        .getContexts();
+      const fetchContextsResponse: ResponseData<GetContextsResponse> =
+        await apiClient(showServerDownPopup).node().getContexts();
       const contexts =
         fetchContextsResponse.data?.contexts.filter(
           (context) => context.applicationId === applicationId,
