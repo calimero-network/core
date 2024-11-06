@@ -192,7 +192,7 @@ impl Node {
         })
         .await
         {
-            error!(%err, "Timeout while performing interval sync");
+            error!("Timeout while performing interval sync");
         }
     }
 
