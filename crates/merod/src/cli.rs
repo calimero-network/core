@@ -37,6 +37,7 @@ pub const EXAMPLES: &str = r"
     "Examples:",
     EXAMPLES
 ))]
+
 pub struct RootCommand {
     #[command(flatten)]
     pub args: RootArgs,
