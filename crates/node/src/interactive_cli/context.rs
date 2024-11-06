@@ -1,8 +1,7 @@
 use calimero_primitives::application::ApplicationId;
-use calimero_primitives::context::ContextInvitationPayload;
+use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::PublicKey;
-use calimero_primitives::{context::ContextId, identity::PrivateKey};
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use clap::{Parser, Subcommand};
 use eyre::Result;
