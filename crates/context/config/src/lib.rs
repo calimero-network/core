@@ -101,8 +101,7 @@ pub enum ContextRequestKind<'a> {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
     },
     DeployProxyContract {
-        account: Cow<'a, str>,
-        code: Cow<'a, [u8]>,
+        // code: Cow<'a, [u8]>,
     },
 }
 

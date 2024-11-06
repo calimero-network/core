@@ -7,6 +7,7 @@ use near_workspaces::network::Sandbox;
 use near_workspaces::result::ExecutionFinalResult;
 use near_workspaces::{Account, Contract, Worker};
 use rand::Rng;
+use serde_json::json;
 
 use super::deploy_contract;
 
@@ -61,6 +62,32 @@ impl ConfigContractHelper {
         Ok(res)
     }
 
+    pub async fn deploy_proxy_contract(
+        &self,
+        caller: &Account,
+        context_id: &SigningKey,
+        host: &SigningKey,
+        code: Vec<u8>,
+    ) -> Result<ExecutionFinalResult> {
+        let context_id: Repr<ContextId> = Repr::new(context_id.verifying_key().rt()?);
+        let host_id: SignerId = host.verifying_key().rt()?;
+
+        let signed_request = Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest::new(
+                    context_id,
+                    ContextRequestKind::DeployProxyContract { code: code.into() },
+                ));
+                Request::new(host_id, kind)
+            },
+            |p| host.sign(p),
+        )?;
+        print!("{:?}", "request");
+        let res = self.mutate_call(caller, &signed_request).await?;
+        print!("{:?}", res);
+        Ok(res)
+    }
+
     pub async fn add_members(
         &self,
         caller: &Account,
@@ -100,8 +127,22 @@ impl ConfigContractHelper {
         let res = caller
             .call(self.config_contract.id(), "mutate")
             .args_json(request)
+            .max_gas()
             .transact()
             .await?;
+        Ok(res)
+    }
+
+    pub async fn get_proxy_contract<'a>(
+        &'a self,
+        caller: &'a Account,
+        context_id: &Repr<ContextId>,
+    ) -> eyre::Result<Option<String>> {
+        let res = caller
+            .view(self.config_contract.id(), "proxy_contract")
+            .args_json(json!({ "context_id": context_id }))
+            .await?
+            .json()?;
         Ok(res)
     }
 }

@@ -6,9 +6,8 @@
 
 use calimero_context_config::types::{Application, ContextId, ContextIdentity};
 use calimero_context_config::Timestamp;
-use near_sdk::store::{IterableMap, IterableSet};
+use near_sdk::store::{IterableMap, IterableSet, LazyOption};
 use near_sdk::{near, BorshStorageKey};
-
 mod guard;
 mod mutate;
 mod query;
@@ -17,12 +16,14 @@ mod sys;
 use guard::Guard;
 
 const DEFAULT_VALIDITY_THRESHOLD_MS: Timestamp = 10_000;
+const DEFAULT_CONTRACT: &[u8] = include_bytes!("../../proxy-lib/res/proxy_lib.wasm");
 
 #[derive(Debug)]
 #[near(contract_state)]
 pub struct ContextConfigs {
     contexts: IterableMap<ContextId, Context>,
     config: Config,
+    proxy_code: LazyOption<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -67,6 +68,7 @@ impl Default for ContextConfigs {
             config: Config {
                 validity_threshold_ms: DEFAULT_VALIDITY_THRESHOLD_MS,
             },
+            proxy_code: LazyOption::new("code".as_bytes(), Some(DEFAULT_CONTRACT.to_vec())),
         }
     }
 }

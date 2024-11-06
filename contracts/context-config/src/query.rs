@@ -28,6 +28,15 @@ impl ContextConfigs {
         context.application.revision()
     }
 
+    pub fn proxy_contract(&self, context_id: Repr<ContextId>) -> Option<String> {
+        let context = self
+            .contexts
+            .get(&context_id)
+            .expect("context does not exist");
+
+        context.proxy.clone()
+    }
+
     pub fn members(
         &self,
         context_id: Repr<ContextId>,

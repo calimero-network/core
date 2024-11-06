@@ -11,12 +11,13 @@ use near_sdk::{
     PromiseResult,
 };
 
-use super::{Proposal, ProxyContract, ProxyContractExt, Signed};
+use super::{parse_input, Proposal, ProxyContract, ProxyContractExt, Signed};
 use crate::{assert_membership, config_contract, MemberAction};
 
 #[near]
 impl ProxyContract {
-    pub fn mutate(&mut self, request: Signed<ProxyMutateRequest>) -> Promise {
+    pub fn mutate(&mut self) -> Promise {
+        parse_input!(request: Signed<ProxyMutateRequest>);
         let request = request
             .parse(|i| match i {
                 ProxyMutateRequest::Propose { proposal } => *proposal.author_id,

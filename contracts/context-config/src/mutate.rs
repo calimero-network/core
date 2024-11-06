@@ -6,8 +6,9 @@ use calimero_context_config::types::{
     Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
 };
 use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
+use hex;
 use near_sdk::store::IterableSet;
-use near_sdk::{env, near, require, AccountId, Promise, PromiseError, PromiseResult};
+use near_sdk::{env, near, require, AccountId, Promise, PromiseError};
 
 use super::{
     parse_input, Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
@@ -54,13 +55,8 @@ impl ContextConfigs {
                 ContextRequestKind::Revoke { capabilities } => {
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
-                ContextRequestKind::DeployProxyContract { account, code } => {
-                    self.deploy_proxy_contract(
-                        &request.signer_id,
-                        context_id,
-                        account.into_owned(),
-                        code.into_owned(),
-                    );
+                ContextRequestKind::DeployProxyContract {} => {
+                    self.deploy_proxy_contract(&request.signer_id, context_id);
                 }
             },
         }
@@ -306,18 +302,12 @@ impl ContextConfigs {
         }
     }
 
-    fn deploy_proxy_contract(
-        &mut self,
-        _signer_id: &SignerId,
-        context_id: Repr<ContextId>,
-        account: String,
-        code: Vec<u8>,
-    ) {
-        let account_id = AccountId::from_str(&account).expect("invalid account ID");
+    fn deploy_proxy_contract(&mut self, signer_id: &SignerId, context_id: Repr<ContextId>) {
+        let contract = hex::encode(context_id.as_bytes());
+        let account_id: AccountId = AccountId::from_str(&contract).expect("invalid account ID");
         let _res = Promise::new(account_id.clone())
-            .create_account()
-            .deploy_contract(code.clone())
             .transfer(env::attached_deposit())
+            .deploy_contract(self.proxy_code.clone().unwrap())
             .then(
                 Self::ext(env::current_account_id())
                     .proxy_deployment_callback(context_id, account_id),

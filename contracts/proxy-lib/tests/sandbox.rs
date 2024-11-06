@@ -1,4 +1,7 @@
-use calimero_context_config::repr::ReprTransmute;
+use std::fs;
+
+use calimero_context_config::repr::{Repr, ReprTransmute};
+use calimero_context_config::types::ContextId;
 use calimero_context_config::{Proposal, ProposalAction, ProposalWithApprovals};
 use common::config_helper::ConfigContractHelper;
 use common::counter_helper::CounterContractHelper;
@@ -6,7 +9,7 @@ use common::create_account_with_balance;
 use common::proxy_lib_helper::ProxyContractHelper;
 use ed25519_dalek::SigningKey;
 use eyre::Result;
-use near_sdk::NearToken;
+use near_sdk::{AccountId, NearToken};
 use near_workspaces::network::Sandbox;
 use near_workspaces::{Account, Worker};
 use rand::Rng;
@@ -23,20 +26,36 @@ async fn setup_test(
     SigningKey,
 )> {
     let config_helper = ConfigContractHelper::new(&worker).await?;
-    let proxy_helper =
-        ProxyContractHelper::new(&worker, config_helper.clone().config_contract).await?;
-
-    let relayer_account = common::create_account_with_balance(&worker, "account", 10).await?;
-    // This account is only used to deploy the proxy contract
-    let developer_account = common::create_account_with_balance(&worker, "alice", 10).await?;
-
-    let context_sk = common::generate_keypair()?;
+    let bytes = fs::read(common::proxy_lib_helper::PROXY_CONTRACT_WASM)?;
     let alice_sk: SigningKey = common::generate_keypair()?;
+    let context_sk = common::generate_keypair()?;
+    let relayer_account = common::create_account_with_balance(&worker, "account", 10).await?;
 
     let _res = config_helper
         .add_context_to_config(&relayer_account, &context_sk, &alice_sk)
         .await?
         .into_result()?;
+
+    println!("Deploying proxy contract");
+
+    config_helper
+        .deploy_proxy_contract(&relayer_account, &context_sk, &alice_sk, bytes)
+        .await?
+        .into_result()
+        .expect("Failed to deploy the contract");
+    println!("Proxy contract deployed");
+    let context_id: Repr<ContextId> = Repr::new(context_sk.verifying_key().rt()?);
+    let contract_id_str = config_helper
+        .get_proxy_contract(&relayer_account, &context_id)
+        .await?
+        .expect("Contract not found");
+
+    let proxy_id: AccountId = contract_id_str.parse()?;
+    let proxy_helper =
+        ProxyContractHelper::new(&proxy_id, config_helper.config_contract.id()).await?;
+
+    // This account is only used to deploy the proxy contract
+    let developer_account = common::create_account_with_balance(&worker, "alice", 10).await?;
 
     let _res = proxy_helper
         .initialize(&developer_account, &context_sk.verifying_key().rt()?)
@@ -449,7 +468,7 @@ async fn test_transfer() -> Result<()> {
     let _res = &worker
         .root_account()?
         .transfer_near(
-            proxy_helper.proxy_contract.id(),
+            &proxy_helper.proxy_contract,
             near_workspaces::types::NearToken::from_near(5),
         )
         .await?;

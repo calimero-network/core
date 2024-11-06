@@ -4,26 +4,26 @@ use calimero_context_config::{
     Proposal, ProposalAction, ProposalApprovalWithSigner, ProposalId, ProxyMutateRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
-use near_workspaces::network::Sandbox;
+use near_sdk::AccountId;
 use near_workspaces::result::{ExecutionFinalResult, ViewResultDetails};
-use near_workspaces::{Account, Contract, Worker};
+use near_workspaces::{Account, Contract};
 use serde_json::json;
 
-use super::deploy_contract;
-
-const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";
+pub const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";
 
 pub struct ProxyContractHelper {
-    pub proxy_contract: Contract,
-    config_contract: Contract,
+    pub proxy_contract: AccountId,
+    config_contract: AccountId,
 }
 
 impl ProxyContractHelper {
-    pub async fn new(worker: &Worker<Sandbox>, config_contract: Contract) -> eyre::Result<Self> {
-        let proxy_contract = deploy_contract(worker, PROXY_CONTRACT_WASM).await?;
+    pub async fn new(
+        proxy_contract: &AccountId,
+        config_contract: &AccountId,
+    ) -> eyre::Result<Self> {
         Ok(Self {
-            proxy_contract,
-            config_contract,
+            proxy_contract: proxy_contract.clone(),
+            config_contract: config_contract.clone(),
         })
     }
 
@@ -33,10 +33,10 @@ impl ProxyContractHelper {
         context_id: &Repr<ContextId>,
     ) -> eyre::Result<ExecutionFinalResult, near_workspaces::error::Error> {
         caller
-            .call(self.proxy_contract.id(), "init")
+            .call(&self.proxy_contract, "init")
             .args_json(json!({
                 "context_id": context_id,
-                "context_config_account_id": self.config_contract.id(),
+                "context_config_account_id": self.config_contract,
             }))
             .transact()
             .await
@@ -65,7 +65,7 @@ impl ProxyContractHelper {
         request: &Signed<ProxyMutateRequest>,
     ) -> eyre::Result<ExecutionFinalResult> {
         let call = caller
-            .call(self.proxy_contract.id(), "mutate")
+            .call(&self.proxy_contract, "mutate")
             .args_json(json!({
                 "request": request
             }))
@@ -96,7 +96,7 @@ impl ProxyContractHelper {
         };
         let signed_request = Signed::new(&request, |p| signer.sign(p))?;
         let res = caller
-            .call(self.proxy_contract.id(), "mutate")
+            .call(&self.proxy_contract, "mutate")
             .args_json(json!({"request": signed_request}))
             .max_gas()
             .transact()
@@ -110,7 +110,7 @@ impl ProxyContractHelper {
         proposal_id: &ProposalId,
     ) -> eyre::Result<ViewResultDetails> {
         let res = caller
-            .view(self.proxy_contract.id(), "get_confirmations_count")
+            .view(&self.proxy_contract, "get_confirmations_count")
             .args_json(json!({ "proposal_id": proposal_id }))
             .await?;
         Ok(res)
@@ -118,7 +118,7 @@ impl ProxyContractHelper {
 
     pub async fn view_active_proposals_limit(&self, caller: &Account) -> eyre::Result<u32> {
         let res: u32 = caller
-            .view(self.proxy_contract.id(), "get_active_proposals_limit")
+            .view(&self.proxy_contract, "get_active_proposals_limit")
             .await?
             .json()?;
         Ok(res)
@@ -126,7 +126,7 @@ impl ProxyContractHelper {
 
     pub async fn view_num_approvals(&self, caller: &Account) -> eyre::Result<u32> {
         let res: u32 = caller
-            .view(self.proxy_contract.id(), "get_num_approvals")
+            .view(&self.proxy_contract, "get_num_approvals")
             .await?
             .json()?;
         Ok(res)
@@ -138,7 +138,7 @@ impl ProxyContractHelper {
         key: Box<[u8]>,
     ) -> eyre::Result<Option<Box<[u8]>>> {
         let res: Option<Box<[u8]>> = caller
-            .view(self.proxy_contract.id(), "get_context_value")
+            .view(&self.proxy_contract, "get_context_value")
             .args_json(json!({ "key": key }))
             .await?
             .json()?;
@@ -152,7 +152,7 @@ impl ProxyContractHelper {
         length: usize,
     ) -> eyre::Result<Vec<Proposal>> {
         let res = caller
-            .view(self.proxy_contract.id(), "proposals")
+            .view(&self.proxy_contract, "proposals")
             .args_json(json!({ "offset": offset, "length": length }))
             .await?
             .json()?;
@@ -165,7 +165,7 @@ impl ProxyContractHelper {
         id: &ProposalId,
     ) -> eyre::Result<Option<Proposal>> {
         let res = caller
-            .view(self.proxy_contract.id(), "proposal")
+            .view(&self.proxy_contract, "proposal")
             .args_json(json!({ "proposal_id": id }))
             .await?
             .json()?;
