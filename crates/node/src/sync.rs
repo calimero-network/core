@@ -6,7 +6,7 @@ use eyre::{bail, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
-use rand::seq::SliceRandom;
+use rand::seq::{IteratorRandom, SliceRandom};
 use rand::thread_rng;
 use tokio::time::timeout;
 use tracing::{debug, error};
@@ -72,24 +72,37 @@ impl Sequencer {
 }
 
 impl Node {
-    async fn initiate_sync(&self, context_id: ContextId, chosen_peer: PeerId) -> EyreResult<()> {
+    pub(crate) async fn initiate_sync(
+        &self,
+        context_id: ContextId,
+        chosen_peer: PeerId,
+    ) -> EyreResult<()> {
         let mut context = self.ctx_manager.sync_context_config(context_id).await?;
 
         let Some(application) = self.ctx_manager.get_application(&context.application_id)? else {
             bail!("application not found: {}", context.application_id);
         };
 
+        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+            bail!("no identities found for context: {}", context.id);
+        };
+
+        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+
         if !self.ctx_manager.has_blob_available(application.blob)? {
             self.initiate_blob_share_process(
                 &context,
+                our_identity,
                 application.blob,
                 application.size,
-                chosen_peer,
+                &mut stream,
             )
             .await?;
         }
 
-        self.initiate_state_sync_process(&mut context, chosen_peer)
+        self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
             .await
     }
 
@@ -197,7 +210,7 @@ impl Node {
             }
         };
 
-        if timeout(self.sync_config.interval, task).await.is_err() {
+        if timeout(self.sync_config.interval * 2, task).await.is_err() {
             error!("Timeout while performing interval sync");
         }
     }

@@ -347,8 +347,7 @@ impl Node {
 
         if let Some(derived_root_hash) = outcome.root_hash {
             if derived_root_hash != *root_hash {
-                self.initiate_state_sync_process(&mut context, source)
-                    .await?;
+                self.initiate_sync(context_id, source).await?;
             }
         }
 
