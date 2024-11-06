@@ -8,5 +8,4 @@ pub mod ws;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
 #[error("Infallible")]
 #[expect(clippy::exhaustive_enums, reason = "This will never have any variants")]
-//tests
 pub enum Infallible {}

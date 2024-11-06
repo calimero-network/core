@@ -313,7 +313,7 @@ impl Node {
             }
         }
 
-        todo!()
+        Ok(())
     }
 
     async fn handle_state_delta(
