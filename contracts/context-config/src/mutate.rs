@@ -121,7 +121,7 @@ impl ContextConfigs {
                 author_id.rt().expect("infallible conversion"),
                 members,
             ),
-            proxy: None,
+            proxy: Some(self.deploy_proxy_contract(signer_id, context_id).to_string()),
         };
 
         if self.contexts.insert(*context_id, context).is_some() {
@@ -302,7 +302,7 @@ impl ContextConfigs {
         }
     }
 
-    fn deploy_proxy_contract(&mut self, signer_id: &SignerId, context_id: Repr<ContextId>) {
+    fn deploy_proxy_contract(&mut self, signer_id: &SignerId, context_id: Repr<ContextId>) -> AccountId{
         let context = self
             .contexts
             .get_mut(&context_id)
@@ -321,7 +321,8 @@ impl ContextConfigs {
             .deploy_contract(self.proxy_code.clone().unwrap())
             .then(
                 Self::ext(env::current_account_id())
-                    .proxy_deployment_callback(context_id, account_id),
+                    .proxy_deployment_callback(context_id, account_id.clone()),
             );
+        account_id
     }
 }
