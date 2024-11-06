@@ -209,6 +209,7 @@ pub struct ContextConfigParams<'a> {
     pub protocol: Cow<'a, str>,
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,
+    pub proxy_contract_id: Cow<'a, str>,
     pub application_revision: u64,
     pub members_revision: u64,
 }

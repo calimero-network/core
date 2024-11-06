@@ -39,6 +39,7 @@ pub struct ContextConfig {
     pub protocol: Box<str>,
     pub network: Box<str>,
     pub contract: Box<str>,
+    pub proxy_contract: Box<str>,
     pub application_revision: u64,
     pub members_revision: u64,
 }
@@ -49,6 +50,7 @@ impl ContextConfig {
         protocol: Box<str>,
         network: Box<str>,
         contract: Box<str>,
+        proxy_contract: Box<str>,
         application_revision: u64,
         members_revision: u64,
     ) -> Self {
@@ -56,8 +58,10 @@ impl ContextConfig {
             protocol,
             network,
             contract,
+            proxy_contract,
             application_revision,
             members_revision,
+
         }
     }
 }

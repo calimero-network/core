@@ -18,6 +18,7 @@ pub struct ClientNew {
     pub protocol: String,
     pub network: String,
     pub contract_id: String,
+    pub proxy_contract_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
