@@ -7,9 +7,11 @@ use eyre::Result;
 use libp2p::gossipsub::TopicHash;
 use owo_colors::OwoColorize;
 
+/// List the peers in the network
 #[derive(Copy, Clone, Debug, Parser)]
 pub struct PeersCommand {
-    topic: Option<ContextId>,
+    /// The context ID to list the peers for
+    context_id: Option<ContextId>,
 }
 
 impl PeersCommand {
@@ -20,8 +22,8 @@ impl PeersCommand {
             network_client.peer_count().await.cyan()
         );
 
-        if let Some(topic) = self.topic {
-            let topic = TopicHash::from_raw(topic);
+        if let Some(context_id) = self.context_id {
+            let topic = TopicHash::from_raw(context_id);
             println!(
                 "{ind} Peers (Session) for Topic {}: {:#?}",
                 topic.clone(),
