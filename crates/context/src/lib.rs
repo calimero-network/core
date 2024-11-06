@@ -1050,11 +1050,15 @@ impl ContextManager {
 
         // println!("Propose in context members {:?}", members);
 
-        let proxy_contract: String = self.config_client.query::<ContextConfigEnv>(
-            context_config.protocol.as_ref().into(),
-            context_config.network.as_ref().into(),
-            context_config.contract.as_ref().into(),
-        ).get_proxy_contract(context_id.rt().unwrap()).await?;
+        let proxy_contract: String = self
+            .config_client
+            .query::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .get_proxy_contract(context_id.rt().unwrap())
+            .await?;
 
         let res = self
             .config_client
@@ -1095,11 +1099,15 @@ impl ContextManager {
             panic!("No private key found for signer");
         };
 
-        let proxy_contract: String = self.config_client.query::<ContextConfigEnv>(
-            context_config.protocol.as_ref().into(),
-            context_config.network.as_ref().into(),
-            context_config.contract.as_ref().into(),
-        ).get_proxy_contract(context_id.rt().unwrap()).await?;
+        let proxy_contract: String = self
+            .config_client
+            .query::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .get_proxy_contract(context_id.rt().unwrap())
+            .await?;
 
         let _ = self
             .config_client
