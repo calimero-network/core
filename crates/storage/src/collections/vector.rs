@@ -1,3 +1,5 @@
+//! This module provides functionality for the vector data structure.
+
 use core::borrow::Borrow;
 use core::marker::PhantomData;
 
