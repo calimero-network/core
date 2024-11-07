@@ -3,7 +3,8 @@ use std::time::Duration;
 use calimero_crypto::SharedKey;
 use calimero_network::stream::{Message, Stream};
 use calimero_primitives::context::ContextId;
-use eyre::{bail, eyre, Result as EyreResult};
+use ed25519_dalek::VerifyingKey;
+use eyre::{bail, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
@@ -14,7 +15,7 @@ use tokio::time::timeout;
 use tracing::{debug, error};
 
 use crate::types::{InitPayload, StreamMessage};
-use crate::{get_shared_key, Node};
+use crate::Node;
 
 mod blobs;
 mod state;
@@ -133,7 +134,7 @@ impl Node {
                 Err(err) => {
                     error!(%err, "Failed to handle stream message");
 
-                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
+                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError, None).await {
                         error!(%err, "Failed to send error message");
                     }
                 }
@@ -142,7 +143,7 @@ impl Node {
     }
 
     async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> EyreResult<Option<()>> {
-        let Some(message) = recv(stream, self.sync_config.timeout).await? else {
+        let Some(message) = recv(stream, self.sync_config.timeout, None).await? else {
             return Ok(None);
         };
 
@@ -181,9 +182,22 @@ impl Node {
             }
         }
 
+        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+            bail!("no identities found for context: {}", context.id);
+        };
+
+        let our_sending_key = self
+            .ctx_manager
+            .get_own_signing_key(&context_id, &our_identity)?;
+
+        let shared_key =
+            SharedKey::new(&our_sending_key, &VerifyingKey::from_bytes(&our_identity)?);
+
         match payload {
             InitPayload::BlobShare { blob_id } => {
-                self.handle_blob_share_request(context, their_identity, blob_id, stream)
+                self.handle_blob_share_request(context, their_identity, blob_id, stream, shared_key)
                     .await?
             }
             InitPayload::StateSync {
@@ -212,6 +226,7 @@ impl Node {
                     root_hash,
                     application_id,
                     stream,
+                    shared_key,
                 )
                 .await?
             }

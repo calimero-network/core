@@ -1243,12 +1243,9 @@ dependencies = [
  "owo-colors",
  "rand 0.8.5",
  "ring 0.17.8",
- "serde",
  "serde_json",
- "thiserror",
  "tokio",
  "tracing",
- "url",
 ]
 
 [[package]]

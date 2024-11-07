@@ -33,13 +33,13 @@ use calimero_store::db::RocksDB;
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
+use ed25519_dalek::VerifyingKey;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
-use owo_colors::OwoColorize;
+use rand::seq::IteratorRandom;
 use rand::{thread_rng, Rng};
 use ring::aead;
-use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -56,23 +56,6 @@ use sync::SyncConfig;
 use types::BroadcastMessage;
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
-
-// TODO: delete once miraclx lands catchup logic
-pub fn get_shared_key() -> Result<SharedKey, ed25519_dalek::SignatureError> {
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[
-        0x1b, 0x2e, 0x3d, 0x4c, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0,
-        0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x0f, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1,
-        0xf0, 0x00,
-    ]);
-
-    let verifying_key = ed25519_dalek::SigningKey::from_bytes(&[
-        0x1b, 0x5e, 0x3d, 0x4c, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1, 0xf0,
-        0x3f, 0x1e, 0x0d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0x01,
-        0xf0, 0x00,
-    ]);
-
-    Ok(SharedKey::new(&signing_key, &verifying_key.verifying_key()))
-}
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -314,12 +297,7 @@ impl Node {
             return Ok(());
         };
 
-        let decryption_key = get_shared_key().map_err(|e| eyre!(e))?;
-        let message = from_slice::<BroadcastMessage<'static>>(
-            &decryption_key
-                .decrypt(message.data, [0; aead::NONCE_LEN])
-                .ok_or_else(|| eyre!("Failed to decrypt message"))?,
-        )?;
+        let message = from_slice::<BroadcastMessage<'static>>(&message.data)?;
 
         match message {
             BroadcastMessage::StateDelta {
@@ -327,15 +305,31 @@ impl Node {
                 author_id,
                 root_hash,
                 artifact,
+                sending_identity,
             } => {
-                self.handle_state_delta(
-                    source,
-                    context_id,
-                    author_id,
-                    root_hash,
-                    artifact.into_owned(),
-                )
-                .await?;
+                let identities = self.ctx_manager.get_context_owned_identities(context_id)?;
+
+                let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+                    bail!("no identities found for context: {}", context_id);
+                };
+
+                let our_sending_key = self
+                    .ctx_manager
+                    .get_own_signing_key(&context_id, &our_identity)?;
+
+                let shared_key = SharedKey::new(
+                    &our_sending_key,
+                    &VerifyingKey::from_bytes(&sending_identity)?,
+                );
+
+                let artifact = from_slice::<Vec<u8>>(
+                    &shared_key
+                        .decrypt(artifact.into_owned(), [0; aead::NONCE_LEN])
+                        .ok_or_else(|| eyre!("Failed to decrypt message"))?,
+                )?;
+
+                self.handle_state_delta(source, context_id, author_id, root_hash, artifact)
+                    .await?;
             }
         }
 
@@ -392,21 +386,37 @@ impl Node {
             .await
             != 0
         {
+            let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+            let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+                bail!("no identities found for context: {}", context.id);
+            };
+
+            let our_sending_key = self
+                .ctx_manager
+                .get_own_signing_key(&context.id, &our_identity)?;
+
+            let shared_key = SharedKey::new(
+                &our_sending_key,
+                &VerifyingKey::from_bytes(&executor_public_key)?,
+            );
+
+            let artifact_encrypted = shared_key
+                .encrypt(outcome.artifact.clone(), [0; aead::NONCE_LEN])
+                .unwrap();
+
             let message = to_vec(&BroadcastMessage::StateDelta {
+                // We are encrypting only the artifact so we can use the context_id and own_id for decrypting
                 context_id: context.id,
                 author_id: executor_public_key,
                 root_hash: context.root_hash,
-                artifact: outcome.artifact.as_slice().into(),
+                artifact: artifact_encrypted.as_slice().into(),
+                sending_identity: our_identity,
             })?;
-
-            let encryption_key = get_shared_key().map_err(|e| eyre!(e))?;
-            let data = encryption_key
-                .encrypt(message, [0; aead::NONCE_LEN])
-                .unwrap();
 
             let _ignored = self
                 .network_client
-                .publish(TopicHash::from_raw(context.id), data)
+                .publish(TopicHash::from_raw(context.id), message)
                 .await?;
         }
 

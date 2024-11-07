@@ -38,7 +38,7 @@ impl Node {
         )
         .await?;
 
-        let Some(ack) = recv(&mut stream, self.sync_config.timeout, None).await? else {
+        let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
             bail!("no response to state sync request");
         };
 
@@ -75,10 +75,6 @@ impl Node {
 
         let mut sqx_out = Sequencer::default();
 
-        //(private_key, public_key) -> shared_key
-
-        //handle.set()
-
         let our_sending_key = self
             .ctx_manager
             .get_own_signing_key(&context.id, &our_identity)?;
@@ -100,8 +96,15 @@ impl Node {
         )
         .await?;
 
-        self.bidirectional_sync(context, our_identity, their_identity, &mut sqx_out, stream)
-            .await?;
+        self.bidirectional_sync(
+            context,
+            our_identity,
+            their_identity,
+            &mut sqx_out,
+            stream,
+            shared_key,
+        )
+        .await?;
 
         Ok(())
     }
@@ -113,6 +116,7 @@ impl Node {
         root_hash: Hash,
         application_id: ApplicationId,
         stream: &mut Stream,
+        shared_key: SharedKey,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,
@@ -138,6 +142,7 @@ impl Node {
                     application_id: context.application_id,
                 },
             },
+            Some(shared_key),
         )
         .await?;
 
@@ -154,6 +159,7 @@ impl Node {
             their_identity,
             &mut sqx_out,
             stream,
+            shared_key,
         )
         .await
 
@@ -179,7 +185,7 @@ impl Node {
 
         let mut sqx_in = Sequencer::default();
 
-        while let Some(msg) = recv(stream, self.sync_config.timeout).await? {
+        while let Some(msg) = recv(stream, self.sync_config.timeout, Some(shared_key)).await? {
             let (sequence_id, artifact) = match msg {
                 StreamMessage::OpaqueError => bail!("other peer ran into an error"),
                 StreamMessage::Message {
@@ -221,6 +227,7 @@ impl Node {
                         artifact: Cow::from(&outcome.artifact),
                     },
                 },
+                Some(shared_key),
             )
             .await?;
         }
