@@ -415,18 +415,18 @@ impl Node {
     }
 
     pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
-        let task = self.handle_call(
-            request.context_id,
-            &request.method,
-            request.payload,
-            request.executor_public_key,
-        );
+        let result = self
+            .handle_call(
+                request.context_id,
+                &request.method,
+                request.payload,
+                request.executor_public_key,
+            )
+            .await;
 
-        drop(request.outcome_sender.send(task.await.map_err(|err| {
-            error!(%err, "failed to execute local query");
-
-            CallError::InternalError
-        })));
+        if let Err(err) = request.outcome_sender.send(result) {
+            error!(?err, "failed to respond to client request");
+        }
     }
 
     async fn handle_call(
@@ -442,6 +442,17 @@ impl Node {
 
         if method != "init" && &*context.root_hash == &[0; 32] {
             return Err(CallError::Uninitialized);
+        }
+
+        if !self
+            .ctx_manager
+            .context_has_owned_identity(context_id, executor_public_key)
+            .unwrap_or_default()
+        {
+            return Err(CallError::Unauthorized {
+                context_id,
+                public_key: executor_public_key,
+            });
         }
 
         let outcome_option = self

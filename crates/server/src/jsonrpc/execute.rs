@@ -3,6 +3,7 @@ use std::sync::Arc;
 use calimero_server_primitives::jsonrpc::{ExecuteError, ExecuteRequest, ExecuteResponse};
 use eyre::{bail, Result as EyreResult};
 use serde_json::{from_str as from_json_str, to_vec as to_json_vec, Value};
+use tracing::error;
 
 use crate::jsonrpc::{call, mount_method, CallError, ServiceState};
 
@@ -34,12 +35,16 @@ async fn handle(request: ExecuteRequest, state: Arc<ServiceState>) -> EyreResult
             }),
         },
         Ok(None) => Ok(ExecuteResponse::new(None)),
-        Err(err) => match err {
-            CallError::UpstreamCallError(err) => bail!(ExecuteError::CallError(err)),
-            CallError::UpstreamFunctionCallError(message) => {
-                bail!(ExecuteError::FunctionCallError(message))
+        Err(err) => {
+            error!(%err, "Failed to execute JSON RPC method");
+
+            match err {
+                CallError::CallError(err) => bail!(ExecuteError::CallError(err)),
+                CallError::FunctionCallError(message) => {
+                    bail!(ExecuteError::FunctionCallError(message))
+                }
+                CallError::InternalError(err) => bail!(err),
             }
-            CallError::InternalError(err) => bail!(err),
-        },
+        }
     }
 }

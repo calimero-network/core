@@ -1,11 +1,13 @@
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
-    ExecuteRequest, Request, RequestId, RequestPayload, Response, Version,
+    ExecuteRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
 };
 use clap::{Parser, ValueEnum};
+use color_eyre::owo_colors::OwoColorize;
 use const_format::concatcp;
 use eyre::{bail, Result as EyreResult};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::cli::Environment;
 use crate::common::{do_request, load_config, multiaddr_to_url, RequestType};
@@ -29,12 +31,11 @@ pub struct CallCommand {
     #[arg(value_name = "METHOD", help = "Method to fetch details")]
     pub method: String,
 
-    #[arg(
-        long,
-        default_value = "{}",
-        help = "Arguments to the method in the app"
-    )]
-    pub args_json: String,
+    #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]
+    pub args: Option<Value>,
+
+    #[arg(long = "as", help = "Public key of the executor")]
+    pub executor: PublicKey,
 
     #[arg(
         long,
@@ -49,11 +50,32 @@ pub enum CallType {
     Execute,
 }
 
+fn serde_value(s: &str) -> serde_json::Result<Value> {
+    serde_json::from_str(s)
+}
+
 impl Report for Response {
     fn report(&self) {
-        println!("jsonrpc: {:#?}", self.jsonrpc);
-        println!("id: {:?}", self.id);
-        println!("result: {:#?}", self.body);
+        match &self.body {
+            ResponseBody::Result(result) => {
+                println!("return value:");
+                let result = format!(
+                    "(json): {}",
+                    format!("{:#}", result.0)
+                        .lines()
+                        .map(|line| line.cyan().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+
+                for line in result.lines() {
+                    println!("  > {line}");
+                }
+            }
+            ResponseBody::Error(error) => {
+                println!("{error}");
+            }
+        }
     }
 }
 
@@ -68,18 +90,11 @@ impl CallCommand {
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
-        let json_payload: Value = serde_json::from_str(&self.args_json)?;
-
         let payload = RequestPayload::Execute(ExecuteRequest::new(
             self.context_id,
             self.method,
-            json_payload,
-            config
-                .identity
-                .public()
-                .try_into_ed25519()?
-                .to_bytes()
-                .into(),
+            self.args.unwrap_or(json!({})),
+            self.executor,
         ));
 
         let request = Request::new(
@@ -87,11 +102,6 @@ impl CallCommand {
             self.id.map(RequestId::String),
             payload,
         );
-
-        match serde_json::to_string_pretty(&request) {
-            Ok(json) => println!("Request JSON:\n{json}"),
-            Err(e) => println!("Error serializing request to JSON: {e}"),
-        }
 
         let client = reqwest::Client::new();
         let response: Response = do_request(
