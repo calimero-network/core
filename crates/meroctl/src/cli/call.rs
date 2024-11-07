@@ -1,9 +1,10 @@
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
-    ExecuteRequest, Request, RequestId, RequestPayload, Response, Version,
+    ExecuteRequest, Request, RequestId, RequestPayload, Response, ResponseBody, Version,
 };
 use clap::{Parser, ValueEnum};
+use color_eyre::owo_colors::OwoColorize;
 use const_format::concatcp;
 use eyre::{bail, Result as EyreResult};
 use serde_json::{json, Value};
@@ -55,9 +56,26 @@ fn serde_value(s: &str) -> serde_json::Result<Value> {
 
 impl Report for Response {
     fn report(&self) {
-        println!("jsonrpc: {:#?}", self.jsonrpc);
-        println!("id: {:?}", self.id);
-        println!("result: {:#?}", self.body);
+        match &self.body {
+            ResponseBody::Result(result) => {
+                println!("return value:");
+                let result = format!(
+                    "(json): {}",
+                    format!("{:#}", result.0)
+                        .lines()
+                        .map(|line| line.cyan().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+
+                for line in result.lines() {
+                    println!("  > {line}");
+                }
+            }
+            ResponseBody::Error(error) => {
+                println!("{error}");
+            }
+        }
     }
 }
 

@@ -63,7 +63,7 @@ pub struct RootArgs {
     #[arg(short, long, value_name = "NAME")]
     pub node_name: String,
 
-    #[arg(long, value_name = "FORMAT")]
+    #[arg(long, value_name = "FORMAT", default_value_t, value_enum)]
     pub output_format: Format,
 }
 
