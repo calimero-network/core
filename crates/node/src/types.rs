@@ -18,7 +18,6 @@ pub enum BroadcastMessage<'a> {
         author_id: PublicKey,
         root_hash: Hash,
         artifact: Cow<'a, [u8]>,
-        sending_identity: PublicKey,
     },
 }
 

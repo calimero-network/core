@@ -304,7 +304,6 @@ impl Node {
                 author_id,
                 root_hash,
                 artifact,
-                sending_identity,
             } => {
                 let identities = self.ctx_manager.get_context_owned_identities(context_id)?;
 
@@ -316,7 +315,7 @@ impl Node {
                     .ctx_manager
                     .get_own_signing_key(&context_id, &our_identity)?;
 
-                let shared_key = SharedKey::new(&our_sending_key, &sending_identity);
+                let shared_key = SharedKey::from_sk(&our_sending_key);
 
                 let artifact = from_slice::<Vec<u8>>(
                     &shared_key
@@ -392,19 +391,18 @@ impl Node {
                 .ctx_manager
                 .get_own_signing_key(&context.id, &our_identity)?;
 
-            let shared_key = SharedKey::new(&our_sending_key, &executor_public_key);
+            let shared_key = SharedKey::from_sk(&our_sending_key);
 
             let artifact_encrypted = shared_key
                 .encrypt(outcome.artifact.clone(), [0; aead::NONCE_LEN])
                 .unwrap();
 
             let message = to_vec(&BroadcastMessage::StateDelta {
-                // We are encrypting only the artifact so we can use the context_id and own_id for decrypting
+                // We are encrypting only the artifact so we can use the context_id decrypting
                 context_id: context.id,
                 author_id: executor_public_key,
                 root_hash: context.root_hash,
                 artifact: artifact_encrypted.as_slice().into(),
-                sending_identity: our_identity,
             })?;
 
             let _ignored = self

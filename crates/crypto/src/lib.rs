@@ -1,4 +1,5 @@
 use calimero_primitives::identity::PublicKey;
+use ed25519_dalek::SigningKey;
 use ring::aead;
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +15,7 @@ pub struct Record {
 }
 
 impl SharedKey {
-    pub fn new(sk: &ed25519_dalek::SigningKey, pk: &PublicKey) -> Self {
+    pub fn new(sk: &SigningKey, pk: &PublicKey) -> Self {
         SharedKey {
             key: (sk.to_scalar()
                 * curve25519_dalek::edwards::CompressedEdwardsY(**pk)
@@ -23,6 +24,10 @@ impl SharedKey {
             .compress()
             .to_bytes(),
         }
+    }
+
+    pub fn from_sk(sk: &SigningKey) -> Self {
+        SharedKey { key: sk.to_bytes() }
     }
 
     pub fn encrypt(&self, payload: Vec<u8>, nonce: [u8; aead::NONCE_LEN]) -> Option<Vec<u8>> {
