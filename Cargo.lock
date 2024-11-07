@@ -938,7 +938,6 @@ version = "0.1.0"
 dependencies = [
  "calimero-sdk",
  "calimero-storage",
- "serde",
 ]
 
 [[package]]
