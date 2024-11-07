@@ -6,11 +6,16 @@ use serde_json::Value;
 
 use crate::Node;
 
+/// Call a method on a context
 #[derive(Debug, Parser)]
 pub struct CallCommand {
+    /// The context ID to call the method on
     context_id: ContextId,
+    /// The method to call
     method: String,
+    /// The payload to send to the method
     payload: Value,
+    /// The public key of the executor
     executor_key: PublicKey,
 }
 
