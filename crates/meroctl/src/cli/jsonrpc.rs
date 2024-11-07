@@ -85,11 +85,6 @@ impl CallCommand {
             payload,
         );
 
-        match serde_json::to_string_pretty(&request) {
-            Ok(json) => println!("Request JSON:\n{json}"),
-            Err(e) => println!("Error serializing request to JSON: {e}"),
-        }
-
         let client = reqwest::Client::new();
         let response: Response = do_request(
             &client,
