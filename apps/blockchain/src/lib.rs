@@ -1,11 +1,11 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::env::{self};
+use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::types::Error;
 use calimero_storage::collections::UnorderedMap;
 use calimero_storage::entities::Element;
 use calimero_storage::AtomicUnit;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Deserialize)]
 #[serde(crate = "calimero_sdk::serde")]

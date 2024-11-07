@@ -10,7 +10,6 @@ crate-type = ["cdylib"]
 [dependencies]
 calimero-sdk = { path = "../../crates/sdk" }
 calimero-storage = { path = "../../crates/storage" }
-serde.workspace = true
 
 [profile.app-release]
 inherits = "release"
