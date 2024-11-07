@@ -52,7 +52,7 @@ pub mod types;
 
 use runtime_compat::RuntimeCompatStore;
 use sync::SyncConfig;
-use types::{BroadcastMessage, ProposalRequest};
+use types::{BroadcastMessage, ProposalRequest, RequestType};
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -433,23 +433,33 @@ impl Node {
             error!(%e, "Failed to convert payload to UTF-8.");
             CallError::InternalError
         })?;
-        let args_json: ProposalRequest = serde_json::from_str(args_str).map_err(|e| {
-            error!(%e, "Failed to parse proposal request.");
-            CallError::InternalError
-        })?;
+        let args_json: RequestType = match serde_json::from_str(args_str) {
+            Ok(parsed_json) => parsed_json,
+            Err(e) => {
+                error!(%e, "Failed to parse request.");
+                return Err(CallError::InternalError);
+            }
+        };
 
-        for proposal in &outcome.proposals {
-            let action = ProposalAction::Transfer {
-                receiver_id: args_json.receiver.clone(),
-                amount: 1,
-            };
-            let actions = vec![action];
+        match args_json {
+            RequestType::Proposal(proposal_request) => {
+                for proposal in &outcome.proposals {
+                    let action = ProposalAction::Transfer {
+                        receiver_id: proposal_request.receiver.clone(),
+                        amount: 1,
+                    };
+                    let actions = vec![action];
 
-            drop(
-                self.ctx_manager
-                    .propose(context_id, executor_public_key, proposal.0.clone(), actions)
-                    .await,
-            );
+                    drop(
+                        self.ctx_manager
+                            .propose(context_id, executor_public_key, proposal.0.clone(), actions)
+                            .await,
+                    );
+                }
+            }
+            RequestType::Another(_another_request) => {
+                todo!();
+            }
         }
 
         for approval in &outcome.approvals {

@@ -55,8 +55,19 @@ pub enum MessagePayload<'a> {
     BlobShare { chunk: Cow<'a, [u8]> },
 }
 
-#[derive(Deserialize)]
+
+
+#[derive(Debug, Deserialize)]
 pub struct ProposalRequest {
     pub sender: String,
     pub receiver: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnotherRequestType {}
+
+#[derive(Debug, Deserialize)]
+pub enum RequestType {
+    Proposal(ProposalRequest),
+    Another(AnotherRequestType),
 }
