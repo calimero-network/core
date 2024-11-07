@@ -429,20 +429,11 @@ impl Node {
         };
 
         for proposal in &outcome.proposals {
-            println!("Proposal: {:?}", proposal);
-            println!("Aaaa: {:?}", proposal.0);
-            println!("Ppppp: {:?}", proposal.1);
-
             let action = ProposalAction::Transfer {
                 receiver_id: "vuki.testnet".to_string(),
                 amount: 1,
             };
             let actions = vec![action];
-
-            // let actions = BorshDeserialize::deserialize(&mut actions.as_slice()).map_err(|e| {
-            //     error!(%e, "Failed to deserialize proposal actions.");
-            //     CallError::InternalError
-            // })?;
 
             drop(
                 self.ctx_manager

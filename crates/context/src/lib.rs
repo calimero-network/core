@@ -2,7 +2,7 @@
 
 use core::error::Error;
 use std::collections::HashSet;
-use std::io::{Error as IoError, Read};
+use std::io::Error as IoError;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
@@ -13,7 +13,7 @@ use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
-    ApplicationSource as ApplicationSourceConfig, Identity, SignerId,
+    ApplicationSource as ApplicationSourceConfig,
 };
 use calimero_context_config::{ProposalAction, ProposalId};
 use calimero_network::client::NetworkClient;
@@ -1021,28 +1021,20 @@ impl ContextManager {
     ) -> EyreResult<()> {
         let handle = self.store.handle();
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
-            //handle
-            return Ok(());
+            bail!(
+                "Failed to retrieve ContextConfig for context ID: {}",
+                context_id
+            );
         };
 
         let Some(ContextIdentityValue {
             private_key: Some(signing_key),
         }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
-            panic!("No private key found for signer");
+            bail!("No private key found for signer");
         };
 
-        // let members = self
-        //     .config_client
-        //     .query::<ContextConfigEnv>(
-        //         context_config.protocol.as_ref().into(),
-        //         context_config.network.as_ref().into(),
-        //         context_config.contract.as_ref().into(),
-        //     )
-        //     .members(context_id.rt()?, 0, 100)
-        //     .await?;
-
-        let res = self
+        let _ = self
             .config_client
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
@@ -1062,21 +1054,17 @@ impl ContextManager {
         signer_id: PublicKey,
         proposal_id: ProposalId,
     ) -> EyreResult<()> {
-        println!("Call approve proposal in context");
-
         let handle = self.store.handle();
 
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
-            //handle gracefully
-            panic!("Context not found");
+            bail!("Context not found");
         };
 
         let Some(ContextIdentityValue {
             private_key: Some(signing_key),
         }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
-            //handle gracefully
-            panic!("No private key found for signer");
+            bail!("No private key found for signer");
         };
 
         let _ = self
