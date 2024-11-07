@@ -33,7 +33,6 @@ use calimero_store::db::RocksDB;
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use ed25519_dalek::VerifyingKey;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
@@ -317,10 +316,7 @@ impl Node {
                     .ctx_manager
                     .get_own_signing_key(&context_id, &our_identity)?;
 
-                let shared_key = SharedKey::new(
-                    &our_sending_key,
-                    &VerifyingKey::from_bytes(&sending_identity)?,
-                );
+                let shared_key = SharedKey::new(&our_sending_key, &sending_identity);
 
                 let artifact = from_slice::<Vec<u8>>(
                     &shared_key
@@ -396,10 +392,7 @@ impl Node {
                 .ctx_manager
                 .get_own_signing_key(&context.id, &our_identity)?;
 
-            let shared_key = SharedKey::new(
-                &our_sending_key,
-                &VerifyingKey::from_bytes(&executor_public_key)?,
-            );
+            let shared_key = SharedKey::new(&our_sending_key, &executor_public_key);
 
             let artifact_encrypted = shared_key
                 .encrypt(outcome.artifact.clone(), [0; aead::NONCE_LEN])

@@ -3,7 +3,6 @@ use std::time::Duration;
 use calimero_crypto::SharedKey;
 use calimero_network::stream::{Message, Stream};
 use calimero_primitives::context::ContextId;
-use ed25519_dalek::VerifyingKey;
 use eyre::{bail, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
@@ -32,9 +31,14 @@ async fn send(
     shared_key: Option<SharedKey>,
 ) -> EyreResult<()> {
     let base_data = borsh::to_vec(message)?;
-    let data = shared_key
-        .and_then(|key| key.encrypt(base_data.clone(), [0; aead::NONCE_LEN]))
-        .unwrap_or(base_data);
+
+    let data = match shared_key {
+        Some(key) => match key.encrypt(base_data, [0; aead::NONCE_LEN]) {
+            Some(data) => data,
+            None => bail!("Encryption failed"),
+        },
+        None => base_data,
+    };
 
     stream.send(Message::new(data)).await?;
     Ok(())
@@ -51,9 +55,13 @@ async fn recv(
 
     let message_data = message?.data.to_vec();
 
-    let data = shared_key
-        .and_then(|key| key.decrypt(message_data.clone(), [0; aead::NONCE_LEN]))
-        .unwrap_or(message_data);
+    let data = match shared_key {
+        Some(key) => match key.decrypt(message_data, [0; aead::NONCE_LEN]) {
+            Some(data) => data,
+            None => bail!("Encryption failed"),
+        },
+        None => message_data,
+    };
 
     let decoded = borsh::from_slice::<StreamMessage<'static>>(&data)?;
 
@@ -192,8 +200,7 @@ impl Node {
             .ctx_manager
             .get_own_signing_key(&context_id, &our_identity)?;
 
-        let shared_key =
-            SharedKey::new(&our_sending_key, &VerifyingKey::from_bytes(&our_identity)?);
+        let shared_key = SharedKey::new(&our_sending_key, &our_identity);
 
         match payload {
             InitPayload::BlobShare { blob_id } => {

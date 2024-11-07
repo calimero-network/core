@@ -3,7 +3,6 @@ use calimero_network::stream::Stream;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
-use ed25519_dalek::VerifyingKey;
 use eyre::bail;
 use futures_util::stream::poll_fn;
 use futures_util::TryStreamExt;
@@ -70,10 +69,7 @@ impl Node {
             .ctx_manager
             .get_own_signing_key(&context.id, &our_identity)?;
 
-        let shared_key = SharedKey::new(
-            &our_sending_key,
-            &VerifyingKey::from_bytes(&their_identity)?,
-        );
+        let shared_key = SharedKey::new(&our_sending_key, &their_identity);
 
         let (tx, mut rx) = mpsc::channel(1);
 

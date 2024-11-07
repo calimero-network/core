@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::ops::Deref;
 
 use calimero_crypto::SharedKey;
 use calimero_network::stream::Stream;
@@ -7,7 +6,6 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::Context;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use ed25519_dalek::VerifyingKey;
 use eyre::{bail, OptionExt};
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
@@ -39,7 +37,7 @@ impl Node {
         .await?;
 
         let Some(ack) = recv(stream, self.sync_config.timeout, None).await? else {
-            bail!("no response to state sync request");
+            bail!("connection closed while awaiting state sync handshake");
         };
 
         let (root_hash, their_identity) = match ack {
@@ -79,10 +77,7 @@ impl Node {
             .ctx_manager
             .get_own_signing_key(&context.id, &our_identity)?;
 
-        let shared_key = SharedKey::new(
-            &our_sending_key,
-            &VerifyingKey::from_bytes(their_identity.deref())?,
-        );
+        let shared_key = SharedKey::new(&our_sending_key, &their_identity);
 
         send(
             stream,

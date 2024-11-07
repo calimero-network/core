@@ -12,6 +12,8 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 ring.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
+calimero-primitives = { path = "../primitives" }
+
 [dev-dependencies]
 eyre.workspace = true
 rand.workspace = true

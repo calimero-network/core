@@ -38,7 +38,7 @@ use calimero_store::types::{
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use ed25519_dalek::SigningKey;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
@@ -768,7 +768,7 @@ impl ContextManager {
             .get(&ContextIdentityKey::new(*context_id, *own_public_key))?
             .unwrap() // we are sure it exists because we own the public_key
             .sender_key
-            .unwrap();
+            .ok_or_eyre(eyre!("Non existant SenderKey"))?;
 
         let combined = {
             let mut temp = [0u8; 64];
