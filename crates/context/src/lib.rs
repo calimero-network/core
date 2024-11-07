@@ -39,7 +39,7 @@ use calimero_store::types::{
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, Result as EyreResult};
-use futures_util::{AsyncRead, TryStreamExt};
+use futures_util::{AsyncRead, TryFutureExt, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
 use rand::SeedableRng;
@@ -145,6 +145,19 @@ impl ContextManager {
         PrivateKey::random(&mut rand::thread_rng())
     }
 
+    async fn get_proxy_contract(&self, context_id: ContextId) -> EyreResult<String> {
+        let proxy_contract = self
+            .config_client
+            .query::<ContextConfigEnv>(
+                self.client_config.new.protocol.as_str().into(),
+                self.client_config.new.network.as_str().into(),
+                self.client_config.new.contract_id.as_str().into(),
+            )
+            .get_proxy_contract(context_id.rt().unwrap())
+            .await?;
+        Ok(proxy_contract)
+    }
+
     pub fn create_context(
         &self,
         seed: Option<[u8; 32]>,
@@ -182,18 +195,6 @@ impl ContextManager {
         let Some(application) = self.get_application(&context.application_id)? else {
             bail!("Application is not installed on node.")
         };
-
-        self.add_context(
-            &context,
-            identity_secret,
-            Some(ContextConfigParams {
-                protocol: self.client_config.new.protocol.as_str().into(),
-                network_id: self.client_config.new.network.as_str().into(),
-                contract_id: self.client_config.new.contract_id.as_str().into(),
-                application_revision: 0,
-                members_revision: 0,
-            }),
-        )?;
 
         let (tx, rx) = oneshot::channel();
 
@@ -245,6 +246,24 @@ impl ContextManager {
         let this = self.clone();
         let context_id = context.id;
         let _ignored = tokio::spawn(async move {
+            let proxy_contract = this.get_proxy_contract(context_id).await;
+
+            this.add_context(
+                &context,
+                identity_secret,
+                Some(ContextConfigParams {
+                    protocol: this.client_config.new.protocol.as_str().into(),
+                    network_id: this.client_config.new.network.as_str().into(),
+                    contract_id: this.client_config.new.contract_id.as_str().into(),
+                    proxy_contract: proxy_contract.unwrap().as_str().into(),
+                    application_revision: 0,
+                    members_revision: 0,
+                }),
+            );
+        });
+
+        let this = self.clone();
+        let _ignored = tokio::spawn(async move {
             let result = finalizer.await;
 
             if result.is_err() {
@@ -278,6 +297,7 @@ impl ContextManager {
                     context_config.protocol.into_owned().into_boxed_str(),
                     context_config.network_id.into_owned().into_boxed_str(),
                     context_config.contract_id.into_owned().into_boxed_str(),
+                    context_config.proxy_contract.into_owned().into_boxed_str(),
                     context_config.application_revision,
                     context_config.members_revision,
                 ),
@@ -332,10 +352,13 @@ impl ContextManager {
 
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
 
+        let proxy_contract = self.get_proxy_contract(context_id).await;
+
         let mut config = (!context_exists).then(|| ContextConfigParams {
             protocol: protocol.into(),
             network_id: network_id.into(),
             contract_id: contract_id.into(),
+            proxy_contract: proxy_contract.unwrap().into(),
             application_revision: 0,
             members_revision: 0,
         });
@@ -426,6 +449,7 @@ impl ContextManager {
                     protocol: config.protocol.into_string().into(),
                     network_id: config.network.into_string().into(),
                     contract_id: config.contract.into_string().into(),
+                    proxy_contract: config.proxy_contract.into_string().into(),
                     application_revision: config.application_revision,
                     members_revision: config.members_revision,
                 }))
@@ -527,6 +551,7 @@ impl ContextManager {
                     config.protocol.into_owned().into_boxed_str(),
                     config.network_id.into_owned().into_boxed_str(),
                     config.contract_id.into_owned().into_boxed_str(),
+                    config.proxy_contract.into_owned().into_boxed_str(),
                     config.application_revision,
                     config.members_revision,
                 ),
@@ -1050,22 +1075,12 @@ impl ContextManager {
 
         // println!("Propose in context members {:?}", members);
 
-        let proxy_contract: String = self
-            .config_client
-            .query::<ContextConfigEnv>(
-                context_config.protocol.as_ref().into(),
-                context_config.network.as_ref().into(),
-                context_config.contract.as_ref().into(),
-            )
-            .get_proxy_contract(context_id.rt().unwrap())
-            .await?;
-
         let res = self
             .config_client
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
-                proxy_contract.into(),
+                context_config.proxy_contract.as_ref().into(),
             )
             .propose(proposal_id, signer_id.rt().unwrap(), actions)
             .send(signing_key)
@@ -1099,22 +1114,12 @@ impl ContextManager {
             panic!("No private key found for signer");
         };
 
-        let proxy_contract: String = self
-            .config_client
-            .query::<ContextConfigEnv>(
-                context_config.protocol.as_ref().into(),
-                context_config.network.as_ref().into(),
-                context_config.contract.as_ref().into(),
-            )
-            .get_proxy_contract(context_id.rt().unwrap())
-            .await?;
-
         let _ = self
             .config_client
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
-                proxy_contract.into(),
+                context_config.proxy_contract.as_ref().into(),
             )
             .approve(signer_id.rt().unwrap(), proposal_id)
             .send(signing_key)
