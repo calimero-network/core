@@ -80,7 +80,9 @@ impl AppState {
         Ok(true)
     }
 
-    pub fn approve_proposal(&mut self, proposal_id: env::ext::ProposalId) -> Result<bool, Error> {
+    pub fn approve_proposal(&mut self, proposal_id: String) -> Result<bool, Error> {
+        let proposal_id = env::ext::ProposalId(Self::string_to_u8_32(proposal_id.as_str()));
+
         println!("Approve proposal: {:?}", proposal_id);
         let _ = Self::external().approve(proposal_id);
         Ok(true)
