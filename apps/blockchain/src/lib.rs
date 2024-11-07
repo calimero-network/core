@@ -5,7 +5,7 @@ use calimero_sdk::types::Error;
 use calimero_storage::collections::UnorderedMap;
 use calimero_storage::entities::Element;
 use calimero_storage::AtomicUnit;
-use serde::{Deserialize, Serialize};
+use calimero_sdk::serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Deserialize)]
 #[serde(crate = "calimero_sdk::serde")]
