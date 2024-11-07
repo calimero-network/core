@@ -9,7 +9,6 @@ use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
 use ed25519_dalek::VerifyingKey;
 use eyre::{bail, OptionExt};
-use libp2p::PeerId;
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
 use tracing::debug;
@@ -19,21 +18,14 @@ use crate::types::{InitPayload, MessagePayload, StreamMessage};
 use crate::Node;
 
 impl Node {
-    pub async fn initiate_state_sync_process(
+    pub(super) async fn initiate_state_sync_process(
         &self,
         context: &mut Context,
-        chosen_peer: PeerId,
+        our_identity: PublicKey,
+        stream: &mut Stream,
     ) -> eyre::Result<()> {
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
-
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
-        };
-
-        let mut stream = self.network_client.open_stream(chosen_peer).await?;
-
         send(
-            &mut stream,
+            stream,
             &StreamMessage::Init {
                 context_id: context.id,
                 party_id: our_identity,
@@ -97,30 +89,24 @@ impl Node {
         );
 
         send(
-            &mut stream,
+            stream,
             &StreamMessage::Message {
                 sequence_id: sqx_out.next(),
                 payload: MessagePayload::StateSync {
-                    artifact: Cow::from(&[]),
+                    artifact: b"".into(),
                 },
             },
             Some(shared_key),
         )
         .await?;
 
-        self.bidirectional_sync(
-            context,
-            our_identity,
-            their_identity,
-            &mut sqx_out,
-            &mut stream,
-        )
-        .await?;
+        self.bidirectional_sync(context, our_identity, their_identity, &mut sqx_out, stream)
+            .await?;
 
         Ok(())
     }
 
-    pub async fn handle_state_sync_request(
+    pub(super) async fn handle_state_sync_request(
         &self,
         context: Context,
         their_identity: PublicKey,
@@ -207,6 +193,10 @@ impl Node {
 
             sqx_in.test(sequence_id)?;
 
+            if artifact.is_empty() && sqx_out.current() != 0 {
+                break;
+            }
+
             let outcome = self
                 .execute(
                     context,
@@ -222,10 +212,6 @@ impl Node {
                 root_hash=?context.root_hash,
                 "State sync outcome",
             );
-
-            if outcome.artifact.is_empty() {
-                break;
-            }
 
             send(
                 stream,

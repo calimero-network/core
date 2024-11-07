@@ -130,6 +130,8 @@ impl<'a> StarknetTransport<'a> {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum StarknetError {
+    #[error("unsupported protocol: {0}")]
+    UnsupportedProtocol(String),
     #[error("unknown network `{0}`")]
     UnknownNetwork(String),
     #[error("invalid response from RPC while {operation}")]
@@ -174,6 +176,12 @@ impl Transport for StarknetTransport<'_> {
         request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
+        if request.protocol != Starknet::PROTOCOL {
+            return Err(StarknetError::UnsupportedProtocol(
+                request.protocol.into_owned(),
+            ));
+        }
+
         let Some(network) = self.networks.get(&request.network_id) else {
             return Err(StarknetError::UnknownNetwork(
                 request.network_id.into_owned(),

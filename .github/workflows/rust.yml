@@ -74,8 +74,17 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v45
+        with:
+          files: |
+            **.rs
+
       - name: Run tests
+        env:
+          CHANGED_RUST_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
           chmod +x $GITHUB_WORKSPACE/scripts/build-all-apps.sh
           chmod +x $GITHUB_WORKSPACE/scripts/test.sh
-          $GITHUB_WORKSPACE/scripts/test.sh
+          $GITHUB_WORKSPACE/scripts/test.sh --local ${CHANGED_RUST_FILES}

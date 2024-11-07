@@ -11,6 +11,10 @@ export interface RpcClient {
     params: RpcMutateParams<Args>,
     config?: RequestConfig,
   ): Promise<RpcResult<RpcMutateResponse<Out>>>;
+  execute<Args, Out>(
+    params: RpcQueryParams<Args>,
+    config?: RequestConfig,
+  ): Promise<RpcResult<RpcQueryResponse<Out>>>;
 }
 
 interface Headers {

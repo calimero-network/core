@@ -49,7 +49,7 @@ export default function StartContextPage() {
     }
     const startContextResponse = await apiClient(showServerDownPopup)
       .node()
-      .startContexts(appId, argumentsJson);
+      .createContexts(appId, argumentsJson);
     if (startContextResponse.error) {
       setStartContextStatus({
         title: t.startContextErrorTitle,
@@ -93,7 +93,7 @@ export default function StartContextPage() {
         message: `Installed application ${application.name}, version ${application.version}.`,
         error: false,
       });
-      return response.data.application_id;
+      return response.data.applicationId;
     }
   };
 

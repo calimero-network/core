@@ -4,15 +4,18 @@
 echo "Running pre-commit hook..."
 
 # Check for changes in Markdown or MDX files
-if git diff --cached --name-only | grep -qE '\.mdx?$'; then
+if git diff --cached --name-only | grep -q '\.mdx?$'; then
   echo "Markdown or MDX files have been changed."
   pnpm format:md
 fi
 
 # Check for changes in Rust files
-if git diff --cached --name-only | grep -qE '\.rs$'; then
+if git diff --cached --name-only | grep -q '\.rs$'; then
   echo "Running checks for the Rust code..."
   cargo +nightly fmt
+  # Run tests only for the changed files
+  # changed_rust_files=$(git diff --cached --name-only | grep -E '\.rs$')
+  # ./scripts/test.sh --local ${changed_rust_files}
 fi
 
 # Check for changes in the 'node-ui' directory (Next.js app)

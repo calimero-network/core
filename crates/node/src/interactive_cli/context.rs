@@ -50,7 +50,7 @@ impl ContextCommand {
         match self.command {
             Commands::Ls => {
                 println!(
-                    "{c1:44} | {c2:44} | Root Hash",
+                    "{ind} {c1:44} | {c2:44} | Root Hash",
                     c1 = "Context ID",
                     c2 = "Application ID",
                 );
