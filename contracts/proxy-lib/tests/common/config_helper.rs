@@ -5,6 +5,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use eyre::Result;
 use near_workspaces::network::Sandbox;
 use near_workspaces::result::ExecutionFinalResult;
+use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract, Worker};
 use rand::Rng;
 use serde_json::json;
@@ -76,15 +77,16 @@ impl ConfigContractHelper {
             &{
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    ContextRequestKind::DeployProxyContract { code: code.into() },
+                    ContextRequestKind::DeployProxyContract {},
                 ));
                 Request::new(host_id, kind)
             },
             |p| host.sign(p),
         )?;
-        print!("{:?}", "request");
         let res = self.mutate_call(caller, &signed_request).await?;
-        print!("{:?}", res);
+
+        // Uncomment to print the result
+        // print!("{:?}", res);
         Ok(res)
     }
 
@@ -127,6 +129,7 @@ impl ConfigContractHelper {
         let res = caller
             .call(self.config_contract.id(), "mutate")
             .args_json(request)
+            .deposit(NearToken::from_near(20))
             .max_gas()
             .transact()
             .await?;

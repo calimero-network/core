@@ -66,9 +66,7 @@ impl ProxyContractHelper {
     ) -> eyre::Result<ExecutionFinalResult> {
         let call = caller
             .call(&self.proxy_contract, "mutate")
-            .args_json(json!({
-                "request": request
-            }))
+            .args_json(json!(request))
             .max_gas()
             .transact()
             .await?;
@@ -97,7 +95,7 @@ impl ProxyContractHelper {
         let signed_request = Signed::new(&request, |p| signer.sign(p))?;
         let res = caller
             .call(&self.proxy_contract, "mutate")
-            .args_json(json!({"request": signed_request}))
+            .args_json(json!(signed_request))
             .max_gas()
             .transact()
             .await?;

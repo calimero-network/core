@@ -29,7 +29,7 @@ async fn setup_test(
     let bytes = fs::read(common::proxy_lib_helper::PROXY_CONTRACT_WASM)?;
     let alice_sk: SigningKey = common::generate_keypair()?;
     let context_sk = common::generate_keypair()?;
-    let relayer_account = common::create_account_with_balance(&worker, "account", 10).await?;
+    let relayer_account = common::create_account_with_balance(&worker, "account", 100).await?;
 
     let _res = config_helper
         .add_context_to_config(&relayer_account, &context_sk, &alice_sk)
