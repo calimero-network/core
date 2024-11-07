@@ -128,7 +128,7 @@ pub enum ServerResponseError {
     ParseError(String),
     #[error(
         "internal error: {}",
-        err.as_ref().map_or_else(|| "<opaque>".to_string(), ToString::to_string)
+        err.as_ref().map_or_else(|| "<opaque>".to_owned(), ToString::to_string)
     )]
     InternalError {
         #[serde(skip)]
