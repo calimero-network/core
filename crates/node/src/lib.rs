@@ -6,6 +6,7 @@
 
 use core::future::{pending, Future};
 use core::pin::Pin;
+use core::str;
 use std::time::Duration;
 
 use borsh::{from_slice, to_vec};
@@ -37,6 +38,7 @@ use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, Rng};
+use serde::de::Error as SerdeError;
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -50,7 +52,7 @@ pub mod types;
 
 use runtime_compat::RuntimeCompatStore;
 use sync::SyncConfig;
-use types::BroadcastMessage;
+use types::{BroadcastMessage, ProposalRequest};
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -415,7 +417,7 @@ impl Node {
         }
 
         let outcome_option = self
-            .execute(&mut context, method, payload, executor_public_key)
+            .execute(&mut context, method, payload.clone(), executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute query call.");
@@ -427,10 +429,18 @@ impl Node {
                 application_id: context.application_id,
             });
         };
+        let args_str = str::from_utf8(&payload).map_err(|e| {
+            error!(%e, "Failed to convert payload to UTF-8.");
+            CallError::InternalError
+        })?;
+        let args_json: ProposalRequest = serde_json::from_str(args_str).map_err(|e| {
+            error!(%e, "Failed to parse proposal request.");
+            CallError::InternalError
+        })?;
 
         for proposal in &outcome.proposals {
             let action = ProposalAction::Transfer {
-                receiver_id: "vuki.testnet".to_string(),
+                receiver_id: args_json.receiver.clone(),
                 amount: 1,
             };
             let actions = vec![action];

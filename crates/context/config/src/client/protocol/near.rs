@@ -1,11 +1,9 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::str::FromStr;
 use std::{time, vec};
 
 pub use near_crypto::SecretKey;
 use near_crypto::{InMemorySigner, PublicKey, Signer};
-use near_jsonrpc_client::methods::block;
 use near_jsonrpc_client::methods::query::{RpcQueryRequest, RpcQueryResponse};
 use near_jsonrpc_client::methods::send_tx::RpcSendTransactionRequest;
 use near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest;
