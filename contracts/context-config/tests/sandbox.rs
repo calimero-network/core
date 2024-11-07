@@ -1,5 +1,4 @@
 #![allow(unused_crate_dependencies)]
-
 use std::collections::BTreeMap;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
@@ -43,12 +42,18 @@ async fn main() -> eyre::Result<()> {
 
     // Fund both nodes with enough NEAR
     let _tx1 = root_account
-        .transfer_near(node1.id(), NearToken::from_near(1))
+        .transfer_near(node1.id(), NearToken::from_near(30))
         .await?
         .into_result()?;
 
     let _tx2 = root_account
-        .transfer_near(node2.id(), NearToken::from_near(1))
+        .transfer_near(node2.id(), NearToken::from_near(30))
+        .await?
+        .into_result()?;
+
+    // Also transfer NEAR to the contract to cover deployment costs
+    let _tx3 = root_account
+        .transfer_near(contract.id(), NearToken::from_near(30))
         .await?
         .into_result()?;
 
@@ -142,6 +147,7 @@ async fn main() -> eyre::Result<()> {
             |p| context_secret.sign(p),
         )?)
         .max_gas()
+        .deposit(NearToken::from_near(20))
         .transact()
         .await?
         .into_result()?;
@@ -933,6 +939,13 @@ async fn test_deploy() -> eyre::Result<()> {
             .await,
     );
 
+    // Also transfer NEAR to the contract to cover proxy deployment costs
+    drop(
+        root_account
+            .transfer_near(contract.id(), NearToken::from_near(10))
+            .await,
+    );
+
     let application_id = rng.gen::<[_; 32]>().rt()?;
     let blob_id = rng.gen::<[_; 32]>().rt()?;
 
@@ -959,38 +972,17 @@ async fn test_deploy() -> eyre::Result<()> {
             |p| context_secret.sign(p),
         )?)
         .max_gas()
+        .deposit(NearToken::from_near(10))
         .transact()
         .await?
         .into_result()?;
-
-    // Assert context creation
-    let expected_log = format!("Context `{}` added", context_id);
-    assert!(res.logs().iter().any(|log| log == &expected_log));
 
     // Uncomment to print the context creation result
     // println!("Result of mutate: {:?}", res);
 
-    // Now deploy the proxy contract
-    let _res = node1
-        .call(contract.id(), "mutate")
-        .args_json(Signed::new(
-            &{
-                let kind = RequestKind::Context(ContextRequest::new(
-                    context_id,
-                    ContextRequestKind::DeployProxyContract {},
-                ));
-                Request::new(alice_cx_id.rt()?, kind)
-            },
-            |p| alice_cx_sk.sign(p),
-        )?)
-        .max_gas()
-        .deposit(NearToken::from_near(20))
-        .transact()
-        .await?
-        .into_result()?;
-
-    // Uncomment to print the proxy contract deployment result
-    // println!("Proxy contract deployed {:?}", res);
+    // Assert context creation
+    let expected_log = format!("Context `{}` added", context_id);
+    assert!(res.logs().iter().any(|log| log == &expected_log));
 
     // Verify the proxy contract was deployed
     let proxy_address: AccountId = contract
