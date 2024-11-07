@@ -105,10 +105,9 @@ impl ContextConfigs {
             env::panic_str("context already exists");
         }
 
-         // Initiate proxy contract deployment with a callback for when it completes
-        self.deploy_proxy_contract(context_id).then(
-            Self::ext(env::current_account_id()).add_context_callback(context_id)
-        )
+        // Initiate proxy contract deployment with a callback for when it completes
+        self.deploy_proxy_contract(context_id)
+            .then(Self::ext(env::current_account_id()).add_context_callback(context_id))
     }
 
     fn update_application(

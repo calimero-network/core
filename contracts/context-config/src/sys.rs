@@ -4,9 +4,9 @@ use std::io;
 use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Application, ContextId, ContextIdentity, SignerId};
 use calimero_context_config::{SystemRequest, Timestamp};
+use near_sdk::serde_json::json;
 use near_sdk::store::{IterableMap, IterableSet};
 use near_sdk::{env, near, require, AccountId, Gas, NearToken, Promise, PromiseResult};
-use near_sdk::serde_json::json;
 
 use crate::{parse_input, Config, ContextConfigs, ContextConfigsExt};
 
@@ -100,10 +100,7 @@ impl ContextConfigs {
     }
 
     #[private]
-    pub fn deploy_proxy_contract(
-        &mut self,
-        context_id: Repr<ContextId>,
-    ) -> Promise {
+    pub fn deploy_proxy_contract(&mut self, context_id: Repr<ContextId>) -> Promise {
         // Create incremental account ID
         let account_id: AccountId = format!("{}.{}", self.next_proxy_id, env::current_account_id())
             .parse()
@@ -163,19 +160,19 @@ impl ContextConfigs {
 
     #[private]
     pub fn add_context_callback(&mut self, context_id: Repr<ContextId>) {
-      require!(
-          env::promise_results_count() == 1,
-          "Expected 1 promise result"
-      );
+        require!(
+            env::promise_results_count() == 1,
+            "Expected 1 promise result"
+        );
 
-      match env::promise_result(0) {
-          PromiseResult::Successful(_) => {
-              env::log_str(&format!("Context `{context_id}` added"));
-          }
-          _ => {
-              panic!("Failed to deploy proxy contract for context");
-          }
-      }
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                env::log_str(&format!("Context `{context_id}` added"));
+            }
+            _ => {
+                panic!("Failed to deploy proxy contract for context");
+            }
+        }
     }
 }
 
