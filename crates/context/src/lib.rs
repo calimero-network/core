@@ -765,6 +765,22 @@ impl ContextManager {
         self.get_context_identities(context_id, true)
     }
 
+    pub fn context_has_owned_identity(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<bool> {
+        let handle = self.store.handle();
+
+        let key = ContextIdentityKey::new(context_id, public_key);
+
+        let Some(value) = handle.get(&key)? else {
+            return Ok(false);
+        };
+
+        Ok(value.private_key.is_some())
+    }
+
     pub fn get_contexts(&self, start: Option<ContextId>) -> EyreResult<Vec<Context>> {
         let handle = self.store.handle();
 
@@ -836,7 +852,7 @@ impl ContextManager {
     }
 
     pub fn has_blob_available(&self, blob_id: BlobId) -> EyreResult<bool> {
-        Ok(self.blob_manager.has(blob_id)?)
+        self.blob_manager.has(blob_id)
     }
 
     // vv~ these would be more appropriate in an ApplicationManager
