@@ -3,6 +3,7 @@
 use core::error::Error;
 use std::collections::HashSet;
 use std::io::Error as IoError;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
@@ -36,6 +37,7 @@ use calimero_store::types::{
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
+use ed25519_dalek::SigningKey;
 use eyre::{bail, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
@@ -285,7 +287,7 @@ impl ContextManager {
         }
 
         handle.put(
-            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
+            &ContextIdentityKey::new(context.id, identity_secret.public_key()), //local node saving its local identity
             &ContextIdentityValue {
                 private_key: Some(*identity_secret),
                 sender_key: Some(*self.new_private_key()),
@@ -754,6 +756,28 @@ impl ContextManager {
             }
         }
         Ok(ids)
+    }
+
+    pub fn get_own_signing_key(
+        &self,
+        context_id: &ContextId,
+        own_public_key: &PublicKey,
+    ) -> EyreResult<SigningKey> {
+        let handle = self.store.handle();
+        let key = handle
+            .get(&ContextIdentityKey::new(*context_id, *own_public_key))?
+            .unwrap() // we are sure it exists because we own the public_key
+            .sender_key
+            .unwrap();
+
+        let combined = {
+            let mut temp = [0u8; 64];
+            temp[..32].copy_from_slice(own_public_key.deref());
+            temp[32..].copy_from_slice(&key);
+            temp
+        };
+
+        Ok(SigningKey::from_keypair_bytes(&combined)?)
     }
 
     pub fn get_context_members_identities(

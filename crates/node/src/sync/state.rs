@@ -1,10 +1,13 @@
 use std::borrow::Cow;
+use std::ops::Deref;
 
+use calimero_crypto::SharedKey;
 use calimero_network::stream::Stream;
 use calimero_primitives::application::ApplicationId;
 use calimero_primitives::context::Context;
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
+use ed25519_dalek::VerifyingKey;
 use eyre::{bail, OptionExt};
 use libp2p::PeerId;
 use rand::seq::IteratorRandom;
@@ -39,10 +42,11 @@ impl Node {
                     application_id: context.application_id,
                 },
             },
+            None,
         )
         .await?;
 
-        let Some(ack) = recv(&mut stream, self.sync_config.timeout).await? else {
+        let Some(ack) = recv(&mut stream, self.sync_config.timeout, None).await? else {
             bail!("no response to state sync request");
         };
 
@@ -79,6 +83,19 @@ impl Node {
 
         let mut sqx_out = Sequencer::default();
 
+        //(private_key, public_key) -> shared_key
+
+        //handle.set()
+
+        let our_sending_key = self
+            .ctx_manager
+            .get_own_signing_key(&context.id, &our_identity)?;
+
+        let shared_key = SharedKey::new(
+            &our_sending_key,
+            &VerifyingKey::from_bytes(their_identity.deref())?,
+        );
+
         send(
             &mut stream,
             &StreamMessage::Message {
@@ -87,6 +104,7 @@ impl Node {
                     artifact: Cow::from(&[]),
                 },
             },
+            Some(shared_key),
         )
         .await?;
 
@@ -163,6 +181,7 @@ impl Node {
         their_identity: PublicKey,
         sqx_out: &mut Sequencer,
         stream: &mut Stream,
+        shared_key: SharedKey,
     ) -> eyre::Result<()> {
         debug!(
             context_id=%context.id,

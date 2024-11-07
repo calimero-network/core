@@ -53,7 +53,7 @@ pub mod types;
 
 use runtime_compat::RuntimeCompatStore;
 use sync::SyncConfig;
-use types::{BroadcastMessage, PeerAction};
+use types::BroadcastMessage;
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -314,7 +314,12 @@ impl Node {
             return Ok(());
         };
 
-        let message = from_slice::<BroadcastMessage<'static>>(&message.data)?;
+        let decryption_key = get_shared_key().map_err(|e| eyre!(e))?;
+        let message = from_slice::<BroadcastMessage<'static>>(
+            &decryption_key
+                .decrypt(message.data, [0; aead::NONCE_LEN])
+                .ok_or_else(|| eyre!("Failed to decrypt message"))?,
+        )?;
 
         match message {
             BroadcastMessage::StateDelta {
@@ -395,9 +400,14 @@ impl Node {
                 artifact: outcome.artifact.as_slice().into(),
             })?;
 
+            let encryption_key = get_shared_key().map_err(|e| eyre!(e))?;
+            let data = encryption_key
+                .encrypt(message, [0; aead::NONCE_LEN])
+                .unwrap();
+
             let _ignored = self
                 .network_client
-                .publish(TopicHash::from_raw(context.id), message)
+                .publish(TopicHash::from_raw(context.id), data)
                 .await?;
         }
 

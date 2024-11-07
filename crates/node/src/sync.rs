@@ -1,18 +1,20 @@
 use std::time::Duration;
 
+use calimero_crypto::SharedKey;
 use calimero_network::stream::{Message, Stream};
 use calimero_primitives::context::ContextId;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, eyre, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use ring::aead;
 use tokio::time::timeout;
 use tracing::{debug, error};
 
 use crate::types::{InitPayload, StreamMessage};
-use crate::Node;
+use crate::{get_shared_key, Node};
 
 mod blobs;
 mod state;
@@ -23,21 +25,38 @@ pub struct SyncConfig {
     pub interval: Duration,
 }
 
-async fn send(stream: &mut Stream, message: &StreamMessage<'_>) -> EyreResult<()> {
-    let message = borsh::to_vec(message)?;
-    stream.send(Message::new(message)).await?;
+async fn send(
+    stream: &mut Stream,
+    message: &StreamMessage<'_>,
+    shared_key: Option<SharedKey>,
+) -> EyreResult<()> {
+    let base_data = borsh::to_vec(message)?;
+    let data = shared_key
+        .and_then(|key| key.encrypt(base_data.clone(), [0; aead::NONCE_LEN]))
+        .unwrap_or(base_data);
+
+    stream.send(Message::new(data)).await?;
     Ok(())
 }
 
 async fn recv(
     stream: &mut Stream,
     duration: Duration,
+    shared_key: Option<SharedKey>,
 ) -> EyreResult<Option<StreamMessage<'static>>> {
     let Some(message) = timeout(duration, stream.next()).await? else {
         return Ok(None);
     };
 
-    Ok(borsh::from_slice(&message?.data)?)
+    let message_data = message?.data.to_vec();
+
+    let data = shared_key
+        .and_then(|key| key.decrypt(message_data.clone(), [0; aead::NONCE_LEN]))
+        .unwrap_or(message_data);
+
+    let decoded = borsh::from_slice::<StreamMessage<'static>>(&data)?;
+
+    Ok(Some(decoded))
 }
 
 #[derive(Default)]
@@ -93,7 +112,7 @@ impl Node {
         if let Err(err) = self.internal_handle_opened_stream(&mut stream).await {
             error!(%err, "Failed to handle stream message");
 
-            if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
+            if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError, None).await {
                 error!(%err, "Failed to send error message");
             }
         }

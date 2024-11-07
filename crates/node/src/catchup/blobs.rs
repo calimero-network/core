@@ -2,10 +2,12 @@ use core::mem::take;
 
 use calimero_blobstore::CHUNK_SIZE as BLOB_CHUNK_SIZE;
 use calimero_network::stream::{Message, Stream, MAX_MESSAGE_SIZE as MAX_STREAM_MESSAGE_SIZE};
-use eyre::Result as EyreResult;
+use eyre::{eyre, Result as EyreResult};
 use futures_util::SinkExt;
+use ring::aead;
 use serde_json::to_vec as to_json_vec;
 
+use crate::get_shared_key;
 use crate::types::{CatchupApplicationBlobChunk, CatchupStreamMessage};
 
 pub struct ApplicationBlobChunkSender {
@@ -42,7 +44,12 @@ impl ApplicationBlobChunkSender {
                 },
             ))?;
 
-            self.stream.send(Message::new(message)).await?;
+            let encryption_key = get_shared_key().map_err(|e| eyre!(e))?;
+            let data = encryption_key
+                .encrypt(message, [0; aead::NONCE_LEN])
+                .unwrap();
+
+            self.stream.send(Message::new(data)).await?;
 
             self.sequential_id = self.sequential_id.saturating_add(1);
         }
@@ -59,7 +66,12 @@ impl ApplicationBlobChunkSender {
                 },
             ))?;
 
-            self.stream.send(Message::new(message)).await?;
+            let encryption_key = get_shared_key().map_err(|e| eyre!(e))?;
+            let data = encryption_key
+                .encrypt(message, [0; aead::NONCE_LEN])
+                .unwrap();
+
+            self.stream.send(Message::new(data)).await?;
         }
 
         Ok(())
