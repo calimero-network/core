@@ -1019,8 +1019,6 @@ impl ContextManager {
         proposal_id: ProposalId,
         actions: Vec<ProposalAction>,
     ) -> EyreResult<()> {
-        println!("Call create proposal in context");
-
         let handle = self.store.handle();
         let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
             //handle
@@ -1034,10 +1032,6 @@ impl ContextManager {
             panic!("No private key found for signer");
         };
 
-        println!("Propose in context proposal_id {:?}", proposal_id);
-        println!("Propose in context signer_id {:?}", signing_key);
-        println!("Propose in context actions {:?}", actions);
-
         // let members = self
         //     .config_client
         //     .query::<ContextConfigEnv>(
@@ -1047,8 +1041,6 @@ impl ContextManager {
         //     )
         //     .members(context_id.rt()?, 0, 100)
         //     .await?;
-
-        // println!("Propose in context members {:?}", members);
 
         let res = self
             .config_client
@@ -1060,8 +1052,6 @@ impl ContextManager {
             .propose(proposal_id, signer_id.rt().unwrap(), actions)
             .send(signing_key)
             .await?;
-
-        println!("Propose in context res {:?}", res);
 
         Ok(())
     }
