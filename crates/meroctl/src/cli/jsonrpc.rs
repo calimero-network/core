@@ -1,11 +1,12 @@
 use calimero_primitives::context::ContextId;
+use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
     ExecuteRequest, Request, RequestId, RequestPayload, Response, Version,
 };
 use clap::{Parser, ValueEnum};
 use const_format::concatcp;
 use eyre::{bail, Result as EyreResult};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::cli::Environment;
 use crate::common::{do_request, load_config, multiaddr_to_url, RequestType};
@@ -29,12 +30,11 @@ pub struct CallCommand {
     #[arg(value_name = "METHOD", help = "Method to fetch details")]
     pub method: String,
 
-    #[arg(
-        long,
-        default_value = "{}",
-        help = "Arguments to the method in the app"
-    )]
-    pub args_json: String,
+    #[arg(long, value_parser = serde_value, help = "JSON arguments to pass to the method")]
+    pub args: Option<Value>,
+
+    #[arg(long = "as", help = "Public key of the executor")]
+    pub executor: PublicKey,
 
     #[arg(
         long,
@@ -47,6 +47,10 @@ pub struct CallCommand {
 #[derive(Clone, Debug, ValueEnum)]
 pub enum CallType {
     Execute,
+}
+
+fn serde_value(s: &str) -> serde_json::Result<Value> {
+    serde_json::from_str(s)
 }
 
 impl Report for Response {
@@ -68,18 +72,11 @@ impl CallCommand {
 
         let url = multiaddr_to_url(multiaddr, "jsonrpc/dev")?;
 
-        let json_payload: Value = serde_json::from_str(&self.args_json)?;
-
         let payload = RequestPayload::Execute(ExecuteRequest::new(
             self.context_id,
             self.method,
-            json_payload,
-            config
-                .identity
-                .public()
-                .try_into_ed25519()?
-                .to_bytes()
-                .into(),
+            self.args.unwrap_or(json!({})),
+            self.executor,
         ));
 
         let request = Request::new(

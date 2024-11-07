@@ -417,7 +417,10 @@ impl Node {
             .context_has_owned_identity(context_id, executor_public_key)
             .unwrap_or_default()
         {
-            return Err(CallError::Unauthorized);
+            return Err(CallError::Unauthorized {
+                context_id,
+                public_key: executor_public_key,
+            });
         }
 
         let outcome_option = self

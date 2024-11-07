@@ -71,7 +71,6 @@ impl Request<RequestPayload> {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum RequestPayload {
     Execute(ExecuteRequest),
 }
@@ -111,19 +110,26 @@ pub enum ResponseBody {
 )]
 pub struct ResponseBodyResult(pub Value);
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ThisError)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum ResponseBodyError {
+    #[error(transparent)]
     ServerError(ServerResponseError),
+    #[error("handler error: {0}")]
     HandlerError(Value),
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum ServerResponseError {
+    #[error("parse error: {0}")]
     ParseError(String),
+    #[error(
+        "internal error: {}",
+        err.as_ref().map_or_else(|| "<opaque>".to_string(), ToString::to_string)
+    )]
     InternalError {
         #[serde(skip)]
         err: Option<EyreError>,
@@ -172,11 +178,13 @@ impl ExecuteResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize, ThisError)]
-#[error("MutateError")]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum ExecuteError {
+    #[error("codec error: {message}")]
     SerdeError { message: String },
+    #[error("error occurred while handling request: {0}")]
     CallError(CallError),
+    #[error("function call error: {0}")]
     FunctionCallError(String),
 }
