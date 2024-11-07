@@ -45,6 +45,8 @@ pub enum CallError {
     NoConnectedPeers,
     #[error("context not found")]
     ContextNotFound,
+    #[error("unauthorized")]
+    Unauthorized,
     #[error("context state not initialized, awaiting state sync")]
     Uninitialized,
     #[error("application not installed: {application_id}")]

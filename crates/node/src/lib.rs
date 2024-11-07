@@ -412,6 +412,14 @@ impl Node {
             return Err(CallError::Uninitialized);
         }
 
+        if !self
+            .ctx_manager
+            .context_has_owned_identity(context_id, executor_public_key)
+            .unwrap_or_default()
+        {
+            return Err(CallError::Unauthorized);
+        }
+
         let outcome_option = self
             .execute(&mut context, method, payload, executor_public_key)
             .await
