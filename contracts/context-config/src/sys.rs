@@ -5,7 +5,7 @@ use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Application, ContextId, ContextIdentity, SignerId};
 use calimero_context_config::{SystemRequest, Timestamp};
 use near_sdk::store::{IterableMap, IterableSet, LazyOption};
-use near_sdk::{env, near, AccountId};
+use near_sdk::{env, near};
 
 use crate::{parse_input, Config, ContextConfigs, ContextConfigsExt};
 

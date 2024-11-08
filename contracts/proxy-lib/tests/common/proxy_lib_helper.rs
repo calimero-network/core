@@ -6,7 +6,7 @@ use calimero_context_config::{
 use ed25519_dalek::{Signer, SigningKey};
 use near_sdk::AccountId;
 use near_workspaces::result::{ExecutionFinalResult, ViewResultDetails};
-use near_workspaces::{Account, Contract};
+use near_workspaces::Account;
 use serde_json::json;
 
 pub const PROXY_CONTRACT_WASM: &str = "./res/proxy_lib.wasm";

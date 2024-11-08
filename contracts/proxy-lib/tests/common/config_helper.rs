@@ -5,7 +5,6 @@ use ed25519_dalek::{Signer, SigningKey};
 use eyre::Result;
 use near_workspaces::network::Sandbox;
 use near_workspaces::result::ExecutionFinalResult;
-use near_workspaces::types::NearToken;
 use near_workspaces::{Account, Contract, Worker};
 use rand::Rng;
 use serde_json::json;

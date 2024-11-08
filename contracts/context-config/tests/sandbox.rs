@@ -1050,17 +1050,20 @@ async fn test_deploy() -> eyre::Result<()> {
         .transact()
         .await?;
 
-    
     // Assert proposal creation result
     let err = res.into_result().unwrap_err();
-    assert!(err.to_string().contains("wouldn't have enough balance to cover storage"), 
-        "Expected storage balance error, got: {}", err);
+    assert!(
+        err.to_string()
+            .contains("wouldn't have enough balance to cover storage"),
+        "Expected storage balance error, got: {}",
+        err
+    );
 
-     // Now fund the account
+    // Now fund the account
     drop(
-      root_account
-          .transfer_near(&proxy_address, NearToken::from_near(5))
-          .await,
+        root_account
+            .transfer_near(&proxy_address, NearToken::from_near(5))
+            .await,
     );
 
     // Try again - this time it should succeed
