@@ -196,6 +196,19 @@ impl ContextManager {
             bail!("Application is not installed on node.")
         };
 
+        self.add_context(
+            &context,
+            identity_secret,
+            Some(ContextConfigParams {
+                protocol: self.client_config.new.protocol.as_str().into(),
+                network_id: self.client_config.new.network.as_str().into(),
+                contract_id: self.client_config.new.contract_id.as_str().into(),
+                proxy_contract: "".into(),
+                application_revision: 0,
+                members_revision: 0,
+            }),
+        )?;
+
         let (tx, rx) = oneshot::channel();
 
         let this = self.clone();
