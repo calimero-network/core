@@ -16,9 +16,7 @@ use crate::{assert_membership, config_contract, MemberAction};
 
 #[near]
 impl ProxyContract {
-    pub fn mutate(&mut self) -> Promise {
-        parse_input!(request: Signed<ProxyMutateRequest>);
-
+    pub fn mutate(&mut self, request: Signed<ProxyMutateRequest>) -> Promise {
         let request = request
             .parse(|i| match i {
                 ProxyMutateRequest::Propose { proposal } => *proposal.author_id,
@@ -268,13 +266,3 @@ impl ProxyContract {
         proposal
     }
 }
-
-macro_rules! _parse_input {
-    ($input:ident $(: $input_ty:ty)?) => {
-        let $input = ::near_sdk::env::input().unwrap_or_default();
-
-        let $input $(: $input_ty )? = ::near_sdk::serde_json::from_slice(&$input).expect("failed to parse input");
-    };
-}
-
-use _parse_input as parse_input;
