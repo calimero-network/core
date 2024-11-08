@@ -312,7 +312,7 @@ impl ContextConfigs {
             .transfer(env::attached_deposit())
             .deploy_contract(self.proxy_code.get().clone().unwrap())
             .function_call(
-                "init".to_string(),
+                "init".to_owned(),
                 serde_json::to_vec(&json!({
                     "context_id": context_id,
                     "context_config_account_id": env::current_account_id()
@@ -346,7 +346,7 @@ impl ContextConfigs {
         // Call the update method on the proxy contract
         Promise::new(proxy_account_id.clone())
             .function_call(
-                "update_contract".to_string(),
+                "update_contract".to_owned(),
                 new_code,
                 NearToken::from_near(0),
                 Gas::from_tgas(100),
