@@ -438,12 +438,14 @@ impl Node {
                 application_id: context.application_id,
             });
         };
-
         for (proposal_id, actions) in &outcome.proposals {
-            let actions: Vec<ProposalAction> = from_slice(&actions).map_err(|e| {
-                error!(%e, "Failed to deserialize proposal actions.");
-                CallError::InternalError
-            })?;
+            // todo deserialize actions into Vec<ProposalAction>
+            let action = ProposalAction::Transfer {
+                receiver_id: "vuki.testnet".into(),
+                amount: 0,
+            };
+            let actions = vec![action];
+
             drop(
                 self.ctx_manager
                     .propose(
