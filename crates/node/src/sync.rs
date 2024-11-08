@@ -6,7 +6,7 @@ use eyre::{bail, Result as EyreResult};
 use futures_util::{SinkExt, StreamExt};
 use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
-use rand::seq::SliceRandom;
+use rand::seq::{IteratorRandom, SliceRandom};
 use rand::thread_rng;
 use tokio::time::timeout;
 use tracing::{debug, error};
@@ -50,6 +50,10 @@ struct Sequencer {
 }
 
 impl Sequencer {
+    fn current(&self) -> usize {
+        self.current
+    }
+
     fn test(&mut self, idx: usize) -> eyre::Result<()> {
         if self.current != idx {
             bail!(
@@ -72,40 +76,59 @@ impl Sequencer {
 }
 
 impl Node {
-    async fn initiate_sync(&self, context_id: ContextId, chosen_peer: PeerId) -> EyreResult<()> {
+    pub(crate) async fn initiate_sync(
+        &self,
+        context_id: ContextId,
+        chosen_peer: PeerId,
+    ) -> EyreResult<()> {
         let mut context = self.ctx_manager.sync_context_config(context_id).await?;
 
         let Some(application) = self.ctx_manager.get_application(&context.application_id)? else {
             bail!("application not found: {}", context.application_id);
         };
 
+        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+
+        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
+            bail!("no identities found for context: {}", context.id);
+        };
+
+        let mut stream = self.network_client.open_stream(chosen_peer).await?;
+
         if !self.ctx_manager.has_blob_available(application.blob)? {
             self.initiate_blob_share_process(
                 &context,
+                our_identity,
                 application.blob,
                 application.size,
-                chosen_peer,
+                &mut stream,
             )
             .await?;
         }
 
-        self.initiate_state_sync_process(&mut context, chosen_peer)
+        self.initiate_state_sync_process(&mut context, our_identity, &mut stream)
             .await
     }
 
     pub(crate) async fn handle_opened_stream(&self, mut stream: Box<Stream>) {
-        if let Err(err) = self.internal_handle_opened_stream(&mut stream).await {
-            error!(%err, "Failed to handle stream message");
+        loop {
+            match self.internal_handle_opened_stream(&mut stream).await {
+                Ok(None) => break,
+                Ok(Some(())) => {}
+                Err(err) => {
+                    error!(%err, "Failed to handle stream message");
 
-            if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
-                error!(%err, "Failed to send error message");
+                    if let Err(err) = send(&mut stream, &StreamMessage::OpaqueError).await {
+                        error!(%err, "Failed to send error message");
+                    }
+                }
             }
         }
     }
 
-    async fn internal_handle_opened_stream(&self, mut stream: &mut Stream) -> EyreResult<()> {
-        let Some(message) = recv(&mut stream, self.sync_config.timeout).await? else {
-            bail!("stream closed unexpectedly")
+    async fn internal_handle_opened_stream(&self, stream: &mut Stream) -> EyreResult<Option<()>> {
+        let Some(message) = recv(stream, self.sync_config.timeout).await? else {
+            return Ok(None);
         };
 
         let (context_id, their_identity, payload) = match message {
@@ -145,7 +168,7 @@ impl Node {
 
         match payload {
             InitPayload::BlobShare { blob_id } => {
-                self.handle_blob_share_request(context, their_identity, blob_id, &mut stream)
+                self.handle_blob_share_request(context, their_identity, blob_id, stream)
                     .await?
             }
             InitPayload::StateSync {
@@ -173,13 +196,13 @@ impl Node {
                     their_identity,
                     root_hash,
                     application_id,
-                    &mut stream,
+                    stream,
                 )
                 .await?
             }
         };
 
-        Ok(())
+        Ok(Some(()))
     }
 
     pub async fn perform_interval_sync(&self) {
@@ -193,7 +216,7 @@ impl Node {
                     break;
                 }
 
-                debug!(%context_id, "Unable to perform interval sync for context, trying another");
+                debug!(%context_id, "Unable to perform interval sync for context, trying another..");
             }
         };
 

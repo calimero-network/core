@@ -69,7 +69,6 @@ async fn handle_request(
     let body = match from_json_value::<RequestPayload>(request.payload) {
         Ok(payload) => match payload {
             RequestPayload::Execute(request) => request.handle(state).await.to_res_body(),
-            _ => unreachable!("Unsupported JSON RPC method"),
         },
         Err(err) => {
             error!(%err, "Failed to deserialize RequestPayload");
@@ -79,10 +78,6 @@ async fn handle_request(
             ))
         }
     };
-
-    if let ResponseBody::Error(err) = &body {
-        error!(?err, "Failed to execute JSON RPC method");
-    }
 
     let response = PrimitiveResponse::new(request.jsonrpc, request.id, body);
     Json(response)
@@ -138,11 +133,13 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
 }
 
 #[derive(Debug, ThisError)]
-#[error("CallError")]
 #[expect(clippy::enum_variant_names, reason = "Acceptable here")]
 pub(crate) enum CallError {
-    UpstreamCallError(PrimitiveCallError),
-    UpstreamFunctionCallError(String), // TODO use FunctionCallError from runtime-primitives once they are migrated
+    #[error(transparent)]
+    CallError(PrimitiveCallError),
+    #[error("function call error: {0}")]
+    FunctionCallError(String), // TODO use FunctionCallError from runtime-primitives once they are migrated
+    #[error(transparent)]
     InternalError(EyreError),
 }
 
@@ -170,13 +167,14 @@ pub(crate) async fn call(
         CallError::InternalError(eyre!("Failed to receive call outcome result: {}", e))
     })? {
         Ok(outcome) => {
-            for log in outcome.logs {
-                info!("RPC log: {}", log);
+            let x = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
+            for (i, log) in outcome.logs.iter().enumerate() {
+                info!("execution log {i:>x$}| {}", log);
             }
 
             let Some(returns) = outcome
                 .returns
-                .map_err(|e| CallError::UpstreamFunctionCallError(e.to_string()))?
+                .map_err(|e| CallError::FunctionCallError(e.to_string()))?
             else {
                 return Ok(None);
             };
@@ -185,7 +183,7 @@ pub(crate) async fn call(
                 CallError::InternalError(eyre!("Failed to convert call result to string: {}", e))
             })?))
         }
-        Err(err) => Err(CallError::UpstreamCallError(err)),
+        Err(err) => Err(CallError::CallError(err)),
     }
 }
 

@@ -188,14 +188,6 @@ pub fn random_bytes(buf: &mut [u8]) {
     unsafe { sys::random_bytes(BufferMut::new(buf)) }
 }
 
-#[inline]
-pub fn send_proposal(value: &[u8], buf: &mut [u8]) {
-    unsafe { sys::send_proposal(Buffer::new(value), BufferMut::new(buf)) }
-}
-#[inline]
-pub fn approve_proposal(buf: &mut [u8]) {
-    unsafe { sys::approve_proposal(BufferMut::new(buf)) }
-}
 /// Gets the current time.
 #[inline]
 #[must_use]

@@ -6,6 +6,7 @@
 
 use core::future::{pending, Future};
 use core::pin::Pin;
+use core::str;
 use std::time::Duration;
 
 use borsh::{from_slice, to_vec};
@@ -149,7 +150,7 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     let mut catchup_interval_tick = interval_at(
         Instant::now()
-            .checked_add(Duration::from_millis(thread_rng().gen_range(0..1001)))
+            .checked_add(Duration::from_millis(thread_rng().gen_range(1000..5000)))
             .ok_or_else(|| eyre!("Overflow when calculating initial catchup interval delay"))?,
         config.sync.interval,
     );
@@ -348,8 +349,7 @@ impl Node {
 
         if let Some(derived_root_hash) = outcome.root_hash {
             if derived_root_hash != *root_hash {
-                self.initiate_state_sync_process(&mut context, source)
-                    .await?;
+                self.initiate_sync(context_id, source).await?;
             }
         }
 
@@ -385,18 +385,18 @@ impl Node {
     }
 
     pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
-        let task = self.handle_call(
-            request.context_id,
-            &request.method,
-            request.payload,
-            request.executor_public_key,
-        );
+        let result = self
+            .handle_call(
+                request.context_id,
+                &request.method,
+                request.payload,
+                request.executor_public_key,
+            )
+            .await;
 
-        drop(request.outcome_sender.send(task.await.map_err(|err| {
-            error!(%err, "failed to execute local query");
-
-            CallError::InternalError
-        })));
+        if let Err(err) = request.outcome_sender.send(result) {
+            error!(?err, "failed to respond to client request");
+        }
     }
 
     async fn handle_call(
@@ -414,8 +414,19 @@ impl Node {
             return Err(CallError::Uninitialized);
         }
 
+        if !self
+            .ctx_manager
+            .context_has_owned_identity(context_id, executor_public_key)
+            .unwrap_or_default()
+        {
+            return Err(CallError::Unauthorized {
+                context_id,
+                public_key: executor_public_key,
+            });
+        }
+
         let outcome_option = self
-            .execute(&mut context, method, payload, executor_public_key)
+            .execute(&mut context, method, payload.clone(), executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute query call.");
@@ -427,26 +438,22 @@ impl Node {
                 application_id: context.application_id,
             });
         };
-
-        for proposal in &outcome.proposals {
-            println!("Proposal: {:?}", proposal);
-            println!("Aaaa: {:?}", proposal.0);
-            println!("Ppppp: {:?}", proposal.1);
-
+        for (proposal_id, actions) in &outcome.proposals {
+            // todo deserialize actions into Vec<ProposalAction>
             let action = ProposalAction::Transfer {
-                receiver_id: "vuki.testnet".to_string(),
-                amount: 1,
+                receiver_id: "vuki.testnet".into(),
+                amount: 0,
             };
             let actions = vec![action];
 
-            // let actions = BorshDeserialize::deserialize(&mut actions.as_slice()).map_err(|e| {
-            //     error!(%e, "Failed to deserialize proposal actions.");
-            //     CallError::InternalError
-            // })?;
-
             drop(
                 self.ctx_manager
-                    .propose(context_id, executor_public_key, proposal.0.clone(), actions)
+                    .propose(
+                        context_id,
+                        executor_public_key,
+                        proposal_id.clone(),
+                        actions,
+                    )
                     .await,
             );
         }

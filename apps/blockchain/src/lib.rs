@@ -1,11 +1,11 @@
 use calimero_sdk::app;
 use calimero_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use calimero_sdk::env::{self};
+use calimero_sdk::serde::{Deserialize, Serialize};
 use calimero_sdk::types::Error;
 use calimero_storage::collections::UnorderedMap;
 use calimero_storage::entities::Element;
 use calimero_storage::AtomicUnit;
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Deserialize)]
 #[serde(crate = "calimero_sdk::serde")]
@@ -80,7 +80,9 @@ impl AppState {
         Ok(true)
     }
 
-    pub fn approve_proposal(&mut self, proposal_id: env::ext::ProposalId) -> Result<bool, Error> {
+    pub fn approve_proposal(&mut self, proposal_id: String) -> Result<bool, Error> {
+        let proposal_id = env::ext::ProposalId(Self::string_to_u8_32(proposal_id.as_str()));
+
         println!("Approve proposal: {:?}", proposal_id);
         let _ = Self::external().approve(proposal_id);
         Ok(true)
@@ -128,6 +130,7 @@ impl AppState {
         Ok(true)
     }
 
+    // todo there's no guarantee a proposal Id will be safely encodable as utf8, use bs58 instead
     fn string_to_u8_32(s: &str) -> [u8; 32] {
         let mut array = [0u8; 32]; // Initialize array with 32 zeroes
         let bytes = s.as_bytes(); // Convert the string to bytes

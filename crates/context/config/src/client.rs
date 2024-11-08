@@ -120,7 +120,6 @@ impl<T: Transport> Client<T> {
         request: TransportRequest<'_>,
         payload: Vec<u8>,
     ) -> Result<Vec<u8>, T::Error> {
-        println!("send {:?}", request);
         self.transport.send(request, payload).await
     }
 
@@ -189,15 +188,11 @@ impl<'a, T: Transport> CallClient<'a, T> {
             operation,
         };
 
-        println!("send req {:?}", request);
-
         let response = self
             .client
             .send(request, payload)
             .await
             .map_err(ClientError::Transport)?;
-
-        println!("send response {:?}", response);
 
         M::decode(response).map_err(ClientError::Codec)
     }
