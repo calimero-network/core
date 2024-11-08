@@ -1083,9 +1083,13 @@ impl ContextManager {
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
-                context_config.contract.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
             )
-            .propose(proposal_id, signer_id.rt().unwrap(), actions)
+            .propose(
+                proposal_id,
+                signer_id.rt().expect("infallible conversion"),
+                actions,
+            )
             .send(signing_key)
             .await?;
 
@@ -1116,9 +1120,9 @@ impl ContextManager {
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
-                context_config.contract.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
             )
-            .approve(signer_id.rt().unwrap(), proposal_id)
+            .approve(signer_id.rt().expect("infallible conversion"), proposal_id)
             .send(signing_key)
             .await?;
 
