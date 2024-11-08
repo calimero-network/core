@@ -305,26 +305,28 @@ impl Node {
                 root_hash,
                 artifact,
             } => {
-                let identities = self.ctx_manager.get_context_owned_identities(context_id)?;
+                let possible_sending_key =
+                    self.ctx_manager.get_sender_key(&context_id, &author_id)?;
 
-                let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-                    bail!("no identities found for context: {}", context_id);
+                let sending_key = match possible_sending_key {
+                    Some(key) => key,
+                    None => todo!(), //initiate sync
                 };
 
-                let our_sending_key = self
-                    .ctx_manager
-                    .get_own_signing_key(&context_id, &our_identity)?;
+                let shared_key = SharedKey::from_sk(&sending_key);
 
-                let shared_key = SharedKey::from_sk(&our_sending_key);
+                let artifact = &shared_key
+                    .decrypt(artifact.into_owned(), [0; aead::NONCE_LEN])
+                    .ok_or_else(|| eyre!("Failed to decrypt message"))?;
 
-                let artifact = from_slice::<Vec<u8>>(
-                    &shared_key
-                        .decrypt(artifact.into_owned(), [0; aead::NONCE_LEN])
-                        .ok_or_else(|| eyre!("Failed to decrypt message"))?,
-                )?;
-
-                self.handle_state_delta(source, context_id, author_id, root_hash, artifact)
-                    .await?;
+                self.handle_state_delta(
+                    source,
+                    context_id,
+                    author_id,
+                    root_hash,
+                    artifact.to_vec(),
+                )
+                .await?;
             }
         }
 
@@ -381,24 +383,22 @@ impl Node {
             .await
             != 0
         {
-            let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
+            let possible_sending_key = self
+                .ctx_manager
+                .get_sender_key(&context.id, &executor_public_key)?;
 
-            let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-                bail!("no identities found for context: {}", context.id);
+            let sending_key = match possible_sending_key {
+                Some(key) => key,
+                None => todo!(), // initiate sync
             };
 
-            let our_sending_key = self
-                .ctx_manager
-                .get_own_signing_key(&context.id, &our_identity)?;
-
-            let shared_key = SharedKey::from_sk(&our_sending_key);
+            let shared_key = SharedKey::from_sk(&sending_key);
 
             let artifact_encrypted = shared_key
                 .encrypt(outcome.artifact.clone(), [0; aead::NONCE_LEN])
-                .unwrap();
+                .ok_or(eyre!("Encryption failed"))?;
 
             let message = to_vec(&BroadcastMessage::StateDelta {
-                // We are encrypting only the artifact so we can use the context_id decrypting
                 context_id: context.id,
                 author_id: executor_public_key,
                 root_hash: context.root_hash,

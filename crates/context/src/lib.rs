@@ -3,7 +3,6 @@
 use core::error::Error;
 use std::collections::HashSet;
 use std::io::Error as IoError;
-use std::ops::Deref;
 use std::sync::Arc;
 
 use calimero_blobstore::{Blob, BlobManager, Size};
@@ -37,8 +36,7 @@ use calimero_store::types::{
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use ed25519_dalek::SigningKey;
-use eyre::{bail, eyre, OptionExt, Result as EyreResult};
+use eyre::{bail, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
@@ -758,26 +756,20 @@ impl ContextManager {
         Ok(ids)
     }
 
-    pub fn get_own_signing_key(
+    pub fn get_sender_key(
         &self,
         context_id: &ContextId,
         own_public_key: &PublicKey,
-    ) -> EyreResult<SigningKey> {
+    ) -> EyreResult<Option<PrivateKey>> {
         let handle = self.store.handle();
         let key = handle
             .get(&ContextIdentityKey::new(*context_id, *own_public_key))?
-            .unwrap() // we are sure it exists because we own the public_key
-            .sender_key
-            .ok_or_eyre(eyre!("Non existant SenderKey"))?;
+            .and_then(|ctx_identity| ctx_identity.sender_key);
 
-        let combined = {
-            let mut temp = [0u8; 64];
-            temp[..32].copy_from_slice(own_public_key.deref());
-            temp[32..].copy_from_slice(&key);
-            temp
-        };
-
-        Ok(SigningKey::from_keypair_bytes(&combined)?)
+        match key {
+            Some(key) => Ok(Some(PrivateKey::from(key))),
+            None => Ok(None),
+        }
     }
 
     pub fn get_context_members_identities(

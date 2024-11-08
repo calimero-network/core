@@ -53,7 +53,7 @@ async fn recv(
         return Ok(None);
     };
 
-    let message_data = message?.data.to_vec();
+    let message_data = message?.data.into_owned();
 
     let data = match shared_key {
         Some(key) => match key.decrypt(message_data, [0; aead::NONCE_LEN]) {
@@ -190,21 +190,9 @@ impl Node {
             }
         }
 
-        let identities = self.ctx_manager.get_context_owned_identities(context.id)?;
-
-        let Some(our_identity) = identities.into_iter().choose(&mut thread_rng()) else {
-            bail!("no identities found for context: {}", context.id);
-        };
-
-        let our_sending_key = self
-            .ctx_manager
-            .get_own_signing_key(&context_id, &our_identity)?;
-
-        let shared_key = SharedKey::new(&our_sending_key, &our_identity);
-
         match payload {
             InitPayload::BlobShare { blob_id } => {
-                self.handle_blob_share_request(context, their_identity, blob_id, stream, shared_key)
+                self.handle_blob_share_request(context, their_identity, blob_id, stream)
                     .await?
             }
             InitPayload::StateSync {
@@ -233,7 +221,6 @@ impl Node {
                     root_hash,
                     application_id,
                     stream,
-                    shared_key,
                 )
                 .await?
             }
