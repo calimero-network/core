@@ -1,9 +1,12 @@
 //! High-level data structures for storage.
 
+use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::ptr;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use indexmap::IndexSet;
 
 pub mod unordered_map;
 pub use unordered_map::UnorderedMap;
@@ -14,26 +17,32 @@ pub use vector::Vector;
 pub mod error;
 pub use error::StoreError;
 
+// fixme! macro expects `calimero_storage` to be in deps
 use crate as calimero_storage;
 use crate::address::{Id, Path};
 use crate::entities::{Data, Element};
 use crate::interface::{Interface, StorageError};
 use crate::{AtomicUnit, Collection};
 
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
 #[type_id(255)]
 #[root]
 struct Collection<T> {
     /// The entries in the collection.
     #[collection]
     entries: Entries<T>,
+
     /// The storage element for the map.
     #[storage]
     storage: Element,
+
+    #[skip]
+    #[borsh(skip)]
+    children_ids: RefCell<Option<IndexSet<Id>>>,
 }
 
 /// A collection of entries in a map.
-#[derive(Collection, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[derive(Collection, Copy, Clone, Debug, Eq, PartialEq)]
 #[children(Entry<T>)]
 struct Entries<T> {
     /// Helper to associate the generic types with the collection.
@@ -41,7 +50,7 @@ struct Entries<T> {
 }
 
 /// An entry in a map.
-#[derive(AtomicUnit, Clone, Debug, Eq, PartialEq, PartialOrd)]
+#[derive(AtomicUnit, BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
 #[type_id(254)]
 struct Entry<T> {
     /// The item in the entry.
@@ -68,7 +77,8 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
     /// Creates a new collection.
     fn new() -> Self {
         let mut this = Self {
-            entries: Entries { _priv: PhantomData },
+            entries: Entries::default(),
+            children_ids: RefCell::new(None),
             storage: Element::new(&Path::new("::unused").expect("valid path"), None),
         };
 
@@ -106,14 +116,10 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
         }))
     }
 
-    fn entries(&self) -> StoreResult<impl ExactSizeIterator<Item = StoreResult<T>>> {
-        let children = Interface::child_info_for(self.id(), &self.entries)?;
-
-        let iter = children.into_iter().map(|child| {
-            let id = child.id();
-
-            let entry = Interface::find_by_id::<Entry<_>>(id)?
-                .ok_or(StoreError::StorageError(StorageError::NotFound(id)))?;
+    fn entries(&self) -> StoreResult<impl ExactSizeIterator<Item = StoreResult<T>> + '_> {
+        let iter = self.children_cache()?.iter().copied().map(|child| {
+            let entry = Interface::find_by_id::<Entry<_>>(child)?
+                .ok_or(StoreError::StorageError(StorageError::NotFound(child)))?;
 
             Ok(entry.item)
         });
@@ -128,13 +134,32 @@ impl<T: BorshSerialize + BorshDeserialize> Collection<T> {
 
         Ok(())
     }
+
+    fn children_cache(&self) -> StoreResult<&mut IndexSet<Id>> {
+        let mut cache = self.children_ids.borrow_mut();
+
+        if cache.is_none() {
+            let children = Interface::child_info_for(self.id(), &self.entries)?;
+
+            let children = children.into_iter().map(|c| c.id()).collect();
+
+            *cache = Some(children);
+        }
+
+        let children = cache.as_mut().expect("children");
+
+        #[allow(unsafe_code)]
+        let children = unsafe { &mut *ptr::from_mut(children) };
+
+        Ok(children)
+    }
 }
 
 impl<T> EntryMut<'_, T>
 where
     T: BorshSerialize + BorshDeserialize,
 {
-    fn remove(mut self) -> StoreResult<T> {
+    fn remove(self) -> StoreResult<T> {
         let old = self
             .collection
             .get(self.entry.id())?
@@ -144,9 +169,14 @@ where
 
         let _ = Interface::remove_child_from(
             self.collection.id(),
-            &mut self.collection.entries,
+            &self.collection.entries,
             self.entry.id(),
         )?;
+
+        let _ = self
+            .collection
+            .children_cache()?
+            .shift_remove(&self.entry.id());
 
         Ok(old)
     }
@@ -193,24 +223,21 @@ where
     fn insert(&mut self, item: Entry<T>) -> StoreResult<()> {
         let mut item = item;
 
-        let _ = Interface::add_child_to(
-            self.collection.id(),
-            &mut self.collection.entries,
-            &mut item,
-        )?;
+        let _ = Interface::add_child_to(self.collection.id(), &self.entries, &mut item)?;
+
+        let _ignored = self.collection.children_cache()?.insert(item.id());
 
         Ok(())
     }
 
     fn clear(&mut self) -> StoreResult<()> {
-        let children =
-            Interface::child_info_for(self.collection.id(), &mut self.collection.entries)?;
+        let children = self.collection.children_cache()?;
 
-        for child in children {
+        for child in children.drain(..) {
             let _ = Interface::remove_child_from(
                 self.collection.id(),
-                &mut self.collection.entries,
-                child.id(),
+                &self.collection.entries,
+                child,
             )?;
         }
 
