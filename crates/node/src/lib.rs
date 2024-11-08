@@ -438,8 +438,8 @@ impl Node {
                 application_id: context.application_id,
             });
         };
-        for proposal in &outcome.proposals {
-            //todo deserialize input
+        for (proposal_id, actions) in &outcome.proposals {
+            // todo deserialize actions into Vec<ProposalAction>
             let action = ProposalAction::Transfer {
                 receiver_id: "vuki.testnet".into(),
                 amount: 0,
@@ -448,7 +448,12 @@ impl Node {
 
             drop(
                 self.ctx_manager
-                    .propose(context_id, executor_public_key, proposal.0.clone(), actions)
+                    .propose(
+                        context_id,
+                        executor_public_key,
+                        proposal_id.clone(),
+                        actions,
+                    )
                     .await,
             );
         }
