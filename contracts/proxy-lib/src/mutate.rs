@@ -11,12 +11,13 @@ use near_sdk::{
     PromiseResult,
 };
 
-use super::{Proposal, ProxyContract, ProxyContractExt, Signed};
+use super::{parse_input, Proposal, ProxyContract, ProxyContractExt, Signed};
 use crate::{assert_membership, config_contract, MemberAction};
 
 #[near]
 impl ProxyContract {
-    pub fn mutate(&mut self, request: Signed<ProxyMutateRequest>) -> Promise {
+    pub fn mutate(&mut self) -> Promise {
+        parse_input!(request: Signed<ProxyMutateRequest>);
         let request = request
             .parse(|i| match i {
                 ProxyMutateRequest::Propose { proposal } => *proposal.author_id,
@@ -195,6 +196,37 @@ impl ProxyContract {
             self.execute_proposal(proposal);
         } else {
             approvals.insert(signer_id);
+        }
+    }
+
+    pub fn update_contract(&mut self) -> Promise {
+        // Verify caller is the context config contract
+        require!(
+            env::predecessor_account_id() == self.context_config_account_id,
+            "Only the context config contract can update the proxy"
+        );
+
+        let new_code = env::input().expect("Expected proxy code");
+        // Deploy the new code and chain the callback
+        Promise::new(env::current_account_id())
+            .deploy_contract(new_code)
+            .then(Self::ext(env::current_account_id()).update_contract_callback())
+    }
+
+    #[private]
+    #[handle_result]
+    pub fn update_contract_callback(&mut self) -> Result<(), &'static str> {
+        require!(
+            env::promise_results_count() == 1,
+            "Expected 1 promise result"
+        );
+
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                env::log_str("Successfully updated proxy contract code");
+                Ok(())
+            }
+            _ => Err("Failed to update proxy contract code"),
         }
     }
 }

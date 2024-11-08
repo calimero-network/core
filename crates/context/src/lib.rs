@@ -356,7 +356,6 @@ impl ContextManager {
                 members_revision: 0,
             })
         } else {
-            //should this be existing config?
             return Ok(None);
         };
 

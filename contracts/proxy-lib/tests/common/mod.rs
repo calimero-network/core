@@ -26,7 +26,7 @@ pub async fn create_account_with_balance(
     account_id: &str,
     balance: u128,
 ) -> Result<Account> {
-    let root_account = worker.dev_create_account().await?;
+    let root_account = worker.root_account()?;
     let account = root_account
         .create_subaccount(account_id)
         .initial_balance(NearToken::from_near(balance))
