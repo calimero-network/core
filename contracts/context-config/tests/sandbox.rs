@@ -1036,7 +1036,7 @@ async fn test_deploy() -> eyre::Result<()> {
     );
 
     // Create proposal
-    let proposal_id = rng.gen();
+    let proposal_id = rand::thread_rng().gen();
     let actions = vec![ProposalAction::ExternalFunctionCall {
         receiver_id: contract.id().to_string(),
         method_name: "increment".to_string(),
@@ -1066,7 +1066,14 @@ async fn test_deploy() -> eyre::Result<()> {
     let success_value = res.raw_bytes()?;
     let proposal_result: serde_json::Value = serde_json::from_slice(&success_value)?;
     assert_eq!(proposal_result["num_approvals"], 1);
-    let created_proposal_id = proposal_result["proposal_id"].as_u64().unwrap();
+    let created_proposal_id: [u8; 32] = proposal_result["proposal_id"]
+        .as_array()
+        .expect("proposal_id should be a byte array")
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u8)
+        .collect::<Vec<u8>>()
+        .try_into()
+        .expect("proposal_id should be 32 bytes");
 
     // Verify proposals list
     let proposals: Vec<Proposal> = worker
@@ -1080,7 +1087,7 @@ async fn test_deploy() -> eyre::Result<()> {
 
     assert_eq!(proposals.len(), 1, "Should have exactly one proposal");
     let created_proposal = &proposals[0];
-    assert_eq!(created_proposal.id, created_proposal_id as u32);
+    assert_eq!(created_proposal.id, created_proposal_id);
     assert_eq!(created_proposal.author_id, alice_cx_id.rt()?);
     assert_eq!(created_proposal.actions.len(), 1);
 
@@ -1114,7 +1121,7 @@ async fn test_deploy() -> eyre::Result<()> {
         single_proposal.is_some(),
         "Should be able to get single proposal"
     );
-    assert_eq!(single_proposal.unwrap().id, created_proposal_id as u32);
+    assert_eq!(single_proposal.unwrap().id, created_proposal_id);
 
     Ok(())
 }
