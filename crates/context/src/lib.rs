@@ -1080,7 +1080,7 @@ impl ContextManager {
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
-                context_config.proxy_contract.as_ref().into(),
+                context_config.contract.as_ref().into(),
             )
             .propose(proposal_id, signer_id.rt().unwrap(), actions)
             .send(signing_key)
@@ -1113,7 +1113,7 @@ impl ContextManager {
             .mutate::<ContextProxy>(
                 context_config.protocol.as_ref().into(),
                 context_config.network.as_ref().into(),
-                context_config.proxy_contract.as_ref().into(),
+                context_config.contract.as_ref().into(),
             )
             .approve(signer_id.rt().unwrap(), proposal_id)
             .send(signing_key)
