@@ -38,7 +38,6 @@ use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, Rng};
-use serde::de::Error as SerdeError;
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -52,7 +51,7 @@ pub mod types;
 
 use runtime_compat::RuntimeCompatStore;
 use sync::SyncConfig;
-use types::{BroadcastMessage, ProposalRequest};
+use types::BroadcastMessage;
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -429,19 +428,11 @@ impl Node {
                 application_id: context.application_id,
             });
         };
-        let args_str = str::from_utf8(&payload).map_err(|e| {
-            error!(%e, "Failed to convert payload to UTF-8.");
-            CallError::InternalError
-        })?;
-        let args_json: ProposalRequest = serde_json::from_str(args_str).map_err(|e| {
-            error!(%e, "Failed to parse proposal request.");
-            CallError::InternalError
-        })?;
-
         for proposal in &outcome.proposals {
+            //todo deserialize input
             let action = ProposalAction::Transfer {
-                receiver_id: args_json.receiver.clone(),
-                amount: 1,
+                receiver_id: "vuki.testnet".into(),
+                amount: 0,
             };
             let actions = vec![action];
 

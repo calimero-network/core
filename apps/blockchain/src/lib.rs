@@ -130,6 +130,7 @@ impl AppState {
         Ok(true)
     }
 
+    // todo there's no guarantee a proposal Id will be safely encodable as utf8, use bs58 instead
     fn string_to_u8_32(s: &str) -> [u8; 32] {
         let mut array = [0u8; 32]; // Initialize array with 32 zeroes
         let bytes = s.as_bytes(); // Convert the string to bytes
