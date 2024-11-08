@@ -104,7 +104,7 @@ async fn test_view_proposal() -> Result<()> {
     assert_eq!(result_proposal.actions, vec![]);
     assert_eq!(result_proposal.author_id, alice_sk.verifying_key().rt()?);
 
-    let non_existent_proposal_id: u32 = 2;
+    let non_existent_proposal_id = [2; 32];
     let view_proposal: Option<Proposal> = proxy_helper
         .view_proposal(&relayer_account, &non_existent_proposal_id)
         .await?;
@@ -157,7 +157,7 @@ async fn test_create_proposal_by_non_member() -> Result<()> {
     assert!(error.to_string().contains("Is not a member"));
 
     let view_proposal: Option<ProposalWithApprovals> = proxy_helper
-        .view_proposal_confirmations(&relayer_account, &0)
+        .view_proposal_confirmations(&relayer_account, &[0; 32])
         .await?
         .json()?;
 

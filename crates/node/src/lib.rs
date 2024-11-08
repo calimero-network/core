@@ -6,6 +6,7 @@
 
 use core::future::{pending, Future};
 use core::pin::Pin;
+use core::str;
 use std::time::Duration;
 
 use borsh::{from_slice, to_vec};
@@ -13,6 +14,7 @@ use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
+use calimero_context_config::ProposalAction;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
@@ -424,7 +426,7 @@ impl Node {
         }
 
         let outcome_option = self
-            .execute(&mut context, method, payload, executor_public_key)
+            .execute(&mut context, method, payload.clone(), executor_public_key)
             .await
             .map_err(|e| {
                 error!(%e, "Failed to execute query call.");
@@ -436,6 +438,33 @@ impl Node {
                 application_id: context.application_id,
             });
         };
+        for (proposal_id, actions) in &outcome.proposals {
+            // todo deserialize actions into Vec<ProposalAction>
+            let action = ProposalAction::Transfer {
+                receiver_id: "vuki.testnet".into(),
+                amount: 0,
+            };
+            let actions = vec![action];
+
+            drop(
+                self.ctx_manager
+                    .propose(
+                        context_id,
+                        executor_public_key,
+                        proposal_id.clone(),
+                        actions,
+                    )
+                    .await,
+            );
+        }
+
+        for approval in &outcome.approvals {
+            drop(
+                self.ctx_manager
+                    .approve(context_id, executor_public_key, approval.clone())
+                    .await,
+            );
+        }
 
         if let Err(err) = self
             .send_state_delta(&context, &outcome, executor_public_key)

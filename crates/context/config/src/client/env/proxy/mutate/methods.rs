@@ -24,7 +24,7 @@ impl<'a, T> ContextProxyMutate<'a, T> {
 
     pub fn approve(
         self,
-        signer_id: Repr<SignerId>,
+        signer_id: SignerId,
         proposal_id: ProposalId,
     ) -> ContextProxyMutateRequest<'a, T> {
         ContextProxyMutateRequest {
@@ -32,7 +32,7 @@ impl<'a, T> ContextProxyMutate<'a, T> {
             raw_request: ProxyMutateRequest::Approve {
                 approval: ProposalApprovalWithSigner {
                     proposal_id,
-                    signer_id,
+                    signer_id: Repr::new(signer_id),
                     added_timestamp: 0, // TODO: add timestamp
                 },
             },

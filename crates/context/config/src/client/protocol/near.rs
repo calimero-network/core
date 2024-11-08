@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::time;
+use std::{time, vec};
 
 pub use near_crypto::SecretKey;
 use near_crypto::{InMemorySigner, PublicKey, Signer};
@@ -272,8 +272,8 @@ impl Network {
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: method,
                 args,
-                gas: 100_000_000_000_000, // 100 TeraGas
-                deposit: 0,
+                gas: 300_000_000_000_000,
+                deposit: 5_000_000_000_000_000_000_000_000,
             }))],
         });
 
@@ -294,7 +294,7 @@ impl Network {
             })
             .await;
 
-        let response = loop {
+        let response: near_jsonrpc_client::methods::tx::RpcTransactionResponse = loop {
             match response {
                 Ok(response) => break response,
                 Err(err) => {

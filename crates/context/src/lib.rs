@@ -8,12 +8,14 @@ use std::sync::Arc;
 use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ClientConfig;
 use calimero_context_config::client::env::config::ContextConfig as ContextConfigEnv;
+use calimero_context_config::client::env::proxy::ContextProxy;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
     ApplicationSource as ApplicationSourceConfig,
 };
+use calimero_context_config::{ProposalAction, ProposalId};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
@@ -1020,5 +1022,78 @@ impl ContextManager {
         };
 
         Ok(Some(stream))
+    }
+
+    pub fn is_application_blob_installed(&self, blob_id: BlobId) -> EyreResult<bool> {
+        self.blob_manager.has(blob_id)
+    }
+
+    pub async fn propose(
+        &self,
+        context_id: ContextId,
+        signer_id: PublicKey,
+        proposal_id: ProposalId,
+        actions: Vec<ProposalAction>,
+    ) -> EyreResult<()> {
+        let handle = self.store.handle();
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!(
+                "Failed to retrieve ContextConfig for context ID: {}",
+                context_id
+            );
+        };
+
+        let Some(ContextIdentityValue {
+            private_key: Some(signing_key),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
+        else {
+            bail!("No private key found for signer");
+        };
+
+        let _ = self
+            .config_client
+            .mutate::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .propose(proposal_id, signer_id.rt().unwrap(), actions)
+            .send(signing_key)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn approve(
+        &self,
+        context_id: ContextId,
+        signer_id: PublicKey,
+        proposal_id: ProposalId,
+    ) -> EyreResult<()> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let Some(ContextIdentityValue {
+            private_key: Some(signing_key),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
+        else {
+            bail!("No private key found for signer");
+        };
+
+        let _ = self
+            .config_client
+            .mutate::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .approve(signer_id.rt().unwrap(), proposal_id)
+            .send(signing_key)
+            .await?;
+
+        Ok(())
     }
 }
