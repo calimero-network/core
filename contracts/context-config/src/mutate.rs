@@ -56,7 +56,7 @@ impl ContextConfigs {
                 }
                 ContextRequestKind::Revoke { capabilities } => {
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
-                }
+                },
                 ContextRequestKind::UpdateProxyContract => {
                     self.update_proxy_contract(&request.signer_id, context_id);
                 }
