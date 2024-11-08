@@ -76,17 +76,6 @@ async fn main() -> eyre::Result<()> {
     let application_id = rng.gen::<[_; 32]>().rt()?;
     let blob_id = rng.gen::<[_; 32]>().rt()?;
 
-    // Transfer more NEAR to cover gas costs
-    drop(
-        root_account
-            .transfer_near(
-                node1.id(),
-                NearToken::from_near(1), // Increased from 0.1 to 1 NEAR
-            )
-            .await?
-            .into_result()?,
-    );
-
     let res = node1
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
@@ -123,6 +112,15 @@ async fn main() -> eyre::Result<()> {
             err
         );
     }
+
+    let new_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib.wasm").await?;
+    let _test = contract
+        .call("set_proxy_code")
+        .args(new_proxy_wasm)
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
 
     let res = node1
         .call(contract.id(), "mutate")
@@ -946,6 +944,15 @@ async fn test_deploy() -> eyre::Result<()> {
             .await,
     );
 
+    let new_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib.wasm").await?;
+    let _test = contract
+        .call("set_proxy_code")
+        .args(new_proxy_wasm)
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+
     let application_id = rng.gen::<[_; 32]>().rt()?;
     let blob_id = rng.gen::<[_; 32]>().rt()?;
 
@@ -993,8 +1000,40 @@ async fn test_deploy() -> eyre::Result<()> {
         .await?
         .json()?;
 
-    // Uncomment to print the proxy contract address
+    //Uncomment to print the proxy contract address
     // println!("Proxy contract address: {}", proxy_address);
+
+    // Call the update function
+    let res = node1
+        .call(contract.id(), "mutate")
+        .args_json(Signed::new(
+            &{
+                let kind = RequestKind::Context(ContextRequest::new(
+                    context_id,
+                    ContextRequestKind::UpdateProxyContract,
+                ));
+
+                Request::new(alice_cx_id.rt()?, kind)
+            },
+            |p| alice_cx_sk.sign(p),
+        )?)
+        .max_gas()
+        .transact()
+        .await?;
+
+    // println!("Update result: {:?}", res);
+    // Check the result
+    assert!(res.is_success(), "Transaction failed: {:?}", res);
+
+    // Verify we got our success message
+    let result = res.into_result()?;
+    assert!(
+        result
+            .logs()
+            .iter()
+            .any(|log| log.contains("Successfully updated proxy contract")),
+        "Expected success message in logs"
+    );
 
     // Create proposal
     let proposal_id = rng.gen();
