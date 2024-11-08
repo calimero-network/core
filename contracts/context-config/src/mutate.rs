@@ -5,10 +5,11 @@ use calimero_context_config::types::{
     Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
 };
 use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
-use near_sdk::store::IterableSet;
-use near_sdk::{Gas, NearToken, PromiseError, PromiseResult};
-use near_sdk::{env, near, require, AccountId, Promise};
 use near_sdk::serde_json::{self, json};
+use near_sdk::store::IterableSet;
+use near_sdk::{
+    env, near, require, AccountId, Gas, NearToken, Promise, PromiseError, PromiseResult,
+};
 
 use super::{
     parse_input, Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
@@ -55,7 +56,7 @@ impl ContextConfigs {
                 }
                 ContextRequestKind::Revoke { capabilities } => {
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
-                },
+                }
                 ContextRequestKind::UpdateProxyContract => {
                     self.update_proxy_contract(&request.signer_id, context_id);
                 }
@@ -82,8 +83,8 @@ impl ContextConfigs {
 
         // Create incremental account ID
         let account_id: AccountId = format!("{}.{}", self.next_proxy_id, env::current_account_id())
-          .parse()
-          .expect("invalid account ID");
+            .parse()
+            .expect("invalid account ID");
 
         self.next_proxy_id += 1;
 
@@ -300,8 +301,11 @@ impl ContextConfigs {
         }
     }
 
-    pub fn deploy_proxy_contract(&mut self, context_id: Repr<ContextId>, account_id: AccountId) -> Promise {
-
+    pub fn deploy_proxy_contract(
+        &mut self,
+        context_id: Repr<ContextId>,
+        account_id: AccountId,
+    ) -> Promise {
         // Deploy and initialize the proxy contract
         Promise::new(account_id.clone())
             .create_account()
@@ -312,14 +316,12 @@ impl ContextConfigs {
                 serde_json::to_vec(&json!({
                     "context_id": context_id,
                     "context_config_account_id": env::current_account_id()
-                })).unwrap(),
+                }))
+                .unwrap(),
                 NearToken::from_near(0),
                 Gas::from_tgas(30),
             )
-            .then(
-                Self::ext(env::current_account_id())
-                    .proxy_deployment_callback(),
-            )
+            .then(Self::ext(env::current_account_id()).proxy_deployment_callback())
     }
 
     fn update_proxy_contract(
@@ -332,13 +334,13 @@ impl ContextConfigs {
             .contexts
             .get_mut(&context_id)
             .expect("context does not exist");
-        
+
         let proxy_account_id = context
             .proxy
             .get(signer_id)
             .expect("unable to update contract")
             .get_mut();
-    
+
         let new_code = self.proxy_code.get().clone().unwrap();
 
         // Call the update method on the proxy contract
@@ -349,55 +351,51 @@ impl ContextConfigs {
                 NearToken::from_near(0),
                 Gas::from_tgas(100),
             )
-            .then(
-                Self::ext(env::current_account_id())
-                    .update_proxy_callback()
-            )
+            .then(Self::ext(env::current_account_id()).update_proxy_callback())
     }
 }
 
-
 #[near]
 impl ContextConfigs {
-  pub fn proxy_deployment_callback(
-      &mut self,
-      #[callback_result] call_result: Result<(), PromiseError>,
-  ) {
-      if let Err(e) = call_result {
-        panic!("Failed to deploy proxy contract: {:?}", e);
-      }
-  }
+    pub fn proxy_deployment_callback(
+        &mut self,
+        #[callback_result] call_result: Result<(), PromiseError>,
+    ) {
+        if let Err(e) = call_result {
+            panic!("Failed to deploy proxy contract: {:?}", e);
+        }
+    }
 
-  pub fn add_context_callback(&mut self, context_id: Repr<ContextId>) {
-      require!(
-          env::promise_results_count() == 1,
-          "Expected 1 promise result"
-      );
+    pub fn add_context_callback(&mut self, context_id: Repr<ContextId>) {
+        require!(
+            env::promise_results_count() == 1,
+            "Expected 1 promise result"
+        );
 
-      match env::promise_result(0) {
-          PromiseResult::Successful(_) => {
-              env::log_str(&format!("Context `{context_id}` added"));
-          }
-          _ => {
-              panic!("Failed to deploy proxy contract for context");
-          }
-      }
-  }
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                env::log_str(&format!("Context `{context_id}` added"));
+            }
+            _ => {
+                panic!("Failed to deploy proxy contract for context");
+            }
+        }
+    }
 
-  #[private]
-  #[handle_result]
-  pub fn update_contract_callback(&mut self) -> Result<(), &'static str> {
-      require!(
-          env::promise_results_count() == 1,
-          "Expected 1 promise result"
-      );
+    #[private]
+    #[handle_result]
+    pub fn update_contract_callback(&mut self) -> Result<(), &'static str> {
+        require!(
+            env::promise_results_count() == 1,
+            "Expected 1 promise result"
+        );
 
-      match env::promise_result(0) {
-          PromiseResult::Successful(_) => {
-              env::log_str("Successfully updated proxy contract code");
-              Ok(())
-          }
-          _ => Err("Failed to update proxy contract code"),
-      }
-  }
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                env::log_str("Successfully updated proxy contract code");
+                Ok(())
+            }
+            _ => Err("Failed to update proxy contract code"),
+        }
+    }
 }
