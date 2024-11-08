@@ -446,24 +446,28 @@ impl Node {
             };
             let actions = vec![action];
 
-            drop(
-                self.ctx_manager
-                    .propose(
-                        context_id,
-                        executor_public_key,
-                        proposal_id.clone(),
-                        actions,
-                    )
-                    .await,
-            );
+            self.ctx_manager
+                .propose(
+                    context_id,
+                    executor_public_key,
+                    proposal_id.clone(),
+                    actions.clone(),
+                )
+                .await
+                .map_err(|e| {
+                    error!(%e, "Failed to create proposal {:?} with actions {:?} in context {:?} by identity {:?}", proposal_id, actions, context_id, executor_public_key);
+                    CallError::InternalError
+                })?;
         }
 
         for approval in &outcome.approvals {
-            drop(
-                self.ctx_manager
-                    .approve(context_id, executor_public_key, approval.clone())
-                    .await,
-            );
+            self.ctx_manager
+                .approve(context_id, executor_public_key, approval.clone())
+                .await
+                .map_err(|e| {
+                    error!(%e, "Failed to approve proposal {:?}", approval);
+                    CallError::InternalError
+                })?;
         }
 
         if let Err(err) = self
