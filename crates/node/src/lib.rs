@@ -9,7 +9,7 @@ use core::pin::Pin;
 use core::str;
 use std::time::Duration;
 
-use borsh::{from_slice, to_vec, BorshDeserialize};
+use borsh::{from_slice, to_vec};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
@@ -31,13 +31,10 @@ use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
-use calimero_store::entry::{Borsh, Codec};
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
-use futures_util::sink::Buffer;
-use futures_util::SinkExt;
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::{thread_rng, Rng};
@@ -443,11 +440,10 @@ impl Node {
         };
 
         for (proposal_id, actions) in &outcome.proposals {
-            let actions: Vec<ProposalAction> = BorshDeserialize::deserialize(&mut &actions[..])
-                .map_err(|e| {
-                    error!(%e, "Failed to deserialize proposal actions.");
-                    CallError::InternalError
-                })?;
+            let actions: Vec<ProposalAction> = from_slice(&actions).map_err(|e| {
+                error!(%e, "Failed to deserialize proposal actions.");
+                CallError::InternalError
+            })?;
             drop(
                 self.ctx_manager
                     .propose(
