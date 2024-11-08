@@ -454,17 +454,17 @@ impl Node {
                 )
                 .await
                 .map_err(|e| {
-                    error!(%e, "Failed to create proposal {:?} with actions {:?} in context {:?} by identity {:?}", proposal_id, actions, context_id, executor_public_key);
+                    error!(%e, "Failed to create proposal {:?}", proposal_id);
                     CallError::InternalError
                 })?;
         }
 
-        for approval in &outcome.approvals {
+        for proposal_id in &outcome.approvals {
             self.ctx_manager
-                .approve(context_id, executor_public_key, approval.clone())
+                .approve(context_id, executor_public_key, *proposal_id)
                 .await
                 .map_err(|e| {
-                    error!(%e, "Failed to approve proposal {:?} in context {:?} by identity {:?}", approval, context_id, executor_public_key);
+                    error!(%e, "Failed to approve proposal {:?}", proposal_id);
                     CallError::InternalError
                 })?;
         }
