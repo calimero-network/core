@@ -8,6 +8,7 @@ use owo_colors::OwoColorize;
 
 use crate::Node;
 
+/// Manage identities
 #[derive(Debug, Parser)]
 pub struct IdentityCommand {
     #[command(subcommand)]
@@ -16,7 +17,12 @@ pub struct IdentityCommand {
 
 #[derive(Debug, Subcommand)]
 enum IdentitySubcommands {
-    Ls { context_id: String },
+    /// List identities in a context
+    Ls {
+        /// The context ID to list identities in
+        context_id: String,
+    },
+    /// Create a new identity
     New,
 }
 
