@@ -7,15 +7,14 @@ import ListTable from '../common/ListTable';
 import rowItem from './RowItem';
 import StatusModal, { ModalContent } from '../common/StatusModal';
 import ActionDialog from '../common/ActionDialog';
-import { ContextsList } from '../../api/dataSource/NodeDataSource';
-import { ContextObject } from '../../types/context';
+import { ContextObject, ContextsList } from '../../types/context';
 
 const FlexWrapper = styled.div`
   flex: 1;
 `;
 
 interface ContextTableProps {
-  nodeContextList: ContextsList<ContextObject>;
+  nodeContextList: ContextsList;
   navigateToStartContext: () => void;
   currentOption: string;
   setCurrentOption: (option: string) => void;

@@ -107,12 +107,10 @@ export default function ContextDetailsPage() {
           const applicationMetadata = (
             await apiClient(showServerDownPopup)
               .node()
-              .getInstalledApplicationDetails(
-                nodeContext.data.context.applicationId,
-              )
+              .getInstalledApplicationDetails(nodeContext.data.applicationId)
           ).data?.metadata;
           const contextObject = await generateContextObjects(
-            nodeContext.data.context,
+            nodeContext.data,
             id,
             applicationMetadata,
           );

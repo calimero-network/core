@@ -447,7 +447,7 @@ impl ContextManager {
             .members_revision(context_id.rt().expect("infallible conversion"))
             .await?;
 
-        if context_exists && members_revision != config.members_revision {
+        if !context_exists || members_revision != config.members_revision {
             config.members_revision = members_revision;
 
             for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
@@ -481,7 +481,7 @@ impl ContextManager {
 
         let mut application_id = None;
 
-        if context_exists && application_revision != config.application_revision {
+        if !context_exists || application_revision != config.application_revision {
             config.application_revision = application_revision;
 
             let application = client
@@ -765,6 +765,22 @@ impl ContextManager {
         self.get_context_identities(context_id, true)
     }
 
+    pub fn context_has_owned_identity(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<bool> {
+        let handle = self.store.handle();
+
+        let key = ContextIdentityKey::new(context_id, public_key);
+
+        let Some(value) = handle.get(&key)? else {
+            return Ok(false);
+        };
+
+        Ok(value.private_key.is_some())
+    }
+
     pub fn get_contexts(&self, start: Option<ContextId>) -> EyreResult<Vec<Context>> {
         let handle = self.store.handle();
 
@@ -836,7 +852,7 @@ impl ContextManager {
     }
 
     pub fn has_blob_available(&self, blob_id: BlobId) -> EyreResult<bool> {
-        Ok(self.blob_manager.has(blob_id)?)
+        self.blob_manager.has(blob_id)
     }
 
     // vv~ these would be more appropriate in an ApplicationManager
@@ -1004,9 +1020,5 @@ impl ContextManager {
         };
 
         Ok(Some(stream))
-    }
-
-    pub fn is_application_blob_installed(&self, blob_id: BlobId) -> EyreResult<bool> {
-        self.blob_manager.has(blob_id)
     }
 }

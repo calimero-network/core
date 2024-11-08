@@ -1,15 +1,17 @@
-use core::mem::replace;
-use core::str::FromStr;
-
+use calimero_primitives::application::ApplicationId;
+use calimero_primitives::context::{ContextId, ContextInvitationPayload};
 use calimero_primitives::hash::Hash;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use owo_colors::OwoColorize;
+use serde_json::Value;
 use tokio::sync::oneshot;
 
 use crate::Node;
 
+/// Manage contexts
 #[derive(Debug, Parser)]
 pub struct ContextCommand {
     #[command(subcommand)]
@@ -18,26 +20,43 @@ pub struct ContextCommand {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// List contexts
     Ls,
-    Join {
-        private_key: String,
-        invitation_payload: String,
-    },
-    Leave {
-        context_id: String,
-    },
+    /// Create a context
     Create {
-        application_id: String,
-        context_seed: Option<String>,
-        params: Option<String>,
+        /// The application ID to create the context with
+        application_id: ApplicationId,
+        /// The initialization parameters for the context
+        params: Option<Value>,
+        /// The seed for the context (to derive a deterministic context ID)
+        #[clap(long = "seed")]
+        context_seed: Option<Hash>,
     },
+    /// Invite a user to a context
     Invite {
-        context_id: String,
-        inviter_id: String,
-        invitee_id: String,
+        /// The context ID to invite the user to
+        context_id: ContextId,
+        /// The ID of the inviter
+        inviter_id: PublicKey,
+        /// The ID of the invitee
+        invitee_id: PublicKey,
     },
+    /// Join a context
+    Join {
+        /// The private key of the user
+        private_key: PrivateKey,
+        /// The invitation payload from the inviter
+        invitation_payload: ContextInvitationPayload,
+    },
+    /// Leave a context
+    Leave {
+        /// The context ID to leave
+        context_id: ContextId,
+    },
+    /// Delete a context
     Delete {
-        context_id: String,
+        /// The context ID to delete
+        context_id: ContextId,
     },
 }
 
@@ -50,7 +69,7 @@ impl ContextCommand {
         match self.command {
             Commands::Ls => {
                 println!(
-                    "{c1:44} | {c2:44} | Root Hash",
+                    "{ind} {c1:44} | {c2:44} | Root Hash",
                     c1 = "Context ID",
                     c2 = "Application ID",
                 );
@@ -76,9 +95,6 @@ impl ContextCommand {
                 private_key,
                 invitation_payload,
             } => {
-                let private_key = private_key.parse()?;
-                let invitation_payload = invitation_payload.parse()?;
-
                 let response = node
                     .ctx_manager
                     .join_context(private_key, invitation_payload)
@@ -95,7 +111,6 @@ impl ContextCommand {
                 }
             }
             Commands::Leave { context_id } => {
-                let context_id = context_id.parse()?;
                 if node.ctx_manager.delete_context(&context_id).await? {
                     println!("{ind} Successfully deleted context {context_id}");
                 } else {
@@ -105,39 +120,20 @@ impl ContextCommand {
             }
             Commands::Create {
                 application_id,
+                params,
                 context_seed,
-                mut params,
             } => {
-                let application_id = application_id.parse()?;
-
-                let (context_seed, params) = 'infer: {
-                    let Some(context_seed) = context_seed else {
-                        break 'infer (None, None);
-                    };
-                    let context_seed_clone = context_seed.clone();
-
-                    if let Ok(context_seed) = context_seed.parse::<Hash>() {
-                        break 'infer (Some(context_seed), params);
-                    };
-
-                    match replace(&mut params, Some(context_seed))
-                        .map(|arg0| FromStr::from_str(&arg0))
-                    {
-                        Some(Ok(context_seed)) => break 'infer (Some(context_seed), params),
-                        None => break 'infer (None, params),
-                        _ => {}
-                    };
-                    println!("{ind} Invalid context seed: {context_seed_clone}");
-                    return Err(eyre::eyre!("Invalid context seed"));
-                };
-
                 let (tx, rx) = oneshot::channel();
 
                 node.ctx_manager.create_context(
                     context_seed.map(Into::into),
                     application_id,
                     None,
-                    params.map(|x| x.as_bytes().to_owned()).unwrap_or_default(),
+                    params
+                        .as_ref()
+                        .map(serde_json::to_vec)
+                        .transpose()?
+                        .unwrap_or_default(),
                     tx,
                 )?;
 
@@ -159,10 +155,6 @@ impl ContextCommand {
                 inviter_id,
                 invitee_id,
             } => {
-                let context_id = context_id.parse()?;
-                let inviter_id = inviter_id.parse()?;
-                let invitee_id = invitee_id.parse()?;
-
                 if let Some(invitation_payload) = node
                     .ctx_manager
                     .invite_to_context(context_id, inviter_id, invitee_id)
@@ -175,7 +167,6 @@ impl ContextCommand {
                 }
             }
             Commands::Delete { context_id } => {
-                let context_id = context_id.parse()?;
                 let _ = node.ctx_manager.delete_context(&context_id).await?;
                 println!("{ind} Deleted context {context_id}");
             }
