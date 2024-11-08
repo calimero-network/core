@@ -100,7 +100,7 @@ pub enum ContextRequestKind<'a> {
     Revoke {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
     },
-    UpdateProxyContract
+    UpdateProxyContract,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
