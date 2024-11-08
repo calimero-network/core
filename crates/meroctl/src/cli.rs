@@ -20,7 +20,6 @@ use app::AppCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use identity::IdentityCommand;
-use jsonrpc::CallCommand;
 use proxy::ProxyCommand;
 
 pub const EXAMPLES: &str = r"
