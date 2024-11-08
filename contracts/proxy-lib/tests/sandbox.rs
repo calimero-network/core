@@ -31,19 +31,20 @@ async fn setup_test(
     let context_sk = common::generate_keypair()?;
     let relayer_account = common::create_account_with_balance(&worker, "account", 100).await?;
 
+    let _test = config_helper
+        .config_contract
+        .call("set_proxy_code")
+        .args(bytes)
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+
     let _res = config_helper
         .add_context_to_config(&relayer_account, &context_sk, &alice_sk)
         .await?
         .into_result()?;
 
-    println!("Deploying proxy contract");
-
-    config_helper
-        .deploy_proxy_contract(&relayer_account, &context_sk, &alice_sk, bytes)
-        .await?
-        .into_result()
-        .expect("Failed to deploy the contract");
-    println!("Proxy contract deployed");
     let context_id: Repr<ContextId> = Repr::new(context_sk.verifying_key().rt()?);
     let contract_id_str = config_helper
         .get_proxy_contract(&relayer_account, &context_id)
@@ -52,7 +53,7 @@ async fn setup_test(
 
     let proxy_id: AccountId = contract_id_str.parse()?;
     let proxy_helper =
-        ProxyContractHelper::new(&proxy_id, config_helper.config_contract.id()).await?;
+        ProxyContractHelper::new(proxy_id, config_helper.config_contract.id().clone())?;
 
     // This account is only used to deploy the proxy contract
     let developer_account = common::create_account_with_balance(&worker, "alice", 10).await?;
@@ -68,6 +69,29 @@ async fn setup_test(
         context_sk,
         alice_sk,
     ))
+}
+
+#[tokio::test]
+async fn update_proxy_code() -> Result<()> {
+    let worker = near_workspaces::sandbox().await?;
+    let (config_helper, _proxy_helper, relayer_account, context_sk, alice_sk) =
+        setup_test(&worker).await?;
+
+    // Call the update function
+    let res = config_helper
+        .update_proxy_contract(&relayer_account, &context_sk, &alice_sk)
+        .await?
+        .into_result()?;
+
+    // Check the result
+    assert!(
+        res.logs()
+            .iter()
+            .any(|log| log.contains("Successfully updated proxy contract")),
+        "Expected success message in logs"
+    );
+
+    Ok(())
 }
 
 #[tokio::test]

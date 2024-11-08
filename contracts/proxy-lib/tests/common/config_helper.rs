@@ -63,12 +63,11 @@ impl ConfigContractHelper {
         Ok(res)
     }
 
-    pub async fn deploy_proxy_contract(
+    pub async fn update_proxy_contract(
         &self,
         caller: &Account,
         context_id: &SigningKey,
         host: &SigningKey,
-        code: Vec<u8>,
     ) -> Result<ExecutionFinalResult> {
         let context_id: Repr<ContextId> = Repr::new(context_id.verifying_key().rt()?);
         let host_id: SignerId = host.verifying_key().rt()?;
@@ -77,16 +76,23 @@ impl ConfigContractHelper {
             &{
                 let kind = RequestKind::Context(ContextRequest::new(
                     context_id,
-                    ContextRequestKind::DeployProxyContract {},
+                    ContextRequestKind::UpdateProxyContract,
                 ));
-                Request::new(host_id, kind)
+
+                Request::new(host_id.rt()?, kind)
             },
             |p| host.sign(p),
         )?;
-        let res = self.mutate_call(caller, &signed_request).await?;
+
+        let res = caller
+            .call(self.config_contract.id(), "mutate")
+            .args_json(&signed_request)
+            .deposit(NearToken::from_near(20))
+            .max_gas()
+            .transact()
+            .await?;
 
         // Uncomment to print the result
-        // print!("{:?}", res);
         Ok(res)
     }
 

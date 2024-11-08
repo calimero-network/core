@@ -17,13 +17,10 @@ pub struct ProxyContractHelper {
 }
 
 impl ProxyContractHelper {
-    pub async fn new(
-        proxy_contract: &AccountId,
-        config_contract: &AccountId,
-    ) -> eyre::Result<Self> {
+    pub fn new(proxy_contract: AccountId, config_contract: AccountId) -> eyre::Result<Self> {
         Ok(Self {
-            proxy_contract: proxy_contract.clone(),
-            config_contract: config_contract.clone(),
+            proxy_contract,
+            config_contract,
         })
     }
 
@@ -95,7 +92,7 @@ impl ProxyContractHelper {
         let signed_request = Signed::new(&request, |p| signer.sign(p))?;
         let res = caller
             .call(&self.proxy_contract, "mutate")
-            .args_json(json!(signed_request))
+            .args_json(signed_request)
             .max_gas()
             .transact()
             .await?;
