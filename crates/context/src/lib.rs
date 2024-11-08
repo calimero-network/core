@@ -153,7 +153,7 @@ impl ContextManager {
                 self.client_config.new.network.as_str().into(),
                 self.client_config.new.contract_id.as_str().into(),
             )
-            .get_proxy_contract(context_id.rt().unwrap())
+            .get_proxy_contract(context_id.rt().expect("infallible conversion"))
             .await?;
         Ok(proxy_contract)
     }
