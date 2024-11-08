@@ -1186,6 +1186,7 @@ dependencies = [
  "calimero-context-config",
  "ed25519-dalek 2.1.1",
  "eyre",
+ "hex 0.4.3",
  "near-crypto 0.26.0",
  "near-sdk",
  "near-workspaces",
