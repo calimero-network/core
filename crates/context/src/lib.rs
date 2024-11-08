@@ -240,28 +240,24 @@ impl ContextManager {
                 .send(*context_secret)
                 .await?;
 
-            Ok((context.id, identity_secret.public_key()))
-        };
-
-        let this = self.clone();
-        let context_id = context.id;
-        let _ignored = tokio::spawn(async move {
-            let proxy_contract = this.get_proxy_contract(context_id).await;
-
-            this.add_context(
+            let proxy_contract = this.get_proxy_contract(context.id).await?;
+            drop(this.add_context(
                 &context,
                 identity_secret,
                 Some(ContextConfigParams {
                     protocol: this.client_config.new.protocol.as_str().into(),
                     network_id: this.client_config.new.network.as_str().into(),
                     contract_id: this.client_config.new.contract_id.as_str().into(),
-                    proxy_contract: proxy_contract.unwrap().as_str().into(),
+                    proxy_contract: proxy_contract.into(),
                     application_revision: 0,
                     members_revision: 0,
                 }),
-            );
-        });
+            ));
 
+            Ok((context.id, identity_secret.public_key()))
+        };
+
+        let context_id = context.id;
         let this = self.clone();
         let _ignored = tokio::spawn(async move {
             let result = finalizer.await;
@@ -343,25 +339,26 @@ impl ContextManager {
         }
 
         let handle = self.store.handle();
-
         let identity_key = ContextIdentityKey::new(context_id, invitee_id);
-
         if handle.has(&identity_key)? {
             return Ok(None);
         }
 
+        let proxy_contract = self.get_proxy_contract(context_id).await?;
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
-
-        let proxy_contract = self.get_proxy_contract(context_id).await;
-
-        let mut config = (!context_exists).then(|| ContextConfigParams {
-            protocol: protocol.into(),
-            network_id: network_id.into(),
-            contract_id: contract_id.into(),
-            proxy_contract: proxy_contract.unwrap().into(),
-            application_revision: 0,
-            members_revision: 0,
-        });
+        let mut config = if !context_exists {
+            Some(ContextConfigParams {
+                protocol: protocol.into(),
+                network_id: network_id.into(),
+                contract_id: contract_id.into(),
+                proxy_contract: proxy_contract.into(),
+                application_revision: 0,
+                members_revision: 0,
+            })
+        } else {
+            //should this be existing config?
+            return Ok(None);
+        };
 
         let context = self
             .internal_sync_context_config(context_id, config.as_mut())
@@ -372,7 +369,6 @@ impl ContextManager {
         }
 
         self.add_context(&context, identity_secret, config)?;
-
         self.subscribe(&context.id).await?;
 
         let _ = self.state.write().await.pending_catchup.insert(context_id);
