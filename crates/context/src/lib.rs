@@ -339,7 +339,9 @@ impl ContextManager {
         }
 
         let handle = self.store.handle();
+
         let identity_key = ContextIdentityKey::new(context_id, invitee_id);
+
         if handle.has(&identity_key)? {
             return Ok(None);
         }
