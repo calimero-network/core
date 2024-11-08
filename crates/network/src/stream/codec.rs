@@ -25,9 +25,9 @@ impl<'a> Message<'a> {
 }
 
 #[derive(Debug, ThisError)]
-#[error("CodecError")]
 #[non_exhaustive]
 pub enum CodecError {
+    #[error(transparent)]
     StdIo(#[from] IoError),
 }
 

@@ -11,12 +11,13 @@ use crate::defaults;
 use crate::output::{Format, Output, Report};
 
 mod app;
+mod call;
 mod context;
 mod identity;
-mod jsonrpc;
 mod proxy;
 
 use app::AppCommand;
+use call::CallCommand;
 use context::ContextCommand;
 use identity::IdentityCommand;
 use jsonrpc::CallCommand;
@@ -53,6 +54,7 @@ pub enum SubCommands {
     Identity(IdentityCommand),
     JsonRpc(CallCommand),
     Proxy(ProxyCommand),
+    Call(CallCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -66,7 +68,7 @@ pub struct RootArgs {
     #[arg(short, long, value_name = "NAME")]
     pub node_name: String,
 
-    #[arg(long, value_name = "FORMAT")]
+    #[arg(long, value_name = "FORMAT", default_value_t, value_enum)]
     pub output_format: Format,
 }
 
@@ -92,6 +94,7 @@ impl RootCommand {
             SubCommands::Identity(identity) => identity.run(&environment).await,
             SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(&environment).await,
             SubCommands::Proxy(proxy) => proxy.run(&environment).await,
+            SubCommands::Call(call) => call.run(&environment).await,
         };
 
         if let Err(err) = result {

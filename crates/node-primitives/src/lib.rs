@@ -41,16 +41,17 @@ pub type ServerSender = mpsc::Sender<ExecutionRequest>;
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum CallError {
-    #[error("no connected peers")]
-    NoConnectedPeers,
     #[error("context not found")]
     ContextNotFound,
+    #[error("cannot execute request as '{public_key}' on context '{context_id}'")]
+    Unauthorized {
+        context_id: ContextId,
+        public_key: PublicKey,
+    },
     #[error("context state not initialized, awaiting state sync")]
     Uninitialized,
-    #[error("application not installed: {application_id}")]
+    #[error("application not installed: '{application_id}'")]
     ApplicationNotInstalled { application_id: ApplicationId },
-    #[error("action rejected")]
-    ActionRejected,
     #[error("internal error")]
     InternalError,
 }
