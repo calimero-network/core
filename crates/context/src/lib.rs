@@ -38,8 +38,8 @@ use calimero_store::types::{
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use eyre::{bail, Result as EyreResult};
-use futures_util::{AsyncRead, TryStreamExt};
+use eyre::{bail, OptionExt, Result as EyreResult};
+use futures_util::{AsyncRead, TryFutureExt, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
 use rand::SeedableRng;
@@ -145,6 +145,19 @@ impl ContextManager {
         PrivateKey::random(&mut rand::thread_rng())
     }
 
+    async fn get_proxy_contract(&self, context_id: ContextId) -> EyreResult<String> {
+        let proxy_contract = self
+            .config_client
+            .query::<ContextConfigEnv>(
+                self.client_config.new.protocol.as_str().into(),
+                self.client_config.new.network.as_str().into(),
+                self.client_config.new.contract_id.as_str().into(),
+            )
+            .get_proxy_contract(context_id.rt().expect("infallible conversion"))
+            .await?;
+        Ok(proxy_contract)
+    }
+
     pub fn create_context(
         &self,
         seed: Option<[u8; 32]>,
@@ -167,7 +180,7 @@ impl ContextManager {
             (context_secret, identity_secret)
         };
 
-        let handle = self.store.handle();
+        let mut handle = self.store.handle();
 
         let context = {
             let context_id = ContextId::from(*context_secret.public_key());
@@ -190,6 +203,7 @@ impl ContextManager {
                 protocol: self.client_config.new.protocol.as_str().into(),
                 network_id: self.client_config.new.network.as_str().into(),
                 contract_id: self.client_config.new.contract_id.as_str().into(),
+                proxy_contract: "".into(),
                 application_revision: 0,
                 members_revision: 0,
             }),
@@ -239,11 +253,18 @@ impl ContextManager {
                 .send(*context_secret)
                 .await?;
 
+            let proxy_contract = this.get_proxy_contract(context.id).await?;
+
+            let key = ContextConfigKey::new(context.id);
+            let mut config = handle.get(&key)?.ok_or_eyre("expected config to exist")?;
+            config.proxy_contract = proxy_contract.into();
+            handle.put(&key, &config)?;
+
             Ok((context.id, identity_secret.public_key()))
         };
 
-        let this = self.clone();
         let context_id = context.id;
+        let this = self.clone();
         let _ignored = tokio::spawn(async move {
             let result = finalizer.await;
 
@@ -278,6 +299,7 @@ impl ContextManager {
                     context_config.protocol.into_owned().into_boxed_str(),
                     context_config.network_id.into_owned().into_boxed_str(),
                     context_config.contract_id.into_owned().into_boxed_str(),
+                    context_config.proxy_contract.into_owned().into_boxed_str(),
                     context_config.application_revision,
                     context_config.members_revision,
                 ),
@@ -331,14 +353,19 @@ impl ContextManager {
         }
 
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
-
-        let mut config = (!context_exists).then(|| ContextConfigParams {
-            protocol: protocol.into(),
-            network_id: network_id.into(),
-            contract_id: contract_id.into(),
-            application_revision: 0,
-            members_revision: 0,
-        });
+        let mut config = if !context_exists {
+            let proxy_contract = self.get_proxy_contract(context_id).await?;
+            Some(ContextConfigParams {
+                protocol: protocol.into(),
+                network_id: network_id.into(),
+                contract_id: contract_id.into(),
+                proxy_contract: proxy_contract.into(),
+                application_revision: 0,
+                members_revision: 0,
+            })
+        } else {
+            None
+        };
 
         let context = self
             .internal_sync_context_config(context_id, config.as_mut())
@@ -349,7 +376,6 @@ impl ContextManager {
         }
 
         self.add_context(&context, identity_secret, config)?;
-
         self.subscribe(&context.id).await?;
 
         let _ = self.state.write().await.pending_catchup.insert(context_id);
@@ -426,6 +452,7 @@ impl ContextManager {
                     protocol: config.protocol.into_string().into(),
                     network_id: config.network.into_string().into(),
                     contract_id: config.contract.into_string().into(),
+                    proxy_contract: config.proxy_contract.into_string().into(),
                     application_revision: config.application_revision,
                     members_revision: config.members_revision,
                 }))
@@ -527,6 +554,7 @@ impl ContextManager {
                     config.protocol.into_owned().into_boxed_str(),
                     config.network_id.into_owned().into_boxed_str(),
                     config.contract_id.into_owned().into_boxed_str(),
+                    config.proxy_contract.into_owned().into_boxed_str(),
                     config.application_revision,
                     config.members_revision,
                 ),
