@@ -7,7 +7,7 @@
 use calimero_context_config::types::{Application, ContextId, ContextIdentity};
 use calimero_context_config::Timestamp;
 use near_sdk::store::{IterableMap, IterableSet, LazyOption};
-use near_sdk::{near, BorshStorageKey};
+use near_sdk::{near, AccountId, BorshStorageKey};
 mod guard;
 mod mutate;
 mod query;
@@ -16,7 +16,6 @@ mod sys;
 use guard::Guard;
 
 const DEFAULT_VALIDITY_THRESHOLD_MS: Timestamp = 10_000;
-const DEFAULT_CONTRACT: &[u8] = include_bytes!("../../proxy-lib/res/proxy_lib.wasm");
 
 #[derive(Debug)]
 #[near(contract_state)]
@@ -38,7 +37,7 @@ struct Config {
 struct Context {
     pub application: Guard<Application<'static>>,
     pub members: Guard<IterableSet<ContextIdentity>>,
-    pub proxy: Option<String>,
+    pub proxy: Guard<AccountId>,
 }
 
 #[derive(Copy, Clone, Debug, BorshStorageKey)]
@@ -47,6 +46,7 @@ enum Prefix {
     Contexts,
     Members(ContextId),
     Privileges(PrivilegeScope),
+    ProxyCode,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -60,6 +60,7 @@ enum PrivilegeScope {
 enum ContextPrivilegeScope {
     Application,
     MemberList,
+    Proxy,
 }
 
 impl Default for ContextConfigs {
@@ -69,7 +70,7 @@ impl Default for ContextConfigs {
             config: Config {
                 validity_threshold_ms: DEFAULT_VALIDITY_THRESHOLD_MS,
             },
-            proxy_code: LazyOption::new("code".as_bytes(), Some(DEFAULT_CONTRACT.to_vec())),
+            proxy_code: LazyOption::new(Prefix::ProxyCode, None),
             next_proxy_id: 0,
         }
     }
