@@ -465,7 +465,7 @@ impl Node {
                 .approve(context_id, executor_public_key, approval.clone())
                 .await
                 .map_err(|e| {
-                    error!(%e, "Failed to approve proposal {:?}", approval);
+                    error!(%e, "Failed to approve proposal {:?} in context {:?} by identity {:?}", approval, context_id, executor_public_key);
                     CallError::InternalError
                 })?;
         }

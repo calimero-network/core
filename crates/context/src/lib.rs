@@ -38,7 +38,7 @@ use calimero_store::types::{
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, OptionExt, Result as EyreResult};
 use futures_util::{AsyncRead, TryFutureExt, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
@@ -180,7 +180,7 @@ impl ContextManager {
             (context_secret, identity_secret)
         };
 
-        let handle = self.store.handle();
+        let mut handle = self.store.handle();
 
         let context = {
             let context_id = ContextId::from(*context_secret.public_key());
@@ -195,6 +195,19 @@ impl ContextManager {
         let Some(application) = self.get_application(&context.application_id)? else {
             bail!("Application is not installed on node.")
         };
+
+        self.add_context(
+            &context,
+            identity_secret,
+            Some(ContextConfigParams {
+                protocol: self.client_config.new.protocol.as_str().into(),
+                network_id: self.client_config.new.network.as_str().into(),
+                contract_id: self.client_config.new.contract_id.as_str().into(),
+                proxy_contract: "".into(),
+                application_revision: 0,
+                members_revision: 0,
+            }),
+        )?;
 
         let (tx, rx) = oneshot::channel();
 
@@ -241,18 +254,11 @@ impl ContextManager {
                 .await?;
 
             let proxy_contract = this.get_proxy_contract(context.id).await?;
-            drop(this.add_context(
-                &context,
-                identity_secret,
-                Some(ContextConfigParams {
-                    protocol: this.client_config.new.protocol.as_str().into(),
-                    network_id: this.client_config.new.network.as_str().into(),
-                    contract_id: this.client_config.new.contract_id.as_str().into(),
-                    proxy_contract: proxy_contract.into(),
-                    application_revision: 0,
-                    members_revision: 0,
-                }),
-            ));
+
+            let key = ContextConfigKey::new(context.id);
+            let mut config = handle.get(&key)?.ok_or_eyre("expected config to exist")?;
+            config.proxy_contract = proxy_contract.into();
+            handle.put(&key, &config)?;
 
             Ok((context.id, identity_secret.public_key()))
         };
@@ -339,7 +345,9 @@ impl ContextManager {
         }
 
         let handle = self.store.handle();
+
         let identity_key = ContextIdentityKey::new(context_id, invitee_id);
+
         if handle.has(&identity_key)? {
             return Ok(None);
         }
