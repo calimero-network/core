@@ -6,8 +6,7 @@ use calimero_context_config::types::{
     Application, Capability, ContextIdentity, Revision, Signed, SignerId,
 };
 use calimero_context_config::{
-    ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProxyMutateRequest, Request,
-    RequestKind, SystemRequest,
+    ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProposalWithApprovals, ProxyMutateRequest, Request, RequestKind, SystemRequest
 };
 use ed25519_dalek::{Signer, SigningKey};
 use eyre::Ok;
@@ -1064,17 +1063,9 @@ async fn test_deploy() -> eyre::Result<()> {
 
     // Assert proposal creation result
     let success_value = res.raw_bytes()?;
-    let proposal_result: serde_json::Value = serde_json::from_slice(&success_value)?;
-    assert_eq!(proposal_result["num_approvals"], 1);
-    let created_proposal_id: [u8; 32] = proposal_result["proposal_id"]
-        .as_array()
-        .expect("proposal_id should be a byte array")
-        .iter()
-        .map(|v| v.as_u64().unwrap() as u8)
-        .collect::<Vec<u8>>()
-        .try_into()
-        .expect("proposal_id should be 32 bytes");
-
+    let proposal_result: ProposalWithApprovals = serde_json::from_slice(&success_value)?;
+    assert_eq!(proposal_result.num_approvals, 1);
+    let created_proposal_id = proposal_result.proposal_id;
     // Verify proposals list
     let proposals: Vec<Proposal> = worker
         .view(&proxy_address, "proposals")
