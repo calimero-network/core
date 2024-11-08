@@ -1,5 +1,5 @@
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use ed25519_dalek::hazmat::ExpandedSecretKey;
+use curve25519_dalek::Scalar;
 use ed25519_dalek::SecretKey;
 use ring::aead;
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ pub struct Record {
 impl SharedKey {
     pub fn new(sk: &PrivateKey, pk: &PublicKey) -> Self {
         SharedKey {
-            key: (ExpandedSecretKey::from(&**sk).scalar
+            key: (Scalar::from_bytes_mod_order(**sk)
                 * curve25519_dalek::edwards::CompressedEdwardsY(**pk)
                     .decompress()
                     .expect("pk should be guaranteed to be the y coordinate"))
@@ -69,7 +69,6 @@ impl SharedKey {
 
 #[cfg(test)]
 mod tests {
-    use ed25519_dalek::SigningKey;
     use eyre::OptionExt;
 
     use super::*;
@@ -78,17 +77,11 @@ mod tests {
     fn test_encrypt_decrypt() -> eyre::Result<()> {
         let mut csprng = rand::thread_rng();
 
-        let signer = SigningKey::generate(&mut csprng);
-        let verifier = SigningKey::generate(&mut csprng);
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
 
-        let signer_shared_key = SharedKey::new(
-            &PrivateKey::from(signer.to_bytes()),
-            &(*verifier.verifying_key().as_bytes()).into(),
-        );
-        let verifier_shared_key = SharedKey::new(
-            &PrivateKey::from(verifier.to_bytes()),
-            &(*signer.verifying_key().as_bytes()).into(),
-        );
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key());
+        let verifier_shared_key = SharedKey::new(&verifier, &signer.public_key());
 
         let payload = b"privacy is important";
         let nonce = [0u8; aead::NONCE_LEN];
@@ -111,18 +104,12 @@ mod tests {
     fn test_decrypt_with_invalid_key() -> eyre::Result<()> {
         let mut csprng = rand::thread_rng();
 
-        let signer = SigningKey::generate(&mut csprng);
-        let verifier = SigningKey::generate(&mut csprng);
-        let invalid = SigningKey::generate(&mut csprng);
+        let signer = PrivateKey::random(&mut csprng);
+        let verifier = PrivateKey::random(&mut csprng);
+        let invalid = PrivateKey::random(&mut csprng);
 
-        let signer_shared_key = SharedKey::new(
-            &PrivateKey::from(signer.to_bytes()),
-            &(*verifier.verifying_key().as_bytes()).into(),
-        );
-        let invalid_shared_key = SharedKey::new(
-            &PrivateKey::from(invalid.to_bytes()),
-            &(*invalid.verifying_key().as_bytes()).into(),
-        );
+        let signer_shared_key = SharedKey::new(&signer, &verifier.public_key());
+        let invalid_shared_key = SharedKey::new(&invalid, &invalid.public_key());
 
         let token = b"privacy is important";
         let nonce = [0u8; aead::NONCE_LEN];

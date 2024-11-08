@@ -475,7 +475,7 @@ impl ContextManager {
                             &key,
                             &ContextIdentityValue {
                                 private_key: None,
-                                sender_key: None,
+                                sender_key: Some(*self.new_private_key()),
                             },
                         )?;
                     }
@@ -766,10 +766,7 @@ impl ContextManager {
             .get(&ContextIdentityKey::new(*context_id, *own_public_key))?
             .and_then(|ctx_identity| ctx_identity.sender_key);
 
-        match key {
-            Some(key) => Ok(Some(PrivateKey::from(key))),
-            None => Ok(None),
-        }
+        Ok(key.map(PrivateKey::from))
     }
 
     pub fn get_context_members_identities(

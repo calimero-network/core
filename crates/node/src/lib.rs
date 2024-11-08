@@ -33,7 +33,7 @@ use calimero_store::db::RocksDB;
 use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
 use rand::seq::IteratorRandom;
@@ -305,19 +305,16 @@ impl Node {
                 root_hash,
                 artifact,
             } => {
-                let possible_sending_key =
-                    self.ctx_manager.get_sender_key(&context_id, &author_id)?;
-
-                let sending_key = match possible_sending_key {
-                    Some(key) => key,
-                    None => todo!(), //initiate sync
+                let Some(sender_key) = self.ctx_manager.get_sender_key(&context_id, &author_id)?
+                else {
+                    return self.initiate_sync(context_id, source).await;
                 };
 
-                let shared_key = SharedKey::from_sk(&sending_key);
+                let shared_key = SharedKey::from_sk(&sender_key);
 
                 let artifact = &shared_key
                     .decrypt(artifact.into_owned(), [0; aead::NONCE_LEN])
-                    .ok_or_else(|| eyre!("Failed to decrypt message"))?;
+                    .ok_or_eyre("failed to decrypt message")?;
 
                 self.handle_state_delta(
                     source,
@@ -383,20 +380,16 @@ impl Node {
             .await
             != 0
         {
-            let possible_sending_key = self
+            let sender_key = self
                 .ctx_manager
-                .get_sender_key(&context.id, &executor_public_key)?;
+                .get_sender_key(&context.id, &executor_public_key)?
+                .ok_or_eyre("expected own identity to have sender key")?;
 
-            let sending_key = match possible_sending_key {
-                Some(key) => key,
-                None => todo!(), // initiate sync
-            };
-
-            let shared_key = SharedKey::from_sk(&sending_key);
+            let shared_key = SharedKey::from_sk(&sender_key);
 
             let artifact_encrypted = shared_key
                 .encrypt(outcome.artifact.clone(), [0; aead::NONCE_LEN])
-                .ok_or(eyre!("Encryption failed"))?;
+                .ok_or_eyre("encryption failed")?;
 
             let message = to_vec(&BroadcastMessage::StateDelta {
                 context_id: context.id,

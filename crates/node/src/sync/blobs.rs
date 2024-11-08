@@ -3,7 +3,7 @@ use calimero_network::stream::Stream;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::Context;
 use calimero_primitives::identity::PublicKey;
-use eyre::bail;
+use eyre::{bail, OptionExt};
 use futures_util::stream::poll_fn;
 use futures_util::TryStreamExt;
 use rand::seq::IteratorRandom;
@@ -65,16 +65,12 @@ impl Node {
             }
         };
 
-        let possible_sending_key = self
+        let sender_key = self
             .ctx_manager
-            .get_sender_key(&context.id, &our_identity)?;
+            .get_sender_key(&context.id, &our_identity)?
+            .ok_or_eyre("expected own identity to have sender key")?;
 
-        let sending_key = match possible_sending_key {
-            Some(key) => key,
-            None => todo!(),
-        };
-
-        let shared_key = SharedKey::new(&sending_key, &their_identity);
+        let shared_key = SharedKey::new(&sender_key, &their_identity);
 
         let (tx, mut rx) = mpsc::channel(1);
 
