@@ -850,9 +850,7 @@ impl ContextManager {
             bail!("Context not found")
         };
 
-        let this = self.clone();
-
-        let Some(application) = this.get_application(&application_id)? else {
+        let Some(application) = self.get_application(&application_id)? else {
             bail!("Application with id {:?} not found", application_id)
         };
 
@@ -860,22 +858,18 @@ impl ContextManager {
             private_key: Some(requester_secret),
         }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
-            bail!(
-                "Identity {:?} not found in context {:?}",
-                signer_id,
-                context_id
-            )
+            bail!("'{}' is not a member of '{}'", signer_id, context_id)
         };
 
-        let _ = this
+        let _ = self
             .config_client
             .mutate::<ContextConfigEnv>(
-                this.client_config.new.protocol.as_str().into(),
-                this.client_config.new.network.as_str().into(),
-                this.client_config.new.contract_id.as_str().into(),
+                self.client_config.new.protocol.as_str().into(),
+                self.client_config.new.network.as_str().into(),
+                self.client_config.new.contract_id.as_str().into(),
             )
             .update_application(
-                context_id.rt().expect("bla"),
+                context_id.rt().expect("infallible conversion"),
                 ApplicationConfig::new(
                     application.id.rt().expect("infallible conversion"),
                     application.blob.rt().expect("infallible conversion"),
