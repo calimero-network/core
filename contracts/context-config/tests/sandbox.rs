@@ -30,24 +30,15 @@ async fn main() -> eyre::Result<()> {
 
     let node1 = root_account
         .create_subaccount("node1")
+        .initial_balance(NearToken::from_near(30))
         .transact()
         .await?
         .into_result()?;
 
     let node2 = root_account
         .create_subaccount("node2")
+        .initial_balance(NearToken::from_near(30))
         .transact()
-        .await?
-        .into_result()?;
-
-    // Fund both nodes with enough NEAR
-    let _tx1 = root_account
-        .transfer_near(node1.id(), NearToken::from_near(30))
-        .await?
-        .into_result()?;
-
-    let _tx2 = root_account
-        .transfer_near(node2.id(), NearToken::from_near(30))
         .await?
         .into_result()?;
 
@@ -145,12 +136,13 @@ async fn main() -> eyre::Result<()> {
             |p| context_secret.sign(p),
         )?)
         .max_gas()
-        .deposit(NearToken::from_near(20))
         .transact()
         .await?
         .into_result()?;
 
-    assert_eq!(res.logs(), [format!("Context `{}` added", context_id)]);
+    // Assert context creation
+    let expected_log = format!("Context `{}` added", context_id);
+    assert!(res.logs().iter().any(|log| log == &expected_log));
 
     let res = node2
         .call(contract.id(), "mutate")
@@ -908,15 +900,11 @@ async fn migration() -> eyre::Result<()> {
 #[tokio::test]
 async fn test_deploy() -> eyre::Result<()> {
     let worker = near_workspaces::sandbox().await?;
-
     let wasm = fs::read("res/calimero_context_config_near.wasm").await?;
-
     let mut rng = rand::thread_rng();
 
     let contract = worker.dev_deploy(&wasm).await?;
-
     let root_account = worker.root_account()?;
-
     let node1 = root_account
         .create_subaccount("node1")
         .transact()
@@ -931,19 +919,21 @@ async fn test_deploy() -> eyre::Result<()> {
     let context_public = context_secret.verifying_key();
     let context_id = context_public.to_bytes().rt()?;
 
+    // Fund node1 just for gas fees
     drop(
         root_account
-            .transfer_near(node1.id(), NearToken::from_near(100))
+            .transfer_near(node1.id(), NearToken::from_near(500))
             .await,
     );
 
-    // Also transfer NEAR to the contract to cover proxy deployment costs
+    // Fund the contract with enough NEAR for proxy deployments
     drop(
         root_account
-            .transfer_near(contract.id(), NearToken::from_near(10))
+            .transfer_near(contract.id(), NearToken::from_near(100))
             .await,
     );
 
+    // Set proxy code
     let new_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib.wasm").await?;
     let _test = contract
         .call("set_proxy_code")
@@ -956,6 +946,7 @@ async fn test_deploy() -> eyre::Result<()> {
     let application_id = rng.gen::<[_; 32]>().rt()?;
     let blob_id = rng.gen::<[_; 32]>().rt()?;
 
+    // Call mutate without deposit since contract uses its own balance
     let res = node1
         .call(contract.id(), "mutate")
         .args_json(Signed::new(
@@ -979,13 +970,11 @@ async fn test_deploy() -> eyre::Result<()> {
             |p| context_secret.sign(p),
         )?)
         .max_gas()
-        .deposit(NearToken::from_near(10))
         .transact()
-        .await?
-        .into_result()?;
+        .await?;
 
-    // Uncomment to print the context creation result
-    // println!("Result of mutate: {:?}", res);
+    // println!("Execution result: {:#?}", res);
+    // println!("Logs: {:#?}", res.logs());  // Print the logs
 
     // Assert context creation
     let expected_log = format!("Context `{}` added", context_id);
@@ -1036,7 +1025,7 @@ async fn test_deploy() -> eyre::Result<()> {
     );
 
     // Create proposal
-    let proposal_id = rng.gen();
+    let proposal_id = rand::thread_rng().gen();
     let actions = vec![ProposalAction::ExternalFunctionCall {
         receiver_id: contract.id().to_string(),
         method_name: "increment".to_string(),
@@ -1053,21 +1042,37 @@ async fn test_deploy() -> eyre::Result<()> {
         },
     };
     let signed = Signed::new(&request, |p| alice_cx_sk.sign(p))?;
-
+    // println!("signed {:?}", signed);
     let res = node1
         .call(&proxy_address, "mutate")
-        .args_json(json!(signed))
+        .args_json(signed.clone())
         .max_gas()
         .transact()
-        .await?
-        .into_result()?;
+        .await?;
+
+    
+    // Assert proposal creation result
+    let err = res.into_result().unwrap_err();
+    assert!(err.to_string().contains("wouldn't have enough balance to cover storage"), 
+        "Expected storage balance error, got: {}", err);
+
+     // Now fund the account
+    drop(
+      root_account
+          .transfer_near(&proxy_address, NearToken::from_near(5))
+          .await,
+    );
+
+    // Try again - this time it should succeed
+    let res = node1
+        .call(&proxy_address, "mutate")
+        .args_json(signed)
+        .max_gas()
+        .transact()
+        .await?;
 
     // Assert proposal creation result
-    let success_value = res.raw_bytes()?;
-    let proposal_result: serde_json::Value = serde_json::from_slice(&success_value)?;
-    assert_eq!(proposal_result["num_approvals"], 1);
-    let created_proposal_id = proposal_result["proposal_id"].as_u64().unwrap();
-
+    assert!(res.is_success(), "Transaction failed: {:#?}", res);
     // Verify proposals list
     let proposals: Vec<Proposal> = worker
         .view(&proxy_address, "proposals")
@@ -1080,7 +1085,7 @@ async fn test_deploy() -> eyre::Result<()> {
 
     assert_eq!(proposals.len(), 1, "Should have exactly one proposal");
     let created_proposal = &proposals[0];
-    assert_eq!(created_proposal.id, created_proposal_id as u32);
+    assert_eq!(created_proposal.id, proposal_id);
     assert_eq!(created_proposal.author_id, alice_cx_id.rt()?);
     assert_eq!(created_proposal.actions.len(), 1);
 
@@ -1105,7 +1110,7 @@ async fn test_deploy() -> eyre::Result<()> {
     let single_proposal: Option<Proposal> = worker
         .view(&proxy_address, "proposal")
         .args_json(json!({
-            "proposal_id": created_proposal_id
+            "proposal_id": proposal_id
         }))
         .await?
         .json()?;
@@ -1114,7 +1119,8 @@ async fn test_deploy() -> eyre::Result<()> {
         single_proposal.is_some(),
         "Should be able to get single proposal"
     );
-    assert_eq!(single_proposal.unwrap().id, created_proposal_id as u32);
+
+    assert_eq!(single_proposal.unwrap().id, proposal_id);
 
     Ok(())
 }

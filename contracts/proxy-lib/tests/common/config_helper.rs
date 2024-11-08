@@ -87,7 +87,6 @@ impl ConfigContractHelper {
         let res = caller
             .call(self.config_contract.id(), "mutate")
             .args_json(&signed_request)
-            .deposit(NearToken::from_near(20))
             .max_gas()
             .transact()
             .await?;
@@ -135,7 +134,6 @@ impl ConfigContractHelper {
         let res = caller
             .call(self.config_contract.id(), "mutate")
             .args_json(request)
-            .deposit(NearToken::from_near(20))
             .max_gas()
             .transact()
             .await?;

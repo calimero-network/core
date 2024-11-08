@@ -29,7 +29,7 @@ async fn setup_test(
     let bytes = fs::read(common::proxy_lib_helper::PROXY_CONTRACT_WASM)?;
     let alice_sk: SigningKey = common::generate_keypair()?;
     let context_sk = common::generate_keypair()?;
-    let relayer_account = common::create_account_with_balance(&worker, "account", 100).await?;
+    let relayer_account = common::create_account_with_balance(&worker, "account", 1000).await?;
 
     let _test = config_helper
         .config_contract
@@ -52,6 +52,10 @@ async fn setup_test(
         .expect("Contract not found");
 
     let proxy_id: AccountId = contract_id_str.parse()?;
+
+    drop(relayer_account.transfer_near(&proxy_id, near_workspaces::types::NearToken::from_near(5))
+        .await);
+
     let proxy_helper =
         ProxyContractHelper::new(proxy_id, config_helper.config_contract.id().clone())?;
 

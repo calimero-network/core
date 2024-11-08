@@ -63,7 +63,7 @@ impl ProxyContractHelper {
     ) -> eyre::Result<ExecutionFinalResult> {
         let call = caller
             .call(&self.proxy_contract, "mutate")
-            .args_json(json!(request))
+            .args_json(request)
             .max_gas()
             .transact()
             .await?;

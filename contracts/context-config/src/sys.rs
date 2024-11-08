@@ -4,8 +4,8 @@ use std::io;
 use calimero_context_config::repr::Repr;
 use calimero_context_config::types::{Application, ContextId, ContextIdentity, SignerId};
 use calimero_context_config::{SystemRequest, Timestamp};
-use near_sdk::store::{IterableMap, IterableSet};
-use near_sdk::{env, near};
+use near_sdk::store::{IterableMap, IterableSet, LazyOption};
+use near_sdk::{env, near, AccountId};
 
 use crate::{parse_input, Config, ContextConfigs, ContextConfigsExt};
 
@@ -36,7 +36,11 @@ impl ContextConfigs {
         for (_, context) in self.contexts.drain() {
             drop(context.application.into_inner());
             context.members.into_inner().clear();
+            // let mut proxy = context.proxy.into_inner();
+            // proxy = AccountId::try_from("".to_string()).unwrap();
         }
+
+        self.proxy_code = LazyOption::new(b"p", None);
 
         env::log_str(&format!(
             "Post-erase storage usage: {}",

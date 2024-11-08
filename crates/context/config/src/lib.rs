@@ -186,7 +186,7 @@ pub struct ProposalApprovalWithSigner {
     pub added_timestamp: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "scope", content = "params")]
 #[serde(deny_unknown_fields)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]

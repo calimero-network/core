@@ -8,7 +8,7 @@ use calimero_context_config::{ContextRequest, ContextRequestKind, Request, Reque
 use near_sdk::serde_json::{self, json};
 use near_sdk::store::IterableSet;
 use near_sdk::{
-    env, near, require, AccountId, Gas, NearToken, Promise, PromiseError, PromiseResult,
+    env, near, require, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
 };
 
 use super::{
@@ -18,7 +18,6 @@ use super::{
 
 #[near]
 impl ContextConfigs {
-    #[payable]
     pub fn mutate(&mut self) {
         parse_input!(request: Signed<Request<'_>>);
 
@@ -125,9 +124,11 @@ impl ContextConfigs {
             env::panic_str("context already exists");
         }
 
-        // Initiate proxy contract deployment with a callback for when it completes
+        env::log_str(&format!("Context `{}` added", context_id));
+
+        // Deploy proxy contract
         self.deploy_proxy_contract(context_id, account_id)
-            .then(Self::ext(env::current_account_id()).add_context_callback(context_id))
+            .then(Self::ext(env::current_account_id()).add_context_callback())
     }
 
     fn update_application(
@@ -306,20 +307,48 @@ impl ContextConfigs {
         context_id: Repr<ContextId>,
         account_id: AccountId,
     ) -> Promise {
-        // Deploy and initialize the proxy contract
-        Promise::new(account_id.clone())
+        // Known constants from NEAR protocol
+        //Use near tokens instead of yoctoNEAR
+        const ACCOUNT_CREATION_COST: u128 = 1_000_000_000_000_000_000_000;    // 0.001 NEAR
+        const MIN_ACCOUNT_BALANCE: u128 = 3_500_000_000_000_000_000_000;      // 0.0035 NEAR
+
+        // Calculate storage needs
+        let contract_bytes = self.proxy_code.get().clone().unwrap();
+        let storage_cost = (contract_bytes.len() as u128) * env::storage_byte_cost().as_yoctonear();
+        
+        // Calculate required deposit
+        let required_deposit = NearToken::from_yoctonear(
+            ACCOUNT_CREATION_COST +    // Cost to create account
+            MIN_ACCOUNT_BALANCE +      // Minimum balance required
+            storage_cost +             // Storage cost for contract
+            10_000_000_000_000_000_000 // Additional deposit for storage
+        );
+
+        require!(
+            env::account_balance() >= required_deposit,
+            "Insufficient contract balance for deployment"
+        );
+
+        // Calculate init gas dynamically
+        let init_args = serde_json::to_vec(&json!({
+            "context_id": context_id,
+            "context_config_account_id": env::current_account_id()
+        })).unwrap();
+
+        let init_gas = Gas::from_gas(
+            Gas::from_tgas(20).as_gas() +
+            ((init_args.len() as u64) + contract_bytes.len() as u64) * 100_000
+        );
+
+        Promise::new(account_id)
             .create_account()
-            .transfer(env::attached_deposit())
-            .deploy_contract(self.proxy_code.get().clone().unwrap())
+            .transfer(required_deposit)
+            .deploy_contract(contract_bytes)
             .function_call(
                 "init".to_owned(),
-                serde_json::to_vec(&json!({
-                    "context_id": context_id,
-                    "context_config_account_id": env::current_account_id()
-                }))
-                .unwrap(),
+                init_args,
                 NearToken::from_near(0),
-                Gas::from_tgas(30),
+                init_gas,
             )
             .then(Self::ext(env::current_account_id()).proxy_deployment_callback())
     }
@@ -360,42 +389,43 @@ impl ContextConfigs {
     pub fn proxy_deployment_callback(
         &mut self,
         #[callback_result] call_result: Result<(), PromiseError>,
-    ) {
-        if let Err(e) = call_result {
-            panic!("Failed to deploy proxy contract: {:?}", e);
+    ) -> PromiseOrValue<()> {
+        if let Ok(_) = call_result {
+            // Calculate actual storage used and refund excess
+            let actual_storage_used = env::storage_usage();
+            let actual_cost = (actual_storage_used as u128) * env::storage_byte_cost().as_yoctonear();
+            let deposit_used = env::attached_deposit().as_yoctonear();
+            
+            env::log_str("Successfully deployed proxy contract");
+            
+            if actual_cost < deposit_used {
+                Promise::new(env::current_account_id())
+                    .transfer(NearToken::from_yoctonear(deposit_used - actual_cost)).into()
+            } else {
+                PromiseOrValue::Value(())
+            }
+        } else {
+            env::panic_str("Failed to deploy proxy contract");
         }
     }
 
-    pub fn add_context_callback(&mut self, context_id: Repr<ContextId>) {
-        require!(
-            env::promise_results_count() == 1,
-            "Expected 1 promise result"
-        );
-
-        match env::promise_result(0) {
-            PromiseResult::Successful(_) => {
-                env::log_str(&format!("Context `{context_id}` added"));
-            }
-            _ => {
-                panic!("Failed to deploy proxy contract for context");
-            }
+    pub fn add_context_callback(
+        &mut self,
+        #[callback_result] call_result: Result<(), PromiseError>,
+    ) {
+        if let Err(e) = call_result {
+            panic!("Failed to deploy proxy contract for context: {:?}", e);
         }
     }
 
     #[private]
     #[handle_result]
-    pub fn update_contract_callback(&mut self) -> Result<(), &'static str> {
-        require!(
-            env::promise_results_count() == 1,
-            "Expected 1 promise result"
-        );
+    pub fn update_contract_callback(&mut self, #[callback_result] call_result: Result<(), PromiseError>) -> Result<(), &'static str> {
 
-        match env::promise_result(0) {
-            PromiseResult::Successful(_) => {
-                env::log_str("Successfully updated proxy contract code");
-                Ok(())
-            }
-            _ => Err("Failed to update proxy contract code"),
+        if let Err(e) = call_result {
+            panic!("Failed to update proxy contract: {:?}", e);
         }
+
+        Ok(())
     }
 }
