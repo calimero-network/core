@@ -428,7 +428,8 @@ impl ContextConfigs {
         #[callback_result] call_result: Result<(), PromiseError>,
     ) -> Result<(), &'static str> {
         if let Err(e) = call_result {
-            panic!("Failed to update proxy contract: {:?}", e);
+            env::log_str(&format!("Failed to update proxy contract: {:?}", e));
+            return Err("Failed to update proxy contract");
         }
 
         Ok(())
