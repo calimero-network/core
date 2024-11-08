@@ -39,7 +39,7 @@ use calimero_store::types::{
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, OptionExt, Result as EyreResult};
-use futures_util::{AsyncRead, TryFutureExt, TryStreamExt};
+use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
 use rand::SeedableRng;
@@ -834,10 +834,11 @@ impl ContextManager {
         Ok(contexts)
     }
 
-    pub fn update_application_id(
+    pub async fn update_application_id(
         &self,
         context_id: ContextId,
         application_id: ApplicationId,
+        signer_id: PublicKey,
     ) -> EyreResult<()> {
         // todo! use context config
 
@@ -848,6 +849,43 @@ impl ContextManager {
         let Some(mut value) = handle.get(&key)? else {
             bail!("Context not found")
         };
+
+        let this = self.clone();
+
+        let Some(application) = this.get_application(&application_id)? else {
+            bail!("Application with id {:?} not found", application_id)
+        };
+
+        let Some(ContextIdentityValue {
+            private_key: Some(requester_secret),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
+        else {
+            bail!(
+                "Identity {:?} not found in context {:?}",
+                signer_id,
+                context_id
+            )
+        };
+
+        let _ = this
+            .config_client
+            .mutate::<ContextConfigEnv>(
+                this.client_config.new.protocol.as_str().into(),
+                this.client_config.new.network.as_str().into(),
+                this.client_config.new.contract_id.as_str().into(),
+            )
+            .update_application(
+                context_id.rt().expect("bla"),
+                ApplicationConfig::new(
+                    application.id.rt().expect("infallible conversion"),
+                    application.blob.rt().expect("infallible conversion"),
+                    application.size,
+                    ApplicationSourceConfig(application.source.to_string().into()),
+                    ApplicationMetadataConfig(Repr::new(application.metadata.into())),
+                ),
+            )
+            .send(requester_secret)
+            .await?;
 
         value.application = ApplicationMetaKey::new(application_id);
 

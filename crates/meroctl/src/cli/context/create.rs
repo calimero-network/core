@@ -260,7 +260,9 @@ async fn update_context_application(
         &format!("admin-api/dev/contexts/{context_id}/application"),
     )?;
 
-    let request = UpdateContextApplicationRequest::new(application_id);
+    //How to make conversion from libp2p to public key
+    let public_key = keypair.public();
+    let request = UpdateContextApplicationRequest::new(application_id, public_key);
 
     let response: UpdateContextApplicationResponse =
         do_request(client, url, Some(request), keypair, RequestType::Post).await?;
