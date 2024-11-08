@@ -344,9 +344,9 @@ impl ContextManager {
             return Ok(None);
         }
 
-        let proxy_contract = self.get_proxy_contract(context_id).await?;
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
         let mut config = if !context_exists {
+            let proxy_contract = self.get_proxy_contract(context_id).await?;
             Some(ContextConfigParams {
                 protocol: protocol.into(),
                 network_id: network_id.into(),
@@ -356,7 +356,7 @@ impl ContextManager {
                 members_revision: 0,
             })
         } else {
-            return Ok(None);
+            None
         };
 
         let context = self
