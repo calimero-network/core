@@ -840,13 +840,11 @@ impl ContextManager {
         application_id: ApplicationId,
         signer_id: PublicKey,
     ) -> EyreResult<()> {
-        // todo! use context config
-
         let mut handle = self.store.handle();
 
         let key = ContextMetaKey::new(context_id);
 
-        let Some(mut value) = handle.get(&key)? else {
+        let Some(mut context_meta) = handle.get(&key)? else {
             bail!("Context not found")
         };
 
@@ -861,12 +859,18 @@ impl ContextManager {
             bail!("'{}' is not a member of '{}'", signer_id, context_id)
         };
 
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!(
+                "Failed to retrieve ContextConfig for context ID: {}",
+                context_id
+            );
+        };
         let _ = self
             .config_client
             .mutate::<ContextConfigEnv>(
-                self.client_config.new.protocol.as_str().into(),
-                self.client_config.new.network.as_str().into(),
-                self.client_config.new.contract_id.as_str().into(),
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
             )
             .update_application(
                 context_id.rt().expect("infallible conversion"),
@@ -881,9 +885,9 @@ impl ContextManager {
             .send(requester_secret)
             .await?;
 
-        value.application = ApplicationMetaKey::new(application_id);
+        context_meta.application = ApplicationMetaKey::new(application_id);
 
-        handle.put(&key, &value)?;
+        handle.put(&key, &context_meta)?;
 
         Ok(())
     }
