@@ -39,7 +39,7 @@ use calimero_store::types::{
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, OptionExt, Result as EyreResult};
-use futures_util::{AsyncRead, TryFutureExt, TryStreamExt};
+use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
 use rand::SeedableRng;
@@ -834,24 +834,60 @@ impl ContextManager {
         Ok(contexts)
     }
 
-    pub fn update_application_id(
+    pub async fn update_application_id(
         &self,
         context_id: ContextId,
         application_id: ApplicationId,
+        signer_id: PublicKey,
     ) -> EyreResult<()> {
-        // todo! use context config
-
         let mut handle = self.store.handle();
 
         let key = ContextMetaKey::new(context_id);
 
-        let Some(mut value) = handle.get(&key)? else {
+        let Some(mut context_meta) = handle.get(&key)? else {
             bail!("Context not found")
         };
 
-        value.application = ApplicationMetaKey::new(application_id);
+        let Some(application) = self.get_application(&application_id)? else {
+            bail!("Application with id {:?} not found", application_id)
+        };
 
-        handle.put(&key, &value)?;
+        let Some(ContextIdentityValue {
+            private_key: Some(requester_secret),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
+        else {
+            bail!("'{}' is not a member of '{}'", signer_id, context_id)
+        };
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!(
+                "Failed to retrieve ContextConfig for context ID: {}",
+                context_id
+            );
+        };
+        let _ = self
+            .config_client
+            .mutate::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .update_application(
+                context_id.rt().expect("infallible conversion"),
+                ApplicationConfig::new(
+                    application.id.rt().expect("infallible conversion"),
+                    application.blob.rt().expect("infallible conversion"),
+                    application.size,
+                    ApplicationSourceConfig(application.source.to_string().into()),
+                    ApplicationMetadataConfig(Repr::new(application.metadata.into())),
+                ),
+            )
+            .send(requester_secret)
+            .await?;
+
+        context_meta.application = ApplicationMetaKey::new(application_id);
+
+        handle.put(&key, &context_meta)?;
 
         Ok(())
     }
