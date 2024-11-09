@@ -12,6 +12,21 @@ use tracing::info;
 
 use crate::cli;
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ConfigProtocol {
+    Near,
+    Starknet,
+}
+
+impl ConfigProtocol {
+    pub fn as_str(&self) -> &str {
+        match self {
+            ConfigProtocol::Near => "near",
+            ConfigProtocol::Starknet => "starknet",
+        }
+    }
+}
+
 /// Configure the node
 #[derive(Debug, Parser)]
 pub struct ConfigCommand {

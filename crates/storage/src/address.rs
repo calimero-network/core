@@ -13,10 +13,11 @@ use core::fmt::{self, Debug, Display, Formatter};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use calimero_store::key::Storage as StorageKey;
+use calimero_sdk::serde::{Deserialize, Serialize};
 use fixedstr::Flexstr;
 use thiserror::Error as ThisError;
-use uuid::{Bytes, Uuid};
+
+use crate::env::{context_id, random_bytes};
 
 /// Globally-unique identifier for an [`Element`](crate::entities::Element).
 ///
@@ -33,104 +34,96 @@ use uuid::{Bytes, Uuid};
 /// system operation. Abstracting the true type away provides a level of
 /// insulation that is useful for any future changes.
 ///
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
-pub struct Id(Uuid);
+#[derive(
+    BorshSerialize,
+    BorshDeserialize,
+    Copy,
+    Clone,
+    Debug,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Hash,
+    Ord,
+    PartialOrd,
+    Serialize,
+)]
+#[serde(crate = "calimero_sdk::serde")]
+pub struct Id {
+    /// The byte array representation of the ID.
+    bytes: [u8; 32],
+}
 
 impl Id {
     /// Creates a new globally-unique identifier.
+    ///
+    /// Returns the byte array representation of the ID.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use calimero_storage::address::Id;
-    /// let id = Id::new();
+    /// let id = Id::new([0; 32]);
+    /// assert_eq!(id.as_bytes(), &[0; 32]);
     /// ```
+    #[must_use]
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        // random_bytes(&mut bytes);
+        Self { bytes }
+    }
+
+    /// Root ID which is set to the context ID.
+    #[must_use]
+    pub fn root() -> Self {
+        Self::new(context_id())
+    }
+
+    /// Creates a new random globally-unique identifier.
     ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Id;
+    /// let id = Id::random();
+    /// ```
     #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
+    pub fn random() -> Self {
+        let mut bytes = [0_u8; 32];
+        random_bytes(&mut bytes);
+        Self::new(bytes)
     }
 
-    /// Returns a slice of 16 octets containing the value.
+    /// Returns the byte array representation of the ID.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use calimero_storage::address::Id;
+    /// let id = Id::new([0; 32]);
+    /// assert_eq!(id.as_bytes(), &[0; 32]);
+    /// ```
     #[must_use]
-    pub const fn as_bytes(&self) -> &Bytes {
-        self.0.as_bytes()
-    }
-}
-
-impl BorshDeserialize for Id {
-    fn deserialize(buf: &mut &[u8]) -> Result<Self, IoError> {
-        if buf.len() < 16 {
-            return Err(IoError::new(
-                IoErrorKind::UnexpectedEof,
-                "Not enough bytes to deserialize Id",
-            ));
-        }
-        let (bytes, rest) = buf.split_at(16);
-        *buf = rest;
-        Ok(Self(Uuid::from_slice(bytes).map_err(|err| {
-            IoError::new(IoErrorKind::InvalidData, err)
-        })?))
-    }
-
-    fn deserialize_reader<R: Read>(reader: &mut R) -> Result<Self, IoError> {
-        let mut bytes = [0_u8; 16];
-        reader.read_exact(&mut bytes)?;
-        Ok(Self(Uuid::from_bytes(bytes)))
-    }
-}
-
-impl BorshSerialize for Id {
-    fn serialize<W: Write>(&self, writer: &mut W) -> Result<(), IoError> {
-        writer.write_all(self.0.as_bytes())
-    }
-}
-
-impl Default for Id {
-    fn default() -> Self {
-        Self::new()
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.bytes
     }
 }
 
 impl Display for Id {
+    #[expect(clippy::use_debug, reason = "fine for now")]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{self:?}")
     }
 }
 
-impl From<Id> for StorageKey {
+impl From<[u8; 32]> for Id {
+    fn from(bytes: [u8; 32]) -> Self {
+        Self::new(bytes)
+    }
+}
+
+impl From<Id> for [u8; 32] {
     fn from(id: Id) -> Self {
-        Self::new(*id.0.as_bytes())
-    }
-}
-
-impl From<StorageKey> for Id {
-    fn from(storage: StorageKey) -> Self {
-        Self(Uuid::from_bytes(storage.id()))
-    }
-}
-
-impl From<[u8; 16]> for Id {
-    fn from(bytes: [u8; 16]) -> Self {
-        Self(Uuid::from_bytes(bytes))
-    }
-}
-
-impl From<&[u8; 16]> for Id {
-    fn from(bytes: &[u8; 16]) -> Self {
-        Self(Uuid::from_bytes(*bytes))
-    }
-}
-
-impl From<Id> for [u8; 16] {
-    fn from(id: Id) -> Self {
-        *id.0.as_bytes()
-    }
-}
-
-impl From<Id> for Uuid {
-    fn from(id: Id) -> Self {
-        id.0
+        id.bytes
     }
 }
 
@@ -150,7 +143,7 @@ impl From<Id> for Uuid {
 /// There is no formal limit to the levels of hierarchy allowed, but in practice
 /// this is limited to 255 levels (assuming a single byte per segment name).
 ///
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Path {
     /// A list of path segment offsets, where offset `0` is assumed, and not
     /// stored.
@@ -490,7 +483,7 @@ impl BorshDeserialize for Path {
 
 impl BorshSerialize for Path {
     fn serialize<W: Write>(&self, writer: &mut W) -> Result<(), IoError> {
-        self.to_string().serialize(writer)
+        BorshSerialize::serialize(&self.to_string(), writer)
     }
 }
 
@@ -528,7 +521,7 @@ impl TryFrom<String> for Path {
 }
 
 /// Errors that can occur when working with [`Path`]s.
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, ThisError)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, ThisError)]
 #[non_exhaustive]
 pub enum PathError {
     /// The path is empty.

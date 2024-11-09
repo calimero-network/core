@@ -24,6 +24,11 @@ where
             shadow: Transaction::default(),
         }
     }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.shadow.is_empty()
+    }
 }
 
 impl<L> Layer for Temporal<'_, '_, L>
@@ -131,6 +136,7 @@ impl<'a, K: AsKeyParts + FromKeyParts> DBIter for TemporalIterator<'a, '_, K> {
 
         loop {
             if let Some((key, op)) = shadow_iter.next() {
+                // todo! if key is in inner, we've already seen it, continue
                 match op {
                     Operation::Delete => continue,
                     Operation::Put { value } => self.value = Some(value.into()),

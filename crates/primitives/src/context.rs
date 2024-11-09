@@ -1,6 +1,7 @@
 use core::fmt;
 use core::ops::Deref;
 use core::str::FromStr;
+use std::borrow::Cow;
 use std::io;
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,10 @@ use crate::application::ApplicationId;
 use crate::hash::{Hash, HashError};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
 // todo! define macros that construct newtypes
 // todo! wrapping Hash<N> with this interface
 pub struct ContextId(Hash);
@@ -17,12 +22,6 @@ pub struct ContextId(Hash);
 impl From<[u8; 32]> for ContextId {
     fn from(id: [u8; 32]) -> Self {
         Self(id.into())
-    }
-}
-
-impl From<ContextId> for [u8; 32] {
-    fn from(id: ContextId) -> Self {
-        *id
     }
 }
 
@@ -81,12 +80,13 @@ impl fmt::Debug for ContextInvitationPayload {
         {
             let is_alternate = f.alternate();
             let mut d = f.debug_struct("ContextInvitationPayload");
-            let (context_id, invitee_id, network, contract_id) =
+            let (context_id, invitee_id, protocol, network, contract_id) =
                 self.parts().map_err(|_| fmt::Error)?;
 
             _ = d
                 .field("context_id", &context_id)
                 .field("invitee_id", &invitee_id)
+                .field("protocol", &protocol)
                 .field("network", &network)
                 .field("contract_id", &contract_id);
 
@@ -146,6 +146,7 @@ const _: () = {
     struct InvitationPayload<'a> {
         context_id: [u8; 32],
         invitee_id: [u8; 32],
+        protocol: Cow<'a, str>,
         network: Cow<'a, str>,
         contract_id: Cow<'a, str>,
     }
@@ -154,12 +155,14 @@ const _: () = {
         pub fn new(
             context_id: ContextId,
             invitee_id: PublicKey,
+            protocol: Cow<'_, str>,
             network: Cow<'_, str>,
             contract_id: Cow<'_, str>,
         ) -> io::Result<Self> {
             let payload = InvitationPayload {
                 context_id: *context_id,
                 invitee_id: *invitee_id,
+                protocol,
                 network,
                 contract_id,
             };
@@ -167,12 +170,13 @@ const _: () = {
             borsh::to_vec(&payload).map(Self)
         }
 
-        pub fn parts(&self) -> io::Result<(ContextId, PublicKey, String, String)> {
+        pub fn parts(&self) -> io::Result<(ContextId, PublicKey, String, String, String)> {
             let payload: InvitationPayload<'_> = borsh::from_slice(&self.0)?;
 
             Ok((
                 payload.context_id.into(),
                 payload.invitee_id.into(),
+                payload.protocol.into_owned(),
                 payload.network.into_owned(),
                 payload.contract_id.into_owned(),
             ))
@@ -186,20 +190,26 @@ const _: () = {
 pub struct Context {
     pub id: ContextId,
     pub application_id: ApplicationId,
-    pub last_transaction_hash: Hash,
+    pub root_hash: Hash,
 }
 
 impl Context {
     #[must_use]
-    pub const fn new(
-        id: ContextId,
-        application_id: ApplicationId,
-        last_transaction_hash: Hash,
-    ) -> Self {
+    pub const fn new(id: ContextId, application_id: ApplicationId, root_hash: Hash) -> Self {
         Self {
             id,
             application_id,
-            last_transaction_hash,
+            root_hash,
         }
     }
+}
+
+#[derive(Debug)]
+pub struct ContextConfigParams<'a> {
+    pub protocol: Cow<'a, str>,
+    pub network_id: Cow<'a, str>,
+    pub contract_id: Cow<'a, str>,
+    pub proxy_contract: Cow<'a, str>,
+    pub application_revision: u64,
+    pub members_revision: u64,
 }

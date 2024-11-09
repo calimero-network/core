@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use axum::routing::{post, MethodRouter};
 use axum::{Extension, Json};
-use calimero_node_primitives::{
-    CallError as PrimitiveCallError, ExecutionRequest, Finality, ServerSender,
-};
+use calimero_node_primitives::{CallError as PrimitiveCallError, ExecutionRequest, ServerSender};
 use calimero_primitives::context::ContextId;
 use calimero_primitives::identity::PublicKey;
 use calimero_server_primitives::jsonrpc::{
@@ -18,8 +16,9 @@ use thiserror::Error as ThisError;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info};
 
-mod mutate;
-mod query;
+use crate::config::ServerConfig;
+
+mod execute;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -69,9 +68,7 @@ async fn handle_request(
     debug!(?request, "Received request");
     let body = match from_json_value::<RequestPayload>(request.payload) {
         Ok(payload) => match payload {
-            RequestPayload::Query(request) => request.handle(state).await.to_res_body(),
-            RequestPayload::Mutate(request) => request.handle(state).await.to_res_body(),
-            _ => unreachable!("Unsupported JSON RPC method"),
+            RequestPayload::Execute(request) => request.handle(state).await.to_res_body(),
         },
         Err(err) => {
             error!(%err, "Failed to deserialize RequestPayload");
@@ -81,10 +78,6 @@ async fn handle_request(
             ))
         }
     };
-
-    if let ResponseBody::Error(err) = &body {
-        error!(?err, "Failed to execute JSON RPC method");
-    }
 
     let response = PrimitiveResponse::new(request.jsonrpc, request.id, body);
     Json(response)
@@ -140,11 +133,13 @@ impl<T: Serialize, E: Serialize> ToResponseBody for Result<T, RpcError<E>> {
 }
 
 #[derive(Debug, ThisError)]
-#[error("CallError")]
 #[expect(clippy::enum_variant_names, reason = "Acceptable here")]
 pub(crate) enum CallError {
-    UpstreamCallError(PrimitiveCallError),
-    UpstreamFunctionCallError(String), // TODO use FunctionCallError from runtime-primitives once they are migrated
+    #[error(transparent)]
+    CallError(PrimitiveCallError),
+    #[error("function call error: {0}")]
+    FunctionCallError(String), // TODO use FunctionCallError from runtime-primitives once they are migrated
+    #[error(transparent)]
     InternalError(EyreError),
 }
 
@@ -153,7 +148,6 @@ pub(crate) async fn call(
     context_id: ContextId,
     method: String,
     args: Vec<u8>,
-    writes: bool,
     executor_public_key: PublicKey,
 ) -> Result<Option<String>, CallError> {
     let (outcome_sender, outcome_receiver) = oneshot::channel();
@@ -165,7 +159,6 @@ pub(crate) async fn call(
             args,
             executor_public_key,
             outcome_sender,
-            writes.then_some(Finality::Global),
         ))
         .await
         .map_err(|e| CallError::InternalError(eyre!("Failed to send call message: {}", e)))?;
@@ -174,13 +167,14 @@ pub(crate) async fn call(
         CallError::InternalError(eyre!("Failed to receive call outcome result: {}", e))
     })? {
         Ok(outcome) => {
-            for log in outcome.logs {
-                info!("RPC log: {}", log);
+            let x = outcome.logs.len().checked_ilog10().unwrap_or(0) as usize + 1;
+            for (i, log) in outcome.logs.iter().enumerate() {
+                info!("execution log {i:>x$}| {}", log);
             }
 
             let Some(returns) = outcome
                 .returns
-                .map_err(|e| CallError::UpstreamFunctionCallError(e.to_string()))?
+                .map_err(|e| CallError::FunctionCallError(e.to_string()))?
             else {
                 return Ok(None);
             };
@@ -189,7 +183,7 @@ pub(crate) async fn call(
                 CallError::InternalError(eyre!("Failed to convert call result to string: {}", e))
             })?))
         }
-        Err(err) => Err(CallError::UpstreamCallError(err)),
+        Err(err) => Err(CallError::CallError(err)),
     }
 }
 
@@ -216,5 +210,3 @@ macro_rules! mount_method {
 }
 
 pub(crate) use mount_method;
-
-use crate::config::ServerConfig;

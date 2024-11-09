@@ -8,32 +8,37 @@ license-file = "LICENSE.md"
 [workspace]
 resolver = "2"
 members = [
-  "./crates/config",
-  "./crates/context",
-  "./crates/context/config",
-  "./crates/meroctl",
-  "./crates/merod",
-  "./crates/merow",
-  "./crates/network",
-  "./crates/node",
-  "./crates/node-primitives",
-  "./crates/primitives",
-  "./crates/runtime",
-  "./crates/sdk",
-  "./crates/sdk/libs/near",
-  "./crates/sdk/macros",
-  "./crates/server",
-  "./crates/server-primitives",
-  "./crates/storage",
-  "./crates/store",
-  "./crates/store/blobs",
+    "./crates/config",
+    "./crates/context",
+    "./crates/context/config",
+    "./crates/meroctl",
+    "./crates/merod",
+    "./crates/merow",
+    "./crates/network",
+    "./crates/node",
+    "./crates/node-primitives",
+    "./crates/primitives",
+    "./crates/runtime",
+    "./crates/sdk",
+    "./crates/sdk/libs/near",
+    "./crates/sdk/macros",
+    "./crates/server",
+    "./crates/server-primitives",
+    "./crates/storage",
+    "./crates/storage-macros",
+    "./crates/store",
+    "./crates/store/blobs",
 
-  "./apps/kv-store",
-  "./apps/only-peers",
-  "./apps/gen-ext",
+    "./apps/kv-store",
+    "./apps/only-peers",
+    "./apps/gen-ext",
+    "./apps/visited",
+    "./apps/blockchain",
 
   "./contracts/context-config",
   "./contracts/registry",
+  "./contracts/proxy-lib",
+  "./contracts/test-counter",
 ]
 
 [workspace.dependencies]
@@ -65,6 +70,7 @@ http = "1.1.0"
 http-serde = "2.1.1"
 ic-canister-sig-creation = "1.1"
 ic-signature-verification = "0.2"
+indexmap = "2.6.0"
 jsonwebtoken = "9.3.0"
 libp2p = "0.53.2"
 libp2p-stream = "0.1.0-alpha.1"
@@ -76,14 +82,14 @@ near-jsonrpc-client = "0.13.0"
 near-jsonrpc-primitives = "0.26.0"
 near-primitives = "0.26.0"
 near-sdk = "5.5.0"
-near-workspaces = "0.14.0"
+near-workspaces = "0.10.0"
 notify = "6.1.1"
 ouroboros = "0.18.3"
 owo-colors = "3.5.0"
 parking_lot = "0.12.3"
 prettyplease = "0.2.17"
 proc-macro2 = "1.0"
-quote = "1.0"
+quote = "1.0.37"
 rand = "0.8.5"
 rand_chacha = "0.3.1"
 reqwest = "0.12.2"
@@ -95,10 +101,9 @@ semver = "1.0.22"
 serde = "1.0.196"
 serde_json = "1.0.113"
 serde_with = "3.9.0"
-starknet-core = "0.11.1"
+starknet = "0.12.0"
 starknet-crypto = "0.7.1"
-starknet-macros = "0.2.0"
-starknet-providers = "0.11.0"
+starknet-types-core = "0.1.7"
 strum = "0.26.2"
 syn = "2.0"
 tempdir = "0.3.7"
@@ -119,7 +124,8 @@ tracing-subscriber = "0.3.17"
 trybuild = "1.0"
 ureq = "2.9.7"
 url = "2.5.2"
-uuid = { version = "1.10.0", features = ["v4"] }
+uuid = { version = "1.10.0", features = ["serde"] }
+velcro = "0.5.4"
 wasmer = "4.2.5"
 wasmer-types = "4.2.5"
 web3 = "0.19.0"
@@ -222,8 +228,6 @@ clone_on_ref_ptr = "deny"
 empty_enum_variants_with_brackets = "deny"
 empty_structs_with_brackets = "deny"
 error_impl_error = "deny"
-exhaustive_enums = "deny"
-exhaustive_structs = "deny"
 #expect_used = "deny" TODO: Enable as soon as possible
 float_cmp_const = "deny"
 fn_to_numeric_cast_any = "deny"
@@ -235,8 +239,6 @@ lossy_float_literal = "deny"
 mem_forget = "deny"
 multiple_inherent_impl = "deny"
 #panic = "deny" TODO: Enable as soon as possible
-print_stderr = "deny"
-print_stdout = "deny"
 rc_mutex = "deny"
 renamed_function_params = "deny"
 try_err = "deny"

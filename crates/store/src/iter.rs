@@ -139,7 +139,7 @@ impl<'a, K> Iter<'a, K, Unstructured> {
 type Key<'a> = Slice<'a>;
 type Value<'a> = Slice<'a>;
 
-impl<K> DBIter for Iter<'_, K, Unstructured> {
+impl<K, V> DBIter for Iter<'_, K, V> {
     fn seek(&mut self, key: Key<'_>) -> EyreResult<Option<Key<'_>>> {
         self.inner.seek(key)
     }

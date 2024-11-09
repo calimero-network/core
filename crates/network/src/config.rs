@@ -1,7 +1,6 @@
 use core::fmt::{self, Formatter};
 use core::time::Duration;
 
-use calimero_node_primitives::NodeType;
 use libp2p::identity::Keypair;
 use libp2p::rendezvous::Namespace;
 use multiaddr::{Multiaddr, Protocol};
@@ -29,31 +28,25 @@ pub const CALIMERO_DEV_BOOT_NODES: &[&str] = &[
 #[non_exhaustive]
 pub struct NetworkConfig {
     pub identity: Keypair,
-    pub node_type: NodeType,
 
     pub swarm: SwarmConfig,
     pub bootstrap: BootstrapConfig,
     pub discovery: DiscoveryConfig,
-    pub catchup: CatchupConfig,
 }
 
 impl NetworkConfig {
     #[must_use]
     pub const fn new(
         identity: Keypair,
-        node_type: NodeType,
         swarm: SwarmConfig,
         bootstrap: BootstrapConfig,
         discovery: DiscoveryConfig,
-        catchup: CatchupConfig,
     ) -> Self {
         Self {
             identity,
-            node_type,
             swarm,
             bootstrap,
             discovery,
-            catchup,
         }
     }
 }
@@ -160,7 +153,7 @@ pub struct RelayConfig {
 
 impl RelayConfig {
     #[must_use]
-    pub fn new(registrations_limit: usize) -> Self {
+    pub const fn new(registrations_limit: usize) -> Self {
         Self {
             registrations_limit,
         }
@@ -211,35 +204,6 @@ impl Default for RendezvousConfig {
             discovery_rpm: 0.5,
             discovery_interval: Duration::from_secs(90),
             registrations_limit: 3,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub struct CatchupConfig {
-    pub batch_size: u8,
-
-    pub receive_timeout: Duration,
-
-    pub interval: Duration,
-
-    pub initial_delay: Duration,
-}
-
-impl CatchupConfig {
-    #[must_use]
-    pub const fn new(
-        batch_size: u8,
-        receive_timeout: Duration,
-        interval: Duration,
-        initial_delay: Duration,
-    ) -> Self {
-        Self {
-            batch_size,
-            receive_timeout,
-            interval,
-            initial_delay,
         }
     }
 }

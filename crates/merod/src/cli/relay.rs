@@ -1,4 +1,5 @@
 use core::net::{AddrParseError, IpAddr, Ipv4Addr, SocketAddr};
+use std::borrow::Cow;
 use std::env;
 
 use axum::extract::State;
@@ -6,8 +7,11 @@ use axum::http::status::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
+use calimero_config::ConfigFile;
+use calimero_context_config::client::config::Credentials;
+use calimero_context_config::client::protocol::{near, starknet};
 use calimero_context_config::client::relayer::RelayRequest;
-use calimero_context_config::client::{near, Transport, TransportRequest};
+use calimero_context_config::client::transport::{Both, Transport, TransportRequest};
 use clap::{Parser, ValueEnum};
 use eyre::{bail, Result as EyreResult};
 use futures_util::FutureExt;
@@ -16,7 +20,6 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use super::RootArgs;
-use calimero_config::ConfigFile;
 
 pub const DEFAULT_PORT: u16 = 63529; // Mero-rELAY = MELAY
 pub const DEFAULT_ADDR: SocketAddr =
@@ -50,38 +53,87 @@ impl RelayCommand {
 
         let (tx, mut rx) = mpsc::channel::<RequestPayload>(32);
 
-        let transport = near::NearTransport::new(&near::NearConfig {
+        let near_transport = near::NearTransport::new(&near::NearConfig {
             networks: config
                 .context
                 .client
                 .signer
                 .local
+                .near
                 .iter()
                 .map(|(network, config)| {
-                    (
-                        network.into(),
+                    let (account_id, access_key) = match &config.credentials {
+                        Credentials::Near(credentials) => (
+                            credentials.account_id.clone(),
+                            credentials.secret_key.clone(),
+                        ),
+                        Credentials::Starknet(_) => {
+                            bail!("Expected NEAR credentials, but got Starknet credentials.")
+                        }
+                        _ => bail!("Expected NEAR credentials."),
+                    };
+                    Ok((
+                        Cow::from(network.clone()),
                         near::NetworkConfig {
                             rpc_url: config.rpc_url.clone(),
-                            account_id: config.credentials.account_id.clone(),
-                            access_key: config.credentials.secret_key.clone(),
+                            account_id,
+                            access_key,
                         },
-                    )
+                    ))
                 })
-                .collect(),
+                .collect::<EyreResult<_>>()?,
         });
+
+        let starknet_transport = starknet::StarknetTransport::new(&starknet::StarknetConfig {
+            networks: config
+                .context
+                .client
+                .signer
+                .local
+                .starknet
+                .iter()
+                .map(|(network, config)| {
+                    let (account_id, access_key) = match &config.credentials {
+                        Credentials::Starknet(credentials) => {
+                            (credentials.account_id, credentials.secret_key)
+                        }
+                        Credentials::Near(_) => bail!("Expected Starknet credentials."),
+                        _ => bail!("Expected NEAR credentials."),
+                    };
+                    Ok((
+                        Cow::from(network.clone()),
+                        starknet::NetworkConfig {
+                            rpc_url: config.rpc_url.clone(),
+                            account_id,
+                            access_key,
+                        },
+                    ))
+                })
+                .collect::<EyreResult<_>>()?,
+        });
+
+        let both_transport = Both {
+            left: near_transport,
+            right: starknet_transport,
+        };
 
         let handle = async move {
             while let Some((request, res_tx)) = rx.recv().await {
                 let payload = request.payload;
 
                 let request = TransportRequest::new(
+                    request.protocol,
                     request.network_id,
                     request.contract_id,
                     request.operation,
                 );
 
-                let _ignored =
-                    res_tx.send(transport.send(request, payload).await.map_err(Into::into));
+                let _ignored = res_tx.send(
+                    both_transport
+                        .send(request, payload)
+                        .await
+                        .map_err(Into::into),
+                );
             }
         };
 

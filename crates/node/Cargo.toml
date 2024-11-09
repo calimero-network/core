@@ -7,16 +7,16 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+borsh.workspace = true
 camino = { workspace = true, features = ["serde1"] }
-clap.workspace = true
+clap = { workspace = true, features = ["derive"] }
 eyre.workspace = true
 futures-util = { workspace = true, features = ["io"] }
 libp2p.workspace = true
 owo-colors.workspace = true
 rand.workspace = true
-serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-thiserror.workspace = true
+serde.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros"] }
 tracing.workspace = true
 url.workspace = true
@@ -29,6 +29,7 @@ calimero-primitives = { path = "../primitives" }
 calimero-runtime = { path = "../runtime" }
 calimero-server = { path = "../server", features = ["jsonrpc", "websocket", "admin"] }
 calimero-store = { path = "../store", features = ["datatypes"] }
+calimero-context-config =  { path = "../context/config" }
 
 [lints]
 workspace = true

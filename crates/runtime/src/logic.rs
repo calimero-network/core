@@ -2,9 +2,13 @@
 #![allow(clippy::mem_forget, reason = "Safe for now")]
 
 use core::num::NonZeroU64;
+use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::vec;
 
 use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;
+use rand::RngCore;
 use serde::Serialize;
 
 use crate::constraint::{Constrained, MaxU64};
@@ -104,6 +108,10 @@ pub struct VMLogic<'a> {
     returns: Option<VMLogicResult<Vec<u8>, Vec<u8>>>,
     logs: Vec<String>,
     events: Vec<Event>,
+    root_hash: Option<[u8; 32]>,
+    artifact: Vec<u8>,
+    proposals: BTreeMap<[u8; 32], Vec<u8>>,
+    approvals: Vec<[u8; 32]>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -117,6 +125,10 @@ impl<'a> VMLogic<'a> {
             returns: None,
             logs: vec![],
             events: vec![],
+            root_hash: None,
+            artifact: vec![],
+            proposals: BTreeMap::new(),
+            approvals: vec![],
         }
     }
 
@@ -144,6 +156,11 @@ pub struct Outcome {
     pub returns: VMLogicResult<Option<Vec<u8>>, FunctionCallError>,
     pub logs: Vec<String>,
     pub events: Vec<Event>,
+    pub root_hash: Option<[u8; 32]>,
+    pub artifact: Vec<u8>,
+    pub proposals: BTreeMap<[u8; 32], Vec<u8>>,
+    //list of ids for approved proposals
+    pub approvals: Vec<[u8; 32]>,
     // execution runtime
     // current storage usage of the app
 }
@@ -170,6 +187,10 @@ impl VMLogic<'_> {
             returns,
             logs: self.logs,
             events: self.events,
+            root_hash: self.root_hash,
+            artifact: self.artifact,
+            proposals: self.proposals,
+            approvals: self.approvals,
         }
     }
 }
@@ -187,6 +208,24 @@ pub struct VMHostFunctions<'a> {
 impl VMHostFunctions<'_> {
     fn read_guest_memory(&self, ptr: u64, len: u64) -> VMLogicResult<Vec<u8>> {
         let mut buf = vec![0; usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?];
+
+        self.borrow_memory().read(ptr, &mut buf)?;
+
+        Ok(buf)
+    }
+
+    fn read_guest_memory_sized<const N: usize>(
+        &self,
+        ptr: u64,
+        len: u64,
+    ) -> VMLogicResult<[u8; N]> {
+        let len = usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?;
+
+        if len != N {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let mut buf = [0; N];
 
         self.borrow_memory().read(ptr, &mut buf)?;
 
@@ -335,6 +374,30 @@ impl VMHostFunctions<'_> {
         Ok(())
     }
 
+    pub fn commit(
+        &mut self,
+        root_hash_ptr: u64,
+        root_hash_len: u64,
+        artifact_ptr: u64,
+        artifact_len: u64,
+    ) -> VMLogicResult<()> {
+        let root_hash = self.read_guest_memory_sized::<32>(root_hash_ptr, root_hash_len)?;
+        let artifact = self.read_guest_memory(artifact_ptr, artifact_len)?;
+
+        self.with_logic_mut(|logic| {
+            if logic.root_hash.is_some() {
+                return Err(HostError::InvalidMemoryAccess);
+            }
+
+            logic.root_hash = Some(root_hash);
+            logic.artifact = artifact;
+
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
     pub fn storage_read(
         &mut self,
         key_ptr: u64,
@@ -351,6 +414,32 @@ impl VMHostFunctions<'_> {
 
         if let Some(value) = logic.storage.get(&key) {
             self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, value))?;
+
+            return Ok(1);
+        }
+
+        Ok(0)
+    }
+
+    pub fn storage_remove(
+        &mut self,
+        key_ptr: u64,
+        key_len: u64,
+        register_id: u64,
+    ) -> VMLogicResult<u32> {
+        let logic = self.borrow_logic();
+
+        if key_len > logic.limits.max_storage_key_size.get() {
+            return Err(HostError::KeyLengthOverflow.into());
+        }
+
+        let key = self.read_guest_memory(key_ptr, key_len)?;
+
+        if let Some(value) = logic.storage.get(&key) {
+            self.with_logic_mut(|logic| {
+                drop(logic.storage.remove(&key));
+                logic.registers.set(logic.limits, register_id, value)
+            })?;
 
             return Ok(1);
         }
@@ -438,5 +527,92 @@ impl VMHostFunctions<'_> {
 
         self.with_logic_mut(|logic| logic.registers.set(logic.limits, register_id, data))?;
         Ok(status)
+    }
+
+    pub fn random_bytes(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
+        let mut buf = vec![0; usize::try_from(len).map_err(|_| HostError::IntegerOverflow)?];
+
+        rand::thread_rng().fill_bytes(&mut buf);
+        self.borrow_memory().write(ptr, &buf)?;
+
+        Ok(())
+    }
+
+    /// Gets the current time.
+    ///
+    /// This function obtains the current time as a nanosecond timestamp, as
+    /// [`SystemTime`] is not available inside the guest runtime. Therefore the
+    /// guest needs to request this from the host.
+    ///
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Impossible to overflow in normal circumstances"
+    )]
+    #[expect(
+        clippy::expect_used,
+        clippy::unwrap_in_result,
+        reason = "Effectively infallible here"
+    )]
+    pub fn time_now(&mut self, ptr: u64, len: u64) -> VMLogicResult<()> {
+        if len != 8 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards to before the Unix epoch!")
+            .as_nanos() as u64;
+
+        self.borrow_memory().write(ptr, &now.to_le_bytes())?;
+
+        Ok(())
+    }
+
+    /// Call the contract's `send_proposal()` function through the bridge.
+    ///
+    /// The proposal actions are obtained as raw data and pushed onto a list of
+    /// proposals to be sent to the host.
+    ///
+    /// Note that multiple actions are received, and the entire batch is pushed
+    /// onto the proposal list to represent one proposal.
+    ///
+    /// # Parameters
+    ///
+    /// * `actions_ptr` - Pointer to the start of the action data in WASM
+    ///                   memory.
+    /// * `actions_len` - Length of the action data.
+    /// * `id_ptr`      - Pointer to the start of the id data in WASM memory.
+    /// * `id_len`      - Length of the action data. This should be 32 bytes.
+    ///
+    pub fn send_proposal(
+        &mut self,
+        actions_ptr: u64,
+        actions_len: u64,
+        id_ptr: u64,
+        id_len: u64,
+    ) -> VMLogicResult<()> {
+        if id_len != 32 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+
+        let actions_bytes: Vec<u8> = self.read_guest_memory(actions_ptr, actions_len)?;
+        let mut proposal_id = [0; 32];
+
+        rand::thread_rng().fill_bytes(&mut proposal_id);
+        drop(self.with_logic_mut(|logic| logic.proposals.insert(proposal_id, actions_bytes)));
+
+        self.borrow_memory().write(id_ptr, &proposal_id)?;
+
+        Ok(())
+    }
+
+    pub fn approve_proposal(&mut self, approval_ptr: u64, approval_len: u64) -> VMLogicResult<()> {
+        if approval_len != 32 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+        let approval = self.read_guest_memory_sized::<32>(approval_ptr, approval_len)?;
+        let _ = self.with_logic_mut(|logic| logic.approvals.push(approval));
+
+        Ok(())
     }
 }

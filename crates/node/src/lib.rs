@@ -6,57 +6,52 @@
 
 use core::future::{pending, Future};
 use core::pin::Pin;
+use core::str;
+use std::time::Duration;
 
+use borsh::{from_slice, to_vec};
 use calimero_blobstore::config::BlobStoreConfig;
 use calimero_blobstore::{BlobManager, FileSystem};
 use calimero_context::config::ContextConfig;
 use calimero_context::ContextManager;
+use calimero_context_config::ProposalAction;
 use calimero_network::client::NetworkClient;
 use calimero_network::config::NetworkConfig;
 use calimero_network::types::{NetworkEvent, PeerId};
-use calimero_node_primitives::{
-    CallError, ExecutionRequest, Finality, MutateCallError, NodeType, QueryCallError,
-};
+use calimero_node_primitives::{CallError, ExecutionRequest};
 use calimero_primitives::context::{Context, ContextId};
 use calimero_primitives::events::{
-    ApplicationEvent, ApplicationEventPayload, ExecutedTransactionPayload, NodeEvent, OutcomeEvent,
-    OutcomeEventPayload, PeerJoinedPayload,
+    ContextEvent, ContextEventPayload, ExecutionEvent, ExecutionEventPayload, NodeEvent,
+    StateMutationPayload,
 };
 use calimero_primitives::hash::Hash;
 use calimero_primitives::identity::PublicKey;
-use calimero_primitives::transaction::Transaction;
 use calimero_runtime::logic::{Outcome, VMContext, VMLimits};
 use calimero_runtime::Constraint;
 use calimero_server::config::ServerConfig;
 use calimero_store::config::StoreConfig;
 use calimero_store::db::RocksDB;
-use calimero_store::key::{
-    ApplicationMeta as ApplicationMetaKey, ContextMeta as ContextMetaKey,
-    ContextTransaction as ContextTransactionKey,
-};
-use calimero_store::types::{ContextMeta, ContextTransaction};
+use calimero_store::key::ContextMeta as ContextMetaKey;
 use calimero_store::Store;
 use camino::Utf8PathBuf;
 use eyre::{bail, eyre, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
-use owo_colors::OwoColorize;
-use serde_json::{from_slice as from_json_slice, to_vec as to_json_vec};
+use rand::{thread_rng, Rng};
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::select;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval_at, Instant};
-use tokio::{select, spawn};
 use tracing::{debug, error, info, warn};
 
-use crate::runtime_compat::RuntimeCompatStore;
-use crate::transaction_pool::{TransactionPool, TransactionPoolEntry};
-use crate::types::{PeerAction, TransactionConfirmation, TransactionRejection};
-
-pub mod catchup;
 pub mod interactive_cli;
 pub mod runtime_compat;
-pub mod transaction_pool;
+pub mod sync;
 pub mod types;
+
+use runtime_compat::RuntimeCompatStore;
+use sync::SyncConfig;
+use types::BroadcastMessage;
 
 type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 
@@ -65,8 +60,8 @@ type BoxedFuture<T> = Pin<Box<dyn Future<Output = T>>>;
 pub struct NodeConfig {
     pub home: Utf8PathBuf,
     pub identity: Keypair,
-    pub node_type: NodeType,
     pub network: NetworkConfig,
+    pub sync: SyncConfig,
     pub datastore: StoreConfig,
     pub blobstore: BlobStoreConfig,
     pub context: ContextConfig,
@@ -74,13 +69,12 @@ pub struct NodeConfig {
 }
 
 impl NodeConfig {
-    #[expect(clippy::too_many_arguments, reason = "Okay for now")]
     #[must_use]
     pub const fn new(
         home: Utf8PathBuf,
         identity: Keypair,
-        node_type: NodeType,
         network: NetworkConfig,
+        sync: SyncConfig,
         datastore: StoreConfig,
         blobstore: BlobStoreConfig,
         context: ContextConfig,
@@ -89,8 +83,8 @@ impl NodeConfig {
         Self {
             home,
             identity,
-            node_type,
             network,
+            sync,
             datastore,
             blobstore,
             context,
@@ -101,15 +95,11 @@ impl NodeConfig {
 
 #[derive(Debug)]
 pub struct Node {
-    id: PeerId,
-    typ: NodeType,
+    sync_config: SyncConfig,
     store: Store,
-    tx_pool: TransactionPool,
     ctx_manager: ContextManager,
     network_client: NetworkClient,
     node_events: broadcast::Sender<NodeEvent>,
-    // --
-    nonce: u64,
 }
 
 pub async fn start(config: NodeConfig) -> EyreResult<()> {
@@ -136,21 +126,13 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
     )
     .await?;
 
-    let mut node = Node::new(
-        &config,
-        network_client.clone(),
-        node_events.clone(),
-        ctx_manager.clone(),
-        store.clone(),
-    );
-
     #[expect(trivial_casts, reason = "Necessary here")]
     let mut server = Box::pin(calimero_server::start(
         config.server,
         server_sender,
-        ctx_manager,
-        node_events,
-        store,
+        ctx_manager.clone(),
+        node_events.clone(),
+        store.clone(),
     )) as BoxedFuture<EyreResult<()>>;
 
     let mut stdin = BufReader::new(stdin()).lines();
@@ -168,10 +150,12 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
     let mut catchup_interval_tick = interval_at(
         Instant::now()
-            .checked_add(config.network.catchup.initial_delay)
+            .checked_add(Duration::from_millis(thread_rng().gen_range(1000..5000)))
             .ok_or_else(|| eyre!("Overflow when calculating initial catchup interval delay"))?,
-        config.network.catchup.interval,
+        config.sync.interval,
     );
+
+    let mut node = Node::new(config.sync, network_client, node_events, ctx_manager, store);
 
     #[expect(clippy::redundant_pub_crate, reason = "Tokio code")]
     loop {
@@ -180,12 +164,12 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
                 let Some(event) = event else {
                     break;
                 };
-                node.handle_event(event).await?;
+                node.handle_event(event).await;
             }
             line = stdin.next_line() => {
                 if let Some(line) = line? {
                     if let Err(err) = interactive_cli::handle_line(&mut node, line).await {
-                        error!("Failed to handle line: {:?}", err);
+                        error!("Failed handling user command: {:?}", err);
                     }
                 }
             }
@@ -194,8 +178,8 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
                 server = Box::pin(pending());
                 continue;
             }
-            Some(request) = server_receiver.recv() => node.handle_call(request).await,
-            _ = catchup_interval_tick.tick() => node.perform_interval_catchup().await,
+            Some(request) = server_receiver.recv() => node.handle_server_request(request).await,
+            _ = catchup_interval_tick.tick() => node.perform_interval_sync().await,
         }
     }
 
@@ -204,28 +188,27 @@ pub async fn start(config: NodeConfig) -> EyreResult<()> {
 
 impl Node {
     #[must_use]
-    pub fn new(
-        config: &NodeConfig,
+    pub const fn new(
+        sync_config: SyncConfig,
         network_client: NetworkClient,
         node_events: broadcast::Sender<NodeEvent>,
         ctx_manager: ContextManager,
         store: Store,
     ) -> Self {
         Self {
-            id: config.identity.public().to_peer_id(),
-            typ: config.node_type,
+            sync_config,
             store,
-            tx_pool: TransactionPool::default(),
             ctx_manager,
             network_client,
             node_events,
-            // --
-            nonce: 0,
         }
     }
 
-    pub async fn handle_event(&mut self, event: NetworkEvent) -> EyreResult<()> {
+    pub async fn handle_event(&mut self, event: NetworkEvent) {
         match event {
+            NetworkEvent::ListeningOn { address, .. } => {
+                info!("Listening on: {}", address);
+            }
             NetworkEvent::Subscribed {
                 peer_id: their_peer_id,
                 topic: topic_hash,
@@ -234,35 +217,32 @@ impl Node {
                     error!(?err, "Failed to handle subscribed event");
                 }
             }
+            NetworkEvent::Unsubscribed {
+                peer_id: their_peer_id,
+                topic: topic_hash,
+            } => {
+                if let Err(err) = self.handle_unsubscribed(their_peer_id, &topic_hash) {
+                    error!(?err, "Failed to handle unsubscribed event");
+                }
+            }
             NetworkEvent::Message { message, .. } => {
                 if let Err(err) = self.handle_message(message).await {
                     error!(?err, "Failed to handle message event");
                 }
             }
-            NetworkEvent::ListeningOn { address, .. } => {
-                info!("Listening on: {}", address);
-            }
             NetworkEvent::StreamOpened { peer_id, stream } => {
-                info!("Stream opened from peer: {}", peer_id);
+                debug!(%peer_id, "Stream opened!");
 
-                if let Err(err) = self.handle_opened_stream(stream).await {
-                    error!(?err, "Failed to handle stream");
-                }
+                self.handle_opened_stream(stream).await;
 
-                info!("Stream closed from peer: {:?}", peer_id);
+                debug!(%peer_id, "Stream closed!");
             }
             _ => error!("Unhandled event: {:?}", event),
         }
-
-        Ok(())
     }
 
     fn handle_subscribed(&self, their_peer_id: PeerId, topic_hash: &TopicHash) -> EyreResult<()> {
         let Ok(context_id) = topic_hash.as_str().parse() else {
-            // bail!(
-            //     "Failed to parse topic hash '{}' into context ID",
-            //     topic_hash
-            // );
             return Ok(());
         };
 
@@ -275,15 +255,35 @@ impl Node {
                 "Observed subscription to unknown context, ignoring.."
             );
             return Ok(());
+        }
+
+        info!(
+            "Peer '{}' subscribed to context '{}'",
+            their_peer_id, context_id
+        );
+
+        Ok(())
+    }
+
+    fn handle_unsubscribed(&self, their_peer_id: PeerId, topic_hash: &TopicHash) -> EyreResult<()> {
+        let Ok(context_id) = topic_hash.as_str().parse() else {
+            return Ok(());
         };
 
-        info!("{} joined the session.", their_peer_id.cyan());
-        drop(
-            self.node_events
-                .send(NodeEvent::Application(ApplicationEvent::new(
-                    context_id,
-                    ApplicationEventPayload::PeerJoined(PeerJoinedPayload::new(their_peer_id)),
-                ))),
+        let handle = self.store.handle();
+
+        if !handle.has(&ContextMetaKey::new(context_id))? {
+            debug!(
+                %context_id,
+                %their_peer_id,
+                "Observed unsubscription from unknown context, ignoring.."
+            );
+            return Ok(());
+        }
+
+        info!(
+            "Peer '{}' unsubscribed from context '{}'",
+            their_peer_id, context_id
         );
 
         Ok(())
@@ -295,471 +295,254 @@ impl Node {
             return Ok(());
         };
 
-        match from_json_slice(&message.data)? {
-            PeerAction::Transaction(transaction) => {
-                debug!(?transaction, %source, "Received transaction");
+        let message = from_slice::<BroadcastMessage<'static>>(&message.data)?;
 
-                let handle = self.store.handle();
-
-                let ctx_meta_key = ContextMetaKey::new(transaction.context_id);
-                let prior_transaction_key = ContextTransactionKey::new(
-                    transaction.context_id,
-                    transaction.prior_hash.into(),
-                );
-
-                let transaction_hash = self.tx_pool.insert(source, transaction.clone(), None)?;
-
-                if !handle.has(&ctx_meta_key)?
-                    || (transaction.prior_hash != Hash::default()
-                        && !handle.has(&prior_transaction_key)?
-                        && !self.typ.is_coordinator())
-                {
-                    info!(context_id=%transaction.context_id, %source, "Attempting to perform tx triggered catchup");
-
-                    self.perform_catchup(transaction.context_id, source).await?;
-
-                    let _ = self
-                        .ctx_manager
-                        .clear_context_pending_catchup(&transaction.context_id)
-                        .await;
-
-                    info!(context_id=%transaction.context_id, %source, "Tx triggered catchup successfully finished");
-                };
-
-                let Some(context) = self.ctx_manager.get_context(&transaction.context_id)? else {
-                    bail!("Context '{}' not found", transaction.context_id);
-                };
-
-                if self.typ.is_coordinator() {
-                    let Some(pool_entry) = self.tx_pool.remove(&transaction_hash) else {
-                        return Ok(());
-                    };
-
-                    let _ = self
-                        .validate_pending_transaction(
-                            &context,
-                            pool_entry.transaction,
-                            transaction_hash,
-                        )
-                        .await?;
-                }
-            }
-            PeerAction::TransactionConfirmation(confirmation) => {
-                debug!(?confirmation, %source, "Received transaction confirmation");
-                // todo! ensure this was only sent by a coordinator
-
-                let Some(TransactionPoolEntry {
-                    transaction,
-                    outcome_sender,
-                    ..
-                }) = self.tx_pool.remove(&confirmation.transaction_hash)
-                else {
-                    return Ok(());
-                };
-
-                let outcome_result = self
-                    .execute_in_context(confirmation.transaction_hash, transaction)
-                    .await;
-
-                if let Some(outcome_sender) = outcome_sender {
-                    drop(outcome_sender.send(outcome_result));
-                }
-            }
-            PeerAction::TransactionRejection(rejection) => {
-                debug!(?rejection, %source, "Received transaction rejection");
-                // todo! ensure this was only sent by a coordinator
-
-                let _ = self.reject_from_pool(rejection.transaction_hash);
-
-                info!(context_id=%rejection.context_id, %source, "Attempting to perform rejection triggered catchup");
-
-                self.perform_catchup(rejection.context_id, source).await?;
-
-                let _ = self
-                    .ctx_manager
-                    .clear_context_pending_catchup(&rejection.context_id)
-                    .await;
-
-                info!(context_id=%rejection.context_id, %source, "Rejection triggered catchup successfully finished");
+        match message {
+            BroadcastMessage::StateDelta {
+                context_id,
+                author_id,
+                root_hash,
+                artifact,
+            } => {
+                self.handle_state_delta(
+                    source,
+                    context_id,
+                    author_id,
+                    root_hash,
+                    artifact.into_owned(),
+                )
+                .await?;
             }
         }
 
         Ok(())
     }
 
-    async fn validate_pending_transaction(
+    async fn handle_state_delta(
         &mut self,
-        context: &Context,
-        transaction: Transaction,
-        transaction_hash: Hash,
-    ) -> EyreResult<bool> {
-        if context.last_transaction_hash == transaction.prior_hash {
-            self.nonce = self.nonce.saturating_add(1);
-
-            self.push_action(
-                transaction.context_id,
-                PeerAction::TransactionConfirmation(TransactionConfirmation {
-                    context_id: transaction.context_id,
-                    nonce: self.nonce,
-                    transaction_hash,
-                    // todo! proper confirmation hash
-                    confirmation_hash: transaction_hash,
-                }),
-            )
-            .await?;
-
-            self.persist_transaction(context, transaction, transaction_hash)?;
-
-            Ok(true)
-        } else {
-            self.push_action(
-                transaction.context_id,
-                PeerAction::TransactionRejection(TransactionRejection {
-                    context_id: transaction.context_id,
-                    transaction_hash,
-                }),
-            )
-            .await?;
-
-            Ok(false)
-        }
-    }
-
-    async fn push_action(&self, context_id: ContextId, action: PeerAction) -> EyreResult<()> {
-        drop(
-            self.network_client
-                .publish(TopicHash::from_raw(context_id), to_json_vec(&action)?)
-                .await?,
-        );
-
-        Ok(())
-    }
-
-    pub async fn handle_call(&mut self, request: ExecutionRequest) {
-        let Ok(Some(context)) = self.ctx_manager.get_context(&request.context_id) else {
-            drop(request.outcome_sender.send(Err(CallError::ContextNotFound {
-                context_id: request.context_id,
-            })));
-            return;
+        source: PeerId,
+        context_id: ContextId,
+        author_id: PublicKey,
+        root_hash: Hash,
+        artifact: Vec<u8>,
+    ) -> EyreResult<()> {
+        let Some(mut context) = self.ctx_manager.get_context(&context_id)? else {
+            bail!("context '{}' not found", context_id);
         };
 
-        if let Some(finality) = request.finality {
-            let transaction = Transaction::new(
-                context.id,
-                request.method,
-                request.payload,
-                context.last_transaction_hash,
-                request.executor_public_key,
-            );
+        if root_hash == context.root_hash {
+            debug!(%context_id, "Received state delta with same root hash, ignoring..");
+            return Ok(());
+        }
 
-            match finality {
-                Finality::Local => {
-                    let task = async {
-                        let hash = Hash::hash_json(&transaction)?;
+        let Some(outcome) = self
+            .execute(
+                &mut context,
+                "apply_state_delta",
+                to_vec(&artifact)?,
+                author_id,
+            )
+            .await?
+        else {
+            bail!("application not installed");
+        };
 
-                        self.execute_transaction(&context, transaction, hash).await
-                    };
-
-                    drop(request.outcome_sender.send(task.await.map_err(|err| {
-                        error!(%err, "failed to execute local transaction");
-
-                        CallError::Mutate(MutateCallError::InternalError)
-                    })));
-                }
-                Finality::Global => {
-                    let (inner_outcome_sender, inner_outcome_receiver) = oneshot::channel();
-
-                    if let Err(err) = self
-                        .call_mutate(&context, transaction, inner_outcome_sender)
-                        .await
-                    {
-                        drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
-                        return;
-                    }
-
-                    drop(spawn(async move {
-                        match inner_outcome_receiver.await {
-                            Ok(outcome) => match outcome {
-                                Ok(outcome) => {
-                                    drop(request.outcome_sender.send(Ok(outcome)));
-                                }
-                                Err(err) => {
-                                    drop(request.outcome_sender.send(Err(CallError::Mutate(err))));
-                                }
-                            },
-                            Err(err) => {
-                                error!("Failed to receive inner outcome of a transaction: {}", err);
-                                drop(
-                                    request.outcome_sender.send(Err(CallError::Mutate(
-                                        MutateCallError::InternalError,
-                                    ))),
-                                );
-                            }
-                        }
-                    }));
-                }
+        if let Some(derived_root_hash) = outcome.root_hash {
+            if derived_root_hash != *root_hash {
+                self.initiate_sync(context_id, source).await?;
             }
-        } else {
-            match self
-                .call_query(
-                    &context,
-                    request.method,
-                    request.payload,
-                    request.executor_public_key,
-                )
-                .await
-            {
-                Ok(outcome) => {
-                    drop(request.outcome_sender.send(Ok(outcome)));
-                }
-                Err(err) => {
-                    drop(request.outcome_sender.send(Err(CallError::Query(err))));
-                }
-            };
         }
+
+        Ok(())
     }
 
-    async fn call_query(
-        &mut self,
+    async fn send_state_delta(
+        &self,
         context: &Context,
-        method: String,
-        payload: Vec<u8>,
+        outcome: &Outcome,
         executor_public_key: PublicKey,
-    ) -> Result<Outcome, QueryCallError> {
-        if !self
-            .ctx_manager
-            .is_application_installed(&context.application_id)
-            .unwrap_or_default()
-        {
-            return Err(QueryCallError::ApplicationNotInstalled {
-                application_id: context.application_id,
-            });
-        }
-
-        self.execute(context, None, method, payload, executor_public_key)
-            .await
-            .map_err(|e| {
-                error!(%e,"Failed to execute query call.");
-                QueryCallError::InternalError
-            })
-    }
-
-    async fn call_mutate(
-        &mut self,
-        context: &Context,
-        transaction: Transaction,
-        outcome_sender: oneshot::Sender<Result<Outcome, MutateCallError>>,
-    ) -> Result<Hash, MutateCallError> {
-        if context.id != transaction.context_id {
-            return Err(MutateCallError::TransactionRejected);
-        }
-
-        if self.typ.is_coordinator() {
-            return Err(MutateCallError::InvalidNodeType {
-                node_type: self.typ,
-            });
-        }
-
-        if !self
-            .ctx_manager
-            .is_application_installed(&context.application_id)
-            .unwrap_or_default()
-        {
-            return Err(MutateCallError::ApplicationNotInstalled {
-                application_id: context.application_id,
-            });
-        }
-
+    ) -> EyreResult<()> {
         if self
             .network_client
             .mesh_peer_count(TopicHash::from_raw(context.id))
             .await
-            == 0
+            != 0
         {
-            return Err(MutateCallError::NoConnectedPeers);
-        }
-
-        self.push_action(context.id, PeerAction::Transaction(transaction.clone()))
-            .await
-            .map_err(|err| {
-                error!(%err, "Failed to push transaction over the network.");
-                MutateCallError::InternalError
+            let message = to_vec(&BroadcastMessage::StateDelta {
+                context_id: context.id,
+                author_id: executor_public_key,
+                root_hash: context.root_hash,
+                artifact: outcome.artifact.as_slice().into(),
             })?;
 
-        let tx_hash = self
-            .tx_pool
-            .insert(self.id, transaction, Some(outcome_sender))
-            .map_err(|err| {
-                error!(%err, "Failed to insert transaction into the pool.");
-                MutateCallError::InternalError
-            })?;
-
-        Ok(tx_hash)
-    }
-
-    async fn execute_in_context(
-        &mut self,
-        transaction_hash: Hash,
-        transaction: Transaction,
-    ) -> Result<Outcome, MutateCallError> {
-        let Some(context) = self
-            .ctx_manager
-            .get_context(&transaction.context_id)
-            .map_err(|e| {
-                error!(%e, "Failed to get context");
-                MutateCallError::InternalError
-            })?
-        else {
-            error!(%transaction.context_id, "Context not found");
-            return Err(MutateCallError::InternalError);
-        };
-
-        if context.last_transaction_hash != transaction.prior_hash {
-            error!(
-                context_id=%transaction.context_id,
-                %transaction_hash,
-                prior_hash=%transaction.prior_hash,
-                "Transaction from the pool doesn't build on last transaction",
-            );
-            return Err(MutateCallError::TransactionRejected);
+            let _ignored = self
+                .network_client
+                .publish(TopicHash::from_raw(context.id), message)
+                .await?;
         }
-
-        let outcome = self
-            .execute_transaction(&context, transaction, transaction_hash)
-            .await
-            .map_err(|e| {
-                error!(%e, "Failed to execute transaction");
-                MutateCallError::InternalError
-            })?;
-
-        Ok(outcome)
-    }
-
-    async fn execute_transaction(
-        &mut self,
-        context: &Context,
-        transaction: Transaction,
-        hash: Hash,
-    ) -> EyreResult<Outcome> {
-        let outcome = self
-            .execute(
-                context,
-                Some(hash),
-                transaction.method.clone(),
-                transaction.payload.clone(),
-                transaction.executor_public_key,
-            )
-            .await?;
-
-        self.persist_transaction(context, transaction, hash)?;
-
-        Ok(outcome)
-    }
-
-    fn reject_from_pool(&mut self, hash: Hash) -> Option<()> {
-        let TransactionPoolEntry { outcome_sender, .. } = self.tx_pool.remove(&hash)?;
-
-        if let Some(sender) = outcome_sender {
-            drop(sender.send(Err(MutateCallError::TransactionRejected)));
-        }
-
-        Some(())
-    }
-
-    fn persist_transaction(
-        &self,
-        context: &Context,
-        transaction: Transaction,
-        hash: Hash,
-    ) -> EyreResult<()> {
-        let mut handle = self.store.handle();
-
-        handle.put(
-            &ContextTransactionKey::new(context.id, hash.into()),
-            &ContextTransaction::new(
-                transaction.method.into(),
-                transaction.payload.into(),
-                *transaction.prior_hash,
-                *transaction.executor_public_key,
-            ),
-        )?;
-
-        handle.put(
-            &ContextMetaKey::new(context.id),
-            &ContextMeta::new(
-                ApplicationMetaKey::new(context.application_id),
-                *hash.as_bytes(),
-            ),
-        )?;
 
         Ok(())
     }
 
-    async fn execute(
+    pub async fn handle_server_request(&mut self, request: ExecutionRequest) {
+        let result = self
+            .handle_call(
+                request.context_id,
+                &request.method,
+                request.payload,
+                request.executor_public_key,
+            )
+            .await;
+
+        if let Err(err) = request.outcome_sender.send(result) {
+            error!(?err, "failed to respond to client request");
+        }
+    }
+
+    async fn handle_call(
         &mut self,
-        context: &Context,
-        hash: Option<Hash>,
-        method: String,
+        context_id: ContextId,
+        method: &str,
         payload: Vec<u8>,
         executor_public_key: PublicKey,
-    ) -> EyreResult<Outcome> {
-        let mut storage = match hash {
-            Some(_) => RuntimeCompatStore::temporal(&mut self.store, context.id),
-            None => RuntimeCompatStore::read_only(&self.store, context.id),
+    ) -> Result<Outcome, CallError> {
+        let Ok(Some(mut context)) = self.ctx_manager.get_context(&context_id) else {
+            return Err(CallError::ContextNotFound);
         };
 
+        if method != "init" && &*context.root_hash == &[0; 32] {
+            return Err(CallError::Uninitialized);
+        }
+
+        if !self
+            .ctx_manager
+            .context_has_owned_identity(context_id, executor_public_key)
+            .unwrap_or_default()
+        {
+            return Err(CallError::Unauthorized {
+                context_id,
+                public_key: executor_public_key,
+            });
+        }
+
+        let outcome_option = self
+            .execute(&mut context, method, payload.clone(), executor_public_key)
+            .await
+            .map_err(|e| {
+                error!(%e, "Failed to execute query call.");
+                CallError::InternalError
+            })?;
+
+        let Some(outcome) = outcome_option else {
+            return Err(CallError::ApplicationNotInstalled {
+                application_id: context.application_id,
+            });
+        };
+
+        for (proposal_id, actions) in &outcome.proposals {
+            let actions: Vec<ProposalAction> = from_slice(&actions).map_err(|e| {
+                error!(%e, "Failed to deserialize proposal actions.");
+                CallError::InternalError
+            })?;
+
+            self.ctx_manager
+                .propose(
+                    context_id,
+                    executor_public_key,
+                    proposal_id.clone(),
+                    actions.clone(),
+                )
+                .await
+                .map_err(|e| {
+                    error!(%e, "Failed to create proposal {:?}", proposal_id);
+                    CallError::InternalError
+                })?;
+        }
+
+        for proposal_id in &outcome.approvals {
+            self.ctx_manager
+                .approve(context_id, executor_public_key, *proposal_id)
+                .await
+                .map_err(|e| {
+                    error!(%e, "Failed to approve proposal {:?}", proposal_id);
+                    CallError::InternalError
+                })?;
+        }
+
+        if let Err(err) = self
+            .send_state_delta(&context, &outcome, executor_public_key)
+            .await
+        {
+            error!(%err, "Failed to send state delta.");
+        }
+
+        Ok(outcome)
+    }
+
+    async fn execute(
+        &self,
+        context: &mut Context,
+        method: &str,
+        payload: Vec<u8>,
+        executor_public_key: PublicKey,
+    ) -> EyreResult<Option<Outcome>> {
         let Some(blob) = self
             .ctx_manager
             .load_application_blob(&context.application_id)
             .await?
         else {
-            bail!(
-                "fatal error: missing blob for application `{}`",
-                context.application_id
-            );
+            return Ok(None);
         };
+
+        let mut store = self.store.clone();
+
+        let mut storage = RuntimeCompatStore::new(&mut store, context.id);
 
         let outcome = calimero_runtime::run(
             &blob,
             &method,
-            VMContext::new(payload, context.id.into(), *executor_public_key),
+            VMContext::new(payload, *context.id, *executor_public_key),
             &mut storage,
             &get_runtime_limits()?,
         )?;
 
-        if let Some(hash) = hash {
-            assert!(storage.commit()?, "do we have a non-temporal store?");
+        if outcome.returns.is_ok() {
+            if let Some(root_hash) = outcome.root_hash {
+                if outcome.artifact.is_empty() {
+                    eyre::bail!("context state changed, but no actions were generated, discarding execution outcome to mitigate potential state inconsistency");
+                }
 
-            // todo! return an error to the caller if the method did not write to storage
-            // todo! debate: when we switch to optimistic execution
-            // todo! we won't have query vs. mutate methods anymore, so this shouldn't matter
+                context.root_hash = root_hash.into();
+
+                drop(self.node_events.send(NodeEvent::Context(ContextEvent::new(
+                    context.id,
+                    ContextEventPayload::StateMutation(StateMutationPayload::new(
+                        context.root_hash,
+                    )),
+                ))));
+
+                self.ctx_manager.save_context(context)?;
+            }
+
+            if !storage.is_empty() {
+                storage.commit()?;
+            }
 
             drop(
-                self.node_events
-                    .send(NodeEvent::Application(ApplicationEvent::new(
-                        context.id,
-                        ApplicationEventPayload::TransactionExecuted(
-                            ExecutedTransactionPayload::new(hash),
-                        ),
-                    ))),
-            );
-        }
-
-        drop(
-            self.node_events
-                .send(NodeEvent::Application(ApplicationEvent::new(
+                self.node_events.send(NodeEvent::Context(ContextEvent::new(
                     context.id,
-                    ApplicationEventPayload::OutcomeEvent(OutcomeEventPayload::new(
+                    ContextEventPayload::ExecutionEvent(ExecutionEventPayload::new(
                         outcome
                             .events
                             .iter()
-                            .map(|e| OutcomeEvent::new(e.kind.clone(), e.data.clone()))
+                            .map(|e| ExecutionEvent::new(e.kind.clone(), e.data.clone()))
                             .collect(),
                     )),
                 ))),
-        );
+            );
+        }
 
-        Ok(outcome)
+        Ok(Some(outcome))
     }
 }
 

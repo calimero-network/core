@@ -1,12 +1,14 @@
+use core::str::FromStr;
+
 use calimero_primitives::context::ContextId;
 use calimero_store::key::ContextIdentity as ContextIdentityKey;
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use owo_colors::OwoColorize;
-use std::str::FromStr;
 
 use crate::Node;
 
+/// Manage identities
 #[derive(Debug, Parser)]
 pub struct IdentityCommand {
     #[command(subcommand)]
@@ -15,21 +17,27 @@ pub struct IdentityCommand {
 
 #[derive(Debug, Subcommand)]
 enum IdentitySubcommands {
-    Ls { context_id: String },
+    /// List identities in a context
+    Ls {
+        /// The context ID to list identities in
+        context_id: String,
+    },
+    /// Create a new identity
     New,
 }
 
 impl IdentityCommand {
-    pub async fn run(self, node: &Node) -> Result<()> {
+    pub fn run(self, node: &Node) -> Result<()> {
+        let ind = ">>".blue();
+
         match &self.subcommand {
             IdentitySubcommands::Ls { context_id } => {
                 match ContextId::from_str(context_id) {
                     Ok(context_id) => {
                         // Handle the "ls" subcommand
                         let handle = node.store.handle();
-                        let mut iter = handle.iter::<ContextIdentityKey>().unwrap();
+                        let mut iter = handle.iter::<ContextIdentityKey>()?;
 
-                        let context_id = ContextId::from(context_id);
                         let first = 'first: {
                             let Some(k) = iter
                                 .seek(ContextIdentityKey::new(context_id, [0; 32].into()))
@@ -41,30 +49,35 @@ impl IdentityCommand {
                             Some((k, iter.read()))
                         };
 
-                        println!("{:44} | Owned", "Identity");
+                        println!("{ind} {:44} | Owned", "Identity");
 
                         for (k, v) in first.into_iter().chain(iter.entries()) {
-                            let (k, v) = (k.unwrap(), v.unwrap());
+                            let (k, v) = (k?, v?);
+
+                            if k.context_id() != context_id {
+                                break;
+                            }
+
                             let entry = format!(
                                 "{:44} | {}",
-                                if v.private_key.is_some() { "*" } else { " " },
                                 k.public_key(),
+                                if v.private_key.is_some() { "Yes" } else { "No" },
                             );
                             for line in entry.lines() {
-                                println!("{}", line.cyan());
+                                println!("{ind} {}", line.cyan());
                             }
                         }
                     }
                     Err(_) => {
-                        println!("Invalid context ID: {}", context_id);
+                        println!("{ind} Invalid context ID: {context_id}");
                     }
                 }
             }
             IdentitySubcommands::New => {
                 // Handle the "new" subcommand
                 let identity = node.ctx_manager.new_identity();
-                println!("Private Key: {}", identity.cyan());
-                println!("Public Key: {}", identity.public_key().cyan());
+                println!("{ind} Private Key: {}", identity.cyan());
+                println!("{ind} Public Key: {}", identity.public_key().cyan());
             }
         }
 

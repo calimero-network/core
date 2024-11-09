@@ -1,9 +1,10 @@
 use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use url::Url;
 
-use super::{Operation, Transport, TransportRequest};
+use super::transport::{Operation, Transport, TransportRequest};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -32,14 +33,29 @@ impl RelayerTransport {
 #[derive(Debug, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct RelayRequest<'a> {
+    pub protocol: Cow<'a, str>,
     pub network_id: Cow<'a, str>,
     pub contract_id: Cow<'a, str>,
     pub operation: Operation<'a>,
     pub payload: Vec<u8>,
 }
 
+#[derive(Debug, Error)]
+pub enum RelayerError {
+    #[error(transparent)]
+    Raw(#[from] reqwest::Error),
+    #[error(
+        "relayer response ({status}): {}",
+        body.is_empty().then_some("<empty>").unwrap_or(body)
+    )]
+    Response {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+}
+
 impl Transport for RelayerTransport {
-    type Error = reqwest::Error;
+    type Error = RelayerError;
 
     async fn send(
         &self,
@@ -50,6 +66,7 @@ impl Transport for RelayerTransport {
             .client
             .post(self.url.clone())
             .json(&RelayRequest {
+                protocol: request.protocol,
                 network_id: request.network_id,
                 contract_id: request.contract_id,
                 operation: request.operation,
@@ -58,6 +75,13 @@ impl Transport for RelayerTransport {
             .send()
             .await?;
 
-        response.bytes().await.map(Into::into)
+        if !response.status().is_success() {
+            return Err(RelayerError::Response {
+                status: response.status(),
+                body: response.text().await?,
+            });
+        }
+
+        response.bytes().await.map(Into::into).map_err(Into::into)
     }
 }

@@ -1,76 +1,24 @@
-#![allow(
-    clippy::multiple_inherent_impl,
-    reason = "Needed to separate NEAR functionality"
-)]
-
-use core::{mem, time};
+use core::mem;
 
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application, Capability, ContextId, ContextIdentity, Signed, SignerId,
 };
-use calimero_context_config::{
-    ContextRequest, ContextRequestKind, Request, RequestKind, SystemRequest, Timestamp,
-};
+use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
+use near_sdk::serde_json::{self, json};
 use near_sdk::store::IterableSet;
-use near_sdk::{env, near, require, serde_json};
+use near_sdk::{
+    env, near, require, AccountId, Gas, NearToken, Promise, PromiseError, PromiseResult,
+};
 
 use super::{
-    Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
+    parse_input, Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
     PrivilegeScope,
 };
 
-const MIN_VALIDITY_THRESHOLD_MS: Timestamp = 5_000;
-
-macro_rules! parse_input {
-    ($input:ident $(: $input_ty:ty)?) => {
-        let $input = env::input().unwrap_or_default();
-
-        let $input $(: $input_ty )? = serde_json::from_slice(&$input).expect("failed to parse input");
-    };
-}
-
 #[near]
 impl ContextConfigs {
-    pub fn set(&mut self) {
-        require!(
-            env::predecessor_account_id() == env::current_account_id(),
-            "access denied"
-        );
-
-        parse_input!(request);
-
-        match request {
-            SystemRequest::SetValidityThreshold { threshold_ms } => {
-                self.set_validity_threshold_ms(threshold_ms);
-            }
-        }
-    }
-
-    pub fn erase(&mut self) {
-        require!(
-            env::signer_account_id() == env::current_account_id(),
-            "Not so fast, chief.."
-        );
-
-        env::log_str(&format!(
-            "Pre-erase storage usage: {}",
-            env::storage_usage()
-        ));
-
-        env::log_str("Erasing contract");
-
-        for (_, context) in self.contexts.drain() {
-            drop(context.application.into_inner());
-            context.members.into_inner().clear();
-        }
-
-        env::log_str(&format!(
-            "Post-erase storage usage: {}",
-            env::storage_usage()
-        ));
-    }
-
+    #[payable]
     pub fn mutate(&mut self) {
         parse_input!(request: Signed<Request<'_>>);
 
@@ -109,6 +57,9 @@ impl ContextConfigs {
                 ContextRequestKind::Revoke { capabilities } => {
                     self.revoke(&request.signer_id, context_id, capabilities.into_owned());
                 }
+                ContextRequestKind::UpdateProxyContract => {
+                    self.update_proxy_contract(&request.signer_id, context_id);
+                }
             },
         }
     }
@@ -121,7 +72,7 @@ impl ContextConfigs {
         context_id: Repr<ContextId>,
         author_id: Repr<ContextIdentity>,
         application: Application<'_>,
-    ) {
+    ) -> Promise {
         require!(
             signer_id.as_bytes() == context_id.as_bytes(),
             "context addition must be signed by the context itself"
@@ -129,6 +80,13 @@ impl ContextConfigs {
 
         let mut members = IterableSet::new(Prefix::Members(*context_id));
         let _ = members.insert(*author_id);
+
+        // Create incremental account ID
+        let account_id: AccountId = format!("{}.{}", self.next_proxy_id, env::current_account_id())
+            .parse()
+            .expect("invalid account ID");
+
+        self.next_proxy_id += 1;
 
         let context = Context {
             application: Guard::new(
@@ -153,13 +111,23 @@ impl ContextConfigs {
                 author_id.rt().expect("infallible conversion"),
                 members,
             ),
+            proxy: Guard::new(
+                Prefix::Privileges(PrivilegeScope::Context(
+                    *context_id,
+                    ContextPrivilegeScope::Proxy,
+                )),
+                author_id.rt().expect("infallible conversion"),
+                account_id.clone(),
+            ),
         };
 
         if self.contexts.insert(*context_id, context).is_some() {
             env::panic_str("context already exists");
         }
 
-        env::log_str(&format!("Context `{context_id}` added"));
+        // Initiate proxy contract deployment with a callback for when it completes
+        self.deploy_proxy_contract(context_id, account_id)
+            .then(Self::ext(env::current_account_id()).add_context_callback(context_id))
     }
 
     fn update_application(
@@ -178,8 +146,9 @@ impl ContextConfigs {
         let old_application = mem::replace(
             &mut *context
                 .application
-                .get_mut(signer_id)
-                .expect("unable to update application"),
+                .get(signer_id)
+                .expect("unable to update application")
+                .get_mut(),
             Application::new(
                 application.id,
                 application.blob,
@@ -208,8 +177,9 @@ impl ContextConfigs {
 
         let mut ctx_members = context
             .members
-            .get_mut(signer_id)
-            .expect("unable to update member list");
+            .get(signer_id)
+            .expect("unable to update member list")
+            .get_mut();
 
         for member in members {
             env::log_str(&format!("Added `{member}` as a member of `{context_id}`"));
@@ -231,8 +201,9 @@ impl ContextConfigs {
 
         let mut ctx_members = context
             .members
-            .get_mut(signer_id)
-            .expect("unable to update member list");
+            .get(signer_id)
+            .expect("unable to update member list")
+            .get_mut();
 
         for member in members {
             let _ = ctx_members.remove(&member);
@@ -271,13 +242,13 @@ impl ContextConfigs {
             match capability {
                 Capability::ManageApplication => context
                     .application
-                    .get_mut(signer_id)
+                    .get(signer_id)
                     .expect("unable to update application")
                     .priviledges()
                     .grant(identity),
                 Capability::ManageMembers => context
                     .members
-                    .get_mut(signer_id)
+                    .get(signer_id)
                     .expect("unable to update member list")
                     .priviledges()
                     .grant(identity),
@@ -309,13 +280,13 @@ impl ContextConfigs {
             match capability {
                 Capability::ManageApplication => context
                     .application
-                    .get_mut(signer_id)
+                    .get(signer_id)
                     .expect("unable to update application")
                     .priviledges()
                     .revoke(&identity),
                 Capability::ManageMembers => context
                     .members
-                    .get_mut(signer_id)
+                    .get(signer_id)
                     .expect("unable to update member list")
                     .priviledges()
                     .revoke(&identity),
@@ -330,16 +301,101 @@ impl ContextConfigs {
         }
     }
 
-    fn set_validity_threshold_ms(&mut self, validity_threshold_ms: Timestamp) {
-        if validity_threshold_ms < MIN_VALIDITY_THRESHOLD_MS {
-            env::panic_str("invalid validity threshold");
+    pub fn deploy_proxy_contract(
+        &mut self,
+        context_id: Repr<ContextId>,
+        account_id: AccountId,
+    ) -> Promise {
+        // Deploy and initialize the proxy contract
+        Promise::new(account_id.clone())
+            .create_account()
+            .transfer(env::attached_deposit())
+            .deploy_contract(self.proxy_code.get().clone().unwrap())
+            .function_call(
+                "init".to_owned(),
+                serde_json::to_vec(&json!({
+                    "context_id": context_id,
+                    "context_config_account_id": env::current_account_id()
+                }))
+                .unwrap(),
+                NearToken::from_near(0),
+                Gas::from_tgas(30),
+            )
+            .then(Self::ext(env::current_account_id()).proxy_deployment_callback())
+    }
+
+    fn update_proxy_contract(
+        &mut self,
+        signer_id: &SignerId,
+        context_id: Repr<ContextId>,
+    ) -> Promise {
+        // Get the context and verify proxy contract exists
+        let context = self
+            .contexts
+            .get_mut(&context_id)
+            .expect("context does not exist");
+
+        let proxy_account_id = context
+            .proxy
+            .get(signer_id)
+            .expect("unable to update contract")
+            .get_mut();
+
+        let new_code = self.proxy_code.get().clone().unwrap();
+
+        // Call the update method on the proxy contract
+        Promise::new(proxy_account_id.clone())
+            .function_call(
+                "update_contract".to_owned(),
+                new_code,
+                NearToken::from_near(0),
+                Gas::from_tgas(100),
+            )
+            .then(Self::ext(env::current_account_id()).update_proxy_callback())
+    }
+}
+
+#[near]
+impl ContextConfigs {
+    pub fn proxy_deployment_callback(
+        &mut self,
+        #[callback_result] call_result: Result<(), PromiseError>,
+    ) {
+        if let Err(e) = call_result {
+            panic!("Failed to deploy proxy contract: {:?}", e);
         }
+    }
 
-        self.config.validity_threshold_ms = validity_threshold_ms;
+    pub fn add_context_callback(&mut self, context_id: Repr<ContextId>) {
+        require!(
+            env::promise_results_count() == 1,
+            "Expected 1 promise result"
+        );
 
-        env::log_str(&format!(
-            "Set validity threshold to `{:?}`",
-            time::Duration::from_millis(validity_threshold_ms)
-        ));
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                env::log_str(&format!("Context `{context_id}` added"));
+            }
+            _ => {
+                panic!("Failed to deploy proxy contract for context");
+            }
+        }
+    }
+
+    #[private]
+    #[handle_result]
+    pub fn update_contract_callback(&mut self) -> Result<(), &'static str> {
+        require!(
+            env::promise_results_count() == 1,
+            "Expected 1 promise result"
+        );
+
+        match env::promise_result(0) {
+            PromiseResult::Successful(_) => {
+                env::log_str("Successfully updated proxy contract code");
+                Ok(())
+            }
+            _ => Err("Failed to update proxy contract code"),
+        }
     }
 }

@@ -2,11 +2,11 @@ import {
   RpcRequestId,
   RpcClient,
   RpcQueryResponse,
-  RpcMutateResponse,
   RpcQueryParams,
-  RpcMutateParams,
   RequestConfig,
   RpcResult,
+  RpcMutateParams,
+  RpcMutateResponse,
 } from '../types/rpc';
 import axios, { AxiosInstance } from 'axios';
 
@@ -53,23 +53,40 @@ export class JsonRpcClient implements RpcClient {
     });
   }
 
+  /**
+   * @deprecated The method should not be used, use execute instead.
+   */
   public async query<Args, Output>(
     params: RpcQueryParams<Args>,
     config?: RequestConfig,
   ): Promise<RpcResult<RpcQueryResponse<Output>>> {
     return await this.request<RpcQueryParams<Args>, RpcQueryResponse<Output>>(
-      'query',
+      'execute',
       params,
       config,
     );
   }
 
+  /**
+   * @deprecated The method should not be used, use execute instead.
+   */
   public async mutate<Args, Output>(
     params: RpcMutateParams<Args>,
     config?: RequestConfig,
   ): Promise<RpcResult<RpcMutateResponse<Output>>> {
     return await this.request<RpcMutateParams<Args>, RpcMutateResponse<Output>>(
-      'mutate',
+      'execute',
+      params,
+      config,
+    );
+  }
+
+  public async execute<Args, Output>(
+    params: RpcQueryParams<Args>,
+    config?: RequestConfig,
+  ): Promise<RpcResult<RpcQueryResponse<Output>>> {
+    return await this.request<RpcQueryParams<Args>, RpcQueryResponse<Output>>(
+      'execute',
       params,
       config,
     );

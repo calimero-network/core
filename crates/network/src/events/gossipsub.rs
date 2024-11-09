@@ -25,16 +25,26 @@ impl EventHandler<Event> for EventLoop {
                 }
             }
             Event::Subscribed { peer_id, topic } => {
-                if (self
+                if self
                     .event_sender
                     .send(NetworkEvent::Subscribed { peer_id, topic })
-                    .await)
+                    .await
                     .is_err()
                 {
                     error!("Failed to send subscribed event");
                 }
             }
-            Event::GossipsubNotSupported { .. } | Event::Unsubscribed { .. } => {}
+            Event::Unsubscribed { peer_id, topic } => {
+                if self
+                    .event_sender
+                    .send(NetworkEvent::Unsubscribed { peer_id, topic })
+                    .await
+                    .is_err()
+                {
+                    error!("Failed to send unsubscribed event");
+                }
+            }
+            Event::GossipsubNotSupported { .. } => {}
         }
     }
 }

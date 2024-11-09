@@ -5,6 +5,11 @@ pub mod event;
 mod returns;
 pub mod state;
 mod sys;
+pub mod types;
+
+use core::result::Result as CoreResult;
+
+pub type Result<T> = CoreResult<T, types::Error>;
 
 pub mod app {
     pub use calimero_sdk_macros::{destroy, emit, event, init, logic, state};

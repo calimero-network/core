@@ -6,23 +6,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
 use tokio::sync::{mpsc, oneshot};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[non_exhaustive]
-pub enum NodeType {
-    Peer,
-    Coordinator,
-}
-
-impl NodeType {
-    #[must_use]
-    pub const fn is_coordinator(&self) -> bool {
-        match *self {
-            Self::Coordinator => true,
-            Self::Peer => false,
-        }
-    }
-}
-
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ExecutionRequest {
@@ -31,7 +14,6 @@ pub struct ExecutionRequest {
     pub payload: Vec<u8>,
     pub executor_public_key: PublicKey,
     pub outcome_sender: oneshot::Sender<Result<Outcome, CallError>>,
-    pub finality: Option<Finality>,
 }
 
 impl ExecutionRequest {
@@ -42,7 +24,6 @@ impl ExecutionRequest {
         payload: Vec<u8>,
         executor_public_key: PublicKey,
         outcome_sender: oneshot::Sender<Result<Outcome, CallError>>,
-        finality: Option<Finality>,
     ) -> Self {
         Self {
             context_id,
@@ -50,51 +31,27 @@ impl ExecutionRequest {
             payload,
             executor_public_key,
             outcome_sender,
-            finality,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "There will never be any other variants"
-)]
-pub enum Finality {
-    Local,
-    Global,
 }
 
 pub type ServerSender = mpsc::Sender<ExecutionRequest>;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
-#[error("CallError")]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum CallError {
-    Query(QueryCallError),
-    Mutate(MutateCallError),
-    ContextNotFound { context_id: ContextId },
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
-#[error("QueryCallError")]
-#[serde(tag = "type", content = "data")]
-#[non_exhaustive]
-pub enum QueryCallError {
+    #[error("context not found")]
+    ContextNotFound,
+    #[error("cannot execute request as '{public_key}' on context '{context_id}'")]
+    Unauthorized {
+        context_id: ContextId,
+        public_key: PublicKey,
+    },
+    #[error("context state not initialized, awaiting state sync")]
+    Uninitialized,
+    #[error("application not installed: '{application_id}'")]
     ApplicationNotInstalled { application_id: ApplicationId },
-    InternalError,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, ThisError)]
-#[error("MutateCallError")]
-#[serde(tag = "type", content = "data")]
-#[expect(variant_size_differences, reason = "This doesn't matter here")]
-#[non_exhaustive]
-pub enum MutateCallError {
-    InvalidNodeType { node_type: NodeType },
-    ApplicationNotInstalled { application_id: ApplicationId },
-    NoConnectedPeers,
-    TransactionRejected,
+    #[error("internal error")]
     InternalError,
 }

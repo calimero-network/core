@@ -58,18 +58,20 @@ export interface SigningKey {
   signingKey: string;
 }
 
+// This is most likely obsolete
 export interface Context {
   applicationId: string;
   id: string;
-  signingKey: SigningKey;
+  rootHash: String;
 }
 
-export interface ContextList {
+export interface CreateContextResponse {
+  contextId: string;
+  memberPublicKey: SigningKey;
+}
+
+export interface GetContextsResponse {
   contexts: Context[];
-}
-
-export interface ContextsList<T> {
-  joined: T[];
 }
 
 export interface RootKey {
@@ -111,10 +113,6 @@ export interface ClientKey {
   wallet: NetworkType;
   createdAt: number;
   applicationId: string;
-}
-
-export interface ApiContext {
-  context: Context;
 }
 
 interface Did {
@@ -288,7 +286,7 @@ export interface WalletSignatureData {
 }
 
 export interface InstallApplicationResponse {
-  application_id: string;
+  applicationId: string;
 }
 
 export interface UninstallApplicationResponse
@@ -362,13 +360,13 @@ export class NodeDataSource implements NodeApi {
     }
   }
 
-  async getContexts(): ApiResponse<ContextList> {
+  async getContexts(): ApiResponse<GetContextsResponse> {
     try {
       const headers: Header | null = await createAuthHeader(
         getAppEndpointKey() as string,
         getNearEnvironment(),
       );
-      const response = await this.client.get<ContextList>(
+      const response = await this.client.get<GetContextsResponse>(
         `${getAppEndpointKey()}/admin-api/contexts`,
         headers ?? {},
       );
@@ -379,13 +377,13 @@ export class NodeDataSource implements NodeApi {
     }
   }
 
-  async getContext(contextId: string): ApiResponse<ApiContext> {
+  async getContext(contextId: string): ApiResponse<Context> {
     try {
       const headers: Header | null = await createAuthHeader(
         contextId,
         getNearEnvironment(),
       );
-      const response = await this.client.get<ApiContext>(
+      const response = await this.client.get<Context>(
         `${getAppEndpointKey()}/admin-api/contexts/${contextId}`,
         headers ?? {},
       );
@@ -472,10 +470,10 @@ export class NodeDataSource implements NodeApi {
     }
   }
 
-  async startContexts(
+  async createContexts(
     applicationId: string,
     initArguments: string,
-  ): ApiResponse<Context> {
+  ): ApiResponse<CreateContextResponse> {
     try {
       const headers: Header | null = await createAuthHeader(
         JSON.stringify({
@@ -488,7 +486,7 @@ export class NodeDataSource implements NodeApi {
       const encodedArgs = encoder.encode(JSON.stringify(initArguments));
       const initializationParams = Array.from(encodedArgs);
 
-      const response = await this.client.post<Context>(
+      const response = await this.client.post<CreateContextResponse>(
         `${getAppEndpointKey()}/admin-api/contexts`,
         {
           applicationId,

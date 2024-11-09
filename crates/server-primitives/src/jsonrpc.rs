@@ -71,14 +71,10 @@ impl Request<RequestPayload> {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum RequestPayload {
-    Query(QueryRequest),
-    Mutate(MutateRequest),
+    Execute(ExecuteRequest),
 }
-// *************************************************************************
 
-// **************************** response *******************************
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -114,38 +110,43 @@ pub enum ResponseBody {
 )]
 pub struct ResponseBodyResult(pub Value);
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ThisError)]
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum ResponseBodyError {
+    #[error(transparent)]
     ServerError(ServerResponseError),
+    #[error("handler error: {0}")]
     HandlerError(Value),
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, ThisError)]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
 pub enum ServerResponseError {
+    #[error("parse error: {0}")]
     ParseError(String),
+    #[error(
+        "internal error: {}",
+        err.as_ref().map_or_else(|| "<opaque>".to_owned(), ToString::to_string)
+    )]
     InternalError {
         #[serde(skip)]
         err: Option<EyreError>,
     },
 }
-// *************************************************************************
 
-// **************************** call method *******************************
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct QueryRequest {
+pub struct ExecuteRequest {
     pub context_id: ContextId,
     pub method: String,
     pub args_json: Value,
     pub executor_public_key: PublicKey,
 }
 
-impl QueryRequest {
+impl ExecuteRequest {
     #[must_use]
     pub const fn new(
         context_id: ContextId,
@@ -165,11 +166,11 @@ impl QueryRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct QueryResponse {
+pub struct ExecuteResponse {
     pub output: Option<Value>,
 }
 
-impl QueryResponse {
+impl ExecuteResponse {
     #[must_use]
     pub const fn new(output: Option<Value>) -> Self {
         Self { output }
@@ -177,65 +178,13 @@ impl QueryResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize, ThisError)]
-#[error("QueryError")]
 #[serde(tag = "type", content = "data")]
 #[non_exhaustive]
-pub enum QueryError {
+pub enum ExecuteError {
+    #[error("codec error: {message}")]
     SerdeError { message: String },
+    #[error("error occurred while handling request: {0}")]
     CallError(CallError),
+    #[error("function call error: {0}")]
     FunctionCallError(String),
 }
-// *************************************************************************
-
-// **************************** call_mut method ****************************
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct MutateRequest {
-    pub context_id: ContextId,
-    pub method: String,
-    pub args_json: Value,
-    pub executor_public_key: PublicKey,
-}
-
-impl MutateRequest {
-    #[must_use]
-    pub const fn new(
-        context_id: ContextId,
-        method: String,
-        args_json: Value,
-        executor_public_key: PublicKey,
-    ) -> Self {
-        Self {
-            context_id,
-            method,
-            args_json,
-            executor_public_key,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[non_exhaustive]
-pub struct MutateResponse {
-    pub output: Option<Value>,
-}
-
-impl MutateResponse {
-    #[must_use]
-    pub const fn new(output: Option<Value>) -> Self {
-        Self { output }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, ThisError)]
-#[error("MutateError")]
-#[serde(tag = "type", content = "data")]
-#[non_exhaustive]
-pub enum MutateError {
-    SerdeError { message: String },
-    CallError(CallError),
-    FunctionCallError(String),
-}
-// *************************************************************************

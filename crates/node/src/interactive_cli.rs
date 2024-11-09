@@ -7,66 +7,58 @@
 mod applications;
 pub mod call;
 pub mod context;
-pub mod gc;
 pub mod identity;
 pub mod peers;
-pub mod pool;
 pub mod state;
 pub mod store;
-pub mod transactions;
 
 use clap::{Parser, Subcommand};
 
 use crate::Node;
 #[derive(Debug, Parser)]
+#[command(multicall = true, bin_name = "{repl}")]
+#[non_exhaustive]
 pub struct RootCommand {
     #[command(subcommand)]
-    pub action: SubCommands,
+    pub action: SubCommand,
 }
 
 #[derive(Debug, Subcommand)]
-pub enum SubCommands {
+#[non_exhaustive]
+pub enum SubCommand {
+    #[command(alias = "app")]
     Application(applications::ApplicationCommand),
     Call(call::CallCommand),
     Context(context::ContextCommand),
-    Gc(gc::GarbageCollectCommand),
     Identity(identity::IdentityCommand),
     Peers(peers::PeersCommand),
-    Pool(pool::PoolCommand),
-    Store(store::StoreCommand),
+    // Store(store::StoreCommand),
     State(state::StateCommand),
-    Transactions(transactions::TransactionsCommand),
 }
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
-    // IMPORTANT: Parser needs first string to be binary name
-    let mut args = vec![""];
-    args.extend(line.split_whitespace());
+    let mut args = line.split_whitespace().peekable();
+
+    if args.peek().is_none() {
+        return Ok(());
+    }
 
     let command = match RootCommand::try_parse_from(args) {
         Ok(command) => command,
         Err(err) => {
-            println!("Failed to parse command: {}", err);
-            eyre::bail!("Failed to parse command");
+            println!("{err}");
+            return Ok(());
         }
     };
 
-    let result = match command.action {
-        SubCommands::Application(application) => application.run(node).await,
-        SubCommands::Call(call) => call.run(node).await,
-        SubCommands::Context(context) => context.run(node).await,
-        SubCommands::Gc(gc) => gc.run(node).await,
-        SubCommands::Identity(identity) => identity.run(node).await,
-        SubCommands::Peers(peers) => peers.run(node.network_client.clone().into()).await,
-        SubCommands::Pool(pool) => pool.run(node).await,
-        SubCommands::State(state) => state.run(node).await,
-        SubCommands::Store(store) => store.run(node).await,
-        SubCommands::Transactions(transactions) => transactions.run(node).await,
-    };
-
-    if let Err(err) = result {
-        println!("Error running command: {}", err);
-        eyre::bail!("Failed to parse command");
+    match command.action {
+        SubCommand::Application(application) => application.run(node).await?,
+        SubCommand::Call(call) => call.run(node).await?,
+        SubCommand::Context(context) => context.run(node).await?,
+        SubCommand::Identity(identity) => identity.run(node)?,
+        SubCommand::Peers(peers) => peers.run(node.network_client.clone().into()).await?,
+        SubCommand::State(state) => state.run(node)?,
+        // SubCommand::Store(store) => store.run(node)?,
     }
 
     Ok(())

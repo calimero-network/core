@@ -18,13 +18,11 @@ mod blobs;
 mod component;
 mod context;
 mod generic;
-mod storage;
 
 pub use application::ApplicationMeta;
 pub use blobs::BlobMeta;
-pub use context::{ContextConfig, ContextIdentity, ContextMeta, ContextState, ContextTransaction};
+pub use context::{ContextConfig, ContextIdentity, ContextMeta, ContextState};
 pub use generic::Generic;
-pub use storage::Storage;
 
 pub struct Key<T: KeyComponents>(GenericArray<u8, T::LEN>);
 
@@ -78,14 +76,22 @@ impl<T: KeyComponents> Key<T> {
         self.as_bytes().into()
     }
 
-    pub(crate) fn try_from_slice(slice: &Slice<'_>) -> Option<Self> {
-        let bytes = slice.as_ref();
+    #[must_use]
+    pub const fn len() -> usize {
+        GenericArray::<u8, T::LEN>::len()
+    }
 
-        (bytes.len() == GenericArray::<u8, T::LEN>::len()).then_some(())?;
+    #[must_use]
+    pub fn try_from_slice(slice: &[u8]) -> Option<Self> {
+        #[expect(
+            clippy::use_self,
+            reason = "Needed here in order to specify type parameter"
+        )]
+        (slice.len() == Key::<T>::len()).then_some(())?;
 
         let mut key = GenericArray::default();
 
-        key.copy_from_slice(bytes);
+        key.copy_from_slice(slice);
 
         Some(Self(key))
     }

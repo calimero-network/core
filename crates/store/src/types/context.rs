@@ -4,29 +4,26 @@ use crate::entry::{Borsh, Identity};
 use crate::key::{
     ApplicationMeta as ApplicationMetaKey, ContextConfig as ContextConfigKey,
     ContextIdentity as ContextIdentityKey, ContextMeta as ContextMetaKey,
-    ContextState as ContextStateKey, ContextTransaction as ContextTransactionKey,
+    ContextState as ContextStateKey,
 };
 use crate::slice::Slice;
 use crate::types::PredefinedEntry;
 
-pub type TransactionHash = [u8; 32];
+pub type Hash = [u8; 32];
 
 #[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextMeta {
     pub application: ApplicationMetaKey,
-    pub last_transaction_hash: TransactionHash,
+    pub root_hash: Hash,
 }
 
 impl ContextMeta {
     #[must_use]
-    pub const fn new(
-        application: ApplicationMetaKey,
-        last_transaction_hash: TransactionHash,
-    ) -> Self {
+    pub const fn new(application: ApplicationMetaKey, root_hash: Hash) -> Self {
         Self {
             application,
-            last_transaction_hash,
+            root_hash,
         }
     }
 }
@@ -39,14 +36,32 @@ impl PredefinedEntry for ContextMetaKey {
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextConfig {
+    pub protocol: Box<str>,
     pub network: Box<str>,
     pub contract: Box<str>,
+    pub proxy_contract: Box<str>,
+    pub application_revision: u64,
+    pub members_revision: u64,
 }
 
 impl ContextConfig {
     #[must_use]
-    pub const fn new(network: Box<str>, contract: Box<str>) -> Self {
-        Self { network, contract }
+    pub const fn new(
+        protocol: Box<str>,
+        network: Box<str>,
+        contract: Box<str>,
+        proxy_contract: Box<str>,
+        application_revision: u64,
+        members_revision: u64,
+    ) -> Self {
+        Self {
+            protocol,
+            network,
+            contract,
+            proxy_contract,
+            application_revision,
+            members_revision,
+        }
     }
 }
 
@@ -90,35 +105,4 @@ pub struct ContextIdentity {
 impl PredefinedEntry for ContextIdentityKey {
     type Codec = Borsh;
     type DataType<'a> = ContextIdentity;
-}
-
-#[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub struct ContextTransaction {
-    pub method: Box<str>,
-    pub payload: Box<[u8]>,
-    pub prior_hash: TransactionHash,
-    pub executor_public_key: [u8; 32],
-}
-
-impl ContextTransaction {
-    #[must_use]
-    pub const fn new(
-        method: Box<str>,
-        payload: Box<[u8]>,
-        prior_hash: TransactionHash,
-        executor_public_key: [u8; 32],
-    ) -> Self {
-        Self {
-            method,
-            payload,
-            prior_hash,
-            executor_public_key,
-        }
-    }
-}
-
-impl PredefinedEntry for ContextTransactionKey {
-    type Codec = Borsh;
-    type DataType<'a> = ContextTransaction;
 }

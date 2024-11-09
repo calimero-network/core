@@ -42,6 +42,8 @@ impl VMLogic<'_> {
             fn log_utf8(ptr: u64, len: u64);
             fn emit(kind_ptr: u64, kind_len: u64, data_ptr: u64, data_len: u64);
 
+            fn commit(root_hash_ptr: u64, root_hash_len: u64, artifact_ptr: u64, artifact_len: u64);
+
             fn storage_write(
                 key_ptr: u64,
                 key_len: u64,
@@ -50,6 +52,7 @@ impl VMLogic<'_> {
                 register_id: u64,
             ) -> u32;
             fn storage_read(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
+            fn storage_remove(key_ptr: u64, key_len: u64, register_id: u64) -> u32;
 
             fn fetch(
                 url_ptr: u64,
@@ -62,6 +65,12 @@ impl VMLogic<'_> {
                 body_len: u64,
                 register_id: u64
             ) -> u32;
+
+            fn random_bytes(ptr: u64, len: u64);
+            fn time_now(ptr: u64, len: u64);
+
+            fn send_proposal(actions_ptr: u64, actions_len: u64, id_ptr: u64, id_len: u64);
+            fn approve_proposal(approval_ptr: u64, approval_len: u64);
         }
     }
 }
@@ -121,7 +130,7 @@ macro_rules! _imports {
 
                     #[cfg(feature = "host-traces")]
                     {
-                        #[expect(unused_mut, unused_assignments)]
+                        #[allow(unused_mut, unused_assignments)]
                         let mut return_ty = "()";
                         $( return_ty = stringify!($returns); )?
                         println!(

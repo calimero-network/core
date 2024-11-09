@@ -99,8 +99,9 @@ impl ToTokens for PublicLogicMethod<'_> {
                         SelfType::Owned(_) | SelfType::Immutable(_) => None,
                     };
                     quote! {
-                        let Some(#mutability app) = ::calimero_sdk::env::state_read::<#self_>() else {
-                            ::calimero_sdk::env::panic_str("Failed to read app state.")
+                        let Some(#mutability app) = ::calimero_storage::interface::Interface::root::<#self_>().ok().flatten()
+                        else {
+                            ::calimero_sdk::env::panic_str("Failed to find or read app state")
                         };
                     }
                 },
@@ -109,11 +110,11 @@ impl ToTokens for PublicLogicMethod<'_> {
             None => (
                 if init_method {
                     quote! {
-                        if let Some(mut app) = ::calimero_sdk::env::state_read::<#self_>() {
+                        if let Some(mut app) = ::calimero_storage::interface::Interface::root::<#self_>().ok().flatten() {
                             ::calimero_sdk::env::panic_str("Cannot initialize over already existing state.")
                         };
 
-                        let app: #self_ =
+                        let mut app: #self_ =
                     }
                 } else {
                     quote! {}
@@ -145,11 +146,14 @@ impl ToTokens for PublicLogicMethod<'_> {
 
         let state_finalizer = match (&self.self_type, init_method) {
             (Some(SelfType::Mutable(_)), _) | (_, true) => quote! {
-                ::calimero_sdk::env::state_write(&app);
+                if let Err(_) = ::calimero_storage::interface::Interface::commit_root(app) {
+                    ::calimero_sdk::env::panic_str("Failed to commit app state")
+                }
             },
             _ => quote! {},
         };
 
+        // todo! when generics are present, strip them
         let init_impl = if init_method {
             quote! {
                 impl ::calimero_sdk::state::AppStateInit for #self_ {
