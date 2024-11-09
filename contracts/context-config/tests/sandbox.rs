@@ -6,7 +6,8 @@ use calimero_context_config::types::{
     Application, Capability, ContextIdentity, Revision, Signed, SignerId,
 };
 use calimero_context_config::{
-    ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProposalWithApprovals, ProxyMutateRequest, Request, RequestKind, SystemRequest
+    ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProposalWithApprovals,
+    ProxyMutateRequest, Request, RequestKind, SystemRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use eyre::Ok;
