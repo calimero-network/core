@@ -920,18 +920,15 @@ async fn test_deploy() -> eyre::Result<()> {
     let context_id = context_public.to_bytes().rt()?;
 
     // Fund node1 just for gas fees
-    drop(
-        root_account
-            .transfer_near(node1.id(), NearToken::from_near(500))
-            .await,
-    );
+    
+    let _unused = root_account
+        .transfer_near(node1.id(), NearToken::from_near(500))
+        .await;
 
     // Fund the contract with enough NEAR for proxy deployments
-    drop(
-        root_account
-            .transfer_near(contract.id(), NearToken::from_near(100))
-            .await,
-    );
+    let _unused = root_account
+        .transfer_near(contract.id(), NearToken::from_near(100))
+        .await;
 
     // Set proxy code
     let new_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib.wasm").await?;
@@ -1042,29 +1039,6 @@ async fn test_deploy() -> eyre::Result<()> {
         },
     };
     let signed = Signed::new(&request, |p| alice_cx_sk.sign(p))?;
-    // println!("signed {:?}", signed);
-    let res = node1
-        .call(&proxy_address, "mutate")
-        .args_json(signed.clone())
-        .max_gas()
-        .transact()
-        .await?;
-
-    // Assert proposal creation result
-    let err = res.into_result().unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("wouldn't have enough balance to cover storage"),
-        "Expected storage balance error, got: {}",
-        err
-    );
-
-    // Now fund the account
-    drop(
-        root_account
-            .transfer_near(&proxy_address, NearToken::from_near(5))
-            .await,
-    );
 
     // Try again - this time it should succeed
     let res = node1

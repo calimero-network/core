@@ -89,11 +89,6 @@ impl ContextConfigs {
     }
 
     #[private]
-    pub fn update_proxy_callback(&mut self) {
-        env::log_str("Successfully updated proxy contract");
-    }
-
-    #[private]
     pub fn set_proxy_code(&mut self) {
         self.proxy_code
             .set(Some(env::input().expect("Expected proxy code").to_vec()));

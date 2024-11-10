@@ -126,7 +126,6 @@ impl ContextConfigs {
 
         env::log_str(&format!("Context `{}` added", context_id));
 
-        // Deploy proxy contract
         self.deploy_proxy_contract(context_id, account_id)
             .then(Self::ext(env::current_account_id()).add_context_callback())
     }
@@ -309,20 +308,19 @@ impl ContextConfigs {
     ) -> Promise {
         // Known constants from NEAR protocol
         //Use near tokens instead of yoctoNEAR
-        const ACCOUNT_CREATION_COST: u128 = 1_000_000_000_000_000_000_000; // 0.001 NEAR
-        const MIN_ACCOUNT_BALANCE: u128 = 3_500_000_000_000_000_000_000; // 0.0035 NEAR
+        const ACCOUNT_CREATION_COST: NearToken = NearToken::from_millinear(1); // 0.001 NEAR
+        const MIN_ACCOUNT_BALANCE: NearToken = NearToken::from_millinear(35).saturating_div(10); // 0.0035 NEAR
+        const STORAGE_TIP: NearToken = NearToken::from_near(1).saturating_div(10); // 0.1 NEAR
 
         // Calculate storage needs
         let contract_bytes = self.proxy_code.get().clone().unwrap();
-        let storage_cost = (contract_bytes.len() as u128) * env::storage_byte_cost().as_yoctonear();
+        let storage_cost = env::storage_byte_cost().saturating_mul(contract_bytes.len() as u128);
 
         // Calculate required deposit
-        let required_deposit = NearToken::from_yoctonear(
-            ACCOUNT_CREATION_COST +    // Cost to create account
-            MIN_ACCOUNT_BALANCE +      // Minimum balance required
-            storage_cost +             // Storage cost for contract
-            10_000_000_000_000_000_000, // Additional deposit for storage
-        );
+        let required_deposit = ACCOUNT_CREATION_COST
+            .saturating_add(MIN_ACCOUNT_BALANCE)
+            .saturating_add(STORAGE_TIP)
+            .saturating_add(storage_cost);
 
         require!(
             env::account_balance() >= required_deposit,
@@ -392,21 +390,8 @@ impl ContextConfigs {
         #[callback_result] call_result: Result<(), PromiseError>,
     ) -> PromiseOrValue<()> {
         if let Ok(_) = call_result {
-            // Calculate actual storage used and refund excess
-            let actual_storage_used = env::storage_usage();
-            let actual_cost =
-                (actual_storage_used as u128) * env::storage_byte_cost().as_yoctonear();
-            let deposit_used = env::attached_deposit().as_yoctonear();
-
             env::log_str("Successfully deployed proxy contract");
-
-            if actual_cost < deposit_used {
-                Promise::new(env::current_account_id())
-                    .transfer(NearToken::from_yoctonear(deposit_used - actual_cost))
-                    .into()
-            } else {
-                PromiseOrValue::Value(())
-            }
+            PromiseOrValue::Value(())
         } else {
             env::panic_str("Failed to deploy proxy contract");
         }
@@ -423,7 +408,7 @@ impl ContextConfigs {
 
     #[private]
     #[handle_result]
-    pub fn update_contract_callback(
+    pub fn update_proxy_callback(
         &mut self,
         #[callback_result] call_result: Result<(), PromiseError>,
     ) -> Result<(), &'static str> {
@@ -431,7 +416,6 @@ impl ContextConfigs {
             env::log_str(&format!("Failed to update proxy contract: {:?}", e));
             return Err("Failed to update proxy contract");
         }
-
         Ok(())
     }
 }

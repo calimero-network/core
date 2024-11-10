@@ -178,7 +178,7 @@ pub struct Proposal {
     pub actions: Vec<ProposalAction>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Copy)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalApprovalWithSigner {
     pub proposal_id: ProposalId,
@@ -186,7 +186,7 @@ pub struct ProposalApprovalWithSigner {
     pub added_timestamp: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "scope", content = "params")]
 #[serde(deny_unknown_fields)]
 #[expect(clippy::exhaustive_enums, reason = "Considered to be exhaustive")]

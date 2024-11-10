@@ -53,12 +53,6 @@ async fn setup_test(
 
     let proxy_id: AccountId = contract_id_str.parse()?;
 
-    drop(
-        relayer_account
-            .transfer_near(&proxy_id, near_workspaces::types::NearToken::from_near(5))
-            .await,
-    );
-
     let proxy_helper =
         ProxyContractHelper::new(proxy_id, config_helper.config_contract.id().clone())?;
 

@@ -207,15 +207,18 @@ impl ProxyContract {
         );
 
         let new_code = env::input().expect("Expected proxy code");
+        // Calculate storage before update
+        let storage_before = env::storage_usage();
+        
         // Deploy the new code and chain the callback
         Promise::new(env::current_account_id())
             .deploy_contract(new_code)
-            .then(Self::ext(env::current_account_id()).update_contract_callback())
+            .then(Self::ext(env::current_account_id()).update_contract_callback(storage_before))
     }
 
     #[private]
     #[handle_result]
-    pub fn update_contract_callback(&mut self) -> Result<(), &'static str> {
+    pub fn update_contract_callback(&mut self, storage_before: u64) -> Result<(), &'static str> {
         require!(
             env::promise_results_count() == 1,
             "Expected 1 promise result"
@@ -223,6 +226,14 @@ impl ProxyContract {
 
         match env::promise_result(0) {
             PromiseResult::Successful(_) => {
+                // Calculate storage difference and refund if needed
+                let storage_after = env::storage_usage();
+                if storage_after < storage_before {
+                    let refund = (storage_before - storage_after) as u128 * env::storage_byte_cost().as_yoctonear();
+                    Promise::new(self.context_config_account_id.clone())
+                        .transfer(NearToken::from_yoctonear(refund));
+                }
+                
                 env::log_str("Successfully updated proxy contract code");
                 Ok(())
             }
