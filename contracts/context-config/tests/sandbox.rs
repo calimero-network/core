@@ -920,7 +920,7 @@ async fn test_deploy() -> eyre::Result<()> {
     let context_id = context_public.to_bytes().rt()?;
 
     // Fund node1 just for gas fees
-    
+
     let _unused = root_account
         .transfer_near(node1.id(), NearToken::from_near(500))
         .await;
