@@ -891,6 +891,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(requester_secret),
+            ..
         }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             bail!("'{}' is not a member of '{}'", signer_id, context_id)
@@ -1146,6 +1147,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(signing_key),
+            ..
         }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             bail!("No private key found for signer");
@@ -1183,6 +1185,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(signing_key),
+            ..
         }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
         else {
             bail!("No private key found for signer");
