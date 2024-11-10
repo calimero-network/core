@@ -9,7 +9,6 @@ use libp2p::gossipsub::TopicHash;
 use libp2p::PeerId;
 use rand::seq::{IteratorRandom, SliceRandom};
 use rand::thread_rng;
-use ring::aead;
 use tokio::time::timeout;
 use tracing::{debug, error};
 
@@ -33,9 +32,9 @@ async fn send(
     let base_data = borsh::to_vec(message)?;
 
     let data = match shared_key {
-        Some(key) => match key.encrypt(base_data, [0; aead::NONCE_LEN]) {
+        Some(key) => match key.encrypt(base_data, [0; 12]) {
             Some(data) => data,
-            None => bail!("Encryption failed"),
+            None => bail!("encryption failed"),
         },
         None => base_data,
     };
@@ -56,7 +55,7 @@ async fn recv(
     let message_data = message?.data.into_owned();
 
     let data = match shared_key {
-        Some(key) => match key.decrypt(message_data, [0; aead::NONCE_LEN]) {
+        Some(key) => match key.decrypt(message_data, [0; 12]) {
             Some(data) => data,
             None => bail!("Encryption failed"),
         },

@@ -1,6 +1,5 @@
 use calimero_primitives::identity::{PrivateKey, PublicKey};
-use curve25519_dalek::Scalar;
-use ed25519_dalek::SecretKey;
+use ed25519_dalek::{SecretKey, SigningKey};
 use ring::aead;
 use serde::{Deserialize, Serialize};
 
@@ -12,13 +11,13 @@ pub struct SharedKey {
 #[derive(Debug)]
 pub struct Record {
     pub token: Vec<u8>,
-    pub nonce: [u8; aead::NONCE_LEN],
+    pub nonce: [u8; 12],
 }
 
 impl SharedKey {
     pub fn new(sk: &PrivateKey, pk: &PublicKey) -> Self {
         SharedKey {
-            key: (Scalar::from_bytes_mod_order(**sk)
+            key: (SigningKey::from_bytes(sk).to_scalar()
                 * curve25519_dalek::edwards::CompressedEdwardsY(**pk)
                     .decompress()
                     .expect("pk should be guaranteed to be the y coordinate"))
@@ -31,7 +30,7 @@ impl SharedKey {
         SharedKey { key: **sk }
     }
 
-    pub fn encrypt(&self, payload: Vec<u8>, nonce: [u8; aead::NONCE_LEN]) -> Option<Vec<u8>> {
+    pub fn encrypt(&self, payload: Vec<u8>, nonce: [u8; 12]) -> Option<Vec<u8>> {
         let encryption_key =
             aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &self.key).ok()?);
 

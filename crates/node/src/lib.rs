@@ -36,9 +36,7 @@ use camino::Utf8PathBuf;
 use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use libp2p::gossipsub::{IdentTopic, Message, TopicHash};
 use libp2p::identity::Keypair;
-use rand::seq::IteratorRandom;
 use rand::{thread_rng, Rng};
-use ring::aead;
 use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tokio::select;
 use tokio::sync::{broadcast, mpsc};
@@ -305,23 +303,12 @@ impl Node {
                 root_hash,
                 artifact,
             } => {
-                let Some(sender_key) = self.ctx_manager.get_sender_key(&context_id, &author_id)?
-                else {
-                    return self.initiate_sync(context_id, source).await;
-                };
-
-                let shared_key = SharedKey::from_sk(&sender_key);
-
-                let artifact = &shared_key
-                    .decrypt(artifact.into_owned(), [0; aead::NONCE_LEN])
-                    .ok_or_eyre("failed to decrypt message")?;
-
                 self.handle_state_delta(
                     source,
                     context_id,
                     author_id,
                     root_hash,
-                    artifact.to_vec(),
+                    artifact.into_owned(),
                 )
                 .await?;
             }
@@ -346,6 +333,16 @@ impl Node {
             debug!(%context_id, "Received state delta with same root hash, ignoring..");
             return Ok(());
         }
+
+        let Some(sender_key) = self.ctx_manager.get_sender_key(&context_id, &author_id)? else {
+            return self.initiate_sync(context_id, source).await;
+        };
+
+        let shared_key = SharedKey::from_sk(&sender_key);
+
+        let artifact = &shared_key
+            .decrypt(artifact, [0; 12])
+            .ok_or_eyre("failed to decrypt message")?;
 
         let Some(outcome) = self
             .execute(
@@ -388,7 +385,7 @@ impl Node {
             let shared_key = SharedKey::from_sk(&sender_key);
 
             let artifact_encrypted = shared_key
-                .encrypt(outcome.artifact.clone(), [0; aead::NONCE_LEN])
+                .encrypt(outcome.artifact.clone(), [0; 12])
                 .ok_or_eyre("encryption failed")?;
 
             let message = to_vec(&BroadcastMessage::StateDelta {

@@ -65,12 +65,12 @@ impl Node {
             }
         };
 
-        let sender_key = self
+        let private_key = self
             .ctx_manager
-            .get_sender_key(&context.id, &our_identity)?
+            .get_private_key(context.id, our_identity)?
             .ok_or_eyre("expected own identity to have sender key")?;
 
-        let shared_key = SharedKey::new(&sender_key, &their_identity);
+        let shared_key = SharedKey::new(&private_key, &their_identity);
 
         let (tx, mut rx) = mpsc::channel(1);
 

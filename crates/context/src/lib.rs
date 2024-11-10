@@ -759,14 +759,30 @@ impl ContextManager {
     pub fn get_sender_key(
         &self,
         context_id: &ContextId,
-        own_public_key: &PublicKey,
+        public_key: &PublicKey,
     ) -> EyreResult<Option<PrivateKey>> {
         let handle = self.store.handle();
         let key = handle
-            .get(&ContextIdentityKey::new(*context_id, *own_public_key))?
+            .get(&ContextIdentityKey::new(*context_id, *public_key))?
             .and_then(|ctx_identity| ctx_identity.sender_key);
 
         Ok(key.map(PrivateKey::from))
+    }
+
+    pub fn get_private_key(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<Option<PrivateKey>> {
+        let handle = self.store.handle();
+
+        let key = ContextIdentityKey::new(context_id, public_key);
+
+        let Some(value) = handle.get(&key)? else {
+            return Ok(None);
+        };
+
+        Ok(value.private_key.map(PrivateKey::from))
     }
 
     pub fn get_context_members_identities(
