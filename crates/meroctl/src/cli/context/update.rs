@@ -21,7 +21,7 @@ pub struct UpdateCommand {
     #[clap(
         long,
         short = 'a',
-        help = "The application ID to attach to the context"
+        help = "The application ID to update in the context"
     )]
     application_id: Option<ApplicationId>,
 
@@ -31,7 +31,7 @@ pub struct UpdateCommand {
     #[clap(help = "ContextId where to install the application")]
     context_id: ContextId,
 
-    #[clap(help = "Metadata needed for the application installation")]
+    #[clap(help = "PublicKey needed for the application installation")]
     member_public_key: PublicKey,
 
     #[clap(
@@ -99,6 +99,26 @@ async fn install_app_and_update_context(
     Ok(())
 }
 
+async fn install_app(
+    environment: &Environment,
+    client: &Client,
+    base_multiaddr: &Multiaddr,
+    path: Utf8PathBuf,
+    metadata: Option<Vec<u8>>,
+    keypair: &Keypair,
+) -> EyreResult<ApplicationId> {
+    let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
+
+    let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
+
+    let response: InstallApplicationResponse =
+        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
+
+    environment.output.write(&response);
+
+    Ok(response.data.application_id)
+}
+
 async fn update_context_application(
     environment: &Environment,
     client: &Client,
@@ -121,24 +141,4 @@ async fn update_context_application(
     environment.output.write(&response);
 
     Ok(())
-}
-
-async fn install_app(
-    environment: &Environment,
-    client: &Client,
-    base_multiaddr: &Multiaddr,
-    path: Utf8PathBuf,
-    metadata: Option<Vec<u8>>,
-    keypair: &Keypair,
-) -> EyreResult<ApplicationId> {
-    let url = multiaddr_to_url(base_multiaddr, "admin-api/dev/install-dev-application")?;
-
-    let request = InstallDevApplicationRequest::new(path, metadata.unwrap_or_default());
-
-    let response: InstallApplicationResponse =
-        do_request(client, url, Some(request), keypair, RequestType::Post).await?;
-
-    environment.output.write(&response);
-
-    Ok(response.data.application_id)
 }
