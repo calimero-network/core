@@ -33,6 +33,7 @@ members = [
     "./apps/only-peers",
     "./apps/gen-ext",
     "./apps/visited",
+    "./apps/blockchain",
 
   "./contracts/context-config",
   "./contracts/registry",

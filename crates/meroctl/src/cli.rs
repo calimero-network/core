@@ -14,11 +14,13 @@ mod app;
 mod call;
 mod context;
 mod identity;
+mod proxy;
 
 use app::AppCommand;
 use call::CallCommand;
 use context::ContextCommand;
 use identity::IdentityCommand;
+use proxy::ProxyCommand;
 
 pub const EXAMPLES: &str = r"
   # List all applications
@@ -49,6 +51,8 @@ pub enum SubCommands {
     App(AppCommand),
     Context(ContextCommand),
     Identity(IdentityCommand),
+    JsonRpc(CallCommand),
+    Proxy(ProxyCommand),
     Call(CallCommand),
 }
 
@@ -87,6 +91,8 @@ impl RootCommand {
             SubCommands::App(application) => application.run(&environment).await,
             SubCommands::Context(context) => context.run(&environment).await,
             SubCommands::Identity(identity) => identity.run(&environment).await,
+            SubCommands::JsonRpc(jsonrpc) => jsonrpc.run(&environment).await,
+            SubCommands::Proxy(proxy) => proxy.run(&environment).await,
             SubCommands::Call(call) => call.run(&environment).await,
         };
 

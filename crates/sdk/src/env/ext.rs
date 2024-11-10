@@ -1,4 +1,5 @@
 use borsh::{to_vec as to_borsh_vec, to_vec, BorshDeserialize, BorshSerialize};
+use serde::{Deserialize, Serialize};
 
 use super::{expected_boolean, expected_register, panic_str, read_register, DATA_REGISTER};
 use crate::sys;
@@ -35,7 +36,7 @@ pub enum ProposalAction {
         receiver_id: AccountId,
 
         /// The amount of tokens to transfer.
-        amount: u64,
+        amount: u128,
     },
 
     /// Set the number of approvals required for a proposal to be executed.
@@ -62,7 +63,7 @@ pub enum ProposalAction {
 
 /// Unique identifier for an account.
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct AccountId(String);
+pub struct AccountId(pub String);
 
 /// A draft proposal.
 ///
@@ -74,6 +75,7 @@ pub struct DraftProposal {
     /// The actions to be executed by the proposal. One proposal can contain
     /// multiple actions to execute.
     actions: Vec<ProposalAction>,
+    approval: Option<ProposalId>,
 }
 
 impl DraftProposal {
@@ -82,12 +84,13 @@ impl DraftProposal {
     pub const fn new() -> Self {
         Self {
             actions: Vec::new(),
+            approval: None,
         }
     }
 
     /// Add an action to transfer tokens to an account.
     #[must_use]
-    pub fn transfer(mut self, receiver: AccountId, amount: u64) -> Self {
+    pub fn transfer(mut self, receiver: AccountId, amount: u128) -> Self {
         self.actions.push(ProposalAction::Transfer {
             receiver_id: receiver,
             amount,
@@ -123,11 +126,33 @@ impl External {
     pub const fn propose(self) -> DraftProposal {
         DraftProposal::new()
     }
+
+    pub fn approve(self, proposal_id: ProposalId) {
+        unsafe { sys::approve_proposal(BufferMut::new(&proposal_id)) }
+    }
 }
 
 /// Unique identifier for a proposal.
-#[derive(BorshDeserialize, BorshSerialize, Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+)]
 pub struct ProposalId(pub [u8; 32]);
+
+impl AsRef<[u8]> for ProposalId {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 #[doc(hidden)]
 pub unsafe fn fetch(

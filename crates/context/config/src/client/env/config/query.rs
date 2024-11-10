@@ -12,6 +12,7 @@ pub mod has_member;
 pub mod members;
 pub mod members_revision;
 pub mod privileges;
+pub mod proxy_contract;
 
 #[derive(Debug)]
 pub struct ContextConfigQuery<'a, T> {
@@ -86,6 +87,17 @@ impl<'a, T: Transport> ContextConfigQuery<'a, T> {
         identities: &[ContextIdentity],
     ) -> Result<BTreeMap<SignerId, Vec<Capability>>, ClientError<T>> {
         let params = privileges::PrivilegesRequest::new(context_id, identities);
+
+        utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
+    }
+
+    pub async fn get_proxy_contract(
+        &self,
+        context_id: ContextId,
+    ) -> Result<String, ClientError<T>> {
+        let params = proxy_contract::ProxyContractRequest {
+            context_id: Repr::new(context_id),
+        };
 
         utils::send_near_or_starknet(&self.client, Operation::Read(params)).await
     }
