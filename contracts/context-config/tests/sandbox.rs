@@ -6,8 +6,8 @@ use calimero_context_config::types::{
     Application, Capability, ContextIdentity, Revision, Signed, SignerId,
 };
 use calimero_context_config::{
-    ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProxyMutateRequest, Request,
-    RequestKind, SystemRequest,
+    ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProposalWithApprovals,
+    ProxyMutateRequest, Request, RequestKind, SystemRequest,
 };
 use ed25519_dalek::{Signer, SigningKey};
 use eyre::Ok;
@@ -1049,7 +1049,10 @@ async fn test_deploy() -> eyre::Result<()> {
         .await?;
 
     // Assert proposal creation result
-    assert!(res.is_success(), "Transaction failed: {:#?}", res);
+    let success_value = res.raw_bytes()?;
+    let proposal_result: ProposalWithApprovals = serde_json::from_slice(&success_value)?;
+    assert_eq!(proposal_result.num_approvals, 1);
+    let created_proposal_id = proposal_result.proposal_id;
     // Verify proposals list
     let proposals: Vec<Proposal> = worker
         .view(&proxy_address, "proposals")
@@ -1062,7 +1065,7 @@ async fn test_deploy() -> eyre::Result<()> {
 
     assert_eq!(proposals.len(), 1, "Should have exactly one proposal");
     let created_proposal = &proposals[0];
-    assert_eq!(created_proposal.id, proposal_id);
+    assert_eq!(created_proposal.id, created_proposal_id);
     assert_eq!(created_proposal.author_id, alice_cx_id.rt()?);
     assert_eq!(created_proposal.actions.len(), 1);
 
@@ -1096,8 +1099,7 @@ async fn test_deploy() -> eyre::Result<()> {
         single_proposal.is_some(),
         "Should be able to get single proposal"
     );
-
-    assert_eq!(single_proposal.unwrap().id, proposal_id);
+    assert_eq!(single_proposal.unwrap().id, created_proposal_id);
 
     Ok(())
 }
