@@ -67,7 +67,7 @@ export default function StartContextStep({
     }
     const startContextResponse = await apiClient(showServerDownPopup)
       .node()
-      .startContexts(applicationId, argumentsJson);
+      .createContexts(applicationId, argumentsJson);
     if (startContextResponse.error) {
       setStartContextStatus({
         title: t.startContextErrorTitle,

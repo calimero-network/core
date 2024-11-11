@@ -395,11 +395,15 @@ impl JoinContextResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateContextApplicationRequest {
     pub application_id: ApplicationId,
+    pub executor_public_key: PublicKey,
 }
 
 impl UpdateContextApplicationRequest {
-    pub const fn new(application_id: ApplicationId) -> Self {
-        Self { application_id }
+    pub const fn new(application_id: ApplicationId, executor_public_key: PublicKey) -> Self {
+        Self {
+            application_id,
+            executor_public_key,
+        }
     }
 }
 

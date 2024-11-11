@@ -2,11 +2,11 @@ import {
   RpcRequestId,
   RpcClient,
   RpcQueryResponse,
-  RpcMutateResponse,
   RpcQueryParams,
-  RpcMutateParams,
   RequestConfig,
   RpcResult,
+  RpcMutateParams,
+  RpcMutateResponse,
 } from '../types/rpc';
 import axios, { AxiosInstance } from 'axios';
 

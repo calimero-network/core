@@ -7,44 +7,51 @@ use owo_colors::OwoColorize;
 
 use crate::Node;
 
-#[derive(Debug, Parser)]
+/// View the raw state of contexts
+#[derive(Copy, Clone, Debug, Parser)]
 pub struct StateCommand {
-    context_id: String,
+    /// The context ID to view the state for
+    context_id: Option<ContextId>,
 }
+
 impl StateCommand {
     pub fn run(self, node: &Node) -> Result<()> {
         let ind = ">>".blue();
+
         let handle = node.store.handle();
         let mut iter = handle.iter::<ContextStateKey>()?;
 
-        println!("{ind} {:44} | {:44}", "State Key", "Value");
+        println!(
+            "{ind} {c1:44} | {c2:44} | Value",
+            c1 = "Context ID",
+            c2 = "State Key",
+        );
 
-        let context_id = match self.context_id.parse::<ContextId>() {
-            Ok(id) => id,
-            Err(e) => eyre::bail!("{} Failed to parse context_id: {}", ind.red(), e),
-        };
-
-        let first = 'first: {
-            let Some(k) = iter
-                .seek(ContextStateKey::new(context_id, [0; 32]))
-                .transpose()
-            else {
-                break 'first None;
-            };
-
-            Some((k, iter.read().map(|s| s.value.into_boxed())))
-        };
+        let first = self.context_id.and_then(|s| {
+            Some((
+                iter.seek(ContextStateKey::new(s, [0; 32])).transpose()?,
+                iter.read().map(|v| v.value.into_boxed()),
+            ))
+        });
 
         let rest = iter
             .entries()
-            .map(|(k, v)| (k, v.map(|s| s.value.into_boxed())));
+            .map(|(k, v)| (k, v.map(|v| v.value.into_boxed())));
 
         for (k, v) in first.into_iter().chain(rest) {
             let (k, v) = (k?, v?);
-            if k.context_id() != context_id {
-                break;
+
+            let (cx, state_key) = (k.context_id(), k.state_key());
+
+            if let Some(context_id) = self.context_id {
+                if cx != context_id {
+                    break;
+                }
             }
-            let entry = format!("{:44} | {:?}", Hash::from(k.state_key()), v);
+
+            let sk = Hash::from(state_key);
+
+            let entry = format!("{c1:44} | {c2:44} | {c3:?}", c1 = cx, c2 = sk, c3 = v);
             for line in entry.lines() {
                 println!("{ind} {}", line.cyan());
             }

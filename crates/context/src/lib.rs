@@ -8,12 +8,14 @@ use std::sync::Arc;
 use calimero_blobstore::{Blob, BlobManager, Size};
 use calimero_context_config::client::config::ClientConfig;
 use calimero_context_config::client::env::config::ContextConfig as ContextConfigEnv;
+use calimero_context_config::client::env::proxy::ContextProxy;
 use calimero_context_config::client::{AnyTransport, Client as ExternalClient};
 use calimero_context_config::repr::{Repr, ReprBytes, ReprTransmute};
 use calimero_context_config::types::{
     Application as ApplicationConfig, ApplicationMetadata as ApplicationMetadataConfig,
     ApplicationSource as ApplicationSourceConfig,
 };
+use calimero_context_config::{ProposalAction, ProposalId};
 use calimero_network::client::NetworkClient;
 use calimero_network::types::IdentTopic;
 use calimero_node_primitives::{ExecutionRequest, ServerSender};
@@ -36,7 +38,7 @@ use calimero_store::types::{
 };
 use calimero_store::Store;
 use camino::Utf8PathBuf;
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, OptionExt, Result as EyreResult};
 use futures_util::{AsyncRead, TryStreamExt};
 use rand::rngs::StdRng;
 use rand::seq::IteratorRandom;
@@ -143,6 +145,19 @@ impl ContextManager {
         PrivateKey::random(&mut rand::thread_rng())
     }
 
+    async fn get_proxy_contract(&self, context_id: ContextId) -> EyreResult<String> {
+        let proxy_contract = self
+            .config_client
+            .query::<ContextConfigEnv>(
+                self.client_config.new.protocol.as_str().into(),
+                self.client_config.new.network.as_str().into(),
+                self.client_config.new.contract_id.as_str().into(),
+            )
+            .get_proxy_contract(context_id.rt().expect("infallible conversion"))
+            .await?;
+        Ok(proxy_contract)
+    }
+
     pub fn create_context(
         &self,
         seed: Option<[u8; 32]>,
@@ -165,7 +180,7 @@ impl ContextManager {
             (context_secret, identity_secret)
         };
 
-        let handle = self.store.handle();
+        let mut handle = self.store.handle();
 
         let context = {
             let context_id = ContextId::from(*context_secret.public_key());
@@ -188,6 +203,7 @@ impl ContextManager {
                 protocol: self.client_config.new.protocol.as_str().into(),
                 network_id: self.client_config.new.network.as_str().into(),
                 contract_id: self.client_config.new.contract_id.as_str().into(),
+                proxy_contract: "".into(),
                 application_revision: 0,
                 members_revision: 0,
             }),
@@ -237,11 +253,18 @@ impl ContextManager {
                 .send(*context_secret)
                 .await?;
 
+            let proxy_contract = this.get_proxy_contract(context.id).await?;
+
+            let key = ContextConfigKey::new(context.id);
+            let mut config = handle.get(&key)?.ok_or_eyre("expected config to exist")?;
+            config.proxy_contract = proxy_contract.into();
+            handle.put(&key, &config)?;
+
             Ok((context.id, identity_secret.public_key()))
         };
 
-        let this = self.clone();
         let context_id = context.id;
+        let this = self.clone();
         let _ignored = tokio::spawn(async move {
             let result = finalizer.await;
 
@@ -276,6 +299,7 @@ impl ContextManager {
                     context_config.protocol.into_owned().into_boxed_str(),
                     context_config.network_id.into_owned().into_boxed_str(),
                     context_config.contract_id.into_owned().into_boxed_str(),
+                    context_config.proxy_contract.into_owned().into_boxed_str(),
                     context_config.application_revision,
                     context_config.members_revision,
                 ),
@@ -329,14 +353,19 @@ impl ContextManager {
         }
 
         let context_exists = handle.has(&ContextMetaKey::new(context_id))?;
-
-        let mut config = (!context_exists).then(|| ContextConfigParams {
-            protocol: protocol.into(),
-            network_id: network_id.into(),
-            contract_id: contract_id.into(),
-            application_revision: 0,
-            members_revision: 0,
-        });
+        let mut config = if !context_exists {
+            let proxy_contract = self.get_proxy_contract(context_id).await?;
+            Some(ContextConfigParams {
+                protocol: protocol.into(),
+                network_id: network_id.into(),
+                contract_id: contract_id.into(),
+                proxy_contract: proxy_contract.into(),
+                application_revision: 0,
+                members_revision: 0,
+            })
+        } else {
+            None
+        };
 
         let context = self
             .internal_sync_context_config(context_id, config.as_mut())
@@ -347,7 +376,6 @@ impl ContextManager {
         }
 
         self.add_context(&context, identity_secret, config)?;
-
         self.subscribe(&context.id).await?;
 
         let _ = self.state.write().await.pending_catchup.insert(context_id);
@@ -424,6 +452,7 @@ impl ContextManager {
                     protocol: config.protocol.into_string().into(),
                     network_id: config.network.into_string().into(),
                     contract_id: config.contract.into_string().into(),
+                    proxy_contract: config.proxy_contract.into_string().into(),
                     application_revision: config.application_revision,
                     members_revision: config.members_revision,
                 }))
@@ -447,7 +476,7 @@ impl ContextManager {
             .members_revision(context_id.rt().expect("infallible conversion"))
             .await?;
 
-        if context_exists && members_revision != config.members_revision {
+        if !context_exists || members_revision != config.members_revision {
             config.members_revision = members_revision;
 
             for (offset, length) in (0..).map(|i| (100_usize.saturating_mul(i), 100)) {
@@ -481,7 +510,7 @@ impl ContextManager {
 
         let mut application_id = None;
 
-        if context_exists && application_revision != config.application_revision {
+        if !context_exists || application_revision != config.application_revision {
             config.application_revision = application_revision;
 
             let application = client
@@ -525,6 +554,7 @@ impl ContextManager {
                     config.protocol.into_owned().into_boxed_str(),
                     config.network_id.into_owned().into_boxed_str(),
                     config.contract_id.into_owned().into_boxed_str(),
+                    config.proxy_contract.into_owned().into_boxed_str(),
                     config.application_revision,
                     config.members_revision,
                 ),
@@ -765,6 +795,22 @@ impl ContextManager {
         self.get_context_identities(context_id, true)
     }
 
+    pub fn context_has_owned_identity(
+        &self,
+        context_id: ContextId,
+        public_key: PublicKey,
+    ) -> EyreResult<bool> {
+        let handle = self.store.handle();
+
+        let key = ContextIdentityKey::new(context_id, public_key);
+
+        let Some(value) = handle.get(&key)? else {
+            return Ok(false);
+        };
+
+        Ok(value.private_key.is_some())
+    }
+
     pub fn get_contexts(&self, start: Option<ContextId>) -> EyreResult<Vec<Context>> {
         let handle = self.store.handle();
 
@@ -788,24 +834,60 @@ impl ContextManager {
         Ok(contexts)
     }
 
-    pub fn update_application_id(
+    pub async fn update_application_id(
         &self,
         context_id: ContextId,
         application_id: ApplicationId,
+        signer_id: PublicKey,
     ) -> EyreResult<()> {
-        // todo! use context config
-
         let mut handle = self.store.handle();
 
         let key = ContextMetaKey::new(context_id);
 
-        let Some(mut value) = handle.get(&key)? else {
+        let Some(mut context_meta) = handle.get(&key)? else {
             bail!("Context not found")
         };
 
-        value.application = ApplicationMetaKey::new(application_id);
+        let Some(application) = self.get_application(&application_id)? else {
+            bail!("Application with id {:?} not found", application_id)
+        };
 
-        handle.put(&key, &value)?;
+        let Some(ContextIdentityValue {
+            private_key: Some(requester_secret),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
+        else {
+            bail!("'{}' is not a member of '{}'", signer_id, context_id)
+        };
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!(
+                "Failed to retrieve ContextConfig for context ID: {}",
+                context_id
+            );
+        };
+        let _ = self
+            .config_client
+            .mutate::<ContextConfigEnv>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.contract.as_ref().into(),
+            )
+            .update_application(
+                context_id.rt().expect("infallible conversion"),
+                ApplicationConfig::new(
+                    application.id.rt().expect("infallible conversion"),
+                    application.blob.rt().expect("infallible conversion"),
+                    application.size,
+                    ApplicationSourceConfig(application.source.to_string().into()),
+                    ApplicationMetadataConfig(Repr::new(application.metadata.into())),
+                ),
+            )
+            .send(requester_secret)
+            .await?;
+
+        context_meta.application = ApplicationMetaKey::new(application_id);
+
+        handle.put(&key, &context_meta)?;
 
         Ok(())
     }
@@ -836,7 +918,7 @@ impl ContextManager {
     }
 
     pub fn has_blob_available(&self, blob_id: BlobId) -> EyreResult<bool> {
-        Ok(self.blob_manager.has(blob_id)?)
+        self.blob_manager.has(blob_id)
     }
 
     // vv~ these would be more appropriate in an ApplicationManager
@@ -1008,5 +1090,78 @@ impl ContextManager {
 
     pub fn is_application_blob_installed(&self, blob_id: BlobId) -> EyreResult<bool> {
         self.blob_manager.has(blob_id)
+    }
+
+    pub async fn propose(
+        &self,
+        context_id: ContextId,
+        signer_id: PublicKey,
+        proposal_id: ProposalId,
+        actions: Vec<ProposalAction>,
+    ) -> EyreResult<()> {
+        let handle = self.store.handle();
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!(
+                "Failed to retrieve ContextConfig for context ID: {}",
+                context_id
+            );
+        };
+
+        let Some(ContextIdentityValue {
+            private_key: Some(signing_key),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
+        else {
+            bail!("No private key found for signer");
+        };
+
+        let _ = self
+            .config_client
+            .mutate::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .propose(
+                proposal_id,
+                signer_id.rt().expect("infallible conversion"),
+                actions,
+            )
+            .send(signing_key)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn approve(
+        &self,
+        context_id: ContextId,
+        signer_id: PublicKey,
+        proposal_id: ProposalId,
+    ) -> EyreResult<()> {
+        let handle = self.store.handle();
+
+        let Some(context_config) = handle.get(&ContextConfigKey::new(context_id))? else {
+            bail!("Context not found");
+        };
+
+        let Some(ContextIdentityValue {
+            private_key: Some(signing_key),
+        }) = handle.get(&ContextIdentityKey::new(context_id, signer_id))?
+        else {
+            bail!("No private key found for signer");
+        };
+
+        let _ = self
+            .config_client
+            .mutate::<ContextProxy>(
+                context_config.protocol.as_ref().into(),
+                context_config.network.as_ref().into(),
+                context_config.proxy_contract.as_ref().into(),
+            )
+            .approve(signer_id.rt().expect("infallible conversion"), proposal_id)
+            .send(signing_key)
+            .await?;
+
+        Ok(())
     }
 }

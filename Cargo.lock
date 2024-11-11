@@ -933,6 +933,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "blockchain"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "calimero-storage",
+]
+
+[[package]]
 name = "blocking"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1178,6 +1186,7 @@ dependencies = [
  "calimero-context-config",
  "ed25519-dalek 2.1.1",
  "eyre",
+ "hex 0.4.3",
  "near-crypto 0.26.0",
  "near-sdk",
  "near-workspaces",
@@ -1213,6 +1222,7 @@ dependencies = [
  "borsh",
  "calimero-blobstore",
  "calimero-context",
+ "calimero-context-config",
  "calimero-network",
  "calimero-node-primitives",
  "calimero-primitives",
@@ -1226,9 +1236,11 @@ dependencies = [
  "libp2p",
  "owo-colors",
  "rand 0.8.5",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

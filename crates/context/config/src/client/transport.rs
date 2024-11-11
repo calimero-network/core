@@ -18,21 +18,6 @@ pub trait Transport {
     ) -> Result<Vec<u8>, Self::Error>;
 }
 
-impl<L: Transport, R: Transport> Transport for Either<L, R> {
-    type Error = Either<L::Error, R::Error>;
-
-    async fn send(
-        &self,
-        request: TransportRequest<'_>,
-        payload: Vec<u8>,
-    ) -> Result<Vec<u8>, Self::Error> {
-        match self {
-            Self::Left(left) => left.send(request, payload).await.map_err(Either::Left),
-            Self::Right(right) => right.send(request, payload).await.map_err(Either::Right),
-        }
-    }
-}
-
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct TransportRequest<'a> {
@@ -55,6 +40,34 @@ impl<'a> TransportRequest<'a> {
             network_id,
             contract_id,
             operation,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum EitherError<L, R> {
+    #[error(transparent)]
+    Left(L),
+    #[error(transparent)]
+    Right(R),
+    #[error("unsupported protocol: {0}")]
+    UnsupportedProtocol(String),
+}
+
+impl<L: Transport, R: Transport> Transport for Either<L, R> {
+    type Error = EitherError<L::Error, R::Error>;
+
+    async fn send(
+        &self,
+        request: TransportRequest<'_>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, Self::Error> {
+        match self {
+            Self::Left(left) => left.send(request, payload).await.map_err(EitherError::Left),
+            Self::Right(right) => right
+                .send(request, payload)
+                .await
+                .map_err(EitherError::Right),
         }
     }
 }
@@ -83,22 +96,12 @@ pub struct Both<L, R> {
     pub right: R,
 }
 
-#[derive(Debug, Error)]
-pub enum BothError<L, R> {
-    #[error("left error: {0}")]
-    Left(L),
-    #[error("right error: {0}")]
-    Right(R),
-    #[error("unsupported protocol: {0}")]
-    UnsupportedProtocol(String),
-}
-
 impl<L, R> Transport for Both<L, R>
 where
     L: AssociatedTransport,
     R: AssociatedTransport,
 {
-    type Error = BothError<L::Error, R::Error>;
+    type Error = EitherError<L::Error, R::Error>;
 
     async fn send(
         &self,
@@ -109,14 +112,14 @@ where
             self.left
                 .send(request, payload)
                 .await
-                .map_err(BothError::Left)
+                .map_err(EitherError::Left)
         } else if request.protocol == R::protocol() {
             self.right
                 .send(request, payload)
                 .await
-                .map_err(BothError::Right)
+                .map_err(EitherError::Right)
         } else {
-            return Err(BothError::UnsupportedProtocol(
+            return Err(EitherError::UnsupportedProtocol(
                 request.protocol.into_owned(),
             ));
         }

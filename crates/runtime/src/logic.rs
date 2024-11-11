@@ -4,6 +4,7 @@
 use core::num::NonZeroU64;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::vec;
 
 use borsh::from_slice as from_borsh_slice;
 use ouroboros::self_referencing;
@@ -43,7 +44,6 @@ impl VMContext {
 }
 
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct VMLimits {
     pub max_memory_pages: u32,
     pub max_stack_size: usize,
@@ -63,40 +63,6 @@ pub struct VMLimits {
     // number of functions per contract
 }
 
-impl VMLimits {
-    #[expect(clippy::too_many_arguments, reason = "Acceptable here")]
-    #[must_use]
-    pub const fn new(
-        max_memory_pages: u32,
-        max_stack_size: usize,
-        max_registers: u64,
-        max_register_size: Constrained<u64, MaxU64<{ u64::MAX - 1 }>>,
-        max_registers_capacity: u64,
-        max_logs: u64,
-        max_log_size: u64,
-        max_events: u64,
-        max_event_kind_size: u64,
-        max_event_data_size: u64,
-        max_storage_key_size: NonZeroU64,
-        max_storage_value_size: NonZeroU64,
-    ) -> Self {
-        Self {
-            max_memory_pages,
-            max_stack_size,
-            max_registers,
-            max_register_size,
-            max_registers_capacity,
-            max_logs,
-            max_log_size,
-            max_events,
-            max_event_kind_size,
-            max_event_data_size,
-            max_storage_key_size,
-            max_storage_value_size,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct VMLogic<'a> {
     storage: &'a mut dyn Storage,
@@ -110,6 +76,7 @@ pub struct VMLogic<'a> {
     root_hash: Option<[u8; 32]>,
     artifact: Vec<u8>,
     proposals: BTreeMap<[u8; 32], Vec<u8>>,
+    approvals: Vec<[u8; 32]>,
 }
 
 impl<'a> VMLogic<'a> {
@@ -126,6 +93,7 @@ impl<'a> VMLogic<'a> {
             root_hash: None,
             artifact: vec![],
             proposals: BTreeMap::new(),
+            approvals: vec![],
         }
     }
 
@@ -156,6 +124,8 @@ pub struct Outcome {
     pub root_hash: Option<[u8; 32]>,
     pub artifact: Vec<u8>,
     pub proposals: BTreeMap<[u8; 32], Vec<u8>>,
+    //list of ids for approved proposals
+    pub approvals: Vec<[u8; 32]>,
     // execution runtime
     // current storage usage of the app
 }
@@ -185,6 +155,7 @@ impl VMLogic<'_> {
             root_hash: self.root_hash,
             artifact: self.artifact,
             proposals: self.proposals,
+            approvals: self.approvals,
         }
     }
 }
@@ -596,6 +567,16 @@ impl VMHostFunctions<'_> {
         drop(self.with_logic_mut(|logic| logic.proposals.insert(proposal_id, actions_bytes)));
 
         self.borrow_memory().write(id_ptr, &proposal_id)?;
+
+        Ok(())
+    }
+
+    pub fn approve_proposal(&mut self, approval_ptr: u64, approval_len: u64) -> VMLogicResult<()> {
+        if approval_len != 32 {
+            return Err(HostError::InvalidMemoryAccess.into());
+        }
+        let approval = self.read_guest_memory_sized::<32>(approval_ptr, approval_len)?;
+        let _ = self.with_logic_mut(|logic| logic.approvals.push(approval));
 
         Ok(())
     }

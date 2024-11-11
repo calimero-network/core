@@ -100,6 +100,7 @@ pub enum ContextRequestKind<'a> {
     Revoke {
         capabilities: Cow<'a, [(Repr<ContextIdentity>, Capability)]>,
     },
+    UpdateProxyContract,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -113,7 +114,7 @@ pub enum SystemRequest {
 
 /// Proxy contract
 /// TODO: move these to a separate cratexs
-pub type ProposalId = u32;
+pub type ProposalId = [u8; 32];
 pub type Gas = u64;
 pub type NativeToken = u128;
 
