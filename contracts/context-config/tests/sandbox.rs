@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{
-    Application, Capability, ContextIdentity, Revision, Signed, SignerId
+    Application, Capability, ContextIdentity, Revision, Signed, SignerId,
 };
 use calimero_context_config::{
     ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProposalWithApprovals,

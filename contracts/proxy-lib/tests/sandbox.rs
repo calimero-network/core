@@ -496,7 +496,8 @@ async fn test_transfer() -> Result<()> {
             &proxy_helper.proxy_contract,
             near_workspaces::types::NearToken::from_near(5),
         )
-        .await?.into_result();
+        .await?
+        .into_result();
 
     let recipient = create_account_with_balance(&worker, "new_account", 0).await?;
 
