@@ -162,20 +162,24 @@ impl Meroctl {
         mut json: serde_json::Value,
         key: &str,
     ) -> EyreResult<serde_json::Value> {
-        let json = json
-            .as_object_mut()
-            .ok_or_eyre("input is not a JSON object")?;
+        let json = match json.as_object_mut() {
+            Some(json) => json,
+            None => bail!("'{}' is not a JSON object", json),
+        };
 
         json.remove(key)
-            .ok_or_else(|| eyre!("'{}' not found in json object", key))
+            .ok_or_else(|| eyre!("key '{}' not found in '{:?}' JSON object", key, json))
     }
 
     fn get_string_from_object(&self, json: &serde_json::Value, key: &str) -> EyreResult<String> {
-        let json = json.as_object().ok_or_eyre("input is not a JSON object")?;
+        let json = match json.as_object() {
+            Some(json) => json,
+            None => bail!("'{}' is not a JSON object", json),
+        };
 
         let json = json
             .get(key)
-            .ok_or_else(|| eyre!("'{}' not found in json object", key))?;
+            .ok_or_else(|| eyre!("key '{}' not found in '{:?}' JSON object", key, json))?;
 
         let value = json
             .as_str()
