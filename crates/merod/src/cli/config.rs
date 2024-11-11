@@ -35,7 +35,7 @@ impl FromStr for KeyValuePair {
         let key = parts.next().ok_or("Missing key")?.to_owned();
 
         let value = parts.next().ok_or("Missing value")?;
-        let value = Value::from_str(value).map_err(|e| e.to_owned())?;
+        let value = Value::from_str(value).map_err(|e| e.to_string())?;
 
         Ok(Self { key, value })
     }
