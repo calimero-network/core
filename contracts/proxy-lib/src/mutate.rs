@@ -217,29 +217,30 @@ impl ProxyContract {
     }
 
     #[private]
-    #[handle_result]
-    pub fn update_contract_callback(&mut self, storage_before: u64) -> Result<(), &'static str> {
+    pub fn update_contract_callback(
+        &mut self,
+        storage_before: u64,
+        #[callback_result] call_result: Result<(), PromiseError>,
+    ) {
         require!(
             env::promise_results_count() == 1,
             "Expected 1 promise result"
         );
 
-        match env::promise_result(0) {
-            PromiseResult::Successful(_) => {
-                // Calculate storage difference and refund if needed
-                let storage_after = env::storage_usage();
-                if storage_after < storage_before {
-                    let refund = (storage_before - storage_after) as u128
-                        * env::storage_byte_cost().as_yoctonear();
-                    Promise::new(self.context_config_account_id.clone())
-                        .transfer(NearToken::from_yoctonear(refund));
-                }
-
-                env::log_str("Successfully updated proxy contract code");
-                Ok(())
-            }
-            _ => Err("Failed to update proxy contract code"),
+        if let Err(e) = call_result {
+            env::panic_str(&format!("Failed to update proxy contract code: {:?}", e));
         }
+
+        // Calculate storage difference and refund if needed
+        let storage_after = env::storage_usage();
+        if storage_after < storage_before {
+            let refund = (storage_before - storage_after) as u128
+                * env::storage_byte_cost().as_yoctonear();
+            Promise::new(self.context_config_account_id.clone())
+                .transfer(NearToken::from_yoctonear(refund));
+        }
+
+        env::log_str("Successfully updated proxy contract code");
     }
 }
 

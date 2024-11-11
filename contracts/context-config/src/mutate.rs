@@ -7,9 +7,7 @@ use calimero_context_config::types::{
 use calimero_context_config::{ContextRequest, ContextRequestKind, Request, RequestKind};
 use near_sdk::serde_json::{self, json};
 use near_sdk::store::IterableSet;
-use near_sdk::{
-    env, near, require, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
-};
+use near_sdk::{env, near, require, AccountId, Gas, NearToken, Promise, PromiseError};
 
 use super::{
     parse_input, Context, ContextConfigs, ContextConfigsExt, ContextPrivilegeScope, Guard, Prefix,
@@ -349,7 +347,9 @@ impl ContextConfigs {
                 NearToken::from_near(0),
                 init_gas,
             )
-            .then(Self::ext(env::current_account_id()).proxy_deployment_callback())
+            .then(Self::ext(env::current_account_id()).proxy_contract_callback(
+                "deploy".to_owned(),
+            ))
     }
 
     fn update_proxy_contract(
@@ -379,24 +379,12 @@ impl ContextConfigs {
                 NearToken::from_near(0),
                 Gas::from_tgas(100),
             )
-            .then(Self::ext(env::current_account_id()).update_proxy_callback())
+            .then(Self::ext(env::current_account_id()).proxy_contract_callback("update".to_owned()))
     }
 }
 
 #[near]
 impl ContextConfigs {
-    pub fn proxy_deployment_callback(
-        &mut self,
-        #[callback_result] call_result: Result<(), PromiseError>,
-    ) -> PromiseOrValue<()> {
-        if let Ok(_) = call_result {
-            env::log_str("Successfully deployed proxy contract");
-            PromiseOrValue::Value(())
-        } else {
-            env::panic_str("Failed to deploy proxy contract");
-        }
-    }
-
     pub fn add_context_callback(
         &mut self,
         #[callback_result] call_result: Result<(), PromiseError>,
@@ -407,15 +395,14 @@ impl ContextConfigs {
     }
 
     #[private]
-    #[handle_result]
-    pub fn update_proxy_callback(
+    pub fn proxy_contract_callback(
         &mut self,
         #[callback_result] call_result: Result<(), PromiseError>,
-    ) -> Result<(), &'static str> {
+        action: String,
+    ) {
         if let Err(e) = call_result {
-            env::log_str(&format!("Failed to update proxy contract: {:?}", e));
-            return Err("Failed to update proxy contract");
+            env::panic_str(&format!("Failed to {} proxy contract: {:?}", action, e));
         }
-        Ok(())
+        env::log_str(&format!("Successfully {} proxy contract", action));
     }
 }

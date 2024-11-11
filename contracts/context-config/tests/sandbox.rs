@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use calimero_context_config::repr::{Repr, ReprTransmute};
 use calimero_context_config::types::{
-    Application, Capability, ContextIdentity, Revision, Signed, SignerId,
+    Application, Capability, ContextIdentity, Revision, Signed, SignerId
 };
 use calimero_context_config::{
     ContextRequest, ContextRequestKind, Proposal, ProposalAction, ProposalWithApprovals,
@@ -39,12 +39,6 @@ async fn main() -> eyre::Result<()> {
         .create_subaccount("node2")
         .initial_balance(NearToken::from_near(30))
         .transact()
-        .await?
-        .into_result()?;
-
-    // Also transfer NEAR to the contract to cover deployment costs
-    let _tx3 = root_account
-        .transfer_near(contract.id(), NearToken::from_near(30))
         .await?
         .into_result()?;
 
@@ -776,7 +770,7 @@ async fn main() -> eyre::Result<()> {
     // assert_eq!(state.len(), 1);
     // assert_eq!(state.get(&b"STATE"[..]).map(|v| v.len()), Some(24));
 
-    // After contract deployment
+    // // After contract deployment
     // let state_size = worker
     //     .view(contract.id(), "get_state_size")  // We'd need to add this method to the contract
     //     .await?
@@ -920,15 +914,10 @@ async fn test_deploy() -> eyre::Result<()> {
     let context_id = context_public.to_bytes().rt()?;
 
     // Fund node1 just for gas fees
-
     let _unused = root_account
-        .transfer_near(node1.id(), NearToken::from_near(500))
-        .await;
-
-    // Fund the contract with enough NEAR for proxy deployments
-    let _unused = root_account
-        .transfer_near(contract.id(), NearToken::from_near(100))
-        .await;
+        .transfer_near(node1.id(), NearToken::from_near(50))
+        .await?
+        .into_result();
 
     // Set proxy code
     let new_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib.wasm").await?;
@@ -985,6 +974,14 @@ async fn test_deploy() -> eyre::Result<()> {
         }))
         .await?
         .json()?;
+
+    // Assert the proxy address is a subaccount of the contract
+    assert!(
+        proxy_address.to_string() == format!("0.{}", contract.id()),
+        "Proxy address '{}' should be exactly '0.{}'",
+        proxy_address,
+        contract.id()
+    );
 
     //Uncomment to print the proxy contract address
     // println!("Proxy contract address: {}", proxy_address);
@@ -1049,8 +1046,7 @@ async fn test_deploy() -> eyre::Result<()> {
         .await?;
 
     // Assert proposal creation result
-    let success_value = res.raw_bytes()?;
-    let proposal_result: ProposalWithApprovals = serde_json::from_slice(&success_value)?;
+    let proposal_result = res.json::<ProposalWithApprovals>()?;
     assert_eq!(proposal_result.num_approvals, 1);
     let created_proposal_id = proposal_result.proposal_id;
     // Verify proposals list
