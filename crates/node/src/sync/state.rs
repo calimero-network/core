@@ -73,16 +73,12 @@ impl Node {
 
         let mut sqx_out = Sequencer::default();
 
-        let possible_sending_key = self
+        let private_key = self
             .ctx_manager
-            .get_sender_key(&context.id, &our_identity)?;
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
 
-        let sending_key = match possible_sending_key {
-            Some(key) => key,
-            None => todo!(),
-        };
-
-        let shared_key = SharedKey::new(&sending_key, &their_identity);
+        let shared_key = SharedKey::new(&private_key, &their_identity);
 
         send(
             stream,
@@ -131,16 +127,12 @@ impl Node {
             bail!("no identities found for context: {}", context.id);
         };
 
-        let possible_sending_key = self
+        let private_key = self
             .ctx_manager
-            .get_sender_key(&context.id, &our_identity)?;
+            .get_private_key(context.id, our_identity)?
+            .ok_or_eyre("expected own identity to have private key")?;
 
-        let sending_key = match possible_sending_key {
-            Some(key) => key,
-            None => todo!(),
-        };
-
-        let shared_key = SharedKey::new(&sending_key, &our_identity);
+        let shared_key = SharedKey::new(&private_key, &our_identity);
 
         send(
             stream,

@@ -309,7 +309,7 @@ impl ContextManager {
         }
 
         handle.put(
-            &ContextIdentityKey::new(context.id, identity_secret.public_key()), //local node saving its local identity
+            &ContextIdentityKey::new(context.id, identity_secret.public_key()),
             &ContextIdentityValue {
                 private_key: Some(*identity_secret),
                 sender_key: Some(*self.new_private_key()),
@@ -401,7 +401,7 @@ impl ContextManager {
 
         let Some(ContextIdentityValue {
             private_key: Some(requester_secret),
-            sender_key: None,
+            ..
         }) = handle.get(&ContextIdentityKey::new(context_id, inviter_id))?
         else {
             return Ok(None);

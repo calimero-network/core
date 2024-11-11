@@ -57,7 +57,7 @@ async fn recv(
     let data = match shared_key {
         Some(key) => match key.decrypt(message_data, [0; 12]) {
             Some(data) => data,
-            None => bail!("Encryption failed"),
+            None => bail!("decryption failed"),
         },
         None => message_data,
     };
