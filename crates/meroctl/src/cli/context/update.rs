@@ -29,6 +29,7 @@ pub struct UpdateCommand {
     context_id: ContextId,
 
     #[clap(
+        long,
         short = 'p',
         help = "PublicKey needed for the application installation"
     )]
@@ -40,7 +41,7 @@ pub struct UpdateCommand {
     )]
     path: Utf8PathBuf,
 
-    #[clap(help = "Metadata needed for the application installation")]
+    #[clap(long, help = "Metadata needed for the application installation")]
     metadata: Option<String>,
 }
 
