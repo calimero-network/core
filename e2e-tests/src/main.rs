@@ -69,7 +69,7 @@ impl Into<TestEnvironment> for Args {
             meroctl_binary: self.meroctl_binary,
             input_dir: self.input_dir.clone(),
             output_dir: self.output_dir.clone(),
-            nodes_dir: self.output_dir.join("calimero"),
+            nodes_dir: self.output_dir.join("nodes"),
             logs_dir: self.output_dir.join("logs"),
         }
     }

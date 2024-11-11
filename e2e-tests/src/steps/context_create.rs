@@ -17,7 +17,7 @@ pub enum ApplicationSource {
 }
 
 impl Test for CreateContextStep {
-    async fn run_assert(&self, ctx: &TestContext<'_>) -> EyreResult<()> {
+    async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
         let app_id = match &self.application {
             ApplicationSource::LocalFile(path) => {
                 ctx.meroctl
@@ -31,8 +31,8 @@ impl Test for CreateContextStep {
             .context_create(&ctx.inviter_node, &app_id)
             .await?;
 
-        ctx.set_context_id(context_id);
-        ctx.set_inviter_public_key(member_public_key);
+        ctx.context_id = Some(context_id);
+        ctx.inviter_public_key = Some(member_public_key);
 
         Ok(())
     }

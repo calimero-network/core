@@ -13,39 +13,34 @@ pub struct Merod {
     pub name: String,
     process: RefCell<Option<Child>>,
     nodes_dir: Utf8PathBuf,
-    logs_dir: Utf8PathBuf,
+    log_dir: Utf8PathBuf,
     binary: Utf8PathBuf,
 }
 
 impl Merod {
     pub fn new(name: String, environment: &TestEnvironment) -> Self {
-        let logs_dir = environment.logs_dir.join(&name);
-
         Self {
-            name,
             process: RefCell::new(None),
             nodes_dir: environment.nodes_dir.clone(),
-            logs_dir,
+            log_dir: environment.logs_dir.join(&name),
             binary: environment.merod_binary.clone(),
+            name,
         }
     }
 
     pub async fn init(&self, swarm_port: u32, server_port: u32) -> EyreResult<()> {
-        let node_dir = self.nodes_dir.join(&self.name);
-        create_dir_all(&node_dir).await?;
-
-        let logs_dir = self.logs_dir.join(&self.name);
-        create_dir_all(&logs_dir).await?;
+        create_dir_all(&self.nodes_dir.join(&self.name)).await?;
+        create_dir_all(&self.log_dir).await?;
 
         let mut child = self
             .run_cmd(
-                Box::new([
+                &[
                     "init",
                     "--swarm-port",
                     swarm_port.to_string().as_str(),
                     "--server-port",
                     server_port.to_string().as_str(),
-                ]),
+                ],
                 "init",
             )
             .await?;
@@ -60,7 +55,7 @@ impl Merod {
     }
 
     pub async fn run(&self) -> EyreResult<()> {
-        let child = self.run_cmd(Box::new(["run"]), "run").await?;
+        let child = self.run_cmd(&["run"], "run").await?;
 
         *self.process.borrow_mut() = Some(child);
 
@@ -82,14 +77,12 @@ impl Merod {
         Ok(())
     }
 
-    async fn run_cmd(&self, args: Box<[&str]>, log_suffix: &str) -> EyreResult<Child> {
+    async fn run_cmd(&self, args: &[&str], log_suffix: &str) -> EyreResult<Child> {
         let mut root_args = vec!["--home", self.nodes_dir.as_str(), "--node-name", &self.name];
 
         root_args.extend(args);
 
-        let log_file = self
-            .logs_dir
-            .join(format!("{}-{}.log", self.name, log_suffix));
+        let log_file = self.log_dir.join(format!("{}.log", log_suffix));
         let mut log_file = File::create(&log_file).await?;
 
         println!("Running command '{:}' {:?}", &self.binary, root_args);

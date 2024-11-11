@@ -1,4 +1,4 @@
-use eyre::{bail, Result as EyreResult};
+use eyre::{bail, eyre, Result as EyreResult};
 use serde::{Deserialize, Serialize};
 
 use crate::driver::{Test, TestContext};
@@ -12,27 +12,33 @@ pub struct JsonRpcExecuteStep {
 }
 
 impl Test for JsonRpcExecuteStep {
-    async fn run_assert(&self, ctx: &TestContext<'_>) -> EyreResult<()> {
-        let context_id = ctx
-            .get_context_id()
-            .expect("Context ID is required for InviteJoinContextStep");
+    async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()> {
+        let Some(ref context_id) = ctx.context_id else {
+            bail!("Context ID is required for InviteJoinContextStep");
+        };
 
         let response = ctx
             .meroctl
             .json_rpc_execute(
                 &ctx.inviter_node,
-                &context_id,
+                context_id,
                 &self.method_name,
                 &self.args_json,
             )
             .await?;
 
         if let Some(expected_result_json) = &self.expected_result_json {
-            if *expected_result_json != response["result"]["output"] {
+            let output = response
+                .get("result")
+                .ok_or_else(|| eyre!("result not found in JSON RPC response"))?
+                .get("output")
+                .ok_or_else(|| eyre!("output not found in JSON RPC response result"))?;
+
+            if expected_result_json != output {
                 bail!(
-                    "JSON RPC Result mismatch: {} != {}",
-                    *expected_result_json,
-                    response["result"]["output"]
+                    "JSON RPC result output mismatch:\nexpected: {}\nactual  : {}",
+                    expected_result_json,
+                    output
                 );
             }
         }

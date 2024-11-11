@@ -1,7 +1,7 @@
 use std::process::Stdio;
 
 use camino::Utf8PathBuf;
-use eyre::Result as EyreResult;
+use eyre::{bail, eyre, OptionExt, Result as EyreResult};
 use tokio::process::Command;
 
 use crate::TestEnvironment;
@@ -21,14 +21,13 @@ impl Meroctl {
 
     pub async fn application_install(&self, node_name: &str, app_path: &str) -> EyreResult<String> {
         let json = self
-            .run_cmd(node_name, Box::new(["app", "install", "--path", app_path]))
+            .run_cmd(node_name, &["app", "install", "--path", app_path])
             .await?;
 
-        let app_id = json["data"]["applicationId"]
-            .as_str()
-            .expect("data.applicationId not found");
+        let data = self.remove_value_from_object(json, "data")?;
+        let app_id = self.get_string_from_object(&data, "applicationId")?;
 
-        Ok(app_id.to_owned())
+        Ok(app_id)
     }
 
     pub async fn context_create(
@@ -37,17 +36,14 @@ impl Meroctl {
         app_id: &str,
     ) -> EyreResult<(String, String)> {
         let json = self
-            .run_cmd(node_name, Box::new(["context", "create", "-a", app_id]))
+            .run_cmd(node_name, &["context", "create", "-a", app_id])
             .await?;
 
-        let context_id = json["data"]["contextId"]
-            .as_str()
-            .expect("data.contextId not found");
-        let member_public_key = json["data"]["memberPublicKey"]
-            .as_str()
-            .expect("data.memberPublicKey not found");
+        let data = self.remove_value_from_object(json, "data")?;
+        let context_id = self.get_string_from_object(&data, "contextId")?;
+        let member_public_key = self.get_string_from_object(&data, "memberPublicKey")?;
 
-        Ok((context_id.to_owned(), member_public_key.to_owned()))
+        Ok((context_id, member_public_key))
     }
 
     pub async fn context_invite(
@@ -60,21 +56,23 @@ impl Meroctl {
         let json = self
             .run_cmd(
                 node_name,
-                Box::new([
+                &[
                     "context",
                     "invite",
                     context_id,
                     inviteer_public_key,
                     invitee_public_key,
-                ]),
+                ],
             )
             .await?;
 
-        let data = json["data"]
+        let data = self
+            .remove_value_from_object(json, "data")?
             .as_str()
-            .expect("Invite response data not found");
+            .ok_or_eyre("data is not string")?
+            .to_owned();
 
-        Ok(data.to_owned())
+        Ok(data)
     }
 
     pub async fn context_join(
@@ -86,33 +84,25 @@ impl Meroctl {
         let json = self
             .run_cmd(
                 node_name,
-                Box::new(["context", "join", private_key, invitation_data]),
+                &["context", "join", private_key, invitation_data],
             )
             .await?;
 
-        let context_id = json["data"]["contextId"]
-            .as_str()
-            .expect("data.contextId not found");
-        let member_public_key = json["data"]["memberPublicKey"]
-            .as_str()
-            .expect("data.memberPublicKey not found");
+        let data = self.remove_value_from_object(json, "data")?;
+        let context_id = self.get_string_from_object(&data, "contextId")?;
+        let member_public_key = self.get_string_from_object(&data, "memberPublicKey")?;
 
-        Ok((context_id.to_owned(), member_public_key.to_owned()))
+        Ok((context_id, member_public_key))
     }
 
     pub async fn identity_generate(&self, node_name: &str) -> EyreResult<(String, String)> {
-        let json = self
-            .run_cmd(node_name, Box::new(["identity", "generate"]))
-            .await?;
+        let json = self.run_cmd(node_name, &["identity", "generate"]).await?;
 
-        let public_key = json["data"]["publicKey"]
-            .as_str()
-            .expect("data.publicKey not found");
-        let private_key = json["data"]["privateKey"]
-            .as_str()
-            .expect("data.privateKey not found");
+        let data = self.remove_value_from_object(json, "data")?;
+        let public_key = self.get_string_from_object(&data, "publicKey")?;
+        let private_key = self.get_string_from_object(&data, "privateKey")?;
 
-        Ok((public_key.to_owned(), private_key.to_owned()))
+        Ok((public_key, private_key))
     }
 
     pub async fn json_rpc_execute(
@@ -126,22 +116,24 @@ impl Meroctl {
         let json = self
             .run_cmd(
                 node_name,
-                Box::new([
+                &[
                     "json-rpc",
                     context_id,
                     method_name,
                     "--args-json",
                     &args_json,
-                ]),
+                ],
             )
             .await?;
 
-        println!("{:?}", json);
+        if let Some(error) = json.get("error") {
+            bail!("JSON RPC response error: {:?}", error)
+        }
 
         Ok(json)
     }
 
-    async fn run_cmd(&self, node_name: &str, args: Box<[&str]>) -> EyreResult<serde_json::Value> {
+    async fn run_cmd(&self, node_name: &str, args: &[&str]) -> EyreResult<serde_json::Value> {
         let mut root_args = vec![
             "--home",
             self.nodes_dir.as_str(),
@@ -163,5 +155,32 @@ impl Meroctl {
             .await?;
 
         Ok(serde_json::from_slice(&output.stdout)?)
+    }
+
+    fn remove_value_from_object(
+        &self,
+        mut json: serde_json::Value,
+        key: &str,
+    ) -> EyreResult<serde_json::Value> {
+        let json = json
+            .as_object_mut()
+            .ok_or_eyre("input is not a JSON object")?;
+
+        json.remove(key)
+            .ok_or_else(|| eyre!("'{}' not found in json object", key))
+    }
+
+    fn get_string_from_object(&self, json: &serde_json::Value, key: &str) -> EyreResult<String> {
+        let json = json.as_object().ok_or_eyre("input is not a JSON object")?;
+
+        let json = json
+            .get(key)
+            .ok_or_else(|| eyre!("'{}' not found in json object", key))?;
+
+        let value = json
+            .as_str()
+            .ok_or_else(|| eyre!("'{}' is not a string", key))?;
+
+        Ok(value.to_owned())
     }
 }

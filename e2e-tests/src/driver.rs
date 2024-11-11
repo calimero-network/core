@@ -77,15 +77,17 @@ impl Driver {
             None => bail!("Not enough nodes to run the test"),
         };
 
-        let ctx = TestContext::new(inviter_node, invitee_node, &self.meroctl);
+        let mut ctx = TestContext::new(inviter_node, invitee_node, &self.meroctl);
 
         for step in scenario.steps.iter() {
-            println!("Running step: {:?}", step);
+            println!("================= Starting step =================");
+            println!("Step: {:?}", step);
             match step {
-                TestStep::ContextCreate(step) => step.run_assert(&ctx).await?,
-                TestStep::ContextInviteJoin(step) => step.run_assert(&ctx).await?,
-                TestStep::JsonRpcExecute(step) => step.run_assert(&ctx).await?,
+                TestStep::ContextCreate(step) => step.run_assert(&mut ctx).await?,
+                TestStep::ContextInviteJoin(step) => step.run_assert(&mut ctx).await?,
+                TestStep::JsonRpcExecute(step) => step.run_assert(&mut ctx).await?,
             };
+            println!("================= Finished step =================");
         }
 
         Ok(())
@@ -146,12 +148,12 @@ pub struct TestContext<'a> {
     pub inviter_node: String,
     pub invitee_node: String,
     pub meroctl: &'a Meroctl,
-    context_id: RefCell<Option<String>>,
-    inviter_public_key: RefCell<Option<String>>,
+    pub context_id: Option<String>,
+    pub inviter_public_key: Option<String>,
 }
 
 pub trait Test {
-    async fn run_assert(&self, ctx: &TestContext<'_>) -> EyreResult<()>;
+    async fn run_assert(&self, ctx: &mut TestContext<'_>) -> EyreResult<()>;
 }
 
 impl<'a> TestContext<'a> {
@@ -160,24 +162,8 @@ impl<'a> TestContext<'a> {
             inviter_node,
             invitee_node,
             meroctl,
-            context_id: RefCell::new(None),
-            inviter_public_key: RefCell::new(None),
+            context_id: None,
+            inviter_public_key: None,
         }
-    }
-
-    pub fn set_context_id(&self, context_id: String) {
-        *self.context_id.borrow_mut() = Some(context_id);
-    }
-
-    pub fn get_context_id(&self) -> Option<String> {
-        self.context_id.borrow().clone()
-    }
-
-    pub fn set_inviter_public_key(&self, inviter_public_key: String) {
-        *self.inviter_public_key.borrow_mut() = Some(inviter_public_key);
-    }
-
-    pub fn get_inviter_public_key(&self) -> Option<String> {
-        self.inviter_public_key.borrow().clone()
     }
 }
