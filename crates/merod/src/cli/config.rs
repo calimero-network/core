@@ -1,214 +1,94 @@
 #![allow(unused_results, reason = "Occurs in macro")]
 
-use core::net::IpAddr;
+use std::env::temp_dir;
 use std::fs::{read_to_string, write};
+use std::str::FromStr;
 
-use calimero_network::config::BootstrapNodes;
-use clap::{Args, Parser, ValueEnum};
-use eyre::{eyre, Result as EyreResult};
-use multiaddr::{Multiaddr, Protocol};
-use toml_edit::{DocumentMut, Value};
+use calimero_config::{ConfigFile, CONFIG_FILE};
+use camino::Utf8PathBuf;
+use clap::{value_parser, Parser};
+use eyre::{bail, eyre, Result as EyreResult};
+use toml_edit::{Item, Value};
 use tracing::info;
 
 use crate::cli;
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum ConfigProtocol {
-    Near,
-    Starknet,
-}
-
-impl ConfigProtocol {
-    pub fn as_str(&self) -> &str {
-        match self {
-            ConfigProtocol::Near => "near",
-            ConfigProtocol::Starknet => "starknet",
-        }
-    }
-}
-
 /// Configure the node
 #[derive(Debug, Parser)]
 pub struct ConfigCommand {
-    /// List of bootstrap nodes
-    #[arg(long, value_name = "ADDR", conflicts_with = "boot_network")]
-    pub boot_nodes: Vec<Multiaddr>,
-
-    /// Use nodes from a known network
-    #[arg(long, value_name = "NETWORK", conflicts_with = "boot_nodes")]
-    pub boot_network: Option<BootstrapNetwork>,
-
-    /// Host to listen on
-    #[arg(long, value_name = "HOST", use_value_delimiter = true)]
-    pub swarm_host: Vec<IpAddr>,
-
-    /// Port to listen on
-    #[arg(long, value_name = "PORT")]
-    pub swarm_port: Option<u16>,
-
-    /// Host to listen on for RPC
-    #[arg(long, value_name = "HOST", use_value_delimiter = true)]
-    pub server_host: Vec<IpAddr>,
-
-    /// Port to listen on for RPC
-    #[arg(long, value_name = "PORT")]
-    pub server_port: Option<u16>,
-
-    #[command(flatten)]
-    pub mdns: Option<MdnsArgs>,
-
-    /// Print the config file
-    #[arg(long, short)]
-    pub print: bool,
+    /// Key-value pairs to be added or updated in the TOML file
+    #[clap(short, long, value_parser = value_parser!(KeyValuePair))]
+    arg: Vec<KeyValuePair>,
 }
 
-#[derive(Args, Debug)]
-#[group(multiple = false)]
-pub struct MdnsArgs {
-    /// Enable mDNS discovery
-    #[arg(long)]
-    pub mdns: bool,
-
-    #[arg(long, hide = true)]
-    pub _no_mdns: bool,
+#[derive(Clone, Debug)]
+struct KeyValuePair {
+    key: String,
+    value: Value,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
-pub enum BootstrapNetwork {
-    CalimeroDev,
-    Ipfs,
+impl FromStr for KeyValuePair {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.splitn(2, '=');
+        let key = parts.next().ok_or("Missing key")?.to_string();
+
+        let value = parts.next().ok_or("Missing value")?;
+        let value = Value::from_str(value).map_err(|e| e.to_string())?;
+
+        Ok(Self { key, value })
+    }
 }
 
 #[warn(unused_results)]
 impl ConfigCommand {
-    // TODO: Consider splitting this long function into multiple parts.
-    #[expect(clippy::too_many_lines, reason = "TODO: Will be refactored")]
     pub fn run(self, root_args: &cli::RootArgs) -> EyreResult<()> {
-        let path = root_args
-            .home
-            .join(&root_args.node_name)
-            .join("config.toml");
+        let path = root_args.home.join(&root_args.node_name);
+
+        if !ConfigFile::exists(&path) {
+            bail!("Node is not initialized in {:?}", path);
+        }
+
+        let path = path.join(CONFIG_FILE);
 
         // Load the existing TOML file
         let toml_str =
             read_to_string(&path).map_err(|_| eyre!("Node is not initialized in {:?}", path))?;
-        let mut doc = toml_str.parse::<DocumentMut>()?;
+        let mut doc = toml_str.parse::<toml_edit::DocumentMut>()?;
 
-        #[expect(clippy::print_stdout, reason = "Acceptable for CLI")]
-        if self.print {
-            println!("{doc}");
-            return Ok(());
-        }
+        // Update the TOML document
+        for kv in self.arg.iter() {
+            let key_parts: Vec<&str> = kv.key.split('.').collect();
 
-        let (ipv4_host, ipv6_host) =
-            self.swarm_host
-                .iter()
-                .fold((None, None), |(v4, v6), ip| match ip {
-                    IpAddr::V4(v4_addr) => (Some(*v4_addr), v6),
-                    IpAddr::V6(v6_addr) => (v4, Some(*v6_addr)),
-                });
+            let mut current = doc.as_item_mut();
 
-        // Update swarm listen addresses
-        if !self.swarm_host.is_empty() || self.swarm_port.is_some() {
-            let listen_array = doc["swarm"]["listen"]
-                .as_array_mut()
-                .ok_or(eyre!("No swarm table in config.toml"))?;
-
-            for item in listen_array.iter_mut() {
-                let addr: Multiaddr = item
-                    .as_str()
-                    .ok_or(eyre!("Value can't be parsed as string"))?
-                    .parse()?;
-                let mut new_addr = Multiaddr::empty();
-
-                for protocol in &addr {
-                    match (&protocol, ipv4_host, ipv6_host, self.swarm_port) {
-                        (Protocol::Ip4(_), Some(ipv4_host), _, _) => {
-                            new_addr.push(Protocol::Ip4(ipv4_host));
-                        }
-                        (Protocol::Ip6(_), _, Some(ipv6_host), _) => {
-                            new_addr.push(Protocol::Ip6(ipv6_host));
-                        }
-                        (Protocol::Tcp(_) | Protocol::Udp(_), _, _, Some(new_port)) => {
-                            #[expect(clippy::wildcard_enum_match_arm, reason = "Acceptable here")]
-                            new_addr.push(match &protocol {
-                                Protocol::Tcp(_) => Protocol::Tcp(new_port),
-                                Protocol::Udp(_) => Protocol::Udp(new_port),
-                                _ => unreachable!(),
-                            });
-                        }
-                        _ => new_addr.push(protocol),
-                    }
-                }
-
-                *item = Value::from(new_addr.to_string());
+            for key in &key_parts[..key_parts.len() - 1] {
+                current = &mut current[key];
             }
+
+            current[key_parts[key_parts.len() - 1]] = Item::Value(kv.value.clone());
         }
 
-        // Update server listen addresses
-        if !self.server_host.is_empty() || self.server_port.is_some() {
-            let listen_array = doc["server"]["listen"]
-                .as_array_mut()
-                .ok_or(eyre!("No server table in config.toml"))?;
-
-            for item in listen_array.iter_mut() {
-                let addr: Multiaddr = item
-                    .as_str()
-                    .ok_or(eyre!("Value can't be parsed as string"))?
-                    .parse()?;
-                let mut new_addr = Multiaddr::empty();
-
-                for protocol in &addr {
-                    match (&protocol, ipv4_host, ipv6_host, self.server_port) {
-                        (Protocol::Ip4(_), Some(ipv4_host), _, _) => {
-                            new_addr.push(Protocol::Ip4(ipv4_host));
-                        }
-                        (Protocol::Ip6(_), _, Some(ipv6_host), _) => {
-                            new_addr.push(Protocol::Ip6(ipv6_host));
-                        }
-                        (Protocol::Tcp(_), _, _, Some(new_port)) => {
-                            new_addr.push(Protocol::Tcp(new_port));
-                        }
-                        _ => new_addr.push(protocol),
-                    }
-                }
-
-                *item = Value::from(new_addr.to_string());
-            }
-        }
-
-        // Update boot nodes if provided
-        if !self.boot_nodes.is_empty() {
-            let list_array = doc["bootstrap"]["nodes"]
-                .as_array_mut()
-                .ok_or(eyre!("No swarm table in config.toml"))?;
-            list_array.clear();
-            for node in self.boot_nodes {
-                list_array.push(node.to_string());
-            }
-        } else if let Some(network) = self.boot_network {
-            let list_array = doc["bootstrap"]["nodes"]
-                .as_array_mut()
-                .ok_or(eyre!("No swarm table in config.toml"))?;
-            list_array.clear();
-            let new_nodes = match network {
-                BootstrapNetwork::CalimeroDev => BootstrapNodes::calimero_dev().list,
-                BootstrapNetwork::Ipfs => BootstrapNodes::ipfs().list,
-            };
-            for node in new_nodes {
-                list_array.push(node.to_string());
-            }
-        }
-
-        // Update mDNS setting if provided
-        if let Some(opts) = self.mdns {
-            doc["discovery"]["mdns"] = toml_edit::value(opts.mdns);
-        }
+        self.validate_toml(&doc)?;
 
         // Save the updated TOML back to the file
         write(&path, doc.to_string())?;
 
         info!("Node configuration has been updated");
+
+        Ok(())
+    }
+
+    pub fn validate_toml(self, doc: &toml_edit::DocumentMut) -> EyreResult<()> {
+        let tmp_dir = temp_dir();
+        let tmp_path = tmp_dir.join(CONFIG_FILE);
+
+        write(&tmp_path, doc.to_string())?;
+
+        let tmp_path_utf8 = Utf8PathBuf::try_from(tmp_dir)?;
+
+        drop(ConfigFile::load(&tmp_path_utf8)?);
 
         Ok(())
     }
