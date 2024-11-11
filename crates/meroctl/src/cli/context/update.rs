@@ -25,13 +25,13 @@ pub struct UpdateCommand {
     )]
     application_id: Option<ApplicationId>,
 
-    #[clap(help = "Metadata needed for the application installation")]
-    metadata: Option<String>,
-
-    #[clap(help = "ContextId where to install the application")]
+    #[clap(long, short = 'c', help = "ContextId where to install the application")]
     context_id: ContextId,
 
-    #[clap(help = "PublicKey needed for the application installation")]
+    #[clap(
+        short = 'p',
+        help = "PublicKey needed for the application installation"
+    )]
     member_public_key: PublicKey,
 
     #[clap(
@@ -39,6 +39,9 @@ pub struct UpdateCommand {
         help = "Path to the application file to watch and install locally"
     )]
     path: Utf8PathBuf,
+
+    #[clap(help = "Metadata needed for the application installation")]
+    metadata: Option<String>,
 }
 
 impl UpdateCommand {
