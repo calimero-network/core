@@ -3,7 +3,7 @@ use std::vec;
 
 use axum::extract::Path;
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
+use axum::Extension;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_sessions::Session;
