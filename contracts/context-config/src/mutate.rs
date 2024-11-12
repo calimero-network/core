@@ -347,7 +347,9 @@ impl ContextConfigs {
                 NearToken::from_near(0),
                 init_gas,
             )
-            .then(Self::ext(env::current_account_id()).proxy_contract_callback("deploy".to_owned()))
+            .then(Self::ext(env::current_account_id()).proxy_contract_callback(
+                "deploy".to_owned(),
+            ))
     }
 
     fn update_proxy_contract(

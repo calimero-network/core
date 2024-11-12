@@ -6,7 +6,7 @@ use calimero_context_config::types::{ContextId, Signed, SignerId};
 use calimero_context_config::{Proposal, ProposalId, ProposalWithApprovals};
 use near_sdk::json_types::U128;
 use near_sdk::store::IterableMap;
-use near_sdk::{near, AccountId, PanicOnDefault, PromiseError};
+use near_sdk::{env, near, AccountId, PanicOnDefault, PromiseError};
 
 pub mod ext_config;
 mod mutate;
@@ -33,6 +33,7 @@ pub struct ProxyContract {
     pub num_proposals_pk: IterableMap<SignerId, u32>,
     pub active_proposals_limit: u32,
     pub context_storage: IterableMap<Box<[u8]>, Box<[u8]>>,
+    pub code_size: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +57,7 @@ impl ProxyContract {
             num_approvals: 3,
             active_proposals_limit: 10,
             context_storage: IterableMap::new(b"l"),
+            code_size: env::storage_usage() as u64,
         }
     }
 

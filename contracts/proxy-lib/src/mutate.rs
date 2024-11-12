@@ -207,19 +207,18 @@ impl ProxyContract {
         );
 
         let new_code = env::input().expect("Expected proxy code");
-        // Calculate storage before update
-        let storage_before = env::storage_usage();
+        let new_code_size = new_code.len() as u64;
 
         // Deploy the new code and chain the callback
         Promise::new(env::current_account_id())
             .deploy_contract(new_code)
-            .then(Self::ext(env::current_account_id()).update_contract_callback(storage_before))
+            .then(Self::ext(env::current_account_id()).update_contract_callback(new_code_size))
     }
 
     #[private]
     pub fn update_contract_callback(
         &mut self,
-        storage_before: u64,
+        new_code_size: u64,
         #[callback_result] call_result: Result<(), PromiseError>,
     ) {
         require!(
@@ -231,15 +230,16 @@ impl ProxyContract {
             env::panic_str(&format!("Failed to update proxy contract code: {:?}", e));
         }
 
-        // Calculate storage difference and refund if needed
-        let storage_after = env::storage_usage();
-        if storage_after < storage_before {
-            let refund =
-                (storage_before - storage_after) as u128 * env::storage_byte_cost().as_yoctonear();
+        // Calculate refund based on code size difference only
+        let old_code_size = self.code_size;
+        if new_code_size < old_code_size {
+            let refund = (old_code_size - new_code_size) as u128 * env::storage_byte_cost().as_yoctonear();
             Promise::new(self.context_config_account_id.clone())
                 .transfer(NearToken::from_yoctonear(refund));
         }
 
+        // Update stored code size
+        self.code_size = new_code_size;
         env::log_str("Successfully updated proxy contract code");
     }
 }
