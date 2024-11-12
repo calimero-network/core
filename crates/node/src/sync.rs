@@ -16,6 +16,7 @@ use crate::types::{InitPayload, StreamMessage};
 use crate::Node;
 
 mod blobs;
+mod key_share;
 mod state;
 
 #[derive(Copy, Clone, Debug)]
@@ -117,6 +118,9 @@ impl Node {
         };
 
         let mut stream = self.network_client.open_stream(chosen_peer).await?;
+
+        self.initiate_key_share_process(&mut context, our_identity, &mut stream)
+            .await?;
 
         if !self.ctx_manager.has_blob_available(application.blob)? {
             self.initiate_blob_share_process(
@@ -222,6 +226,10 @@ impl Node {
                     stream,
                 )
                 .await?
+            }
+            InitPayload::KeyShare {} => {
+                self.handle_key_share_request(context, their_identity, stream)
+                    .await?
             }
         };
 

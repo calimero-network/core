@@ -11,6 +11,10 @@ use crate::context::ContextId;
 use crate::hash::{Hash, HashError};
 
 #[derive(Eq, Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(borsh::BorshDeserialize, borsh::BorshSerialize)
+)]
 pub struct PrivateKey(Hash);
 
 impl From<[u8; 32]> for PrivateKey {

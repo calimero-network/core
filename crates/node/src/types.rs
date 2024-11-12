@@ -7,7 +7,7 @@ use calimero_primitives::application::ApplicationId;
 use calimero_primitives::blobs::BlobId;
 use calimero_primitives::context::ContextId;
 use calimero_primitives::hash::Hash;
-use calimero_primitives::identity::PublicKey;
+use calimero_primitives::identity::{PrivateKey, PublicKey};
 use serde::Deserialize;
 
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
@@ -47,12 +47,14 @@ pub enum InitPayload {
         root_hash: Hash,
         application_id: ApplicationId,
     },
+    KeyShare {},
 }
-
+// this I was encrypting
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum MessagePayload<'a> {
     StateSync { artifact: Cow<'a, [u8]> },
     BlobShare { chunk: Cow<'a, [u8]> },
+    KeyShare { sender_key: PrivateKey },
 }
 
 #[derive(Deserialize)]

@@ -12,6 +12,7 @@ pub mod peers;
 pub mod state;
 pub mod store;
 
+use calimero_primitives::blobs::BlobId;
 use clap::{Parser, Subcommand};
 
 use crate::Node;
@@ -34,6 +35,7 @@ pub enum SubCommand {
     Peers(peers::PeersCommand),
     // Store(store::StoreCommand),
     State(state::StateCommand),
+    Connect,
 }
 
 pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
@@ -59,6 +61,14 @@ pub async fn handle_line(node: &mut Node, line: String) -> eyre::Result<()> {
         SubCommand::Peers(peers) => peers.run(node.network_client.clone().into()).await?,
         SubCommand::State(state) => state.run(node)?,
         // SubCommand::Store(store) => store.run(node)?,
+        SubCommand::Connect => {
+            let addr =
+            "/ip4/18.156.18.6/udp/4001/quic-v1/p2p/12D3KooWMgoF9xzyeKJHtRvrYwdomheRbHPELagWZwTLmXb6bCVC";
+
+            let res = node.network_client.dial(addr.parse()?).await;
+
+            dbg!(res);
+        }
     }
 
     Ok(())
