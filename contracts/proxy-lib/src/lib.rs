@@ -10,7 +10,17 @@ use near_sdk::{env, near, AccountId, PanicOnDefault, PromiseError};
 
 pub mod ext_config;
 mod mutate;
-pub use crate::ext_config::config_contract;
+
+#[cfg(feature = "__internal_explode_size")]
+const _: () = {
+    const __SIZE: usize = 1 << 16; // 64KB
+    const __PAYLOAD: [u8; __SIZE] = [1; __SIZE];
+
+    #[no_mangle]
+    extern "C" fn __internal_explode_size() -> usize {
+        __PAYLOAD.iter().map(|c| (*c as usize) + 1).sum()
+    }
+};
 
 enum MemberAction {
     Approve {
@@ -22,6 +32,7 @@ enum MemberAction {
         num_proposals: u32,
     },
 }
+
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct ProxyContract {

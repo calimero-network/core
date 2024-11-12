@@ -1086,7 +1086,6 @@ async fn test_deploy() -> eyre::Result<()> {
     Ok(())
 }
 
-#[ignore]
 #[tokio::test]
 async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let worker = near_workspaces::sandbox().await?;
@@ -1110,7 +1109,7 @@ async fn test_storage_usage_matches_code_size() -> eyre::Result<()> {
     let context_public = context_secret.verifying_key();
     let context_id = context_public.to_bytes().rt()?;
 
-    let bigger_proxy_wasm = fs::read("./tests/proxy_lib.wasm").await?;
+    let bigger_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib_fat.wasm").await?;
     let smaller_proxy_wasm = fs::read("../proxy-lib/res/proxy_lib.wasm").await?;
 
     // Set initial proxy code
